@@ -69,7 +69,7 @@ export function startNonStopWatchdogClient(): void {
   })
     .then((fn) => {
       if (disposed) {
-        void fn();
+        fn();
       } else {
         unlisten = fn;
       }
@@ -79,7 +79,7 @@ export function startNonStopWatchdogClient(): void {
   onCleanup(() => {
     disposed = true;
     clearInterval(timer);
-    if (unlisten) void unlisten();
+    if (unlisten) unlisten();
     stopAllNonStopAlarms();
   });
 }

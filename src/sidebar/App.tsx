@@ -8,6 +8,7 @@ import type {
   MainSidebarSide,
   SessionWarning,
   SessionSelection,
+  SettingsSnapshot,
 } from "../shared/types";
 import {
   PtyAPI,
@@ -27,7 +28,7 @@ import {
   onSessionBusy,
   onSessionComanagedState,
   onSessionContext,
-  onSessionAgentQuota,
+  onAgentQuota,
   onSessionGitRepos,
   onSessionCoordinatorChanged,
   onTelegramBridgeAttached,
@@ -192,6 +193,11 @@ export function createSidebarSelectionScrollReset(
   onCleanup(() => {
     disposed = true;
   });
+}
+
+function resolveSidebarStyle(style: string): string {
+  const removedThemes = ["classic", "signal-grid"];
+  return (!style || removedThemes.includes(style)) ? "noir-minimal" : style;
 }
 
 const SidebarApp: Component<SidebarAppProps> = (props) => {
@@ -524,6 +530,11 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     unlisteners.push(unlisten);
   };
 
+  // Ends the whole mount; onMount's catch swallows exactly this sentinel.
+  const bailIfDisposed = (): void => {
+    if (disposed) throw mountDisposed;
+  };
+
   const cancelHydrationRetry = (): void => {
     if (!hydrationRetryTimer) return;
     clearTimeout(hydrationRetryTimer);
@@ -674,8 +685,9 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
   // reactive owner and its cleanup runs on dispose.
   startCiActivityStamp();
 
-  onMount(async () => {
-    try {
+  // onMount phases, in mount order. Every phase after the first starts with
+  // bailIfDisposed(): an unmount can land in the gap between two phases.
+  const registerSessionLifecycleListeners = async (): Promise<void> => {
     // Selection authority and transport lifecycle are registered before every
     // hydration/list await so an event cannot lose a race to an older snapshot.
     await register(
@@ -683,9 +695,9 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         applyAuthoritativeSelection(selection, deliveryGeneration, false);
       }),
     );
-    if (disposed) return;
+    bailIfDisposed();
     await register(onTransportConnectionState(applyConnectionState));
-    if (disposed) return;
+    bailIfDisposed();
     await register(
       onSessionCreated((session) => {
         sessionsStore.addSession(session);
@@ -693,7 +705,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         scheduleProfileOutdatedRefresh();
       }),
     );
-    if (disposed) return;
+    bailIfDisposed();
     await register(
       onSessionDestroyed(({ id }) => {
         voiceRecorder.revokeSession(id);
@@ -701,9 +713,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         sessionsStore.setDetached(id, false);
       }),
     );
-    if (disposed) return;
+    bailIfDisposed();
     applyConnectionState(getTransportConnectionState());
+  };
 
+  const registerProjectAndProfileListeners = async (): Promise<void> => {
+    bailIfDisposed();
     // #289 / dark-default — dark is the base CSS, so first paint is dark with
     // no optimistic class; the persisted-preference check after
     // SettingsAPI.get() below opts into light only for users who chose it last
@@ -758,10 +773,10 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       });
     // #714 screenshot capture saved/failed toasts + startup hotkey-status warning.
     for (const unlisten of await wireScreenshotListeners()) addUnlistener(unlisten);
-    if (disposed) return;
+    bailIfDisposed();
     // #1327 startup coding-agent update splash, prompt, and failure toasts.
     for (const unlisten of await wireAgentUpdateListeners()) addUnlistener(unlisten);
-    if (disposed) return;
+    bailIfDisposed();
     await register(
       onCodingAgentEnvSettingsUpdated(() => {
         settingsStore.refresh();
@@ -793,25 +808,29 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         if (toast) showLoopToast(toast);
       })
     );
+  };
 
+  const initWindowChrome = async (): Promise<void> => {
+    bailIfDisposed();
     shortcutHandler = registerShortcuts();
     if (!props.embedded) {
       cleanupZoom = await initZoom("sidebar");
       if (disposed) {
         cleanupZoom();
         cleanupZoom = null;
-        return;
+        throw mountDisposed;
       }
       cleanupGeometry = await initWindowGeometry("sidebar");
       if (disposed) {
         cleanupGeometry();
         cleanupGeometry = null;
-        return;
+        throw mountDisposed;
       }
     }
+  };
 
-    const appSettings = await SettingsAPI.get();
-    if (disposed) return;
+  const applyAppSettings = async (appSettings: SettingsSnapshot): Promise<void> => {
+    bailIfDisposed();
     setSettingsRailSide(appSettings.mainSidebarSide === "left" ? "left" : "right");
     if (!props.embedded) {
       document.documentElement.classList.toggle("light-theme", appSettings.themeLight);
@@ -820,9 +839,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     sessionsStore.setCoordSortByActivity(appSettings.coordSortByActivity ?? false);
     sessionsStore.setAlwaysShowSelectedWorkgroup(appSettings.alwaysShowSelectedWorkgroup ?? true);
     railCollapseStore.hydrateFromSettings(appSettings);
-    const style = appSettings.sidebarStyle;
-    const removedThemes = ["classic", "signal-grid"];
-    document.documentElement.dataset.sidebarStyle = (!style || removedThemes.includes(style)) ? "noir-minimal" : style;
+    document.documentElement.dataset.sidebarStyle = resolveSidebarStyle(appSettings.sidebarStyle);
     applySelectedRowRail(
       document.documentElement,
       appSettings.selectedRowRailWidth,
@@ -831,7 +848,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     if (!props.embedded && appSettings.sidebarAlwaysOnTop && isTauri) {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().setAlwaysOnTop(true);
-      if (disposed) return;
+      bailIfDisposed();
     }
     if (!props.embedded) {
       document.addEventListener("mousedown", handleRaiseTerminal);
@@ -844,11 +861,14 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       try {
         await applyWindowLayout("right");
       } catch {}
-      if (disposed) return;
+      bailIfDisposed();
     }
+  };
 
+  const hydrateProjectsAndSessions = async (appSettings: SettingsSnapshot): Promise<void> => {
+    bailIfDisposed();
     await settingsStore.load();
-    if (disposed) return;
+    bailIfDisposed();
 
     primeAudio();
     stopTeamIdleWatcher = startTeamIdleWatcher();
@@ -869,7 +889,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       // backend) is the only legacy fallback.
       appSettings.projectPathResolution,
     );
-    if (disposed) return;
+    bailIfDisposed();
     // #1966: the project list is now the authoritative head; the observer above
     // reconciles (or adopts) the catalog identity from here on.
     setProjectsInitialized(true);
@@ -878,7 +898,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
       const allRepos = await ReposAPI.search("");
       if (!disposed) sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
     } catch {}
-    if (disposed) return;
+    bailIfDisposed();
 
     await register(
       onSessionCommunicationChanged(({ sessionId, communication }) => {
@@ -888,7 +908,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
     const rowMembershipGeneration = sessionsStore.rowMembershipGeneration;
     const sessions = await SessionAPI.list();
-    if (disposed) return;
+    bailIfDisposed();
     sessionsStore.setSessionsIfRowMembershipUnchanged(
       sessions,
       rowMembershipGeneration,
@@ -904,7 +924,10 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     // which is the reported field case. A low-frequency tick runs the same
     // debounced refresh; handleWindowFocusDriftRefresh skips it while hidden.
     waitingReconcileTimer = setInterval(handleWindowFocusDriftRefresh, 5000);
+  };
 
+  const registerSessionStateListeners = async (): Promise<void> => {
+    bailIfDisposed();
     // Listen for events
     await register(
       onTerminalDetached(({ sessionId }) =>
@@ -924,7 +947,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     } catch (e) {
       console.warn("[sidebar] listDetached hydration failed:", e);
     }
-    if (disposed) return;
+    bailIfDisposed();
 
     await register(
       onSessionRenamed(({ id, name }) => {
@@ -967,7 +990,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         sessionsStore.setSessionContext(sessionId, percent);
       }),
     );
-    if (disposed) return;
+    bailIfDisposed();
 
     try {
       await Promise.all(
@@ -981,26 +1004,20 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
           }),
       );
     } catch {}
-    if (disposed) return;
+    bailIfDisposed();
 
     await register(
-      onSessionAgentQuota(({ sessionId, weeklyUsedPercent }) => {
-        sessionsStore.setSessionAgentQuota(sessionId, weeklyUsedPercent);
+      onAgentQuota(({ agentId, weeklyUsedPercent }) => {
+        sessionsStore.setAgentQuota(agentId, weeklyUsedPercent);
       }),
     );
-    if (disposed) return;
+    bailIfDisposed();
 
     try {
-      await Promise.all(
-        sessionsStore.sessions
-          .filter((session) => session.agentId)
-          .map(async (session) => {
-            const used = await PtyAPI.getSessionAgentQuota(session.id);
-            if (!disposed) sessionsStore.hydrateSessionAgentQuota(session.id, used);
-          }),
-      );
+      const readings = await PtyAPI.getAgentQuotaReadings();
+      if (!disposed) sessionsStore.hydrateAgentQuotaReadings(readings);
     } catch {}
-    if (disposed) return;
+    bailIfDisposed();
 
     await register(
       onSessionGitRepos(({ sessionId, repos }) => {
@@ -1022,9 +1039,12 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         sessionsStore.setIsCoordinator(sessionId, isCoordinator);
       })
     );
+  };
 
+  const hydrateTelegramBridges = async (): Promise<void> => {
+    bailIfDisposed();
     const bridges = await TelegramAPI.listBridges();
-    if (disposed) return;
+    bailIfDisposed();
     bridgesStore.setBridges(bridges);
 
     // Telegram bridge events
@@ -1045,6 +1065,19 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         console.error(`Bridge error for ${sessionId}: ${error}`);
       })
     );
+  };
+
+  onMount(async () => {
+    try {
+    await registerSessionLifecycleListeners();
+    await registerProjectAndProfileListeners();
+    await initWindowChrome();
+    const appSettings = await SettingsAPI.get();
+    bailIfDisposed();
+    await applyAppSettings(appSettings);
+    await hydrateProjectsAndSessions(appSettings);
+    await registerSessionStateListeners();
+    await hydrateTelegramBridges();
     } catch (error) {
       if (error !== mountDisposed) throw error;
     }

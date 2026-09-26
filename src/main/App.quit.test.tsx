@@ -404,6 +404,34 @@ describe("MainApp quit handshake (#2297)", () => {
     expect(statusText()).toContain("timeout");
   });
 
+  // #2641 - every arm of the normal attempt's invoke result. "" means the
+  // round ended with no status; otherwise the status must contain the text.
+  it.each([
+    ["Exiting ends the round", null, { outcome: "Exiting", epoch: 5 }, ""],
+    ["Aborted shows its reason", null, { outcome: "Aborted", epoch: 5, reason: "refused" }, "refused"],
+    ["Stale ends the round quietly", null, { outcome: "Stale", epoch: 5 }, ""],
+    ["an unknown outcome changes nothing", null, { outcome: "Bogus", epoch: 5 }, "Waiting to quit..."],
+    ["a non-live epoch changes nothing", null, { outcome: "Exiting", epoch: -1 }, "Waiting to quit..."],
+    ["a result for another epoch changes nothing", 7, { outcome: "Exiting", epoch: 8 }, "Waiting to quit..."],
+    ["a rejection after an epoch was bound changes nothing", 7, new Error("late transport failure"), "Waiting to quit..."],
+  ] as const)("settles the normal attempt from its invoke result: %s", async (_label, bindEpoch, settle, status) => {
+    const pending = deferred<unknown>();
+    fake.onInvoke("quit_application", () => pending.promise);
+    await mountMain();
+    await triggerClose();
+    if (bindEpoch !== null) await emitStarted(bindEpoch);
+
+    if (settle instanceof Error) pending.reject(settle);
+    else pending.resolve(settle);
+    await flush();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+
+    expect(fake.callsFor("quit_application")).toHaveLength(1);
+    if (status === "") expect(statusText()).toBe("");
+    else expect(statusText()).toContain(status);
+  });
+
   it("binds a matching start event during a slow invoke and dedupes its terminal result by epoch", async () => {
     const pending = deferred<unknown>();
     fake.onInvoke("quit_application", () => pending.promise);

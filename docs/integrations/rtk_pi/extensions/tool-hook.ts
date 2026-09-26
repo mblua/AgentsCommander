@@ -76,48 +76,44 @@ const RTK_CMD = fs.existsSync(WRAPPER) ? WRAPPER : "rtk";
 // `;`, `|`) so compound syntax survives, and masks quoted regions so `rtk`
 // inside a string literal is never rewritten.
 const SEGMENT_RTK = /(^|[;&|]+)\s*rtk\s+/g;
-const routeRtk = (cmd: string): string => {
+type QuoteState = { inS: boolean; inD: boolean; esc: boolean };
+
+// One step of the quote/escape scanner: whether `ch` is quoted, and the state
+// for the next char.
+function scanChar(state: QuoteState, ch: string): { quoted: boolean; state: QuoteState } {
+  if (state.esc) return { quoted: true, state: { ...state, esc: false } };
+  if (ch === "\\" && state.inD) return { quoted: true, state: { ...state, esc: true } };
+  if (ch === "'" && !state.inD) return { quoted: true, state: { ...state, inS: !state.inS } };
+  if (ch === '"' && !state.inS) return { quoted: true, state: { ...state, inD: !state.inD } };
+  return { quoted: state.inS || state.inD, state };
+}
+
+function quotedIndexes(cmd: string): Set<number> {
   const quoted = new Set<number>();
-  let inS = false;
-  let inD = false;
-  let esc = false;
+  let state: QuoteState = { inS: false, inD: false, esc: false };
   for (let i = 0; i < cmd.length; i++) {
-    const ch = cmd[i];
-    if (esc) {
-      esc = false;
-      quoted.add(i);
-      continue;
-    }
-    if (ch === "\\" && inD) {
-      esc = true;
-      quoted.add(i);
-      continue;
-    }
-    if (ch === "'" && !inD) {
-      inS = !inS;
-      quoted.add(i);
-      continue;
-    }
-    if (ch === '"' && !inS) {
-      inD = !inD;
-      quoted.add(i);
-      continue;
-    }
-    if (inS || inD) quoted.add(i);
+    const step = scanChar(state, cmd[i]);
+    state = step.state;
+    if (step.quoted) quoted.add(i);
   }
+  return quoted;
+}
+
+function overlapsQuoted(quoted: Set<number>, start: number, len: number): boolean {
+  for (let k = start; k < start + len; k++) {
+    if (quoted.has(k)) return true;
+  }
+  return false;
+}
+
+const routeRtk = (cmd: string): string => {
+  const quoted = quotedIndexes(cmd);
   let out = "";
   let last = 0;
   for (const m of cmd.matchAll(SEGMENT_RTK)) {
     const i = m.index;
     if (i === undefined) break;
-    let overlap = false;
-    for (let k = i; k < i + m[0].length; k++) {
-      if (quoted.has(k)) {
-        overlap = true;
-        break;
-      }
-    }
-    if (overlap) continue;
+    if (overlapsQuoted(quoted, i, m[0].length)) continue;
     out += cmd.slice(last, i) + m[1] + (m[1] ? " " : "") + RTK_CMD + " ";
     last = i + m[0].length;
   }

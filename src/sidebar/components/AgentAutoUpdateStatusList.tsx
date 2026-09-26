@@ -74,7 +74,7 @@ const AgentAutoUpdateStatusList: Component<{
 
   return (
     <div
-      class="settings-agents-actions-block settings-auto-update-block"
+      class="settings-agents-actions-block"
       data-ac-testid="settings.autoUpdate.block"
       data-ac-role="region"
     >

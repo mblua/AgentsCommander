@@ -64,6 +64,9 @@ jobs:
         # installed.
         run: npm ci --ignore-scripts
 
+      - name: "Check class coverage (#2615, guard from #2410)"
+        run: npm test -- src/shared/styles/class-coverage.test.ts
+
       - name: Check ignored and placeholder test debt
         run: npm run test:debt
       - name: "Check #480 guard controls"
@@ -815,10 +818,10 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build frontend assets for Tauri config validation
         run: npm run build
@@ -906,7 +909,7 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci
@@ -1153,9 +1156,9 @@ jobs:
           set -euo pipefail
           FILTER=config::agent_command::tests
           # LINUX count: the Windows leg also compiles four cfg(windows) tests
-          # and reports 76. Update in the same commit that adds or removes a
+          # and reports 95. Update in the same commit that adds or removes a
           # test in that module.
-          EXPECTED=72
+          EXPECTED=91
           cargo test --locked --lib "$FILTER" -- --nocapture 2>&1 | tee test-2431.log
           grep -qF 'env_precedence_is_platform_independent' test-2431.log || {
             echo "::error::the POSIX precedence sentinel never ran; the filter matched nothing or it was renamed."
@@ -1867,10 +1870,10 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build frontend assets for Tauri config validation
         run: npm run build
@@ -2011,10 +2014,10 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build frontend assets for Tauri config validation
         run: npm run build
@@ -2961,10 +2964,10 @@ jobs:
           cache: 'npm'
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: TypeScript type check
         run: npm run typecheck

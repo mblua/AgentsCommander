@@ -10,6 +10,45 @@ interface ParsedTask {
   body: string;
 }
 
+function unquoteTitle(after: string): string {
+  if (after.startsWith("'") && after.endsWith("'") && after.length >= 2) {
+    return after.slice(1, -1).replace(/''/g, "'");
+  } else if (after.startsWith('"') && after.endsWith('"') && after.length >= 2) {
+    return after.slice(1, -1);
+  } else {
+    return after;
+  }
+}
+
+function readTitleLine(rawLine: string): string | null {
+  const trimmed = rawLine.trim();
+  if (trimmed.toLowerCase().startsWith("title:")) return unquoteTitle(trimmed.slice(6).trim());
+  return null;
+}
+
+function scanFrontmatter(detect: string, start: number): { title: string | null; bodyStart: number } {
+  let title: string | null = null;
+  let pos = start;
+  let bodyStart = -1;
+
+  while (pos < detect.length) {
+    const nl = detect.indexOf("\n", pos);
+    const lineEnd = nl < 0 ? detect.length : nl;
+    const line = detect.slice(pos, lineEnd).replace(/\s+$/, "");
+
+    if (line === "---") {
+      bodyStart = nl < 0 ? detect.length : nl + 1;
+      break;
+    }
+
+    if (title === null) title = readTitleLine(detect.slice(pos, lineEnd));
+
+    pos = nl < 0 ? detect.length : nl + 1;
+  }
+
+  return { title, bodyStart };
+}
+
 // Splits TASK.md content into a YAML-frontmatter title and the body that
 // follows the closing `---`. Delimiters must be a line containing exactly
 // `---` (trailing whitespace tolerated). If the input lacks a valid
@@ -27,36 +66,7 @@ function parseTask(content: string | null): ParsedTask {
   // Reject prefixed openers like `---not`, `--- body`, or `----`.
   if (firstLine !== "---") return { title: null, body: raw };
 
-  let title: string | null = null;
-  let pos = firstNl < 0 ? detect.length : firstNl + 1;
-  let bodyStart = -1;
-
-  while (pos < detect.length) {
-    const nl = detect.indexOf("\n", pos);
-    const lineEnd = nl < 0 ? detect.length : nl;
-    const line = detect.slice(pos, lineEnd).replace(/\s+$/, "");
-
-    if (line === "---") {
-      bodyStart = nl < 0 ? detect.length : nl + 1;
-      break;
-    }
-
-    if (title === null) {
-      const trimmed = detect.slice(pos, lineEnd).trim();
-      if (trimmed.toLowerCase().startsWith("title:")) {
-        const after = trimmed.slice(6).trim();
-        if (after.startsWith("'") && after.endsWith("'") && after.length >= 2) {
-          title = after.slice(1, -1).replace(/''/g, "'");
-        } else if (after.startsWith('"') && after.endsWith('"') && after.length >= 2) {
-          title = after.slice(1, -1);
-        } else {
-          title = after;
-        }
-      }
-    }
-
-    pos = nl < 0 ? detect.length : nl + 1;
-  }
+  const { title, bodyStart } = scanFrontmatter(detect, firstNl < 0 ? detect.length : firstNl + 1);
 
   // Missing closer means malformed frontmatter — fall back to original.
   if (bodyStart < 0) return { title: null, body: raw };
@@ -228,7 +238,7 @@ const WorkgroupTask: Component = () => {
         <div class="workgroup-task-label">
           TASK
           <Show when={taskTitle()}>
-            <span class="workgroup-task-label-sep">: </span>
+            <span>: </span>
             <span class="workgroup-task-title">{taskTitle()}</span>
           </Show>
         </div>

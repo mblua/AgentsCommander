@@ -36,6 +36,26 @@ function lineOf(source, index) {
   return line;
 }
 
+function scanLiterals(trackedFiles, readSource) {
+  const literals = [];
+  for (const file of trackedFiles) {
+    if (!SCAN_PREFIXES.some((prefix) => file.startsWith(prefix))) continue;
+    const source = readSource(file);
+    LITERAL_RE.lastIndex = 0;
+    let match;
+    while ((match = LITERAL_RE.exec(source)) !== null) {
+      if (match[1].toLowerCase() !== OWNER || match[2].toLowerCase() !== REPO) continue;
+      literals.push({
+        file,
+        line: lineOf(source, match.index),
+        ref: match[3],
+        path: match[4].replace(TRAILING_PATH_PUNCTUATION, ''),
+      });
+    }
+  }
+  return literals;
+}
+
 export function checkServedPaths({ inventoryText, inventoryName, trackedFiles, readSource }) {
   const errors = [];
   const rows = [];
@@ -56,22 +76,7 @@ export function checkServedPaths({ inventoryText, inventoryName, trackedFiles, r
   if (rows.length === 0) errors.push('inventory has no rows');
 
   const tracked = new Set(trackedFiles);
-  const literals = [];
-  for (const file of trackedFiles) {
-    if (!SCAN_PREFIXES.some((prefix) => file.startsWith(prefix))) continue;
-    const source = readSource(file);
-    LITERAL_RE.lastIndex = 0;
-    let match;
-    while ((match = LITERAL_RE.exec(source)) !== null) {
-      if (match[1].toLowerCase() !== OWNER || match[2].toLowerCase() !== REPO) continue;
-      literals.push({
-        file,
-        line: lineOf(source, match.index),
-        ref: match[3],
-        path: match[4].replace(TRAILING_PATH_PUNCTUATION, ''),
-      });
-    }
-  }
+  const literals = scanLiterals(trackedFiles, readSource);
 
   for (const row of rows) {
     if (!tracked.has(row.path)) {

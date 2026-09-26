@@ -3822,6 +3822,15 @@ pub(crate) fn command_executable_basename(command: &str) -> Option<String> {
     ))
 }
 
+/// #2566 - the ACCOUNT identity of a configured agent command: its program token,
+/// verbatim. Same key means same account and one shared weekly-quota reading. NOT
+/// `command_executable_basename` above, whose basename step folds `/a/claude` onto
+/// `claude`, and NOT resolved through PATH or the filesystem: see #2566 D1/D2.
+pub(crate) fn command_account_key(command: &str) -> Option<String> {
+    let normalized = crate::config::agent_command::normalize_legacy_agent_command(command).ok()?;
+    Some(normalized.shell)
+}
+
 /// Write a master's embedded files verbatim into `dir` (creating it and any
 /// parents). Rejects a rel_path with empty/`.`/`..` segments.
 fn write_embedded_files_into(dir: &Path, master: &EmbeddedSeedMaster) -> Result<(), String> {
@@ -9236,6 +9245,41 @@ mod tests {
             std::fs::read(&journal_path).unwrap(),
             journal_before,
             "the instance never resumes or rewrites a foreign journal"
+        );
+    }
+
+    #[test]
+    fn command_account_key_drops_arguments_and_keeps_the_program_token() {
+        assert_eq!(command_account_key("claude"), Some("claude".to_string()));
+        assert_eq!(
+            command_account_key("claude --dangerously-skip-permissions"),
+            Some("claude".to_string())
+        );
+    }
+
+    #[test]
+    fn command_account_key_separates_two_paths_to_the_same_name() {
+        assert_eq!(
+            command_account_key("/a/claude"),
+            Some("/a/claude".to_string())
+        );
+        assert_ne!(
+            command_account_key("/a/claude"),
+            command_account_key("claude")
+        );
+    }
+
+    #[test]
+    fn command_account_key_is_none_for_an_empty_command() {
+        assert_eq!(command_account_key(""), None);
+        assert_eq!(command_account_key("   "), None);
+    }
+
+    #[test]
+    fn command_account_key_honours_quoting() {
+        assert_eq!(
+            command_account_key("\"C:/Program Files/a/claude.exe\" --x"),
+            Some("C:/Program Files/a/claude.exe".to_string())
         );
     }
 }

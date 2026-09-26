@@ -2400,6 +2400,19 @@ describe("AgentPickerModal", () => {
       dispose();
     });
 
+    it("F2 filter status counts partial matches and returns to the total when cleared", async () => {
+      const { dispose } = renderPicker({ agentPath: REPO_PATH });
+      await settle();
+
+      await setAgentFilter("claude");
+      expect(text("agentPicker.agentFilterStatus")).toBe('1 of 2 agents match "claude".');
+
+      await setAgentFilter("");
+      expect(text("agentPicker.agentFilterStatus")).toBe("2 agents");
+
+      dispose();
+    });
+
     it("F3 filtering never changes selection, profile, radios or buttons", async () => {
       const { dispose, onSelect } = renderWgPicker();
       await settle();

@@ -2389,8 +2389,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 Some(spawn.profile_resolution.effective_profile.clone()),
                 spawn.profile_resolution.fallback_chain.clone(),
                 spawn.profile_resolution.fallback_applied,
-                None,
-                None,
+                spawn.match_tier.clone(),
+                spawn.original_profile_letter.clone(),
                 effective_codex_home.clone(),
                 Some(spawn.profile_content_hash.clone()),
             )
@@ -2400,6 +2400,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             session.effective_profile = Some(spawn.profile_resolution.effective_profile.clone());
             session.profile_fallback_chain = spawn.profile_resolution.fallback_chain.clone();
             session.profile_fallback_applied = spawn.profile_resolution.fallback_applied;
+            session.match_tier = spawn.match_tier.clone();
+            session.original_profile_letter = spawn.original_profile_letter.clone();
             session.effective_codex_home = effective_codex_home;
             session.profile_content_hash = Some(spawn.profile_content_hash.clone());
         }
@@ -3402,37 +3404,41 @@ fn compute_profile_outdated(settings: &AppSettings, info: &SessionInfo) -> bool 
         return false;
     }
     let cwd = info.working_directory.as_str();
-    // Which coding agent + letter a Reload would launch (honors currentCodingAgent).
-    let Some(agent_id) =
-        resolve_restart_selected_agent_id(settings, cwd, None, info.agent_id.as_deref())
+    // #2434 - the SAME selection a Reload would launch: the matched agent, its
+    // letter and its authority. `NoAgent` and `Unresolved` raise no badge (a
+    // badge whose click restarts a session that cannot start is a trap).
+    let requested = effective_restart_requested_profile(None, info.requested_profile.clone());
+    let MatchedSelection::Agent {
+        agent_id,
+        profile_letter,
+        authoritative,
+        ..
+    } = matched_selection(
+        settings,
+        cwd,
+        None,
+        info.agent_id.as_deref(),
+        requested.as_deref(),
+    )
     else {
         return false;
     };
-    let requested = effective_restart_requested_profile(None, info.requested_profile.clone());
     let resolution = crate::config::coding_agent_profiles::resolve_profile(
         settings,
         crate::config::coding_agent_profiles::ProfileResolutionRequest {
             coding_agent_id: &agent_id,
             launch_path: Some(std::path::Path::new(cwd)),
             agent_matrix_name: None,
-            requested_profile: requested.as_deref(),
-            requested_profile_authoritative: false,
+            requested_profile: profile_letter.as_deref(),
+            requested_profile_authoritative: authoritative,
         },
     );
-    // #597 - mirror the spawn-time composition exactly: hash the effective command
-    // (agent base + cell params) and the raw merged env (agent + cell). Look up the
-    // agent a Reload would launch; if it vanished from settings, do not false-flag.
+    // If the agent vanished from settings, do not false-flag.
     let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) else {
         return false;
     };
-    let configured_command = crate::config::agent_command::compose_effective_command(
-        &agent.command,
-        &resolution.cell.command,
-    );
-    let configured_env =
-        crate::config::agent_command::raw_merged_profile_env(agent, &resolution.cell.env);
-    let configured =
-        crate::config::agent_command::profile_content_hash(&configured_command, &configured_env);
+    // #2431 - the one definition of a cell digest, as the spawn stamps it.
+    let configured = crate::config::agent_command::cell_identity(agent, &resolution.cell);
     // Loaded hash: in-memory stamp, else the persisted replica copy (survives an
     // AC restart that cleared the in-memory stamp).
     let loaded = info.profile_content_hash.clone().or_else(|| {
@@ -4356,6 +4362,99 @@ fn effective_restart_requested_profile(
     requested.or(stored)
 }
 
+/// #2434 - one matched selection, read by both the restart and the drift badge
+/// so a Reload launches exactly what the badge compared against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MatchedSelection {
+    /// No coding-agent reference at all: restart the saved shell. Today's path.
+    NoAgent,
+    /// A reference that resolved.
+    Agent {
+        agent_id: String,
+        /// The letter to launch, straight from `AgentMatch.profile_letter`;
+        /// `None` whenever no letter was chosen. An absent request stays absent.
+        profile_letter: Option<String>,
+        /// True only when `tier.is_some()` and `profile_letter` is `Some`: a
+        /// matched letter outranks the replica pin for this spawn.
+        authoritative: bool,
+        tier: Option<crate::config::agent_command::MatchTier>,
+        original_letter: Option<String>,
+    },
+    /// A reference that exists and resolves to nothing.
+    Unresolved { reference: String },
+}
+
+/// #2434 - pure, read-only: pick the reference a restart of `cwd` would launch
+/// (explicit request, then `tooling.currentCodingAgent`, then the session's own
+/// agent) and resolve it through `resolve_portable_reference`. Never falls back
+/// to another agent and never writes the reference back.
+pub(crate) fn matched_selection(
+    settings: &AppSettings,
+    cwd: &str,
+    requested_agent_id: Option<&str>,
+    stored_agent_id: Option<&str>,
+    source_letter: Option<&str>,
+) -> MatchedSelection {
+    let config_path = std::path::Path::new(cwd).join("config.json");
+    let config = match std::fs::read_to_string(&config_path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                log::warn!(
+                    "[agent-match] malformed '{}', no descriptor: {}",
+                    config_path.display(),
+                    e
+                );
+                None
+            }
+        },
+        Err(_) => None,
+    };
+    let current = config
+        .as_ref()
+        .and_then(|value| value.get("tooling")?.get("currentCodingAgent")?.as_str())
+        // An empty or whitespace-only id names nothing: it is absent, always.
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    // Only a stale `currentCodingAgent` on a session with no agent of its own
+    // may degrade to the saved shell; an explicit request never does.
+    let plain_shell_selection =
+        requested_agent_id.is_none() && stored_agent_id.is_none() && current.is_some();
+    let Some(id) = requested_agent_id
+        .map(str::to_string)
+        .or(current)
+        .or_else(|| stored_agent_id.map(str::to_string))
+    else {
+        return MatchedSelection::NoAgent;
+    };
+    let mut reference =
+        crate::config::agent_command::StoredReference::from_config(config.as_ref(), &id);
+    reference.source_letter = source_letter.map(str::to_string);
+    match crate::config::agent_command::resolve_portable_reference(settings, &reference) {
+        crate::config::agent_command::MatchOutcome::Matched(found) => MatchedSelection::Agent {
+            authoritative: found.tier.is_some() && found.profile_letter.is_some(),
+            agent_id: found.agent_id,
+            profile_letter: found.profile_letter,
+            tier: found.tier,
+            original_letter: found.original_letter,
+        },
+        crate::config::agent_command::MatchOutcome::NoMatch { reference } => {
+            if plain_shell_selection {
+                // Nothing else to launch: the session already is a plain shell.
+                log::warn!(
+                    "[agent-match] ignoring unresolvable currentCodingAgent '{}' in '{}'; restarting the saved shell",
+                    reference,
+                    cwd
+                );
+                MatchedSelection::NoAgent
+            } else {
+                MatchedSelection::Unresolved { reference }
+            }
+        }
+    }
+}
+
 /// #537 read-side: pick which coding agent a restart should launch.
 ///
 /// Ranks an explicit request first, then the replica's Selection-UI assignment
@@ -4792,28 +4891,57 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     let requested_agent_id = agent_id;
     let selected_requested_profile =
         effective_restart_requested_profile(requested_profile, stored_requested_profile);
-    // #537 read-side: resolve the launch agent (honoring currentCodingAgent) and
-    // build its spawn under a single settings read guard. No await is held across
-    // the guard; it is dropped at the end of this block. The #1271 host-shell
-    // snapshot is copied from the SAME guard so program and args can never pair
-    // across a configuration change.
+    // #537 read-side / #2434: resolve the launch agent through the one matched
+    // selection drift also reads, and resolve its spawn under a single settings
+    // read guard. No await is held across the guard; it is dropped at the end of
+    // this block. The #1271 host-shell snapshot is copied from the SAME guard so
+    // program and args can never pair across a configuration change.
     let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
         let cfg = settings.read().await;
-        let selected_agent_id = resolve_restart_selected_agent_id(
+        let selection = matched_selection(
             &cfg,
             &cwd,
             requested_agent_id.as_deref(),
             stored_agent_id.as_deref(),
+            selected_requested_profile.as_deref(),
         );
-        let resolved_spawn = if let Some(ref aid) = selected_agent_id {
-            build_configured_agent_spawn_for_cwd(
-                &cfg,
-                aid,
-                &cwd,
-                selected_requested_profile.as_deref(),
-            )?
-        } else {
-            None
+        let (selected_agent_id, resolved_spawn) = match selection {
+            MatchedSelection::NoAgent => (None, None),
+            MatchedSelection::Unresolved { reference } => {
+                return Err(format!(
+                    "unresolved_coding_agent_reference: '{}' matches no configured coding agent",
+                    reference
+                ));
+            }
+            MatchedSelection::Agent {
+                agent_id,
+                profile_letter,
+                authoritative,
+                tier,
+                original_letter,
+            } => {
+                let spawn = resolve_configured_agent_spawn_for_cwd(
+                    &cfg,
+                    &agent_id,
+                    &cwd,
+                    profile_letter.as_deref(),
+                    authoritative,
+                )?
+                .map(|mut spawn| {
+                    // A matched restart records the ORIGINAL request; the matched
+                    // letter lives in `effective_profile`, its provenance in the
+                    // #2451 carriers.
+                    if authoritative {
+                        if let Some(original) = selected_requested_profile.as_ref() {
+                            spawn.profile_resolution.requested_profile = original.clone();
+                        }
+                    }
+                    spawn.match_tier = tier.map(|tier| tier.as_wire_str().to_string());
+                    spawn.original_profile_letter = original_letter;
+                    spawn
+                });
+                (Some(agent_id), spawn)
+            }
         };
         let resolved_agent_host_shell = if resolved_spawn.is_some() {
             Some(ResolvedAgentHostShell {
@@ -4825,6 +4953,12 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         };
         (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
     };
+    // #2434 - prepare (isolated CODEX_HOME, OpenCode config dir) outside the
+    // settings guard and BEFORE any teardown: a failure aborts the restart and
+    // leaves the old session running.
+    if let Some(spawn) = resolved_spawn.as_ref() {
+        crate::config::agent_command::prepare_agent_spawn_command(spawn)?;
+    }
     let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
         (
             spawn.shell.clone(),
@@ -14683,6 +14817,696 @@ mod tests {
 
         assert!(watchers.is_session_registered(id));
         assert!(quota.engine.is_session_registered(id));
+    }
+
+    // #2434 - restart and drift read one matched selection.
+
+    fn route_agent(id: &str, label: &str, command: &str) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            label: label.to_string(),
+            command: command.to_string(),
+            color: "#10b981".to_string(),
+            order: None,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus: None,
+            backend: Default::default(),
+        }
+    }
+
+    /// One local `codex` agent with enabled cells `A` (`--a`) and `B` (`--b`).
+    fn route_settings() -> AppSettings {
+        let mut settings = AppSettings {
+            agents: vec![route_agent("codex", "Codex", "codex")],
+            ..AppSettings::default()
+        };
+        for (letter, command) in [("A", "--a"), ("B", "--b")] {
+            settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .entry("codex".to_string())
+                .or_default()
+                .insert(
+                    letter.to_string(),
+                    ProfileCellConfig {
+                        enabled: true,
+                        command: command.to_string(),
+                        env: BTreeMap::new(),
+                        notes: String::new(),
+                    },
+                );
+        }
+        settings
+    }
+
+    fn route_digest(settings: &AppSettings, letter: &str) -> String {
+        crate::config::agent_command::cell_identity(
+            &settings.agents[0],
+            &settings.coding_agent_profiles.profiles_by_agent["codex"][letter],
+        )
+    }
+
+    /// Merge `tooling` into `dir/config.json`, keeping every other key.
+    fn merge_tooling(dir: &std::path::Path, tooling: serde_json::Value) {
+        let path = dir.join("config.json");
+        let mut value: serde_json::Value = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| serde_json::from_str(&content).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let entry = value
+            .as_object_mut()
+            .unwrap()
+            .entry("tooling")
+            .or_insert_with(|| serde_json::json!({}));
+        for (key, v) in tooling.as_object().unwrap() {
+            entry
+                .as_object_mut()
+                .unwrap()
+                .insert(key.clone(), v.clone());
+        }
+        std::fs::write(&path, value.to_string()).unwrap();
+    }
+
+    struct RouteHarness {
+        app: tauri::App<tauri::test::MockRuntime>,
+        manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        pty: Arc<Mutex<crate::pty::manager::PtyManager>>,
+        backend: Arc<ScriptedSpawnBackend>,
+    }
+
+    impl RouteHarness {
+        fn new(settings: AppSettings) -> Self {
+            let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+            let backend = Arc::new(ScriptedSpawnBackend::default());
+            let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+                backend.clone(),
+            )));
+            let app = session_test_app(settings, Arc::clone(&manager), Arc::clone(&pty));
+            Self {
+                app,
+                manager,
+                pty,
+                backend,
+            }
+        }
+
+        /// A live session recorded with `agent_id` and the saved `shell`/`args`.
+        async fn live(
+            &self,
+            cwd: &std::path::Path,
+            agent_id: Option<&str>,
+            shell: &str,
+            args: &[&str],
+        ) -> Uuid {
+            let info = super::create_session_inner(
+                self.app.handle(),
+                &self.manager,
+                &self.pty,
+                shell.to_string(),
+                args.iter().map(|a| a.to_string()).collect(),
+                cwd.to_string_lossy().into_owned(),
+                Some("route fixture".to_string()),
+                agent_id.map(str::to_string),
+                None,
+                true,
+                Vec::new(),
+                true,
+                None,
+                None,
+                None,
+                CreateSelectionIntent::User,
+            )
+            .await
+            .expect("create route fixture session");
+            Uuid::parse_str(&info.id).unwrap()
+        }
+
+        async fn restart(
+            &self,
+            id: Uuid,
+            requested_profile: Option<&str>,
+        ) -> Result<SessionInfo, String> {
+            let settings = self.app.state::<crate::config::settings::SettingsState>();
+            super::restart_session_inner_with_intent(
+                self.app.handle(),
+                &self.manager,
+                &self.pty,
+                settings.inner(),
+                id,
+                None,
+                requested_profile.map(str::to_string),
+                Some(true),
+                true,
+                crate::session::selection::TrustedRestartIntent::User,
+                None,
+                crate::config::sessions_persistence::default_creation_gate_enforcement(),
+            )
+            .await
+        }
+
+        async fn close(self) {
+            close_test_coordinator(&self.app).await;
+        }
+    }
+
+    /// A foreign `currentCodingAgent` whose descriptor names local cell `B` as `A`.
+    fn moved_letter_reference(dir: &std::path::Path, settings: &AppSettings) {
+        merge_tooling(
+            dir,
+            serde_json::json!({
+                "profile": "A",
+                "currentCodingAgent": "their-codex",
+                "codingAgents": {"their-codex": {
+                    "app": "Theirs",
+                    "identity": {"A": route_digest(settings, "B")}
+                }}
+            }),
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_spawns_the_matched_letter_over_a_pinned_replica_letter() {
+        let fixture = super::co_managed_tests::room_fixture();
+        let cwd = fixture.coordinator_path();
+        let settings = route_settings();
+        moved_letter_reference(cwd, &settings);
+        let h = RouteHarness::new(settings);
+        let old = h.live(cwd, Some("codex"), "codex", &[]).await;
+
+        let restarted = h.restart(old, Some("A")).await.expect("restart");
+        assert_eq!(restarted.agent_id.as_deref(), Some("codex"));
+        assert!(
+            restarted.shell_args.iter().any(|a| a == "--b"),
+            "{:?}",
+            restarted.shell_args
+        );
+        assert!(
+            !restarted.shell_args.iter().any(|a| a == "--a"),
+            "{:?}",
+            restarted.shell_args
+        );
+        assert_eq!(restarted.effective_profile.as_deref(), Some("B"));
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn restart_populates_the_match_carrier_fields() {
+        let fixture = super::co_managed_tests::room_fixture();
+        let cwd = fixture.coordinator_path();
+        let settings = route_settings();
+        moved_letter_reference(cwd, &settings);
+        let h = RouteHarness::new(settings);
+        let old = h.live(cwd, Some("codex"), "codex", &[]).await;
+
+        let restarted = h.restart(old, Some("A")).await.expect("restart");
+        assert_eq!(restarted.match_tier.as_deref(), Some("hash"));
+        assert_eq!(restarted.original_profile_letter.as_deref(), Some("A"));
+        let wire = serde_json::to_value(&restarted).unwrap();
+        assert_eq!(wire["matchTier"], "hash");
+        assert_eq!(wire["originalProfileLetter"], "A");
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_matched_restart_records_the_original_request() {
+        let fixture = super::co_managed_tests::room_fixture();
+        let cwd = fixture.coordinator_path();
+        let settings = route_settings();
+        moved_letter_reference(cwd, &settings);
+        let h = RouteHarness::new(settings);
+        let old = h.live(cwd, Some("codex"), "codex", &[]).await;
+
+        let restarted = h.restart(old, Some("A")).await.expect("restart");
+        assert_eq!(restarted.requested_profile.as_deref(), Some("A"));
+        assert_eq!(restarted.effective_profile.as_deref(), Some("B"));
+        assert_eq!(restarted.original_profile_letter.as_deref(), Some("A"));
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn drift_mirrors_a_moved_letter() {
+        let fixture = super::co_managed_tests::room_fixture();
+        let cwd = fixture.coordinator_path();
+        let settings = route_settings();
+        moved_letter_reference(cwd, &settings);
+        let h = RouteHarness::new(settings.clone());
+        let old = h.live(cwd, Some("codex"), "codex", &[]).await;
+
+        let restarted = h.restart(old, Some("A")).await.expect("restart");
+        assert_eq!(
+            restarted.profile_content_hash.as_deref(),
+            Some(route_digest(&settings, "B").as_str())
+        );
+        assert!(
+            !compute_profile_outdated(&settings, &restarted),
+            "a matched B must not raise a drift badge against the pinned A"
+        );
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn restart_with_no_coding_agent_restarts_the_saved_shell() {
+        let temp = tempfile::tempdir().unwrap();
+        let h = RouteHarness::new(AppSettings::default());
+        let old = h.live(temp.path(), None, "test-shell", &["--keep"]).await;
+
+        let restarted = h.restart(old, None).await.expect("plain shell restart");
+        assert_eq!(restarted.shell, "test-shell");
+        assert_eq!(restarted.shell_args, vec!["--keep".to_string()]);
+        assert_eq!(restarted.agent_id, None);
+        assert_eq!(restarted.match_tier, None);
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn restart_returns_an_error_on_no_match() {
+        let temp = tempfile::tempdir().unwrap();
+        merge_tooling(
+            temp.path(),
+            serde_json::json!({
+                "currentCodingAgent": "foreign",
+                "codingAgents": {"foreign": {"app": "Gemini", "command": "gemini"}}
+            }),
+        );
+        let h = RouteHarness::new(route_settings());
+        let old = h.live(temp.path(), Some("codex"), "codex", &[]).await;
+
+        let err = h.restart(old, None).await.unwrap_err();
+        assert!(err.contains("unresolved_coding_agent_reference"), "{err}");
+        assert!(err.contains("'foreign'"), "{err}");
+        // No fallback to the stored `codex`, and no teardown.
+        let row = h
+            .manager
+            .read()
+            .await
+            .get_session(old)
+            .await
+            .expect("row survives");
+        assert!(!matches!(row.status, SessionStatus::Exited(_)));
+        assert!(h.backend.has_session(old), "the old PTY is untouched");
+        assert_eq!(h.manager.read().await.list_sessions().await.len(), 1);
+        h.close().await;
+    }
+
+    #[test]
+    fn drift_is_false_for_an_unresolved_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = route_settings();
+        let mut info = make_info(
+            &temp.path().to_string_lossy(),
+            Some("codex"),
+            None,
+            Some("stale".to_string()),
+        );
+        // Control: with no foreign reference, a stale loaded hash IS drift.
+        assert!(compute_profile_outdated(&settings, &info));
+        merge_tooling(
+            temp.path(),
+            serde_json::json!({
+                "currentCodingAgent": "foreign",
+                "codingAgents": {"foreign": {"app": "Gemini"}}
+            }),
+        );
+        assert!(!compute_profile_outdated(&settings, &info));
+        // `NoAgent` raises none either.
+        info.agent_id = None;
+        assert!(!compute_profile_outdated(&settings, &info));
+    }
+
+    #[test]
+    fn root_agent_chain_is_unchanged() {
+        // D5: the root agent keeps its id-only chain; a descriptor-matchable
+        // foreign id is NOT routed through the matcher.
+        let settings = test_settings();
+        let (_, _, agent_id, _) =
+            resolve_root_agent_command(&settings, Some("their-codex"), Some("codex")).unwrap();
+        assert_eq!(
+            agent_id.as_deref(),
+            Some("codex"),
+            "falls to lastCodingAgent"
+        );
+        let (_, _, agent_id, _) =
+            resolve_root_agent_command(&settings, Some("their-codex"), Some("gone")).unwrap();
+        assert_eq!(
+            agent_id.as_deref(),
+            Some("claude"),
+            "then to the first agent"
+        );
+        let (_, _, agent_id, _) =
+            resolve_root_agent_command(&settings, Some("claude"), None).unwrap();
+        assert_eq!(agent_id.as_deref(), Some("claude"), "a valid request first");
+    }
+
+    fn isolated_codex_settings(id: &str) -> (AppSettings, PathBuf) {
+        let mut agent = route_agent(id, "Codex", "codex");
+        agent.isolated_home = true;
+        let settings = AppSettings {
+            agents: vec![agent],
+            ..AppSettings::default()
+        };
+        let home = crate::config::agent_command::resolve_agent_spawn_command(
+            &settings, id, None, None, false,
+        )
+        .unwrap()
+        .effective_codex_home
+        .expect("isolated CODEX_HOME");
+        (settings, home)
+    }
+
+    #[tokio::test]
+    async fn restart_prepares_the_spawn_before_teardown() {
+        let id = format!("codex-2434-{}", Uuid::new_v4());
+        let (settings, home) = isolated_codex_settings(&id);
+        let _ = std::fs::remove_dir_all(&home);
+        let temp = tempfile::tempdir().unwrap();
+        let h = RouteHarness::new(settings);
+        let old = h.live(temp.path(), Some(&id), "codex", &[]).await;
+        assert!(!home.exists());
+
+        h.restart(old, None).await.expect("restart");
+        assert!(
+            home.is_dir(),
+            "the restart prepared the isolated CODEX_HOME"
+        );
+        std::fs::remove_dir_all(&home).unwrap();
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_preparation_keeps_the_old_session() {
+        let id = format!("codex-2434-{}", Uuid::new_v4());
+        let (settings, home) = isolated_codex_settings(&id);
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.parent().unwrap()).unwrap();
+        // A regular FILE at the directory path: `create_dir_all` fails for real.
+        std::fs::write(&home, "not a directory").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let h = RouteHarness::new(settings);
+        let old = h.live(temp.path(), Some(&id), "codex", &[]).await;
+
+        let err = h.restart(old, None).await.unwrap_err();
+        assert!(
+            err.contains("Failed to create isolated CODEX_HOME"),
+            "{err}"
+        );
+        let row = h
+            .manager
+            .read()
+            .await
+            .get_session(old)
+            .await
+            .expect("row survives");
+        assert!(!matches!(row.status, SessionStatus::Exited(_)));
+        assert!(h.backend.has_session(old), "never torn down");
+        assert_eq!(h.manager.read().await.list_sessions().await.len(), 1);
+        std::fs::remove_file(&home).unwrap();
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn tier_zero_without_a_request_keeps_the_origin_default() {
+        // Origin default `B` (the replica's matrix), then an agent-level default.
+        for use_origin in [true, false] {
+            let fixture = super::co_managed_tests::room_fixture();
+            let cwd = fixture.coordinator_path();
+            let mut settings = route_settings();
+            if use_origin {
+                let matrix = cwd
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("_agent_coordinator");
+                merge_tooling(&matrix, serde_json::json!({"defaultProfile": "B"}));
+            } else {
+                settings
+                    .coding_agent_profiles
+                    .default_profile_by_agent
+                    .insert("coordinator".to_string(), "B".to_string());
+            }
+            assert!(matches!(
+                super::matched_selection(
+                    &settings,
+                    &cwd.to_string_lossy(),
+                    None,
+                    Some("codex"),
+                    None
+                ),
+                super::MatchedSelection::Agent {
+                    profile_letter: None,
+                    authoritative: false,
+                    tier: None,
+                    ..
+                }
+            ));
+            let h = RouteHarness::new(settings.clone());
+            let old = h.live(cwd, Some("codex"), "codex", &[]).await;
+            let restarted = h.restart(old, None).await.expect("restart");
+            assert_eq!(
+                restarted.effective_profile.as_deref(),
+                Some("B"),
+                "origin={use_origin}"
+            );
+            assert!(restarted.shell_args.iter().any(|a| a == "--b"));
+            assert!(
+                !compute_profile_outdated(&settings, &restarted),
+                "drift agrees"
+            );
+            h.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_matched_reference_without_a_request_keeps_the_default() {
+        let label = serde_json::json!({"app": "CODEX"});
+        let command = serde_json::json!({"app": "Other", "command": "codex"});
+        for (descriptor, tier) in [
+            (
+                label,
+                crate::config::agent_command::MatchTier::LabelAndLetter,
+            ),
+            (
+                command,
+                crate::config::agent_command::MatchTier::CommandAndLetter,
+            ),
+        ] {
+            let fixture = super::co_managed_tests::room_fixture();
+            let cwd = fixture.coordinator_path();
+            let mut settings = route_settings();
+            settings
+                .coding_agent_profiles
+                .default_profile_by_agent
+                .insert("coordinator".to_string(), "B".to_string());
+            merge_tooling(
+                cwd,
+                serde_json::json!({
+                    "currentCodingAgent": "foreign",
+                    "codingAgents": {"foreign": descriptor}
+                }),
+            );
+            assert_eq!(
+                super::matched_selection(
+                    &settings,
+                    &cwd.to_string_lossy(),
+                    None,
+                    Some("codex"),
+                    None
+                ),
+                super::MatchedSelection::Agent {
+                    agent_id: "codex".to_string(),
+                    profile_letter: None,
+                    authoritative: false,
+                    tier: Some(tier),
+                    original_letter: None,
+                }
+            );
+            let h = RouteHarness::new(settings.clone());
+            let old = h.live(cwd, Some("codex"), "codex", &[]).await;
+            let restarted = h.restart(old, None).await.expect("restart");
+            assert_eq!(
+                restarted.effective_profile.as_deref(),
+                Some("B"),
+                "{tier:?}"
+            );
+            assert_eq!(restarted.match_tier.as_deref(), Some(tier.as_wire_str()));
+            assert!(
+                !compute_profile_outdated(&settings, &restarted),
+                "drift agrees"
+            );
+            h.close().await;
+        }
+    }
+
+    fn selection_for(
+        tooling: serde_json::Value,
+        requested: Option<&str>,
+        stored: Option<&str>,
+    ) -> (tempfile::TempDir, super::MatchedSelection) {
+        let temp = tempfile::tempdir().unwrap();
+        merge_tooling(temp.path(), tooling);
+        let selection = super::matched_selection(
+            &route_settings(),
+            &temp.path().to_string_lossy(),
+            requested,
+            stored,
+            None,
+        );
+        (temp, selection)
+    }
+
+    async fn assert_saved_shell_restart(current: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        merge_tooling(
+            temp.path(),
+            serde_json::json!({"currentCodingAgent": current}),
+        );
+        let h = RouteHarness::new(route_settings());
+        let old = h.live(temp.path(), None, "test-shell", &["--keep"]).await;
+        let restarted = h.restart(old, None).await.expect("plain shell restart");
+        assert_eq!(restarted.shell, "test-shell");
+        assert_eq!(restarted.shell_args, vec!["--keep".to_string()]);
+        assert_eq!(restarted.agent_id, None);
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn an_empty_current_coding_agent_restarts_the_saved_shell() {
+        let (_t, selection) =
+            selection_for(serde_json::json!({"currentCodingAgent": ""}), None, None);
+        assert_eq!(selection, super::MatchedSelection::NoAgent);
+        assert_saved_shell_restart("").await;
+    }
+
+    #[tokio::test]
+    async fn a_whitespace_current_coding_agent_is_absent() {
+        let (_t, selection) =
+            selection_for(serde_json::json!({"currentCodingAgent": "   "}), None, None);
+        assert_eq!(selection, super::MatchedSelection::NoAgent);
+        // With a stored agent the blank id must not become a reference either.
+        let (_t, selection) = selection_for(
+            serde_json::json!({"currentCodingAgent": "   "}),
+            None,
+            Some("codex"),
+        );
+        assert!(
+            matches!(selection, super::MatchedSelection::Agent { ref agent_id, .. } if agent_id == "codex"),
+            "{selection:?}"
+        );
+        assert_saved_shell_restart("   ").await;
+    }
+
+    #[test]
+    fn an_empty_current_coding_agent_is_absent_even_with_a_stored_agent() {
+        let (_t, selection) = selection_for(
+            serde_json::json!({"currentCodingAgent": ""}),
+            None,
+            Some("codex"),
+        );
+        assert!(
+            matches!(selection, super::MatchedSelection::Agent { ref agent_id, tier: None, .. } if agent_id == "codex"),
+            "{selection:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plain_shell_ignores_an_unresolvable_current_coding_agent() {
+        let (_t, selection) = selection_for(
+            serde_json::json!({"currentCodingAgent": "ghost-agent"}),
+            None,
+            None,
+        );
+        assert_eq!(selection, super::MatchedSelection::NoAgent);
+        assert_saved_shell_restart("ghost-agent").await;
+    }
+
+    #[tokio::test]
+    async fn an_unresolvable_reference_still_fails_a_session_that_has_an_agent() {
+        let (_t, selection) = selection_for(
+            serde_json::json!({"currentCodingAgent": "ghost-agent"}),
+            None,
+            Some("codex"),
+        );
+        assert_eq!(
+            selection,
+            super::MatchedSelection::Unresolved {
+                reference: "ghost-agent".to_string()
+            }
+        );
+        let temp = tempfile::tempdir().unwrap();
+        merge_tooling(
+            temp.path(),
+            serde_json::json!({"currentCodingAgent": "ghost-agent"}),
+        );
+        let h = RouteHarness::new(route_settings());
+        let old = h.live(temp.path(), Some("codex"), "codex", &[]).await;
+        let err = h.restart(old, None).await.unwrap_err();
+        assert!(err.contains("unresolved_coding_agent_reference"), "{err}");
+        assert!(h.backend.has_session(old), "no teardown");
+        h.close().await;
+    }
+
+    #[tokio::test]
+    async fn an_explicit_unresolvable_request_fails_without_a_stored_agent() {
+        let (_t, selection) = selection_for(serde_json::json!({}), Some("ghost-agent"), None);
+        assert_eq!(
+            selection,
+            super::MatchedSelection::Unresolved {
+                reference: "ghost-agent".to_string()
+            }
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let h = RouteHarness::new(route_settings());
+        let old = h.live(temp.path(), None, "test-shell", &[]).await;
+        let settings = h.app.state::<crate::config::settings::SettingsState>();
+        let err = super::restart_session_inner_with_intent(
+            h.app.handle(),
+            &h.manager,
+            &h.pty,
+            settings.inner(),
+            old,
+            Some("ghost-agent".to_string()),
+            None,
+            Some(true),
+            true,
+            crate::session::selection::TrustedRestartIntent::User,
+            None,
+            crate::config::sessions_persistence::default_creation_gate_enforcement(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("unresolved_coding_agent_reference"), "{err}");
+        assert!(h.backend.has_session(old), "no teardown");
+        h.close().await;
+    }
+
+    #[test]
+    fn drift_is_false_for_a_plain_shell_with_a_stale_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        merge_tooling(
+            temp.path(),
+            serde_json::json!({"currentCodingAgent": "ghost-agent"}),
+        );
+        let info = make_info(
+            &temp.path().to_string_lossy(),
+            None,
+            None,
+            Some("stale".to_string()),
+        );
+        assert!(!compute_profile_outdated(&route_settings(), &info));
+        assert_eq!(
+            super::matched_selection(
+                &route_settings(),
+                &temp.path().to_string_lossy(),
+                None,
+                None,
+                None
+            ),
+            super::MatchedSelection::NoAgent
+        );
     }
 
     // #2433 descriptor persistence

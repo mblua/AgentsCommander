@@ -26,7 +26,8 @@ import {
 } from "../../shared/ipc";
 import { launchErrorMessage } from "../../shared/launch-errors";
 import { GripIcon } from "./settings/GripIcon";
-import { DRAG_THRESHOLD, autoScrollDelta, insertionSlot, reorderIndex, reorderedIds } from "./settings/agentReorderDnd";
+import { reorderedIds } from "./settings/agentReorderDnd";
+import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { automationAttrs } from "../../shared/automation-hooks";
 import {
   agentNameFromPathOrSession,
@@ -111,24 +112,6 @@ const MOVE_OVERLAY_REASON =
 /** #2577 - why every grip is disabled while the agent filter hides cards. */
 const REORDER_FILTER_REASON = "Clear the filter to reorder.";
 
-/** #2577 - one in-flight pointer drag (same shape as Settings). Not render state:
- *  only `dragSourceId` and `dropIndicatorTop` are signals the view reads. */
-type PointerDrag = {
-  agentId: string;
-  handle: HTMLElement;
-  row: HTMLElement;
-  pointerId: number;
-  startX: number;
-  startY: number;
-  lastY: number;
-  rowTop: number;
-  slot: number;
-  started: boolean;
-  ghost: HTMLElement | null;
-  raf: number | null;
-  onEscape: (e: KeyboardEvent) => void;
-};
-
 /** #1943 - the three scopes, in the order the lock radios and the independent
  *  "Remove lock from" group both render them. */
 const LOCK_SCOPES: ProfileAssignmentScope[] = ["replica", "kind", "workgroup"];
@@ -211,10 +194,15 @@ const AgentPickerModal: Component<{
   const [moveBusy, setMoveBusy] = createSignal(false);
   const [moveError, setMoveError] = createSignal("");
   const [moveAnnouncement, setMoveAnnouncement] = createSignal("");
-  const [dragSourceId, setDragSourceId] = createSignal<string | null>(null);
-  const [dropIndicatorTop, setDropIndicatorTop] = createSignal<number | null>(null);
-  let pointerDrag: PointerDrag | null = null;
   let listRef: HTMLDivElement | undefined;
+  const drag = createAgentDragReorder({
+    container: () => listRef,
+    rowSelector: ".agent-profile-provider-card-wrap",
+    handleSelector: ".agent-profile-provider-drag-handle",
+    canDrag: () => !reorderDisabled(),
+    commit: (agentId, targetIndex) => void reorderAgent(agentId, targetIndex, false),
+    announce: setMoveAnnouncement,
+  });
 
   const [selectedScope, setSelectedScope] = createSignal<ProfileAssignmentScope>("replica");
   const [restartSessions, setRestartSessions] = createSignal(false);
@@ -451,6 +439,13 @@ const AgentPickerModal: Component<{
     );
   };
   const visibleAgentCount = createMemo(() => orderedAgents().filter(matchesFilter).length);
+  // The filter status line under the agent list: the total, a no-match hint, or the match count.
+  const agentFilterStatusText = () =>
+    filterQuery() === ""
+      ? `${orderedAgents().length} agents`
+      : visibleAgentCount() === 0
+      ? `No coding agent matches "${agentFilter().trim()}". Clear the filter to see all ${orderedAgents().length}.`
+      : `${visibleAgentCount()} of ${orderedAgents().length} agents match "${agentFilter().trim()}".`;
   const comparisonSummary = createMemo(() => ({
     direct: comparisonRows().filter((row) => row.status === "direct").length,
     fallback: comparisonRows().filter((row) => row.status === "fallback").length,
@@ -623,143 +618,6 @@ const AgentPickerModal: Component<{
       void reorderAgent(agentId, target, true);
     }
   };
-
-  // Drags only start with no filter, so every wrap is rendered and the row
-  // index equals the orderedAgents() index.
-  const pickerRows = (): HTMLElement[] =>
-    listRef ? [...listRef.querySelectorAll<HTMLElement>(".agent-profile-provider-card-wrap")] : [];
-
-  /** Ghost position, insertion slot and drop line, in the list's offset space. */
-  const updatePointerDrag = (drag: PointerDrag) => {
-    if (drag.ghost) drag.ghost.style.top = `${drag.lastY - (drag.startY - drag.rowTop)}px`;
-    const rows = pickerRows();
-    const from = rows.indexOf(drag.row);
-    const others = rows.filter((row) => row !== drag.row);
-    drag.slot = insertionSlot(drag.lastY, others.map((row) => row.getBoundingClientRect()));
-    const atSlot = others[drag.slot];
-    const last = others[others.length - 1];
-    if (from < 0 || drag.slot === from || !last) {
-      setDropIndicatorTop(null);
-    } else {
-      setDropIndicatorTop(atSlot ? atSlot.offsetTop - 3 : last.offsetTop + last.offsetHeight + 1);
-    }
-  };
-
-  /** Runs on every exit path, including onCleanup: the ghost lives on document.body. */
-  const teardownPointerDrag = () => {
-    const drag = pointerDrag;
-    if (!drag) return;
-    pointerDrag = null;
-    if (drag.raf !== null) cancelAnimationFrame(drag.raf);
-    drag.ghost?.remove();
-    setDropIndicatorTop(null);
-    setDragSourceId(null);
-    document.body.classList.remove("is-dragging");
-    window.removeEventListener("keydown", drag.onEscape, true);
-    if (drag.handle.hasPointerCapture(drag.pointerId)) {
-      drag.handle.releasePointerCapture(drag.pointerId);
-    }
-  };
-
-  const cancelPointerDrag = () => {
-    const started = pointerDrag?.started ?? false;
-    teardownPointerDrag();
-    if (started) setMoveAnnouncement("Move cancelled.");
-  };
-
-  const startPointerDrag = (drag: PointerDrag) => {
-    const rect = drag.row.getBoundingClientRect();
-    drag.rowTop = rect.top;
-    const ghost = drag.row.cloneNode(true) as HTMLElement;
-    // The clone must not double any test id, id or focusable control.
-    for (const node of [ghost, ...ghost.querySelectorAll("*")]) {
-      node.removeAttribute("data-ac-testid");
-      node.removeAttribute("data-ac-role");
-      node.removeAttribute("id");
-    }
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.setAttribute("tabindex", "-1");
-    ghost.setAttribute("inert", "");
-    ghost.classList.add("drag-ghost");
-    ghost.style.width = `${rect.width}px`;
-    ghost.style.left = `${rect.left}px`;
-    document.body.append(ghost);
-    drag.ghost = ghost;
-    drag.started = true;
-    setDragSourceId(drag.agentId);
-    document.body.classList.add("is-dragging");
-    // Capture phase: Escape cancels the drag and never reaches the modal close.
-    window.addEventListener("keydown", drag.onEscape, true);
-    const tick = () => {
-      if (pointerDrag !== drag) return;
-      if (listRef) {
-        const list = listRef.getBoundingClientRect();
-        const delta = autoScrollDelta(drag.lastY, list.top, list.bottom);
-        if (delta !== 0) {
-          listRef.scrollTop += delta;
-          updatePointerDrag(drag);
-        }
-      }
-      drag.raf = requestAnimationFrame(tick);
-    };
-    drag.raf = requestAnimationFrame(tick);
-  };
-
-  const onHandlePointerDown = (e: PointerEvent, agentId: string) => {
-    if (e.button !== 0 || reorderDisabled() || pointerDrag) return;
-    const handle = (e.target as Element).closest<HTMLElement>(".agent-profile-provider-drag-handle");
-    const row = handle?.closest<HTMLElement>(".agent-profile-provider-card-wrap");
-    if (!handle || !row) return;
-    e.preventDefault();
-    handle.setPointerCapture(e.pointerId);
-    pointerDrag = {
-      agentId,
-      handle,
-      row,
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      lastY: e.clientY,
-      rowTop: 0,
-      slot: -1,
-      started: false,
-      ghost: null,
-      raf: null,
-      onEscape: (key: KeyboardEvent) => {
-        if (key.key !== "Escape") return;
-        key.preventDefault();
-        key.stopPropagation();
-        cancelPointerDrag();
-      },
-    };
-  };
-
-  const onHandlePointerMove = (e: PointerEvent) => {
-    const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    drag.lastY = e.clientY;
-    if (!drag.started) {
-      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) return;
-      startPointerDrag(drag);
-    }
-    updatePointerDrag(drag);
-  };
-
-  const onHandlePointerUp = (e: PointerEvent) => {
-    const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    // A refetch that re-rendered mid-drag detaches drag.row: from < 0, no-op.
-    const from = pickerRows().indexOf(drag.row);
-    teardownPointerDrag();
-    if (!drag.started || from < 0 || drag.slot === from) return;
-    void reorderAgent(drag.agentId, reorderIndex(from, drag.slot), false);
-  };
-
-  const onHandlePointerCancel = (e: PointerEvent) => {
-    if (pointerDrag && e.pointerId === pointerDrag.pointerId) cancelPointerDrag();
-  };
-
-  onCleanup(teardownPointerDrag);
 
   onMount(async () => {
     overlayRef?.focus();
@@ -1360,6 +1218,60 @@ const AgentPickerModal: Component<{
     }
   };
 
+  const needsConflictReview = (scope: ProfileAssignmentScope, mode: AssignmentMode): boolean =>
+    mode === "assignAndLock" && scope !== "replica" && conflictCount() > 0 && !conflictDecision();
+
+  const confirmedFingerprintFor = (
+    scope: ProfileAssignmentScope,
+    mode: AssignmentMode,
+    decision: ConflictDecision | null
+  ): string | null => {
+    // Each reviewed policy carries its OWN backend-issued fingerprint; the
+    // no-conflict path uses the preview's direct fingerprint.
+    const reviewedFingerprint = decision
+      ? conflictProjection(decision)?.fingerprint ?? null
+      : null;
+    // #2051 - "This replica + lock" is confirmed by the replica-scope preview's
+    // own fingerprint; the legacy replica ordinary apply deliberately sends none
+    // (the backend still accepts a missing fingerprint for replica + ordinary).
+    const previewFingerprint = scopePreview()?.targetFingerprint ?? null;
+    if (scope === "replica") return mode === "assignAndLock" ? previewFingerprint : null;
+    return reviewedFingerprint ?? previewFingerprint;
+  };
+
+  const reportApplyErrors = (
+    errors: ProfileAssignmentError[],
+    scope: ProfileAssignmentScope,
+    agentId: string
+  ) => {
+    setApplyErrors(errors);
+    const firstError = errors[0];
+    const extra = errors.length - 1;
+    showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
+    setDangerArmed(false);
+    setConflictDecision(null);
+    if (scope !== "replica") setScopePreviews((prev) => ({ ...prev, [scope]: null }));
+    setBusy(false);
+    runScopePreview(scope, agentId, selectedProfile());
+  };
+
+  const resetAfterRejectedApply = (
+    scope: ProfileAssignmentScope,
+    mode: AssignmentMode,
+    target: string | null | undefined,
+    agentId: string
+  ) => {
+    // #2051 - a rejected replica + lock needs the same fresh review the bulk
+    // scopes get; the old fingerprint must never be replayed. Replica ordinary
+    // keeps today's behavior.
+    const needsFreshReview = scope !== "replica" || mode === "assignAndLock";
+    if (needsFreshReview && target && isWgReplica()) {
+      setDangerArmed(false);
+      setScopePreviews((prev) => ({ ...prev, [scope]: null }));
+      runScopePreview(scope, agentId, selectedProfile());
+    }
+  };
+
   const apply = async () => {
     const agent = selectedAgent();
     if (!agent || !applyEnabled()) return;
@@ -1367,12 +1279,7 @@ const AgentPickerModal: Component<{
     const mode = assignmentMode();
     // A bulk assign-and-lock that found protected replicas cannot proceed on a
     // guess: pick one of the two reviewed outcomes first.
-    if (
-      mode === "assignAndLock" &&
-      scope !== "replica" &&
-      conflictCount() > 0 &&
-      !conflictDecision()
-    ) {
+    if (needsConflictReview(scope, mode)) {
       openConflictReview();
       return;
     }
@@ -1384,21 +1291,7 @@ const AgentPickerModal: Component<{
     const effective = effectivePreview().effectiveProfile;
     const target = targetReplicaPath();
     const restart = selectionRestart(scope);
-    // Each reviewed policy carries its OWN backend-issued fingerprint; the
-    // no-conflict path uses the preview's direct fingerprint.
-    const reviewedFingerprint = decision
-      ? conflictProjection(decision)?.fingerprint ?? null
-      : null;
-    // #2051 - "This replica + lock" is confirmed by the replica-scope preview's
-    // own fingerprint; the legacy replica ordinary apply deliberately sends none
-    // (the backend still accepts a missing fingerprint for replica + ordinary).
-    const previewFingerprint = scopePreview()?.targetFingerprint ?? null;
-    const confirmedFingerprint =
-      scope === "replica"
-        ? mode === "assignAndLock"
-          ? previewFingerprint
-          : null
-        : reviewedFingerprint ?? previewFingerprint;
+    const confirmedFingerprint = confirmedFingerprintFor(scope, mode, decision);
     try {
       let updatedCount: number | undefined;
       let restartedCount: number | undefined;
@@ -1417,15 +1310,7 @@ const AgentPickerModal: Component<{
           ...(decision ? { conflictDecision: decision } : {}),
         });
         if (result.errors.length > 0) {
-          setApplyErrors(result.errors);
-          const firstError = result.errors[0];
-          const extra = result.errors.length - 1;
-          showToast(extra > 0 ? `${firstError.message} (+${extra} more)` : firstError.message);
-          setDangerArmed(false);
-          setConflictDecision(null);
-          if (scope !== "replica") setScopePreviews((prev) => ({ ...prev, [scope]: null }));
-          setBusy(false);
-          runScopePreview(scope, agent.id, selectedProfile());
+          reportApplyErrors(result.errors, scope, agent.id);
           return;
         }
         updatedCount = result.updatedCount;
@@ -1445,15 +1330,7 @@ const AgentPickerModal: Component<{
       setError(message);
       showToast(message);
       setConflictDecision(null);
-      // #2051 - a rejected replica + lock needs the same fresh review the bulk
-      // scopes get; the old fingerprint must never be replayed. Replica ordinary
-      // keeps today's behavior.
-      const needsFreshReview = scope !== "replica" || mode === "assignAndLock";
-      if (needsFreshReview && target && isWgReplica()) {
-        setDangerArmed(false);
-        setScopePreviews((prev) => ({ ...prev, [scope]: null }));
-        runScopePreview(scope, agent.id, selectedProfile());
-      }
+      resetAfterRejectedApply(scope, mode, target, agent.id);
     } finally {
       // The backend-owned mutation has settled. Releasing the gate here (instead
       // of only on the error paths) keeps "busy until the promise settles" true
@@ -1571,11 +1448,7 @@ const AgentPickerModal: Component<{
                   aria-live="polite"
                   data-ac-testid="agentPicker.agentFilterStatus"
                 >
-                  {filterQuery() === ""
-                    ? `${orderedAgents().length} agents`
-                    : visibleAgentCount() === 0
-                    ? `No coding agent matches "${agentFilter().trim()}". Clear the filter to see all ${orderedAgents().length}.`
-                    : `${visibleAgentCount()} of ${orderedAgents().length} agents match "${agentFilter().trim()}".`}
+                  {agentFilterStatusText()}
                 </div>
               </div>
             </Show>
@@ -1599,7 +1472,7 @@ const AgentPickerModal: Component<{
                       <Show when={matchesFilter(agent)}>
                         <div
                           class="agent-profile-provider-card-wrap"
-                          classList={{ "is-drag-source": dragSourceId() === agent.id }}
+                          classList={{ "is-drag-source": drag.dragSourceId() === agent.id }}
                           data-ac-testid={`agentPicker.providerWrap.${agent.id}`}
                         >
                           {/* #2577 - the grip is a SEPARATE button drawn inside the card border (no nested buttons); the filter disables it. */}
@@ -1612,11 +1485,11 @@ const AgentPickerModal: Component<{
                             title={reorderHandleTitle(agent)}
                             data-ac-testid={reorderHandleTestId(agent.id)}
                             data-ac-role="button"
-                            onPointerDown={(e) => onHandlePointerDown(e, agent.id)}
-                            onPointerMove={onHandlePointerMove}
-                            onPointerUp={onHandlePointerUp}
-                            onPointerCancel={onHandlePointerCancel}
-                            onLostPointerCapture={onHandlePointerCancel}
+                            onPointerDown={(e) => drag.onPointerDown(e, agent.id)}
+                            onPointerMove={drag.onPointerMove}
+                            onPointerUp={drag.onPointerUp}
+                            onPointerCancel={drag.onPointerCancel}
+                            onLostPointerCapture={drag.onPointerCancel}
                             onKeyDown={(e) => onReorderHandleKeyDown(e, agent.id)}
                           >
                             <GripIcon />
@@ -1651,10 +1524,10 @@ const AgentPickerModal: Component<{
                   }}
                 </For>
               </Show>
-              <Show when={dropIndicatorTop() != null}>
+              <Show when={drag.dropIndicatorTop() != null}>
                 <div
                   class="drop-indicator"
-                  style={{ top: `${dropIndicatorTop()}px` }}
+                  style={{ top: `${drag.dropIndicatorTop()}px` }}
                   data-ac-testid="agentPicker.providers.dropIndicator"
                   aria-hidden="true"
                 />
@@ -1726,7 +1599,6 @@ const AgentPickerModal: Component<{
                         classList={{
                           active: selected(),
                           missing: !configured(),
-                          default: configuredDefault() === letter,
                         }}
                         aria-pressed={selected()}
                         onClick={() => chooseProfile(letter)}
@@ -1903,7 +1775,7 @@ const AgentPickerModal: Component<{
 
               <Show when={effectivePreview().fallbackApplied || hasBackendWarnings()}>
                 <div
-                  class="agent-profile-warning-strip agent-projection-status"
+                  class="agent-profile-warning-strip"
                   classList={{ visible: true }}
                   data-component="Coding Agent profile fallback explanation"
                   {...automationAttrs("agentPicker.fallback", "status", "warning")}
@@ -2330,7 +2202,7 @@ const AgentPickerModal: Component<{
               </div>
               <For each={applyErrors()}>
                 {(e) => (
-                  <div class="agent-scope-error-row">
+                  <div>
                     {e.message}
                     <Show when={e.sessionIds.length > 0}>
                       <span class="agent-scope-error-ids"> ({e.sessionIds.join(", ")})</span>
@@ -2419,7 +2291,7 @@ const AgentPickerModal: Component<{
             aria-modal="true"
             aria-labelledby="agentPickerConflictTitle"
           >
-            <div class="lock-conflict-head">
+            <div>
               <div class="lock-conflict-title" id="agentPickerConflictTitle">
                 {lockedKindTargets().length}{" "}
                 {lockedKindTargets().length === 1 ? "replica is" : "replicas are"} already locked
@@ -2438,7 +2310,7 @@ const AgentPickerModal: Component<{
                     data-ac-role="row"
                     data-ac-replica-path={t.replicaPath}
                   >
-                    <span class="lock-conflict-who">
+                    <span>
                       <span class="wg">{t.workgroupName}</span> ·{" "}
                       <span class="name">{t.replicaName}</span>
                     </span>

@@ -41,6 +41,10 @@ function die(msg) {
   process.exit(1);
 }
 
+function printable(s) {
+  return String(s).replace(/[\u0000-\u001f\u007f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+}
+
 function git(args) {
   return execFileSync('git', args, {
     encoding: 'utf8',
@@ -84,7 +88,7 @@ function validateFormat(branch) {
   const m = PATTERN.exec(branch);
   if (!m) {
     die(
-      `Branch "${branch}" does not match the naming convention.\n` +
+      `Branch "${printable(branch)}" does not match the naming convention.\n` +
       `  Expected: <type>/<issue-number>-<slug>\n` +
       `    <type>   ∈ { bug | chore | ci | docs | feat | feature | fix | refactor | style | test }\n` +
       `    <issue>  = open GitHub issue number (no leading zeros)\n` +
@@ -122,7 +126,7 @@ async function verifyIssueOpen(issue) {
     if (err instanceof SyntaxError) {
       die(`Invalid JSON response from GitHub API for issue #${issue}.`);
     }
-    die(`Network error fetching issue #${issue}: ${err?.message || err}`);
+    die(`Network error fetching issue #${issue}: ${printable(err?.message || err)}`);
   }
   if (data.pull_request) die(`#${issue} is a pull request, not an issue.`);
   if (data.state !== 'open') die(`Issue #${issue} is ${data.state}. Branch must reference an OPEN issue.`);
@@ -142,6 +146,6 @@ async function verifyIssueOpen(issue) {
     console.log(`[branch-name] OK: ${branch}`);
     process.exit(0);
   } catch (err) {
-    die(`Unexpected error: ${err?.message || err}`);
+    die(`Unexpected error: ${printable(err?.message || err)}`);
   }
 })();

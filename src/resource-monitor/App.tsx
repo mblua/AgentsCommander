@@ -141,8 +141,10 @@ const STATUS_FILTERS: ReadonlyArray<{ value: RmStatusFilter; label: string }> = 
   { value: "inactive", label: "Inactive" },
 ];
 
+const compareCodeUnits = (a: string, b: string): number => Number(a > b) - Number(a < b);
+
 const distinct = (values: (string | null | undefined)[]): string[] =>
-  [...new Set(values.filter((v): v is string => !!v))].sort((a, b) => Number(a > b) - Number(a < b));
+  [...new Set(values.filter((v): v is string => !!v))].sort(compareCodeUnits);
 
 const toggleFilter = (
   get: () => Set<string>,
@@ -645,9 +647,9 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   const filterSignature = createMemo(() =>
     JSON.stringify([
       statusFilter(),
-      [...projectFilter()].sort(),
-      [...workgroupFilter()].sort(),
-      [...roleFilter()].sort(),
+      [...projectFilter()].sort(compareCodeUnits),
+      [...workgroupFilter()].sort(compareCodeUnits),
+      [...roleFilter()].sort(compareCodeUnits),
       pidParse().pids,
       appliedSearch(),
     ])
@@ -1359,7 +1361,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
             </Show>
 
             <div
-              class="rm-filter-group rm-filter-pid"
+              class="rm-filter-group"
               data-ac-testid="resourceMonitor.filter.pid"
               data-ac-role="group"
             >
@@ -1422,7 +1424,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                       pidPresentInSnapshot(pid) ? "matched" : "unmatched"
                     }
                   >
-                    <span class="rm-pid-chip-pid">{pid}</span>
+                    <span>{pid}</span>
                     {/* 11.1: PID reuse is real and untestable from here. Naming
                         the process is what exposes the confusion to the user. */}
                     <Show when={pidProcessName(pid)}>
@@ -1446,7 +1448,7 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
             </div>
 
             <div
-              class="rm-filter-group rm-filter-search"
+              class="rm-filter-group"
               data-ac-testid="resourceMonitor.filter.search"
               data-ac-role="group"
             >

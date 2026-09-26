@@ -509,6 +509,64 @@ describe("automation bridge", () => {
     expect(focus).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["click", "button"],
+    ["contextClick", "div"],
+    ["hover", "button"],
+  ] as const)("checks expiry immediately before %s dispatch", async (action, tag) => {
+    const target = addTarget(tag, `late.${action}`, "Late");
+    topmostElement = target;
+    const events: string[] = [];
+    for (const type of ["click", "contextmenu", "pointerover", "mouseover"]) {
+      target.addEventListener(type, () => events.push(type));
+    }
+    const focus = vi.spyOn(target, "focus");
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValueOnce(100).mockReturnValueOnce(100).mockReturnValue(101);
+
+    const response = await executeAutomationRequest(
+      "main",
+      request(action, `late.${action}`, undefined, 101),
+    );
+
+    expect(response.ok).toBe(false);
+    if (response.ok) throw new Error("expected timeout");
+    expect(response.error).toBe("timeout");
+    expect(events).toEqual([]);
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it("reports an obscured target with a null topmost when the hit test finds nothing", async () => {
+    addTarget("button", "nothing.on.top", "Target");
+    topmostElement = null;
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("click", "nothing.on.top"),
+    );
+
+    expect(response.ok).toBe(false);
+    if (response.ok) throw new Error("expected target_obscured");
+    expect(response.error).toBe("target_obscured");
+    expect(response.diagnostics?.topmost).toBeNull();
+  });
+
+  it("reports unsupported actions after the target checks pass", async () => {
+    const target = addTarget("button", "unsupported.target", "Target");
+    topmostElement = target;
+
+    const response = await executeAutomationRequest(
+      "main",
+      request("doubleClick" as UiAutomationAction, "unsupported.target"),
+    );
+
+    expect(response.ok).toBe(false);
+    if (response.ok) throw new Error("expected unsupported_action");
+    expect(response.error).toBe("unsupported_action");
+    expect(response.message).toBe('Unsupported automation action "doubleClick".');
+    expect(response.available?.map((t) => t.testId)).toContain("unsupported.target");
+  });
+
   it("reports missing selectors with available targets", async () => {
     addTarget("button", "onboarding.modal", "Welcome");
 
