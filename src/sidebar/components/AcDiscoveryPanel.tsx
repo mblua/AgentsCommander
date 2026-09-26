@@ -395,21 +395,21 @@ const AcDiscoveryPanel: Component = () => {
       {/* Context files panel */}
       {ctxFilesReplica() && (
         <Portal>
-          {/* #2655 - Escape = backdrop click; the panel takes focus on mount so keys reach here. */}
-          <div
-            class="ctx-files-overlay"
-            onClick={closeContextFilesPanel}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.stopPropagation();
-                closeContextFilesPanel();
-              }
-            }}
-          >
+          <div class="ctx-files-overlay" onClick={closeContextFilesPanel}>
+            {/* #2655 - Escape = backdrop click; the panel takes focus on mount so keys reach it. */}
             <div
               class="ctx-files-panel ac-escape-focus-host"
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Context Files — ${ctxFilesReplica()!.name}`}
               tabIndex={-1}
               ref={(el) => focusOnMount(el)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.stopPropagation();
+                  closeContextFilesPanel();
+                }
+              }}
               onClick={(e) => e.stopPropagation()}
             >
               <div class="ctx-files-header">
