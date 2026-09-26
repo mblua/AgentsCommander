@@ -168,4 +168,21 @@ describe("ProjectPanel Agent Matrix row notice (#2046)", () => {
       rendered.cleanup();
     }
   });
+
+  // #2658 - Enter and Space on the row's key proxy open the notice, like a click.
+  it("opens the notice from the keyboard through the row key proxy", async () => {
+    const { rendered } = await mount();
+    try {
+      for (const key of ["Enter", " "]) {
+        const proxy = agentRow(rendered.root).firstElementChild!;
+        expect(proxy.classList.contains("ac-row-key-proxy")).toBe(true);
+        proxy.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+        await waitFor(() => expect(q("agentMatrixNotice.modal")).not.toBeNull());
+        click(q("agentMatrixNotice.close")!);
+        await waitFor(() => expect(q("agentMatrixNotice.modal")).toBeNull());
+      }
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

@@ -728,4 +728,23 @@ describe("ProjectPanel loop automation hooks", () => {
       rendered.cleanup();
     }
   });
+
+  // #2658 - Enter and Space on the loop row's key proxy open the loop editor, like a click.
+  it("opens the loop editor from the keyboard through the row key proxy", async () => {
+    const fake = new FakeTransport();
+    setupProject(fake);
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    const rowSelector = `[data-ac-testid="loop.row.${automationIdPart(projectPath)}.${automationIdPart("weekday-standup")}"]`;
+    const editor = () => document.body.querySelector('[data-ac-testid="loop.edit.id"]');
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeTruthy());
+      const proxy = rendered.root.querySelector(rowSelector)!.firstElementChild!;
+      expect(proxy.classList.contains("ac-row-key-proxy")).toBe(true);
+      proxy.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      await waitFor(() => expect(editor()).toBeTruthy());
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });

@@ -800,3 +800,55 @@ describe("SessionItem identity chip (#1730)", () => {
     }
   });
 });
+
+describe("SessionItem row keyboard access (#2659)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  const renderKeyRow = (props: Partial<Session>) => {
+    const fake = new FakeTransport();
+    fake.resolve("switch_session", null);
+    const rendered = renderWithFakeTransport(() => <SessionItem session={session(props)} isActive={false} />, fake);
+    const row = rendered.root.querySelector<HTMLElement>(`[data-ac-testid="session.${props.id}"]`)!;
+    return { fake, rendered, row };
+  };
+  const press = (el: Element, key: string) =>
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+
+  it("Enter and Space on the proxy switch like a click; nested buttons do not", async () => {
+    const { fake, rendered, row } = renderKeyRow({ id: "live-1", status: "running" });
+    try {
+      const proxy = row.firstElementChild!;
+      expect(proxy.classList.contains("ac-row-key-proxy")).toBe(true);
+      press(row.querySelector(".session-item-close")!, "Enter");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fake.callsFor("switch_session")).toHaveLength(0);
+      for (const [act, calls] of [[() => press(proxy, "Enter"), 1], [() => press(proxy, " "), 2], [() => click(row), 3]] as const) {
+        act();
+        await waitFor(() => expect(fake.callsFor("switch_session")).toHaveLength(calls));
+      }
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("gives an inactive row no key proxy", () => {
+    const { rendered, row } = renderKeyRow({ id: "inactive-1", status: { exited: 0 } });
+    try {
+      expect(row.querySelector(".ac-row-key-proxy")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
