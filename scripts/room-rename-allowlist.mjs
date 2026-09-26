@@ -478,16 +478,10 @@ function classifyRust(r, rev) {
   // sweeps must classify it identically or one surface would list a row the
   // other subtracts.
   if (r.path.endsWith(".md")) return classifyDocs(r);
+  // analysisOf reads the file, so it runs before the table checks, as it always has.
   const { inTest, inString, inLog } = analysisOf(rev, r.path);
-  if (has(GATES, r.path, r.lineno)) return "MOVE";
-  if (has(FROZEN_EXCEPTIONS, r.path, r.lineno)) return "MOVE";
-  if (has(CLAP_DOCS, r.path, r.lineno)) return "MOVE";
-  if (has(CONTRADICTING_DOCS, r.path, r.lineno)) return "MOVE";
-  if (has(TEST_EDITS, r.path, r.lineno)) return "MOVE";
-  const ex = STR_EXCEPTIONS[r.path]?.[r.lineno];
-  if (ex) return ex;
-  if (P2_FILES.includes(r.path)) return "P2-fixture";
-  if (inRanges(FROZEN[r.path], r.lineno)) return "P3-frozen";
+  const listed = classifyRustListed(r);
+  if (listed !== undefined) return listed;
   if (inTest.has(r.lineno)) return "P2-fixture";
   if (inLog.has(r.lineno)) return "P4-log";
   if (isNonDocComment(r.content)) return "P1-comment";
@@ -497,6 +491,20 @@ function classifyRust(r, rev) {
   const spans = quotedSpans(r.content);
   if (!spans.some((s) => PROSE.test(s) || PROSE_WG_DIR.test(s))) return machineClass(r.content);
   return "MOVE";
+}
+
+// The hand-listed tables, in their precedence order; undefined when r is in none.
+function classifyRustListed(r) {
+  if (has(GATES, r.path, r.lineno)) return "MOVE";
+  if (has(FROZEN_EXCEPTIONS, r.path, r.lineno)) return "MOVE";
+  if (has(CLAP_DOCS, r.path, r.lineno)) return "MOVE";
+  if (has(CONTRADICTING_DOCS, r.path, r.lineno)) return "MOVE";
+  if (has(TEST_EDITS, r.path, r.lineno)) return "MOVE";
+  const ex = STR_EXCEPTIONS[r.path]?.[r.lineno];
+  if (ex) return ex;
+  if (P2_FILES.includes(r.path)) return "P2-fixture";
+  if (inRanges(FROZEN[r.path], r.lineno)) return "P3-frozen";
+  return undefined;
 }
 
 // Plan 3.10: name the compatibility-critical classes explicitly, because AC1
@@ -561,98 +569,125 @@ function main() {
   const rev = ri > 0 ? process.argv[ri + 1] : undefined;
 
   if (mode === "sweep" || mode === "moved" || mode === "derive") {
-    const partA = [];
-    const moved = [];
-    const subtotals = {};
-    for (const s of Object.keys(SURFACES)) {
-      const rows = sweep(s, rev);
-      let mv = 0;
-      for (const r of rows) {
-        const cls = classify(r, rev);
-        if (cls === "MOVE") { moved.push(r); mv++; }
-        else partA.push({ ...r, cls });
-      }
-      subtotals[s] = { swept: rows.length, moved: mv, partA: rows.length - mv };
-    }
-    if (mode === "moved") {
-      for (const r of moved) console.log(`${r.path}:${r.lineno}: ${r.content.slice(0, 150)}`);
-    }
-    if (mode === "sweep") {
-      for (const r of partA) console.log(`${r.cls}\t${r.path}\t${r.content}`);
-    }
-    let sw = 0, mv = 0, pa = 0;
-    for (const [s, v] of Object.entries(subtotals)) {
-      console.error(`${s.padEnd(9)} swept ${String(v.swept).padStart(5)}  moved ${String(v.moved).padStart(4)}  Part A ${String(v.partA).padStart(5)}`);
-      sw += v.swept; mv += v.moved; pa += v.partA;
-    }
-    console.error(`${"TOTAL".padEnd(9)} swept ${String(sw).padStart(5)}  moved ${String(mv).padStart(4)}  Part A ${String(pa).padStart(5)}`);
-    console.error(`closing check: rows(Part A) ${pa} + lines subtracted ${mv} = ${pa + mv}`);
-
-    if (mode === "derive" && process.argv.includes("--write")) {
-      const seen = new Set();
-      const out = [
-        "# scripts/room-rename-allowlist.tsv -- #1614 plan section 9.4 AC1.",
-        `# Part A: derived at frozen base ${rev} from the three binding sweeps,`,
-        "# minus the lines this plan moves. Committed before the first",
-        "# visible-text edit, so an unrenamed Rule R line comes back unlisted.",
-        "# Columns: <Rule P class>\\t<path>\\t<trimmed line content>.",
-        "#",
-        "# Per-surface subtotals at the base (AC1 point 8):",
-        ...Object.entries(subtotals).map(
-          ([s, v]) => `#   ${s.padEnd(9)} swept ${v.swept}, moved ${v.moved}, Part A ${v.partA}`,
-        ),
-        `#   closing check: Part A ${pa} + subtracted ${mv} = ${pa + mv}`,
-        "#",
-        "# Rows are keyed on (path, trimmed content), so the identical trimmed",
-        "# content on several lines of one file collapses to ONE row. The",
-        "# closing arithmetic above counts LINES; the file below holds rows.",
-        "# Regenerate: node scripts/room-rename-allowlist.mjs derive --rev " + rev + " --write",
-        "# Check:      node scripts/room-rename-allowlist.mjs gate",
-      ];
-      for (const r of partA) {
-        const line = `${r.cls}\t${r.path}\t${r.content}`;
-        if (seen.has(line)) continue; // identical content on two lines of one file
-        seen.add(line);
-        out.push(line);
-      }
-      writeFileSync(TSV, out.join("\n") + "\n");
-      console.error(`wrote ${TSV}: ${seen.size} unique rows from ${partA.length} Part A lines`);
-    }
+    runClassify(mode, rev);
     return;
   }
 
   // Emit every unlisted line with FULL content, for building Part B. The gate's
   // own output truncates for readability and must never be parsed for this.
   if (mode === "unlisted") {
-    const allow = loadAllowlist();
-    for (const s of Object.keys(SURFACES)) {
-      for (const r of sweep(s, rev)) {
-        if (!allow.has(key(r))) console.log(`${r.path}\t${r.lineno}\t${r.content}`);
-      }
-    }
+    runUnlisted(rev);
     return;
   }
 
   if (mode === "gate") {
-    const allow = loadAllowlist();
-    let unlisted = 0;
-    for (const s of Object.keys(SURFACES)) {
-      const rows = sweep(s, rev);
-      let miss = 0;
-      for (const r of rows) {
-        if (allow.has(key(r))) continue;
-        miss++; unlisted++;
-        console.log(`UNLISTED ${r.path}:${r.lineno}: ${r.content.slice(0, 160)}`);
-      }
-      console.error(`${s.padEnd(9)} ${String(rows.length).padStart(5)} lines, ${miss} unlisted`);
-    }
-    console.error(`unlisted total: ${unlisted}`);
-    process.exitCode = unlisted === 0 ? 0 : 1;
+    runGate(rev);
     return;
   }
 
   console.error("usage: room-rename-allowlist.mjs sweep|moved|derive|gate [--rev <rev>] [--write]");
   process.exitCode = 2;
+}
+
+function runClassify(mode, rev) {
+  const partA = [];
+  const moved = [];
+  const subtotals = {};
+  for (const s of Object.keys(SURFACES)) {
+    subtotals[s] = classifySurface(s, rev, partA, moved);
+  }
+  if (mode === "moved") {
+    for (const r of moved) console.log(`${r.path}:${r.lineno}: ${r.content.slice(0, 150)}`);
+  }
+  if (mode === "sweep") {
+    for (const r of partA) console.log(`${r.cls}\t${r.path}\t${r.content}`);
+  }
+  const { mv, pa } = printSubtotals(subtotals);
+
+  if (mode === "derive" && process.argv.includes("--write")) {
+    writeDerivedTsv(rev, subtotals, partA, pa, mv);
+  }
+}
+
+// Classify every swept row of one surface into partA or moved; returns its subtotal.
+function classifySurface(s, rev, partA, moved) {
+  const rows = sweep(s, rev);
+  let mv = 0;
+  for (const r of rows) {
+    const cls = classify(r, rev);
+    if (cls === "MOVE") { moved.push(r); mv++; }
+    else partA.push({ ...r, cls });
+  }
+  return { swept: rows.length, moved: mv, partA: rows.length - mv };
+}
+
+// Print the per-surface and TOTAL lines and the closing check; returns the totals.
+function printSubtotals(subtotals) {
+  let sw = 0, mv = 0, pa = 0;
+  for (const [s, v] of Object.entries(subtotals)) {
+    console.error(`${s.padEnd(9)} swept ${String(v.swept).padStart(5)}  moved ${String(v.moved).padStart(4)}  Part A ${String(v.partA).padStart(5)}`);
+    sw += v.swept; mv += v.moved; pa += v.partA;
+  }
+  console.error(`${"TOTAL".padEnd(9)} swept ${String(sw).padStart(5)}  moved ${String(mv).padStart(4)}  Part A ${String(pa).padStart(5)}`);
+  console.error(`closing check: rows(Part A) ${pa} + lines subtracted ${mv} = ${pa + mv}`);
+  return { sw, mv, pa };
+}
+
+function writeDerivedTsv(rev, subtotals, partA, pa, mv) {
+  const seen = new Set();
+  const out = [
+    "# scripts/room-rename-allowlist.tsv -- #1614 plan section 9.4 AC1.",
+    `# Part A: derived at frozen base ${rev} from the three binding sweeps,`,
+    "# minus the lines this plan moves. Committed before the first",
+    "# visible-text edit, so an unrenamed Rule R line comes back unlisted.",
+    "# Columns: <Rule P class>\\t<path>\\t<trimmed line content>.",
+    "#",
+    "# Per-surface subtotals at the base (AC1 point 8):",
+    ...Object.entries(subtotals).map(
+      ([s, v]) => `#   ${s.padEnd(9)} swept ${v.swept}, moved ${v.moved}, Part A ${v.partA}`,
+    ),
+    `#   closing check: Part A ${pa} + subtracted ${mv} = ${pa + mv}`,
+    "#",
+    "# Rows are keyed on (path, trimmed content), so the identical trimmed",
+    "# content on several lines of one file collapses to ONE row. The",
+    "# closing arithmetic above counts LINES; the file below holds rows.",
+    "# Regenerate: node scripts/room-rename-allowlist.mjs derive --rev " + rev + " --write",
+    "# Check:      node scripts/room-rename-allowlist.mjs gate",
+  ];
+  for (const r of partA) {
+    const line = `${r.cls}\t${r.path}\t${r.content}`;
+    if (seen.has(line)) continue; // identical content on two lines of one file
+    seen.add(line);
+    out.push(line);
+  }
+  writeFileSync(TSV, out.join("\n") + "\n");
+  console.error(`wrote ${TSV}: ${seen.size} unique rows from ${partA.length} Part A lines`);
+}
+
+function runUnlisted(rev) {
+  const allow = loadAllowlist();
+  for (const s of Object.keys(SURFACES)) {
+    for (const r of sweep(s, rev)) {
+      if (!allow.has(key(r))) console.log(`${r.path}\t${r.lineno}\t${r.content}`);
+    }
+  }
+}
+
+function runGate(rev) {
+  const allow = loadAllowlist();
+  let unlisted = 0;
+  for (const s of Object.keys(SURFACES)) {
+    const rows = sweep(s, rev);
+    let miss = 0;
+    for (const r of rows) {
+      if (allow.has(key(r))) continue;
+      miss++; unlisted++;
+      console.log(`UNLISTED ${r.path}:${r.lineno}: ${r.content.slice(0, 160)}`);
+    }
+    console.error(`${s.padEnd(9)} ${String(rows.length).padStart(5)} lines, ${miss} unlisted`);
+  }
+  console.error(`unlisted total: ${unlisted}`);
+  process.exitCode = unlisted === 0 ? 0 : 1;
 }
 
 main();

@@ -69,7 +69,7 @@ export function startNonStopWatchdogClient(): void {
   })
     .then((fn) => {
       if (disposed) {
-        void fn();
+        fn();
       } else {
         unlisten = fn;
       }
