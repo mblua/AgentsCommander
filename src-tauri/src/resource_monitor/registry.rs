@@ -10,8 +10,8 @@ use super::types::{
     ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory,
     ResourceAgentGroupSnapshot, ResourceGroupState, ResourceGroupWarning,
     ResourceGroupWarningLevel, ResourceKillReason, ResourceKillResult, ResourceLaunchMetadata,
-    ResourceLimits, ResourceNetworkState, ResourceOverallState, ResourceProcessSnapshot,
-    ResourceSnapshot, TerminateOutcome,
+    ResourceLimits, ResourceOverallState, ResourceProcessSnapshot, ResourceSnapshot,
+    TerminateOutcome,
 };
 
 #[derive(Debug, Error, Clone)]
@@ -490,17 +490,12 @@ impl ResourceMonitorState {
         // this tick still renders as Terminated but the map cannot grow without limit.
         self.prune_terminated_groups();
 
-        let mut snapshot = {
+        let snapshot = {
             let inner = self.inner.lock().expect("resource monitor lock poisoned");
             build_snapshot(&inner, limits, app_memory, warnings)
         };
         if let Ok(mut inner) = self.inner.lock() {
             inner.last_snapshot = Some(snapshot.clone());
-        }
-        if snapshot.network_state == ResourceNetworkState::Unknown
-            && matches!(snapshot.overall_state, ResourceOverallState::Ok)
-        {
-            snapshot.overall_state = ResourceOverallState::Unknown;
         }
         snapshot
     }
@@ -1329,7 +1324,7 @@ fn build_snapshot(
     } else if !warnings.is_empty() || !group_warnings.is_empty() {
         ResourceOverallState::Warn
     } else {
-        ResourceOverallState::Unknown
+        ResourceOverallState::Ok
     };
 
     ResourceSnapshot {
@@ -1340,8 +1335,6 @@ fn build_snapshot(
         max_concurrent_agent_groups: limits.max_concurrent_agent_processes,
         app_private_bytes: app_memory.private_bytes,
         app_working_set_bytes: app_memory.working_set_bytes,
-        network_state: ResourceNetworkState::Unknown,
-        network_summary: "Socket attribution unavailable".to_string(),
         groups,
         warnings,
         group_warnings,
@@ -1375,8 +1368,6 @@ fn group_snapshot(group: &ResourceAgentGroup) -> ResourceAgentGroupSnapshot {
         private_bytes,
         working_set_bytes,
         cpu_percent: None,
-        network_state: ResourceNetworkState::Unknown,
-        network_summary: "Socket attribution unavailable".to_string(),
         processes,
         kill_allowed: matches!(
             group.state,
@@ -1395,8 +1386,6 @@ fn disabled_snapshot(limits: ResourceLimits) -> ResourceSnapshot {
         max_concurrent_agent_groups: limits.max_concurrent_agent_processes,
         app_private_bytes: None,
         app_working_set_bytes: None,
-        network_state: ResourceNetworkState::Unknown,
-        network_summary: "Socket attribution unavailable".to_string(),
         groups: Vec::new(),
         warnings: Vec::new(),
         group_warnings: Vec::new(),
@@ -1761,8 +1750,6 @@ mod tests {
         );
         assert_eq!(snapshot.app_private_bytes, None);
         assert_eq!(snapshot.app_working_set_bytes, None);
-        assert_eq!(snapshot.network_state, ResourceNetworkState::Unknown);
-        assert_eq!(snapshot.network_summary, "Socket attribution unavailable");
         assert!(snapshot.groups.is_empty());
         assert!(snapshot.warnings.is_empty());
     }
@@ -1887,8 +1874,7 @@ mod tests {
         let snapshot = state.snapshot(limits(3));
         assert_eq!(snapshot.groups[0].process_count, 2);
         assert!(snapshot.groups[0].descendants_observed);
-        assert_eq!(snapshot.network_state, ResourceNetworkState::Unknown);
-        assert_eq!(snapshot.overall_state, ResourceOverallState::Unknown);
+        assert_eq!(snapshot.overall_state, ResourceOverallState::Ok);
     }
 
     #[test]
@@ -3692,7 +3678,7 @@ mod tests {
     fn group_under_warn_limit_emits_no_group_warning() {
         let (_id, snap) = snapshot_with_group_at(50);
         assert!(snap.group_warnings.is_empty());
-        assert_eq!(snap.overall_state, ResourceOverallState::Unknown);
+        assert_eq!(snap.overall_state, ResourceOverallState::Ok);
     }
 
     #[test]

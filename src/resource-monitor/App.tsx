@@ -126,7 +126,6 @@ const groupSeverity = (group: ResourceAgentGroupSnapshot): string => {
   }
   if (group.state === "terminating") return "enforcing";
   if (group.state === "unknownOwnership" || group.lastError) return "warn";
-  if (group.networkState === "unknown") return "unknown";
   return "ok";
 };
 
@@ -906,7 +905,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
   const statusClass = createMemo(() => {
     const s = snapshot();
     if (!s || s.overallState === "unknown") return "unknown";
-    if (s.overallState === "ok" && s.networkState === "unknown") return "unknown";
     return s.overallState;
   });
   const statusText = createMemo(() =>
@@ -1122,15 +1120,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
             >
               {formatBytes(snapshot()?.appWorkingSetBytes)}
             </span>
-          </div>
-          <div
-            class={`rm-status-tile network-${snapshot()?.networkState ?? "unknown"}`}
-            data-ac-testid="resourceMonitor.summary.network"
-            data-ac-role="metric"
-            data-ac-state={snapshot()?.networkState ?? "unknown"}
-          >
-            <span class="rm-tile-label">Network</span>
-            <strong>{snapshot()?.networkSummary ?? "Unknown"}</strong>
           </div>
         </section>
 
@@ -1678,15 +1667,6 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
                         data-ac-role="cell"
                       >
                         {formatCpu(group.cpuPercent)}
-                      </span>
-                      <span
-                        class={`rm-network-pill network-${group.networkState}`}
-                        title={group.networkSummary || group.networkState}
-                        data-ac-testid={`resourceMonitor.group.${group.sessionId}.network`}
-                        data-ac-role="cell"
-                        data-ac-state={group.networkState}
-                      >
-                        {group.networkSummary || group.networkState}
                       </span>
                     </button>
                     <button

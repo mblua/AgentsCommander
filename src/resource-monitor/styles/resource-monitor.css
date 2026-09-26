@@ -242,10 +242,6 @@ button {
   box-shadow: inset 3px 0 0 var(--status-exited), inset 0 0 0 1px var(--sidebar-border);
 }
 
-.rm-status-tile.network-unknown {
-  box-shadow: inset 3px 0 0 var(--status-offline), inset 0 0 0 1px var(--sidebar-border);
-}
-
 .rm-banner {
   padding: var(--spacing-sm) var(--spacing-md);
   border-radius: var(--radius-md);
@@ -447,7 +443,6 @@ button {
 
 .rm-expander,
 .rm-group-state,
-.rm-network-pill,
 .rm-process-row span,
 .rm-process-header span {
   min-width: 0;
@@ -503,28 +498,6 @@ button {
 .rm-group-state {
   color: var(--sidebar-fg-dim);
   text-transform: capitalize;
-}
-
-.rm-network-pill {
-  justify-self: start;
-  max-width: 100%;
-  padding: 2px 7px;
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--sidebar-fg-dim);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.rm-network-pill.network-observed {
-  color: var(--sidebar-accent);
-  background: rgba(0, 212, 255, 0.09);
-}
-
-.rm-network-pill.network-unknown {
-  color: var(--sidebar-fg-dim);
-  background: rgba(255, 255, 255, 0.05);
 }
 
 .rm-kill-btn {
@@ -702,12 +675,8 @@ button {
    cannot shrink below its text and the ellipsis never fires. */
 
 /* The anti-clipping rule: a metric cell can no longer be squeezed below its own
-   text. The network pill is excluded because it is NOT a metric — its text is
-   free-form ("Socket attribution unavailable"), so under max-content the pill
-   itself would overflow and .rm-group-row { overflow: hidden } would cut it
-   with no ellipsis. Excluded, it keeps the shared ellipsis rule above and a
-   title attribute, so the cell stays present and readable. */
-.rm-group-main > span:not(.rm-group-identity):not(.rm-network-pill),
+   text. */
+.rm-group-main > span:not(.rm-group-identity),
 .rm-process-header > span:not(:first-child),
 .rm-process-row > span:not(:first-child) {
   flex: 0 0 auto;
@@ -960,7 +929,7 @@ button {
 @container rm-body (min-width: 860px) {
   .rm-group-main {
     display: grid;
-    grid-template-columns: 20px minmax(130px, 1.5fr) 110px 72px 96px 72px 72px minmax(110px, 1fr);
+    grid-template-columns: 20px minmax(130px, 1.5fr) 110px 72px 96px 72px 72px;
   }
 
   .rm-process-header,
@@ -971,14 +940,14 @@ button {
 
   /* Required, not tidiness: min-width: max-content is not inert on a grid item
      and would raise the automatic minimum of a fixed metric track. */
-  .rm-group-main > span:not(.rm-group-identity):not(.rm-network-pill),
+  .rm-group-main > span:not(.rm-group-identity),
   .rm-process-header > span:not(:first-child),
   .rm-process-row > span:not(:first-child) {
     min-width: 0;
   }
 
   .rm-status-strip {
-    grid-template-columns: repeat(5, minmax(110px, 1fr));
+    grid-template-columns: repeat(4, minmax(110px, 1fr));
   }
 
   .rm-header {

@@ -1279,8 +1279,6 @@ async fn handle_resource_watchdog_backend_request_with_config<R: tauri::Runtime>
             "overallState": snapshot.overall_state,
             "activeAgentGroups": snapshot.active_agent_groups,
             "appPrivateBytes": snapshot.app_private_bytes,
-            "networkState": snapshot.network_state,
-            "networkSummary": snapshot.network_summary,
             "warnings": snapshot.warnings,
         })
     } else {
@@ -1288,8 +1286,6 @@ async fn handle_resource_watchdog_backend_request_with_config<R: tauri::Runtime>
             "overallState": snapshot.overall_state,
             "activeAgentGroups": snapshot.active_agent_groups,
             "appPrivateBytes": snapshot.app_private_bytes,
-            "networkState": snapshot.network_state,
-            "networkSummary": snapshot.network_summary,
             "warnings": snapshot.warnings,
         })
     };
@@ -2475,8 +2471,6 @@ mod tests {
                         "overallState": "unknown",
                         "activeAgentGroups": 0,
                         "appPrivateBytes": null,
-                        "networkState": "unknown",
-                        "networkSummary": "Socket attribution unavailable",
                         "warnings": [],
                     },
                     "decisions": [],

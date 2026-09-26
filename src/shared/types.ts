@@ -1121,7 +1121,6 @@ export type ResourceOverallState =
   | "critical"
   | "enforcing"
   | "unknown";
-export type ResourceNetworkState = "unknown" | "observed";
 export type ResourceGroupState =
   | "starting"
   | "running"
@@ -1172,8 +1171,6 @@ export interface ResourceAgentGroupSnapshot {
   privateBytes?: number | null;
   workingSetBytes?: number | null;
   cpuPercent?: number | null;
-  networkState: ResourceNetworkState;
-  networkSummary: string;
   killAllowed?: boolean;
   processes: ResourceProcessSnapshot[];
   lastError?: string | null;
@@ -1187,8 +1184,6 @@ export interface ResourceSnapshot {
   maxConcurrentAgentGroups: number;
   appPrivateBytes?: number | null;
   appWorkingSetBytes?: number | null;
-  networkState: ResourceNetworkState;
-  networkSummary: string;
   groups: ResourceAgentGroupSnapshot[];
   warnings: string[];
   /** #2581 - per-agent memory warnings. Optional for older producers. */

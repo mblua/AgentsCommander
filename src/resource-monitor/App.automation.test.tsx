@@ -20,8 +20,6 @@ const activeSnapshot = (): ResourceSnapshot => ({
   maxConcurrentAgentGroups: 1,
   appPrivateBytes: 2 * 1024 ** 3,
   appWorkingSetBytes: 3 * 1024 ** 3,
-  networkState: "unknown",
-  networkSummary: "Unknown",
   warnings: ["Resource Monitor cap reached"],
   groups: [
     {
@@ -37,8 +35,6 @@ const activeSnapshot = (): ResourceSnapshot => ({
       privateBytes: 512 * 1024 ** 2,
       workingSetBytes: 768 * 1024 ** 2,
       cpuPercent: 1.2,
-      networkState: "unknown",
-      networkSummary: "Unknown",
       killAllowed: true,
       processes: [
         {
@@ -62,8 +58,6 @@ const emptySnapshot = (): ResourceSnapshot => ({
   maxConcurrentAgentGroups: 1,
   appPrivateBytes: 1024 ** 3,
   appWorkingSetBytes: 2 * 1024 ** 3,
-  networkState: "observed",
-  networkSummary: "Observed",
   warnings: [],
   groups: [],
 });
@@ -178,10 +172,6 @@ describe("ResourceMonitorApp automation hooks", () => {
         ).toBe("1");
       });
 
-      expect(
-        rendered.root.querySelector('[data-ac-testid="resourceMonitor.summary.network"]')
-          ?.getAttribute("data-ac-state")
-      ).toBe("unknown");
       expect(
         rendered.root.querySelector('[data-ac-testid="resourceMonitor.summary.activeGroups.count"]')
           ?.textContent

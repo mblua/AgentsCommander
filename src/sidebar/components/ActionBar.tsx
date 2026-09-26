@@ -44,7 +44,7 @@ export function computeResourceBadgeState(
   ) {
     return "limit";
   }
-  if (snapshot.overallState === "unknown" || snapshot.networkState === "unknown") {
+  if (snapshot.overallState === "unknown") {
     return "unknown";
   }
   return "ok";

@@ -440,7 +440,7 @@ mod tests {
     use crate::resource_monitor::types::{
         ObservedProcess, ObservedProcessTree, ProcessIdentity, ProcessMemory,
         ResourceAgentGroupSnapshot, ResourceKillReason, ResourceKillResult, ResourceLaunchMetadata,
-        ResourceNetworkState, ResourceProcessSnapshot, TerminateOutcome,
+        ResourceProcessSnapshot, TerminateOutcome,
     };
     use crate::session::manager::SessionManager;
     use crate::web::broadcast::WsBroadcaster;
@@ -542,8 +542,6 @@ mod tests {
             private_bytes,
             working_set_bytes: None,
             cpu_percent: None,
-            network_state: ResourceNetworkState::Unknown,
-            network_summary: "Socket attribution unavailable".to_string(),
             processes,
             kill_allowed: true,
             last_error: None,
