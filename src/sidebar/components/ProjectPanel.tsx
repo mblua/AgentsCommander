@@ -3486,6 +3486,7 @@ const ProjectPanel: Component = () => {
                                   "ac-loop-row-missed": loop.lastResult?.kind === "missedWhileClosed",
                                 }}
                                 onClick={() => setEditingLoopTarget({ projectPath: proj.path, loopId: loop.id })}
+                                onKeyDown={onRowKey(() => setEditingLoopTarget({ projectPath: proj.path, loopId: loop.id }))}
                                 onContextMenu={(e) => handleLoopContextMenu(e, loop)}
                                 title={loop.promptPreview}
                                 data-ac-testid={loopTestId(loop)}
@@ -3494,6 +3495,7 @@ const ProjectPanel: Component = () => {
                                   loop.pendingDueAt ? "pending" : "",
                                 ].filter(Boolean).join(" ")}
                               >
+                                <RowKeyProxy label={`Edit loop ${loop.promptPreview}`} />
                                 <div class="ac-loop-main">
                                   <span class="ac-loop-name">{loop.name}</span>
                                   <span class="ac-loop-target">{loop.workgroup}</span>
@@ -3608,8 +3610,10 @@ const ProjectPanel: Component = () => {
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
                         onClick={() => togglePanelCollapsed(agentsCollapsedKey)}
+                        onKeyDown={onRowKey(() => togglePanelCollapsed(agentsCollapsedKey))}
                         onContextMenu={handleAgentsHeaderContextMenu}
                       >
+                        <RowKeyProxy label="Toggle Agents" />
                         <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(agentsCollapsedKey) }}>
                           &#x25BE;
                         </span>
@@ -3632,9 +3636,11 @@ const ProjectPanel: Component = () => {
                                     <div
                                       class="replica-item"
                                       onClick={() => handleAgentClick(agent)}
+                                      onKeyDown={onRowKey(() => handleAgentClick(agent))}
                                       onContextMenu={(e) => handleAgentContextMenu(e, agent)}
                                       title={agent.path}
                                     >
+                                      <RowKeyProxy label={agent.name} />
                                       <div class="session-item-status offline" />
                                       <div class="replica-item-info">
                                         <span class="replica-item-name">
@@ -3832,8 +3838,10 @@ const ProjectPanel: Component = () => {
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
                         onClick={() => togglePanelCollapsed(teamsCollapsedKey)}
+                        onKeyDown={onRowKey(() => togglePanelCollapsed(teamsCollapsedKey))}
                         onContextMenu={handleTeamsHeaderContextMenu}
                       >
+                        <RowKeyProxy label="Toggle Teams" />
                         <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(teamsCollapsedKey) }}>
                           &#x25BE;
                         </span>
@@ -3856,8 +3864,10 @@ const ProjectPanel: Component = () => {
                                   <div
                                     class="ac-team-header"
                                     onClick={() => togglePanelCollapsed(teamCollapsedKey, true)}
+                                    onKeyDown={onRowKey(() => togglePanelCollapsed(teamCollapsedKey, true))}
                                     onContextMenu={(e) => handleTeamContextMenu(e, team)}
                                   >
+                                    <RowKeyProxy label={`Toggle ${team.name}`} />
                                     <span class="ac-discovery-chevron" classList={{ collapsed: teamCollapsed() }}>
                                       &#x25BE;
                                     </span>

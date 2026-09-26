@@ -302,7 +302,7 @@ describe("ProjectPanel collapse state", () => {
     }
   });
 
-  // #2657 - the 5 collapsible headers toggle by keyboard through their row key proxy.
+  // #2657/#2658 - the collapsible headers toggle by keyboard through their row key proxy.
   it("toggles each collapsible header with Enter, Space and mouse click", async () => {
     const fake = new FakeTransport();
     fake.resolve("new_project", { path: projectPath, registered: true, created: false });
@@ -319,9 +319,12 @@ describe("ProjectPanel collapse state", () => {
     sessionsStore.setVisibleActiveIdForTests("coord");
 
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    // #2658 - the team header uses its own class; every other header is .ac-wg-header.
+    const find = (name: string) =>
+      name === "frontend-team" ? teamHeaderByName(rendered.root, name) : headerByName(rendered.root, name);
     const toggles = async (name: string, act: (header: HTMLElement) => void, expected: boolean) => {
-      act(headerByName(rendered.root, name));
-      await waitFor(() => expect(headerCollapsed(headerByName(rendered.root, name))).toBe(expected));
+      act(find(name));
+      await waitFor(() => expect(headerCollapsed(find(name))).toBe(expected));
     };
     const press = (key: string) => (header: HTMLElement) => {
       const proxy = header.firstElementChild!;
@@ -331,12 +334,13 @@ describe("ProjectPanel collapse state", () => {
     try {
       await projectStore.createAndLoad(projectPath);
       await waitFor(() => void headerByName(rendered.root, "Selected Room"));
-      for (const name of ["wg-2-dev-team", "Orchestrators", "Selected Room", "Rooms", "Loops"]) {
-        expect(headerCollapsed(headerByName(rendered.root, name))).toBe(false);
-        await toggles(name, press("Enter"), true);
-        await toggles(name, press(" "), false);
-        await toggles(name, click, true);
-        await toggles(name, click, false);
+      const names = ["wg-2-dev-team", "Orchestrators", "Selected Room", "Rooms", "Loops", "Agents", "Teams", "frontend-team"];
+      for (const name of names) {
+        const start = headerCollapsed(find(name));
+        await toggles(name, press("Enter"), !start);
+        await toggles(name, press(" "), start);
+        await toggles(name, click, !start);
+        await toggles(name, click, start);
       }
     } finally {
       rendered.cleanup();
