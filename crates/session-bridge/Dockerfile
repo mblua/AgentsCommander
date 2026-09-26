@@ -20,4 +20,6 @@ RUN apt-get update \
 COPY --from=build /src/target/release/session-bridge /usr/local/bin/session-bridge
 COPY --from=build /src/target/release/agentscommander-api-helper /usr/local/bin/agentscommander-api-helper
 
+USER nobody
+
 ENTRYPOINT ["session-bridge"]
