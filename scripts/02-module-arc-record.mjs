@@ -185,9 +185,9 @@ function readOptionValue(argv, index, name) {
     // A value that starts with '-' is still a value: the parser does not guess which of two
     // options the caller meant, it fails later at read time instead.
     if (index + 1 >= argv.length) return { error: `usage: --${name} requires a file path` };
-    return { value: argv[index + 1], next: index + 1 };
+    return { value: argv[index + 1], next: index + 2 };
   }
-  return { value: argv[index].slice(`--${name}=`.length), next: index };
+  return { value: argv[index].slice(`--${name}=`.length), next: index + 1 };
 }
 
 function finalArgsError(result, argv) {
@@ -219,11 +219,13 @@ function parseArgs(argv) {
     return result;
   };
 
-  for (let index = 0; index < argv.length; index += 1) {
+  let index = 0;
+  while (index < argv.length) {
     const arg = argv[index];
 
     if (arg === '--self-test') {
       result.selfTest = true;
+      index += 1;
       continue;
     }
 

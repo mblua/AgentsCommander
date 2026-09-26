@@ -2198,7 +2198,9 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("visibly reloads the authoritative terminal snapshot value on CAS conflict", async () => {
+  // #2622 - shared by the CAS-conflict cases: toggle the snapshot opt-in, lose the
+  // CAS race on Save, and hand back what the assertions need.
+  async function saveWithSnapshotConflict() {
     vi.mocked(SettingsAPI.setTerminalSnapshotsEnabled).mockRejectedValueOnce(
       "terminal_snapshot_setting_conflict",
     );
@@ -2220,15 +2222,25 @@ describe("SettingsModal automation hooks", () => {
     byTestId<HTMLButtonElement>("settings.save").click();
     await settle();
     await settle();
+    await settle();
+    return { checkbox, dispose, onClose };
+  }
 
+  function expectConflictKeptModalOpen(onClose: ReturnType<typeof vi.fn>) {
     expect(SettingsAPI.setTerminalSnapshotsEnabled).toHaveBeenCalledWith(false, true);
-    expect(SettingsAPI.get).toHaveBeenCalledTimes(3);
-    expect(checkbox.checked).toBe(false);
     expect(document.querySelector(".modal-save-error")?.textContent).toContain(
       "current value was reloaded",
     );
     expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(false);
     expect(onClose).not.toHaveBeenCalled();
+  }
+
+  it("visibly reloads the authoritative terminal snapshot value on CAS conflict", async () => {
+    const { checkbox, dispose, onClose } = await saveWithSnapshotConflict();
+
+    expectConflictKeptModalOpen(onClose);
+    expect(SettingsAPI.get).toHaveBeenCalledTimes(3);
+    expect(checkbox.checked).toBe(false);
 
     dispose();
   });
@@ -2279,39 +2291,12 @@ describe("SettingsModal automation hooks", () => {
     vi.mocked(SettingsAPI.apiServerStatus)
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(true);
-    vi.mocked(SettingsAPI.setTerminalSnapshotsEnabled).mockRejectedValueOnce(
-      "terminal_snapshot_setting_conflict",
-    );
 
-    const onClose = vi.fn();
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose }),
-      root,
-    );
-    await settle();
+    const { dispose, onClose } = await saveWithSnapshotConflict();
 
-    const checkbox = byTestId<HTMLInputElement>(
-      "settings.general.terminalSnapshotsEnabled",
-    );
-    checkbox.checked = true;
-    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
-    await settle();
-
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
-    await settle();
-    await settle();
-
-    expect(SettingsAPI.setTerminalSnapshotsEnabled).toHaveBeenCalledWith(false, true);
+    expectConflictKeptModalOpen(onClose);
     expect(SettingsAPI.stopApiServer).not.toHaveBeenCalled();
     expect(SettingsAPI.startApiServer).not.toHaveBeenCalled();
-    expect(document.querySelector(".modal-save-error")?.textContent).toContain(
-      "current value was reloaded",
-    );
-    expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(false);
-    expect(onClose).not.toHaveBeenCalled();
 
     dispose();
   });
