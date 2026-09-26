@@ -46,57 +46,54 @@ const QuitConfirmModal: Component<QuitConfirmModalProps> = (props) => {
       cancelBtnRef?.focus();
     }
 
-    const onKeyDown = (e: KeyboardEvent) => {
-      // Keys are routed by the ACTIVE mode only. A ref left behind by the
-      // other variant can never steer this handler.
-      if (props.mode === "force") {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          e.stopPropagation();
-          props.onKeepWaiting();
-          return;
-        }
-        if (e.key === "Enter") {
-          e.preventDefault();
-          e.stopPropagation();
-          if (document.activeElement === forceQuitBtnRef) {
-            props.onForceQuit();
-          } else {
-            props.onKeepWaiting();
-          }
-          return;
-        }
-        if (e.key === "Tab") {
-          trapTabFocus(
-            e,
-            [keepWaitingBtnRef, forceQuitBtnRef].filter(Boolean) as HTMLElement[],
-          );
-        }
-        return;
-      }
-
+    const handleModalKey = (
+      e: KeyboardEvent,
+      onDismiss: () => void,
+      primaryRef: HTMLButtonElement | undefined,
+      onPrimary: () => void,
+      tabRefs: (HTMLButtonElement | undefined)[],
+    ) => {
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        props.onCancel();
+        onDismiss();
         return;
       }
       if (e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
-        if (document.activeElement === quitBtnRef) {
-          props.onQuit();
+        if (document.activeElement === primaryRef) {
+          onPrimary();
         } else {
-          props.onCancel();
+          onDismiss();
         }
         return;
       }
       if (e.key === "Tab") {
-        trapTabFocus(
-          e,
-          [cancelBtnRef, quitBtnRef].filter(Boolean) as HTMLElement[],
-        );
+        trapTabFocus(e, tabRefs.filter(Boolean) as HTMLElement[]);
       }
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Keys are routed by the ACTIVE mode only. A ref left behind by the
+      // other variant can never steer this handler.
+      if (props.mode === "force") {
+        handleModalKey(
+          e,
+          () => props.onKeepWaiting(),
+          forceQuitBtnRef,
+          () => props.onForceQuit(),
+          [keepWaitingBtnRef, forceQuitBtnRef],
+        );
+        return;
+      }
+      handleModalKey(
+        e,
+        () => props.onCancel(),
+        quitBtnRef,
+        () => props.onQuit(),
+        [cancelBtnRef, quitBtnRef],
+      );
     };
 
     document.addEventListener("keydown", onKeyDown, true);

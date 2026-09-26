@@ -1040,38 +1040,47 @@
 
   // Full re-render with keyboard focus preserved by data-focus-key, so a move
   // keeps focus on the pressed control by tool id (plan requirement).
+  function focusAttr(el, name) {
+    return el && el.getAttribute ? el.getAttribute(name) : null;
+  }
+  function focusNearestMoveRow(rows, at) {
+    for (var d = 1; d <= rows.length; d += 1) {
+      var candidates = [rows[at - d], rows[at + d]];
+      for (var c = 0; c < candidates.length; c += 1) {
+        if (!candidates[c]) continue;
+        var btn = candidates[c].querySelector("[data-move]:not([disabled])");
+        if (btn) { btn.focus(); return true; }
+      }
+    }
+    return false;
+  }
+  // The pressed move control became a boundary (or vanished): keep focus in
+  // the SAME screen and tool first, then move to the nearest row with an
+  // enabled move control, then to the same tool's row/card.
+  function focusMoveFallback(activeMove, activeTool) {
+    var sibling = document.querySelector('[data-move="' + activeMove + '"][data-tool="' + activeTool + '"]:not([disabled])');
+    if (sibling) { sibling.focus(); return true; }
+    var rowSel = activeMove === "settings" ? ".settings-agent-row[data-tool]" : ".agent-profile-provider-card-wrap[data-tool]";
+    var rows = Array.prototype.slice.call(document.querySelectorAll("#" + activeMove + "-frame-root " + rowSel));
+    var at = -1;
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i].getAttribute("data-tool") === activeTool) { at = i; break; }
+    }
+    if (focusNearestMoveRow(rows, at)) return true;
+    var own = document.querySelector('[data-focus-key="' + (activeMove === "settings" ? "row-" : "picker-card-") + activeTool + '"]');
+    if (own) { own.focus(); return true; }
+    return false;
+  }
   function rerender() {
     var active = document.activeElement;
-    var focusKey = active && active.getAttribute ? active.getAttribute("data-focus-key") : null;
-    var activeMove = active && active.getAttribute ? active.getAttribute("data-move") : null;
-    var activeTool = active && active.getAttribute ? active.getAttribute("data-tool") : null;
+    var focusKey = focusAttr(active, "data-focus-key");
+    var activeMove = focusAttr(active, "data-move");
+    var activeTool = focusAttr(active, "data-tool");
     render();
     if (!focusKey) return;
     var next = document.querySelector('[data-focus-key="' + focusKey.replace(/"/g, '\\"') + '"]');
     if (next && !next.disabled) { next.focus(); return; }
-    // The pressed move control became a boundary (or vanished): keep focus in
-    // the SAME screen and tool first, then move to the nearest row with an
-    // enabled move control, then to the same tool's row/card.
-    if (activeMove && activeTool) {
-      var sibling = document.querySelector('[data-move="' + activeMove + '"][data-tool="' + activeTool + '"]:not([disabled])');
-      if (sibling) { sibling.focus(); return; }
-      var rowSel = activeMove === "settings" ? ".settings-agent-row[data-tool]" : ".agent-profile-provider-card-wrap[data-tool]";
-      var rows = Array.prototype.slice.call(document.querySelectorAll("#" + activeMove + "-frame-root " + rowSel));
-      var at = -1;
-      for (var i = 0; i < rows.length; i += 1) {
-        if (rows[i].getAttribute("data-tool") === activeTool) { at = i; break; }
-      }
-      for (var d = 1; d <= rows.length; d += 1) {
-        var candidates = [rows[at - d], rows[at + d]];
-        for (var c = 0; c < candidates.length; c += 1) {
-          if (!candidates[c]) continue;
-          var btn = candidates[c].querySelector("[data-move]:not([disabled])");
-          if (btn) { btn.focus(); return; }
-        }
-      }
-      var own = document.querySelector('[data-focus-key="' + (activeMove === "settings" ? "row-" : "picker-card-") + activeTool + '"]');
-      if (own) { own.focus(); return; }
-    }
+    if (activeMove && activeTool && focusMoveFallback(activeMove, activeTool)) return;
     var fallback = document.querySelector('[data-focus-key="reopen"]');
     if (fallback) fallback.focus();
   }
@@ -1294,42 +1303,46 @@
   }
 
   // Review-only helper: reproduces the state a highlight legend item describes.
+  function reproduceDraft() {
+    if (!state.draftColor.pi || state.draftColor.pi === TOOLS.pi.color) state.draftColor.pi = "#ff00aa";
+    state.mode.settings = "proposed";
+    moveTool("settings", "pi", -1);
+  }
+  function reproduceRules() {
+    var btn = document.querySelector('#settings-frame-root [data-move]:not([disabled])') ||
+              document.querySelector('#picker-frame-root [data-move]:not([disabled])');
+    if (btn) {
+      btn.focus();
+      setStatus("Foco puesto en un control de movimiento: Tab/Enter/Espacio lo activan; el foco se conserva por id tras mover.", "");
+      announce("Foco en un control de movimiento. Tab, Enter o Espacio lo activan.");
+    } else {
+      setStatus("No hay controles de movimiento habilitados en este estado.", "warn");
+    }
+  }
+  function reproduceFailure() {
+    state.failNextSave = true;
+    syncToolbar();
+    setStatus("El próximo movimiento fallará una vez (mock).", "warn");
+    announce("El próximo movimiento fallará una vez.");
+  }
+  function reproduceOrderField() {
+    var card = document.getElementById("order-json-card");
+    if (card) {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      setStatus("Ejemplo de persistencia: cada herramienta muestra su valor order (simulado, sin escribir archivos).", "");
+      announce("Ejemplo de persistencia simulado con los valores order actuales.");
+    }
+  }
   function reproduce(kind) {
     if (kind === "order") { setMode("picker", "proposed"); }
-    else if (kind === "draft") {
-      if (!state.draftColor.pi || state.draftColor.pi === TOOLS.pi.color) state.draftColor.pi = "#ff00aa";
-      state.mode.settings = "proposed";
-      moveTool("settings", "pi", -1);
-    }
-    else if (kind === "rules") {
-      var btn = document.querySelector('#settings-frame-root [data-move]:not([disabled])') ||
-                document.querySelector('#picker-frame-root [data-move]:not([disabled])');
-      if (btn) {
-        btn.focus();
-        setStatus("Foco puesto en un control de movimiento: Tab/Enter/Espacio lo activan; el foco se conserva por id tras mover.", "");
-        announce("Foco en un control de movimiento. Tab, Enter o Espacio lo activan.");
-      } else {
-        setStatus("No hay controles de movimiento habilitados en este estado.", "warn");
-      }
-    }
+    else if (kind === "draft") { reproduceDraft(); }
+    else if (kind === "rules") { reproduceRules(); }
     else if (kind === "filter") { setFilter("grok"); }
     else if (kind === "ownership") { toggleOwnership(true); }
     else if (kind === "ownership-after") { simulateOwnershipAfterLoad(); }
-    else if (kind === "failure") {
-      state.failNextSave = true;
-      syncToolbar();
-      setStatus("El próximo movimiento fallará una vez (mock).", "warn");
-      announce("El próximo movimiento fallará una vez.");
-    }
+    else if (kind === "failure") { reproduceFailure(); }
     else if (kind === "conflict") { simulateExternalWriter(); }
-    else if (kind === "order-field") {
-      var card = document.getElementById("order-json-card");
-      if (card) {
-        card.scrollIntoView({ behavior: "smooth", block: "center" });
-        setStatus("Ejemplo de persistencia: cada herramienta muestra su valor order (simulado, sin escribir archivos).", "");
-        announce("Ejemplo de persistencia simulado con los valores order actuales.");
-      }
-    }
+    else if (kind === "order-field") { reproduceOrderField(); }
   }
 
   function reopenProposed() {
@@ -1386,6 +1399,80 @@
   }
 
   /* --- Screen A: Settings > Coding Agents */
+  function settingsRowColorLine(id, i, ctx, hex, editing) {
+    var tool = byId(id);
+    var isProposed = ctx.isProposed;
+    var isRail = state.railTool === id;
+    return '' +
+      '<div class="settings-agent-row-colorline">' +
+        '<span class="settings-agent-swatch" style="background:' + attr(hex) + '"></span>' +
+        '<input class="settings-agent-color-input' + (isProposed && i === 0 ? hlClass() : "") + '" type="text" spellcheck="false" value="' + attr(hex) + '"' +
+          ' aria-label="Color en borrador para ' + attr(tool.label) + ' (sin guardar)"' +
+          ' data-color-tool="' + attr(id) + '" data-focus-key="color-' + attr(id) + '">' +
+        (isProposed && i === 0 ? changeBadge("3") : "") +
+        (i === 0 ? '<span class="proto-tag">Solo prototipo</span>' : "") +
+        (isProposed
+          ? '<span class="settings-agent-order-chip' + (i === 0 ? hlClass() : "") + '" title="Campo propuesto settings.json.agents[].order">order ' + ctx.orderValues[id] + '</span>' +
+            (i === 0 ? changeBadge("10") : "")
+          : "") +
+        '<span class="settings-rail-pill ' + (isRail ? "left" : "available") + '">' + (isRail ? "LEFT" : "AVAILABLE") + '</span>' +
+        (editing ? '<span class="draft-chip">Sin guardar</span>' : "") +
+      '</div>';
+  }
+  function settingsRowActions(id, ctx) {
+    var tool = byId(id);
+    var isRail = state.railTool === id;
+    var moveOpts = {
+      disabled: ctx.ownsDisabled,
+      describedBy: ctx.ownsDisabled ? "ownership-reason-settings" : ""
+    };
+    return '' +
+      '<div class="settings-agent-row-actions">' +
+        (ctx.isProposed
+          ? moveButton("settings", id, -1, ctx.order, moveOpts) + moveButton("settings", id, 1, ctx.order, moveOpts)
+          : "") +
+        '<button type="button" class="settings-row-btn" data-select-tool="' + attr(id) + '"' +
+          (isRail ? ' aria-current="true"' : "") + ' aria-label="See profiles for ' + attr(tool.label) + '">See profiles</button>' +
+        '<button type="button" class="settings-agent-row-delete" aria-label="Delete ' + attr(tool.label) + '" title="Delete agent">\u{1F5D1}</button>' +
+        '<button type="button" class="settings-agent-chevron" aria-expanded="false" aria-label="Expand agent settings" title="Expand agent settings">\u25B8</button>' +
+      '</div>';
+  }
+  function renderSettingsRow(id, i, ctx) {
+    var tool = byId(id);
+    var draft = state.draftColor[id];
+    var hex = draft !== undefined ? draft : tool.color;
+    var isRail = state.railTool === id;
+    var editing = draft !== undefined && draft !== tool.color;
+    return '' +
+      '<div class="settings-agent-row" style="--agent-color:' + attr(tool.color) + '" role="listitem"' +
+        (isRail ? ' aria-current="true"' : "") + ' data-tool="' + attr(id) + '">' +
+        '<div class="settings-agent-row-head" role="button" tabindex="0" data-select-tool="' + attr(id) +
+          '" data-focus-key="row-' + attr(id) + '" aria-label="Mostrar ' + attr(tool.label) + ' en el rail de comparación LEFT">' +
+          '<span class="settings-agent-dot" style="background:' + attr(tool.color) + '"></span>' +
+          '<div class="settings-agent-row-meta">' +
+            '<div class="settings-agent-row-name">' + esc(tool.label) +
+              (isRail ? ' <span class="settings-rail-pill left" aria-hidden="true">Seleccionado</span>' : "") +
+            '</div>' +
+            '<div class="settings-agent-row-cmd">' + esc(tool.command) + '</div>' +
+            settingsRowColorLine(id, i, ctx, hex, editing) +
+          '</div>' +
+          settingsRowActions(id, ctx) +
+        '</div>' +
+      '</div>';
+  }
+  function settingsErrorBanner() {
+    return state.moveError
+      ? '<div class="state-banner error' + hlClass() + '">' + esc(state.moveError.message) +
+          (state.moveError.kind === "ownership-after-load" ? changeBadge("7") : changeBadge("8")) +
+          (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Reintentar movimiento</button>' : "") +
+        '</div>'
+      : "";
+  }
+  function settingsConflictBanner() {
+    return state.conflict
+      ? '<div class="state-banner warn' + hlClass() + '">' + esc(state.conflict.message) + changeBadge("9") + '</div>'
+      : "";
+  }
   function renderSettings() {
     var order = orderFor("settings");
     var isProposed = state.mode.settings === "proposed";
@@ -1393,54 +1480,8 @@
     var firstId = order[0];
     var orderValues = effectiveOrderValues();
 
-    var rows = order.map(function (id, i) {
-      var tool = byId(id);
-      var draft = state.draftColor[id];
-      var hex = draft !== undefined ? draft : tool.color;
-      var isRail = state.railTool === id;
-      var editing = draft !== undefined && draft !== tool.color;
-      var moveOpts = {
-        disabled: ownsDisabled,
-        describedBy: ownsDisabled ? "ownership-reason-settings" : ""
-      };
-      return '' +
-        '<div class="settings-agent-row" style="--agent-color:' + attr(tool.color) + '" role="listitem"' +
-          (isRail ? ' aria-current="true"' : "") + ' data-tool="' + attr(id) + '">' +
-          '<div class="settings-agent-row-head" role="button" tabindex="0" data-select-tool="' + attr(id) +
-            '" data-focus-key="row-' + attr(id) + '" aria-label="Mostrar ' + attr(tool.label) + ' en el rail de comparación LEFT">' +
-            '<span class="settings-agent-dot" style="background:' + attr(tool.color) + '"></span>' +
-            '<div class="settings-agent-row-meta">' +
-              '<div class="settings-agent-row-name">' + esc(tool.label) +
-                (isRail ? ' <span class="settings-rail-pill left" aria-hidden="true">Seleccionado</span>' : "") +
-              '</div>' +
-              '<div class="settings-agent-row-cmd">' + esc(tool.command) + '</div>' +
-              '<div class="settings-agent-row-colorline">' +
-                '<span class="settings-agent-swatch" style="background:' + attr(hex) + '"></span>' +
-                '<input class="settings-agent-color-input' + (isProposed && i === 0 ? hlClass() : "") + '" type="text" spellcheck="false" value="' + attr(hex) + '"' +
-                  ' aria-label="Color en borrador para ' + attr(tool.label) + ' (sin guardar)"' +
-                  ' data-color-tool="' + attr(id) + '" data-focus-key="color-' + attr(id) + '">' +
-                (isProposed && i === 0 ? changeBadge("3") : "") +
-                (i === 0 ? '<span class="proto-tag">Solo prototipo</span>' : "") +
-                (isProposed
-                  ? '<span class="settings-agent-order-chip' + (i === 0 ? hlClass() : "") + '" title="Campo propuesto settings.json.agents[].order">order ' + orderValues[id] + '</span>' +
-                    (i === 0 ? changeBadge("10") : "")
-                  : "") +
-                '<span class="settings-rail-pill ' + (isRail ? "left" : "available") + '">' + (isRail ? "LEFT" : "AVAILABLE") + '</span>' +
-                (editing ? '<span class="draft-chip">Sin guardar</span>' : "") +
-              '</div>' +
-            '</div>' +
-            '<div class="settings-agent-row-actions">' +
-              (isProposed
-                ? moveButton("settings", id, -1, order, moveOpts) + moveButton("settings", id, 1, order, moveOpts)
-                : "") +
-              '<button type="button" class="settings-row-btn" data-select-tool="' + attr(id) + '"' +
-                (isRail ? ' aria-current="true"' : "") + ' aria-label="See profiles for ' + attr(tool.label) + '">See profiles</button>' +
-              '<button type="button" class="settings-agent-row-delete" aria-label="Delete ' + attr(tool.label) + '" title="Delete agent">\u{1F5D1}</button>' +
-              '<button type="button" class="settings-agent-chevron" aria-expanded="false" aria-label="Expand agent settings" title="Expand agent settings">\u25B8</button>' +
-            '</div>' +
-          '</div>' +
-        '</div>';
-    }).join("");
+    var ctx = { order: order, isProposed: isProposed, ownsDisabled: ownsDisabled, orderValues: orderValues };
+    var rows = order.map(function (id, i) { return renderSettingsRow(id, i, ctx); }).join("");
 
     var rail = byId(state.railTool);
     var railOwn = state.draftLabel[rail.id] !== undefined ? state.draftLabel[rail.id] : (OWN_LABEL[rail.id] || "");
@@ -1448,15 +1489,8 @@
       ? (resolveLabelProposed(rail.id) || "Baseline")
       : (resolveLabelToday(rail.id, firstId) || "Baseline");
 
-    var errorBanner = state.moveError
-      ? '<div class="state-banner error' + hlClass() + '">' + esc(state.moveError.message) +
-          (state.moveError.kind === "ownership-after-load" ? changeBadge("7") : changeBadge("8")) +
-          (state.pendingRetry ? ' <button type="button" class="review-btn" data-action="retry" data-focus-key="retry">Reintentar movimiento</button>' : "") +
-        '</div>'
-      : "";
-    var conflictBanner = state.conflict
-      ? '<div class="state-banner warn' + hlClass() + '">' + esc(state.conflict.message) + changeBadge("9") + '</div>'
-      : "";
+    var errorBanner = settingsErrorBanner();
+    var conflictBanner = settingsConflictBanner();
 
     var panel =
       '<div class="settings-mock rel">' +
