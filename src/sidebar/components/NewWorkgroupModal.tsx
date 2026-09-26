@@ -54,7 +54,7 @@ const NewWorkgroupModal: Component<{
 
   return (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>
-      <div class="agent-modal new-agent-modal">
+      <div class="agent-modal">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Room</span>
         </div>

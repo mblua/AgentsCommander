@@ -232,42 +232,50 @@ export function profileBadgeKind(
     : "missing";
 }
 
+type ArgvQuote = "'" | '"';
+
+function readQuotedStep(
+  input: string,
+  index: number,
+  quote: ArgvQuote,
+): { text: string; index: number; quote: ArgvQuote | null } {
+  const char = input[index];
+  if (char === "\\") {
+    let slashCount = 0;
+    while (input[index] === "\\") {
+      slashCount += 1;
+      index += 1;
+    }
+    if (input[index] === quote) {
+      const text = "\\".repeat(Math.floor(slashCount / 2));
+      if (slashCount % 2 === 1) {
+        return { text: text + quote, index: index + 1, quote };
+      } else {
+        return { text, index: index + 1, quote: null };
+      }
+    } else {
+      return { text: "\\".repeat(slashCount), index, quote };
+    }
+  } else if (char === quote) {
+    return { text: "", index: index + 1, quote: null };
+  } else {
+    return { text: char, index: index + 1, quote };
+  }
+}
+
 export function parseArgvText(input: string): ArgvParseResult {
   const argv: string[] = [];
   let current = "";
-  let quote: "'" | '"' | null = null;
+  let quote: ArgvQuote | null = null;
 
   for (let index = 0; index < input.length;) {
     const char = input[index];
 
-    if (quote && char === "\\") {
-      let slashCount = 0;
-      while (input[index] === "\\") {
-        slashCount += 1;
-        index += 1;
-      }
-      if (input[index] === quote) {
-        current += "\\".repeat(Math.floor(slashCount / 2));
-        if (slashCount % 2 === 1) {
-          current += quote;
-          index += 1;
-        } else {
-          quote = null;
-          index += 1;
-        }
-      } else {
-        current += "\\".repeat(slashCount);
-      }
-      continue;
-    }
-
     if (quote) {
-      if (char === quote) {
-        quote = null;
-      } else {
-        current += char;
-      }
-      index += 1;
+      const step = readQuotedStep(input, index, quote);
+      current += step.text;
+      index = step.index;
+      quote = step.quote;
       continue;
     }
 

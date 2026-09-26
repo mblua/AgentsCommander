@@ -6,6 +6,7 @@ import type {
 } from "./transport";
 import type { PtyOutputEvent } from "./types";
 import { noteInvokeSettle, noteInvokeStart } from "./ipc-blackbox";
+import { resolveRemoteToken } from "./remote-token";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -26,6 +27,12 @@ const BACKEND_OWNED_COMPLETION_COMMANDS = new Set<string>([
 
 /// Transport implementation using WebSocket.
 /// Connects to the embedded axum server for remote browser access.
+/** A uniform integer in [0, bound) from the Web Crypto CSPRNG (reconnect jitter). */
+function randomJitter(bound: number): number {
+  const [value] = crypto.getRandomValues(new Uint32Array(1));
+  return Math.floor((value / 0x1_0000_0000) * bound);
+}
+
 export class WsTransport implements Transport {
   private ws: WebSocket | null = null;
   private nextId = 1;
@@ -42,9 +49,9 @@ export class WsTransport implements Transport {
 
   constructor() {
     const params = new URLSearchParams(window.location.search);
-    const token = params.get("remoteToken") || sessionStorage.getItem("remoteToken") || "";
+    const token = resolveRemoteToken(params, sessionStorage);
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    this.url = `${proto}//${location.host}/ws?token=${token}`;
+    this.url = `${proto}//${location.host}/ws?token=${encodeURIComponent(token)}`;
     this.connect();
   }
 
@@ -101,7 +108,7 @@ export class WsTransport implements Transport {
 
     const delay =
       this.reconnectDelay +
-      Math.floor(Math.random() * Math.min(250, this.reconnectDelay));
+      randomJitter(Math.min(250, this.reconnectDelay));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.closed) return;

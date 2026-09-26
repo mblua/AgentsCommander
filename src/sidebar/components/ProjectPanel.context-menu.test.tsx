@@ -443,6 +443,38 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(fake.lastCall("open_in_explorer")!.args.path).not.toBe(memberPath);
   });
 
+  // #2611 — normalizePath (module-private) is reached through the Matrix folder
+  // action: identityPath -> matrixFolderFromIdentityPath -> normalizePath.
+  it.each([
+    ["C:\\a\\..\\b\\identity.json", "C:\\b"],
+    ["C:\\a\\..\\..", "C:\\"],
+    ["\\\\srv\\share\\x\\..\\identity.json", "\\\\srv\\share\\"],
+    ["/a/./b/../identity.json", "\\a"],
+    ["/../x/identity.json", "\\x"],
+    ["../../x", `${projectPath}\\.ac\\x`],
+    ["../../../../../x", "C:\\x"],
+  ])("normalizes identityPath %j to Matrix folder %j", async (identityPath, expected) => {
+    const discoveryResult = projectDiscovery();
+    discoveryResult.workgroups[0].agents[1].identityPath = identityPath;
+    const fake = await setupPanel([coordSession()], discoveryResult);
+
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+
+    let action: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      const menu = replicaMenu();
+      expect(menu).not.toBeNull();
+      action = findMatrixFolderAction(menu!);
+      expect(action).not.toBeNull();
+    });
+
+    click(action!);
+
+    await waitFor(() => {
+      expect(fake.lastCall("open_in_explorer")?.args.path).toBe(expected);
+    });
+  });
+
   it("opens the workgroup replica folder from a gray workgroup replica", async () => {
     const fake = await setupPanel([coordSession()]);
 

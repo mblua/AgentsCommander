@@ -41,13 +41,9 @@ import { projectStore } from "../stores/project";
 import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 import TrashIcon from "./TrashIcon";
-import {
-  DRAG_THRESHOLD,
-  autoScrollDelta,
-  insertionSlot,
-  reorderIndex,
-  reorderedIds,
-} from "./settings/agentReorderDnd";
+import { reorderedIds } from "./settings/agentReorderDnd";
+import { createAgentDragReorder } from "./settings/agentDragReorder";
+import { GripIcon } from "./settings/GripIcon";
 import AgentAutoUpdateStatusList from "./AgentAutoUpdateStatusList";
 import XMarkIcon from "./XMarkIcon";
 import AgentHelpTipsModal from "./AgentHelpTipsModal";
@@ -169,36 +165,6 @@ const JUST_DROPPED_MS = 420;
 /** #2544 - ordered comparison: same length and the same id at every index. */
 const sameIdSequence = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((id, index) => id === b[index]);
-
-/** #2544 - six-dot grip for the Settings agent reorder handle. */
-const GripIcon: Component = () => (
-  <svg viewBox="0 0 8 14" fill="currentColor" aria-hidden="true">
-    <circle cx="2" cy="2" r="1.2" />
-    <circle cx="6" cy="2" r="1.2" />
-    <circle cx="2" cy="7" r="1.2" />
-    <circle cx="6" cy="7" r="1.2" />
-    <circle cx="2" cy="12" r="1.2" />
-    <circle cx="6" cy="12" r="1.2" />
-  </svg>
-);
-
-/** #2544 - one in-flight pointer drag. Not render state: only `dragSourceId`
- *  and `dropIndicatorTop` are signals the view reads. */
-type PointerDrag = {
-  agentId: string;
-  handle: HTMLElement;
-  row: HTMLElement;
-  pointerId: number;
-  startX: number;
-  startY: number;
-  lastY: number;
-  rowTop: number;
-  slot: number;
-  started: boolean;
-  ghost: HTMLElement | null;
-  raf: number | null;
-  onEscape: (e: KeyboardEvent) => void;
-};
 
 /** #1313 - shape-only check: a plausible complete executable path must contain
  *  a directory separator (`\` or `/`). Bare names like `powershell.exe` or
@@ -325,6 +291,27 @@ const appSettingsOnly = (snapshot: AppSettings | null): AppSettings | null => {
 const TYPING_HOLD_SECONDS_DEFAULT = 30;
 const TYPING_HOLD_SECONDS_MIN = 1;
 const TYPING_HOLD_SECONDS_MAX = 3600;
+
+// #2597 — grow the params textarea to fit its content. scrollHeight excludes
+// the border (box-sizing: border-box), so add it back; 28px = one-line floor.
+function fitProfileCommand(el: HTMLTextAreaElement): void {
+  const border = el.offsetHeight - el.clientHeight;
+  el.style.height = "auto";
+  el.style.height = `${Math.max(28, el.scrollHeight + border)}px`;
+}
+
+// #2597 — params are one logical line: newlines (paste/drop) become spaces.
+// Keeps the caret at the same logical offset. Returns the sanitized value.
+function sanitizeProfileCommandInput(el: HTMLTextAreaElement): string {
+  const raw = el.value;
+  const v = raw.replace(/\r\n|\r|\n/g, " ");
+  if (v !== raw) {
+    const caret = raw.slice(0, el.selectionStart ?? raw.length).replace(/\r\n|\r|\n/g, " ").length;
+    el.value = v;
+    el.setSelectionRange(caret, caret);
+  }
+  return v;
+}
 
 /** Whole seconds in range, or null. A blank or a fraction is invalid and is
  *  NEVER coerced: the input keeps the user's text and Save stays blocked. */
@@ -859,8 +846,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   );
   const [pendingOrder, setPendingOrder] = createSignal<string[] | null>(null);
   const [kbdGrabbedId, setKbdGrabbedId] = createSignal<string | null>(null);
-  const [dragSourceId, setDragSourceId] = createSignal<string | null>(null);
-  const [dropIndicatorTop, setDropIndicatorTop] = createSignal<number | null>(null);
   const [justDroppedId, setJustDroppedId] = createSignal<string | null>(null);
 
   const cancelPickUp = (announcement: string) => {
@@ -928,40 +913,50 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return running;
   };
 
+  const saveDraftBeforeApiServerStart = async (enabled: boolean): Promise<boolean> => {
+    if (enabled && settings.data && apiServerEndpointChanged(settings.data, modalSeed())) {
+      const validationError = currentValidationError();
+      if (validationError) {
+        setSaveError(validationError);
+        return false;
+      }
+      await saveCurrentSettingsDraft();
+    }
+    return true;
+  };
+
+  const apiServerToggleMismatch = (enabled: boolean, running: boolean): string => {
+    if (enabled && !running) return "API server did not report running after start.";
+    if (!enabled && running) return "API server is still running after stop.";
+    return "";
+  };
+
+  const apiServerToggleFailure = (enabled: boolean, err: unknown): string => {
+    const action = enabled ? "start" : "stop";
+    return `API server ${action} failed: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+  };
+
   const handleApiServerToggle = async (enabled: boolean) => {
     if (apiServerBusy()) return;
     setSaveError("");
     setApiServerBusy(true);
     try {
-      if (enabled && settings.data && apiServerEndpointChanged(settings.data, modalSeed())) {
-        const validationError = currentValidationError();
-        if (validationError) {
-          setSaveError(validationError);
-          return;
-        }
-        await saveCurrentSettingsDraft();
-      }
+      if (!(await saveDraftBeforeApiServerStart(enabled))) return;
       if (enabled) {
         await SettingsAPI.startApiServer();
       } else {
         await SettingsAPI.stopApiServer();
       }
       const running = await refreshApiServerRunning(true);
-      if (enabled && !running) {
-        setSaveError("API server did not report running after start.");
-      } else if (!enabled && running) {
-        setSaveError("API server is still running after stop.");
-      }
+      const mismatch = apiServerToggleMismatch(enabled, running);
+      if (mismatch) setSaveError(mismatch);
     } catch (err: unknown) {
       try {
         await refreshApiServerRunning(false);
       } catch {}
-      const action = enabled ? "start" : "stop";
-      setSaveError(
-        `API server ${action} failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      setSaveError(apiServerToggleFailure(enabled, err));
     } finally {
       setApiServerBusy(false);
     }
@@ -1327,6 +1322,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   });
 
   let agentsPanelBody: HTMLDivElement | undefined;
+  const drag = createAgentDragReorder({
+    container: () => agentsPanelBody,
+    rowSelector: ".settings-agent-row",
+    handleSelector: ".settings-agent-drag-handle",
+    canDrag: () => !settingsReorderDisabled() && !pendingOrder(),
+    commit: (agentId, targetIndex) => void reorderSettingsAgent(agentId, targetIndex),
+    announce: setMoveAnnouncement,
+  });
   /** `<For>` moves row nodes, which drops focus; re-query the handle at the
    *  agent's current index once Solid has applied the DOM update. */
   const focusReorderHandle = (agentId: string, scrollTop?: number) => {
@@ -1413,7 +1416,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   };
 
   const pickUpAgent = (agentId: string) => {
-    if (settingsReorderDisabled() || pointerDrag) return;
+    if (settingsReorderDisabled() || drag.isDragging()) return;
     const ids = draftAgentIds();
     const index = ids.indexOf(agentId);
     if (index < 0) return;
@@ -1490,143 +1493,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     });
   });
 
-  let pointerDrag: PointerDrag | null = null;
-  const panelRows = (): HTMLElement[] =>
-    agentsPanelBody
-      ? [...agentsPanelBody.querySelectorAll<HTMLElement>(".settings-agent-row")]
-      : [];
-
-  /** Ghost position, insertion slot and drop line, in the panel body's offset space. */
-  const updatePointerDrag = (drag: PointerDrag) => {
-    if (drag.ghost) drag.ghost.style.top = `${drag.lastY - (drag.startY - drag.rowTop)}px`;
-    const rows = panelRows();
-    const from = rows.indexOf(drag.row);
-    const others = rows.filter((row) => row !== drag.row);
-    drag.slot = insertionSlot(drag.lastY, others.map((row) => row.getBoundingClientRect()));
-    const atSlot = others[drag.slot];
-    const last = others[others.length - 1];
-    if (from < 0 || drag.slot === from || !last) {
-      setDropIndicatorTop(null);
-    } else {
-      setDropIndicatorTop(atSlot ? atSlot.offsetTop - 3 : last.offsetTop + last.offsetHeight + 1);
-    }
-  };
-
-  /** Runs on every exit path, including onCleanup: the ghost lives on
-   *  document.body and a dead webview never runs a framework unmount. */
-  const teardownPointerDrag = () => {
-    const drag = pointerDrag;
-    if (!drag) return;
-    pointerDrag = null;
-    if (drag.raf !== null) cancelAnimationFrame(drag.raf);
-    drag.ghost?.remove();
-    setDropIndicatorTop(null);
-    setDragSourceId(null);
-    document.body.classList.remove("is-dragging");
-    window.removeEventListener("keydown", drag.onEscape, true);
-    if (drag.handle.hasPointerCapture(drag.pointerId)) {
-      drag.handle.releasePointerCapture(drag.pointerId);
-    }
-  };
-
-  const cancelPointerDrag = () => {
-    const started = pointerDrag?.started ?? false;
-    teardownPointerDrag();
-    if (started) setMoveAnnouncement("Move cancelled.");
-  };
-
-  const startPointerDrag = (drag: PointerDrag) => {
-    const rect = drag.row.getBoundingClientRect();
-    drag.rowTop = rect.top;
-    const ghost = drag.row.cloneNode(true) as HTMLElement;
-    // The clone must not double any test id, id or focusable control.
-    for (const node of [ghost, ...ghost.querySelectorAll("*")]) {
-      node.removeAttribute("data-ac-testid");
-      node.removeAttribute("data-ac-role");
-      node.removeAttribute("id");
-    }
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.setAttribute("tabindex", "-1");
-    ghost.setAttribute("inert", "");
-    ghost.classList.add("drag-ghost");
-    ghost.style.width = `${rect.width}px`;
-    ghost.style.left = `${rect.left}px`;
-    document.body.append(ghost);
-    drag.ghost = ghost;
-    drag.started = true;
-    setDragSourceId(drag.agentId);
-    document.body.classList.add("is-dragging");
-    window.addEventListener("keydown", drag.onEscape, true);
-    const tick = () => {
-      if (pointerDrag !== drag) return;
-      if (agentsPanelBody) {
-        const list = agentsPanelBody.getBoundingClientRect();
-        const delta = autoScrollDelta(drag.lastY, list.top, list.bottom);
-        if (delta !== 0) {
-          agentsPanelBody.scrollTop += delta;
-          updatePointerDrag(drag);
-        }
-      }
-      drag.raf = requestAnimationFrame(tick);
-    };
-    drag.raf = requestAnimationFrame(tick);
-  };
-
-  const onHandlePointerDown = (e: PointerEvent, agentId: string) => {
-    if (e.button !== 0 || settingsReorderDisabled() || pendingOrder() || pointerDrag) return;
-    const handle = (e.target as Element).closest<HTMLElement>(".settings-agent-drag-handle");
-    const row = handle?.closest<HTMLElement>(".settings-agent-row");
-    if (!handle || !row) return;
-    e.preventDefault();
-    handle.setPointerCapture(e.pointerId);
-    pointerDrag = {
-      agentId,
-      handle,
-      row,
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      lastY: e.clientY,
-      rowTop: 0,
-      slot: -1,
-      started: false,
-      ghost: null,
-      raf: null,
-      onEscape: (key: KeyboardEvent) => {
-        if (key.key !== "Escape") return;
-        key.preventDefault();
-        key.stopPropagation();
-        cancelPointerDrag();
-      },
-    };
-  };
-
-  const onHandlePointerMove = (e: PointerEvent) => {
-    const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    drag.lastY = e.clientY;
-    if (!drag.started) {
-      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) return;
-      startPointerDrag(drag);
-    }
-    updatePointerDrag(drag);
-  };
-
-  const onHandlePointerUp = (e: PointerEvent) => {
-    const drag = pointerDrag;
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    const from = panelRows().indexOf(drag.row);
-    teardownPointerDrag();
-    if (!drag.started || from < 0 || drag.slot === from) return;
-    void reorderSettingsAgent(drag.agentId, reorderIndex(from, drag.slot));
-  };
-
-  const onHandlePointerCancel = (e: PointerEvent) => {
-    if (pointerDrag && e.pointerId === pointerDrag.pointerId) cancelPointerDrag();
-  };
-
   onCleanup(() => {
-    teardownPointerDrag();
     if (justDroppedTimer !== undefined) clearTimeout(justDroppedTimer);
   });
 
@@ -2373,40 +2240,55 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
+  const validateAgentRow = (agent: AgentConfig): string | null => {
+    const envError = validateEnvRows(agent.envs ?? []);
+    if (envError) {
+      return `Agent "${agent.label || "Unnamed"}": ${envError}`;
+    }
+    const parsedCommand = parseArgvText(agent.command);
+    if (parsedCommand.error) {
+      return `Agent "${agent.label || "Unnamed"}": ${parsedCommand.error}`;
+    }
+    return commandFlagError(`Agent "${agent.label || "Unnamed"}"`, parsedCommand.argv);
+  };
+
+  const validateProfileCell = (agentId: string, letter: string): string | null => {
+    const cellLabel = `Profile ${agentId}:${letter}`;
+    const command = displayedProfileCellCommand(agentId, letter);
+    if (command.trim()) {
+      const parsed = parseArgvText(command);
+      if (parsed.error) return `${cellLabel}: ${parsed.error}`;
+      const flagError = commandFlagError(cellLabel, parsed.argv);
+      if (flagError) return flagError;
+    }
+    const envError = cellEnvError(agentId, letter);
+    if (envError) return `${cellLabel}: ${envError}`;
+    return null;
+  };
+
+  const validateProfileCells = (
+    byAgent: Record<string, Record<string, ProfileCellConfig>>,
+  ): string | null => {
+    for (const [agentId, cells] of Object.entries(byAgent)) {
+      for (const [letter, cell] of Object.entries(cells)) {
+        if (!cell.enabled) continue;
+        const cellError = validateProfileCell(agentId, letter);
+        if (cellError) return cellError;
+      }
+    }
+    return null;
+  };
+
   const validateAgents = (): string | null => {
     if (!settings.data) return null;
     for (const agent of settings.data.agents) {
-      const envError = validateEnvRows(agent.envs ?? []);
-      if (envError) {
-        return `Agent "${agent.label || "Unnamed"}": ${envError}`;
-      }
-      const parsedCommand = parseArgvText(agent.command);
-      if (parsedCommand.error) {
-        return `Agent "${agent.label || "Unnamed"}": ${parsedCommand.error}`;
-      }
-      const flagError = commandFlagError(`Agent "${agent.label || "Unnamed"}"`, parsedCommand.argv);
-      if (flagError) return flagError;
+      const agentError = validateAgentRow(agent);
+      if (agentError) return agentError;
     }
     for (const [key, error] of Object.entries(profileCellErrors)) {
       if (error) return `Profile cell ${key}: ${error}`;
     }
-    const byAgent = settings.data.codingAgentProfiles.profilesByAgent;
-    for (const [agentId, cells] of Object.entries(byAgent)) {
-      for (const [letter, cell] of Object.entries(cells)) {
-        if (!cell.enabled) continue;
-        const cellLabel = `Profile ${agentId}:${letter}`;
-        const command = displayedProfileCellCommand(agentId, letter);
-        if (command.trim()) {
-          const parsed = parseArgvText(command);
-          if (parsed.error) return `${cellLabel}: ${parsed.error}`;
-          const flagError = commandFlagError(cellLabel, parsed.argv);
-          if (flagError) return flagError;
-        }
-        const envError = cellEnvError(agentId, letter);
-        if (envError) return `${cellLabel}: ${envError}`;
-      }
-    }
-    return null;
+    return validateProfileCells(settings.data.codingAgentProfiles.profilesByAgent);
   };
 
   const validateResources = (): string | null => {
@@ -2528,6 +2410,58 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateSidebarCompactHotkey() ??
     validateRoomNumberMask();
 
+  const recoverTerminalSnapshotConflict = async (
+    draftSettings: AppSettings,
+    seedBeforeSave: AppSettings | null,
+    wasApiServerRunning: boolean,
+  ) => {
+    const authoritative = await SettingsAPI.get();
+    const reloadedSettings = {
+      ...draftSettings,
+      terminalSnapshotsEnabled: authoritative.terminalSnapshotsEnabled,
+    };
+    const reloadedSeed = cloneSettings(reloadedSettings);
+    setSettings("data", cloneSettings(reloadedSettings));
+    setModalSeed(reloadedSeed);
+    adoptBackendAgentOrder(reloadedSettings.agents);
+    setTerminalSnapshotsOpeningValue(authoritative.terminalSnapshotsEnabled);
+    setDraftDirty(false);
+    setSaveError(TERMINAL_SNAPSHOT_CONFLICT_MESSAGE);
+    // #1173 — the draft above already persisted the new bind/port, so the
+    // conflict must not skip the restart the success path runs; otherwise the
+    // modal reports the new endpoint as running while the server still
+    // listens on the old one, and the advanced seed hides the delta on retry.
+    if (wasApiServerRunning && apiServerEndpointChanged(reloadedSettings, seedBeforeSave)) {
+      await restartApiServerAfterEndpointSave(reloadedSettings);
+    }
+  };
+
+  const applySavedSettings = async (
+    nextSettings: AppSettings,
+    seedBeforeSave: AppSettings | null,
+    wasApiServerRunning: boolean,
+  ) => {
+    const nextModalSeed = cloneSettings(nextSettings);
+    setSettings("data", cloneSettings(nextSettings));
+    setModalSeed(nextModalSeed);
+    adoptBackendAgentOrder(nextSettings.agents);
+    setTerminalSnapshotsOpeningValue(nextSettings.terminalSnapshotsEnabled);
+    setDraftDirty(false);
+    if (wasApiServerRunning && apiServerEndpointChanged(nextSettings, seedBeforeSave)) {
+      await restartApiServerAfterEndpointSave(nextSettings);
+    }
+    setSoundsEnabled(nextSettings.soundsEnabled ?? true);
+    if (isTauri) {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
+    }
+    settingsStore.refresh();
+    try {
+      const allRepos = await ReposAPI.search("");
+      sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
+    } catch {}
+  };
+
   const handleSave = async () => {
     if (!settings.data) return;
     const validationError = currentValidationError();
@@ -2553,25 +2487,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           );
         } catch (err: unknown) {
           if (errorMessage(err) !== TERMINAL_SNAPSHOT_SETTING_CONFLICT) throw err;
-          const authoritative = await SettingsAPI.get();
-          const reloadedSettings = {
-            ...draftSettings,
-            terminalSnapshotsEnabled: authoritative.terminalSnapshotsEnabled,
-          };
-          const reloadedSeed = cloneSettings(reloadedSettings);
-          setSettings("data", cloneSettings(reloadedSettings));
-          setModalSeed(reloadedSeed);
-          adoptBackendAgentOrder(reloadedSettings.agents);
-          setTerminalSnapshotsOpeningValue(authoritative.terminalSnapshotsEnabled);
-          setDraftDirty(false);
-          setSaveError(TERMINAL_SNAPSHOT_CONFLICT_MESSAGE);
-          // #1173 — the draft above already persisted the new bind/port, so the
-          // conflict must not skip the restart the success path runs; otherwise the
-          // modal reports the new endpoint as running while the server still
-          // listens on the old one, and the advanced seed hides the delta on retry.
-          if (wasApiServerRunning && apiServerEndpointChanged(reloadedSettings, seedBeforeSave)) {
-            await restartApiServerAfterEndpointSave(reloadedSettings);
-          }
+          await recoverTerminalSnapshotConflict(draftSettings, seedBeforeSave, wasApiServerRunning);
           setSaving(false);
           return;
         }
@@ -2579,25 +2495,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const nextSettings = terminalSnapshotsChanged
         ? { ...draftSettings, terminalSnapshotsEnabled }
         : draftSettings;
-      const nextModalSeed = cloneSettings(nextSettings);
-      setSettings("data", cloneSettings(nextSettings));
-      setModalSeed(nextModalSeed);
-      adoptBackendAgentOrder(nextSettings.agents);
-      setTerminalSnapshotsOpeningValue(nextSettings.terminalSnapshotsEnabled);
-      setDraftDirty(false);
-      if (wasApiServerRunning && apiServerEndpointChanged(nextSettings, seedBeforeSave)) {
-        await restartApiServerAfterEndpointSave(nextSettings);
-      }
-      setSoundsEnabled(nextSettings.soundsEnabled ?? true);
-      if (isTauri) {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
-      }
-      settingsStore.refresh();
-      try {
-        const allRepos = await ReposAPI.search("");
-        sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
-      } catch {}
+      await applySavedSettings(nextSettings, seedBeforeSave, wasApiServerRunning);
       setSaving(false);
       closeSettings();
     } catch (err: unknown) {
@@ -2616,6 +2514,78 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     document.removeEventListener("keydown", handleKeyDown);
   });
 
+
+  const intFieldInput =
+    (
+      field:
+        | "coordinatorIdleBadgeYellowMinutes"
+        | "coordinatorIdleBadgeRedMinutes"
+        | "coordinatorAutoCloseMinutes",
+    ) =>
+    (e: InputEvent & { currentTarget: HTMLInputElement }) => {
+      const value = parseInt(e.currentTarget.value, 10);
+      if (!Number.isNaN(value)) {
+        updateField(field, value);
+      }
+    };
+
+  const renderWebRemoteSection = () => (
+    <div class="settings-section">
+      <div class="settings-section-title">Web Remote Access</div>
+      <label class="settings-checkbox-field">
+        <input
+          type="checkbox"
+          class="settings-checkbox"
+          checked={settings.data!.webServerEnabled}
+          onChange={(e) =>
+            updateField("webServerEnabled", e.currentTarget.checked)
+          }
+        />
+        <span>Enable web server</span>
+      </label>
+      <Show when={settings.data!.webServerEnabled}>
+        <div style="display: flex; gap: 6px; margin-top: 6px; align-items: center;">
+          <button
+            class="settings-add-btn"
+            onClick={async () => {
+              try {
+                const running = await SettingsAPI.getWebServerStatus();
+                if (running) {
+                  await SettingsAPI.stopWebServer();
+                  setWebServerRunning(false);
+                } else {
+                  // #1453 - start_web_server returns false when the bind
+                  // fails, so ignoring it reported a running server that
+                  // never bound.
+                  const ok = await SettingsAPI.startWebServer();
+                  setWebServerRunning(ok);
+                }
+              } catch (err) {
+                console.error("Web server toggle failed:", err);
+              }
+            }}
+          >
+            {webServerRunning() ? "Stop Server" : "Start Server"}
+          </button>
+          <button
+            class="settings-add-btn"
+            disabled={!webServerRunning()}
+            style={!webServerRunning() ? "opacity: 0.4; cursor: default;" : ""}
+            onClick={() => {
+              SettingsAPI.openWebRemote().catch((err) =>
+                console.error("Failed to open web remote:", err)
+              );
+            }}
+          >
+            Open in Browser
+          </button>
+          <span style={`font-size: 11px; opacity: 0.6;`}>
+            {webServerRunning() ? "● Running" : "○ Stopped"}
+          </span>
+        </div>
+      </Show>
+    </div>
+  );
 
   const renderGeneralTab = () => (
     <>
@@ -2860,12 +2830,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             min="1"
             step="1"
             value={settings.data!.coordinatorIdleBadgeYellowMinutes}
-            onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
-              if (!Number.isNaN(value)) {
-                updateField("coordinatorIdleBadgeYellowMinutes", value);
-              }
-            }}
+            onInput={intFieldInput("coordinatorIdleBadgeYellowMinutes")}
             data-ac-testid="settings.general.coordinatorIdleBadgeYellowMinutes"
             data-ac-role="spinbutton"
           />
@@ -2878,12 +2843,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             min="1"
             step="1"
             value={settings.data!.coordinatorIdleBadgeRedMinutes}
-            onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
-              if (!Number.isNaN(value)) {
-                updateField("coordinatorIdleBadgeRedMinutes", value);
-              }
-            }}
+            onInput={intFieldInput("coordinatorIdleBadgeRedMinutes")}
             data-ac-testid="settings.general.coordinatorIdleBadgeRedMinutes"
             data-ac-role="spinbutton"
           />
@@ -2909,12 +2869,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             step="1"
             disabled={!settings.data!.coordinatorAutoCloseEnabled}
             value={settings.data!.coordinatorAutoCloseMinutes}
-            onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
-              if (!Number.isNaN(value)) {
-                updateField("coordinatorAutoCloseMinutes", value);
-              }
-            }}
+            onInput={intFieldInput("coordinatorAutoCloseMinutes")}
             data-ac-testid="settings.general.coordinatorAutoCloseMinutes"
             data-ac-role="spinbutton"
           />
@@ -3059,61 +3014,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         </div>
       </div>
 
-      <div class="settings-section">
-        <div class="settings-section-title">Web Remote Access</div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.webServerEnabled}
-            onChange={(e) =>
-              updateField("webServerEnabled", e.currentTarget.checked)
-            }
-          />
-          <span>Enable web server</span>
-        </label>
-        <Show when={settings.data!.webServerEnabled}>
-          <div style="display: flex; gap: 6px; margin-top: 6px; align-items: center;">
-            <button
-              class="settings-add-btn"
-              onClick={async () => {
-                try {
-                  const running = await SettingsAPI.getWebServerStatus();
-                  if (running) {
-                    await SettingsAPI.stopWebServer();
-                    setWebServerRunning(false);
-                  } else {
-                    // #1453 - start_web_server returns false when the bind
-                    // fails, so ignoring it reported a running server that
-                    // never bound.
-                    const ok = await SettingsAPI.startWebServer();
-                    setWebServerRunning(ok);
-                  }
-                } catch (err) {
-                  console.error("Web server toggle failed:", err);
-                }
-              }}
-            >
-              {webServerRunning() ? "Stop Server" : "Start Server"}
-            </button>
-            <button
-              class="settings-add-btn"
-              disabled={!webServerRunning()}
-              style={!webServerRunning() ? "opacity: 0.4; cursor: default;" : ""}
-              onClick={() => {
-                SettingsAPI.openWebRemote().catch((err) =>
-                  console.error("Failed to open web remote:", err)
-                );
-              }}
-            >
-              Open in Browser
-            </button>
-            <span style={`font-size: 11px; opacity: 0.6;`}>
-              {webServerRunning() ? "● Running" : "○ Stopped"}
-            </span>
-          </div>
-        </Show>
-      </div>
+      {renderWebRemoteSection()}
 
       <div class="settings-section">
         <div class="settings-section-title">Control Plane API</div>
@@ -3627,7 +3528,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         class="settings-agent-row"
         classList={{
           expanded: expanded(),
-          "is-drag-source": dragSourceId() === agent.id,
+          "is-drag-source": drag.dragSourceId() === agent.id,
           "is-kbd-grabbed": kbdGrabbedId() === agent.id,
           "just-dropped": justDroppedId() === agent.id,
         }}
@@ -3666,11 +3567,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             title="Drag to reorder (Alt+Up / Alt+Down)"
             data-ac-testid={`settings.agentRow.${i()}.dragHandle`}
             data-ac-role="button"
-            onPointerDown={(e) => onHandlePointerDown(e, agent.id)}
-            onPointerMove={onHandlePointerMove}
-            onPointerUp={onHandlePointerUp}
-            onPointerCancel={onHandlePointerCancel}
-            onLostPointerCapture={onHandlePointerCancel}
+            onPointerDown={(e) => drag.onPointerDown(e, agent.id)}
+            onPointerMove={drag.onPointerMove}
+            onPointerUp={drag.onPointerUp}
+            onPointerCancel={drag.onPointerCancel}
+            onLostPointerCapture={drag.onPointerCancel}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => onReorderHandleKeyDown(e, agent.id)}
           >
@@ -3691,7 +3592,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
           </div>
           <div
-            class="settings-agent-row-action-cluster"
             style={{ display: "flex", "align-items": "center", gap: "4px", "flex": "0 0 auto" }}
           >
           <div class="settings-agent-row-actions">
@@ -4543,11 +4443,27 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <div class="settings-profile-command-base" data-ac-testid={`${cardId}.commandBase`}>
             Runs <code>{agent.command || "(set the Coding Agent command first)"}</code> then your params:
           </div>
-          <input
+          <textarea
             class="settings-input settings-profile-command"
             classList={{ invalid: Boolean(cellError()) }}
             value={command()}
-            onInput={(e) => updateProfileCellCommand(agent.id, letter, e.currentTarget.value)}
+            rows={1}
+            wrap="soft"
+            spellcheck={false}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.isComposing) e.preventDefault();
+            }}
+            onFocus={(e) => fitProfileCommand(e.currentTarget)}
+            onBlur={(e) => {
+              e.currentTarget.style.height = "";
+              e.currentTarget.scrollTop = 0;
+            }}
+            onInput={(e) => {
+              const el = e.currentTarget;
+              const v = sanitizeProfileCommandInput(el);
+              updateProfileCellCommand(agent.id, letter, v);
+              if (document.activeElement === el) fitProfileCommand(el);
+            }}
             placeholder={paramsExampleFor(agentHelpOverlay(), agent.id, agent.command)}
             data-ac-testid={`${cardId}.command`}
             data-ac-role="textbox"
@@ -4819,7 +4735,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       >
         <aside class="settings-agents-panel">
           <div class="settings-agents-panel-header">
-            <div class="settings-agents-panel-heading">
+            <div>
               <div class="settings-agents-panel-title">Coding Agents</div>
               <div class="settings-agents-panel-kicker">Colors and selected comparison pair</div>
             </div>
@@ -4845,10 +4761,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 {(agent, i) => renderAgentRow(agent, i)}
               </For>
             </Show>
-            <Show when={dropIndicatorTop() != null}>
+            <Show when={drag.dropIndicatorTop() != null}>
               <div
                 class="drop-indicator"
-                style={{ top: `${dropIndicatorTop()}px` }}
+                style={{ top: `${drag.dropIndicatorTop()}px` }}
                 data-ac-testid="settings.agents.dropIndicator"
                 aria-hidden="true"
               />

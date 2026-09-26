@@ -24,22 +24,15 @@ export interface ProjectState {
 }
 
 
-export function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
-  const aIsArray = Array.isArray(a);
-  if (aIsArray !== Array.isArray(b)) return false;
-  if (aIsArray) {
-    const arrA = a as unknown[];
-    const arrB = b as unknown[];
-    if (arrA.length !== arrB.length) return false;
-    for (let i = 0; i < arrA.length; i++) {
-      if (!deepEqual(arrA[i], arrB[i])) return false;
-    }
-    return true;
+function arraysDeepEqual(arrA: unknown[], arrB: unknown[]): boolean {
+  if (arrA.length !== arrB.length) return false;
+  for (let i = 0; i < arrA.length; i++) {
+    if (!deepEqual(arrA[i], arrB[i])) return false;
   }
-  const objA = a as Record<string, unknown>;
-  const objB = b as Record<string, unknown>;
+  return true;
+}
+
+function objectsDeepEqual(objA: Record<string, unknown>, objB: Record<string, unknown>): boolean {
   for (const key in objA) {
     if (!deepEqual(objA[key], objB[key])) return false;
   }
@@ -47,6 +40,15 @@ export function deepEqual(a: unknown, b: unknown): boolean {
     if (!(key in objA) && objB[key] !== undefined) return false;
   }
   return true;
+}
+
+export function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  const aIsArray = Array.isArray(a);
+  if (aIsArray !== Array.isArray(b)) return false;
+  if (aIsArray) return arraysDeepEqual(a as unknown[], b as unknown[]);
+  return objectsDeepEqual(a as Record<string, unknown>, b as Record<string, unknown>);
 }
 
 function mergeKeyedArray<T>(

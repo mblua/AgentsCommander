@@ -7,7 +7,8 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code \
+RUN npm install -g --ignore-scripts @anthropic-ai/claude-code \
+    && node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs" \
     && npm cache clean --force
 
 RUN mkdir -p /workspace /home/node/.claude \

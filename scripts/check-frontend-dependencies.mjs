@@ -113,6 +113,77 @@ function classifySeamTarget(to) {
   return null;
 }
 
+// One CYCLE_PAIRS entry: every violation on the pair is no-circular, and the
+// pair is the named cycle.
+function checkPairFixture(result, pair) {
+  const failures = [];
+  const a = fixturePath(pair, "a.ts");
+  const b = fixturePath(pair, "b.ts");
+  const pairViolations = result.summary.violations.filter(
+    (v) =>
+      normalize(v.from) === a ||
+      normalize(v.from) === b ||
+      normalize(v.to) === a ||
+      normalize(v.to) === b,
+  );
+  const foreignRules = pairViolations.filter((v) => v.rule.name !== "no-circular");
+  if (foreignRules.length > 0) {
+    failures.push(
+      `${pair} must fail exclusively with no-circular; got ` +
+        foreignRules.map((v) => `${v.rule.name} (${v.from} -> ${v.to})`).join("; "),
+    );
+    return failures;
+  }
+  const namedCycle = pairViolations.some((v) => {
+    const from = normalize(v.from);
+    const to = normalize(v.to);
+    return (
+      v.rule.name === "no-circular" &&
+      ((from === a && to === b) || (from === b && to === a))
+    );
+  });
+  if (!namedCycle) {
+    failures.push(`${pair} pair cycle not named with both a.ts and b.ts paths`);
+  }
+  return failures;
+}
+
+// One SEAM_HELPERS entry: see the seam comment in verifyFixtureMatrix.
+function checkSeamFixture(result, helper) {
+  const failures = [];
+  const seamPath = `${FIXTURE_ROOT}/seams/${helper}.ts`;
+  const violations = violationsFor(result, seamPath);
+  const backEdge = violations.filter(
+    (v) => v.rule.name === "no-terminal-helper-back-edge",
+  );
+  const foreign = violations.filter(
+    (v) => !["no-terminal-helper-back-edge", "no-circular"].includes(v.rule.name),
+  );
+  if (foreign.length > 0) {
+    failures.push(
+      `${helper} seam fixture produced non-back-edge violations: ` +
+        foreign.map((v) => `${v.rule.name} (-> ${v.to})`).join("; "),
+    );
+  }
+  const seenTargets = new Set(backEdge.map((v) => classifySeamTarget(v.to)));
+  if (seenTargets.has(null)) {
+    const unknown = backEdge
+      .filter((v) => classifySeamTarget(v.to) === null)
+      .map((v) => v.to);
+    failures.push(`${helper} seam back-edge names unexpected targets: ${unknown.join(", ")}`);
+  }
+  const expected = ["view", "sidebar", "ipc", "tauri", "opposite-helper"];
+  const missing = expected.filter((target) => !seenTargets.has(target));
+  if (missing.length > 0) {
+    failures.push(
+      `${helper} seam fixture must name every forbidden target under ` +
+        `no-terminal-helper-back-edge; missing: ${missing.join(", ")} ` +
+        `(named: ${[...seenTargets].join(", ")})`,
+    );
+  }
+  return failures;
+}
+
 function verifyFixtureMatrix(result, commonjsApplicable) {
   const failures = [];
 
@@ -147,34 +218,7 @@ function verifyFixtureMatrix(result, commonjsApplicable) {
       );
       continue;
     }
-    const a = fixturePath(pair, "a.ts");
-    const b = fixturePath(pair, "b.ts");
-    const pairViolations = result.summary.violations.filter(
-      (v) =>
-        normalize(v.from) === a ||
-        normalize(v.from) === b ||
-        normalize(v.to) === a ||
-        normalize(v.to) === b,
-    );
-    const foreignRules = pairViolations.filter((v) => v.rule.name !== "no-circular");
-    if (foreignRules.length > 0) {
-      failures.push(
-        `${pair} must fail exclusively with no-circular; got ` +
-          foreignRules.map((v) => `${v.rule.name} (${v.from} -> ${v.to})`).join("; "),
-      );
-      continue;
-    }
-    const namedCycle = pairViolations.some((v) => {
-      const from = normalize(v.from);
-      const to = normalize(v.to);
-      return (
-        v.rule.name === "no-circular" &&
-        ((from === a && to === b) || (from === b && to === a))
-      );
-    });
-    if (!namedCycle) {
-      failures.push(`${pair} pair cycle not named with both a.ts and b.ts paths`);
-    }
+    failures.push(...checkPairFixture(result, pair));
   }
 
   // Seam fixtures: no-terminal-helper-back-edge must name every forbidden
@@ -183,36 +227,7 @@ function verifyFixtureMatrix(result, commonjsApplicable) {
   // two seam helpers a two-module cycle, so no-circular is an expected,
   // tolerated violation there (the seam verdict is the back-edge naming).
   for (const helper of SEAM_HELPERS) {
-    const seamPath = `${FIXTURE_ROOT}/seams/${helper}.ts`;
-    const violations = violationsFor(result, seamPath);
-    const backEdge = violations.filter(
-      (v) => v.rule.name === "no-terminal-helper-back-edge",
-    );
-    const foreign = violations.filter(
-      (v) => !["no-terminal-helper-back-edge", "no-circular"].includes(v.rule.name),
-    );
-    if (foreign.length > 0) {
-      failures.push(
-        `${helper} seam fixture produced non-back-edge violations: ` +
-          foreign.map((v) => `${v.rule.name} (-> ${v.to})`).join("; "),
-      );
-    }
-    const seenTargets = new Set(backEdge.map((v) => classifySeamTarget(v.to)));
-    if (seenTargets.has(null)) {
-      const unknown = backEdge
-        .filter((v) => classifySeamTarget(v.to) === null)
-        .map((v) => v.to);
-      failures.push(`${helper} seam back-edge names unexpected targets: ${unknown.join(", ")}`);
-    }
-    const expected = ["view", "sidebar", "ipc", "tauri", "opposite-helper"];
-    const missing = expected.filter((target) => !seenTargets.has(target));
-    if (missing.length > 0) {
-      failures.push(
-        `${helper} seam fixture must name every forbidden target under ` +
-          `no-terminal-helper-back-edge; missing: ${missing.join(", ")} ` +
-          `(named: ${[...seenTargets].join(", ")})`,
-      );
-    }
+    failures.push(...checkSeamFixture(result, helper));
   }
 
   if (result.summary.error <= 0) {

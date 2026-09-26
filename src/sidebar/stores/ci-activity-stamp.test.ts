@@ -56,6 +56,7 @@ async function seed() {
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
   fake.resolve("get_settings", baseSettings());
   fake.resolve("discover_project", roomDiscovery());
+  fake.resolve("remove_project", undefined);
   const restore = __setTransportForTests(fake);
   await settingsStore.load();
   await projectStore.createAndLoad(projectPath);
@@ -129,6 +130,26 @@ describe("#2202 CI-stop activity stamp", () => {
     await start();
 
     publishCi([]); // the path departed; it reads as not running, exactly as the tint does
+    await waitFor(() => expect(stampOf(COORD_SESSION)).toBeTypeOf("number"));
+  });
+
+  it("prunes a room gone from the store, so its return is a fresh first observation", async () => {
+    restore = await seed();
+    publishCi([[coordRepo, "running"]]);
+    await start();
+
+    await projectStore.removeProject(projectPath);
+    publishCi([[coordRepo, "idle"]]); // runs the effect while the room is gone
+    await Promise.resolve();
+    await projectStore.createAndLoad(projectPath);
+    await Promise.resolve();
+    // Without the prune the stale `true` would make this a falling edge and stamp.
+    expect(stampOf(COORD_SESSION)).toBeUndefined();
+
+    // Positive control: the effect still sees the returned room.
+    publishCi([[coordRepo, "running"]]);
+    await Promise.resolve();
+    publishCi([[coordRepo, "idle"]]);
     await waitFor(() => expect(stampOf(COORD_SESSION)).toBeTypeOf("number"));
   });
 

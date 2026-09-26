@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import ResourceMonitorApp from "./App";
+import ResourceMonitorApp, { groupWarningText } from "./App";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import {
   baseSettings,
@@ -828,5 +828,167 @@ describe("ResourceMonitorApp automation hooks", () => {
     } finally {
       rendered.cleanup();
     }
+  });
+});
+
+// #2581 - per-agent warnings sit above the Agents list, name the agent and
+// jump to its row.
+const groupWarningSnapshot = (): ResourceSnapshot => {
+  const snapshot = multiGroupSnapshot();
+  snapshot.groupWarnings = [
+    { sessionId: "session-1", level: "kill", privateBytes: 3 * 1024 ** 3, limitBytes: 2 * 1024 ** 3 },
+    { sessionId: "session-2", level: "warn", privateBytes: 1536 * 1024 ** 2, limitBytes: 1024 ** 3 },
+    { sessionId: "session-gone", level: "warn", privateBytes: 2 * 1024 ** 3, limitBytes: 1024 ** 3 },
+  ];
+  return snapshot;
+};
+
+describe("#2581 group warnings", () => {
+  const group = activeSnapshot().groups[0];
+  const warning = {
+    sessionId: "session-1",
+    level: "warn" as const,
+    privateBytes: 1536 * 1024 ** 2,
+    limitBytes: 1024 ** 3,
+  };
+
+  it("names the agent, its room and the CLI, plus size and limit", () => {
+    expect(groupWarningText(warning, group)).toEqual({
+      label: "dev-rust",
+      rest: " · wg-5-dev-team (cap-one) is over the warn limit: 1.5 GB, limit 1.0 GB",
+    });
+  });
+
+  it("falls back to the CLI name when there is no agent", () => {
+    expect(groupWarningText(warning, { ...group, agent: null, workgroup: null })).toEqual({
+      label: "cap-one",
+      rest: " is over the warn limit: 1.5 GB, limit 1.0 GB",
+    });
+  });
+
+  it("drops the room when there is no workgroup", () => {
+    expect(
+      groupWarningText({ ...warning, level: "kill" }, { ...group, workgroup: null })
+    ).toEqual({
+      label: "dev-rust",
+      rest: " (cap-one) is over the kill limit: 1.5 GB, limit 1.0 GB",
+    });
+  });
+
+  describe("in the app", () => {
+    let cleanupDom: (() => void) | null = null;
+
+    beforeEach(() => {
+      cleanupDom = installBrowserDomStubs();
+      resourceMonitorStore.stopPolling();
+    });
+
+    afterEach(() => {
+      resourceMonitorStore.stopPolling();
+      cleanupDom?.();
+      cleanupDom = null;
+    });
+
+    const warningButton = (root: ParentNode, id: string) =>
+      root.querySelector<HTMLElement>(`[data-ac-testid="resourceMonitor.groupWarning.${id}"]`);
+
+    it("renders the Warnings section above the Agents section", async () => {
+      const fake = new FakeTransport();
+      setupResourceMonitor(fake, groupWarningSnapshot());
+      const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+      try {
+        await waitFor(() => {
+          expect(warningButton(rendered.root, "session-1")).not.toBeNull();
+        });
+        const warnings = rendered.root.querySelector(".rm-warnings")!;
+        const agents = rendered.root.querySelector(".rm-groups")!;
+        expect(
+          warnings.compareDocumentPosition(agents) & Node.DOCUMENT_POSITION_FOLLOWING
+        ).toBeTruthy();
+        expect(warningButton(rendered.root, "session-1")?.textContent).toBe(
+          "dev-rust · wg-5-dev-team (cap-one) is over the kill limit: 3.0 GB, limit 2.0 GB"
+        );
+        expect(warningButton(rendered.root, "session-1")?.getAttribute("data-ac-state")).toBe(
+          "kill"
+        );
+        expect(warningButton(rendered.root, "session-1")?.classList.contains("is-kill")).toBe(
+          true
+        );
+        expect(warningButton(rendered.root, "session-2")?.classList.contains("is-kill")).toBe(
+          false
+        );
+        // Plain warnings still render, after the agent lines.
+        expect(
+          rendered.root.querySelector('[data-ac-testid="resourceMonitor.warning.0"]')?.textContent
+        ).toBe("Resource Monitor cap reached");
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("focuses the agent row when its warning is activated", async () => {
+      const fake = new FakeTransport();
+      setupResourceMonitor(fake, groupWarningSnapshot());
+      const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+      try {
+        await waitFor(() => {
+          expect(warningButton(rendered.root, "session-2")).not.toBeNull();
+        });
+        click(warningButton(rendered.root, "session-2")!);
+        expect(document.activeElement?.getAttribute("data-ac-testid")).toBe(
+          "resourceMonitor.group.session-2.toggle"
+        );
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("clears a filter that hides the row, then focuses it", async () => {
+      const fake = new FakeTransport();
+      setupResourceMonitor(fake, groupWarningSnapshot());
+      const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+      try {
+        await waitFor(() => {
+          expect(groupRowCount(rendered.root)).toBe(3);
+        });
+        click(
+          rendered.root.querySelector(
+            '[data-ac-testid="resourceMonitor.filter.status.inactive"]'
+          )!
+        );
+        await waitFor(() => {
+          expect(groupRowCount(rendered.root)).toBe(1);
+        });
+        click(warningButton(rendered.root, "session-1")!);
+        await waitFor(() => {
+          expect(groupRowCount(rendered.root)).toBe(3);
+          expect(document.activeElement?.getAttribute("data-ac-testid")).toBe(
+            "resourceMonitor.group.session-1.toggle"
+          );
+        });
+      } finally {
+        rendered.cleanup();
+      }
+    });
+
+    it("does nothing for a session that is no longer in the snapshot", async () => {
+      const fake = new FakeTransport();
+      setupResourceMonitor(fake, groupWarningSnapshot());
+      const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+      try {
+        await waitFor(() => {
+          expect(warningButton(rendered.root, "session-gone")).not.toBeNull();
+        });
+        const button = warningButton(rendered.root, "session-gone")!;
+        button.focus();
+        expect(() => click(button)).not.toThrow();
+        expect(document.activeElement).toBe(button);
+        expect(button.textContent).toBe(
+          "Unknown agent is over the warn limit: 2.0 GB, limit 1.0 GB"
+        );
+      } finally {
+        rendered.cleanup();
+      }
+    });
   });
 });

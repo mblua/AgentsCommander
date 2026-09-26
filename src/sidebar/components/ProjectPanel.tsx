@@ -1,4 +1,4 @@
-import { Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
+import { Accessor, Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings, UnresolvedLoopTarget, CoManagedState, OffReason } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, CoManagedAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
@@ -51,7 +51,7 @@ import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, shouldOfferR
 import { clockStore } from "../stores/clock";
 import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import { COORD_IDLE_CLASS } from "./coordinator-badge-class";
-import SessionItem from "./SessionItem";
+import SessionItem, { type SessionContextExtraAction } from "./SessionItem";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
 import ContextBadge from "./ContextBadge";
 import { contextBadgeConfigured } from "./session-context";
@@ -297,6 +297,19 @@ function isAbsolutePath(path: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(path) || /^[\\/]/.test(path);
 }
 
+function pushPathSegment(segments: string[], segment: string, hasRoot: boolean): void {
+  if (!segment || segment === ".") return;
+  if (segment === "..") {
+    if (segments.length > 0 && segments[segments.length - 1] !== "..") {
+      segments.pop();
+    } else if (!hasRoot) {
+      segments.push(segment);
+    }
+    return;
+  }
+  segments.push(segment);
+}
+
 function normalizePath(path: string, separator: "\\" | "/"): string {
   const trimmed = path.trim();
   const driveMatch = trimmed.match(/^([A-Za-z]:)[\\/]+(.*)$/);
@@ -317,16 +330,7 @@ function normalizePath(path: string, separator: "\\" | "/"): string {
 
   const segments: string[] = [];
   for (const segment of rest.split(/[\\/]+/)) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (segments.length > 0 && segments[segments.length - 1] !== "..") {
-        segments.pop();
-      } else if (!root) {
-        segments.push(segment);
-      }
-      continue;
-    }
-    segments.push(segment);
+    pushPathSegment(segments, segment, root !== "");
   }
 
   const suffix = segments.join(separator);
@@ -939,6 +943,13 @@ const ProjectPanel: Component = () => {
           setAgentDeleteInProgress(false);
           setDeletingAgent(null);
         };
+        const agentDeleteAction = (agent: { name: string; path: string }): SessionContextExtraAction => ({
+          label: "Delete",
+          class: "context-option-danger",
+          icon: <TrashIcon />,
+          testId: `agent.action.delete.${automationIdPart(agent.path)}`,
+          onSelect: () => setDeletingAgent({ name: agent.name, path: agent.path }),
+        });
         const closeWgDeleteModal = () => {
           setWgDeleteError("");
           setWgDirtyRepos(false);
@@ -1166,6 +1177,13 @@ const ProjectPanel: Component = () => {
           const agentId = replica.currentCodingAgentId ?? replica.preferredAgentId;
           if (!agentId) return null;
           return settingsStore.current?.agents?.find((a) => a.id === agentId)?.label ?? null;
+        };
+        const resolveReplicaAgentId = (
+          session: Session | undefined,
+          replica: AcAgentReplica
+        ): string | null => {
+          if (session) return session.agentId ?? null;
+          return replica.currentCodingAgentId ?? replica.preferredAgentId ?? null;
         };
         const resolveReplicaProfileBadge = (
           session: Session | undefined,
@@ -1527,6 +1545,9 @@ const ProjectPanel: Component = () => {
             console.error("Failed to open repo in browser:", e);
           }
         };
+        const openRepoBrowseItem = (url: string) => {
+          void openRepoBrowse(url);
+        };
 
         createEffect(() => {
           if (replicaCtxMenu()) return;
@@ -1818,6 +1839,31 @@ const ProjectPanel: Component = () => {
           if (!currentSession || !isSessionLive(currentSession)) return;
           await TelegramAPI.attach(targetSessionId, targetBotId);
         };
+
+        const renderReplicaTelegramBotChoice = (
+          choices: Accessor<{ epoch: number; sessionId: string }>,
+          bot: TelegramBotConfig,
+        ) => (
+          <button
+            class="session-context-option"
+            onClick={(event) =>
+              void handleReplicaTelegramBotSelect(
+                event,
+                choices().sessionId,
+                bot.id,
+                choices().epoch,
+              )
+            }
+          >
+            <span class="session-context-option-icon" aria-hidden="true">
+              <span
+                class="settings-color-dot"
+                style={{ background: bot.color }}
+              />
+            </span>{" "}
+            {bot.label}
+          </button>
+        );
 
         const handleReplicaContextClose = (event: MouseEvent, sessionId: string) => {
           event.stopPropagation();
@@ -2111,7 +2157,7 @@ const ProjectPanel: Component = () => {
                         <button
                           class="session-context-option"
                           title={item.url}
-                          onClick={() => void openRepoBrowse(item.url)}
+                          onClick={[openRepoBrowseItem, item.url]}
                           data-ac-testid={`${testIdPrefix()}.${repoFlyout()?.index ?? 0}.browse.${item.id}`}
                           data-ac-role="menuitem"
                         >
@@ -2753,11 +2799,11 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s ? sessionsStore.contextPercentBySessionId[s.id] : undefined;
           };
-          // #2482 - same sidecar, same builder as the origin chip (SessionItem, p6). The
-          // reading is keyed by session id, so a replica with no live session has none.
+          // #2566 - keyed by AGENT id, so a replica with no live session shows the value
+          // of its configured agent's command, and two rooms of one agent agree.
           const quotaUsed = () => {
-            const s = session();
-            return s ? sessionsStore.weeklyQuotaUsedBySessionId[s.id] : undefined;
+            const agentId = resolveReplicaAgentId(session(), replica);
+            return agentId ? sessionsStore.weeklyQuotaUsedByAgentId[agentId] : undefined;
           };
           const profileBadgeTitle = () => {
             const s = session();
@@ -3591,13 +3637,7 @@ const ProjectPanel: Component = () => {
                                     <SessionItem
                                       session={s()}
                                       isActive={s().id === sessionsStore.activeId}
-                                      extraContextAction={{
-                                        label: "Delete",
-                                        class: "context-option-danger",
-                                        icon: <TrashIcon />,
-                                        testId: `agent.action.delete.${automationIdPart(agent.path)}`,
-                                        onSelect: () => setDeletingAgent({ name: agent.name, path: agent.path }),
-                                      }}
+                                      extraContextAction={agentDeleteAction(agent)}
                                     />
                                   )}
                                 </Show>
@@ -4185,27 +4225,7 @@ const ProjectPanel: Component = () => {
                         <Show when={telegramChoices()}>
                           {(choices) => (
                             <For each={choices().bots}>
-                              {(bot) => (
-                                <button
-                                  class="session-context-option"
-                                  onClick={(event) =>
-                                    void handleReplicaTelegramBotSelect(
-                                      event,
-                                      choices().sessionId,
-                                      bot.id,
-                                      choices().epoch,
-                                    )
-                                  }
-                                >
-                                  <span class="session-context-option-icon" aria-hidden="true">
-                                    <span
-                                      class="settings-color-dot"
-                                      style={{ background: bot.color }}
-                                    />
-                                  </span>{" "}
-                                  {bot.label}
-                                </button>
-                              )}
+                              {(bot) => renderReplicaTelegramBotChoice(choices, bot)}
                             </For>
                           )}
                         </Show>

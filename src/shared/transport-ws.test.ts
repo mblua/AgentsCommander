@@ -392,3 +392,51 @@ describe("WsTransport listener isolation", () => {
     }
   });
 });
+
+describe("WsTransport URL and reconnect jitter (#2646)", () => {
+  const VALID = "123e4567-e89b-42d3-a456-426614174000";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    MockWebSocket.instances.length = 0;
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+    sessionStorage.clear();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ["a valid token, byte-identical to the unencoded URL", VALID, VALID],
+    ["a token that would add a query parameter", "x&y=1", ""],
+    ["a token that would add a fragment", "a#b", ""],
+  ] as const)("builds the socket URL from %s", (_label, token, expected) => {
+    window.history.replaceState(null, "", `/?${new URLSearchParams({ remoteToken: token })}`);
+    const transport = new WsTransport();
+    expect(MockWebSocket.instances[0].url).toBe(`ws://${location.host}/ws?token=${expected}`);
+    transport.close();
+  });
+
+  it.each([
+    ["the lowest random value", 0, 0],
+    ["the highest random value", 0xffffffff, 249],
+  ] as const)("keeps the reconnect jitter in [0, 250) at %s", (_label, random, jitter) => {
+    vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => {
+      (array as Uint32Array)[0] = random;
+      return array;
+    });
+    const transport = new WsTransport();
+    MockWebSocket.instances[0].close();
+
+    vi.advanceTimersByTime(1_000 + jitter - 1);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    transport.close();
+  });
+});

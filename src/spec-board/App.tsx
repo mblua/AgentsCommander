@@ -319,62 +319,72 @@ const SpecBoardApp: Component = () => {
     }
   };
 
+  /** Saves the open doc; resolves false when the save picker was cancelled. */
+  const saveCurrentDoc = async (): Promise<boolean> => {
+    if (specBoardStore.path) {
+      await SpecBoardAPI.save(specBoardStore.docId!, specBoardStore.content);
+      return true;
+    }
+    const doc = await SpecBoardAPI.pickSave(
+      specBoardStore.docId!,
+      specBoardStore.content,
+      specBoardStore.repoRoot,
+    );
+    return Boolean(doc);
+  };
+
+  const finishRoundAfterSave = async (epoch: number) => {
+    if (pendingEpoch() !== epoch) {
+      // A stale save completion must never touch a newer round; it may
+      // only dismiss a modal left with no round at all.
+      if (pendingEpoch() === null) {
+        setShowCloseModal(false);
+      }
+      return;
+    }
+    const resolved = await resolveQuitConsent(epoch, true);
+    if (!resolved) return; // Keep the modal and epoch for retry/cancel
+    if (pendingEpoch() !== epoch) return; // Replaced while resolving
+    setShowCloseModal(false);
+    setPendingEpoch(null);
+  };
+
+  const closeWithoutDoc = async (epoch: number | null) => {
+    if (epoch !== null) {
+      const resolved = await resolveQuitConsent(epoch, true);
+      if (!resolved) return;
+      // The epoch may have been cancelled or replaced while consent resolved.
+      if (pendingEpoch() !== epoch) return;
+      setPendingEpoch(null);
+    }
+    clearRoundProgress();
+    setShowCloseModal(false);
+    await forceCloseSpecBoardWindow();
+  };
+
   const handleSaveAndClose = async () => {
     const epoch = pendingEpoch();
-    if (specBoardStore.docId) {
+    if (!specBoardStore.docId) return closeWithoutDoc(epoch);
+    if (epoch !== null) {
+      await beginRoundProgress(epoch);
+    }
+    try {
+      if (!(await saveCurrentDoc())) return; // Cancelled picker stays pending
       if (epoch !== null) {
-        await beginRoundProgress(epoch);
+        await finishRoundAfterSave(epoch);
+        return;
       }
-      try {
-        if (specBoardStore.path) {
-          await SpecBoardAPI.save(specBoardStore.docId, specBoardStore.content);
-        } else {
-          const doc = await SpecBoardAPI.pickSave(
-            specBoardStore.docId,
-            specBoardStore.content,
-            specBoardStore.repoRoot,
-          );
-          if (!doc) return; // Cancelled picker stays pending
-        }
-        if (epoch !== null) {
-          if (pendingEpoch() !== epoch) {
-            // A stale save completion must never touch a newer round; it may
-            // only dismiss a modal left with no round at all.
-            if (pendingEpoch() === null) {
-              setShowCloseModal(false);
-            }
-            return;
-          }
-          const resolved = await resolveQuitConsent(epoch, true);
-          if (!resolved) return; // Keep the modal and epoch for retry/cancel
-          if (pendingEpoch() !== epoch) return; // Replaced while resolving
-          setShowCloseModal(false);
-          setPendingEpoch(null);
-          return;
-        }
-        // Standalone close: existing save-then-destroy behavior.
-        clearRoundProgress();
-        setShowCloseModal(false);
-        await forceCloseSpecBoardWindow();
-      } catch (err) {
-        console.error("Save failed", err);
-        setSpecBoardStore("renderError", String(err));
-      } finally {
-        if (epoch !== null) {
-          void endRoundProgress(epoch);
-        }
-      }
-    } else {
-      if (epoch !== null) {
-        const resolved = await resolveQuitConsent(epoch, true);
-        if (!resolved) return;
-        // The epoch may have been cancelled or replaced while consent resolved.
-        if (pendingEpoch() !== epoch) return;
-        setPendingEpoch(null);
-      }
+      // Standalone close: existing save-then-destroy behavior.
       clearRoundProgress();
       setShowCloseModal(false);
       await forceCloseSpecBoardWindow();
+    } catch (err) {
+      console.error("Save failed", err);
+      setSpecBoardStore("renderError", String(err));
+    } finally {
+      if (epoch !== null) {
+        void endRoundProgress(epoch);
+      }
     }
   };
 

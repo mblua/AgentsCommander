@@ -15,6 +15,19 @@ function keyFor(project: ProjectState, wg: AcWorkgroup): string {
   return `${normalizeProjectPathForCompare(project.path)}|${normalizeProjectPathForCompare(wg.path || wg.name)}`;
 }
 
+function stampCoordinators(wg: AcWorkgroup): void {
+  for (const replica of wg.agents) {
+    if (!replica.isCoordinator) continue;
+    const session = findReplicaSession(wg, replica);
+    if (session) sessionsStore.markActivity(session.id);
+  }
+}
+
+/** A room gone from the store drops its key without stamping. */
+function pruneGone(seen: Set<string>): void {
+  for (const key of [...previous.keys()]) if (!seen.has(key)) previous.delete(key);
+}
+
 /** #2202 - stamps `lastActivityBySessionId` on a room's CI falling edge, so a room
  *  whose CI just finished floats under sort-by-activity exactly as a session that
  *  just stopped working does. Reads `workgroupCiRunning`, the same predicate the
@@ -31,15 +44,10 @@ export function startCiActivityStamp(): void {
         const before = previous.get(key);
         previous.set(key, now);
         if (before !== true || now) continue; // stamp only on true -> false
-        for (const replica of wg.agents) {
-          if (!replica.isCoordinator) continue;
-          const session = findReplicaSession(wg, replica);
-          if (session) sessionsStore.markActivity(session.id);
-        }
+        stampCoordinators(wg);
       }
     }
-    // A room gone from the store drops its key without stamping.
-    for (const key of [...previous.keys()]) if (!seen.has(key)) previous.delete(key);
+    pruneGone(seen);
   });
   onCleanup(() => previous.clear());
 }
