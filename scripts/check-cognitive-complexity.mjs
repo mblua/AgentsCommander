@@ -134,6 +134,19 @@ function isIdentContinue(ch) {
   return isIdentStart(ch) || (ch !== undefined && ch >= '0' && ch <= '9');
 }
 
+/** Returns the index after a char escape whose body starts at `j` (just past the `\\`):
+ *  a `u{...}` escape or one escaped char. */
+function escapedCharEnd(source, j) {
+  if (source[j] === 'u' && source[j + 1] === '{') {
+    j += 2;
+    while (j < source.length && source[j] !== '}') j += 1;
+    if (source[j] === '}') j += 1;
+  } else if (j < source.length) {
+    j += 1;
+  }
+  return j;
+}
+
 /**
  * A Rust tokenizer, just enough to walk attribute argument lists.
  *
@@ -242,14 +255,7 @@ class RustTokenizer {
     const source = this.source;
     let j = start + 1;
     if (source[j] === '\\') {
-      j += 1;
-      if (source[j] === 'u' && source[j + 1] === '{') {
-        j += 2;
-        while (j < source.length && source[j] !== '}') j += 1;
-        if (source[j] === '}') j += 1;
-      } else if (j < source.length) {
-        j += 1;
-      }
+      j = escapedCharEnd(source, j + 1);
       if (source[j] === "'") {
         this.offset = j + 1;
         return { type: 'string', value: source.slice(start, j + 1), start, end: j + 1 };
@@ -258,6 +264,11 @@ class RustTokenizer {
       this.offset = start + 3;
       return { type: 'string', value: source.slice(start, start + 3), start, end: start + 3 };
     }
+    return this.readLifetimeOrIdent(start, j);
+  }
+
+  readLifetimeOrIdent(start, j) {
+    const source = this.source;
     if (isIdentStart(source[j])) {
       let k = j;
       while (isIdentContinue(source[k])) k += 1;
@@ -395,17 +406,24 @@ function analyzeAttributeTokens(tokens, source, file, hits) {
   });
 }
 
+/** Returns the `[` index of a `#[` or `#![` attribute starting at `i`, or -1. */
+function attributeOpenIndex(tokens, i) {
+  const token = tokens[i];
+  if (token.type === 'punct' && token.value === '#') {
+    const inner = tokens[i + 1]?.type === 'punct' && tokens[i + 1].value === '!';
+    const bracket = tokens[i + (inner ? 2 : 1)];
+    if (bracket?.type === 'punct' && bracket.value === '[') return i + (inner ? 2 : 1);
+  }
+  return -1;
+}
+
 function scanAttributes(tokens, source, file, hits) {
   let i = 0;
   while (i < tokens.length) {
-    const token = tokens[i];
-    if (token.type === 'punct' && token.value === '#') {
-      const inner = tokens[i + 1]?.type === 'punct' && tokens[i + 1].value === '!';
-      const bracket = tokens[i + (inner ? 2 : 1)];
-      if (bracket?.type === 'punct' && bracket.value === '[') {
-        i = parseAttribute(tokens, i + (inner ? 2 : 1), source, file, hits);
-        continue;
-      }
+    const open = attributeOpenIndex(tokens, i);
+    if (open !== -1) {
+      i = parseAttribute(tokens, open, source, file, hits);
+      continue;
     }
     i += 1;
   }
@@ -605,6 +623,157 @@ function runScan({ listDir, readSource, readBytes, stdout, stderr, getEnv }) {
   return 1;
 }
 
+const BOOLEAN_FLAGS = new Map([
+  ['--self-test', 'selfTest'],
+  ['--scan-sources', 'scanSources'],
+  ['--help', 'help'],
+  ['--report', 'report'],
+  ['--baseline-diff', 'baselineDiff'],
+]);
+
+const VALUE_FLAGS = new Map([
+  ['--capture', 'capture'],
+  ['--rustc-version', 'rustcVersion'],
+  ['--emit', 'emit'],
+  ['--workspace-root', 'workspaceRoot'],
+  ['--commit', 'commit'],
+  ['--base-ref', 'baseRef'],
+  ['--out', 'out'],
+  ['--classify-probe', 'classifyProbe'],
+]);
+
+const INT_FLAGS = new Map([
+  ['--clippy-exit', 'clippyExit'],
+  ['--probe-exit', 'probeExit'],
+]);
+
+function requireValue(argv, index, name) {
+  const next = argv[index + 1];
+  if (next === undefined || next.startsWith('--')) throw new UsageError(`${name} requires a value`);
+  return next;
+}
+
+function parsePlatform(argv, i) {
+  const value_ = argv[i + 1];
+  if (value_ === undefined) throw new UsageError('--platform requires a value: windows, linux or macos');
+  if (!PLATFORMS.includes(value_)) {
+    throw new UsageError(`--platform must be one of windows, linux or macos, got ${JSON.stringify(value_)}`);
+  }
+  return value_;
+}
+
+function parseIntFlag(argv, i, name) {
+  const raw = requireValue(argv, i, name);
+  if (!/^-?[0-9]+$/.test(raw)) {
+    throw new UsageError(`${name} must be an integer, got ${JSON.stringify(raw)}`);
+  }
+  return Number(raw);
+}
+
+function parseMergeFiles(argv, i) {
+  const files = [];
+  let next = i + 1;
+  while (next < argv.length && !argv[next].startsWith('--')) {
+    files.push(argv[next]);
+    next += 1;
+  }
+  return { files, nextIndex: next };
+}
+
+/** Applies the flag at `argv[i]` to `flags` and returns the index of the last argv entry it consumed. */
+function applyFlag(argv, i, flags) {
+  const arg = argv[i];
+  if (BOOLEAN_FLAGS.has(arg)) {
+    flags[BOOLEAN_FLAGS.get(arg)] = true;
+    return i;
+  }
+  if (arg === '--platform') {
+    flags.platform = parsePlatform(argv, i);
+    return i + 1;
+  }
+  if (VALUE_FLAGS.has(arg)) {
+    flags[VALUE_FLAGS.get(arg)] = requireValue(argv, i, arg);
+    return i + 1;
+  }
+  if (INT_FLAGS.has(arg)) {
+    flags[INT_FLAGS.get(arg)] = parseIntFlag(argv, i, arg);
+    return i + 1;
+  }
+  if (arg === '--merge') {
+    const { files, nextIndex } = parseMergeFiles(argv, i);
+    flags.merge = files;
+    return nextIndex - 1;
+  }
+  throw new UsageError(`unknown argument: ${arg}`);
+}
+
+function selectMode(flags) {
+  const modes = [];
+  if (flags.selfTest) modes.push('self-test');
+  if (flags.scanSources) modes.push('scan-sources');
+  if (flags.capture !== undefined) modes.push('capture');
+  if (flags.baselineDiff) modes.push('baseline-diff');
+  if (flags.merge !== undefined) modes.push('merge');
+  if (flags.classifyProbe !== undefined) modes.push('classify-probe');
+  if (modes.length !== 1) {
+    throw new UsageError(
+      'exactly one mode is required: --self-test, --scan-sources, --capture, --baseline-diff, --merge or --classify-probe',
+    );
+  }
+  return modes[0];
+}
+
+function captureOptions(flags) {
+  if (flags.platform === undefined) {
+    throw new UsageError('--capture requires --platform windows, linux or macos');
+  }
+  if (flags.clippyExit === undefined) throw new UsageError('--capture requires --clippy-exit <n>');
+  if (flags.rustcVersion === undefined) throw new UsageError('--capture requires --rustc-version <v>');
+  return {
+    mode: 'capture',
+    captureFile: flags.capture,
+    clippyExit: flags.clippyExit,
+    platform: flags.platform,
+    rustcVersion: flags.rustcVersion,
+    report: flags.report,
+    emit: flags.emit,
+    workspaceRoot: flags.workspaceRoot,
+    commit: flags.commit,
+  };
+}
+
+function baselineDiffOptions(flags) {
+  if (flags.baseRef === undefined) {
+    throw new UsageError('--baseline-diff requires --base-ref <ref>');
+  }
+  return { mode: 'baseline-diff', baseRef: flags.baseRef };
+}
+
+function mergeOptions(flags) {
+  if (flags.out === undefined) throw new UsageError('--merge requires --out <file>');
+  return { mode: 'merge', mergeFiles: flags.merge, out: flags.out };
+}
+
+function classifyProbeOptions(flags) {
+  if (flags.probeExit === undefined) {
+    throw new UsageError('--classify-probe requires --probe-exit <n>');
+  }
+  return { mode: 'classify-probe', probeFile: flags.classifyProbe, probeExit: flags.probeExit };
+}
+
+const MODE_OPTIONS = new Map([
+  ['capture', captureOptions],
+  ['baseline-diff', baselineDiffOptions],
+  ['merge', mergeOptions],
+  ['classify-probe', classifyProbeOptions],
+]);
+
+function buildModeOptions(mode, flags) {
+  const build = MODE_OPTIONS.get(mode);
+  if (build) return build(flags);
+  return { mode, platform: flags.platform };
+}
+
 export function parseArgs(argv) {
   const flags = {
     help: false,
@@ -625,130 +794,9 @@ export function parseArgs(argv) {
     classifyProbe: undefined,
     probeExit: undefined,
   };
-  const value = (index, name) => {
-    const next = argv[index + 1];
-    if (next === undefined || next.startsWith('--')) throw new UsageError(`${name} requires a value`);
-    return next;
-  };
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === '--self-test') {
-      flags.selfTest = true;
-    } else if (arg === '--scan-sources') {
-      flags.scanSources = true;
-    } else if (arg === '--help') {
-      flags.help = true;
-    } else if (arg === '--report') {
-      flags.report = true;
-    } else if (arg === '--platform') {
-      const value_ = argv[i + 1];
-      if (value_ === undefined) throw new UsageError('--platform requires a value: windows, linux or macos');
-      if (!PLATFORMS.includes(value_)) {
-        throw new UsageError(`--platform must be one of windows, linux or macos, got ${JSON.stringify(value_)}`);
-      }
-      flags.platform = value_;
-      i += 1;
-    } else if (arg === '--capture') {
-      flags.capture = value(i, '--capture');
-      i += 1;
-    } else if (arg === '--clippy-exit') {
-      const raw = value(i, '--clippy-exit');
-      if (!/^-?[0-9]+$/.test(raw)) {
-        throw new UsageError(`--clippy-exit must be an integer, got ${JSON.stringify(raw)}`);
-      }
-      flags.clippyExit = Number(raw);
-      i += 1;
-    } else if (arg === '--rustc-version') {
-      flags.rustcVersion = value(i, '--rustc-version');
-      i += 1;
-    } else if (arg === '--emit') {
-      flags.emit = value(i, '--emit');
-      i += 1;
-    } else if (arg === '--workspace-root') {
-      flags.workspaceRoot = value(i, '--workspace-root');
-      i += 1;
-    } else if (arg === '--commit') {
-      flags.commit = value(i, '--commit');
-      i += 1;
-    } else if (arg === '--baseline-diff') {
-      flags.baselineDiff = true;
-    } else if (arg === '--base-ref') {
-      flags.baseRef = value(i, '--base-ref');
-      i += 1;
-    } else if (arg === '--merge') {
-      const files = [];
-      let next = i + 1;
-      while (next < argv.length && !argv[next].startsWith('--')) {
-        files.push(argv[next]);
-        next += 1;
-      }
-      flags.merge = files;
-      i = next - 1;
-    } else if (arg === '--out') {
-      flags.out = value(i, '--out');
-      i += 1;
-    } else if (arg === '--classify-probe') {
-      flags.classifyProbe = value(i, '--classify-probe');
-      i += 1;
-    } else if (arg === '--probe-exit') {
-      const raw = value(i, '--probe-exit');
-      if (!/^-?[0-9]+$/.test(raw)) {
-        throw new UsageError(`--probe-exit must be an integer, got ${JSON.stringify(raw)}`);
-      }
-      flags.probeExit = Number(raw);
-      i += 1;
-    } else {
-      throw new UsageError(`unknown argument: ${arg}`);
-    }
-  }
+  for (let i = 0; i < argv.length; i += 1) i = applyFlag(argv, i, flags);
   if (flags.help) return { mode: 'help', platform: flags.platform };
-  const modes = [];
-  if (flags.selfTest) modes.push('self-test');
-  if (flags.scanSources) modes.push('scan-sources');
-  if (flags.capture !== undefined) modes.push('capture');
-  if (flags.baselineDiff) modes.push('baseline-diff');
-  if (flags.merge !== undefined) modes.push('merge');
-  if (flags.classifyProbe !== undefined) modes.push('classify-probe');
-  if (modes.length !== 1) {
-    throw new UsageError(
-      'exactly one mode is required: --self-test, --scan-sources, --capture, --baseline-diff, --merge or --classify-probe',
-    );
-  }
-  if (modes[0] === 'capture') {
-    if (flags.platform === undefined) {
-      throw new UsageError('--capture requires --platform windows, linux or macos');
-    }
-    if (flags.clippyExit === undefined) throw new UsageError('--capture requires --clippy-exit <n>');
-    if (flags.rustcVersion === undefined) throw new UsageError('--capture requires --rustc-version <v>');
-    return {
-      mode: 'capture',
-      captureFile: flags.capture,
-      clippyExit: flags.clippyExit,
-      platform: flags.platform,
-      rustcVersion: flags.rustcVersion,
-      report: flags.report,
-      emit: flags.emit,
-      workspaceRoot: flags.workspaceRoot,
-      commit: flags.commit,
-    };
-  }
-  if (modes[0] === 'baseline-diff') {
-    if (flags.baseRef === undefined) {
-      throw new UsageError('--baseline-diff requires --base-ref <ref>');
-    }
-    return { mode: 'baseline-diff', baseRef: flags.baseRef };
-  }
-  if (modes[0] === 'merge') {
-    if (flags.out === undefined) throw new UsageError('--merge requires --out <file>');
-    return { mode: 'merge', mergeFiles: flags.merge, out: flags.out };
-  }
-  if (modes[0] === 'classify-probe') {
-    if (flags.probeExit === undefined) {
-      throw new UsageError('--classify-probe requires --probe-exit <n>');
-    }
-    return { mode: 'classify-probe', probeFile: flags.classifyProbe, probeExit: flags.probeExit };
-  }
-  return { mode: modes[0], platform: flags.platform };
+  return buildModeOptions(selectMode(flags), flags);
 }
 
 export function main(argv, io = {}) {
