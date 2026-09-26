@@ -53,7 +53,7 @@ jobs:
           node-version: 22
 
       - name: Pin npm version
-        run: npm install -g npm@11.6.2
+        run: npm install -g npm@11.6.2 --ignore-scripts
 
       - name: Verify all version locations agree
         run: npm run version:check
