@@ -1,4 +1,4 @@
-import { Component, createSignal, For, Show, onMount, onCleanup } from "solid-js";
+import { Component, createEffect, createSignal, For, Show, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../shared/types";
 import { AcDiscoveryAPI, SessionAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
@@ -7,7 +7,6 @@ import AgentPickerModal from "./AgentPickerModal";
 import { sessionsStore } from "../stores/sessions";
 import { stripFrontmatter } from "../../shared/markdown";
 import { homeStore } from "../../main/stores/home";
-import { focusOnMount } from "../../shared/focus-on-mount";
 
 interface PendingLaunch {
   path: string;
@@ -176,6 +175,16 @@ const AcDiscoveryPanel: Component = () => {
     setCtxFiles([]);
     setNewCtxPath("");
   };
+
+  // #2655 - Escape = backdrop click while the panel is open (AgentMatrixNoticeModal idiom).
+  createEffect(() => {
+    if (!ctxFilesReplica()) return;
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeContextFilesPanel();
+    };
+    document.addEventListener("keydown", onEscape);
+    onCleanup(() => document.removeEventListener("keydown", onEscape));
+  });
 
   let unmounted = false;
   let unlistenBranch: (() => void) | null = null;
@@ -396,22 +405,7 @@ const AcDiscoveryPanel: Component = () => {
       {ctxFilesReplica() && (
         <Portal>
           <div class="ctx-files-overlay" onClick={closeContextFilesPanel}>
-            {/* #2655 - Escape = backdrop click; the panel takes focus on mount so keys reach it. */}
-            <div
-              class="ctx-files-panel ac-escape-focus-host"
-              role="dialog"
-              aria-modal="true"
-              aria-label={`Context Files — ${ctxFilesReplica()!.name}`}
-              tabIndex={-1}
-              ref={(el) => focusOnMount(el)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.stopPropagation();
-                  closeContextFilesPanel();
-                }
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
+            <div class="ctx-files-panel" onClick={(e) => e.stopPropagation()}>
               <div class="ctx-files-header">
                 <span class="ctx-files-title">
                   Context Files — {ctxFilesReplica()!.name}

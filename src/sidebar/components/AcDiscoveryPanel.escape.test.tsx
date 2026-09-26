@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AcDiscoveryPanel from "./AcDiscoveryPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -61,13 +61,25 @@ describe("AcDiscoveryPanel context files overlay keyboard (#2660)", () => {
     document.body.replaceChildren();
   });
 
-  it("focuses the panel and closes on Escape from the panel or the input, and on backdrop click", async () => {
+  it("closes on Escape from the panel or the input, and on backdrop click", async () => {
     for (const close of [() => press(panel(), "Escape"), () => press(input(), "Escape"), () => click(overlay()!)]) {
       await openPanel();
-      await waitFor(() => expect(document.activeElement).toBe(panel()));
       close();
       await waitFor(() => expect(overlay()).toBeNull());
     }
+  });
+
+  it("removes the Escape listener once the panel is closed", async () => {
+    await openPanel();
+    const removeSpy = vi.spyOn(document, "removeEventListener");
+    click(overlay()!);
+    await waitFor(() => expect(overlay()).toBeNull());
+    expect(removeSpy).toHaveBeenCalledWith("keydown", expect.any(Function));
+    removeSpy.mockRestore();
+    const reads = fake.callsFor("get_replica_context_files").length;
+    press(document.body, "Escape");
+    expect(overlay()).toBeNull();
+    expect(fake.callsFor("get_replica_context_files")).toHaveLength(reads);
   });
 
   it("keeps Enter in the path input adding the file", async () => {
