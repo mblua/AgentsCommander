@@ -651,7 +651,9 @@ describe("#2582 the column-header strip cannot drift from the row", () => {
       ).toBe(false);
     }
     expect(declares(strip.body, "position", "sticky")).toBe(true);
-    expect(declares(strip.body, "top", "0")).toBe(true);
+    // #2582 check 3: the strip covers .rm-body's 12px padding band above it.
+    expect(declaredValue(strip, "top")).toBe("calc(var(--spacing-md) * -1)");
+    expect(declaredValue(strip, "padding-top")).toBe("calc(4px + var(--spacing-md))");
   });
 
   it("changes no row padding and keeps the strip's colours tokenised", () => {
