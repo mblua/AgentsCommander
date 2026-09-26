@@ -7,6 +7,9 @@ import { declProps, declValue, scanRules } from "./css-test-helpers";
 // .sidebar-scrollable. jsdom never renders scrollbars, so the stylesheet bytes
 // are the contract. scanRules() is brace-based and so CRLF-safe; every helper
 // throws on a miss, so no assertion below can pass on an empty match.
+// #2579 moved the scrollbar values to src/shared/styles/scrollbars.css; they are
+// now owned by src/shared/styles/scrollbars-css.test.ts (G1/G3), and T4 here
+// asserts the rails inherit that global rule.
 const CSS = readFileSync(new URL("./sidebar.css", import.meta.url), "utf8");
 const CSS_SCAN = CSS.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " "));
 const RULES = scanRules(CSS_SCAN);
@@ -41,13 +44,12 @@ describe("#2578 rail scrollbars", () => {
   });
 
   it("T4 both scrollers use the thin Noir webkit scrollbar", () => {
+    // #2579: no rail-level pseudo-element rule may survive; one would outrank the
+    // global Noir rule in scrollbars.css.
     for (const s of SCROLLERS) {
-      expect(declValue(ruleFor(`${s}::-webkit-scrollbar`), "width")).toBe("4px");
-      expect(declValue(ruleFor(`${s}::-webkit-scrollbar-button`), "display")).toBe("none");
-      expect(declValue(ruleFor(`${s}::-webkit-scrollbar-track`), "background")).toBe("transparent");
-      const thumb = ruleFor(`${s}::-webkit-scrollbar-thumb`);
-      expect(declValue(thumb, "background")).toBe("var(--sidebar-border)");
-      expect(declValue(thumb, "border-radius")).toBe("2px");
+      expect(
+        RULES.filter((r) => r.selectors.some((x) => x.startsWith(s) && x.includes("::-webkit-scrollbar"))),
+      ).toEqual([]);
     }
   });
 
@@ -55,7 +57,7 @@ describe("#2578 rail scrollbars", () => {
     const railRules = RULES.filter((r) =>
       r.selectors.some((s) => SCROLLERS.some((sc) => s.includes(sc.slice(1)))),
     );
-    expect(railRules.length).toBeGreaterThanOrEqual(6);
+    expect(railRules.length).toBeGreaterThanOrEqual(2);
     for (const r of railRules) {
       expect(declProps(r.body)).not.toContain("scrollbar-width");
       expect(declProps(r.body)).not.toContain("scrollbar-color");

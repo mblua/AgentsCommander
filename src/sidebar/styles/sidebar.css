@@ -745,19 +745,6 @@ html, body, #root {
   padding: var(--spacing-xs) 0;
 }
 
-.session-list-container::-webkit-scrollbar {
-  width: 4px;
-}
-
-.session-list-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.session-list-container::-webkit-scrollbar-thumb {
-  background: var(--sidebar-border);
-  border-radius: 2px;
-}
-
 /* Team Group */
 .team-group {
   margin-bottom: 2px;
@@ -1678,15 +1665,6 @@ html.light-theme .root-agent-avatar {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-lg);
-}
-
-.modal-body::-webkit-scrollbar {
-  width: 4px;
-}
-
-.modal-body::-webkit-scrollbar-thumb {
-  background: var(--sidebar-border);
-  border-radius: 2px;
 }
 
 .modal-footer {
@@ -4134,24 +4112,6 @@ html.light-theme .settings-hint-error {
   flex-shrink: 0;
 }
 
-.workgroup-group-rail-scroll::-webkit-scrollbar,
-.workgroup-group-rail-favorites-scroll::-webkit-scrollbar {
-  width: 4px;
-}
-.workgroup-group-rail-scroll::-webkit-scrollbar-button,
-.workgroup-group-rail-favorites-scroll::-webkit-scrollbar-button {
-  display: none;
-}
-.workgroup-group-rail-scroll::-webkit-scrollbar-track,
-.workgroup-group-rail-favorites-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.workgroup-group-rail-scroll::-webkit-scrollbar-thumb,
-.workgroup-group-rail-favorites-scroll::-webkit-scrollbar-thumb {
-  background: var(--sidebar-border);
-  border-radius: 2px;
-}
-
 .workgroup-group-rail-button {
   position: relative;
   overflow: hidden;
@@ -4331,19 +4291,6 @@ html.light-theme .settings-hint-error {
   text-align: center;
 }
 
-.sidebar-scrollable::-webkit-scrollbar {
-  width: 4px;
-}
-
-.sidebar-scrollable::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.sidebar-scrollable::-webkit-scrollbar-thumb {
-  background: var(--sidebar-border);
-  border-radius: 2px;
-}
-
 .sidebar-section-header {
   padding: 6px var(--spacing-md);
   font-size: 9px;
@@ -4423,11 +4370,6 @@ html.light-theme .settings-hint-error {
   overflow-x: hidden;
   overflow-y: auto; /* safety valve only: no scroll at the target sizes */
   scrollbar-gutter: stable;
-}
-.agent-picker-modal::-webkit-scrollbar { width: 4px; }
-.agent-picker-modal::-webkit-scrollbar-thumb {
-  background: var(--sidebar-border);
-  border-radius: 2px;
 }
 
 /* 2. Every block keeps its content height; the three-panel body absorbs the
@@ -4694,15 +4636,6 @@ html.light-theme .settings-hint-error {
   flex: 1;
   overflow-y: auto;
   max-height: 300px;
-}
-
-.agent-modal-list::-webkit-scrollbar {
-  width: 4px;
-}
-
-.agent-modal-list::-webkit-scrollbar-thumb {
-  background: var(--sidebar-border);
-  border-radius: 2px;
 }
 
 .agent-modal-item {
@@ -5936,15 +5869,6 @@ html.light-theme .settings-hint-error {
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-gutter: stable;
-}
-
-.agent-comparison-table-body::-webkit-scrollbar {
-  width: 4px;
-}
-
-.agent-comparison-table-body::-webkit-scrollbar-thumb {
-  background: var(--sidebar-border);
-  border-radius: 2px;
 }
 
 .agent-comparison-table-head,
@@ -9177,15 +9101,6 @@ html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access-group {
   flex-direction: column;
   gap: var(--spacing-sm);
   max-height: 50vh;
-}
-
-.wizard-body::-webkit-scrollbar {
-  width: 4px;
-}
-
-.wizard-body::-webkit-scrollbar-thumb {
-  background: var(--sidebar-border);
-  border-radius: 2px;
 }
 
 .wizard-loading,
