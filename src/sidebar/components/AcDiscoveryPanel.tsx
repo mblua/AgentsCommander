@@ -7,6 +7,7 @@ import AgentPickerModal from "./AgentPickerModal";
 import { sessionsStore } from "../stores/sessions";
 import { stripFrontmatter } from "../../shared/markdown";
 import { homeStore } from "../../main/stores/home";
+import { focusOnMount } from "../../shared/focus-on-mount";
 
 interface PendingLaunch {
   path: string;
@@ -394,8 +395,23 @@ const AcDiscoveryPanel: Component = () => {
       {/* Context files panel */}
       {ctxFilesReplica() && (
         <Portal>
-          <div class="ctx-files-overlay" onClick={closeContextFilesPanel}>
-            <div class="ctx-files-panel" onClick={(e) => e.stopPropagation()}>
+          {/* #2655 - Escape = backdrop click; the panel takes focus on mount so keys reach here. */}
+          <div
+            class="ctx-files-overlay"
+            onClick={closeContextFilesPanel}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                closeContextFilesPanel();
+              }
+            }}
+          >
+            <div
+              class="ctx-files-panel ac-escape-focus-host"
+              tabIndex={-1}
+              ref={(el) => focusOnMount(el)}
+              onClick={(e) => e.stopPropagation()}
+            >
               <div class="ctx-files-header">
                 <span class="ctx-files-title">
                   Context Files — {ctxFilesReplica()!.name}

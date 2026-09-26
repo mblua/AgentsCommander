@@ -1,5 +1,6 @@
 import { Component, Show } from "solid-js";
 import { automationAttrs } from "../../shared/automation-hooks";
+import { focusOnMount } from "../../shared/focus-on-mount";
 
 const RestartPromptModal: Component<{
   agentLabel: string;
@@ -13,14 +14,23 @@ const RestartPromptModal: Component<{
     <div
       class="modal-overlay"
       onClick={props.onLater}
+      // #2655 - Escape = backdrop click; the dialog takes focus on mount so keys reach here.
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          props.onLater();
+        }
+      }}
       {...automationAttrs("restartPrompt.overlay", "overlay")}
     >
       <div
-        class="agent-modal"
+        class="agent-modal ac-escape-focus-host"
         role="dialog"
         aria-modal="true"
         aria-labelledby="restartPromptTitle"
         style={{ "max-width": "360px" }}
+        tabIndex={-1}
+        ref={(el) => focusOnMount(el)}
         onClick={(e) => e.stopPropagation()}
         {...automationAttrs("restartPrompt.modal", "dialog")}
       >
