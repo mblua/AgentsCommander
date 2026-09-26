@@ -8,6 +8,8 @@ import { bridgesStore } from "../stores/bridges";
 import { sessionsStore } from "../stores/sessions";
 import { requestCoordinatorClose } from "../stores/coordinator-close";
 import { settingsStore } from "../../shared/stores/settings";
+import { toastStore } from "../../shared/stores/toasts";
+import { launchErrorMessage } from "../../shared/launch-errors";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
@@ -362,6 +364,7 @@ const SessionItem: Component<{
       );
     } catch (e) {
       console.error("Failed to restart session:", e);
+      toastStore.error(launchErrorMessage(e));
     }
   };
 

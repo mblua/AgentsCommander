@@ -31,4 +31,42 @@ describe("launchErrorMessage", () => {
     expect(launchErrorMessage("")).toBe("Failed to start agent.");
     expect(launchErrorMessage(undefined)).toBe("Failed to start agent.");
   });
+
+  const UNRESOLVED =
+    "unresolved_coding_agent_reference: 'claude-old' matches no configured coding agent";
+  const FIX = "Right-click the session, choose Coding Agent, pick one, then restart.";
+
+  it("maps_the_unresolved_reference_to_plain_words", () => {
+    expect(launchErrorMessage(UNRESOLVED)).toBe(
+      `Can't restart this session: its coding agent 'claude-old' is no longer in Settings. ${FIX}`
+    );
+    expect(launchErrorMessage(new Error(UNRESOLVED))).toBe(launchErrorMessage(UNRESOLVED));
+  });
+
+  it("keeps_the_vanished_agent_id_in_the_message", () => {
+    const text = launchErrorMessage(UNRESOLVED);
+    expect(text).toContain("'claude-old'");
+    expect(text).not.toContain("unresolved_coding_agent_reference");
+  });
+
+  it("falls_back_when_the_id_cannot_be_parsed", () => {
+    const expected = `Can't restart this session: its coding agent is no longer in Settings. ${FIX}`;
+    for (const raw of [
+      "unresolved_coding_agent_reference: matches no configured coding agent",
+      "unresolved_coding_agent_reference: '' matches no configured coding agent",
+    ]) {
+      const text = launchErrorMessage(raw);
+      expect(text).toBe(expected);
+      expect(text).not.toContain("unresolved_coding_agent_reference");
+    }
+  });
+
+  it("leaves_other_errors_alone", () => {
+    expect(launchErrorMessage("boom: 'x' unresolved_coding_agent_reference")).toBe(
+      "boom: 'x' unresolved_coding_agent_reference"
+    );
+    expect(launchErrorMessage("Resource Monitor cap reached: 16/16 agent groups are active")).toBe(
+      "Resource Monitor cap reached (16/16). Close an agent or raise the limit in Settings > Resources."
+    );
+  });
 });

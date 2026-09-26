@@ -729,6 +729,7 @@ const ProjectPanel: Component = () => {
           }
         } catch (e) {
           console.error("Failed to wake session:", e);
+          toastStore.error(launchErrorMessage(e));
         }
         return;
       }

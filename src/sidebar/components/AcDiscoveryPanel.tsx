@@ -7,6 +7,8 @@ import AgentPickerModal from "./AgentPickerModal";
 import { sessionsStore } from "../stores/sessions";
 import { stripFrontmatter } from "../../shared/markdown";
 import { homeStore } from "../../main/stores/home";
+import { toastStore } from "../../shared/stores/toasts";
+import { launchErrorMessage } from "../../shared/launch-errors";
 
 interface PendingLaunch {
   path: string;
@@ -354,7 +356,10 @@ const AcDiscoveryPanel: Component = () => {
                       setCtxMenuReplica(null);
                       cleanupCtxMenu();
                       try { await SessionAPI.restart(session.id); }
-                      catch (err) { console.error("Failed to restart session:", err); }
+                      catch (err) {
+                        console.error("Failed to restart session:", err);
+                        toastStore.error(launchErrorMessage(err));
+                      }
                     }}
                   >
                     Restart Session
