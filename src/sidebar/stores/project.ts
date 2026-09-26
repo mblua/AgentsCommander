@@ -164,28 +164,35 @@ function isJsonValue(root: unknown): boolean {
   const stack: unknown[] = [root];
   const seen = new Set<object>();
   while (stack.length > 0) {
-    const value = stack.pop();
-    if (value === null) continue;
-    const kind = typeof value;
-    if (kind === "string" || kind === "boolean") continue;
-    if (kind === "number") {
-      if (!Number.isFinite(value)) return false;
-      continue;
-    }
-    if (Array.isArray(value)) {
-      if (seen.has(value)) return false;
-      seen.add(value);
-      for (const item of value as unknown[]) stack.push(item);
-      continue;
-    }
-    if (isPlainObject(value)) {
-      if (seen.has(value)) return false;
-      seen.add(value);
-      for (const key of Object.keys(value)) stack.push(value[key]);
-      continue;
-    }
-    return false; // undefined, function, symbol, bigint, non-plain object
+    if (!visitJsonNode(stack.pop(), stack, seen)) return false;
   }
+  return true;
+}
+
+/** Check one node of isJsonValue's walk, queueing a container's children. */
+function visitJsonNode(value: unknown, stack: unknown[], seen: Set<object>): boolean {
+  if (value === null) return true;
+  const kind = typeof value;
+  if (kind === "string" || kind === "boolean") return true;
+  if (kind === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return pushJsonChildren(value, () => value as unknown[], stack, seen);
+  if (isPlainObject(value)) {
+    return pushJsonChildren(value, () => Object.keys(value).map((key) => value[key]), stack, seen);
+  }
+  return false; // undefined, function, symbol, bigint, non-plain object
+}
+
+// Children are read only after the `seen` check, so a repeated container's
+// getters or proxy traps never run twice.
+function pushJsonChildren(
+  container: object,
+  readChildren: () => unknown[],
+  stack: unknown[],
+  seen: Set<object>,
+): boolean {
+  if (seen.has(container)) return false;
+  seen.add(container);
+  for (const item of readChildren()) stack.push(item);
   return true;
 }
 
