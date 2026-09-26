@@ -309,7 +309,7 @@ const WebServerMenu: Component<WebServerMenuProps> = (props) => {
         expectedRevision !== undefined &&
         !isCurrentWebServerIntent(expectedRevision)
       ) return false;
-      await settingsStore.refresh();
+      settingsStore.refresh();
       return true;
     });
     webSettingsWriteTail = write.then(() => undefined, () => undefined);

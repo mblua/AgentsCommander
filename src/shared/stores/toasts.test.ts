@@ -214,6 +214,18 @@ describe("pinned toasts and the dismiss/re-push race (#1857)", () => {
     expect(toastStore.items.some((t) => t.message === "blocked")).toBe(true);
   });
 
+  it("4b. tier 3: when every toast is pinned, the oldest (index 0) is evicted", () => {
+    for (let i = 0; i < 5; i++) {
+      toastStore.push({ message: `pinned-${i}`, kind: "error", durationMs: null, pinned: true });
+    }
+    expect(toastStore.items.map((t) => t.message)).toEqual([
+      "pinned-1",
+      "pinned-2",
+      "pinned-3",
+      "pinned-4",
+    ]);
+  });
+
   it("5. the physical-ceiling contract: five plain toasts leave exactly four", () => {
     // `.toast-host` in src/shared/styles/toast.css declares NO `overflow` and NO
     // `max-height`, so this cap is the only thing bounding the stack height on
