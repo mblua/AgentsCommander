@@ -8,10 +8,6 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  actions: read
-
 concurrency:
   group: cache-warm-main
   cancel-in-progress: false
@@ -20,6 +16,9 @@ jobs:
   warm-debug:
     name: warm-debug
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
 
@@ -73,6 +72,9 @@ jobs:
   warm-release:
     name: warm-release
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
 
@@ -112,6 +114,9 @@ jobs:
     name: verify-debug-cache
     needs: warm-debug
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
 
@@ -141,6 +146,9 @@ jobs:
     name: verify-release-cache
     needs: warm-release
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
 
