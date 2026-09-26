@@ -26,6 +26,8 @@ const workgroupPath = `${projectPath}\\.ac\\wg-2-dev-team`;
 const replicaPath = `${workgroupPath}\\__agent_dev-webpage-ui`;
 const replicaName = "dev-webpage-ui";
 const sessionName = `wg-2-dev-team/${replicaName}`;
+// #2435 - a second replica with no session: the dormant row.
+const dormantName = "dormant-ui";
 
 function replicaDiscovery() {
   return discovery({
@@ -41,6 +43,14 @@ function replicaDiscovery() {
             path: replicaPath,
             repoPaths: [],
             isCoordinator: true,
+            currentProfile: "B",
+          },
+          {
+            name: dormantName,
+            path: `${workgroupPath}\\__agent_${dormantName}`,
+            repoPaths: [],
+            isCoordinator: false,
+            currentProfile: "B",
           },
         ],
       },
@@ -109,6 +119,69 @@ describe("ProjectPanel replica profile-outdated badge (#592)", () => {
       await waitFor(() =>
         expect(rendered.root.querySelector(".profile-outdated-badge")).toBeNull(),
       );
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
+
+describe("ProjectPanel replica tier badge (#2435)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  const rowOf = (root: ParentNode, name: string) =>
+    Array.from(root.querySelectorAll<HTMLElement>(".replica-item")).find((row) =>
+      row.textContent?.includes(name),
+    );
+
+  it("shows the tier badge on a row with a tier-carrying session and none on a dormant row", async () => {
+    const rendered = await mount();
+    try {
+      sessionsStore.setSessions([
+        session({
+          id: "replica-live",
+          name: sessionName,
+          workingDirectory: replicaPath,
+          isCoordinator: true,
+          status: "running",
+          agentId: "codex",
+          agentLabel: "Codex",
+          requestedProfile: "B",
+          effectiveProfile: "B",
+          profileFallbackApplied: false,
+          matchTier: "commandAndLetter",
+        }),
+      ]);
+      const tierSelector =
+        '[data-ac-testid="replica.tierBadge.workgroups.wg-2-dev-team.dev-webpage-ui"]';
+      await waitFor(() => expect(rendered.root.querySelector(tierSelector)).not.toBeNull());
+      const tier = rendered.root.querySelector<HTMLElement>(tierSelector)!;
+      expect(tier.tagName).toBe("SPAN");
+      expect(tier.textContent).toBe("B·cmd");
+      expect(tier.getAttribute("title")).toBe(
+        "Matched by command, not by name or configuration. Effective profile: B.",
+      );
+      const liveBadges = rowOf(rendered.root, replicaName)!.querySelectorAll(".profile-badge");
+      expect(Array.from(liveBadges, (el) => el.textContent)).toEqual(["B", "B·cmd"]);
+
+      // Dormant row: today's bare-letter badge, and no tier badge.
+      const dormant = rowOf(rendered.root, dormantName)!;
+      expect(dormant).toBeDefined();
+      const dormantBadges = dormant.querySelectorAll(".profile-badge");
+      expect(Array.from(dormantBadges, (el) => el.textContent)).toEqual(["B"]);
+      expect(dormant.querySelector('[data-ac-testid^="replica.tierBadge."]')).toBeNull();
+      expect(dormant.querySelector(".profile-badge--tier")).toBeNull();
     } finally {
       rendered.cleanup();
     }
