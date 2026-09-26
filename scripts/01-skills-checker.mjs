@@ -649,28 +649,24 @@ function foldBlockLines(content) {
   return folded;
 }
 
+// Leading characters that make a value undecidable for the mini-parser.
+const UNDECIDABLE_LEADS = new Map([
+  ['{', 'a flow collection value'],
+  ['[', 'a flow collection value'],
+  ['&', 'an anchored value'],
+  ['*', 'an alias value'],
+  ['!', 'a tagged value'],
+  ['|', 'a block-scalar header outside the supported subset'],
+  ['>', 'a block-scalar header outside the supported subset'],
+]);
+
 function resolveScalar(value) {
   if (value === '') return { kind: 'null', value: null, raw: value };
   const lead = value[0];
   if (lead === '#') return { kind: 'null', value: null, raw: value };
-  if (lead === '{' || lead === '[') {
-    return { kind: 'undecidable', construct: 'a flow collection value', raw: value };
-  }
-  if (lead === '&') return { kind: 'undecidable', construct: 'an anchored value', raw: value };
-  if (lead === '*') return { kind: 'undecidable', construct: 'an alias value', raw: value };
-  if (lead === '!') return { kind: 'undecidable', construct: 'a tagged value', raw: value };
-  if (lead === '|' || lead === '>') {
-    return { kind: 'undecidable', construct: 'a block-scalar header outside the supported subset', raw: value };
-  }
-  if (lead === "'" || lead === '"') {
-    const quoted = readQuotedScalar(value, 0);
-    if (!quoted.ok) return { kind: 'undecidable', construct: quoted.reason, raw: value };
-    const tail = value.slice(quoted.end);
-    if (tail !== '' && !/^[ \t]+(#.*)?$/.test(tail)) {
-      return { kind: 'undecidable', construct: 'trailing text after a quoted scalar', raw: value };
-    }
-    return { kind: 'string', value: quoted.value, raw: value };
-  }
+  const construct = UNDECIDABLE_LEADS.get(lead);
+  if (construct !== undefined) return { kind: 'undecidable', construct, raw: value };
+  if (lead === "'" || lead === '"') return resolveQuotedScalar(value);
 
   // Plain scalar. An unquoted `#` preceded by a space or tab starts a comment and
   // terminates the value; a `#` not preceded by whitespace is an ordinary character.
@@ -679,7 +675,21 @@ function resolveScalar(value) {
   if (comment) plain = plain.slice(0, comment.index);
   plain = plain.replace(/[ \t]+$/, '');
   if (plain === '') return { kind: 'null', value: null, raw: value };
+  return classifyPlainScalar(plain, value);
+}
 
+function resolveQuotedScalar(value) {
+  const quoted = readQuotedScalar(value, 0);
+  if (!quoted.ok) return { kind: 'undecidable', construct: quoted.reason, raw: value };
+  const tail = value.slice(quoted.end);
+  if (tail !== '' && !/^[ \t]+(#.*)?$/.test(tail)) {
+    return { kind: 'undecidable', construct: 'trailing text after a quoted scalar', raw: value };
+  }
+  return { kind: 'string', value: quoted.value, raw: value };
+}
+
+// Classify a non-empty plain scalar whose comment and trailing blanks are already removed.
+function classifyPlainScalar(plain, value) {
   // de.rs:932-938 matches exactly these six bool spellings and nothing else; de.rs:925-930
   // exactly these four nulls. yes/no/on/off/y/n are plain STRINGS under the 1.2 core schema.
   if (
@@ -1296,32 +1306,7 @@ function validateEntrypoint(candidate, collector) {
 
   const frontmatter = readFrontmatter(entrypoint);
   if (!frontmatter.ok) {
-    const detail = frontmatter.detail === undefined ? '' : frontmatter.detail;
-    const messages = {
-      'E-ENTRYPOINT-UNREADABLE': `The entrypoint could not be ${frontmatter.verb === 'read' ? 'read' : 'opened'} (${detail}).`,
-      'E-FM-NO-OPEN':
-        'No opening frontmatter delimiter on line 1. The first line must reduce to exactly `---` after stripping one terminator, an optional leading BOM and ASCII whitespace.',
-      'E-FM-FIRST-LINE-TOO-LONG': `The first line, including its terminator, exceeds ${FIRST_LINE_MAX_BYTES} bytes. The indexer reports this as a missing opening delimiter (:342-345).`,
-      'E-FM-NO-CLOSE': 'End of file reached with no closing frontmatter delimiter.',
-      'E-FM-TOO-LARGE': `The frontmatter exceeds the ${FRONTMATTER_MAX_BYTES} byte limit. Line terminators count, and \`\\r\\n\` costs two bytes.`,
-      'E-FM-NOT-UTF8': `The frontmatter block is not valid UTF-8 (${detail}). Only the frontmatter must be valid UTF-8; the body may be arbitrary bytes.`,
-    };
-    const tails = {
-      'E-ENTRYPOINT-UNREADABLE': `failed to ${frontmatter.verb === 'read' ? 'read' : 'open'} SKILL.md frontmatter: ${sanitizeForReport(detail)}`,
-      'E-FM-NO-OPEN': 'missing opening frontmatter delimiter',
-      'E-FM-FIRST-LINE-TOO-LONG': 'missing opening frontmatter delimiter',
-      'E-FM-NO-CLOSE': 'missing closing frontmatter delimiter',
-      'E-FM-TOO-LARGE': `frontmatter exceeds ${FRONTMATTER_MAX_BYTES} byte limit`,
-      'E-FM-NOT-UTF8': `frontmatter is not valid UTF-8: ${sanitizeForReport(detail)}`,
-    };
-    collector.add({
-      code: frontmatter.code,
-      absolutePath: entrypoint,
-      skillDirectory: candidate.dir,
-      line: frontmatter.code === 'E-FM-NO-OPEN' || frontmatter.code === 'E-FM-FIRST-LINE-TOO-LONG' ? 1 : null,
-      message: messages[frontmatter.code],
-      indexerMessage: skippedSkill(folder, tails[frontmatter.code]),
-    });
+    reportFrontmatterFailure(frontmatter, candidate, folder, collector);
     return null;
   }
 
@@ -1331,36 +1316,12 @@ function validateEntrypoint(candidate, collector) {
   const mapping = parseMiniYaml(frontmatter.text);
 
   if (mapping.certainError !== null) {
-    const certain = mapping.certainError;
-    collector.add({
-      code: certain.code,
-      absolutePath: entrypoint,
-      skillDirectory: candidate.dir,
-      line: certain.line === null ? null : certain.line + lineOffset,
-      message: `${certain.detail}. The indexer never resolves any field of this skill, so no field-level finding would be truthful.`,
-      indexerMessage: skippedSkill(
-        folder,
-        certain.code === 'E-YAML-PARSE'
-          ? `YAML parse error: ${certain.detail}`
-          : 'frontmatter must be a YAML mapping',
-      ),
-    });
+    reportCertainYamlError(mapping.certainError, candidate, folder, collector, lineOffset);
     return null;
   }
 
   if (mapping.duplicate !== null) {
-    const dup = mapping.duplicate;
-    collector.add({
-      code: 'E-YAML-DUPLICATE-KEY',
-      absolutePath: entrypoint,
-      skillDirectory: candidate.dir,
-      line: dup.line + lineOffset,
-      message: `The top-level key \`${sanitizeForReport(dup.key)}\` appears on line ${dup.firstLine + lineOffset} and again on line ${dup.line + lineOffset}. serde_yaml 0.9.34 rejects duplicate mapping keys (mapping.rs:813-822), so the parse fails and the skill is skipped outright. This covers every top-level key, not just the three the indexer reads.`,
-      indexerMessage: skippedSkill(
-        folder,
-        `YAML parse error: duplicate entry with key "${sanitizeForReport(dup.key)}"`,
-      ),
-    });
+    reportDuplicateKey(mapping.duplicate, candidate, folder, collector, lineOffset);
     return null;
   }
 
@@ -1376,6 +1337,68 @@ function validateEntrypoint(candidate, collector) {
 
   const fields = validateFields(candidate, mapping, collector, lineOffset);
   return fields;
+}
+
+function reportFrontmatterFailure(frontmatter, candidate, folder, collector) {
+  const entrypoint = candidate.entrypoint;
+  const detail = frontmatter.detail === undefined ? '' : frontmatter.detail;
+  const messages = {
+    'E-ENTRYPOINT-UNREADABLE': `The entrypoint could not be ${frontmatter.verb === 'read' ? 'read' : 'opened'} (${detail}).`,
+    'E-FM-NO-OPEN':
+      'No opening frontmatter delimiter on line 1. The first line must reduce to exactly `---` after stripping one terminator, an optional leading BOM and ASCII whitespace.',
+    'E-FM-FIRST-LINE-TOO-LONG': `The first line, including its terminator, exceeds ${FIRST_LINE_MAX_BYTES} bytes. The indexer reports this as a missing opening delimiter (:342-345).`,
+    'E-FM-NO-CLOSE': 'End of file reached with no closing frontmatter delimiter.',
+    'E-FM-TOO-LARGE': `The frontmatter exceeds the ${FRONTMATTER_MAX_BYTES} byte limit. Line terminators count, and \`\\r\\n\` costs two bytes.`,
+    'E-FM-NOT-UTF8': `The frontmatter block is not valid UTF-8 (${detail}). Only the frontmatter must be valid UTF-8; the body may be arbitrary bytes.`,
+  };
+  const tails = {
+    'E-ENTRYPOINT-UNREADABLE': `failed to ${frontmatter.verb === 'read' ? 'read' : 'open'} SKILL.md frontmatter: ${sanitizeForReport(detail)}`,
+    'E-FM-NO-OPEN': 'missing opening frontmatter delimiter',
+    'E-FM-FIRST-LINE-TOO-LONG': 'missing opening frontmatter delimiter',
+    'E-FM-NO-CLOSE': 'missing closing frontmatter delimiter',
+    'E-FM-TOO-LARGE': `frontmatter exceeds ${FRONTMATTER_MAX_BYTES} byte limit`,
+    'E-FM-NOT-UTF8': `frontmatter is not valid UTF-8: ${sanitizeForReport(detail)}`,
+  };
+  collector.add({
+    code: frontmatter.code,
+    absolutePath: entrypoint,
+    skillDirectory: candidate.dir,
+    line: frontmatter.code === 'E-FM-NO-OPEN' || frontmatter.code === 'E-FM-FIRST-LINE-TOO-LONG' ? 1 : null,
+    message: messages[frontmatter.code],
+    indexerMessage: skippedSkill(folder, tails[frontmatter.code]),
+  });
+}
+
+function reportCertainYamlError(certain, candidate, folder, collector, lineOffset) {
+  const entrypoint = candidate.entrypoint;
+  collector.add({
+    code: certain.code,
+    absolutePath: entrypoint,
+    skillDirectory: candidate.dir,
+    line: certain.line === null ? null : certain.line + lineOffset,
+    message: `${certain.detail}. The indexer never resolves any field of this skill, so no field-level finding would be truthful.`,
+    indexerMessage: skippedSkill(
+      folder,
+      certain.code === 'E-YAML-PARSE'
+        ? `YAML parse error: ${certain.detail}`
+        : 'frontmatter must be a YAML mapping',
+    ),
+  });
+}
+
+function reportDuplicateKey(dup, candidate, folder, collector, lineOffset) {
+  const entrypoint = candidate.entrypoint;
+  collector.add({
+    code: 'E-YAML-DUPLICATE-KEY',
+    absolutePath: entrypoint,
+    skillDirectory: candidate.dir,
+    line: dup.line + lineOffset,
+    message: `The top-level key \`${sanitizeForReport(dup.key)}\` appears on line ${dup.firstLine + lineOffset} and again on line ${dup.line + lineOffset}. serde_yaml 0.9.34 rejects duplicate mapping keys (mapping.rs:813-822), so the parse fails and the skill is skipped outright. This covers every top-level key, not just the three the indexer reads.`,
+    indexerMessage: skippedSkill(
+      folder,
+      `YAML parse error: duplicate entry with key "${sanitizeForReport(dup.key)}"`,
+    ),
+  });
 }
 
 function runCheck(root) {
@@ -1519,24 +1542,30 @@ function renderHuman(report, out) {
     return;
   }
 
-  for (const finding of report.findings) {
-    out('');
-    const anchor = finding.line === null ? finding.path : `${finding.path}:${finding.line}`;
-    const suffix =
-      finding.reason === null ? `${finding.code}  (rule ${finding.rule ?? 'checker-only'})` : `${finding.code}  (reason: ${finding.reason})`;
-    out(`${SEVERITY_LABEL[finding.severity]}${LABEL_GAP} ${anchor}  ${suffix}`);
-    for (const line of wrapContinuation(finding.message)) out(`       ${line}`);
-    if (finding.indexerMessage !== null) {
-      const indexerLines = wrapContinuation(`Indexer: ${finding.indexerMessage}`);
-      for (const line of indexerLines) out(`       ${line}`);
-    }
-  }
+  for (const finding of report.findings) renderFinding(finding, out);
 
   out('');
   out(
     `${TAG} ${plural(report.summary.errors, 'error')}, ${plural(report.summary.warnings, 'warning')}, ${plural(report.summary.infos, 'note')} across ${plural(report.summary.entrypointsFound, 'entrypoint')}`,
   );
 
+  renderVerdict(report, out);
+}
+
+function renderFinding(finding, out) {
+  out('');
+  const anchor = finding.line === null ? finding.path : `${finding.path}:${finding.line}`;
+  const suffix =
+    finding.reason === null ? `${finding.code}  (rule ${finding.rule ?? 'checker-only'})` : `${finding.code}  (reason: ${finding.reason})`;
+  out(`${SEVERITY_LABEL[finding.severity]}${LABEL_GAP} ${anchor}  ${suffix}`);
+  for (const line of wrapContinuation(finding.message)) out(`       ${line}`);
+  if (finding.indexerMessage !== null) {
+    const indexerLines = wrapContinuation(`Indexer: ${finding.indexerMessage}`);
+    for (const line of indexerLines) out(`       ${line}`);
+  }
+}
+
+function renderVerdict(report, out) {
   if (report.exitCode === 0) {
     if (report.summary.entrypointsFound === 0) {
       out(`${TAG} OK: no SKILL.md entrypoints found`);
@@ -1601,8 +1630,8 @@ function printUsage(out) {
   for (const line of USAGE) out(line);
 }
 
-function parseArgs(argv) {
-  const result = { help: false, selfTest: false, json: false, root: null, error: null };
+// Split argv into flags and positionals; `--` ends flag parsing.
+function splitArgs(argv) {
   const flags = [];
   const positionals = [];
   let flagsTerminated = false;
@@ -1618,6 +1647,19 @@ function parseArgs(argv) {
     }
     positionals.push(arg);
   }
+  return { flags, positionals };
+}
+
+function applyKnownFlags(result, flags) {
+  for (const flag of flags) {
+    if (flag === '--json') result.json = true;
+    else if (flag === '--self-test') result.selfTest = true;
+  }
+}
+
+function parseArgs(argv) {
+  const result = { help: false, selfTest: false, json: false, root: null, error: null };
+  const { flags, positionals } = splitArgs(argv);
 
   // `--help` wins over every other argument, including an invalid one. It is scanned
   // among flags only, so `-- --help` still names a root, which is what `--` is for.
@@ -1626,10 +1668,7 @@ function parseArgs(argv) {
     return result;
   }
 
-  for (const flag of flags) {
-    if (flag === '--json') result.json = true;
-    else if (flag === '--self-test') result.selfTest = true;
-  }
+  applyKnownFlags(result, flags);
 
   const unknown = flags.find((flag) => flag !== '--json' && flag !== '--self-test');
   if (unknown !== undefined) {
@@ -1649,14 +1688,37 @@ function parseArgs(argv) {
   return result;
 }
 
+function reportInternalError(error, err) {
+  err(`internal error: ${error instanceof Error ? error.message : String(error)}`);
+  if (error instanceof Error && error.stack) err(error.stack);
+  return 2;
+}
+
+// Returns an exit code when the root is unusable, or null when it can be walked.
+function checkRoot(root, fail) {
+  let stats;
+  try {
+    stats = fs.statSync(root);
+  } catch (error) {
+    return fail(`cannot read root '${root}': ${errnoOf(error)}`);
+  }
+  if (!stats.isDirectory()) return fail(`root '${root}' is not a directory`);
+  try {
+    // Exit 2 is only ever about the invocation and the root itself; a directory that
+    // cannot be read INSIDE the walk is a finding, not an exit-2 failure.
+    fs.readdirSync(root);
+  } catch (error) {
+    return fail(`cannot read root '${root}': ${errnoOf(error)}`);
+  }
+  return null;
+}
+
 function runCli(argv, out, err) {
   let options;
   try {
     options = parseArgs(argv);
   } catch (error) {
-    err(`internal error: ${error instanceof Error ? error.message : String(error)}`);
-    if (error instanceof Error && error.stack) err(error.stack);
-    return 2;
+    return reportInternalError(error, err);
   }
 
   if (options.help) {
@@ -1678,28 +1740,14 @@ function runCli(argv, out, err) {
 
   const root = path.resolve(options.root === null ? process.cwd() : options.root);
 
-  let stats;
-  try {
-    stats = fs.statSync(root);
-  } catch (error) {
-    return fail(`cannot read root '${root}': ${errnoOf(error)}`);
-  }
-  if (!stats.isDirectory()) return fail(`root '${root}' is not a directory`);
-  try {
-    // Exit 2 is only ever about the invocation and the root itself; a directory that
-    // cannot be read INSIDE the walk is a finding, not an exit-2 failure.
-    fs.readdirSync(root);
-  } catch (error) {
-    return fail(`cannot read root '${root}': ${errnoOf(error)}`);
-  }
+  const rootFailure = checkRoot(root, fail);
+  if (rootFailure !== null) return rootFailure;
 
   let report;
   try {
     report = runCheck(root);
   } catch (error) {
-    err(`internal error: ${error instanceof Error ? error.message : String(error)}`);
-    if (error instanceof Error && error.stack) err(error.stack);
-    return 2;
+    return reportInternalError(error, err);
   }
 
   if (options.json) {
