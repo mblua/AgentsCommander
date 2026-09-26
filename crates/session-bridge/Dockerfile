@@ -20,6 +20,8 @@ RUN apt-get update \
 COPY --from=build /src/target/release/session-bridge /usr/local/bin/session-bridge
 COPY --from=build /src/target/release/agentscommander-api-helper /usr/local/bin/agentscommander-api-helper
 
+# When running this image directly, mount /workspace or set AGENTSCOMMANDER_BRIDGE_WORKDIR
+# to an existing directory: as nobody, HOME=/nonexistent, the bridge otherwise exits 1.
 USER nobody
 
 ENTRYPOINT ["session-bridge"]
