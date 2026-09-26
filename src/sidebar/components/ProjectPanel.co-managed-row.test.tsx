@@ -151,6 +151,24 @@ describe("ProjectPanel Co-managed row text (#2452)", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 
+  // #2659 - the replica row (it holds nested buttons) is reachable by keyboard
+  // through its key proxy; Enter and Space switch like a click.
+  it("switches the replica row from its key proxy like a click", async () => {
+    const fake = await mount(plainNoTitle);
+    const row = document.body.querySelector<HTMLElement>(".replica-item")!;
+    const proxy = row.firstElementChild!;
+    expect(proxy.classList.contains("ac-row-key-proxy")).toBe(true);
+    const before = fake.callsFor("switch_session").length;
+    for (const [act, calls] of [
+      [() => proxy.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })), 1],
+      [() => proxy.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true })), 2],
+      [() => row.click(), 3],
+    ] as const) {
+      act();
+      await waitFor(() => expect(fake.callsFor("switch_session")).toHaveLength(before + calls));
+    }
+  });
+
   // Reproduction 1: the message is rendered as TEXT, not only as a title.
   it("renders the Co-managed message as row text", async () => {
     const fake = await mount(coordWithTitle);

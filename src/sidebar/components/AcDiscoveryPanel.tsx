@@ -7,6 +7,7 @@ import AgentPickerModal from "./AgentPickerModal";
 import { sessionsStore } from "../stores/sessions";
 import { stripFrontmatter } from "../../shared/markdown";
 import { homeStore } from "../../main/stores/home";
+import { RowKeyProxy, onRowKey } from "./RowKeyProxy";
 
 interface PendingLaunch {
   path: string;
@@ -229,8 +230,10 @@ const AcDiscoveryPanel: Component = () => {
                   <div
                     class="replica-item"
                     onClick={() => handleAgentClick(agent)}
+                    onKeyDown={onRowKey(() => handleAgentClick(agent))}
                     title={agent.path}
                   >
+                    <RowKeyProxy label={agent.name} />
                     <div class="replica-item-info">
                       <span class="replica-item-name">
                         <span class="ac-discovery-prefix">
@@ -286,9 +289,11 @@ const AcDiscoveryPanel: Component = () => {
                           <div
                             class="replica-item"
                             onClick={() => handleReplicaClick(replica, wg)}
+                            onKeyDown={onRowKey(() => handleReplicaClick(replica, wg))}
                             onContextMenu={(e) => handleReplicaContextMenu(e, replica)}
                             title={replica.path}
                           >
+                            <RowKeyProxy label={replica.name} />
                             <div class="replica-item-info">
                               <span class="replica-item-name">{replica.name}</span>
                               <div class="ac-discovery-badges">
