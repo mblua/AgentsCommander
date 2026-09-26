@@ -2198,7 +2198,9 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
-  it("visibly reloads the authoritative terminal snapshot value on CAS conflict", async () => {
+  // #2622 - shared by the CAS-conflict cases: toggle the snapshot opt-in, lose the
+  // CAS race on Save, and hand back what the assertions need.
+  async function saveWithSnapshotConflict() {
     vi.mocked(SettingsAPI.setTerminalSnapshotsEnabled).mockRejectedValueOnce(
       "terminal_snapshot_setting_conflict",
     );
@@ -2220,15 +2222,81 @@ describe("SettingsModal automation hooks", () => {
     byTestId<HTMLButtonElement>("settings.save").click();
     await settle();
     await settle();
+    await settle();
+    return { checkbox, dispose, onClose };
+  }
 
+  function expectConflictKeptModalOpen(onClose: ReturnType<typeof vi.fn>) {
     expect(SettingsAPI.setTerminalSnapshotsEnabled).toHaveBeenCalledWith(false, true);
-    expect(SettingsAPI.get).toHaveBeenCalledTimes(3);
-    expect(checkbox.checked).toBe(false);
     expect(document.querySelector(".modal-save-error")?.textContent).toContain(
       "current value was reloaded",
     );
     expect(byTestId<HTMLButtonElement>("settings.save").disabled).toBe(false);
     expect(onClose).not.toHaveBeenCalled();
+  }
+
+  it("visibly reloads the authoritative terminal snapshot value on CAS conflict", async () => {
+    const { checkbox, dispose, onClose } = await saveWithSnapshotConflict();
+
+    expectConflictKeptModalOpen(onClose);
+    expect(SettingsAPI.get).toHaveBeenCalledTimes(3);
+    expect(checkbox.checked).toBe(false);
+
+    dispose();
+  });
+
+  // #2622 - integer minute inputs write the parsed value and ignore a non-number.
+  it("writes a typed idle red threshold and ignores an empty value", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(
+      () => SettingsModal({ onClose: () => {} }),
+      root,
+    );
+    await settle();
+
+    const red = byTestId<HTMLInputElement>(
+      "settings.general.coordinatorIdleBadgeRedMinutes",
+    );
+    red.value = "75";
+    red.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    red.value = "";
+    red.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+    await settle();
+
+    expect(
+      vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0]?.coordinatorIdleBadgeRedMinutes,
+    ).toBe(75);
+
+    dispose();
+  });
+
+  // #2622 - the conflict branch restarts only when bind/port changed; an unchanged
+  // endpoint with a running server must stay put while the modal stays open.
+  it("does not restart the API server on a snapshot CAS conflict when the endpoint is unchanged", async () => {
+    const runningSettings = settings({
+      apiServerEnabled: true,
+      apiServerBind: "0.0.0.0",
+      apiServerPort: 8766,
+      terminalSnapshotsEnabled: false,
+    });
+    vi.mocked(SettingsAPI.get)
+      .mockResolvedValueOnce(runningSettings)
+      .mockResolvedValueOnce(runningSettings)
+      .mockResolvedValueOnce(runningSettings);
+    vi.mocked(SettingsAPI.apiServerStatus)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+
+    const { dispose, onClose } = await saveWithSnapshotConflict();
+
+    expectConflictKeptModalOpen(onClose);
+    expect(SettingsAPI.stopApiServer).not.toHaveBeenCalled();
+    expect(SettingsAPI.startApiServer).not.toHaveBeenCalled();
 
     dispose();
   });

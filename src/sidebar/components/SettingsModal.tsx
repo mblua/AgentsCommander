@@ -2410,6 +2410,58 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateSidebarCompactHotkey() ??
     validateRoomNumberMask();
 
+  const recoverTerminalSnapshotConflict = async (
+    draftSettings: AppSettings,
+    seedBeforeSave: AppSettings | null,
+    wasApiServerRunning: boolean,
+  ) => {
+    const authoritative = await SettingsAPI.get();
+    const reloadedSettings = {
+      ...draftSettings,
+      terminalSnapshotsEnabled: authoritative.terminalSnapshotsEnabled,
+    };
+    const reloadedSeed = cloneSettings(reloadedSettings);
+    setSettings("data", cloneSettings(reloadedSettings));
+    setModalSeed(reloadedSeed);
+    adoptBackendAgentOrder(reloadedSettings.agents);
+    setTerminalSnapshotsOpeningValue(authoritative.terminalSnapshotsEnabled);
+    setDraftDirty(false);
+    setSaveError(TERMINAL_SNAPSHOT_CONFLICT_MESSAGE);
+    // #1173 — the draft above already persisted the new bind/port, so the
+    // conflict must not skip the restart the success path runs; otherwise the
+    // modal reports the new endpoint as running while the server still
+    // listens on the old one, and the advanced seed hides the delta on retry.
+    if (wasApiServerRunning && apiServerEndpointChanged(reloadedSettings, seedBeforeSave)) {
+      await restartApiServerAfterEndpointSave(reloadedSettings);
+    }
+  };
+
+  const applySavedSettings = async (
+    nextSettings: AppSettings,
+    seedBeforeSave: AppSettings | null,
+    wasApiServerRunning: boolean,
+  ) => {
+    const nextModalSeed = cloneSettings(nextSettings);
+    setSettings("data", cloneSettings(nextSettings));
+    setModalSeed(nextModalSeed);
+    adoptBackendAgentOrder(nextSettings.agents);
+    setTerminalSnapshotsOpeningValue(nextSettings.terminalSnapshotsEnabled);
+    setDraftDirty(false);
+    if (wasApiServerRunning && apiServerEndpointChanged(nextSettings, seedBeforeSave)) {
+      await restartApiServerAfterEndpointSave(nextSettings);
+    }
+    setSoundsEnabled(nextSettings.soundsEnabled ?? true);
+    if (isTauri) {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
+    }
+    settingsStore.refresh();
+    try {
+      const allRepos = await ReposAPI.search("");
+      sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
+    } catch {}
+  };
+
   const handleSave = async () => {
     if (!settings.data) return;
     const validationError = currentValidationError();
@@ -2435,25 +2487,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           );
         } catch (err: unknown) {
           if (errorMessage(err) !== TERMINAL_SNAPSHOT_SETTING_CONFLICT) throw err;
-          const authoritative = await SettingsAPI.get();
-          const reloadedSettings = {
-            ...draftSettings,
-            terminalSnapshotsEnabled: authoritative.terminalSnapshotsEnabled,
-          };
-          const reloadedSeed = cloneSettings(reloadedSettings);
-          setSettings("data", cloneSettings(reloadedSettings));
-          setModalSeed(reloadedSeed);
-          adoptBackendAgentOrder(reloadedSettings.agents);
-          setTerminalSnapshotsOpeningValue(authoritative.terminalSnapshotsEnabled);
-          setDraftDirty(false);
-          setSaveError(TERMINAL_SNAPSHOT_CONFLICT_MESSAGE);
-          // #1173 — the draft above already persisted the new bind/port, so the
-          // conflict must not skip the restart the success path runs; otherwise the
-          // modal reports the new endpoint as running while the server still
-          // listens on the old one, and the advanced seed hides the delta on retry.
-          if (wasApiServerRunning && apiServerEndpointChanged(reloadedSettings, seedBeforeSave)) {
-            await restartApiServerAfterEndpointSave(reloadedSettings);
-          }
+          await recoverTerminalSnapshotConflict(draftSettings, seedBeforeSave, wasApiServerRunning);
           setSaving(false);
           return;
         }
@@ -2461,25 +2495,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       const nextSettings = terminalSnapshotsChanged
         ? { ...draftSettings, terminalSnapshotsEnabled }
         : draftSettings;
-      const nextModalSeed = cloneSettings(nextSettings);
-      setSettings("data", cloneSettings(nextSettings));
-      setModalSeed(nextModalSeed);
-      adoptBackendAgentOrder(nextSettings.agents);
-      setTerminalSnapshotsOpeningValue(nextSettings.terminalSnapshotsEnabled);
-      setDraftDirty(false);
-      if (wasApiServerRunning && apiServerEndpointChanged(nextSettings, seedBeforeSave)) {
-        await restartApiServerAfterEndpointSave(nextSettings);
-      }
-      setSoundsEnabled(nextSettings.soundsEnabled ?? true);
-      if (isTauri) {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        await getCurrentWindow().setAlwaysOnTop(nextSettings.sidebarAlwaysOnTop);
-      }
-      settingsStore.refresh();
-      try {
-        const allRepos = await ReposAPI.search("");
-        sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
-      } catch {}
+      await applySavedSettings(nextSettings, seedBeforeSave, wasApiServerRunning);
       setSaving(false);
       closeSettings();
     } catch (err: unknown) {
@@ -2498,6 +2514,78 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     document.removeEventListener("keydown", handleKeyDown);
   });
 
+
+  const intFieldInput =
+    (
+      field:
+        | "coordinatorIdleBadgeYellowMinutes"
+        | "coordinatorIdleBadgeRedMinutes"
+        | "coordinatorAutoCloseMinutes",
+    ) =>
+    (e: InputEvent & { currentTarget: HTMLInputElement }) => {
+      const value = parseInt(e.currentTarget.value, 10);
+      if (!Number.isNaN(value)) {
+        updateField(field, value);
+      }
+    };
+
+  const renderWebRemoteSection = () => (
+    <div class="settings-section">
+      <div class="settings-section-title">Web Remote Access</div>
+      <label class="settings-checkbox-field">
+        <input
+          type="checkbox"
+          class="settings-checkbox"
+          checked={settings.data!.webServerEnabled}
+          onChange={(e) =>
+            updateField("webServerEnabled", e.currentTarget.checked)
+          }
+        />
+        <span>Enable web server</span>
+      </label>
+      <Show when={settings.data!.webServerEnabled}>
+        <div style="display: flex; gap: 6px; margin-top: 6px; align-items: center;">
+          <button
+            class="settings-add-btn"
+            onClick={async () => {
+              try {
+                const running = await SettingsAPI.getWebServerStatus();
+                if (running) {
+                  await SettingsAPI.stopWebServer();
+                  setWebServerRunning(false);
+                } else {
+                  // #1453 - start_web_server returns false when the bind
+                  // fails, so ignoring it reported a running server that
+                  // never bound.
+                  const ok = await SettingsAPI.startWebServer();
+                  setWebServerRunning(ok);
+                }
+              } catch (err) {
+                console.error("Web server toggle failed:", err);
+              }
+            }}
+          >
+            {webServerRunning() ? "Stop Server" : "Start Server"}
+          </button>
+          <button
+            class="settings-add-btn"
+            disabled={!webServerRunning()}
+            style={!webServerRunning() ? "opacity: 0.4; cursor: default;" : ""}
+            onClick={() => {
+              SettingsAPI.openWebRemote().catch((err) =>
+                console.error("Failed to open web remote:", err)
+              );
+            }}
+          >
+            Open in Browser
+          </button>
+          <span style={`font-size: 11px; opacity: 0.6;`}>
+            {webServerRunning() ? "● Running" : "○ Stopped"}
+          </span>
+        </div>
+      </Show>
+    </div>
+  );
 
   const renderGeneralTab = () => (
     <>
@@ -2742,12 +2830,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             min="1"
             step="1"
             value={settings.data!.coordinatorIdleBadgeYellowMinutes}
-            onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
-              if (!Number.isNaN(value)) {
-                updateField("coordinatorIdleBadgeYellowMinutes", value);
-              }
-            }}
+            onInput={intFieldInput("coordinatorIdleBadgeYellowMinutes")}
             data-ac-testid="settings.general.coordinatorIdleBadgeYellowMinutes"
             data-ac-role="spinbutton"
           />
@@ -2760,12 +2843,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             min="1"
             step="1"
             value={settings.data!.coordinatorIdleBadgeRedMinutes}
-            onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
-              if (!Number.isNaN(value)) {
-                updateField("coordinatorIdleBadgeRedMinutes", value);
-              }
-            }}
+            onInput={intFieldInput("coordinatorIdleBadgeRedMinutes")}
             data-ac-testid="settings.general.coordinatorIdleBadgeRedMinutes"
             data-ac-role="spinbutton"
           />
@@ -2791,12 +2869,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             step="1"
             disabled={!settings.data!.coordinatorAutoCloseEnabled}
             value={settings.data!.coordinatorAutoCloseMinutes}
-            onInput={(e) => {
-              const value = parseInt(e.currentTarget.value, 10);
-              if (!Number.isNaN(value)) {
-                updateField("coordinatorAutoCloseMinutes", value);
-              }
-            }}
+            onInput={intFieldInput("coordinatorAutoCloseMinutes")}
             data-ac-testid="settings.general.coordinatorAutoCloseMinutes"
             data-ac-role="spinbutton"
           />
@@ -2941,61 +3014,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         </div>
       </div>
 
-      <div class="settings-section">
-        <div class="settings-section-title">Web Remote Access</div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.webServerEnabled}
-            onChange={(e) =>
-              updateField("webServerEnabled", e.currentTarget.checked)
-            }
-          />
-          <span>Enable web server</span>
-        </label>
-        <Show when={settings.data!.webServerEnabled}>
-          <div style="display: flex; gap: 6px; margin-top: 6px; align-items: center;">
-            <button
-              class="settings-add-btn"
-              onClick={async () => {
-                try {
-                  const running = await SettingsAPI.getWebServerStatus();
-                  if (running) {
-                    await SettingsAPI.stopWebServer();
-                    setWebServerRunning(false);
-                  } else {
-                    // #1453 - start_web_server returns false when the bind
-                    // fails, so ignoring it reported a running server that
-                    // never bound.
-                    const ok = await SettingsAPI.startWebServer();
-                    setWebServerRunning(ok);
-                  }
-                } catch (err) {
-                  console.error("Web server toggle failed:", err);
-                }
-              }}
-            >
-              {webServerRunning() ? "Stop Server" : "Start Server"}
-            </button>
-            <button
-              class="settings-add-btn"
-              disabled={!webServerRunning()}
-              style={!webServerRunning() ? "opacity: 0.4; cursor: default;" : ""}
-              onClick={() => {
-                SettingsAPI.openWebRemote().catch((err) =>
-                  console.error("Failed to open web remote:", err)
-                );
-              }}
-            >
-              Open in Browser
-            </button>
-            <span style={`font-size: 11px; opacity: 0.6;`}>
-              {webServerRunning() ? "● Running" : "○ Stopped"}
-            </span>
-          </div>
-        </Show>
-      </div>
+      {renderWebRemoteSection()}
 
       <div class="settings-section">
         <div class="settings-section-title">Control Plane API</div>
