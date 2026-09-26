@@ -47,7 +47,7 @@ function replicaDiscovery() {
           },
           {
             name: dormantName,
-            path: `${workgroupPath}\__agent_${dormantName}`,
+            path: `${workgroupPath}\\__agent_${dormantName}`,
             repoPaths: [],
             isCoordinator: false,
             currentProfile: "B",
