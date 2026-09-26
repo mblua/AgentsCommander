@@ -8605,11 +8605,15 @@ exit 0
 ",
         );
 
+        // `output()`, not `status()`: tokio's `status()` drops the piped
+        // stdout/stderr, so `sh` dies of SIGPIPE writing "not found" (macOS)
+        // instead of exiting 127.
         let with_dir = agent_path_2589_compose(&[&bin]);
         let status = build_update_step_command("ac-2589-fake", tmp.path(), &with_dir)
-            .status()
+            .output()
             .await
-            .expect("spawn update step");
+            .expect("spawn update step")
+            .status;
         assert_eq!(
             status.code(),
             Some(0),
@@ -8618,9 +8622,10 @@ exit 0
 
         let without_dir = agent_path_2589_compose(&[]);
         let status = build_update_step_command("ac-2589-fake", tmp.path(), &without_dir)
-            .status()
+            .output()
             .await
-            .expect("spawn update step");
+            .expect("spawn update step")
+            .status;
         assert_eq!(
             status.code(),
             Some(127),
