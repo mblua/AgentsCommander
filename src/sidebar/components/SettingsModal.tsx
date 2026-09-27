@@ -58,6 +58,7 @@ import {
 } from "../../shared/agent-help";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
 import { applySelectedRowRail, isValidRailColor, isValidRailWidth } from "../selected-row-rail";
+import { QuotaRemaining } from "./AgentQuotaRemaining";
 import {
   canEnableWatcher,
   distinctCommandStems,
@@ -3579,7 +3580,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </button>
           <span class="settings-agent-dot" style={{ background: agent.color }} />
           <div class="settings-agent-row-meta">
-            <div class="settings-agent-row-name">{agent.label || "New Agent"}</div>
+            <div class="settings-agent-row-name agent-quota-name-line">
+              <span class="agent-quota-name" title={agent.label || "New Agent"}>{agent.label || "New Agent"}</span>
+              <QuotaRemaining agentId={agent.id} />
+            </div>
             <div class="settings-agent-row-cmd">
               {commandExecutableBasename(agent.command) || agent.command || "—"}
             </div>

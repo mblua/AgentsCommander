@@ -29,6 +29,7 @@ import { GripIcon } from "./settings/GripIcon";
 import { reorderedIds } from "./settings/agentReorderDnd";
 import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { automationAttrs } from "../../shared/automation-hooks";
+import { QuotaRemaining } from "./AgentQuotaRemaining";
 import {
   agentNameFromPathOrSession,
   composeEffectiveCommand,
@@ -1509,7 +1510,10 @@ const AgentPickerModal: Component<{
                             {...automationAttrs(`agentPicker.provider.${agent.id}`, "button", active() ? "active" : "inactive")}
                           >
                             <span>
-                              <span class="agent-profile-provider-name">{agent.label}</span>
+                              <span class="agent-quota-name-line">
+                                <span class="agent-profile-provider-name" title={agent.label}>{agent.label}</span>
+                                <QuotaRemaining agentId={agent.id} />
+                              </span>
                               <span class="agent-profile-provider-command">{agent.command}</span>
                             </span>
                             <span class="agent-profile-provider-chip">
