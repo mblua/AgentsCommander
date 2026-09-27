@@ -657,6 +657,15 @@ impl PtyManager {
         self.backend_for_kind(kind).get_screen_rows(id)
     }
 
+    /// #2586 - best-effort rows for an observation, not a gate. `Unavailable` and
+    /// `SessionOver` both answer `None`: an observer must not branch on why.
+    pub fn screen_rows_snapshot(&self, id: Uuid) -> Option<Vec<String>> {
+        match self.get_screen_rows(id) {
+            ScreenRowsRead::Rows(rows) => Some(rows),
+            ScreenRowsRead::Unavailable | ScreenRowsRead::SessionOver => None,
+        }
+    }
+
     /// #1171 - forwards to the routed backend. A missing route is `Gone` for the same reason
     /// it is `SessionOver` above: every route removal is preceded by parser removal, so the
     /// session really is over.

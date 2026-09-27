@@ -25,7 +25,7 @@ use crate::config::teams;
 use crate::phone::consumption::{verdict_to_result, ConsumptionVerdict};
 use crate::phone::types::OutboxMessage;
 use crate::pty::backend::SessionBackendKind;
-use crate::pty::inject::LogicalPtyCommand;
+use crate::pty::inject::{LogicalPtyCommand, SettleReadiness};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::{Session, SessionCommunicationKind, SessionInfo, SessionStatus};
@@ -7854,9 +7854,9 @@ impl MailboxPoller {
                     // once; only a freshly-idle established one waits the guard.
                     // Best-effort - a vanished session just falls through to the
                     // inject's own race handling below.
-                    self.settle_live_before_inject(app, session_id).await;
+                    let settle = self.settle_live_before_inject(app, session_id).await;
                     match self
-                        .inject_wake_into_pty(app, session_id, msg, origin, comanaged)
+                        .inject_wake_into_pty(app, session_id, msg, origin, comanaged, settle)
                         .await
                     {
                         Ok(()) => {
@@ -8116,10 +8116,10 @@ impl MailboxPoller {
             }
         }
 
-        self.wait_for_spawned_wake_idle(app, session_id).await?;
+        let settle = self.wait_for_spawned_wake_idle(app, session_id).await?;
 
         // Inject message — interactive mode (session persists, user sees reply instructions)
-        self.inject_wake_into_pty(app, session_id, msg, origin, comanaged)
+        self.inject_wake_into_pty(app, session_id, msg, origin, comanaged, settle)
             .await?;
 
         // #1635-2 D4: the delivered JSON reports the effective agent and
@@ -8448,7 +8448,9 @@ impl MailboxPoller {
             _ = cancellation.cancelled() => {
                 return Err("Context alert delivery was canceled during spawned-session settle".to_string());
             }
-            result = self.wait_for_spawned_wake_idle(app, session_id) => result?,
+            result = self.wait_for_spawned_wake_idle(app, session_id) => {
+                result?;
+            }
         }
         if cancellation.is_cancelled() {
             return Err(
@@ -8475,7 +8477,9 @@ impl MailboxPoller {
                 return;
             }
         }
-        self.settle_live_before_inject(app, session_id).await;
+        // #2586 - the internal-notice injector is a non-wake path that reports
+        // `Unknown`, so this readiness is not carried.
+        let _ = self.settle_live_before_inject(app, session_id).await;
     }
 
     async fn run_internal_guard(guard: InternalNoticeGuard) -> Result<(), String> {
@@ -8841,6 +8845,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
+        settle: SettleReadiness,
     ) -> Result<(), String> {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
@@ -8881,7 +8886,7 @@ impl MailboxPoller {
         }
 
         let result = self
-            .inject_into_pty(app, session_id, msg, true, origin, comanaged)
+            .inject_into_pty(app, session_id, msg, true, origin, comanaged, settle)
             .await;
         // #552 auto-close: a successful inter-agent wake is activity for the
         // recipient team's silence clock (NOT the badge; inter-agent is not a
@@ -9095,13 +9100,15 @@ impl MailboxPoller {
         &self,
         app: &tauri::AppHandle<R>,
         session_id: Uuid,
-    ) -> Result<(), String> {
+    ) -> Result<SettleReadiness, String> {
         #[cfg(test)]
         if self.test_hooks.is_some() {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
             let mgr = session_mgr.read().await;
             mgr.mark_idle(session_id).await;
-            return Ok(());
+            // #2586 - the hooked path never runs the settle loop, so it has no
+            // readiness to report; `Unknown` keeps it from fabricating `Ready`.
+            return Ok(SettleReadiness::Unknown);
         }
 
         // #611: require SUSTAINED idle before injecting on the COLD-SPAWN path. A
@@ -9144,7 +9151,7 @@ impl MailboxPoller {
         settle: std::time::Duration,
         poll: std::time::Duration,
         initial_idle_since: Option<std::time::Instant>,
-    ) -> Result<(), String> {
+    ) -> Result<SettleReadiness, String> {
         let start = std::time::Instant::now();
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mut idle_since = initial_idle_since;
@@ -9214,6 +9221,7 @@ impl MailboxPoller {
                             session_id
                         ));
                     }
+                    // #2586 D3 - readiness exists only on this `Ok` branch.
                     if start.elapsed() >= max_wait {
                         log::warn!(
                             "[mailbox] wake: timeout waiting for session {} to reach sustained idle; injecting anyway (waiting_for_input={}, rendered={})",
@@ -9221,8 +9229,9 @@ impl MailboxPoller {
                             waiting,
                             rendered
                         );
+                        return Ok(SettleReadiness::TimedOut);
                     }
-                    return Ok(());
+                    return Ok(SettleReadiness::Ready);
                 }
                 SettleAction::Wait => {
                     if was_settling && !ready {
@@ -9266,7 +9275,7 @@ impl MailboxPoller {
         &self,
         app: &tauri::AppHandle<R>,
         session_id: Uuid,
-    ) {
+    ) -> SettleReadiness {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
             hooks.settle_calls.lock().unwrap().push(session_id);
@@ -9282,12 +9291,13 @@ impl MailboxPoller {
                     .await
                     .expect("remove test session after logical-command preflight");
             }
-            return; // hooked tests exercise the inject wiring, not real timers
+            return SettleReadiness::Unknown; // hooked tests exercise the inject wiring, not real timers
         }
 
         let Some(idle) = app.try_state::<std::sync::Arc<crate::pty::idle_detector::IdleDetector>>()
         else {
-            return;
+            // #2586 - no detector means no settle gate ran.
+            return SettleReadiness::Unknown;
         };
 
         // (#1001 PR2 P2 / option-a) Classify starting vs established by alive_age
@@ -9306,8 +9316,9 @@ impl MailboxPoller {
             // - notably the 90s cap, since a cold agent can take >10s to become
             // paste-ready (measured ~12-16s for Claude, startup_probe), well past
             // the live path's 10s cap. Best-effort: a destroy mid-settle just falls
-            // through to the inject's own race path.
-            let _ = self
+            // through to the inject's own race path, with no readiness (#2586 D3:
+            // readiness exists only on the `Ok` branch).
+            return self
                 .settle_until_ready(
                     app,
                     session_id,
@@ -9316,8 +9327,8 @@ impl MailboxPoller {
                     std::time::Duration::from_millis(500),
                     None,
                 )
-                .await;
-            return;
+                .await
+                .unwrap_or(SettleReadiness::Unknown);
         }
 
         // Established: gate on the real-time activity_age snapshot (grinch P1).
@@ -9332,13 +9343,13 @@ impl MailboxPoller {
                 .is_some_and(|g| g.is_blocked(session_id))
             {
                 if start.elapsed() >= max_wait {
-                    return;
+                    return SettleReadiness::TimedOut;
                 }
                 tokio::time::sleep(poll).await;
                 continue;
             }
             let Some(r) = idle.purge_readiness(&[session_id]).into_iter().next() else {
-                return; // no snapshot: proceed to inject (best-effort)
+                return SettleReadiness::Unknown; // no snapshot: proceed to inject (best-effort)
             };
             let settle_live = r.idle_threshold + FRESH_IDLE_GUARD;
             match live_settle_action(
@@ -9357,8 +9368,9 @@ impl MailboxPoller {
                             session_id,
                             max_wait.as_secs()
                         );
+                        return SettleReadiness::TimedOut;
                     }
-                    return;
+                    return SettleReadiness::Ready;
                 }
                 SettleAction::Wait => tokio::time::sleep(poll).await,
             }
@@ -9372,6 +9384,7 @@ impl MailboxPoller {
     /// `wake-and-sleep` non-interactive path was removed in 0.7.0). The
     /// `use_markers=true` branch below is retained for future non-interactive
     /// consumers; see _plans/delete-modes.md §2.4.
+    #[allow(clippy::too_many_arguments)]
     async fn inject_into_pty<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -9380,6 +9393,7 @@ impl MailboxPoller {
         interactive: bool,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
+        settle: SettleReadiness,
     ) -> Result<(), String> {
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
@@ -9422,6 +9436,7 @@ impl MailboxPoller {
                 session_id,
                 resolved.text,
                 &msg.id,
+                settle,
             )
             .await
             .map_err(|e| {
@@ -9583,25 +9598,27 @@ impl MailboxPoller {
         );
         // #2336 - a standard peer wake is the other gated delivery path; the
         // detached logical-command follow-up above stays on the plain injector.
-        crate::pty::inject::inject_peer_wake_text_into_session(app, session_id, &payload, &msg.id)
-            .await
-            .map_err(|e| {
-                if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
-                    && is_permanent_delivery_error(&e)
-                {
-                    crate::commands::pty::clear_held_wake(app, session_id, &msg.id);
-                }
-                let (level, outcome) = classify_injection_error(&e);
-                log::log!(
-                    level,
-                    "[mailbox] PTY injection {} session={} msg={}: {}",
-                    outcome,
-                    session_id,
-                    msg.id,
-                    e
-                );
+        crate::pty::inject::inject_peer_wake_text_into_session(
+            app, session_id, &payload, &msg.id, settle,
+        )
+        .await
+        .map_err(|e| {
+            if !crate::pty::menu_guard::is_typing_hold_deferred_error(&e)
+                && is_permanent_delivery_error(&e)
+            {
+                crate::commands::pty::clear_held_wake(app, session_id, &msg.id);
+            }
+            let (level, outcome) = classify_injection_error(&e);
+            log::log!(
+                level,
+                "[mailbox] PTY injection {} session={} msg={}: {}",
+                outcome,
+                session_id,
+                msg.id,
                 e
-            })?;
+            );
+            e
+        })?;
 
         log::info!(
             "[mailbox] PTY injection SUCCESS session={} msg={}",
@@ -25099,6 +25116,7 @@ mod tests {
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
                 false,
+                SettleReadiness::Unknown,
             )
             .await
             .unwrap();
@@ -25164,6 +25182,7 @@ mod tests {
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
                 false,
+                SettleReadiness::Unknown,
             )
             .await
             .unwrap();
@@ -25186,8 +25205,9 @@ mod tests {
             manager.mark_idle(session_id).await;
         }
 
-        let expected_body =
-            crate::phone::messaging::format_pty_wrap(&message.from, "follow-up body");
+        // #2586 D1 - a `send_enter` shell is written the wrap without its final `\n\r`.
+        let wrapped = crate::phone::messaging::format_pty_wrap(&message.from, "follow-up body");
+        let expected_body = wrapped.strip_suffix("\n\r").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             // The follow-up writes the body, then sleeps 1500ms and 500ms before
@@ -25313,6 +25333,7 @@ mod tests {
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
                 false,
+                SettleReadiness::Unknown,
             )
             .await
             .expect_err("menu-blocked logical command must defer");
@@ -25333,6 +25354,7 @@ mod tests {
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
                 false,
+                SettleReadiness::Unknown,
             )
             .await
             .expect_err("menu-blocked standard wake must defer");
@@ -25372,6 +25394,7 @@ mod tests {
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
                 false,
+                SettleReadiness::Unknown,
             )
             .await
             .expect_err("real PTY write failure must surface");
@@ -25391,6 +25414,7 @@ mod tests {
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
                 false,
+                SettleReadiness::Unknown,
             )
             .await
             .expect_err("real PTY write failure must surface");
@@ -25447,6 +25471,7 @@ mod tests {
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
                 false,
+                SettleReadiness::Unknown,
             ),
             poller.inject_into_pty(
                 &app,
@@ -25455,6 +25480,7 @@ mod tests {
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
                 false,
+                SettleReadiness::Unknown,
             )
         );
         clear_result.unwrap();
@@ -25564,6 +25590,7 @@ mod tests {
                 true,
                 WakeDeliveryOrigin::FilesystemPoller,
                 false,
+                SettleReadiness::Unknown,
             )
             .await
             .unwrap_err();
@@ -28820,6 +28847,95 @@ mod tests {
 
         let err = res.unwrap_err();
         assert!(crate::pty::menu_guard::is_menu_guard_deferred_error(&err));
+    }
+
+    /// #2586 T10 - an idle session settles `Ready` well before the cap. The
+    /// negative controls redden a constant `TimedOut` mapping and a hang.
+    #[tokio::test]
+    async fn test_settle_until_ready_reports_ready_before_the_cap() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let sid = add_mailbox_session(
+            &app,
+            temp.path(),
+            "wg-1-dev-team/dev",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let max_wait = Duration::from_millis(500);
+        let started = std::time::Instant::now();
+
+        let res = MailboxPoller::new()
+            .settle_until_ready(
+                &app,
+                sid,
+                max_wait,
+                Duration::from_millis(20),
+                Duration::from_millis(10),
+                None,
+            )
+            .await;
+
+        assert!(started.elapsed() < max_wait, "{:?}", started.elapsed());
+        assert_ne!(res, Ok(SettleReadiness::TimedOut));
+        assert_eq!(res, Ok(SettleReadiness::Ready));
+    }
+
+    /// #2586 T11 - a never-ready session hits the cap: still `Ok` (bias to
+    /// deliver) and `TimedOut`. T10 and T11 are each other's control.
+    #[tokio::test]
+    async fn test_settle_until_ready_reports_timed_out_at_the_cap() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let sid = add_mailbox_session(
+            &app,
+            temp.path(),
+            "wg-1-dev-team/dev",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+
+        let res = MailboxPoller::new()
+            .settle_until_ready(
+                &app,
+                sid,
+                Duration::from_millis(80),
+                Duration::from_millis(20),
+                Duration::from_millis(10),
+                None,
+            )
+            .await;
+
+        assert!(res.is_ok(), "{res:?}");
+        assert_ne!(res, Ok(SettleReadiness::Ready));
+        assert_eq!(res, Ok(SettleReadiness::TimedOut));
+    }
+
+    /// #2586 T12 - the readiness survives the real cold-spawn caller. No test
+    /// hooks, so the production 2000 ms settle runs (about 2.1 s wall).
+    #[tokio::test]
+    async fn test_wait_for_spawned_wake_idle_propagates_ready() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_struct = make_mailbox_app(temp.path());
+        let app = app_handle(&app_struct);
+        let sid = add_mailbox_session(
+            &app,
+            temp.path(),
+            "wg-1-dev-team/dev",
+            SessionStatus::Idle,
+            None,
+        )
+        .await;
+        let poller = MailboxPoller::new();
+        assert!(poller.test_hooks.is_none());
+
+        let res = poller.wait_for_spawned_wake_idle(&app, sid).await;
+
+        assert_eq!(res, Ok(SettleReadiness::Ready));
     }
 
     /// Single source of the TTL-bound fixture pair: `expires_at` is derived from the same
