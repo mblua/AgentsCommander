@@ -153,6 +153,7 @@ fn run_command(mode: &ExecutionMode) -> std::io::Result<std::process::ExitStatus
     match mode {
         ExecutionMode::Argv(argv) => {
             let mut command = Command::new(&argv[0]);
+            crate::config::agent_path::apply_search_path_to_std_command(&mut command);
             command.args(&argv[1..]);
             // #992 - the release binary is GUI-subsystem, and `attach_parent_console`
             // deliberately does NOT attach when the std handles are already valid
@@ -192,6 +193,7 @@ fn platform_shell_command(raw: &str) -> Command {
 #[cfg(not(target_os = "windows"))]
 fn platform_shell_command(raw: &str) -> Command {
     let mut command = Command::new("sh");
+    crate::config::agent_path::apply_search_path_to_std_command(&mut command);
     command.args(["-c", raw]);
     command
 }
