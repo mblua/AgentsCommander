@@ -91,6 +91,29 @@ pub struct UiHoverArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct UiPointerArgs {
+    #[arg(long, default_value = "main")]
+    pub window: String,
+    /// Required for down and move*; forbidden for up and cancel.
+    #[arg(long)]
+    pub selector: Option<String>,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+    pub operation: String,
+}
+
+#[derive(Debug, Args)]
+pub struct UiKeyArgs {
+    #[arg(long, default_value = "main")]
+    pub window: String,
+    #[arg(long)]
+    pub selector: String,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+    pub chord: String,
+}
+
+#[derive(Debug, Args)]
 pub struct UiSetArgs {
     #[arg(long, default_value = "main")]
     pub window: String,
@@ -171,6 +194,8 @@ pub enum UiAutomationAction {
     TypeText,
     Backend,
     Terminal,
+    Pointer,
+    Key,
 }
 
 impl UiAutomationAction {
@@ -189,7 +214,9 @@ impl UiAutomationAction {
             Self::SetValue => Self::TypeText,
             Self::TypeText => Self::Backend,
             Self::Backend => Self::Terminal,
-            Self::Terminal => return None,
+            Self::Terminal => Self::Pointer,
+            Self::Pointer => Self::Key,
+            Self::Key => return None,
         })
     }
 
@@ -914,6 +941,118 @@ fn terminal_cli_request(args: UiTerminalArgs) -> Result<CliRequest, Value> {
 
 pub fn execute_terminal(args: UiTerminalArgs) -> i32 {
     match terminal_cli_request(args) {
+        Ok(request) => execute_cli(request),
+        Err(error) => {
+            print_stdout_json(&error);
+            1
+        }
+    }
+}
+
+fn valid_pointer_operation(op: &str) -> bool {
+    matches!(
+        op,
+        "down" | "move" | "move:top" | "move:bottom" | "up" | "cancel"
+    )
+}
+
+fn valid_key_chord(chord: &str) -> bool {
+    const MODIFIERS: [&str; 4] = ["Ctrl", "Alt", "Shift", "Meta"];
+    const KEYS: [&str; 10] = [
+        "Escape",
+        "Enter",
+        "Space",
+        "Tab",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "Home",
+        "End",
+    ];
+    let mut parts: Vec<&str> = chord.split('+').collect();
+    let Some(key) = parts.pop() else {
+        return false;
+    };
+    // Each modifier at most once and in canonical order: a strictly increasing index.
+    let mut next_modifier = 0;
+    for part in parts {
+        match MODIFIERS[next_modifier..].iter().position(|m| *m == part) {
+            Some(offset) => next_modifier += offset + 1,
+            None => return false,
+        }
+    }
+    KEYS.contains(&key)
+}
+
+fn pointer_cli_request(args: UiPointerArgs) -> Result<CliRequest, Value> {
+    if !valid_pointer_operation(&args.operation) {
+        return Err(preflight_error(
+            "invalid_pointer_operation",
+            "Pointer operation must be down, move, move:top, move:bottom, up, or cancel.",
+            None,
+        ));
+    }
+    let target_free = matches!(args.operation.as_str(), "up" | "cancel");
+    let selector = match (target_free, args.selector) {
+        (false, Some(selector)) => selector,
+        (false, None) => {
+            return Err(preflight_error(
+                "pointer_selector_required",
+                "Pointer down and move operations require --selector.",
+                None,
+            ))
+        }
+        // Empty like `ui-hover --leave`; the frontend echoes it, so `complete()` still matches.
+        (true, None) => String::new(),
+        (true, Some(_)) => {
+            return Err(preflight_error(
+                "pointer_selector_not_allowed",
+                "Pointer up and cancel operations do not accept --selector.",
+                None,
+            ))
+        }
+    };
+
+    Ok(CliRequest {
+        window: args.window,
+        selector,
+        action: UiAutomationAction::Pointer,
+        value: Some(args.operation),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+fn key_cli_request(args: UiKeyArgs) -> Result<CliRequest, Value> {
+    if !valid_key_chord(&args.chord) {
+        return Err(preflight_error(
+            "invalid_key_chord",
+            "Key chord must be optional Ctrl+, Alt+, Shift+, Meta+ in that order, then Escape, Enter, Space, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, or End.",
+            None,
+        ));
+    }
+
+    Ok(CliRequest {
+        window: args.window,
+        selector: args.selector,
+        action: UiAutomationAction::Key,
+        value: Some(args.chord),
+        timeout_ms: args.timeout_ms,
+    })
+}
+
+pub fn execute_pointer(args: UiPointerArgs) -> i32 {
+    match pointer_cli_request(args) {
+        Ok(request) => execute_cli(request),
+        Err(error) => {
+            print_stdout_json(&error);
+            1
+        }
+    }
+}
+
+pub fn execute_key(args: UiKeyArgs) -> i32 {
+    match key_cli_request(args) {
         Ok(request) => execute_cli(request),
         Err(error) => {
             print_stdout_json(&error);
@@ -2401,6 +2540,8 @@ mod tests {
             UiAutomationAction::TypeText => "typeText",
             UiAutomationAction::Backend => "backend",
             UiAutomationAction::Terminal => "terminal",
+            UiAutomationAction::Pointer => "pointer",
+            UiAutomationAction::Key => "key",
         }
     }
 
@@ -2918,6 +3059,97 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(invalid_operation["error"], "invalid_terminal_operation");
+    }
+
+    #[test]
+    fn pointer_operation_grammar_is_exact() {
+        for op in ["down", "move", "move:top", "move:bottom", "up", "cancel"] {
+            assert!(valid_pointer_operation(op), "{op}");
+        }
+        for op in ["", "drag", "Down", "move:", "move:left", "up ", "leave"] {
+            assert!(!valid_pointer_operation(op), "{op}");
+        }
+    }
+
+    #[test]
+    fn key_chord_grammar_is_exact() {
+        for chord in [
+            "Escape",
+            "Alt+ArrowUp",
+            "Ctrl+Shift+Tab",
+            "Ctrl+Alt+Shift+Meta+End",
+            "Meta+Home",
+        ] {
+            assert!(valid_key_chord(chord), "{chord}");
+        }
+        for chord in [
+            "alt+ArrowUp",
+            "Alt+Ctrl+Home",
+            "Alt+Alt+End",
+            "Alt+",
+            "A",
+            "",
+            "+Escape",
+            "Alt",
+            "escape",
+        ] {
+            assert!(!valid_key_chord(chord), "{chord}");
+        }
+    }
+
+    fn pointer_args(operation: &str, selector: Option<&str>) -> UiPointerArgs {
+        UiPointerArgs {
+            window: "main".to_string(),
+            selector: selector.map(str::to_string),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            operation: operation.to_string(),
+        }
+    }
+
+    #[test]
+    fn pointer_cli_request_applies_selector_rule() {
+        for op in ["down", "move", "move:top", "move:bottom"] {
+            let request = pointer_cli_request(pointer_args(op, Some("row"))).expect(op);
+            assert_eq!(request.action, UiAutomationAction::Pointer);
+            assert_eq!(request.selector, "row");
+            assert_eq!(request.value.as_deref(), Some(op));
+            let error = pointer_cli_request(pointer_args(op, None)).unwrap_err();
+            assert_eq!(error["error"], "pointer_selector_required");
+        }
+        for op in ["up", "cancel"] {
+            let request = pointer_cli_request(pointer_args(op, None)).expect(op);
+            assert_eq!(request.selector, "");
+            assert_eq!(request.value.as_deref(), Some(op));
+            let error = pointer_cli_request(pointer_args(op, Some("row"))).unwrap_err();
+            assert_eq!(error["error"], "pointer_selector_not_allowed");
+        }
+        // Grammar is checked before the selector rule.
+        let error = pointer_cli_request(pointer_args("drag", None)).unwrap_err();
+        assert_eq!(error["error"], "invalid_pointer_operation");
+    }
+
+    #[test]
+    fn key_cli_request_carries_chord_verbatim() {
+        let request = key_cli_request(UiKeyArgs {
+            window: "main".to_string(),
+            selector: "row".to_string(),
+            timeout_ms: 77,
+            chord: "Alt+ArrowUp".to_string(),
+        })
+        .expect("valid key request");
+        assert_eq!(request.action, UiAutomationAction::Key);
+        assert_eq!(request.selector, "row");
+        assert_eq!(request.value.as_deref(), Some("Alt+ArrowUp"));
+        assert_eq!(request.timeout_ms, 77);
+
+        let error = key_cli_request(UiKeyArgs {
+            window: "main".to_string(),
+            selector: "row".to_string(),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            chord: "alt+ArrowUp".to_string(),
+        })
+        .unwrap_err();
+        assert_eq!(error["error"], "invalid_key_chord");
     }
 
     /// #944 - the Rust enum and the `UiAutomationAction` union in `src/shared/types.ts`

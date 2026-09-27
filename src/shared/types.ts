@@ -1223,7 +1223,9 @@ export type UiAutomationAction =
   | "setValue"
   | "typeText"
   | "backend"
-  | "terminal";
+  | "terminal"
+  | "pointer"
+  | "key";
 
 export interface UiAutomationRequest<
   A extends UiAutomationAction = Exclude<UiAutomationAction, "terminal">,

@@ -208,6 +208,12 @@ pub enum Commands {
     /// Query or scroll a visible xterm through the test-only automation bridge
     #[command(hide = true)]
     UiTerminal(crate::testability::ui_automation::UiTerminalArgs),
+    /// Dispatch a WebView pointer button/move operation on an automation target by data-ac-testid
+    #[command(hide = true)]
+    UiPointer(crate::testability::ui_automation::UiPointerArgs),
+    /// Dispatch a WebView key press on an automation target by data-ac-testid
+    #[command(hide = true)]
+    UiKey(crate::testability::ui_automation::UiKeyArgs),
     /// Click a WebView automation target by data-ac-testid
     #[command(hide = true)]
     UiClick(crate::testability::ui_automation::UiClickArgs),
@@ -450,6 +456,8 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::WindowInfo(args) => crate::testability::window_info::execute(args),
         Commands::UiQuery(args) => crate::testability::ui_automation::execute_query(args),
         Commands::UiTerminal(args) => crate::testability::ui_automation::execute_terminal(args),
+        Commands::UiPointer(args) => crate::testability::ui_automation::execute_pointer(args),
+        Commands::UiKey(args) => crate::testability::ui_automation::execute_key(args),
         Commands::UiClick(args) => crate::testability::ui_automation::execute_click(args),
         Commands::UiContextClick(args) => {
             crate::testability::ui_automation::execute_context_click(args)
@@ -596,6 +604,8 @@ mod tests {
             "window-info",
             "ui-query",
             "ui-terminal",
+            "ui-pointer",
+            "ui-key",
             "ui-click",
             "ui-context-click",
             "ui-hover",
