@@ -20,6 +20,7 @@ pub(crate) mod instance_gitignore;
 pub mod local_config_io;
 pub(crate) mod local_overlay;
 pub mod loops;
+pub(crate) mod naming_migration;
 pub mod placeholders;
 pub mod profile;
 pub mod project_settings;
