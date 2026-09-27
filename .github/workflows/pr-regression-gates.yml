@@ -1144,6 +1144,33 @@ jobs:
             exit 1
           }
 
+      - name: "cargo test (IS #2683 PTY launch search path, focused)"
+        working-directory: src-tauri
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          FILTER='issue_2683'
+          # T1-T6 all compile on this unix leg. The Windows leg of
+          # rust-regression has no such step because T1 and T2 are cfg(unix).
+          # Update EXPECTED and the name list below in the same commit that
+          # adds, removes or renames an issue_2683 test.
+          EXPECTED=6
+          cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2683.log
+
+          T1=issue_2683_spawn_sync_resolves_a_program_only_in_the_injected_search_path
+          T2=issue_2683_spawn_sync_reproduces_the_vm200_failure_without_the_probe_dir
+          for T in "$T1" "$T2"; do
+            grep -qF "$T" test-2683.log || {
+              echo "::error::the #2683 unix test $T never ran; it was renamed or gated out, and this step was testing less than it claims."
+              exit 1
+            }
+          done
+          grep -qE "^test result: ok\. ${EXPECTED} passed; 0 failed" test-2683.log || {
+            echo "::error::expected exactly ${EXPECTED} passing ${FILTER} tests; the count changed or the filter matched something else."
+            exit 1
+          }
+
       # IS #2431: the portable profile digest folds env keys and reduces the
       # executable on every OS. The POSIX behaviour cannot be proven on the
       # Windows leg, where the full suite runs; the sentinel fails on Linux
