@@ -1611,9 +1611,9 @@ mod tests {
         );
         drop(holder);
 
+        assert!(!audit_path.exists(), "no audit row without its state write");
         let err = result.expect_err("the held state write fails");
         assert!(err.starts_with("Failed to finalize Loop state"), "{err}");
-        assert!(!audit_path.exists(), "no audit row without its state write");
         assert_eq!(read_raw_loop_state(&dir).expect("raw"), Some(s0_raw));
         assert!(tmp_files_in(&dir).is_empty(), "{:?}", tmp_files_in(&dir));
     }
