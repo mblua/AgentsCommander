@@ -691,13 +691,13 @@ mod tests {
             }
         });
         std::fs::write(
-            dir.join("settings-blocking-menus.local.json"),
+            dir.join("blocking-menus.50.personal.no-git.json"),
             serde_json::to_vec_pretty(&local).unwrap(),
         )
         .unwrap();
         let store = BlockingMenusStore::load_from_settings_path(&dir.join("settings.json"));
         assert!(
-            dir.join("settings-blocking-menus.json").exists(),
+            dir.join("blocking-menus.10.default.no-git.json").exists(),
             "the production loader writes the shipped file"
         );
         store
@@ -760,7 +760,7 @@ mod tests {
             "byAgent": {},
         });
         std::fs::write(
-            temp.path().join("settings-blocking-menus.remote.json"),
+            temp.path().join("blocking-menus.20.remote.no-git.json"),
             serde_json::to_vec_pretty(&remote).unwrap(),
         )
         .unwrap();
@@ -906,7 +906,7 @@ mod tests {
         // two opencode cases share the stem and differ only in the row under test.
         let temp = tempfile::TempDir::new().unwrap();
         std::fs::write(
-            temp.path().join("settings-blocking-menus.remote.json"),
+            temp.path().join("blocking-menus.20.remote.no-git.json"),
             published,
         )
         .unwrap();
@@ -1021,7 +1021,7 @@ mod tests {
         // entries at all (control).
         let temp = tempfile::TempDir::new().unwrap();
         std::fs::write(
-            temp.path().join("settings-blocking-menus.remote.json"),
+            temp.path().join("blocking-menus.20.remote.no-git.json"),
             published,
         )
         .unwrap();

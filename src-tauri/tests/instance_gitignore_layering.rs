@@ -549,13 +549,14 @@ const ALLOWED_GUARDED_CRATE_REFERENCES: [(&str, &str); 0] = [];
 /// would make the observed set a union over every scanned file, so a reference
 /// added to a future submodule of this module would leave the set unmoved and
 /// pass.
-const ALLOWED_GUARDED_SUPER_REFERENCES: [(&str, &str); 7] = [
+const ALLOWED_GUARDED_SUPER_REFERENCES: [(&str, &str); 8] = [
     ("src/config/instance_gitignore.rs", "*"),
     ("src/config/instance_gitignore.rs", "ROOT_AGENT_DIR_NAME"),
     ("src/config/instance_gitignore.rs", "agent_local_dir_name"),
     ("src/config/instance_gitignore.rs", "config_dir"),
     ("src/config/instance_gitignore.rs", "injected_messages"),
     ("src/config/instance_gitignore.rs", "instance_artifacts"),
+    ("src/config/instance_gitignore.rs", "naming_migration"),
     ("src/config/instance_gitignore.rs", "super"),
 ];
 
