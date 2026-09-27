@@ -1304,23 +1304,28 @@ impl QuotaSources {
         let own: HashMap<String, SourceSpec> = settings
             .quota_sources
             .iter()
-            .filter_map(|(agent_id, entry)| match entry.valid()? {
-                QuotaSourceConfig::ScreenRegex { pattern, enabled } => {
-                    if !*enabled {
-                        return None;
-                    }
-                    // Emptiness is tested on a TRIMMED view; the value handed over is the
-                    // user's string byte for byte. `ScraperPatterns` documents why: leading
-                    // spaces ARE the column anchor, and trimming makes the reading fail OPEN.
-                    (!pattern.trim().is_empty()).then(|| {
-                        (
-                            agent_id.clone(),
-                            SourceSpec::ScreenRegex {
-                                pattern: pattern.clone(),
-                            },
-                        )
-                    })
+            .filter_map(|(agent_id, entry)| {
+                // Every kind shares one filter; only the spec it builds differs.
+                let (pattern, enabled, build): (&String, bool, fn(String) -> SourceSpec) =
+                    match entry.valid()? {
+                        QuotaSourceConfig::ScreenRegex { pattern, enabled } => {
+                            (pattern, *enabled, |pattern| SourceSpec::ScreenRegex {
+                                pattern,
+                            })
+                        }
+                        QuotaSourceConfig::ScreenRegexRemaining { pattern, enabled } => {
+                            (pattern, *enabled, |pattern| {
+                                SourceSpec::ScreenRegexRemaining { pattern }
+                            })
+                        }
+                    };
+                if !enabled {
+                    return None;
                 }
+                // Emptiness is tested on a TRIMMED view; the value handed over is the
+                // user's string byte for byte. `ScraperPatterns` documents why: leading
+                // spaces ARE the column anchor, and trimming makes the reading fail OPEN.
+                (!pattern.trim().is_empty()).then(|| (agent_id.clone(), build(pattern.clone())))
             })
             .collect();
 
@@ -1476,6 +1481,51 @@ mod quota_sources_tests {
         assert_eq!(
             specs.get("anchored").map(|src| &src.spec),
             Some(&spec(anchored)),
+            "the leading spaces are the column anchor and must survive"
+        );
+    }
+
+    fn remaining(pattern: &str, enabled: bool) -> QuotaSourceEntry {
+        QuotaSourceEntry::Valid(QuotaSourceConfig::ScreenRegexRemaining {
+            pattern: pattern.to_string(),
+            enabled,
+        })
+    }
+
+    #[test]
+    fn the_adapter_maps_a_remaining_entry_to_a_remaining_spec() {
+        let pattern = r"Weekly (\d{1,3})% left";
+        let specs = specs(vec![("codex", remaining(pattern, true))]);
+        assert_eq!(
+            specs.get("codex").map(|src| &src.spec),
+            Some(&SourceSpec::ScreenRegexRemaining {
+                pattern: pattern.to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_adapter_skips_a_disabled_or_blank_remaining_entry() {
+        let anchored = "  Weekly (\\d+)% left";
+        let specs = map(
+            vec![
+                ("off", "off-cli"),
+                ("blank", "blank-cli"),
+                ("anchored", "claude"),
+            ],
+            vec![
+                ("off", remaining(PATTERN, false)),
+                ("blank", remaining("   ", true)),
+                ("anchored", remaining(anchored, true)),
+            ],
+        );
+        assert!(!specs.contains_key("off"));
+        assert!(!specs.contains_key("blank"));
+        assert_eq!(
+            specs.get("anchored").map(|src| &src.spec),
+            Some(&SourceSpec::ScreenRegexRemaining {
+                pattern: anchored.to_string(),
+            }),
             "the leading spaces are the column anchor and must survive"
         );
     }
