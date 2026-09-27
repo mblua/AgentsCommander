@@ -226,6 +226,12 @@ const INVENTORY: &[Row] = &[
         &[(TestOnly, 1)],
     ),
     ("src-tauri/src/config/loops.rs", 1, 0, &[(TestOnly, 1)]),
+    (
+        "src-tauri/src/config/naming_migration.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
     ("src-tauri/src/config/session_context.rs", 1, 1, &[]),
     ("src-tauri/src/config/teams.rs", 1, 0, &[(TestOnly, 1)]),
     ("src-tauri/src/lib.rs", 1, 0, &[(TestOnly, 1)]),
