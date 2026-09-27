@@ -579,7 +579,7 @@ export function sessionTierBadge(
   if (!letter) return null;
   if (session.matchTier === "labelAndLetter") {
     return {
-      text: `${letter}·nombre`,
+      text: `${letter}·name`,
       title: `Matched by coding-agent name, not by configuration. Effective profile: ${letter}.`,
     };
   }
@@ -590,4 +590,44 @@ export function sessionTierBadge(
     };
   }
   return null;
+}
+
+const ORPHAN_NOTICE_CLAUSE: Record<string, string> = {
+  hash: "configuration",
+  labelAndLetter: "name",
+  commandAndLetter: "command",
+};
+
+/**
+ * #2568 - the row notice for a stored coding-agent reference that was not
+ * found, so another profile was adopted in its place. `null` means "no
+ * notice": no tier, an unknown tier, no label or letter to print, or a hash
+ * match on the same letter. The hash tier compares the two letters instead of
+ * trusting presence, so it stays correct if the backend ever sets the field
+ * unconditionally.
+ */
+export function sessionOrphanNotice(
+  session: Pick<Session, "agentLabel" | "effectiveProfile" | "matchTier" | "originalProfileLetter">
+): { text: string } | null {
+  const codingAgent = session.agentLabel;
+  const letter = session.effectiveProfile;
+  if (!codingAgent || !letter || !session.matchTier) return null;
+  if (!Object.prototype.hasOwnProperty.call(ORPHAN_NOTICE_CLAUSE, session.matchTier)) return null;
+  if (session.matchTier === "hash") {
+    const saved = session.originalProfileLetter;
+    if (!saved || saved === letter) return null;
+  }
+  const clause = ORPHAN_NOTICE_CLAUSE[session.matchTier];
+  return { text: `Saved coding agent not found. Using ${codingAgent} ${letter}, same ${clause}.` };
+}
+
+/**
+ * #2568 - dismissal key for the orphan notice: one per agent per app run. It
+ * holds no session id, so a relaunch of the agent keeps the dismissal.
+ */
+export function orphanNoticeKey(
+  session: Pick<Session, "workingDirectory" | "agentId">
+): string | null {
+  if (!session.workingDirectory || !session.agentId) return null;
+  return `${session.workingDirectory}\u001f${session.agentId}`;
 }

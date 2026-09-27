@@ -1453,6 +1453,7 @@ export interface SessionsState {
   coordSortByActivity: boolean;
   lastActivityBySessionId: Record<string, number>;
   contextPercentBySessionId: Record<string, number | null>;
+  orphanNoticeDismissedByAgentKey: Record<string, true>;
   weeklyQuotaUsedByAgentId: Record<string, number | null>;
   hydrated: boolean;
 }

@@ -22,6 +22,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveGit } from "./resolve-git.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..");
@@ -52,7 +53,7 @@ const SURFACES = {
 
 function git(args) {
   try {
-    return execFileSync("git", ["-C", REPO, ...args], { encoding: "utf8", maxBuffer: 1 << 29 });
+    return execFileSync(resolveGit(), ["-C", REPO, ...args], { encoding: "utf8", maxBuffer: 1 << 29 });
   } catch (e) {
     if (e.status === 1 && typeof e.stdout === "string") return e.stdout; // no matches
     throw e;
