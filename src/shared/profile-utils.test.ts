@@ -17,6 +17,7 @@ import {
   isAcAgentPath,
   isCodexAgent,
   isWgReplicaPath,
+  orphanNoticeKey,
   parseArgvText,
   profileBadgeKind,
   profileCellCommandText,
@@ -28,6 +29,7 @@ import {
   resolveProfileLabel,
   resolveProfilePreview,
   sessionProfileBadge,
+  sessionOrphanNotice,
   sessionTierBadge,
   shouldMaskEnvValue,
   shouldOfferRestartAfterAssign,
@@ -706,9 +708,9 @@ describe("sessionTierBadge (#2435 weak-tier profile match)", () => {
 
   it("label tier renders the middle-dot name form with the label tooltip", () => {
     const tier = sessionTierBadge({ effectiveProfile: "B", matchTier: "labelAndLetter" });
-    expect(tier).toEqual({ text: "B·nombre", title: LABEL_TITLE });
+    expect(tier).toEqual({ text: "B·name", title: LABEL_TITLE });
     expect(tier!.text.codePointAt(1)).toBe(0x00b7);
-    expect(tier!.text).toHaveLength(8);
+    expect(tier!.text).toHaveLength(6);
   });
 
   it("command tier renders the middle-dot cmd form with the command tooltip", () => {
@@ -761,5 +763,113 @@ describe("sessionTierBadge (#2435 weak-tier profile match)", () => {
         matchTier: "labelAndLetter",
       } as Parameters<typeof sessionProfileBadge>[0]),
     ).toBe("A->B");
+  });
+});
+
+describe("sessionOrphanNotice (#2568)", () => {
+  const base = { agentLabel: "Codex", effectiveProfile: "B" };
+
+  it("labelAndLetter renders the name clause", () => {
+    expect(sessionOrphanNotice({ ...base, matchTier: "labelAndLetter" })).toEqual({
+      text: "Saved coding agent not found. Using Codex B, same name.",
+    });
+  });
+
+  it("commandAndLetter renders the command clause", () => {
+    expect(sessionOrphanNotice({ ...base, matchTier: "commandAndLetter" })).toEqual({
+      text: "Saved coding agent not found. Using Codex B, same command.",
+    });
+  });
+
+  it("the two clauses differ", () => {
+    const byName = sessionOrphanNotice({ ...base, matchTier: "labelAndLetter" });
+    const byCommand = sessionOrphanNotice({ ...base, matchTier: "commandAndLetter" });
+    expect(byName!.text).not.toBe(byCommand!.text);
+  });
+
+  it("hash with a different saved letter renders the configuration clause", () => {
+    expect(
+      sessionOrphanNotice({ ...base, matchTier: "hash", originalProfileLetter: "A" }),
+    ).toEqual({ text: "Saved coding agent not found. Using Codex B, same configuration." });
+  });
+
+  it("hash with the same letter renders nothing", () => {
+    expect(sessionOrphanNotice({ ...base, matchTier: "hash", originalProfileLetter: "B" })).toBeNull();
+  });
+
+  it("hash with no saved letter renders nothing", () => {
+    expect(sessionOrphanNotice({ ...base, matchTier: "hash", originalProfileLetter: null })).toBeNull();
+    expect(sessionOrphanNotice({ ...base, matchTier: "hash" })).toBeNull();
+    expect(sessionOrphanNotice({ ...base, matchTier: "hash", originalProfileLetter: "" })).toBeNull();
+  });
+
+  it("an absent tier returns null", () => {
+    expect(sessionOrphanNotice({ ...base })).toBeNull();
+  });
+
+  it("a null tier returns null", () => {
+    expect(sessionOrphanNotice({ ...base, matchTier: null })).toBeNull();
+  });
+
+  it("an unrecognised tier string returns null", () => {
+    const tier = "localId" as unknown as "hash";
+    expect(sessionOrphanNotice({ ...base, matchTier: tier, originalProfileLetter: "A" })).toBeNull();
+    const inherited = "toString" as unknown as "hash";
+    expect(sessionOrphanNotice({ ...base, matchTier: inherited })).toBeNull();
+  });
+
+  it("no effective letter returns null", () => {
+    expect(
+      sessionOrphanNotice({ agentLabel: "Codex", effectiveProfile: null, matchTier: "labelAndLetter" }),
+    ).toBeNull();
+  });
+
+  it("no agent label returns null", () => {
+    expect(
+      sessionOrphanNotice({ agentLabel: null, effectiveProfile: "B", matchTier: "labelAndLetter" }),
+    ).toBeNull();
+  });
+
+  it("sessionProfileBadge is unchanged for a session with a weak tier", () => {
+    const withTier = {
+      requestedProfile: "A",
+      effectiveProfile: "B",
+      profileFallbackApplied: true,
+      matchTier: "commandAndLetter",
+      agentLabel: "Codex",
+    } as Parameters<typeof sessionProfileBadge>[0];
+    expect(sessionProfileBadge(withTier)).toBe("A->B");
+  });
+
+  it("the tier badge reads the English name suffix", () => {
+    const byName = sessionTierBadge({ effectiveProfile: "B", matchTier: "labelAndLetter" })!;
+    expect(byName.text).toBe("B\u00b7name");
+    expect(byName.text.codePointAt(1)).toBe(0x00b7);
+    const byCommand = sessionTierBadge({ effectiveProfile: "B", matchTier: "commandAndLetter" })!;
+    expect(byCommand.text).toBe("B\u00b7cmd");
+    expect(byCommand.text.codePointAt(1)).toBe(0x00b7);
+  });
+});
+
+describe("orphanNoticeKey (#2568)", () => {
+  it("joins the working directory and the agent id", () => {
+    const key = orphanNoticeKey({ workingDirectory: "C:\\proj\\agent", agentId: "codex" });
+    expect(key).toBe("C:\\proj\\agent\u001fcodex");
+    expect(key!.codePointAt("C:\\proj\\agent".length)).toBe(0x1f);
+  });
+
+  it("returns null for a missing or empty part", () => {
+    expect(orphanNoticeKey({ workingDirectory: "C:\\proj", agentId: null })).toBeNull();
+    expect(orphanNoticeKey({ workingDirectory: "C:\\proj", agentId: "" })).toBeNull();
+    expect(orphanNoticeKey({ workingDirectory: "", agentId: "codex" })).toBeNull();
+  });
+
+  it("distinguishes two agents in one directory and one agent in two directories", () => {
+    expect(orphanNoticeKey({ workingDirectory: "C:\\proj", agentId: "codex" })).not.toBe(
+      orphanNoticeKey({ workingDirectory: "C:\\proj", agentId: "claude" }),
+    );
+    expect(orphanNoticeKey({ workingDirectory: "C:\\proj", agentId: "codex" })).not.toBe(
+      orphanNoticeKey({ workingDirectory: "C:\\other", agentId: "codex" }),
+    );
   });
 });

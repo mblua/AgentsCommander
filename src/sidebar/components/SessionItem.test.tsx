@@ -828,7 +828,7 @@ describe("SessionItem tier badge (#2435)", () => {
         expect(rendered.root.querySelector('[data-ac-testid="session.tier-1.tierBadge"]')).not.toBeNull(),
       );
       const tier = rendered.root.querySelector<HTMLElement>('[data-ac-testid="session.tier-1.tierBadge"]')!;
-      expect(tier.textContent).toBe("B·nombre");
+      expect(tier.textContent).toBe("B·name");
       expect(tier.getAttribute("title")).toBe(
         "Matched by coding-agent name, not by configuration. Effective profile: B.",
       );
@@ -880,8 +880,80 @@ describe("SessionItem tier badge (#2435)", () => {
       );
       const badges = rendered.root.querySelectorAll<HTMLElement>(".profile-badge");
       expect(badges[0].textContent).toBe("A->B");
-      expect(badges[1].textContent).toBe("B·nombre");
+      expect(badges[1].textContent).toBe("B·name");
       expect(badges[1].getAttribute("data-ac-testid")).toBe("session.tier-3.tierBadge");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
+
+describe("SessionItem orphan notice (#2568)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+    sessionsStore.resetOrphanNoticesForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    sessionsStore.resetOrphanNoticesForTests();
+    document.body.replaceChildren();
+  });
+
+  const noticeSettings = () => baseSettings({ agents: TWO_AGENTS, codingAgentProfiles: profiles({}) });
+  const adopted = (id: string): Partial<Session> => ({
+    id,
+    agentId: "codex",
+    agentLabel: "Codex",
+    requestedProfile: "B",
+    effectiveProfile: "B",
+    profileFallbackApplied: false,
+    matchTier: "labelAndLetter",
+  });
+
+  it("an adopted session renders the notice text", async () => {
+    const rendered = await renderRow(adopted("orphan-1"), noticeSettings());
+    try {
+      const notice = rendered.root.querySelector<HTMLElement>('[data-ac-testid="session.orphan-1.orphanNotice"]');
+      expect(notice).not.toBeNull();
+      expect(notice!.querySelector(".orphan-notice-text")!.textContent).toBe(
+        "Saved coding agent not found. Using Codex B, same name.",
+      );
+      expect(notice!.parentElement!.classList.contains("session-item-info")).toBe(true);
+      expect(notice!.parentElement!.lastElementChild).toBe(notice);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("dismissing removes the notice and does not switch the session", async () => {
+    const rendered = await renderRow(adopted("orphan-2"), noticeSettings());
+    rendered.fake.resolve("switch_session", undefined);
+    try {
+      const dismiss = rendered.root.querySelector<HTMLElement>(
+        '[data-ac-testid="session.orphan-2.orphanNotice.dismiss"]',
+      );
+      expect(dismiss).not.toBeNull();
+      expect(dismiss!.getAttribute("aria-label")).toBe("Dismiss notice");
+      rendered.fake.clearCalls();
+      click(dismiss!);
+      await Promise.resolve();
+      expect(rendered.root.querySelector('[data-ac-testid="session.orphan-2.orphanNotice"]')).toBeNull();
+      expect(rendered.fake.calls.map((call) => call.cmd)).toEqual([]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("a session with no tier renders no notice node", async () => {
+    const rendered = await renderRow({ ...adopted("orphan-3"), matchTier: null }, noticeSettings());
+    try {
+      expect(rendered.root.querySelector(".orphan-notice")).toBeNull();
     } finally {
       rendered.cleanup();
     }
