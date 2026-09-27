@@ -45,6 +45,7 @@ pub(crate) struct LoopDeliveryGate {
 
 /// #2698: a run whose prompt was delivered but whose commit failed. A later
 /// scan retries the commit instead of delivering the run again.
+#[derive(Clone)]
 struct UnrecordedDelivery {
     /// Loop generation at delivery (app-side edits).
     generation: u64,
@@ -305,8 +306,11 @@ impl LoopScheduler {
             (config, state, raw, self.loop_generation(dir))
         };
         let s0_raw = s0_raw.as_deref();
-        if let Some(record) = self.take_unrecorded_delivery(dir) {
+        // A clone: the record stays in the map until the replay writes it, so
+        // a scan cancelled inside the replay cannot lose it.
+        if let Some(record) = self.peek_unrecorded_delivery(dir) {
             if !config.loop_def.enabled {
+                self.take_unrecorded_delivery(dir);
                 log::warn!(
                     "[loops] Dropping unrecorded delivery for {}: the Loop is disabled",
                     dir.display()
@@ -316,6 +320,7 @@ impl LoopScheduler {
                     && s0_raw != Some(&record.state_after[..]))
                 || !loop_delivery_config_matches(&config, &record.config)
             {
+                self.take_unrecorded_delivery(dir);
                 log::warn!(
                     "[loops] Dropping unrecorded delivery for {}: the Loop or its state changed",
                     dir.display()
@@ -691,6 +696,14 @@ impl LoopScheduler {
             .insert(generation_key(dir), record);
     }
 
+    fn peek_unrecorded_delivery(&self, dir: &Path) -> Option<UnrecordedDelivery> {
+        self.unrecorded_deliveries
+            .lock()
+            .expect("unrecorded deliveries")
+            .get(&generation_key(dir))
+            .cloned()
+    }
+
     fn take_unrecorded_delivery(&self, dir: &Path) -> Option<UnrecordedDelivery> {
         self.unrecorded_deliveries
             .lock()
@@ -720,28 +733,20 @@ impl LoopScheduler {
             Some(&record.config),
         );
         drop(io);
-        match result {
-            Ok(LoopStateWrite::Written) => {
-                emit_transition(
-                    app,
-                    project_dir,
-                    dir,
-                    &record.config,
-                    &record.delivered,
-                    "delivered",
-                    Some(record.report_message),
-                );
-                Ok(())
-            }
-            Ok(LoopStateWrite::Stale) => {
-                self.keep_unrecorded_delivery(dir, record);
-                Ok(())
-            }
-            Err(e) => {
-                self.keep_unrecorded_delivery(dir, record);
-                Err(e)
-            }
+        // Stale or Err: the record stays for the next scan.
+        if result? == LoopStateWrite::Written {
+            self.take_unrecorded_delivery(dir);
+            emit_transition(
+                app,
+                project_dir,
+                dir,
+                &record.config,
+                &record.delivered,
+                "delivered",
+                Some(record.report_message),
+            );
         }
+        Ok(())
     }
 
     /// `false` when the Loop was replaced (generation) or its `state.json`
@@ -2441,5 +2446,69 @@ mod tests {
             (state.last_checked_at, state.next_due_at),
             (reset.last_checked_at, reset.next_due_at)
         );
+    }
+
+    /// Rework 1 - a replay cancelled while it waits for `io_lock` keeps its
+    /// record: the next scan still replays and does not deliver again.
+    #[tokio::test]
+    async fn issue_2698_cancelled_replay_keeps_the_record() {
+        let (tmp, dir, run_id) = issue_2698_fixture();
+        let app = audit_writer_app();
+        let scheduler = Arc::new(LoopScheduler::new());
+        failed_first_scan(&scheduler, &app, tmp.path(), &dir, run_id).await;
+
+        // tokio's Mutex is FIFO: the scan queues at S0, then the holder. Once
+        // the test lets go, the scan runs S0 and queues again in the replay,
+        // behind the holder, which then keeps `io_lock`.
+        let first = scheduler.io_lock.lock().await;
+        let scan = {
+            let scheduler = Arc::clone(&scheduler);
+            let app = app.handle().clone();
+            let (project, dir) = (tmp.path().to_path_buf(), dir.clone());
+            tokio::spawn(async move {
+                scheduler
+                    .scan_loop(&app, &project, &dir, false, false)
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (free_tx, free_rx) = tokio::sync::oneshot::channel::<()>();
+        let holder = {
+            let scheduler = Arc::clone(&scheduler);
+            tokio::spawn(async move {
+                let _io = scheduler.io_lock.lock().await;
+                let _ = held_tx.send(());
+                let _ = free_rx.await;
+            })
+        };
+        tokio::task::yield_now().await;
+        drop(first);
+        held_rx
+            .await
+            .expect("the holder took io_lock after the scan's S0");
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!scan.is_finished(), "the replay waits for io_lock");
+        scan.abort();
+        assert!(scan.await.expect_err("aborted").is_cancelled());
+        free_tx.send(()).expect("free io_lock");
+        holder.await.expect("holder");
+        assert!(
+            has_record(&scheduler, &dir),
+            "a cancelled replay lost its record"
+        );
+
+        install_report_gate(&scheduler, delivered_report());
+        scheduler
+            .scan_project_under_scan_lock(app.handle().clone(), tmp.path().to_path_buf())
+            .await
+            .expect("next scan");
+        assert!(gate_is_untaken(&scheduler), "the next scan re-delivered");
+        let rows = audit_rows(&dir);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].run_id, run_id);
+        assert!(!has_record(&scheduler, &dir));
     }
 }
