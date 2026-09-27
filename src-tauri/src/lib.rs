@@ -1068,9 +1068,28 @@ fn migrate_instance_families(dir: &Path) -> Result<Option<String>, StartupError>
         })
     };
 
-    // A directory that does not exist yet holds nothing to rename.
-    if !dir.is_dir() {
-        return Ok(None);
+    // A directory that does not exist yet holds nothing to rename, and it is
+    // not created here. Anything else that is not a readable directory is fatal.
+    match dir.metadata() {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(naming_migration_error(
+                "the configuration directory path is not a directory",
+                dir.to_path_buf(),
+            ))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(Some(format!(
+                "[naming-migration] {scope}: skipped, configuration directory {} does not exist",
+                dir.display()
+            )))
+        }
+        Err(e) => {
+            return Err(naming_migration_error(
+                format!("failed to inspect the configuration directory: {e}"),
+                dir.to_path_buf(),
+            ))
+        }
     }
     // `scope_is_settled`, never `is_complete`: a `Complete` the disk
     // contradicts is re-run.
@@ -7793,6 +7812,54 @@ mod tests {
             std::fs::read_to_string(dir.join("settings.json.deprecated-1.no-git")).unwrap(),
             "a restored old file"
         );
+    }
+
+    /// E21. An absent configuration directory is skipped and not created; a
+    /// path that exists but is not a readable directory is fatal.
+    #[test]
+    fn a_missing_config_dir_skips_and_a_bad_one_is_fatal() {
+        let _guard = naming_migration_guard();
+        let temp = tempfile::tempdir().unwrap();
+
+        // Absent: skipped, recorded, and nothing is written anywhere.
+        let _ = crate::take_naming_migration_summary();
+        let absent = temp.path().join("absent-config");
+        crate::preflight_config_startup_in(&absent).expect("an absent directory is skipped");
+        assert!(!absent.exists(), "the directory was created");
+        assert_eq!(
+            std::fs::read_dir(temp.path()).unwrap().count(),
+            0,
+            "a journal, lock or temporary was written"
+        );
+        let summary = crate::take_naming_migration_summary().expect("the skip is recorded");
+        assert!(summary.contains("skipped"), "{summary}");
+
+        // A regular file where the directory should be.
+        let file = temp.path().join("config-is-a-file");
+        std::fs::write(&file, "not a directory").unwrap();
+        let message = crate::preflight_config_startup_in(&file)
+            .expect_err("a regular file is fatal")
+            .to_string();
+        assert!(message.contains(&file.display().to_string()), "{message}");
+
+        // A path below a regular file. Unix reports ENOTDIR, which is fatal.
+        // Windows reports ERROR_PATH_NOT_FOUND (3), which std maps to
+        // `NotFound`, so there it is the absent case: skipped, nothing created.
+        let child = file.join("child");
+        #[cfg(unix)]
+        {
+            let message = crate::preflight_config_startup_in(&child)
+                .expect_err("a path below a file is fatal")
+                .to_string();
+            assert!(message.contains(&child.display().to_string()), "{message}");
+        }
+        #[cfg(windows)]
+        {
+            crate::preflight_config_startup_in(&child)
+                .expect("Windows reports a path below a file as not found");
+            assert!(std::fs::metadata(&file).unwrap().is_file());
+            assert!(!child.exists());
+        }
     }
 
     /// E20.
