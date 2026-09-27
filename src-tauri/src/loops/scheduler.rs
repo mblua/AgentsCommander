@@ -43,6 +43,16 @@ pub(crate) struct LoopDeliveryGate {
     pub(crate) report: Option<LoopDeliveryReport>,
 }
 
+/// Test-only pause in a #2698 replay, before its `io_lock` wait: signals
+/// `reached`, waits for `release`, then signals `at_lock` just before it
+/// awaits `io_lock`, with no other await in between.
+#[cfg(test)]
+pub(crate) struct LoopReplayGate {
+    pub(crate) reached: tokio::sync::oneshot::Sender<()>,
+    pub(crate) release: tokio::sync::oneshot::Receiver<()>,
+    pub(crate) at_lock: tokio::sync::oneshot::Sender<()>,
+}
+
 /// #2698: a run whose prompt was delivered but whose commit failed. A later
 /// scan retries the commit instead of delivering the run again.
 #[derive(Clone)]
@@ -84,6 +94,8 @@ pub struct LoopScheduler {
     unrecorded_deliveries: std::sync::Mutex<HashMap<String, UnrecordedDelivery>>,
     #[cfg(test)]
     delivery_gate: std::sync::Mutex<Option<LoopDeliveryGate>>,
+    #[cfg(test)]
+    replay_gate: std::sync::Mutex<Option<LoopReplayGate>>,
 }
 
 impl LoopScheduler {
@@ -96,6 +108,8 @@ impl LoopScheduler {
             unrecorded_deliveries: std::sync::Mutex::new(HashMap::new()),
             #[cfg(test)]
             delivery_gate: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            replay_gate: std::sync::Mutex::new(None),
         }
     }
 
@@ -232,6 +246,11 @@ impl LoopScheduler {
     ) -> Result<(), String> {
         let _guard = self.scan_lock.lock().await;
         self.scan_project(&app, &dir, false, false).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_replay_gate(&self, gate: LoopReplayGate) {
+        *self.replay_gate.lock().expect("replay gate") = Some(gate);
     }
 
     #[cfg(test)]
@@ -723,6 +742,14 @@ impl LoopScheduler {
         s0_generation: u64,
         s0_raw: Option<&[u8]>,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        let gate = self.replay_gate.lock().expect("replay gate").take();
+        #[cfg(test)]
+        if let Some(gate) = gate {
+            let _ = gate.reached.send(());
+            let _ = gate.release.await;
+            let _ = gate.at_lock.send(());
+        }
         let io = self.io_lock.lock().await;
         let result = self.commit_scan_section_checked(
             dir,
@@ -2448,19 +2475,31 @@ mod tests {
         );
     }
 
-    /// Rework 1 - a replay cancelled while it waits for `io_lock` keeps its
-    /// record: the next scan still replays and does not deliver again.
+    /// Rework 1/2 - a replay cancelled while it waits for `io_lock` keeps
+    /// its record: the next scan still replays and does not deliver again.
+    /// The replay gate makes the order deterministic: the test takes
+    /// `io_lock` while the scan is parked in the gate, and `at_lock` arrives
+    /// only once the scan's task yields, which (current-thread runtime) is
+    /// at the `io_lock` wait, since no other await follows the gate.
     #[tokio::test]
     async fn issue_2698_cancelled_replay_keeps_the_record() {
+        assert_eq!(
+            tokio::runtime::Handle::current().runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::CurrentThread
+        );
         let (tmp, dir, run_id) = issue_2698_fixture();
         let app = audit_writer_app();
         let scheduler = Arc::new(LoopScheduler::new());
         failed_first_scan(&scheduler, &app, tmp.path(), &dir, run_id).await;
 
-        // tokio's Mutex is FIFO: the scan queues at S0, then the holder. Once
-        // the test lets go, the scan runs S0 and queues again in the replay,
-        // behind the holder, which then keeps `io_lock`.
-        let first = scheduler.io_lock.lock().await;
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let (at_lock_tx, at_lock_rx) = tokio::sync::oneshot::channel();
+        scheduler.install_replay_gate(LoopReplayGate {
+            reached: reached_tx,
+            release: release_rx,
+            at_lock: at_lock_tx,
+        });
         let scan = {
             let scheduler = Arc::clone(&scheduler);
             let app = app.handle().clone();
@@ -2471,30 +2510,14 @@ mod tests {
                     .await
             })
         };
-        tokio::task::yield_now().await;
-        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
-        let (free_tx, free_rx) = tokio::sync::oneshot::channel::<()>();
-        let holder = {
-            let scheduler = Arc::clone(&scheduler);
-            tokio::spawn(async move {
-                let _io = scheduler.io_lock.lock().await;
-                let _ = held_tx.send(());
-                let _ = free_rx.await;
-            })
-        };
-        tokio::task::yield_now().await;
-        drop(first);
-        held_rx
-            .await
-            .expect("the holder took io_lock after the scan's S0");
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
-        assert!(!scan.is_finished(), "the replay waits for io_lock");
+        reached_rx.await.expect("the scan reached the replay");
+        let held = scheduler.io_lock.lock().await;
+        release_tx.send(()).expect("release the replay gate");
+        at_lock_rx.await.expect("the replay waits for io_lock");
+        assert!(!scan.is_finished(), "the replay is parked on io_lock");
         scan.abort();
         assert!(scan.await.expect_err("aborted").is_cancelled());
-        free_tx.send(()).expect("free io_lock");
-        holder.await.expect("holder");
+        drop(held);
         assert!(
             has_record(&scheduler, &dir),
             "a cancelled replay lost its record"
