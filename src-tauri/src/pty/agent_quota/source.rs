@@ -16,12 +16,14 @@ use crate::pty::context_scrape::rows;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceSpec {
     ScreenRegex { pattern: String },
+    ScreenRegexRemaining { pattern: String },
 }
 
 /// The compiled form of one configured source.
 #[derive(Debug)]
 pub enum ResolvedSource {
     ScreenRegex(Arc<ContextPattern>),
+    ScreenRegexRemaining(Arc<ContextPattern>),
 }
 
 /// Compile a spec, or say why it cannot be one. For `ScreenRegex` this is #1032's
@@ -30,6 +32,8 @@ pub fn resolve(spec: &SourceSpec) -> Result<ResolvedSource, String> {
     match spec {
         SourceSpec::ScreenRegex { pattern } => pattern::compile(pattern)
             .map(|compiled| ResolvedSource::ScreenRegex(Arc::new(compiled))),
+        SourceSpec::ScreenRegexRemaining { pattern } => pattern::compile(pattern)
+            .map(|compiled| ResolvedSource::ScreenRegexRemaining(Arc::new(compiled))),
     }
 }
 
@@ -38,20 +42,36 @@ pub fn resolve(spec: &SourceSpec) -> Result<ResolvedSource, String> {
 pub fn sample(source: &ResolvedSource, rows: &[String]) -> Option<u8> {
     match source {
         ResolvedSource::ScreenRegex(pattern) => rows::extract(pattern, rows),
+        // Group 1 is the REMAINING percentage; the engine speaks USED. `100 - r` cannot
+        // underflow: `rows::extract` returns `None` for anything above 100, so every
+        // `Some(r)` it yields has `r <= 100`. No `saturating_sub` on purpose: it would hide
+        // a regression in that guarantee, which the `101` test catches instead.
+        ResolvedSource::ScreenRegexRemaining(pattern) => {
+            rows::extract(pattern, rows).map(|r| 100 - r)
+        }
     }
 }
 
-/// The string a recompile is decided by. The `"screenRegex:"` prefix is contract: it
-/// is what stops a future kind with equal text from reusing a cached compile.
+/// The string a recompile is decided by. The `"screenRegex:"` and
+/// `"screenRegexRemaining:"` prefixes are contract: they are what stop a kind with equal
+/// text from reusing another kind's cached compile.
 pub fn spec_key(spec: &SourceSpec) -> String {
     match spec {
         SourceSpec::ScreenRegex { pattern } => format!("screenRegex:{pattern}"),
+        SourceSpec::ScreenRegexRemaining { pattern } => {
+            format!("screenRegexRemaining:{pattern}")
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The 37 ASCII bytes the settings file holds. RAW string: the backslash survives.
+    const CODEX_PATTERN: &str = r"(?:^|[ \u00b7])Weekly (\d{1,3})% left";
+    // The row Codex draws. Real U+00B7 characters, written with a Rust escape.
+    const CODEX_ROW: &str = "Context 0% used \u{b7} Weekly 100% left \u{b7} GPT-6-Sol low";
 
     const PATTERN: &str = r"Weekly (\d{1,3})% used";
 
@@ -98,5 +118,64 @@ mod tests {
         };
         assert!(spec_key(&spec).starts_with("screenRegex:"));
         assert_ne!(spec_key(&spec), r"ctx (\d+)");
+    }
+
+    fn remaining(pattern: &str) -> SourceSpec {
+        SourceSpec::ScreenRegexRemaining {
+            pattern: pattern.to_string(),
+        }
+    }
+
+    fn one(row: &str) -> Vec<String> {
+        vec![row.to_string()]
+    }
+
+    #[test]
+    fn a_remaining_spec_samples_the_complement_of_the_lowest_matching_row() {
+        let source = resolve(&remaining(r"Weekly (\d{1,3})% left")).unwrap();
+        let rows = vec![
+            "Weekly 10% left".to_string(),
+            "prose".to_string(),
+            "Weekly 30% left".to_string(),
+        ];
+        assert_eq!(sample(&source, &rows), Some(70));
+    }
+
+    #[test]
+    fn a_remaining_reading_of_one_hundred_is_zero_used_and_zero_is_one_hundred() {
+        let source = resolve(&remaining(r"Weekly (\d{1,3})% left")).unwrap();
+        assert_eq!(sample(&source, &one("Weekly 100% left")), Some(0));
+        assert_eq!(sample(&source, &one("Weekly 0% left")), Some(100));
+        assert_eq!(sample(&source, &one("Weekly 101% left")), None);
+    }
+
+    #[test]
+    fn the_persisted_codex_pattern_is_thirty_seven_ascii_bytes() {
+        assert_eq!(CODEX_PATTERN.len(), 37);
+        assert!(CODEX_PATTERN.contains(r"\u00b7"));
+    }
+
+    #[test]
+    fn the_real_codex_statusline_row_reads_one_hundred_remaining() {
+        let source = resolve(&remaining(CODEX_PATTERN)).unwrap();
+        assert_eq!(sample(&source, &one(CODEX_ROW)), Some(0));
+        assert_eq!(
+            sample(&source, &one("Context 0% used \u{b7} Weekly 100%")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_remaining_pattern_without_capture_group_one_is_rejected_by_resolve() {
+        assert!(resolve(&remaining(r"Weekly \d+% left")).is_err());
+        assert!(resolve(&remaining(r"(unclosed")).is_err());
+    }
+
+    #[test]
+    fn spec_key_separates_the_two_kinds_for_an_identical_pattern() {
+        let text = r"Weekly (\d+)% left";
+        let remaining_key = spec_key(&remaining(text));
+        assert!(remaining_key.starts_with("screenRegexRemaining:"));
+        assert_ne!(remaining_key, spec_key(&spec(text)));
     }
 }
