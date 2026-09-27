@@ -11,6 +11,7 @@
 //   1 → invalid format, slug too long, issue missing/closed, timeout, or internal error
 
 import { execFileSync } from 'node:child_process';
+import { resolveGit } from './resolve-git.mjs';
 
 const PATTERN          = /^(bug|chore|ci|docs|feat|feature|fix|refactor|style|test)\/([1-9][0-9]*)-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const MAX_SLUG         = 50;
@@ -46,13 +47,14 @@ function printable(s) {
 }
 
 function git(args) {
-  return execFileSync('git', args, {
+  return execFileSync(resolveGit(), args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
 }
 function gitOk(args) {
-  try { execFileSync('git', args, { stdio: 'ignore' }); return true; }
+  const bin = resolveGit();
+  try { execFileSync(bin, args, { stdio: 'ignore' }); return true; }
   catch { return false; }
 }
 
@@ -135,6 +137,7 @@ async function verifyIssueOpen(issue) {
 (async () => {
   try {
     const args   = parseArgs(process.argv.slice(2));
+    try { resolveGit(); } catch (e) { die(e.message); }
     const branch = args.branch || resolveBranch();
 
     if (isExempt(branch))        { console.log(`[branch-name] exempt: ${branch}`); process.exit(0); }

@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveGit } from "./resolve-git.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CRUISE_BIN = path.join(
@@ -247,7 +248,14 @@ function verifyFullRoot(result) {
     return failures;
   }
 
-  const git = spawnSync("git", ["ls-files"], { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  let gitBin;
+  try {
+    gitBin = resolveGit();
+  } catch (error) {
+    failures.push(`cannot read tracked inventory: ${error.message}`);
+    return failures;
+  }
+  const git = spawnSync(gitBin, ["ls-files"], { cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (git.error || git.status !== 0) {
     failures.push(`cannot read tracked inventory: ${git.error?.message ?? git.stderr}`);
     return failures;

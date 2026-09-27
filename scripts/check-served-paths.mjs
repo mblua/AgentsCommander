@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveGit } from './resolve-git.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_INVENTORY = 'remote-resources/SERVED-PATHS.md';
@@ -96,7 +97,7 @@ export function checkServedPaths({ inventoryText, inventoryName, trackedFiles, r
 }
 
 function loadTrackedFiles() {
-  const output = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const output = execFileSync(resolveGit(), ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   return output.split('\0').filter((file) => file.length > 0);
 }
 
