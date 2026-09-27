@@ -512,6 +512,15 @@ export function suggestedQuotaSource(command: string): SuggestedQuotaSource | nu
   return null;
 }
 
+/** #2680 - the task adds a default for a new Codex agent and forbids any new default for
+ *  Claude, so the restriction is a named function with its own test. */
+export function defaultQuotaSourceForNewAgent(
+  command: string,
+): SuggestedQuotaSource | null {
+  const suggested = suggestedQuotaSource(command);
+  return suggested?.kind === "screenRegexRemaining" ? suggested : null;
+}
+
 export function agentNameFromPathOrSession(
   path: string | null | undefined,
   sessionName: string,

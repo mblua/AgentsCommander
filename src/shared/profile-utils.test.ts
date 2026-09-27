@@ -10,6 +10,7 @@ import {
   commandExecutableBasename,
   composeEffectiveCommand,
   defaultInstructionsFilename,
+  defaultQuotaSourceForNewAgent,
   deriveMatrixRoot,
   effectiveEnvProjection,
   executableBasename,
@@ -709,6 +710,18 @@ describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
     const re = new RegExp(CODEX_WEEKLY_QUOTA_REGEX);
     expect(re.exec(codexRow)?.[1]).toBe("100");
     expect(re.exec("Context 0% used \u00b7 Weekly 100%")).toBeNull();
+  });
+
+  it("defaultQuotaSourceForNewAgent seeds codex and never claude", () => {
+    const codex = { kind: "screenRegexRemaining", pattern: CODEX_WEEKLY_QUOTA_REGEX };
+    expect(defaultQuotaSourceForNewAgent("codex")).toEqual(codex);
+    expect(defaultQuotaSourceForNewAgent("C:\\tools\\codex.exe --model x")).toEqual(codex);
+    expect(defaultQuotaSourceForNewAgent("cmd /c codex")).toEqual(codex);
+    // Claude gains no new default (#2680).
+    expect(defaultQuotaSourceForNewAgent("claude")).toBeNull();
+    expect(defaultQuotaSourceForNewAgent("cmd /c claude")).toBeNull();
+    expect(defaultQuotaSourceForNewAgent("")).toBeNull();
+    expect(defaultQuotaSourceForNewAgent("npm run dev")).toBeNull();
   });
 
   it("the quota suggestion reads only the executable stem", () => {

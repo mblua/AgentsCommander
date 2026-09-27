@@ -4862,4 +4862,162 @@ describe("SettingsModal weekly quota pattern (#2482)", () => {
     expect(hint()).not.toContain("the USED percentage");
     dispose();
   });
+
+  // #2680 - no `claude` and no `codex` command, so `hasAgentByCommand` leaves both
+  // catalog presets enabled and clickable. One row, so a created agent is row 1.
+  const CREATION_AGENTS: AgentConfig[] = [
+    { id: "h1", label: "Hermes", command: "hermes", color: "#8b5cf6", envs: [], isolatedHome: false },
+  ];
+  const CODEX_SEED = { kind: "screenRegexRemaining", pattern: CODEX_WEEKLY_QUOTA_REGEX };
+
+  const mountCreation = async (): Promise<() => void> => {
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ agents: CREATION_AGENTS })));
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => SettingsModal({ onClose: () => {}, section: "agents" }), root);
+    await settle();
+    return dispose;
+  };
+
+  const clickPreset = async (key: "codex" | "claude"): Promise<void> => {
+    const preset = byTestId<HTMLButtonElement>(`settings.agentPreset.${key}`);
+    expect(preset.disabled).toBe(false);
+    preset.click();
+    await settle();
+    // Creation makes the new row active, which already expands it; a toggle click would collapse it.
+    expect(byTestId("settings.agentRow.1.toggle").getAttribute("data-ac-state")).toBe("expanded");
+  };
+
+  const addManual = async (): Promise<void> => {
+    byTestId<HTMLButtonElement>("settings.agent.addCustom").click();
+    await settle();
+    // Creation makes the new row active, which already expands it; a toggle click would collapse it.
+    expect(byTestId("settings.agentRow.1.toggle").getAttribute("data-ac-state")).toBe("expanded");
+  };
+
+  const commandField = (row = 1) => byTestId<HTMLInputElement>(`settings.agentRow.${row}.command`);
+
+  // The new id is minted by `newAgentId()`; read it from the saved draft, never guess it.
+  const savedWithNewId = async () => {
+    const saved = await saveAndReadDraft();
+    const newId = saved!.agents[1]!.id;
+    return { newId, ...views(saved) };
+  };
+
+  it("creating a codex agent from the catalog seeds the remaining source", async () => {
+    const dispose = await mountCreation();
+    await clickPreset("codex");
+    expect(field(1).value).toBe(CODEX_WEEKLY_QUOTA_REGEX);
+    const { newId, store, wire } = await savedWithNewId();
+    expect(store[newId]).toEqual(CODEX_SEED);
+    expect(wire[newId]).toStrictEqual(CODEX_SEED);
+    dispose();
+  });
+
+  it("creating a claude agent from the catalog seeds nothing", async () => {
+    const dispose = await mountCreation();
+    await clickPreset("claude");
+    expect(field(1).value).toBe("");
+    expect(field(1).placeholder).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
+    const { newId, store, wire } = await savedWithNewId();
+    expect(newId in store).toBe(false);
+    expect(newId in wire).toBe(false);
+    dispose();
+  });
+
+  it("creating an agent manually seeds the remaining source when the codex command is entered", async () => {
+    const dispose = await mountCreation();
+    await addManual();
+    expect(commandField().value).toBe("");
+    expect(field(1).value).toBe("");
+    await typeInto(commandField(), "codex");
+    expect(field(1).value).toBe(CODEX_WEEKLY_QUOTA_REGEX);
+    const { newId, store, wire } = await savedWithNewId();
+    expect(store[newId]).toEqual(CODEX_SEED);
+    expect(wire[newId]).toStrictEqual(CODEX_SEED);
+    dispose();
+  });
+
+  it("the manual agent has no entry while its command is empty", async () => {
+    const dispose = await mountCreation();
+    await addManual();
+    expect(commandField().value).toBe("");
+    const { newId, store, wire } = await savedWithNewId();
+    expect(newId in store).toBe(false);
+    expect(newId in wire).toBe(false);
+    dispose();
+  });
+
+  it("entering a claude command manually seeds nothing", async () => {
+    for (const command of ["claude", "cmd /c claude"]) {
+      vi.mocked(SettingsAPI.saveDraft).mockClear();
+      document.body.innerHTML = "";
+      const dispose = await mountCreation();
+      await addManual();
+      await typeInto(commandField(), command);
+      const { newId, store, wire } = await savedWithNewId();
+      expect(newId in store).toBe(false);
+      expect(newId in wire).toBe(false);
+      dispose();
+    }
+  });
+
+  it("the deferred seed never overwrites a typed entry", async () => {
+    const dispose = await mountCreation();
+    await addManual();
+    await typeInto(field(1), "MINE (\\d+)%");
+    await typeInto(commandField(), "codex");
+    const { newId, store, wire } = await savedWithNewId();
+    expect(store[newId]).toEqual({ kind: "screenRegex", pattern: "MINE (\\d+)%" });
+    expect(wire[newId]).toStrictEqual({ kind: "screenRegex", pattern: "MINE (\\d+)%" });
+    dispose();
+  });
+
+  it("the deferred seed never refills an explicitly cleared field", async () => {
+    const dispose = await mountCreation();
+    await addManual();
+    await typeInto(field(1), "MINE (\\d+)%");
+    await typeInto(field(1), "");
+    await typeInto(commandField(), "codex");
+    const { newId, store, wire } = await savedWithNewId();
+    expect(newId in store).toBe(false);
+    expect(newId in wire).toBe(false);
+    dispose();
+  });
+
+  it("editing the command of a pre-existing agent writes no quota source", async () => {
+    const dispose = await mountCreation();
+    expandAgentRow(0);
+    await settle();
+    await typeInto(commandField(0), "codex");
+    const { store, wire } = views(await saveAndReadDraft());
+    expect(Object.keys(store)).toEqual([]);
+    expect(Object.keys(wire)).toEqual([]);
+    dispose();
+  });
+
+  it("a non-command field edit seeds nothing", async () => {
+    const dispose = await mountCreation();
+    await addManual();
+    await typeInto(byTestId<HTMLInputElement>("settings.agentRow.1.label"), "codex");
+    expect(commandField().value).toBe("");
+    const { newId, store, wire } = await savedWithNewId();
+    expect(newId in store).toBe(false);
+    expect(newId in wire).toBe(false);
+    dispose();
+  });
+
+  it("the suggest button still writes the kind on the manual path", async () => {
+    const dispose = await mountCreation();
+    await addManual();
+    await typeInto(commandField(), "codex");
+    expect(field(1).value).toBe(CODEX_WEEKLY_QUOTA_REGEX);
+    await typeInto(field(1), "");
+    suggestButton(1)!.click();
+    await settle();
+    const { newId, store, wire } = await savedWithNewId();
+    expect(store[newId]).toEqual(CODEX_SEED);
+    expect(wire[newId]).toStrictEqual(CODEX_SEED);
+    dispose();
+  });
 });

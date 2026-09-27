@@ -83,6 +83,7 @@ import {
   AC_WORKSPACE_ROOT_PLACEHOLDER,
   commandExecutableBasename,
   defaultInstructionsFilename,
+  defaultQuotaSourceForNewAgent,
   executableTokenBasename,
   hasAcPlaceholder,
   hasEnabledEnvKey,
@@ -1746,7 +1747,20 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     if (!settings.data) return;
     setDraftDirty(true);
     setSettings("data", "agents", index, field as any, value as any);
+    if (field !== "command") return;
+    const agentId = settings.data.agents[index]?.id;
+    if (!agentId || !pendingQuotaSeed.has(agentId)) return;
+    if (settings.data.quotaSources && agentId in settings.data.quotaSources) return;
+    const seeded = defaultQuotaSourceForNewAgent(String(value));
+    if (!seeded) return;
+    setQuotaSource(agentId, seeded);
+    pendingQuotaSeed.delete(agentId);
   };
+
+  /** #2680 - ids of agents created in this modal whose command was not yet known
+   *  when they were created. The catalog path seeds at creation; the manual path
+   *  is created with `command: ""`, so its seed waits for the first command. */
+  const pendingQuotaSeed = new Set<string>();
 
   /** #2482 - what the field shows. Reads the root map, never `AgentConfig`. */
   const quotaPattern = (agentId: string): string => {
@@ -1765,6 +1779,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const setQuotaPattern = (agentId: string, pattern: string): void => {
     if (!settings.data) return;
     const blank = pattern.trim() === "";
+    pendingQuotaSeed.delete(agentId);
     // Early return: on an absent map a write CREATES the key (present, undefined).
     if (blank && !settings.data.quotaSources) return;
     setDraftDirty(true);
@@ -1781,6 +1796,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   /** #2687 - the suggest button writes the suggestion's kind along with its pattern. */
   const setQuotaSource = (agentId: string, source: SuggestedQuotaSource): void => {
     if (!settings.data) return;
+    pendingQuotaSeed.delete(agentId);
     setDraftDirty(true);
     setSettings("data", "quotaSources", (map) => ({
       ...(map ?? {}),
@@ -2104,6 +2120,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           instructionsFilename: "AGENTS.md",
         };
     setSettings("data", "agents", (prev) => [...prev, agent]);
+    const seeded = defaultQuotaSourceForNewAgent(agent.command);
+    if (seeded) setQuotaSource(agent.id, seeded);
+    else pendingQuotaSeed.add(agent.id);
     setActiveAgentId(agent.id);
   };
 
@@ -2125,6 +2144,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     const removed = settings.data.agents[index];
     setSettings("data", "agents", (prev) => prev.filter((_, i) => i !== index));
     if (removed) {
+      pendingQuotaSeed.delete(removed.id);
       if (activeAgentId() === removed.id) setActiveAgentId(null);
       if (leftRailId() === removed.id) setLeftRailId(null);
       if (rightRailId() === removed.id) setRightRailId(null);
