@@ -827,14 +827,44 @@ pub(crate) fn rename_prefix_family(
             return vec![(old_prefix.to_string(), Outcome::Refused(refusal))];
         }
     };
-    let mut names: Vec<String> = entries
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| {
-            name.len() >= old_prefix.len() + suffix.len()
-                && name.starts_with(old_prefix)
-                && name.ends_with(suffix)
-        })
-        .collect();
+    let in_family = |name: &str| {
+        name.len() >= old_prefix.len() + suffix.len()
+            && name.starts_with(old_prefix)
+            && name.ends_with(suffix)
+    };
+    // An entry this pass cannot read or name may be a member of the family, so
+    // it refuses the whole family: a skipped member would let the scope reach
+    // `Complete` with its old name still on disk.
+    let refuse = |reason: String| {
+        vec![(
+            old_prefix.to_string(),
+            Outcome::Refused(Refusal::Io(reason)),
+        )]
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        #[cfg(test)]
+        let entry = match take_migration_path_fault("read_dir_entry", dir) {
+            Some(kind) => Err(io::Error::new(kind, "injected read_dir entry failure")),
+            None => entry,
+        };
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => return refuse(format!("failed to list an entry of {}: {e}", dir.display())),
+        };
+        match entry.file_name().into_string() {
+            Ok(name) if in_family(&name) => names.push(name),
+            Ok(_) => {}
+            Err(raw) if in_family(&raw.to_string_lossy()) => {
+                return refuse(format!(
+                    "entry {} of {} is not valid UTF-8",
+                    raw.to_string_lossy(),
+                    dir.display()
+                ))
+            }
+            Err(_) => {}
+        }
+    }
     names.sort();
     names
         .into_iter()
@@ -1531,6 +1561,49 @@ mod tests {
             );
             assert_complete(&f.cfg, SCOPE);
         }
+    }
+
+    #[test]
+    fn a_family_enumeration_error_refuses_and_the_scope_cannot_complete() {
+        let f = fixture();
+        put(&f.data, "legacy.backup.1.json", b"backup one");
+        let family = Some(("legacy.backup.", "target.backup.", ".json"));
+        arm_migration_path_fault("read_dir_entry", &f.data, io::ErrorKind::PermissionDenied);
+        let outcomes = run_scope_with(
+            &f.data,
+            &[],
+            family,
+            SCOPE,
+            Some(&f.cfg),
+            MIGRATION_LOCK_BUDGET,
+        )
+        .expect("the scope ran");
+        assert!(
+            matches!(outcomes.as_slice(), [Outcome::Refused(Refusal::Io(_))]),
+            "an unreadable entry was skipped: {outcomes:?}"
+        );
+        assert_ne!(status(&journal(&f.cfg), SCOPE), Some(ScopeStatus::Complete));
+        assert!(!scope_is_settled(Some(&journal(&f.cfg)), SCOPE));
+        assert_eq!(
+            get(&f.data, "legacy.backup.1.json"),
+            Some(b"backup one".to_vec())
+        );
+
+        let outcomes = run_scope_with(
+            &f.data,
+            &[],
+            family,
+            SCOPE,
+            Some(&f.cfg),
+            MIGRATION_LOCK_BUDGET,
+        )
+        .expect("the scope ran again");
+        assert_eq!(outcomes, vec![Outcome::Renamed]);
+        assert_eq!(
+            get(&f.data, "target.backup.1.json"),
+            Some(b"backup one".to_vec())
+        );
+        assert_complete(&f.cfg, SCOPE);
     }
 
     // -- E6, E7 --------------------------------------------------------------
