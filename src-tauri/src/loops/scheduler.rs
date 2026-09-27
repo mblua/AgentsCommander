@@ -1338,6 +1338,25 @@ mod tests {
         assert!(state.last_checked_at.is_some(), "a baseline replaced it");
     }
 
+    /// #2695 round 3 - the non-UTF-8 arm of `guarded_state_write` is still a
+    /// compare-and-swap: different invalid bytes on disk mean `Stale`.
+    #[test]
+    fn guarded_state_write_is_stale_when_non_utf8_bytes_changed() {
+        let config = sample_config();
+        let tmp = project_with_loop(&config);
+        let dir = loop_dir(&tmp.path().join(".ac"), &config.loop_def.id);
+        let state_path = dir.join(LOOP_STATE_FILE);
+        std::fs::write(&state_path, [0xff, 0xfe, b'A']).expect("write bytes A");
+        let (_, s0_raw) = read_state_snapshot(&dir).expect("snapshot");
+        let changed = [0xff, 0xfe, b'B'];
+        std::fs::write(&state_path, changed).expect("write bytes B");
+
+        let result = guarded_state_write(&dir, &LoopState::default(), s0_raw.as_deref());
+
+        assert_eq!(result, Ok(LoopStateWrite::Stale));
+        assert_eq!(std::fs::read(&state_path).expect("state bytes"), changed);
+    }
+
     /// #2695 T3 - the scan lock was split, not deleted: a second scan cannot
     /// start while the first is held inside a delivery.
     #[tokio::test]
