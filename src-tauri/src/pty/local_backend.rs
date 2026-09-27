@@ -1571,6 +1571,7 @@ impl LocalProcessBackend {
         // is the precedence rule: the env-removal loop and the configured-env
         // loop below run later, so a configured PATH still wins and a removed
         // PATH is still removed. The Windows git-guard PATH also runs later.
+        crate::config::agent_path::apply_search_path_to_pty_command(&mut command);
 
         // #942 - the argv exactly as executed, adapted host-shell wrapper
         // included. Built from the SAME `PreparedLaunch` the `CommandBuilder`
