@@ -106,6 +106,10 @@ const [state, setState] = createStore<SessionsStateWithComanaged>({
   // BOUNDS the map by the configured agent count instead of letting it grow
   // with every session id ever seen.
   weeklyQuotaUsedByAgentId: {},
+  // #2568 - keyed by agent (orphanNoticeKey), not session id, so a dismissal
+  // survives a relaunch of the agent inside one app run. Only the dismiss
+  // click writes it; never persisted.
+  orphanNoticeDismissedByAgentKey: {},
   hydrated: false,
 });
 
@@ -621,6 +625,9 @@ export const sessionsStore = {
   get weeklyQuotaUsedByAgentId() {
     return state.weeklyQuotaUsedByAgentId;
   },
+  get orphanNoticeDismissedByAgentKey() {
+    return state.orphanNoticeDismissedByAgentKey;
+  },
   get hydrated() {
     return state.hydrated;
   },
@@ -696,6 +703,10 @@ export const sessionsStore = {
     setState("contextPercentBySessionId", (prev) => ({ ...prev, [sessionId]: percent }));
   },
 
+  dismissOrphanNotice(key: string) {
+    setState("orphanNoticeDismissedByAgentKey", (prev) => ({ ...prev, [key]: true }));
+  },
+
   hydrateSessionContext(sessionId: string, percent: number | null) {
     setState("contextPercentBySessionId", (prev) =>
       sessionId in prev ? prev : { ...prev, [sessionId]: percent },
@@ -730,6 +741,10 @@ export const sessionsStore = {
       "weeklyQuotaUsedByAgentId",
       reconcile(emptyReadings),
     );
+  },
+
+  resetOrphanNoticesForTests() {
+    setState("orphanNoticeDismissedByAgentKey", reconcile({}));
   },
 
   resetComanagedForTests() {

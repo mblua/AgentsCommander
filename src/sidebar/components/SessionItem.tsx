@@ -14,13 +14,14 @@ import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder"
 import OpenAgentModal from "./OpenAgentModal";
 import AgentPickerModal from "./AgentPickerModal";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
+import OrphanNotice from "./OrphanNotice";
 import ContextBadge from "./ContextBadge";
 import { contextBadgeConfigured } from "./session-context";
 import { quotaChipAttrs } from "./agent-quota";
 import { TelegramIcon } from "./TelegramIcon";
 import DetachIcon from "./DetachIcon";
 import ReattachIcon from "./ReattachIcon";
-import { profileDisplayLabel, sessionProfileBadge, sessionTierBadge } from "../../shared/profile-utils";
+import { orphanNoticeKey, profileDisplayLabel, sessionOrphanNotice, sessionProfileBadge, sessionTierBadge } from "../../shared/profile-utils";
 import { sessionDotClass } from "./session-status";
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
@@ -297,6 +298,14 @@ const SessionItem: Component<{
     await toggleDetach("context detach/attach toggle failed:");
   };
 
+  // #2568 - keyed by agent, so a dismissal outlives a relaunch of the agent.
+  const orphanNotice = () => {
+    const key = orphanNoticeKey(props.session);
+    if (!key || sessionsStore.orphanNoticeDismissedByAgentKey[key]) return null;
+    const notice = sessionOrphanNotice(props.session);
+    return notice ? { text: notice.text, key } : null;
+  };
+
   const handleClose = (e: MouseEvent) => {
     e.stopPropagation();
     void requestCoordinatorClose(props.session);
@@ -488,6 +497,13 @@ const SessionItem: Component<{
             </Show>
           </Show>
         </div>
+        <Show when={orphanNotice()}>{(notice) => (
+          <OrphanNotice
+            text={notice().text}
+            onDismiss={() => sessionsStore.dismissOrphanNotice(notice().key)}
+            testId={`session.${props.session.id}.orphanNotice`}
+          />
+        )}</Show>
       </div>
       <Show when={!isInactive()}>
         <Show when={sessionHasLivePty()}>
