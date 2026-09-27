@@ -288,6 +288,10 @@ impl LoopScheduler {
 
         if state.last_checked_at.is_none() {
             let _io = self.io_lock.lock().await;
+            // #2682: no Loop lock here. `commit_scan_section` takes it at entry
+            // and re-checks freshness and config presence under it; holding it
+            // here too would self-deadlock, since a second handle in this
+            // process blocks on the same sidecar (T0).
             if !loop_is_current_for_delivery(dir, &config)? {
                 return Ok(());
             }

@@ -68,7 +68,12 @@ fn acquire_config_file_write_lock(
         )
     })?;
     let lock_path = config_lock_path(&canonical_parent, config_path)?;
-    acquire_sidecar_write_lock(&lock_path, timeout, "configLockTimeout")
+    acquire_sidecar_write_lock(
+        &lock_path,
+        timeout,
+        "configLockTimeout",
+        "local config write lock",
+    )
 }
 
 /// #1938 - open (creating once) and acquire the sidecar lock at `lock_path`.
@@ -79,11 +84,18 @@ pub(crate) fn acquire_sidecar_write_lock(
     lock_path: &Path,
     timeout: Duration,
     timeout_marker: &str,
+    subject: &str,
 ) -> Result<SidecarWriteLock, String> {
+    let mut chars = subject.chars();
+    let subject_capitalized: String = chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
     match std::fs::symlink_metadata(lock_path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             return Err(format!(
-                "Local config write lock '{}' must be a regular non-symlink file",
+                "{} '{}' must be a regular non-symlink file",
+                subject_capitalized,
                 lock_path.display()
             ));
         }
@@ -91,7 +103,8 @@ pub(crate) fn acquire_sidecar_write_lock(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
             return Err(format!(
-                "Failed to inspect local config write lock '{}': {}",
+                "Failed to inspect {} '{}': {}",
+                subject,
                 lock_path.display(),
                 e
             ));
@@ -106,7 +119,8 @@ pub(crate) fn acquire_sidecar_write_lock(
         .open(lock_path)
         .map_err(|e| {
             format!(
-                "Failed to open local config write lock '{}': {}",
+                "Failed to open {} '{}': {}",
+                subject,
                 lock_path.display(),
                 e
             )
@@ -115,7 +129,8 @@ pub(crate) fn acquire_sidecar_write_lock(
         .metadata()
         .map_err(|e| {
             format!(
-                "Failed to inspect opened local config write lock '{}': {}",
+                "Failed to inspect opened {} '{}': {}",
+                subject,
                 lock_path.display(),
                 e
             )
@@ -123,7 +138,8 @@ pub(crate) fn acquire_sidecar_write_lock(
         .is_file()
     {
         return Err(format!(
-            "Local config write lock '{}' must be a regular file",
+            "{} '{}' must be a regular file",
+            subject_capitalized,
             lock_path.display()
         ));
     }
@@ -134,9 +150,10 @@ pub(crate) fn acquire_sidecar_write_lock(
             Ok(()) => break,
             Err(std::fs::TryLockError::WouldBlock) if started.elapsed() >= timeout => {
                 return Err(format!(
-                    "{}: timed out after {} ms waiting for local config write lock '{}'",
+                    "{}: timed out after {} ms waiting for {} '{}'",
                     timeout_marker,
                     timeout.as_millis(),
+                    subject,
                     lock_path.display()
                 ));
             }
@@ -146,7 +163,8 @@ pub(crate) fn acquire_sidecar_write_lock(
             }
             Err(std::fs::TryLockError::Error(e)) => {
                 return Err(format!(
-                    "Failed to acquire local config write lock '{}': {}",
+                    "Failed to acquire {} '{}': {}",
+                    subject,
                     lock_path.display(),
                     e
                 ));

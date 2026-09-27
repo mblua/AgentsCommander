@@ -843,7 +843,7 @@ pub(crate) fn acquire_loop_lock(
         )
     })?;
     let lock_path = canonical_root.join(format!(".{}{}.lock", LOOP_DIR_PREFIX, loop_id));
-    acquire_sidecar_write_lock(&lock_path, timeout, "loopLockTimeout")
+    acquire_sidecar_write_lock(&lock_path, timeout, "loopLockTimeout", "Loop write lock")
 }
 
 /// #2682 - [`acquire_loop_lock`] for a caller that holds only the Loop
@@ -1907,6 +1907,8 @@ busyCoordinator = "waitUntilIdle"
             .expect_err("a held Loop lock must time out");
         assert!(err.contains("loopLockTimeout"), "{err}");
         assert!(err.contains("._loop_weekday-standup.lock"), "{err}");
+        assert!(err.contains("waiting for Loop write lock"), "{err}");
+        assert!(!err.contains("local config"), "{err}");
 
         std::fs::write(rendezvous.path().join(LOCK_CHILD_RELEASE_FILE), b"go").expect("release");
         let stdout = wait_child(child, Duration::from_secs(60));
