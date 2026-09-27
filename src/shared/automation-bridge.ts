@@ -42,6 +42,10 @@ let started = false;
 let hoveredElement: HTMLElement | null = null;
 let hoveredChain: HTMLElement[] = [];
 
+type ClientPoint = { clientX: number; clientY: number };
+/** The one emulated mouse button: set by `down`, cleared by `up`/`cancel`. */
+let pointerDown: ({ source: HTMLElement } & ClientPoint) | null = null;
+
 async function resolveAutomationWindowLabel(explicit?: string): Promise<string> {
   if (explicit) return explicit;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
@@ -75,6 +79,7 @@ export function resetAutomationBridgeForTests(): void {
   started = false;
   hoveredElement = null;
   hoveredChain = [];
+  pointerDown = null;
   AutomationAPI.resetTerminalControllerForTests();
 }
 
@@ -146,6 +151,10 @@ async function validateRequestValue(
       availableTargets(),
       diagnostics,
     );
+  }
+
+  if (request.action === "pointer" || request.action === "key") {
+    return validateInputRequest(windowLabel, request, diagnostics);
   }
 
   if (request.action === "hover") {
@@ -232,7 +241,8 @@ function checkTargetInteractable(
     return successResponse(windowLabel, request, snapshotTarget(element), diagnostics);
   }
 
-  if (request.action !== "hover" && isElementDisabled(element)) {
+  const pointerMove = request.action === "pointer" && request.value?.startsWith("move") === true;
+  if (request.action !== "hover" && !pointerMove && isElementDisabled(element)) {
     return errorResponse(
       windowLabel,
       request,
@@ -243,7 +253,9 @@ function checkTargetInteractable(
     );
   }
 
-  const topmost = topmostElementAtCenter(element);
+  const topmost = pointerMove || request.action === "key"
+    ? { ok: true as const }
+    : topmostElementAtCenter(element);
   if (!topmost.ok) {
     return errorResponse(
       windowLabel,
@@ -279,6 +291,10 @@ async function dispatchAction(
     case "setValue":
     case "typeText":
       return setElementValue(windowLabel, request, element, diagnostics);
+    case "pointer":
+      return runPointerAction(windowLabel, request, element, diagnostics);
+    case "key":
+      return runKeyAction(windowLabel, request, element, diagnostics);
     default:
       return errorResponse(
         windowLabel,
@@ -963,6 +979,7 @@ function createHoverEvent(
   related: HTMLElement | null,
   bubbles: boolean,
   cancelable: boolean,
+  buttonState?: { button: number; buttons: number },
 ): MouseEvent {
   const eventView = element.ownerDocument.defaultView ?? window;
   const isPointer = type.startsWith("pointer");
@@ -974,8 +991,7 @@ function createHoverEvent(
     bubbles,
     cancelable,
     composed: true,
-    button: isPointer ? -1 : 0,
-    buttons: 0,
+    ...(buttonState ?? { button: isPointer ? -1 : 0, buttons: 0 }),
     relatedTarget: related,
     clientX: point.clientX,
     clientY: point.clientY,
@@ -984,20 +1000,251 @@ function createHoverEvent(
     ...(isPointer ? HOVER_POINTER_INIT : {}),
   };
 
-  let event: MouseEvent;
-  try {
-    event = new Ctor(type, { ...eventInit, view: eventView });
-  } catch (error) {
-    if (!String(error).includes("member view is not of type Window")) throw error;
-    event = new Ctor(type, eventInit);
-  }
-
+  const event = newEventWithView(Ctor, type, eventInit, eventView);
   if (isPointer && !hasPointerEvent) {
     for (const [key, value] of Object.entries(HOVER_POINTER_INIT)) {
       Object.defineProperty(event, key, { value, configurable: true });
     }
   }
   return event;
+}
+
+function newEventWithView<E extends Event, I extends EventInit>(
+  Ctor: new (type: string, init: I & { view?: Window }) => E,
+  type: string,
+  init: I,
+  eventView: Window,
+): E {
+  try {
+    return new Ctor(type, { ...init, view: eventView });
+  } catch (error) {
+    if (!String(error).includes("member view is not of type Window")) throw error;
+    return new Ctor(type, init);
+  }
+}
+
+// ---- pointer and key actions (#2691) ----
+
+type UiPointerOperation = {
+  kind: "down" | "move" | "up" | "cancel";
+  position: "center" | "top" | "bottom" | null;
+};
+type UiKeyChord = {
+  key: string;
+  code: string;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  metaKey: boolean;
+};
+type PointerDiagnostics = NonNullable<UiAutomationDiagnostics["pointer"]>;
+
+const UI_POINTER_OPERATIONS: Record<string, UiPointerOperation> = {
+  down: { kind: "down", position: null },
+  move: { kind: "move", position: "center" },
+  "move:top": { kind: "move", position: "top" },
+  "move:bottom": { kind: "move", position: "bottom" },
+  up: { kind: "up", position: null },
+  cancel: { kind: "cancel", position: null },
+};
+
+const UI_POINTER_EVENTS = {
+  down: { type: "pointerdown", button: 0, buttons: 1, cancelable: true },
+  move: { type: "pointermove", button: -1, buttons: 1, cancelable: true },
+  up: { type: "pointerup", button: 0, buttons: 0, cancelable: true },
+  cancel: { type: "pointercancel", button: -1, buttons: 0, cancelable: false },
+} as const;
+
+const UI_KEY_CHORD =
+  /^(Ctrl\+)?(Alt\+)?(Shift\+)?(Meta\+)?(Escape|Enter|Space|Tab|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End)$/;
+
+function parseUiPointerOperation(value: string | null | undefined): UiPointerOperation | null {
+  if (typeof value !== "string" || !Object.prototype.hasOwnProperty.call(UI_POINTER_OPERATIONS, value)) return null;
+  return UI_POINTER_OPERATIONS[value];
+}
+
+function parseUiKeyChord(value: string | null | undefined): UiKeyChord | null {
+  const match = typeof value === "string" ? UI_KEY_CHORD.exec(value) : null;
+  if (!match) return null;
+  const name = match[5];
+  return {
+    key: name === "Space" ? " " : name,
+    code: name,
+    ctrlKey: !!match[1],
+    altKey: !!match[2],
+    shiftKey: !!match[3],
+    metaKey: !!match[4],
+  };
+}
+
+/** Grammar, then the button-state guards; `up`/`cancel` finish here (no target). */
+async function validateInputRequest(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  diagnostics: UiAutomationDiagnostics,
+): Promise<AnyUiAutomationResponse | null> {
+  const operation = request.action === "pointer" ? parseUiPointerOperation(request.value) : null;
+  const valid = request.action === "pointer" ? operation !== null : parseUiKeyChord(request.value) !== null;
+  if (!valid) {
+    return errorResponse(
+      windowLabel,
+      request,
+      "value_not_supported",
+      `Automation action "${request.action}" does not accept value ${JSON.stringify(request.value ?? null)}.`,
+      availableTargets(),
+      diagnostics,
+    );
+  }
+  if (!operation) return null;
+
+  const stateError = pointerStateError(windowLabel, request, diagnostics, operation.kind);
+  if (stateError || operation.kind === "down" || operation.kind === "move") return stateError;
+  if (request.selector !== "") {
+    return errorResponse(
+      windowLabel,
+      request,
+      "value_not_supported",
+      `Automation pointer "${operation.kind}" takes no selector (got "${request.selector}").`,
+      availableTargets(),
+      diagnostics,
+    );
+  }
+  return runPointerRelease(windowLabel, request, diagnostics, operation);
+}
+
+function pointerStateError(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  diagnostics: UiAutomationDiagnostics,
+  kind: UiPointerOperation["kind"],
+): AnyUiAutomationResponse | null {
+  const fail = (error: UiAutomationErrorCode, message: string) =>
+    errorResponse(windowLabel, request, error, message, availableTargets(), diagnostics);
+  if (kind === "down") {
+    return pointerDown ? fail("pointer_already_down", "The automation pointer is already down.") : null;
+  }
+  if (!pointerDown) return fail("pointer_not_down", "The automation pointer is not down.");
+  if (pointerDown.source.isConnected) return null;
+  pointerDown = null;
+  return fail("pointer_source_detached", "The pointer-down source left the document; the pointer was released.");
+}
+
+async function runPointerRelease(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  diagnostics: UiAutomationDiagnostics,
+  operation: UiPointerOperation,
+): Promise<AnyUiAutomationResponse> {
+  const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+  if (expired) return expired;
+  const { source, ...point } = pointerDown!;
+  pointerDown = null;
+  const result = dispatchPointerEvent(source, null, operation, point);
+  await settleAfterDomMutation();
+  return observedResponse(windowLabel, request, source, { ...diagnostics, pointer: result.pointer }, result.errors);
+}
+
+async function runPointerAction(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  element: HTMLElement,
+  diagnostics: UiAutomationDiagnostics,
+): Promise<AnyUiAutomationResponse> {
+  const operation = parseUiPointerOperation(request.value)!;
+  // Re-checked: another request may have changed the button while this one resolved.
+  const stateError = pointerStateError(windowLabel, request, diagnostics, operation.kind);
+  if (stateError) return stateError;
+  const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+  if (expired) return expired;
+
+  const down = operation.kind === "down";
+  const source = down ? element : pointerDown!.source;
+  const point = pointerPoint(element, operation.position);
+  pointerDown = { source, ...point };
+  const result = dispatchPointerEvent(source, down ? null : element, operation, point);
+  await settleAfterDomMutation();
+  return observedResponse(windowLabel, request, element, { ...diagnostics, pointer: result.pointer }, result.errors);
+}
+
+function pointerPoint(element: HTMLElement, position: UiPointerOperation["position"]): ClientPoint {
+  const center = elementCenterPoint(element);
+  const rect = element.getBoundingClientRect();
+  if (position === "top" && rect.height >= 3) return { clientX: center.clientX, clientY: rect.top + 1 };
+  if (position === "bottom" && rect.height >= 3) return { clientX: center.clientX, clientY: rect.bottom - 1 };
+  return center;
+}
+
+/** Every pointer event goes to the source (capture emulation). */
+function dispatchPointerEvent(
+  source: HTMLElement,
+  at: HTMLElement | null,
+  operation: UiPointerOperation,
+  point: ClientPoint,
+): { pointer: PointerDiagnostics; errors: string[] } {
+  const { type, button, buttons, cancelable } = UI_POINTER_EVENTS[operation.kind];
+  const event = createHoverEvent(source, type, point, null, true, cancelable, { button, buttons });
+  const { defaultPrevented, errors } = dispatchObserved(source, event);
+  return {
+    pointer: {
+      operation: operation.kind,
+      position: operation.position,
+      pointerId: 1,
+      source: testIdOf(source),
+      at: at ? testIdOf(at) : null,
+      ...point,
+      events: [type],
+      defaultPrevented,
+    },
+    errors,
+  };
+}
+
+async function runKeyAction(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  element: HTMLElement,
+  diagnostics: UiAutomationDiagnostics,
+): Promise<AnyUiAutomationResponse> {
+  const chord = parseUiKeyChord(request.value)!;
+  const expired = expiredMutationResponse(windowLabel, request, diagnostics);
+  if (expired) return expired;
+
+  element.focus();
+  const focused = document.activeElement === element;
+  const eventView = element.ownerDocument.defaultView ?? window;
+  const init: KeyboardEventInit = { ...chord, bubbles: true, cancelable: true, composed: true };
+  const down = dispatchObserved(element, newEventWithView(eventView.KeyboardEvent, "keydown", init, eventView));
+  const up = dispatchObserved(element, newEventWithView(eventView.KeyboardEvent, "keyup", init, eventView));
+  await settleAfterDomMutation();
+  const key = { ...chord, focused, events: ["keydown", "keyup"], defaultPrevented: down.defaultPrevented };
+  return observedResponse(windowLabel, request, element, { ...diagnostics, key }, [...down.errors, ...up.errors]);
+}
+
+/** Dispatches while collecting listener exceptions, which the DOM reports as
+ *  window "error" events instead of throwing out of dispatchEvent. */
+function dispatchObserved(target: HTMLElement, event: Event): { defaultPrevented: boolean; errors: string[] } {
+  const errors: string[] = [];
+  const onError = (error: ErrorEvent) => {
+    errors.push(error.message);
+  };
+  window.addEventListener("error", onError);
+  try {
+    target.dispatchEvent(event);
+  } finally {
+    window.removeEventListener("error", onError);
+  }
+  return { defaultPrevented: event.defaultPrevented, errors };
+}
+
+function observedResponse(
+  windowLabel: string,
+  request: AnyUiAutomationRequest,
+  target: HTMLElement,
+  diagnostics: UiAutomationDiagnostics,
+  errors: string[],
+): AnyUiAutomationResponse {
+  if (errors.length === 0) return successResponse(windowLabel, request, snapshotTarget(target), diagnostics);
+  return errorResponse(windowLabel, request, "listener_exception", errors[0], availableTargets(), diagnostics);
 }
 
 function topmostElementAtCenter(element: HTMLElement): { ok: true } | { ok: false; element: HTMLElement | null } {
