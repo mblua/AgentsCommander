@@ -1566,6 +1566,12 @@ impl LocalProcessBackend {
 
         let mut command = launch.command_builder();
         command.cwd(&spawn_cwd);
+        // #2683 - set PATH to the #2589 effective search path, which is also
+        // what portable_pty searches to resolve a bare program name. Placement
+        // is the precedence rule: the env-removal loop and the configured-env
+        // loop below run later, so a configured PATH still wins and a removed
+        // PATH is still removed. The Windows git-guard PATH also runs later.
+        crate::config::agent_path::apply_search_path_to_pty_command(&mut command);
 
         // #942 - the argv exactly as executed, adapted host-shell wrapper
         // included. Built from the SAME `PreparedLaunch` the `CommandBuilder`
@@ -4490,5 +4496,163 @@ mod launch_witness_tests {
         backend.spawn_sync(spec).expect("valid spawn must succeed");
         assert!(witness.launched(), "a child exists: witness marked");
         backend.kill(id).expect("kill spawned child");
+    }
+}
+
+/// #2683 T1/T2: the REAL `spawn_sync` resolves a bare program name through the
+/// search path its production adapter call applies. The value is injected with
+/// the thread-local `SearchPathOverrideGuard`, which is only visible because
+/// `spawn_sync` runs the whole builder on the calling test thread.
+#[cfg(all(test, unix))]
+mod issue_2683_spawn_sync_search_path_tests {
+    use super::*;
+    use crate::config::agent_path::SearchPathOverrideGuard;
+    use crate::session::manager::SessionManager;
+    use std::os::unix::fs::PermissionsExt;
+
+    const PROBE: &str = "ac-2683-probe";
+
+    fn test_backend() -> (LocalProcessBackend, tauri::App) {
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app = crate::test_support::test_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build #2683 spawn-sync test app");
+        let git_watcher = GitWatcher::new(session_mgr, app.handle().clone());
+        let idle_detector = IdleDetector::new(|_| {}, |_| {});
+        let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+        (
+            LocalProcessBackend::new(output_senders, idle_detector, git_watcher, None),
+            app,
+        )
+    }
+
+    fn spawn_spec(cmd: &str, cwd: &std::path::Path) -> BackendSpawnSpec {
+        BackendSpawnSpec {
+            id: Uuid::new_v4(),
+            agent_id: None,
+            coding_agent: None,
+            cmd: cmd.to_string(),
+            args: Vec::new(),
+            resolved_agent_host_shell: None,
+            cwd: cwd.to_string_lossy().to_string(),
+            selected_cwd: None,
+            cols: 80,
+            rows: 24,
+            container_image: None,
+            configured_env: Vec::new(),
+            env_remove_keys: Vec::new(),
+            env_unset: Vec::new(),
+            extra_env: Vec::new(),
+            idle_tuning: crate::session::profile::IdleTuning::DEFAULT,
+            output_target: crate::pty::output::PtyOutputTarget::noop(),
+            resource_registration: None,
+            logical_resource_slot: None,
+            container_credential: None,
+            container_repo_mounts: Vec::new(),
+            launch_witness: Default::default(),
+        }
+    }
+
+    fn write_probe(dir: &std::path::Path) {
+        let probe = dir.join(PROBE);
+        std::fs::write(&probe, "#!/bin/sh\nexit 0\n").expect("write probe");
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod probe");
+        let mode = std::fs::metadata(&probe)
+            .expect("stat probe")
+            .permissions()
+            .mode();
+        assert!(probe.is_file(), "probe must exist before spawning");
+        assert_eq!(mode & 0o777, 0o755, "probe must be executable");
+    }
+
+    fn assert_ambient_path_cannot_resolve_probe() {
+        let ambient = std::env::var_os("PATH").unwrap_or_default();
+        for dir in std::env::split_paths(&ambient) {
+            assert!(
+                !dir.join(PROBE).exists(),
+                "ambient PATH entry {} resolves the probe; the test would be vacuous",
+                dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn issue_2683_spawn_sync_resolves_a_program_only_in_the_injected_search_path() {
+        let probe_dir = tempfile::tempdir().expect("probe dir");
+        let cwd = tempfile::tempdir().expect("cwd");
+        write_probe(probe_dir.path());
+        assert_ambient_path_cannot_resolve_probe();
+        let _guard = SearchPathOverrideGuard::new(probe_dir.path().as_os_str());
+
+        let (backend, _app) = test_backend();
+        let spec = spawn_spec(PROBE, cwd.path());
+        let id = spec.id;
+        backend
+            .spawn_sync(spec)
+            .expect("the probe exists only in the injected search path and must spawn");
+        assert!(backend.ptys.lock().unwrap().contains_key(&id));
+
+        backend.kill(id).expect("kill spawned probe");
+        assert!(!backend.ptys.lock().unwrap().contains_key(&id));
+    }
+
+    #[test]
+    fn issue_2683_spawn_sync_reproduces_the_vm200_failure_without_the_probe_dir() {
+        let probe_dir = tempfile::tempdir().expect("probe dir");
+        let empty_dir = tempfile::tempdir().expect("empty dir");
+        let cwd = tempfile::tempdir().expect("cwd");
+        write_probe(probe_dir.path());
+        assert_ambient_path_cannot_resolve_probe();
+        let _guard = SearchPathOverrideGuard::new(empty_dir.path().as_os_str());
+
+        let (backend, _app) = test_backend();
+        let spec = spawn_spec(PROBE, cwd.path());
+        let error = backend
+            .spawn_sync(spec)
+            .expect_err("the probe is absent from the injected search path");
+        assert!(
+            error.to_string().contains("was not found in PATH"),
+            "unexpected error: {error}"
+        );
+        assert!(backend.ptys.lock().unwrap().is_empty());
+    }
+}
+
+/// #2683 T5: the search path is applied before the env-removal and
+/// configured-env loops in `spawn_sync`, so explicit configuration still wins.
+#[cfg(test)]
+mod issue_2683_search_path_order_tests {
+    // Split so this file never contains a needle whole; see the no-self-match rule.
+    const N_APPLY: &str = concat!("apply_search_path", "_to_pty_command(&mut command)");
+    const N_REMOVE: &str = concat!("for key in ", "&env_remove", "_keys");
+    const N_CONFIGURED: &str = concat!("for (key, value) in ", "&configured", "_env");
+
+    fn only_offset(source: &str, needle: &str) -> usize {
+        let hits: Vec<usize> = source.match_indices(needle).map(|(at, _)| at).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected exactly one {needle:?}, got {hits:?}"
+        );
+        hits[0]
+    }
+
+    #[test]
+    fn issue_2683_spawn_sync_applies_the_search_path_before_the_env_loops() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pty/local_backend.rs");
+        let source = std::fs::read_to_string(&path).expect("read local_backend.rs");
+        let apply = only_offset(&source, N_APPLY);
+        let remove = only_offset(&source, N_REMOVE);
+        let configured = only_offset(&source, N_CONFIGURED);
+        assert!(
+            apply < remove,
+            "search path must be applied before the removal loop"
+        );
+        assert!(
+            apply < configured,
+            "search path must be applied before the configured-env loop"
+        );
     }
 }

@@ -917,6 +917,7 @@ agentscommander_lib::pty::inject -> agentscommander_lib::pty::menu_guard
 agentscommander_lib::pty::inject -> agentscommander_lib::session::manager
 agentscommander_lib::pty::inject -> agentscommander_lib::session::session
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config
+agentscommander_lib::pty::local_backend -> agentscommander_lib::config::agent_path
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::root_agent
 agentscommander_lib::pty::local_backend -> agentscommander_lib::config::session_context

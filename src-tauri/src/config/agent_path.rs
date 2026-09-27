@@ -113,6 +113,82 @@ pub fn effective_search_path() -> OsString {
     compose(&inputs_from_process())
 }
 
+/// #2683 - the ONLY place the platform decision is made and the ONLY place
+/// the test override is read. `None` on Windows by decision.
+fn search_path_to_apply() -> Option<OsString> {
+    if cfg!(windows) {
+        return None;
+    }
+    #[cfg(test)]
+    if let Some(injected) = test_search_path_override() {
+        return Some(injected);
+    }
+    Some(effective_search_path())
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SEARCH_PATH_OVERRIDE: std::cell::RefCell<Option<OsString>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// #2683 - the search path installed on this thread by a
+/// `SearchPathOverrideGuard`, if any.
+#[cfg(test)]
+pub(crate) fn test_search_path_override() -> Option<OsString> {
+    TEST_SEARCH_PATH_OVERRIDE.with(|cell| cell.borrow().clone())
+}
+
+/// #2683 - installs a thread-local search path override for the lifetime of
+/// the guard; `Drop` restores the previous value, even on panic.
+#[cfg(test)]
+pub(crate) struct SearchPathOverrideGuard {
+    previous: Option<OsString>,
+}
+
+#[cfg(test)]
+impl SearchPathOverrideGuard {
+    pub(crate) fn new(value: impl Into<OsString>) -> Self {
+        let previous =
+            TEST_SEARCH_PATH_OVERRIDE.with(|cell| cell.borrow_mut().replace(value.into()));
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for SearchPathOverrideGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        TEST_SEARCH_PATH_OVERRIDE.with(|cell| *cell.borrow_mut() = previous);
+    }
+}
+
+/// #2683 - sets `PATH` on a PTY command to the effective search path. A no-op
+/// on Windows by decision. The assignment is also what `portable_pty` searches
+/// to resolve a bare program name (`cmdbuilder.rs` `resolve_path` reads
+/// `get_env("PATH")`), so it both finds the binary and reaches the child.
+pub fn apply_search_path_to_pty_command(command: &mut portable_pty::CommandBuilder) {
+    if let Some(path) = search_path_to_apply() {
+        command.env("PATH", path);
+    }
+}
+
+/// #2683 - sets `PATH` on a std command to the effective search path. A no-op
+/// on Windows by decision.
+pub fn apply_search_path_to_std_command(command: &mut std::process::Command) {
+    if let Some(path) = search_path_to_apply() {
+        command.env("PATH", path);
+    }
+}
+
+/// #2683 - sets `PATH` on a tokio command to the effective search path. A
+/// no-op on Windows by decision.
+pub fn apply_search_path_to_tokio_command(command: &mut tokio::process::Command) {
+    if let Some(path) = search_path_to_apply() {
+        command.env("PATH", path);
+    }
+}
+
 /// Pure skip decision for Phase 2. `None` means do not probe: windows, `$SHELL`
 /// unset or empty, or a `fish` shell (its `$PATH` is a list, so the printed
 /// value would be unusable; fish users are served by Phase 1).
@@ -422,5 +498,48 @@ mod tests {
             probe_login_shell_path(&missing, Duration::from_secs(5)).await,
             None
         );
+    }
+
+    const T3_INJECTED: &str = "/ac-2683-t3";
+
+    fn path_override(command: &std::process::Command) -> Option<Option<OsString>> {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("PATH"))
+            .map(|(_, value)| value.map(OsStr::to_os_string))
+    }
+
+    #[test]
+    fn issue_2683_apply_search_path_uses_the_injected_value_or_nothing_on_windows() {
+        let _guard = SearchPathOverrideGuard::new(T3_INJECTED);
+        let mut command = portable_pty::CommandBuilder::new("probe");
+        let before = command.get_env("PATH").map(OsStr::to_os_string);
+
+        apply_search_path_to_pty_command(&mut command);
+
+        let after = command.get_env("PATH").map(OsStr::to_os_string);
+        if cfg!(windows) {
+            assert_eq!(after, before, "Windows must leave the PTY PATH untouched");
+        } else {
+            assert_eq!(after, Some(OsString::from(T3_INJECTED)));
+        }
+    }
+
+    #[test]
+    fn issue_2683_apply_search_path_adapters_agree_across_command_types() {
+        let _guard = SearchPathOverrideGuard::new(T3_INJECTED);
+        let expected = if cfg!(windows) {
+            None
+        } else {
+            Some(Some(OsString::from(T3_INJECTED)))
+        };
+
+        let mut std_command = std::process::Command::new("probe");
+        apply_search_path_to_std_command(&mut std_command);
+        assert_eq!(path_override(&std_command), expected);
+
+        let mut tokio_command = tokio::process::Command::new("probe");
+        apply_search_path_to_tokio_command(&mut tokio_command);
+        assert_eq!(path_override(tokio_command.as_std()), expected);
     }
 }
