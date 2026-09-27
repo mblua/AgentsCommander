@@ -3686,6 +3686,13 @@ describe("AgentPickerModal", () => {
         expect(text("agentPicker.removeScopeCount.workgroup")).toBe("3 of 4 protected");
         expect(text("agentPicker.scope.kind")).toContain("3 replicas");
         expect(text("agentPicker.scope.workgroup")).toContain("4 replicas");
+        const assignCounts = Array.from(document.querySelectorAll(".agent-scope-count")).map(
+          (element) => element.textContent?.replace(/\s+/g, " ").trim(),
+        );
+        expect(assignCounts).toEqual([
+          "1 replica", "3 replicas", "4 replicas", // ordinary replica / kind / workgroup
+          "1 replica", "3 replicas", "4 replicas", // + lock replica / kind / workgroup
+        ]);
         expect(lines("picker_counts")).toHaveLength(0);
         expect(frames).toHaveLength(1);
 
