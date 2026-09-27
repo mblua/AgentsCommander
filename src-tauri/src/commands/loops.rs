@@ -7,11 +7,11 @@ use tauri::{AppHandle, State};
 
 use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
-    apply_loop_update_patch, baseline_loop_state, details_from_parts, loop_dir, next_due_after,
-    read_loop_config, read_loop_state, sanitize_loop_id, validate_cron_expr, validate_loop_config,
-    validate_loop_id, write_loop_config, write_loop_state_atomic, BusyCoordinatorPolicy,
-    LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopSessionStart,
-    LoopTarget, LoopTargetKind, LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
+    create_loop_files, details_from_parts, loop_dir, next_due_after, read_loop_config,
+    read_loop_state, remove_loop_files, sanitize_loop_id, update_loop_files, validate_cron_expr,
+    validate_loop_id, BusyCoordinatorPolicy, LoopConfigDetails, LoopConfigToml, LoopDef,
+    LoopPolicy, LoopPrompt, LoopSessionStart, LoopTarget, LoopTargetKind, LoopTrigger,
+    LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
 // #1252: keep private. A `pub use` here would re-expose the emitter and kill the E0603 backstop.
 use crate::loops::events::emit_loop_change;
@@ -102,10 +102,6 @@ pub async fn create_loop(
         Some(id) => sanitize_loop_id(id)?,
         None => sanitize_loop_id(&request.name)?,
     };
-    let dir = loop_dir(&ac_root, &id);
-    if dir.exists() {
-        return Err(format!("Loop '{}' already exists", id));
-    }
     let policy = policy_from_create_request(&request);
     let prompt_body = validated_prompt(request.prompt_body)?;
     let config = LoopConfigToml {
@@ -126,10 +122,7 @@ pub async fn create_loop(
         prompt: LoopPrompt { body: prompt_body },
         policy,
     };
-    validate_loop_config(&project_dir, &config)?;
-    let dir = write_loop_config(&ac_root, &config)?;
-    let state = baseline_loop_state(&config, Utc::now())?;
-    write_loop_state_atomic(&dir, &state)?;
+    let (dir, state) = create_loop_files(&project_dir, &ac_root, &config)?;
     scheduler.bump_loop_generation(&dir);
     let details = details_from_parts(&dir, &config, &state);
     emit_loop_change(
@@ -156,23 +149,13 @@ pub async fn update_loop(
     let ac_root = ac_root_for_project(&project_dir)?;
     crate::commands::ac_discovery::ensure_ac_root_gitignore(&ac_root)?;
     let _guard = scheduler.io_guard().await;
-    let dir = loop_dir(&ac_root, &request.id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", request.id));
-    }
-    let mut config = read_loop_config(&dir)?;
-    let reset_schedule = apply_loop_update_patch(&mut config, patch_from_update_request(request))?;
-
-    validate_loop_config(&project_dir, &config)?;
-    let dir = write_loop_config(&ac_root, &config)?;
-    let state = if reset_schedule {
-        baseline_loop_state(&config, Utc::now())?
-    } else {
-        read_loop_state(&dir).unwrap_or_default()
-    };
-    if reset_schedule {
-        write_loop_state_atomic(&dir, &state)?;
-    }
+    let loop_id = request.id.clone();
+    let (dir, config, state) = update_loop_files(
+        &project_dir,
+        &ac_root,
+        &loop_id,
+        patch_from_update_request(request),
+    )?;
     scheduler.bump_loop_generation(&dir);
     let details = details_from_parts(&dir, &config, &state);
     emit_loop_change(
@@ -199,11 +182,7 @@ pub async fn delete_loop(
     let project_dir = PathBuf::from(&project_path);
     let ac_root = ac_root_for_project(&project_dir)?;
     let _guard = scheduler.io_guard().await;
-    let dir = loop_dir(&ac_root, &id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", id));
-    }
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to remove Loop directory: {}", e))?;
+    let dir = remove_loop_files(&ac_root, &id)?;
     scheduler.bump_loop_generation(&dir);
     emit_loop_change(&app, &project_dir, &dir, &id, "deleted", None, None);
     scheduler.request_scan();
@@ -222,28 +201,15 @@ pub async fn toggle_loop(
     let project_dir = PathBuf::from(&project_path);
     let ac_root = ac_root_for_project(&project_dir)?;
     let _guard = scheduler.io_guard().await;
-    let dir = loop_dir(&ac_root, &id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", id));
-    }
-    let mut config = read_loop_config(&dir)?;
-    let reset_schedule = apply_loop_update_patch(
-        &mut config,
+    let (dir, config, state) = update_loop_files(
+        &project_dir,
+        &ac_root,
+        &id,
         LoopUpdatePatch {
             enabled: Some(enabled),
             ..LoopUpdatePatch::default()
         },
     )?;
-    validate_loop_config(&project_dir, &config)?;
-    let dir = write_loop_config(&ac_root, &config)?;
-    let state = if reset_schedule {
-        baseline_loop_state(&config, Utc::now())?
-    } else {
-        read_loop_state(&dir).unwrap_or_default()
-    };
-    if reset_schedule {
-        write_loop_state_atomic(&dir, &state)?;
-    }
     scheduler.bump_loop_generation(&dir);
     let details = details_from_parts(&dir, &config, &state);
     emit_loop_change(
@@ -345,7 +311,10 @@ pub async fn list_unresolved_loop_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::loops::{LoopSessionStart, MissedWhileClosedPolicy};
+    use crate::config::loops::{
+        apply_loop_update_patch, write_loop_config, write_loop_state_atomic, LoopSessionStart,
+        MissedWhileClosedPolicy,
+    };
     use tauri::Manager;
 
     /// A stored Loop whose `sessionStart` is `Accumulate`, so an update that

@@ -10,12 +10,12 @@ use uuid::Uuid;
 
 use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
-    append_loop_audit_once, baseline_loop_state, details_from_parts, latest_due_between, loop_dir,
-    next_due_after, read_loop_config, read_loop_config_if_present, read_loop_state_with_raw,
-    resolve_loop_target, revalidate_loop_current, write_loop_state_atomic,
-    write_loop_state_if_unchanged, LoopAuditEntry, LoopAuditKind, LoopConfigDetails,
-    LoopConfigRevalidation, LoopConfigToml, LoopLastResult, LoopState, LoopStateWrite,
-    LOOP_DIR_PREFIX, LOOP_STATE_FILE,
+    acquire_loop_lock_for_dir, append_loop_audit_once, baseline_loop_state, details_from_parts,
+    latest_due_between, loop_dir, next_due_after, read_loop_config, read_loop_config_if_present,
+    read_loop_state_with_raw, resolve_loop_target, revalidate_loop_current,
+    write_loop_state_atomic, write_loop_state_if_unchanged, LoopAuditEntry, LoopAuditKind,
+    LoopConfigDetails, LoopConfigRevalidation, LoopConfigToml, LoopLastResult, LoopState,
+    LoopStateWrite, LOOP_DIR_PREFIX, LOOP_LOCK_TIMEOUT, LOOP_STATE_FILE,
 };
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
@@ -52,9 +52,9 @@ pub struct LoopScheduler {
     /// commands and by the scan's read and commit sections. Lock order is
     /// always `scan_lock` then `io_lock`, never the reverse. It is never held
     /// across an await other than its own acquisition, so never across a
-    /// delivery. Scope: in-process writers only. `cli/loop_cmd.rs` writes
-    /// Loop files from another process without this lock; the state CAS only
-    /// narrows that window, it does not close it.
+    /// delivery. Scope: in-process writers only. Other processes (the CLI in
+    /// `cli/loop_cmd.rs`) are excluded by the per-Loop sidecar lock
+    /// (`acquire_loop_lock`, #2682), taken inside `io_lock` by every section.
     io_lock: tokio::sync::Mutex<()>,
     /// Per-Loop generation, bumped by every Loop command under `io_lock`, so
     /// a scan can tell that the Loop it read was replaced underneath it.
@@ -133,6 +133,7 @@ impl LoopScheduler {
         let dir = loop_dir(&ac_root, &loop_id);
         let (config, state, s0_raw, s0_generation) = {
             let _io = self.io_lock.lock().await;
+            let _loop_lock = acquire_loop_lock_for_dir(&dir, LOOP_LOCK_TIMEOUT)?;
             if !dir.is_dir() {
                 return Err(format!("Loop '{}' not found", loop_id));
             }
@@ -270,6 +271,7 @@ impl LoopScheduler {
         // S0: a Loop that is gone at entry is a quiet skip.
         let (config, mut state, s0_raw, s0_generation) = {
             let _io = self.io_lock.lock().await;
+            let _loop_lock = acquire_loop_lock_for_dir(dir, LOOP_LOCK_TIMEOUT)?;
             if !dir.is_dir() {
                 return Ok(());
             }
@@ -286,6 +288,10 @@ impl LoopScheduler {
 
         if state.last_checked_at.is_none() {
             let _io = self.io_lock.lock().await;
+            // #2682: no Loop lock here. `commit_scan_section` takes it at entry
+            // and re-checks freshness and config presence under it; holding it
+            // here too would self-deadlock, since a second handle in this
+            // process blocks on the same sidecar (T0).
             if !loop_is_current_for_delivery(dir, &config)? {
                 return Ok(());
             }
@@ -603,8 +609,8 @@ impl LoopScheduler {
         Ok(read_raw_loop_state(dir)?.as_deref() == s0_raw)
     }
 
-    /// The one commit order for every scan-side write, run under `io_lock`:
-    /// (1) freshness, (2) guarded state write, (3) audit append only after a
+    /// The one commit order for every scan-side write, run under `io_lock`
+    /// and the cross-process Loop lock (#2682): (1) freshness, (2) guarded state write, (3) audit append only after a
     /// `Written`. So no audit row exists without its state write.
     fn commit_scan_section(
         &self,
@@ -614,6 +620,7 @@ impl LoopScheduler {
         audit: Option<&LoopAuditEntry>,
         state: &LoopState,
     ) -> Result<LoopStateWrite, String> {
+        let _loop_lock = acquire_loop_lock_for_dir(dir, LOOP_LOCK_TIMEOUT)?;
         if !self.scan_write_is_fresh(dir, s0_generation, s0_raw)? {
             log::debug!(
                 "[loops] Skipping stale Loop scan write for {}: the Loop changed since the scan read it",
@@ -1616,5 +1623,192 @@ mod tests {
         assert!(err.starts_with("Failed to finalize Loop state"), "{err}");
         assert_eq!(read_raw_loop_state(&dir).expect("raw"), Some(s0_raw));
         assert!(tmp_files_in(&dir).is_empty(), "{:?}", tmp_files_in(&dir));
+    }
+
+    // #2682 T2b - the CAS window in `commit_scan_section`, under the Loop lock.
+
+    const SCAN_CHILD_DIR_ENV: &str = "AC_2682_SCAN_CHILD_DIR";
+    const SCAN_CHILD_TEST_FQN: &str = "loops::scheduler::tests::issue_2682_scan_commit_child";
+    const T2B_EXPR: &str = "0 0 1 1 *";
+
+    /// A project whose `wg-1-dev-team` target resolves, so a real update
+    /// section passes validation, with one Loop and a baseline state.
+    fn t2b_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ac_root = tmp.path().join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let matrix = ac_root.join("_agent_tech-lead");
+        let replica = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
+        for dir in [&team_dir, &matrix, &replica] {
+            std::fs::create_dir_all(dir).expect("create fixture dir");
+        }
+        std::fs::write(matrix.join("Role.md"), "# Tech Lead\n").expect("role");
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["_agent_tech-lead"],"coordinator":"_agent_tech-lead","repos":[]}"#,
+        )
+        .expect("team config");
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .expect("replica config");
+        let config = sample_config();
+        let dir = write_loop_config(&ac_root, &config).expect("write config");
+        let baseline = baseline_loop_state(&config, Utc::now() - chrono::Duration::hours(1))
+            .expect("baseline");
+        write_loop_state_atomic(&dir, &baseline).expect("write state");
+        (tmp, ac_root, dir)
+    }
+
+    /// The scheduler-shaped writer: one scan commit from a fresh snapshot.
+    fn t2b_scan_commit(dir: &Path) -> Result<LoopStateWrite, String> {
+        let scheduler = LoopScheduler::new();
+        let s0_raw = read_raw_loop_state(dir)?;
+        let s0_generation = scheduler.loop_generation(dir);
+        let state = LoopState {
+            last_checked_at: Some(Utc::now()),
+            ..LoopState::default()
+        };
+        scheduler.commit_scan_section(dir, s0_generation, s0_raw.as_deref(), None, &state)
+    }
+
+    fn t2b_update(
+        tmp: &tempfile::TempDir,
+        ac_root: &Path,
+    ) -> std::thread::JoinHandle<Result<LoopState, String>> {
+        let (project, root) = (tmp.path().to_path_buf(), ac_root.to_path_buf());
+        std::thread::spawn(move || {
+            crate::config::loops::update_loop_files(
+                &project,
+                &root,
+                "daily-sync",
+                crate::config::loops::LoopUpdatePatch {
+                    expr: Some(T2B_EXPR.to_string()),
+                    ..Default::default()
+                },
+            )
+            .map(|(_, _, state)| state)
+        })
+    }
+
+    fn let_it_finish_if_unblocked<T>(handle: &std::thread::JoinHandle<T>) {
+        let started = std::time::Instant::now();
+        while !handle.is_finished() && started.elapsed() < Duration::from_millis(500) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The update's reset state is what is on disk: no lost update.
+    fn assert_update_survived(dir: &Path, update: LoopState) {
+        let on_disk = crate::config::loops::read_loop_state(dir).expect("state on disk");
+        assert_eq!(
+            (on_disk.last_checked_at, on_disk.next_due_at),
+            (update.last_checked_at, update.next_due_at),
+            "the scan commit clobbered the update's reset state"
+        );
+        assert_eq!(
+            read_loop_config(dir).expect("config").trigger.expr,
+            T2B_EXPR
+        );
+    }
+
+    /// #2682 T2b, in-process - the scan commit stops between its CAS compare
+    /// and its replace while an update runs. With the Loop lock the update
+    /// waits and lands after; without it the commit clobbers the update.
+    #[test]
+    fn issue_2682_t2b_scan_commit_does_not_clobber_an_update() {
+        let (tmp, ac_root, dir) = t2b_fixture();
+        let armed = crate::config::loops::pause::arm("after_cas_compare", &dir);
+        let commit_dir = dir.clone();
+        let writer_a = std::thread::spawn(move || t2b_scan_commit(&commit_dir));
+        armed
+            .reached
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the scan commit reaches the pause");
+        let writer_b = t2b_update(&tmp, &ac_root);
+        let_it_finish_if_unblocked(&writer_b);
+        armed.release.send(()).expect("release the scan commit");
+        assert_eq!(
+            writer_a.join().expect("writer A"),
+            Ok(LoopStateWrite::Written)
+        );
+        let update = writer_b.join().expect("writer B").expect("update section");
+        assert_update_survived(&dir, update);
+    }
+
+    /// #2682 - the child half of T2b's cross-process leg: a scan commit that
+    /// pauses (armed by environment) after its CAS compare. A no-op without
+    /// the child-only environment.
+    #[test]
+    fn issue_2682_scan_commit_child() {
+        let Some(dir) = std::env::var_os(SCAN_CHILD_DIR_ENV) else {
+            return;
+        };
+        let written = t2b_scan_commit(Path::new(&dir)).expect("child scan commit");
+        assert_eq!(written, LoopStateWrite::Written);
+        println!("AC_2682_SCAN_CHILD_WRITTEN");
+    }
+
+    /// #2682 T2b, cross-process - the lost update #2682 names: the scan commit
+    /// runs in a child process, the update in this one.
+    #[test]
+    fn issue_2682_t2b_cross_process_scan_commit_does_not_clobber_an_update() {
+        use crate::config::loops::pause;
+        let (tmp, ac_root, dir) = t2b_fixture();
+        let rendezvous = tempfile::tempdir().expect("rendezvous");
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test exe"))
+            .args([
+                "--exact",
+                SCAN_CHILD_TEST_FQN,
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(SCAN_CHILD_DIR_ENV, &dir)
+            .env(pause::PAUSE_DIR_ENV, rendezvous.path())
+            .env(pause::PAUSE_STAGE_ENV, "after_cas_compare")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn scan child");
+        let ready = rendezvous.path().join(pause::READY_FILE);
+        let started = std::time::Instant::now();
+        while !ready.exists() {
+            if started.elapsed() > Duration::from_secs(60)
+                || child.try_wait().ok().flatten().is_some()
+            {
+                let _ = child.kill();
+                let output = child.wait_with_output().expect("child output");
+                panic!(
+                    "scan child never paused:\n{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let writer_b = t2b_update(&tmp, &ac_root);
+        let_it_finish_if_unblocked(&writer_b);
+        std::fs::write(rendezvous.path().join(pause::RELEASE_FILE), b"go").expect("release");
+        let started = std::time::Instant::now();
+        while child.try_wait().expect("poll child").is_none() {
+            if started.elapsed() > Duration::from_secs(60) {
+                let _ = child.kill();
+                panic!("scan child exceeded its 60 s bound");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().expect("child output");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success()
+                && stdout.contains(&format!("test {SCAN_CHILD_TEST_FQN} ..."))
+                && stdout.contains("test result: ok. 1 passed; 0 failed")
+                && stdout.contains("AC_2682_SCAN_CHILD_WRITTEN"),
+            "scan child failed:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let update = writer_b.join().expect("writer B").expect("update section");
+        assert_update_survived(&dir, update);
     }
 }
