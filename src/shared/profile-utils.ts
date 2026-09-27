@@ -476,17 +476,40 @@ export function suggestedContextRegex(command: string): string | null {
  *  reports a confidently wrong number instead of failing closed. */
 export const CLAUDE_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ |])7d (\d{1,3})%`;
 
-export function suggestedQuotaRegex(command: string): string | null {
+/** #2687 - Codex's weekly-quota row reads REMAINING, e.g. `Context 0% used · Weekly 100% left`.
+ *  The leading alternation accepts start-of-row or the character before the word, which on
+ *  the observed row is the space after Codex's separator. The trailing ` left` is REQUIRED,
+ *  for the reason `context_scrape/rows.rs` pins: a narrow terminal truncates the row
+ *  right-to-left, and a pattern without the suffix reports a confidently wrong number instead
+ *  of failing closed. `String.raw` keeps the six-character `\u00b7` escape, so the stored
+ *  pattern is 37 ASCII bytes, the same bytes p1's Rust byte-pin test asserts. */
+export const CODEX_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ \u00b7])Weekly (\d{1,3})% left`;
+
+export type SuggestedQuotaSource = {
+  kind: "screenRegex" | "screenRegexRemaining";
+  pattern: string;
+};
+
+/** The executable token's stem, unwrapping `cmd /c <exe>`. Unlike the any-token scan in
+ *  `suggestedContextRegex`, only the executable counts: `echo claude` is `echo`. */
+export function commandExecutableStem(command: string): string {
   const parsed = parseArgvText(command);
   const tokens = parsed.error
     ? command.trim().split(/\s+/).filter(Boolean)
     : parsed.argv;
   const directStem = executableTokenBasename(tokens[0] ?? "");
-  const stem =
-    directStem === "cmd" && tokens[1]?.toLowerCase() === "/c"
-      ? executableTokenBasename(tokens[2] ?? "")
-      : directStem;
-  return stem.startsWith("claude") ? CLAUDE_WEEKLY_QUOTA_REGEX : null;
+  return directStem === "cmd" && tokens[1]?.toLowerCase() === "/c"
+    ? executableTokenBasename(tokens[2] ?? "")
+    : directStem;
+}
+
+export function suggestedQuotaSource(command: string): SuggestedQuotaSource | null {
+  const stem = commandExecutableStem(command);
+  if (stem.startsWith("claude")) return { kind: "screenRegex", pattern: CLAUDE_WEEKLY_QUOTA_REGEX };
+  if (stem.startsWith("codex")) {
+    return { kind: "screenRegexRemaining", pattern: CODEX_WEEKLY_QUOTA_REGEX };
+  }
+  return null;
 }
 
 export function agentNameFromPathOrSession(
