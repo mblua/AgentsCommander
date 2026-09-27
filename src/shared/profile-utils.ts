@@ -476,14 +476,15 @@ export function suggestedContextRegex(command: string): string | null {
  *  reports a confidently wrong number instead of failing closed. */
 export const CLAUDE_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ |])7d (\d{1,3})%`;
 
-/** #2687 - Codex's weekly-quota row reads REMAINING, e.g. `Context 0% used · Weekly 100% left`.
+/** #2687 - Codex's weekly-quota row reads REMAINING, e.g. `Context 52% used · weekly 87% left`.
  *  The leading alternation accepts start-of-row or the character before the word, which on
  *  the observed row is the space after Codex's separator. The trailing ` left` is REQUIRED,
  *  for the reason `context_scrape/rows.rs` pins: a narrow terminal truncates the row
  *  right-to-left, and a pattern without the suffix reports a confidently wrong number instead
  *  of failing closed. `String.raw` keeps the six-character `\u00b7` escape, so the stored
- *  pattern is 37 ASCII bytes, the same bytes p1's Rust byte-pin test asserts. */
-export const CODEX_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ \u00b7])Weekly (\d{1,3})% left`;
+ *  pattern is 40 ASCII bytes, the same bytes p1's Rust byte-pin test asserts.
+ *  `[Ww]` not `(?i)`, because JS RegExp rejects inline flags. */
+export const CODEX_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ \u00b7])[Ww]eekly (\d{1,3})% left`;
 
 export type SuggestedQuotaSource = {
   kind: "screenRegex" | "screenRegexRemaining";
