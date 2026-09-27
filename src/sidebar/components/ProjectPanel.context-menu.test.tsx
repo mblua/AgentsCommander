@@ -239,6 +239,26 @@ function replicaMenu(): HTMLElement | null {
   return document.querySelector<HTMLElement>(".session-context-menu");
 }
 
+// #2528: the Coding Agent item carries exactly one of the two testids.
+const LIVE_CODING_AGENT = "replica.member-session.menu.coding-agent";
+const INACTIVE_CODING_AGENT = "replica.inactive.menu.coding-agent";
+function expectCodingAgentTestId(menu: HTMLElement, present: string, absent: string): HTMLButtonElement {
+  const codingAgent = menu.querySelector<HTMLButtonElement>(`[data-ac-testid="${present}"]`);
+  expect(codingAgent).not.toBeNull();
+  expect(codingAgent!.getAttribute("data-ac-role")).toBe("menuitem");
+  expect(codingAgent!.textContent).toContain("Coding Agent");
+  expect(menu.querySelector(`[data-ac-testid="${absent}"]`)).toBeNull();
+  return codingAgent!;
+}
+
+async function expectClickOpensPicker(codingAgent: HTMLButtonElement): Promise<void> {
+  click(codingAgent);
+  await waitFor(() => {
+    expect(replicaMenu()).toBeNull();
+    expect(document.querySelector(".agent-picker-eyebrow")).not.toBeNull();
+  });
+}
+
 function findBroom(menu: HTMLElement): HTMLButtonElement | null {
   return (
     Array.from(menu.querySelectorAll("button")).find((b) =>
@@ -392,17 +412,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(menu.textContent).not.toContain("Restart Session");
     expect(menu.textContent).not.toContain("Detach session");
     // #2528: gray menu Coding Agent carries the static inactive testid.
-    const codingAgent = menu.querySelector<HTMLButtonElement>('[data-ac-testid="replica.inactive.menu.coding-agent"]');
-    expect(codingAgent).not.toBeNull();
-    expect(codingAgent!.getAttribute("data-ac-role")).toBe("menuitem");
-    expect(codingAgent!.textContent).toContain("Coding Agent");
-    expect(menu.querySelector('[data-ac-testid="replica.member-session.menu.coding-agent"]')).toBeNull();
-
-    click(codingAgent!);
-    await waitFor(() => {
-      expect(replicaMenu()).toBeNull();
-      expect(document.querySelector(".agent-picker-eyebrow")).not.toBeNull();
-    });
+    await expectClickOpensPicker(expectCodingAgentTestId(menu, INACTIVE_CODING_AGENT, LIVE_CODING_AGENT));
   });
 
   it("preserves the native context menu inside the project regex filter row", async () => {
@@ -1093,11 +1103,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(menu!.textContent).toContain("Clear task title");
     });
     // #2528: red uses the live menu, so the testid carries the sessionId.
-    const menu = replicaMenu()!;
-    const codingAgent = menu.querySelector('[data-ac-testid="replica.member-session.menu.coding-agent"]');
-    expect(codingAgent).not.toBeNull();
-    expect(codingAgent!.getAttribute("data-ac-role")).toBe("menuitem");
-    expect(menu.querySelector('[data-ac-testid="replica.inactive.menu.coding-agent"]')).toBeNull();
+    expectCodingAgentTestId(replicaMenu()!, LIVE_CODING_AGENT, INACTIVE_CODING_AGENT);
   });
 
   it("opens the workgroup replica folder from a red (exited) workgroup replica", async () => {
@@ -1176,17 +1182,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     // #545: the broom now renders in EVERY dot state, including green.
     expect(menu.textContent).toContain("Clear task title");
     // #2528: live Coding Agent testid; clicking it swaps the menu for the picker.
-    const codingAgent = menu.querySelector<HTMLButtonElement>('[data-ac-testid="replica.member-session.menu.coding-agent"]');
-    expect(codingAgent).not.toBeNull();
-    expect(codingAgent!.getAttribute("data-ac-role")).toBe("menuitem");
-    expect(codingAgent!.textContent).toContain("Coding Agent");
-    expect(menu.querySelector('[data-ac-testid="replica.inactive.menu.coding-agent"]')).toBeNull();
-
-    click(codingAgent!);
-    await waitFor(() => {
-      expect(replicaMenu()).toBeNull();
-      expect(document.querySelector(".agent-picker-eyebrow")).not.toBeNull();
-    });
+    await expectClickOpensPicker(expectCodingAgentTestId(menu, LIVE_CODING_AGENT, INACTIVE_CODING_AGENT));
   });
 
   it("removes duplicate ProjectPanel live replica controls while preserving active-recording cancellation", async () => {
