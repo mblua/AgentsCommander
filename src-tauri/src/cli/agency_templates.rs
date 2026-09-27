@@ -516,6 +516,7 @@ fn run_process_with_timeout(
 ) -> Result<Output, String> {
     let mut cmd = Command::new(program);
     crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
+    crate::config::agent_path::apply_search_path_to_std_command(&mut cmd);
     if let Some(dir) = current_dir {
         cmd.current_dir(dir);
     }

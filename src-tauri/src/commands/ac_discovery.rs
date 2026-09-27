@@ -397,6 +397,7 @@ async fn detect_repo_branch(dir: &str) -> Option<String> {
 
     let mut cmd = tokio::process::Command::new("git");
     crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
+    crate::config::agent_path::apply_search_path_to_tokio_command(&mut cmd);
     cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(dir)
         .kill_on_drop(true);
