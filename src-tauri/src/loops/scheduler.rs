@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,10 +11,10 @@ use uuid::Uuid;
 use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
     append_loop_audit_once, baseline_loop_state, details_from_parts, latest_due_between, loop_dir,
-    next_due_after, read_loop_config, read_loop_state, resolve_loop_target,
-    revalidate_loop_current, write_loop_state_atomic, LoopAuditEntry, LoopAuditKind,
-    LoopConfigDetails, LoopConfigRevalidation, LoopConfigToml, LoopLastResult, LoopState,
-    LOOP_DIR_PREFIX,
+    next_due_after, read_loop_config, read_loop_config_if_present, read_loop_state_with_raw,
+    resolve_loop_target, revalidate_loop_current, write_loop_state_if_unchanged, LoopAuditEntry,
+    LoopAuditKind, LoopConfigDetails, LoopConfigRevalidation, LoopConfigToml, LoopLastResult,
+    LoopState, LoopStateWrite, LOOP_DIR_PREFIX, LOOP_STATE_FILE,
 };
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
@@ -32,9 +33,33 @@ pub struct UnresolvedLoopTarget {
     pub error: String,
 }
 
+/// Test-only stand-in for one delivery: signals `entered`, waits for
+/// `release`, then returns `report` without calling `deliver_loop_prompt`.
+#[cfg(test)]
+pub(crate) struct LoopDeliveryGate {
+    pub(crate) entered: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) release: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub(crate) report: Option<LoopDeliveryReport>,
+}
+
 pub struct LoopScheduler {
     notify: tokio::sync::Notify,
+    /// One scan at a time. Taken by `scan_once` and `run_loop_now` and held
+    /// across the delivery.
     scan_lock: tokio::sync::Mutex<()>,
+    /// Short read-modify-write guard over Loop files, taken by the four Loop
+    /// commands and by the scan's read and commit sections. Lock order is
+    /// always `scan_lock` then `io_lock`, never the reverse. It is never held
+    /// across an await other than its own acquisition, so never across a
+    /// delivery. Scope: in-process writers only. `cli/loop_cmd.rs` writes
+    /// Loop files from another process without this lock; the state CAS only
+    /// narrows that window, it does not close it.
+    io_lock: tokio::sync::Mutex<()>,
+    /// Per-Loop generation, bumped by every Loop command under `io_lock`, so
+    /// a scan can tell that the Loop it read was replaced underneath it.
+    loop_generations: std::sync::Mutex<HashMap<String, u64>>,
+    #[cfg(test)]
+    delivery_gate: std::sync::Mutex<Option<LoopDeliveryGate>>,
 }
 
 impl LoopScheduler {
@@ -42,6 +67,10 @@ impl LoopScheduler {
         Self {
             notify: tokio::sync::Notify::new(),
             scan_lock: tokio::sync::Mutex::new(()),
+            io_lock: tokio::sync::Mutex::new(()),
+            loop_generations: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            delivery_gate: std::sync::Mutex::new(None),
         }
     }
 
@@ -49,8 +78,24 @@ impl LoopScheduler {
         self.notify.notify_one();
     }
 
-    pub async fn mutation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.scan_lock.lock().await
+    pub async fn io_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.io_lock.lock().await
+    }
+
+    pub(crate) fn loop_generation(&self, dir: &Path) -> u64 {
+        let key = generation_key(dir);
+        let generations = self.loop_generations.lock().expect("loop generations");
+        generations.get(&key).copied().unwrap_or(0)
+    }
+
+    pub fn bump_loop_generation(&self, dir: &Path) {
+        let key = generation_key(dir);
+        *self
+            .loop_generations
+            .lock()
+            .expect("loop generations")
+            .entry(key)
+            .or_insert(0) += 1;
     }
 
     pub fn start(self: Arc<Self>, app: AppHandle, shutdown: ShutdownSignal) {
@@ -85,21 +130,29 @@ impl LoopScheduler {
             )
         })?;
         let dir = loop_dir(&ac_root, &loop_id);
-        if !dir.is_dir() {
-            return Err(format!("Loop '{}' not found", loop_id));
-        }
-        let config = read_loop_config(&dir)?;
+        let (config, state, s0_raw, s0_generation) = {
+            let _io = self.io_lock.lock().await;
+            if !dir.is_dir() {
+                return Err(format!("Loop '{}' not found", loop_id));
+            }
+            let Some(config) = read_loop_config_if_present(&dir)? else {
+                return Err(format!("Loop '{}' not found", loop_id));
+            };
+            let (state, raw) = read_state_snapshot(&dir)?;
+            (config, state, raw, self.loop_generation(&dir))
+        };
         if !config.loop_def.enabled {
             return Err(format!("Loop '{}' is disabled", loop_id));
         }
-        let state = read_loop_state(&dir).unwrap_or_default();
         let run_id = Uuid::new_v4();
         let due_at = Utc::now();
         let started_at = Utc::now();
         if !loop_is_current_for_delivery(&dir, &config)? {
             return Err(format!("Loop '{}' changed before delivery", loop_id));
         }
-        let report = deliver_loop_prompt(&app, &project_dir, &config, run_id, due_at).await;
+        let report = self
+            .deliver(&app, &project_dir, &config, run_id, due_at)
+            .await;
         let state = self
             .apply_delivery_report(
                 &app,
@@ -111,6 +164,8 @@ impl LoopScheduler {
                 run_id,
                 due_at,
                 started_at,
+                s0_generation,
+                s0_raw.as_deref(),
             )
             .await?;
         Ok(details_from_parts(&dir, &config, &state))
@@ -139,6 +194,46 @@ impl LoopScheduler {
                 );
             }
         }
+    }
+
+    /// `scan_once` for one known project, minus project enumeration (which
+    /// needs `SettingsState`), so tests can drive a real scan.
+    #[cfg(test)]
+    pub(crate) async fn scan_project_under_scan_lock(
+        &self,
+        app: AppHandle,
+        dir: PathBuf,
+    ) -> Result<(), String> {
+        let _guard = self.scan_lock.lock().await;
+        self.scan_project(&app, &dir, false, false).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_delivery_gate(&self, gate: LoopDeliveryGate) {
+        *self.delivery_gate.lock().expect("delivery gate") = Some(gate);
+    }
+
+    async fn deliver(
+        &self,
+        app: &AppHandle,
+        project_dir: &Path,
+        config: &LoopConfigToml,
+        run_id: Uuid,
+        due_at: DateTime<Utc>,
+    ) -> LoopDeliveryReport {
+        #[cfg(test)]
+        let gate = self.delivery_gate.lock().expect("delivery gate").take();
+        #[cfg(test)]
+        if let Some(mut gate) = gate {
+            if let Some(entered) = gate.entered.take() {
+                let _ = entered.send(());
+            }
+            if let Some(release) = gate.release.take() {
+                let _ = release.await;
+            }
+            return gate.report.take().expect("delivery gate report");
+        }
+        deliver_loop_prompt(app, project_dir, config, run_id, due_at).await
     }
 
     async fn scan_project(
@@ -171,25 +266,30 @@ impl LoopScheduler {
         startup: bool,
         pending_only: bool,
     ) -> Result<(), String> {
-        let config = read_loop_config(dir)?;
+        // S0: a Loop that is gone at entry is a quiet skip.
+        let (config, mut state, s0_raw, s0_generation) = {
+            let _io = self.io_lock.lock().await;
+            if !dir.is_dir() {
+                return Ok(());
+            }
+            let Some(config) = read_loop_config_if_present(dir)? else {
+                return Ok(());
+            };
+            let (state, raw) = read_state_snapshot(dir)?;
+            (config, state, raw, self.loop_generation(dir))
+        };
         if !config.loop_def.enabled {
             return Ok(());
         }
-        let mut state = read_loop_state(dir).unwrap_or_else(|e| {
-            log::warn!(
-                "[loops] Treating unreadable Loop state as default for {}: {}",
-                dir.display(),
-                e
-            );
-            LoopState::default()
-        });
+        let s0_raw = s0_raw.as_deref();
 
         if state.last_checked_at.is_none() {
+            let _io = self.io_lock.lock().await;
             if !loop_is_current_for_delivery(dir, &config)? {
                 return Ok(());
             }
             state = baseline_loop_state(&config, Utc::now())?;
-            write_loop_state_atomic(dir, &state)?;
+            self.commit_scan_section(dir, s0_generation, s0_raw, None, &state)?;
             return Ok(());
         }
 
@@ -199,11 +299,20 @@ impl LoopScheduler {
                 return Ok(());
             }
             let started_at = Utc::now();
-            let report =
-                deliver_loop_prompt(app, project_dir, &config, pending_run, pending_due).await;
+            let report = self
+                .deliver(app, project_dir, &config, pending_run, pending_due)
+                .await;
             if report.kind == LoopAuditKind::PendingBusy {
-                self.maybe_coalesce_pending(app, project_dir, dir, &config, &mut state)
-                    .await?;
+                self.maybe_coalesce_pending(
+                    app,
+                    project_dir,
+                    dir,
+                    &config,
+                    &mut state,
+                    s0_generation,
+                    s0_raw,
+                )
+                .await?;
                 return Ok(());
             }
             self.apply_delivery_report(
@@ -216,6 +325,8 @@ impl LoopScheduler {
                 pending_run,
                 pending_due,
                 started_at,
+                s0_generation,
+                s0_raw,
             )
             .await?;
             return Ok(());
@@ -236,8 +347,18 @@ impl LoopScheduler {
             if !loop_is_current_for_delivery(dir, &config)? {
                 return Ok(());
             }
-            self.record_missed_while_closed(app, project_dir, dir, &config, state, run_id, due_at)
-                .await?;
+            self.record_missed_while_closed(
+                app,
+                project_dir,
+                dir,
+                &config,
+                state,
+                run_id,
+                due_at,
+                s0_generation,
+                s0_raw,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -245,7 +366,9 @@ impl LoopScheduler {
         if !loop_is_current_for_delivery(dir, &config)? {
             return Ok(());
         }
-        let report = deliver_loop_prompt(app, project_dir, &config, run_id, due_at).await;
+        let report = self
+            .deliver(app, project_dir, &config, run_id, due_at)
+            .await;
         self.apply_delivery_report(
             app,
             project_dir,
@@ -256,11 +379,14 @@ impl LoopScheduler {
             run_id,
             due_at,
             started_at,
+            s0_generation,
+            s0_raw,
         )
         .await?;
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn maybe_coalesce_pending(
         &self,
         app: &AppHandle,
@@ -268,7 +394,10 @@ impl LoopScheduler {
         dir: &Path,
         config: &LoopConfigToml,
         state: &mut LoopState,
+        s0_generation: u64,
+        s0_raw: Option<&str>,
     ) -> Result<(), String> {
+        let io = self.io_lock.lock().await;
         if !loop_is_current_for_delivery(dir, config)? {
             return Ok(());
         }
@@ -290,25 +419,26 @@ impl LoopScheduler {
             kind: "coalescedPending".to_string(),
             message: "A new due time occurred while the prior run was still pending".to_string(),
         });
-        append_loop_audit_once(
-            dir,
-            &LoopAuditEntry {
-                run_id,
-                loop_id: config.loop_def.id.clone(),
-                project_path: project_dir.to_string_lossy().to_string(),
-                kind: LoopAuditKind::CoalescedPending,
-                due_at: new_due,
-                started_at: now,
-                completed_at: Some(now),
-                target: None,
-                session_id: None,
-                busy_coordinator_policy: config.policy.busy_coordinator.clone(),
-                session_start: Some(config.policy.session_start),
-                error: None,
-                prompt_snapshot: None,
-            },
-        )?;
-        write_loop_state_atomic(dir, state)?;
+        let entry = LoopAuditEntry {
+            run_id,
+            loop_id: config.loop_def.id.clone(),
+            project_path: project_dir.to_string_lossy().to_string(),
+            kind: LoopAuditKind::CoalescedPending,
+            due_at: new_due,
+            started_at: now,
+            completed_at: Some(now),
+            target: None,
+            session_id: None,
+            busy_coordinator_policy: config.policy.busy_coordinator.clone(),
+            session_start: Some(config.policy.session_start),
+            error: None,
+            prompt_snapshot: None,
+        };
+        let written = self.commit_scan_section(dir, s0_generation, s0_raw, Some(&entry), state)?;
+        drop(io);
+        if written == LoopStateWrite::Stale {
+            return Ok(());
+        }
         emit_transition(
             app,
             project_dir,
@@ -331,7 +461,10 @@ impl LoopScheduler {
         mut state: LoopState,
         run_id: Uuid,
         due_at: DateTime<Utc>,
+        s0_generation: u64,
+        s0_raw: Option<&str>,
     ) -> Result<LoopState, String> {
+        let io = self.io_lock.lock().await;
         if !loop_is_current_for_delivery(dir, config)? {
             return Ok(state);
         }
@@ -345,25 +478,26 @@ impl LoopScheduler {
             message: "Loop was due while AgentsCommander was closed; no catch-up run was injected"
                 .to_string(),
         });
-        append_loop_audit_once(
-            dir,
-            &LoopAuditEntry {
-                run_id,
-                loop_id: config.loop_def.id.clone(),
-                project_path: project_dir.to_string_lossy().to_string(),
-                kind: LoopAuditKind::MissedWhileClosed,
-                due_at,
-                started_at: now,
-                completed_at: Some(now),
-                target: None,
-                session_id: None,
-                busy_coordinator_policy: config.policy.busy_coordinator.clone(),
-                session_start: Some(config.policy.session_start),
-                error: None,
-                prompt_snapshot: None,
-            },
-        )?;
-        write_loop_state_atomic(dir, &state)?;
+        let entry = LoopAuditEntry {
+            run_id,
+            loop_id: config.loop_def.id.clone(),
+            project_path: project_dir.to_string_lossy().to_string(),
+            kind: LoopAuditKind::MissedWhileClosed,
+            due_at,
+            started_at: now,
+            completed_at: Some(now),
+            target: None,
+            session_id: None,
+            busy_coordinator_policy: config.policy.busy_coordinator.clone(),
+            session_start: Some(config.policy.session_start),
+            error: None,
+            prompt_snapshot: None,
+        };
+        let written = self.commit_scan_section(dir, s0_generation, s0_raw, Some(&entry), &state)?;
+        drop(io);
+        if written == LoopStateWrite::Stale {
+            return Ok(state);
+        }
         emit_transition(
             app,
             project_dir,
@@ -383,70 +517,185 @@ impl LoopScheduler {
         project_dir: &Path,
         dir: &Path,
         config: &LoopConfigToml,
-        mut state: LoopState,
+        state: LoopState,
         report: LoopDeliveryReport,
         run_id: Uuid,
         due_at: DateTime<Utc>,
         started_at: DateTime<Utc>,
+        s0_generation: u64,
+        s0_raw: Option<&str>,
     ) -> Result<LoopState, String> {
+        let io = self.io_lock.lock().await;
         if !loop_is_current_for_delivery(dir, config)? {
             return Ok(state);
         }
+        let mut next = state.clone();
         let now = Utc::now();
-        state.last_checked_at = Some(now);
-        state.last_due_at = Some(due_at);
-        state.next_due_at = next_due_after(&config.trigger.expr, now)?;
-        state.last_result = Some(LoopLastResult {
+        next.last_checked_at = Some(now);
+        next.last_due_at = Some(due_at);
+        next.next_due_at = next_due_after(&config.trigger.expr, now)?;
+        next.last_result = Some(LoopLastResult {
             kind: audit_kind_name(&report.kind).to_string(),
             message: report.message.clone(),
         });
 
         match report.kind {
             LoopAuditKind::Delivered => {
-                state.last_delivered_at = report.completed_at.or(Some(now));
-                state.pending_due_at = None;
-                state.pending_run_id = None;
+                next.last_delivered_at = report.completed_at.or(Some(now));
+                next.pending_due_at = None;
+                next.pending_run_id = None;
             }
             LoopAuditKind::PendingBusy => {
-                state.pending_due_at = Some(due_at);
-                state.pending_run_id = Some(run_id);
+                next.pending_due_at = Some(due_at);
+                next.pending_run_id = Some(run_id);
             }
             LoopAuditKind::SkippedBusy | LoopAuditKind::DeliveryFailed => {
-                state.pending_due_at = None;
-                state.pending_run_id = None;
+                next.pending_due_at = None;
+                next.pending_run_id = None;
             }
             LoopAuditKind::MissedWhileClosed | LoopAuditKind::CoalescedPending => {}
         }
 
-        append_loop_audit_once(
-            dir,
-            &LoopAuditEntry {
-                run_id,
-                loop_id: config.loop_def.id.clone(),
-                project_path: project_dir.to_string_lossy().to_string(),
-                kind: report.kind.clone(),
-                due_at,
-                started_at,
-                completed_at: report.completed_at,
-                target: report.target.clone(),
-                session_id: report.session_id,
-                busy_coordinator_policy: config.policy.busy_coordinator.clone(),
-                session_start: Some(config.policy.session_start),
-                error: report.error.clone(),
-                prompt_snapshot: report.prompt_snapshot.clone(),
-            },
-        )?;
-        write_loop_state_atomic(dir, &state)?;
+        let entry = LoopAuditEntry {
+            run_id,
+            loop_id: config.loop_def.id.clone(),
+            project_path: project_dir.to_string_lossy().to_string(),
+            kind: report.kind.clone(),
+            due_at,
+            started_at,
+            completed_at: report.completed_at,
+            target: report.target.clone(),
+            session_id: report.session_id,
+            busy_coordinator_policy: config.policy.busy_coordinator.clone(),
+            session_start: Some(config.policy.session_start),
+            error: report.error.clone(),
+            prompt_snapshot: report.prompt_snapshot.clone(),
+        };
+        let written = self.commit_scan_section(dir, s0_generation, s0_raw, Some(&entry), &next)?;
+        drop(io);
+        if written == LoopStateWrite::Stale {
+            return Ok(state);
+        }
         emit_transition(
             app,
             project_dir,
             dir,
             config,
-            &state,
+            &next,
             audit_kind_event(&report.kind),
             Some(report.message),
         );
-        Ok(state)
+        Ok(next)
+    }
+
+    /// `false` when the Loop was replaced (generation) or its `state.json`
+    /// changed (raw bytes, absent included) since the scan read it.
+    fn scan_write_is_fresh(
+        &self,
+        dir: &Path,
+        s0_generation: u64,
+        s0_raw: Option<&str>,
+    ) -> Result<bool, String> {
+        if self.loop_generation(dir) != s0_generation {
+            return Ok(false);
+        }
+        Ok(read_raw_loop_state(dir)?.as_deref() == s0_raw)
+    }
+
+    /// The one commit order for every scan-side write, run under `io_lock`:
+    /// (1) freshness, (2) guarded state write, (3) audit append only after a
+    /// `Written`. So no audit row exists without its state write.
+    fn commit_scan_section(
+        &self,
+        dir: &Path,
+        s0_generation: u64,
+        s0_raw: Option<&str>,
+        audit: Option<&LoopAuditEntry>,
+        state: &LoopState,
+    ) -> Result<LoopStateWrite, String> {
+        if !self.scan_write_is_fresh(dir, s0_generation, s0_raw)? {
+            log::debug!(
+                "[loops] Skipping stale Loop scan write for {}: the Loop changed since the scan read it",
+                dir.display()
+            );
+            return Ok(LoopStateWrite::Stale);
+        }
+        if guarded_state_write(dir, state, s0_raw)? == LoopStateWrite::Stale {
+            log::debug!(
+                "[loops] Skipping stale Loop scan write for {}: state or config changed at the write",
+                dir.display()
+            );
+            return Ok(LoopStateWrite::Stale);
+        }
+        if let Some(entry) = audit {
+            if let Err(e) = append_loop_audit_once(dir, entry) {
+                if read_loop_config_if_present(dir)?.is_some() {
+                    return Err(e);
+                }
+                log::debug!(
+                    "[loops] Dropping audit row for deleted Loop {}: {}",
+                    dir.display(),
+                    e
+                );
+            }
+        }
+        Ok(LoopStateWrite::Written)
+    }
+}
+
+/// Every scan-side state write: a Loop whose `config.toml` is gone is `Stale`
+/// with nothing written, else a compare-and-swap against `s0_raw`.
+fn guarded_state_write(
+    dir: &Path,
+    state: &LoopState,
+    s0_raw: Option<&str>,
+) -> Result<LoopStateWrite, String> {
+    if read_loop_config_if_present(dir)?.is_none() {
+        return Ok(LoopStateWrite::Stale);
+    }
+    write_loop_state_if_unchanged(dir, state, s0_raw)
+}
+
+/// Canonical parent plus directory name, so spelling aliases share one key
+/// and the key survives the directory's own deletion. Case-folded on Windows.
+fn generation_key(dir: &Path) -> String {
+    let path = match (dir.parent(), dir.file_name()) {
+        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+            .map(|parent| parent.join(name))
+            .unwrap_or_else(|_| dir.to_path_buf()),
+        _ => dir.to_path_buf(),
+    };
+    let key = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        key.to_lowercase()
+    } else {
+        key
+    }
+}
+
+/// The scan's view of `state.json`: parsed state plus raw text. An unreadable
+/// state is treated as default, as before, but keeps its raw text so the
+/// compare-and-swap can still replace it.
+fn read_state_snapshot(dir: &Path) -> Result<(LoopState, Option<String>), String> {
+    match read_loop_state_with_raw(dir) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(e) => {
+            log::warn!(
+                "[loops] Treating unreadable Loop state as default for {}: {}",
+                dir.display(),
+                e
+            );
+            Ok((LoopState::default(), read_raw_loop_state(dir)?))
+        }
+    }
+}
+
+fn read_raw_loop_state(dir: &Path) -> Result<Option<String>, String> {
+    let path = dir.join(LOOP_STATE_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Ok(Some(content)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Failed to read {}: {}", path.display(), e)),
     }
 }
 
@@ -905,7 +1154,15 @@ mod tests {
         };
 
         scheduler
-            .maybe_coalesce_pending(app.handle(), &project_dir, &dir, &config, &mut state)
+            .maybe_coalesce_pending(
+                app.handle(),
+                &project_dir,
+                &dir,
+                &config,
+                &mut state,
+                0,
+                None,
+            )
             .await
             .expect("coalesce pending");
 
@@ -942,6 +1199,8 @@ mod tests {
                 LoopState::default(),
                 Uuid::new_v4(),
                 Utc::now() - chrono::Duration::hours(1),
+                0,
+                None,
             )
             .await
             .expect("record missed while closed");
@@ -992,6 +1251,8 @@ mod tests {
                 Uuid::new_v4(),
                 now,
                 now,
+                0,
+                None,
             )
             .await
             .expect("apply delivery report");
@@ -1005,5 +1266,222 @@ mod tests {
         let row: serde_json::Value = serde_json::from_str(last).expect("audit row as value");
         assert_eq!(row["kind"], serde_json::json!("delivered"));
         assert_eq!(row["sessionStart"], serde_json::json!("accumulate"));
+    }
+
+    fn delivered_report() -> LoopDeliveryReport {
+        LoopDeliveryReport {
+            kind: LoopAuditKind::Delivered,
+            message: "gated delivery".to_string(),
+            target: None,
+            session_id: None,
+            error: None,
+            prompt_snapshot: None,
+            completed_at: Some(Utc::now()),
+        }
+    }
+
+    /// #2695 scheduler-side fixture: a project with one Loop whose pending
+    /// run makes the next scan deliver, then apply the report (S2).
+    fn pending_loop_fixture() -> (tempfile::TempDir, PathBuf) {
+        let config = sample_config();
+        let tmp = project_with_loop(&config);
+        let dir = loop_dir(&tmp.path().join(".ac"), &config.loop_def.id);
+        let state = LoopState {
+            last_checked_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+            pending_due_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+            pending_run_id: Some(Uuid::new_v4()),
+            ..LoopState::default()
+        };
+        crate::config::loops::write_loop_state_atomic(&dir, &state).expect("write state");
+        (tmp, dir)
+    }
+
+    fn tmp_files_in(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .expect("read loop dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect()
+    }
+
+    /// #2695 T3 - the scan lock was split, not deleted: a second scan cannot
+    /// start while the first is held inside a delivery.
+    #[tokio::test]
+    async fn a_second_scan_waits_while_the_first_is_inside_a_delivery() {
+        let (tmp, dir) = pending_loop_fixture();
+        let app = audit_writer_app();
+        let scheduler = Arc::new(LoopScheduler::new());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        scheduler.install_delivery_gate(LoopDeliveryGate {
+            entered: Some(entered_tx),
+            release: Some(release_rx),
+            report: Some(delivered_report()),
+        });
+        let spawn_scan = || {
+            let scheduler = Arc::clone(&scheduler);
+            let app = app.handle().clone();
+            let project = tmp.path().to_path_buf();
+            tokio::spawn(async move { scheduler.scan_project_under_scan_lock(app, project).await })
+        };
+        let first = spawn_scan();
+        entered_rx.await.expect("first scan entered the delivery");
+
+        let mut second = spawn_scan();
+        let started = std::time::Instant::now();
+        let blocked = tokio::time::timeout(Duration::from_millis(200), &mut second).await;
+        eprintln!(
+            "T3: second scan still blocked after {:?}",
+            started.elapsed()
+        );
+        assert!(blocked.is_err(), "the second scan must wait on scan_lock");
+
+        release_tx.send(()).expect("release the gate");
+        first.await.expect("join first").expect("first scan");
+        second.await.expect("join second").expect("second scan");
+        let state = crate::config::loops::read_loop_state(&dir).expect("state");
+        assert!(
+            state.pending_run_id.is_none(),
+            "the first scan applied its report"
+        );
+    }
+
+    /// #2695 T7 - a Loop gone at entry is a quiet skip with no write.
+    #[tokio::test]
+    async fn scan_loop_skips_a_missing_dir_or_config_quietly() {
+        let app = audit_writer_app();
+        let scheduler = LoopScheduler::new();
+        let config = sample_config();
+        let tmp = project_with_loop(&config);
+        let ac_root = tmp.path().join(".ac");
+
+        let missing = loop_dir(&ac_root, "gone");
+        scheduler
+            .scan_loop(app.handle(), tmp.path(), &missing, false, false)
+            .await
+            .expect("a missing directory is Ok");
+        assert!(!missing.exists(), "nothing recreated the missing directory");
+
+        let dir = loop_dir(&ac_root, &config.loop_def.id);
+        std::fs::remove_file(dir.join(crate::config::loops::LOOP_CONFIG_FILE))
+            .expect("remove config");
+        scheduler
+            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .await
+            .expect("a missing config is Ok");
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("read loop dir").count(),
+            0,
+            "no write attempted"
+        );
+    }
+
+    /// #2695 T12 - the write-time presence recheck, isolated.
+    #[test]
+    fn guarded_state_write_is_stale_when_the_config_is_gone() {
+        let config = sample_config();
+        let tmp = project_with_loop(&config);
+        let dir = loop_dir(&tmp.path().join(".ac"), &config.loop_def.id);
+        crate::config::loops::write_loop_state_atomic(&dir, &LoopState::default())
+            .expect("write state");
+        std::fs::remove_file(dir.join(crate::config::loops::LOOP_CONFIG_FILE))
+            .expect("remove config");
+        let (_, raw) = read_loop_state_with_raw(&dir).expect("read state");
+        let state = LoopState {
+            last_checked_at: Some(Utc::now()),
+            ..LoopState::default()
+        };
+
+        let result = guarded_state_write(&dir, &state, raw.as_deref());
+
+        assert_eq!(result, Ok(LoopStateWrite::Stale));
+        assert_eq!(read_raw_loop_state(&dir).expect("raw"), raw);
+        assert!(tmp_files_in(&dir).is_empty(), "no tmp file left");
+    }
+
+    /// #2695 T13 - the generation key resists a spelling alias.
+    #[test]
+    fn generation_key_resists_a_spelling_alias() {
+        let config = sample_config();
+        let tmp = project_with_loop(&config);
+        let ac_root = tmp.path().join(".ac");
+        std::fs::create_dir_all(ac_root.join("x")).expect("sibling");
+        let dir = loop_dir(&ac_root, &config.loop_def.id);
+        let dir_name = dir.file_name().expect("loop dir name");
+        let aliased = ac_root.join("x").join("..").join(dir_name);
+
+        assert_eq!(generation_key(&dir), generation_key(&aliased));
+        #[cfg(windows)]
+        assert_eq!(
+            generation_key(&dir),
+            generation_key(Path::new(&dir.to_string_lossy().to_uppercase()))
+        );
+
+        let scheduler = LoopScheduler::new();
+        let before = scheduler.loop_generation(&dir);
+        scheduler.bump_loop_generation(&aliased);
+        assert_ne!(scheduler.loop_generation(&dir), before);
+    }
+
+    /// #2695 T15 - the commit order, isolated: with the config gone, the
+    /// state write refuses before any audit append is attempted.
+    #[test]
+    fn commit_scan_section_writes_nothing_when_the_config_is_gone() {
+        let config = sample_config();
+        let tmp = project_with_loop(&config);
+        let dir = loop_dir(&tmp.path().join(".ac"), &config.loop_def.id);
+        crate::config::loops::write_loop_state_atomic(
+            &dir,
+            &LoopState {
+                last_checked_at: Some(Utc::now() - chrono::Duration::hours(1)),
+                ..LoopState::default()
+            },
+        )
+        .expect("write state");
+        let audit_path = dir.join(crate::config::loops::LOOP_AUDIT_FILE);
+        std::fs::write(&audit_path, "{\"row\":1}\n").expect("write audit");
+        std::fs::remove_file(dir.join(crate::config::loops::LOOP_CONFIG_FILE))
+            .expect("remove config");
+
+        let scheduler = LoopScheduler::new();
+        let (_, s0_raw) = read_loop_state_with_raw(&dir).expect("read state");
+        let s0_generation = scheduler.loop_generation(&dir);
+        let now = Utc::now();
+        let entry = LoopAuditEntry {
+            run_id: Uuid::new_v4(),
+            loop_id: config.loop_def.id.clone(),
+            project_path: tmp.path().to_string_lossy().to_string(),
+            kind: LoopAuditKind::Delivered,
+            due_at: now,
+            started_at: now,
+            completed_at: Some(now),
+            target: None,
+            session_id: None,
+            busy_coordinator_policy: config.policy.busy_coordinator.clone(),
+            session_start: Some(config.policy.session_start),
+            error: None,
+            prompt_snapshot: None,
+        };
+        let state = LoopState {
+            last_checked_at: Some(now),
+            ..LoopState::default()
+        };
+
+        let result = scheduler.commit_scan_section(
+            &dir,
+            s0_generation,
+            s0_raw.as_deref(),
+            Some(&entry),
+            &state,
+        );
+
+        assert_eq!(result, Ok(LoopStateWrite::Stale));
+        assert_eq!(read_raw_loop_state(&dir).expect("raw"), s0_raw);
+        assert_eq!(
+            std::fs::read_to_string(&audit_path).expect("audit"),
+            "{\"row\":1}\n"
+        );
+        assert!(tmp_files_in(&dir).is_empty(), "no tmp file left");
     }
 }
