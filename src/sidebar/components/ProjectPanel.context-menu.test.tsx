@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel, { isTaskClean } from "./ProjectPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
+  baseSettings,
   click,
   contextMenu,
   discovery,
@@ -375,7 +376,8 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
   });
 
   it("opens a Coding Agent + Matrix folder + broom menu on a gray replica", async () => {
-    await setupPanel([coordSession()]);
+    const fake = await setupPanel([coordSession()]);
+    fake.resolve("get_settings", baseSettings());
 
     contextMenu(findRow(rendered!.root, memberRowTestId));
 
@@ -389,6 +391,18 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     const menu = replicaMenu()!;
     expect(menu.textContent).not.toContain("Restart Session");
     expect(menu.textContent).not.toContain("Detach session");
+    // #2528: gray menu Coding Agent carries the static inactive testid.
+    const codingAgent = menu.querySelector<HTMLButtonElement>('[data-ac-testid="replica.inactive.menu.coding-agent"]');
+    expect(codingAgent).not.toBeNull();
+    expect(codingAgent!.getAttribute("data-ac-role")).toBe("menuitem");
+    expect(codingAgent!.textContent).toContain("Coding Agent");
+    expect(menu.querySelector('[data-ac-testid="replica.member-session.menu.coding-agent"]')).toBeNull();
+
+    click(codingAgent!);
+    await waitFor(() => {
+      expect(replicaMenu()).toBeNull();
+      expect(document.querySelector(".agent-picker-eyebrow")).not.toBeNull();
+    });
   });
 
   it("preserves the native context menu inside the project regex filter row", async () => {
@@ -1078,6 +1092,12 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       // ...and gains the broom (#545 rework).
       expect(menu!.textContent).toContain("Clear task title");
     });
+    // #2528: red uses the live menu, so the testid carries the sessionId.
+    const menu = replicaMenu()!;
+    const codingAgent = menu.querySelector('[data-ac-testid="replica.member-session.menu.coding-agent"]');
+    expect(codingAgent).not.toBeNull();
+    expect(codingAgent!.getAttribute("data-ac-role")).toBe("menuitem");
+    expect(menu.querySelector('[data-ac-testid="replica.inactive.menu.coding-agent"]')).toBeNull();
   });
 
   it("opens the workgroup replica folder from a red (exited) workgroup replica", async () => {
@@ -1139,7 +1159,8 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
   });
 
   it("keeps the full menu PLUS broom on a green (running) replica", async () => {
-    await setupPanel([coordSession(), memberSession()]);
+    const fake = await setupPanel([coordSession(), memberSession()]);
+    fake.resolve("get_settings", baseSettings());
 
     contextMenu(findRow(rendered!.root, memberRowTestId));
 
@@ -1154,6 +1175,18 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(menu.textContent).toContain("Detach session");
     // #545: the broom now renders in EVERY dot state, including green.
     expect(menu.textContent).toContain("Clear task title");
+    // #2528: live Coding Agent testid; clicking it swaps the menu for the picker.
+    const codingAgent = menu.querySelector<HTMLButtonElement>('[data-ac-testid="replica.member-session.menu.coding-agent"]');
+    expect(codingAgent).not.toBeNull();
+    expect(codingAgent!.getAttribute("data-ac-role")).toBe("menuitem");
+    expect(codingAgent!.textContent).toContain("Coding Agent");
+    expect(menu.querySelector('[data-ac-testid="replica.inactive.menu.coding-agent"]')).toBeNull();
+
+    click(codingAgent!);
+    await waitFor(() => {
+      expect(replicaMenu()).toBeNull();
+      expect(document.querySelector(".agent-picker-eyebrow")).not.toBeNull();
+    });
   });
 
   it("removes duplicate ProjectPanel live replica controls while preserving active-recording cancellation", async () => {
