@@ -1758,6 +1758,197 @@ html.light-theme .root-agent-avatar {
   margin-bottom: var(--spacing-xs);
 }
 
+/* #2704 - Settings > General: category list + search on the left, one pane on the right. */
+.modal-body-general {
+  overflow: hidden;
+  padding: 0;
+  gap: 0;
+}
+
+.settings-general {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-general-nav {
+  width: 220px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--spacing-md);
+  overflow-y: auto;
+  border-right: 1px solid var(--sidebar-border);
+}
+
+.settings-general-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: var(--spacing-sm);
+  padding: 6px 8px;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg);
+  background: transparent;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 4px;
+}
+
+.settings-general-search:focus {
+  outline: none;
+  border-color: var(--sidebar-accent);
+}
+
+.settings-general-cat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  color: var(--sidebar-fg-dim);
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.settings-general-cat:hover {
+  color: var(--sidebar-fg);
+  background: var(--sidebar-hover);
+}
+
+.settings-general-cat.active,
+.settings-general-cat[aria-current="page"] {
+  color: var(--sidebar-fg);
+  border-left-color: var(--sidebar-accent);
+}
+
+.settings-general-cat.is-empty {
+  opacity: 0.45;
+}
+
+.settings-general-cat-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-general-cat-count {
+  font-size: var(--font-size-xs, 11px);
+  color: var(--sidebar-fg-dim);
+}
+
+.settings-general-cat-invalid-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f87171;
+}
+
+html.light-theme .settings-general-cat-invalid-dot {
+  background: #b91c1c;
+}
+
+.settings-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.settings-general-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--spacing-lg);
+}
+
+.settings-general-pane:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.settings-general-cat-title {
+  margin: 0;
+  font-size: var(--font-size-md, 14px);
+  font-weight: 600;
+  color: var(--sidebar-fg);
+}
+
+.settings-general-result-count,
+.settings-general-empty {
+  margin: 0 0 var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+}
+
+.settings-general-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-general-result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  color: var(--sidebar-fg);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.settings-general-result:hover,
+.settings-general-result:focus-visible {
+  background: var(--sidebar-hover);
+}
+
+.settings-general-result-path {
+  font-size: var(--font-size-xs, 11px);
+  color: var(--sidebar-fg-dim);
+}
+
+.settings-general-flash {
+  background: color-mix(in srgb, var(--sidebar-accent) 18%, transparent);
+  transition: background 0.3s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-general-flash {
+    transition: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .settings-general {
+    flex-direction: column;
+  }
+
+  .settings-general-nav {
+    width: auto;
+    max-height: 180px;
+    border-right: none;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+}
+
 .settings-field {
   display: flex;
   flex-direction: column;
@@ -2479,6 +2670,11 @@ html.light-theme .settings-api-client-warning {
   min-width: 90vw;
   max-width: 90vw;
   height: 90vh;
+}
+
+.modal-container.modal-container-general {
+  max-width: 1080px;
+  height: min(720px, 90vh);
 }
 
 .modal-body-config {
