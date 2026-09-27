@@ -12,9 +12,10 @@ use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
     append_loop_audit_once, baseline_loop_state, details_from_parts, latest_due_between, loop_dir,
     next_due_after, read_loop_config, read_loop_config_if_present, read_loop_state_with_raw,
-    resolve_loop_target, revalidate_loop_current, write_loop_state_if_unchanged, LoopAuditEntry,
-    LoopAuditKind, LoopConfigDetails, LoopConfigRevalidation, LoopConfigToml, LoopLastResult,
-    LoopState, LoopStateWrite, LOOP_DIR_PREFIX, LOOP_STATE_FILE,
+    resolve_loop_target, revalidate_loop_current, write_loop_state_atomic,
+    write_loop_state_if_unchanged, LoopAuditEntry, LoopAuditKind, LoopConfigDetails,
+    LoopConfigRevalidation, LoopConfigToml, LoopLastResult, LoopState, LoopStateWrite,
+    LOOP_DIR_PREFIX, LOOP_STATE_FILE,
 };
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
@@ -395,7 +396,7 @@ impl LoopScheduler {
         config: &LoopConfigToml,
         state: &mut LoopState,
         s0_generation: u64,
-        s0_raw: Option<&str>,
+        s0_raw: Option<&[u8]>,
     ) -> Result<(), String> {
         let io = self.io_lock.lock().await;
         if !loop_is_current_for_delivery(dir, config)? {
@@ -462,7 +463,7 @@ impl LoopScheduler {
         run_id: Uuid,
         due_at: DateTime<Utc>,
         s0_generation: u64,
-        s0_raw: Option<&str>,
+        s0_raw: Option<&[u8]>,
     ) -> Result<LoopState, String> {
         let io = self.io_lock.lock().await;
         if !loop_is_current_for_delivery(dir, config)? {
@@ -523,7 +524,7 @@ impl LoopScheduler {
         due_at: DateTime<Utc>,
         started_at: DateTime<Utc>,
         s0_generation: u64,
-        s0_raw: Option<&str>,
+        s0_raw: Option<&[u8]>,
     ) -> Result<LoopState, String> {
         let io = self.io_lock.lock().await;
         if !loop_is_current_for_delivery(dir, config)? {
@@ -594,7 +595,7 @@ impl LoopScheduler {
         &self,
         dir: &Path,
         s0_generation: u64,
-        s0_raw: Option<&str>,
+        s0_raw: Option<&[u8]>,
     ) -> Result<bool, String> {
         if self.loop_generation(dir) != s0_generation {
             return Ok(false);
@@ -609,7 +610,7 @@ impl LoopScheduler {
         &self,
         dir: &Path,
         s0_generation: u64,
-        s0_raw: Option<&str>,
+        s0_raw: Option<&[u8]>,
         audit: Option<&LoopAuditEntry>,
         state: &LoopState,
     ) -> Result<LoopStateWrite, String> {
@@ -648,12 +649,24 @@ impl LoopScheduler {
 fn guarded_state_write(
     dir: &Path,
     state: &LoopState,
-    s0_raw: Option<&str>,
+    s0_raw: Option<&[u8]>,
 ) -> Result<LoopStateWrite, String> {
     if read_loop_config_if_present(dir)?.is_none() {
         return Ok(LoopStateWrite::Stale);
     }
-    write_loop_state_if_unchanged(dir, state, s0_raw)
+    match s0_raw.map(std::str::from_utf8) {
+        None => write_loop_state_if_unchanged(dir, state, None),
+        Some(Ok(text)) => write_loop_state_if_unchanged(dir, state, Some(text)),
+        // Not UTF-8, so phase A's text CAS cannot read it: compare the bytes
+        // here, under `io_lock`, then replace the unreadable state.
+        Some(Err(_)) => {
+            if read_raw_loop_state(dir)?.as_deref() != s0_raw {
+                return Ok(LoopStateWrite::Stale);
+            }
+            write_loop_state_atomic(dir, state)?;
+            Ok(LoopStateWrite::Written)
+        }
+    }
 }
 
 /// Canonical parent plus directory name, so spelling aliases share one key
@@ -673,12 +686,12 @@ fn generation_key(dir: &Path) -> String {
     }
 }
 
-/// The scan's view of `state.json`: parsed state plus raw text. An unreadable
-/// state is treated as default, as before, but keeps its raw text so the
-/// compare-and-swap can still replace it.
-fn read_state_snapshot(dir: &Path) -> Result<(LoopState, Option<String>), String> {
+/// The scan's view of `state.json`: parsed state plus raw bytes. An
+/// unreadable state (unparsable or not UTF-8) is treated as default, as
+/// before, but keeps its bytes so the compare-and-swap can still replace it.
+fn read_state_snapshot(dir: &Path) -> Result<(LoopState, Option<Vec<u8>>), String> {
     match read_loop_state_with_raw(dir) {
-        Ok(snapshot) => Ok(snapshot),
+        Ok((state, raw)) => Ok((state, raw.map(String::into_bytes))),
         Err(e) => {
             log::warn!(
                 "[loops] Treating unreadable Loop state as default for {}: {}",
@@ -690,9 +703,9 @@ fn read_state_snapshot(dir: &Path) -> Result<(LoopState, Option<String>), String
     }
 }
 
-fn read_raw_loop_state(dir: &Path) -> Result<Option<String>, String> {
+fn read_raw_loop_state(dir: &Path) -> Result<Option<Vec<u8>>, String> {
     let path = dir.join(LOOP_STATE_FILE);
-    match std::fs::read_to_string(&path) {
+    match std::fs::read(&path) {
         Ok(content) => Ok(Some(content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("Failed to read {}: {}", path.display(), e)),
@@ -1305,6 +1318,26 @@ mod tests {
             .collect()
     }
 
+    /// #2695 round 2 - a non-UTF-8 `state.json` is unreadable state, not a
+    /// scan failure: the scan replaces it with a baseline, as before #2695.
+    #[tokio::test]
+    async fn scan_heals_a_non_utf8_state_file() {
+        let config = sample_config();
+        let tmp = project_with_loop(&config);
+        let dir = loop_dir(&tmp.path().join(".ac"), &config.loop_def.id);
+        let state_path = dir.join(LOOP_STATE_FILE);
+        std::fs::write(&state_path, [0xff, 0xfe, b'{']).expect("write invalid state");
+        let app = audit_writer_app();
+
+        LoopScheduler::new()
+            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .await
+            .expect("an unreadable state is not a scan failure");
+
+        let state = crate::config::loops::read_loop_state(&dir).expect("healed state parses");
+        assert!(state.last_checked_at.is_some(), "a baseline replaced it");
+    }
+
     /// #2695 T3 - the scan lock was split, not deleted: a second scan cannot
     /// start while the first is held inside a delivery.
     #[tokio::test]
@@ -1393,10 +1426,13 @@ mod tests {
             ..LoopState::default()
         };
 
-        let result = guarded_state_write(&dir, &state, raw.as_deref());
+        let result = guarded_state_write(&dir, &state, raw.as_deref().map(str::as_bytes));
 
         assert_eq!(result, Ok(LoopStateWrite::Stale));
-        assert_eq!(read_raw_loop_state(&dir).expect("raw"), raw);
+        assert_eq!(
+            read_raw_loop_state(&dir).expect("raw"),
+            raw.map(String::into_bytes)
+        );
         assert!(tmp_files_in(&dir).is_empty(), "no tmp file left");
     }
 
@@ -1471,13 +1507,16 @@ mod tests {
         let result = scheduler.commit_scan_section(
             &dir,
             s0_generation,
-            s0_raw.as_deref(),
+            s0_raw.as_deref().map(str::as_bytes),
             Some(&entry),
             &state,
         );
 
         assert_eq!(result, Ok(LoopStateWrite::Stale));
-        assert_eq!(read_raw_loop_state(&dir).expect("raw"), s0_raw);
+        assert_eq!(
+            read_raw_loop_state(&dir).expect("raw"),
+            s0_raw.map(String::into_bytes)
+        );
         assert_eq!(
             std::fs::read_to_string(&audit_path).expect("audit"),
             "{\"row\":1}\n"
