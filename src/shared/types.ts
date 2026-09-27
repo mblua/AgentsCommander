@@ -1223,7 +1223,9 @@ export type UiAutomationAction =
   | "setValue"
   | "typeText"
   | "backend"
-  | "terminal";
+  | "terminal"
+  | "pointer"
+  | "key";
 
 export interface UiAutomationRequest<
   A extends UiAutomationAction = Exclude<UiAutomationAction, "terminal">,
@@ -1367,6 +1369,28 @@ export interface UiAutomationDiagnostics {
     reason?: "not_hovered";
     events: string[];
   };
+  pointer?: {
+    operation: "down" | "move" | "up" | "cancel";
+    position: "center" | "top" | "bottom" | null;
+    pointerId: 1;
+    source: string | null;
+    at: string | null;
+    clientX: number;
+    clientY: number;
+    events: string[];
+    defaultPrevented: boolean;
+  };
+  key?: {
+    key: string;
+    code: string;
+    ctrlKey: boolean;
+    altKey: boolean;
+    shiftKey: boolean;
+    metaKey: boolean;
+    focused: boolean;
+    events: string[];
+    defaultPrevented: boolean;
+  };
 }
 
 type UiAutomationSuccessResponse<A extends UiAutomationAction> =
@@ -1413,7 +1437,11 @@ export type UiAutomationResponse<
         | "terminal_target_mismatch"
         | "terminal_entry_stale"
         | "terminal_session_not_visible"
-        | "automation_bridge_exception";
+        | "automation_bridge_exception"
+        | "pointer_not_down"
+        | "pointer_already_down"
+        | "pointer_source_detached"
+        | "listener_exception";
       message: string;
       available?: UiAutomationTarget[];
       diagnostics?: UiAutomationDiagnostics;

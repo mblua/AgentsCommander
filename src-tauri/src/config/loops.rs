@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::config::ac_root::existing_ac_root;
+use crate::config::local_config_io::{acquire_sidecar_write_lock, SidecarWriteLock};
 
 pub const LOOP_DIR_PREFIX: &str = "_loop_";
 pub const LOOP_CONFIG_FILE: &str = "config.toml";
@@ -269,8 +271,22 @@ pub fn read_loop_config(loop_dir: &Path) -> Result<LoopConfigToml, String> {
     let config_path = loop_dir.join(LOOP_CONFIG_FILE);
     let content = std::fs::read_to_string(&config_path)
         .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-    toml::from_str(&content)
-        .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))
+    parse_loop_config(&config_path, &content)
+}
+
+/// Like `read_loop_config`, but a missing Loop directory or `config.toml`
+/// is `Ok(None)` instead of a read error. A malformed file is still an error.
+pub fn read_loop_config_if_present(loop_dir: &Path) -> Result<Option<LoopConfigToml>, String> {
+    let config_path = loop_dir.join(LOOP_CONFIG_FILE);
+    match std::fs::read_to_string(&config_path) {
+        Ok(content) => parse_loop_config(&config_path, &content).map(Some),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Failed to read {}: {}", config_path.display(), e)),
+    }
+}
+
+fn parse_loop_config(config_path: &Path, content: &str) -> Result<LoopConfigToml, String> {
+    toml::from_str(content).map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,20 +335,69 @@ pub fn write_loop_config(ac_root: &Path, config: &LoopConfigToml) -> Result<Path
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create Loop directory: {}", e))?;
     let content = toml::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize Loop config: {}", e))?;
-    std::fs::write(dir.join(LOOP_CONFIG_FILE), content)
-        .map_err(|e| format!("Failed to write Loop config: {}", e))?;
+    // Write a sibling tmp file and replace, so no reader in any process
+    // (including the CLI) ever sees a torn config.toml.
+    let config_path = dir.join(LOOP_CONFIG_FILE);
+    let tmp_path = dir.join(format!("{}.{}.tmp", LOOP_CONFIG_FILE, Uuid::new_v4()));
+    write_config_via_tmp(&tmp_path, &config_path, &content)?;
     Ok(dir)
 }
 
+/// Writes `content` to `tmp_path` and replaces `config_path` with it. On any
+/// failure, including a partial tmp write, the tmp file is removed.
+fn write_config_via_tmp(tmp_path: &Path, config_path: &Path, content: &str) -> Result<(), String> {
+    std::fs::write(tmp_path, content)
+        .and_then(|()| replace_file_with_retry(tmp_path, config_path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(tmp_path);
+            format!("Failed to write Loop config: {}", e)
+        })
+}
+
 pub fn read_loop_state(loop_dir: &Path) -> Result<LoopState, String> {
+    read_loop_state_with_raw(loop_dir).map(|(state, _)| state)
+}
+
+/// Reads `state.json` and also returns its raw text (`None` when absent), the
+/// expectation `write_loop_state_if_unchanged` compares against.
+pub fn read_loop_state_with_raw(loop_dir: &Path) -> Result<(LoopState, Option<String>), String> {
     let state_path = loop_dir.join(LOOP_STATE_FILE);
     if !state_path.exists() {
-        return Ok(LoopState::default());
+        return Ok((LoopState::default(), None));
     }
     let content = std::fs::read_to_string(&state_path)
         .map_err(|e| format!("Failed to read {}: {}", state_path.display(), e))?;
-    serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse {}: {}", state_path.display(), e))
+    let state = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse {}: {}", state_path.display(), e))?;
+    Ok((state, Some(content)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopStateWrite {
+    Written,
+    Stale,
+}
+
+/// Compare-and-swap on `state.json`: writes only when the on-disk raw bytes
+/// still equal `expected_raw` (absent included). Not a lock by itself; it is
+/// atomic only for a caller that holds a lock across the read and this call.
+pub fn write_loop_state_if_unchanged(
+    loop_dir: &Path,
+    state: &LoopState,
+    expected_raw: Option<&str>,
+) -> Result<LoopStateWrite, String> {
+    let state_path = loop_dir.join(LOOP_STATE_FILE);
+    let current_raw = match std::fs::read_to_string(&state_path) {
+        Ok(content) => Some(content),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("Failed to read {}: {}", state_path.display(), e)),
+    };
+    if current_raw.as_deref() != expected_raw {
+        return Ok(LoopStateWrite::Stale);
+    }
+    loop_write_pause_hook("after_cas_compare", loop_dir);
+    write_loop_state_atomic(loop_dir, state)?;
+    Ok(LoopStateWrite::Written)
 }
 
 pub fn write_loop_state_atomic(loop_dir: &Path, state: &LoopState) -> Result<(), String> {
@@ -343,10 +408,43 @@ pub fn write_loop_state_atomic(loop_dir: &Path, state: &LoopState) -> Result<(),
         .map_err(|e| format!("Failed to serialize Loop state: {}", e))?;
     std::fs::write(&tmp_path, content)
         .map_err(|e| format!("Failed to write temporary Loop state: {}", e))?;
-    replace_file(&tmp_path, &state_path).map_err(|e| {
+    replace_file_with_retry(&tmp_path, &state_path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp_path);
         format!("Failed to finalize Loop state: {}", e)
     })
+}
+
+/// Sleeps between replace attempts: 5 attempts, at most 150 ms added.
+const REPLACE_RETRY_DELAYS_MS: [u64; 4] = [10, 20, 40, 80];
+
+/// `replace_file`, retried while the destination is transiently held open
+/// (any open handle, even a fully shared reader, fails `MoveFileExW`).
+/// Blocking `std::thread::sleep` on purpose: the callers are synchronous and
+/// the CLI uses them too; 150 ms on an already-failing path is cheaper than
+/// making the write path async.
+fn replace_file_with_retry(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let mut delays = REPLACE_RETRY_DELAYS_MS.iter();
+    loop {
+        match replace_file(src, dst) {
+            Err(e) if is_transient_replace_error(&e) => match delays.next() {
+                Some(ms) => std::thread::sleep(std::time::Duration::from_millis(*ms)),
+                None => return Err(e),
+            },
+            result => return result,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn is_transient_replace_error(e: &std::io::Error) -> bool {
+    // ERROR_ACCESS_DENIED (what a held destination produces) and
+    // ERROR_SHARING_VIOLATION.
+    matches!(e.raw_os_error(), Some(5) | Some(32))
+}
+
+#[cfg(not(windows))]
+fn is_transient_replace_error(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::PermissionDenied
 }
 
 pub fn append_loop_audit_once(loop_dir: &Path, entry: &LoopAuditEntry) -> Result<(), String> {
@@ -711,6 +809,202 @@ fn replace_file(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(not(windows))]
 fn replace_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::rename(src, dst)
+}
+
+/// #2682 - production deadline for [`acquire_loop_lock`].
+pub const LOOP_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// #2682 - a held Loop lock; dropping it releases the OS lock.
+pub(crate) type LoopDirLock = SidecarWriteLock;
+
+/// #2682 - cross-process guard over one Loop's `config.toml` + `state.json` +
+/// `audit.jsonl`, and over the existence of the Loop directory itself.
+///
+/// The sidecar is `<canonical ac_root>/._loop_<id>.lock`: outside the Loop
+/// directory, so it resolves before `create` makes the directory and survives
+/// `remove_dir_all`. Rule: in every section that reads, checks or mutates a
+/// Loop, this is the first statement once the AC root and Loop id are known;
+/// nothing that observes or mutates the Loop runs above it. The leaf writers
+/// (`write_loop_config`, `write_loop_state_atomic`, `append_loop_audit_once`)
+/// never take it: the OS lock excludes per handle, so a self-locking leaf
+/// would deadlock against its own section. Lock order: `scan_lock` ->
+/// `io_lock` -> this. Never held across an `.await`.
+pub(crate) fn acquire_loop_lock(
+    ac_root: &Path,
+    loop_id: &str,
+    timeout: Duration,
+) -> Result<LoopDirLock, String> {
+    validate_loop_id(loop_id)?;
+    let canonical_root = std::fs::canonicalize(ac_root).map_err(|e| {
+        format!(
+            "Failed to resolve AC root '{}' for Loop lock: {}",
+            ac_root.display(),
+            e
+        )
+    })?;
+    let lock_path = canonical_root.join(format!(".{}{}.lock", LOOP_DIR_PREFIX, loop_id));
+    acquire_sidecar_write_lock(&lock_path, timeout, "loopLockTimeout", "Loop write lock")
+}
+
+/// #2682 - [`acquire_loop_lock`] for a caller that holds only the Loop
+/// directory path (`<ac_root>/_loop_<id>`), such as the scheduler.
+pub(crate) fn acquire_loop_lock_for_dir(
+    dir: &Path,
+    timeout: Duration,
+) -> Result<LoopDirLock, String> {
+    let ac_root = dir
+        .parent()
+        .ok_or_else(|| format!("Loop directory {} has no parent", dir.display()))?;
+    let loop_id = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix(LOOP_DIR_PREFIX))
+        .ok_or_else(|| format!("{} is not a Loop directory", dir.display()))?;
+    acquire_loop_lock(ac_root, loop_id, timeout)
+}
+
+/// #2682 - the create section shared by the app command and the CLI: lock,
+/// existence check, validation, then the config+state pair as one unit.
+pub fn create_loop_files(
+    project_dir: &Path,
+    ac_root: &Path,
+    config: &LoopConfigToml,
+) -> Result<(PathBuf, LoopState), String> {
+    let _lock = acquire_loop_lock(ac_root, &config.loop_def.id, LOOP_LOCK_TIMEOUT)?;
+    if loop_dir(ac_root, &config.loop_def.id).exists() {
+        return Err(format!("Loop '{}' already exists", config.loop_def.id));
+    }
+    validate_loop_config(project_dir, config)?;
+    let dir = write_loop_config(ac_root, config)?;
+    loop_write_pause_hook("between_config_and_state", &dir);
+    let state = baseline_loop_state(config, Utc::now())?;
+    write_loop_state_atomic(&dir, &state)?;
+    Ok((dir, state))
+}
+
+/// #2682 - the read-modify-write section shared by the app `update_loop` /
+/// `toggle_loop` and the CLI `update` / `enable` / `disable`.
+pub fn update_loop_files(
+    project_dir: &Path,
+    ac_root: &Path,
+    loop_id: &str,
+    patch: LoopUpdatePatch,
+) -> Result<(PathBuf, LoopConfigToml, LoopState), String> {
+    let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;
+    let dir = loop_dir(ac_root, loop_id);
+    if !dir.is_dir() {
+        return Err(format!("Loop '{}' not found", loop_id));
+    }
+    let mut config = read_loop_config(&dir)?;
+    let reset_schedule = apply_loop_update_patch(&mut config, patch)?;
+    validate_loop_config(project_dir, &config)?;
+    let dir = write_loop_config(ac_root, &config)?;
+    loop_write_pause_hook("between_config_and_state", &dir);
+    let state = if reset_schedule {
+        baseline_loop_state(&config, Utc::now())?
+    } else {
+        read_loop_state(&dir).unwrap_or_default()
+    };
+    if reset_schedule {
+        write_loop_state_atomic(&dir, &state)?;
+    }
+    Ok((dir, config, state))
+}
+
+/// #2682 - the delete section shared by the app `delete_loop` and the CLI
+/// `remove`. The sidecar lives outside the directory it deletes.
+pub fn remove_loop_files(ac_root: &Path, loop_id: &str) -> Result<PathBuf, String> {
+    let _lock = acquire_loop_lock(ac_root, loop_id, LOOP_LOCK_TIMEOUT)?;
+    let dir = loop_dir(ac_root, loop_id);
+    if !dir.is_dir() {
+        return Err(format!("Loop '{}' not found", loop_id));
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to remove Loop directory: {}", e))?;
+    Ok(dir)
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn loop_write_pause_hook(_stage: &str, _dir: &Path) {}
+
+/// #2682 - test-only pause point. Inert unless a test arms it.
+#[cfg(test)]
+fn loop_write_pause_hook(stage: &str, dir: &Path) {
+    pause::hook(stage, dir);
+}
+
+/// #2682 - the handshake behind the lock tests. In-process legs arm a
+/// `(stage, dir)` pair; a cross-process child is armed by environment (a
+/// rendezvous directory with ready/release files, as in the #1938 harness).
+#[cfg(test)]
+pub(crate) mod pause {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{mpsc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    pub(crate) const PAUSE_DIR_ENV: &str = "AC_2682_LOOP_PAUSE_DIR";
+    pub(crate) const PAUSE_STAGE_ENV: &str = "AC_2682_LOOP_PAUSE_STAGE";
+    pub(crate) const READY_FILE: &str = "paused.ready";
+    pub(crate) const RELEASE_FILE: &str = "paused.release";
+    const BOUND: Duration = Duration::from_secs(60);
+
+    type Slot = (mpsc::Sender<()>, mpsc::Receiver<()>);
+
+    fn registry() -> &'static Mutex<HashMap<(String, PathBuf), Slot>> {
+        static REGISTRY: OnceLock<Mutex<HashMap<(String, PathBuf), Slot>>> = OnceLock::new();
+        REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// One armed pause: `reached` fires when the writer stops at the stage,
+    /// and the writer resumes on `release`.
+    pub(crate) struct Armed {
+        pub(crate) reached: mpsc::Receiver<()>,
+        pub(crate) release: mpsc::Sender<()>,
+    }
+
+    pub(crate) fn arm(stage: &str, dir: &Path) -> Armed {
+        let (reached_tx, reached) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        registry().lock().expect("pause registry").insert(
+            (stage.to_string(), dir.to_path_buf()),
+            (reached_tx, release_rx),
+        );
+        Armed { reached, release }
+    }
+
+    pub(super) fn hook(stage: &str, dir: &Path) {
+        let slot = registry()
+            .lock()
+            .expect("pause registry")
+            .remove(&(stage.to_string(), dir.to_path_buf()));
+        if let Some((reached, release)) = slot {
+            let _ = reached.send(());
+            release
+                .recv_timeout(BOUND)
+                .expect("in-process pause released within its 60 s bound");
+            return;
+        }
+        let (Some(rendezvous), Some(armed_stage)) = (
+            std::env::var_os(PAUSE_DIR_ENV),
+            std::env::var_os(PAUSE_STAGE_ENV),
+        ) else {
+            return;
+        };
+        if armed_stage != stage {
+            return;
+        }
+        let rendezvous = PathBuf::from(rendezvous);
+        std::fs::write(rendezvous.join(READY_FILE), b"ready").expect("announce pause");
+        let started = Instant::now();
+        while !rendezvous.join(RELEASE_FILE).exists() {
+            assert!(
+                started.elapsed() < BOUND,
+                "cross-process pause exceeded 60 s"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1110,5 +1404,694 @@ busyCoordinator = "waitUntilIdle"
             "the legacy row must be seen by the dedupe, so nothing is appended"
         );
         assert_eq!(content, format!("{}\n", legacy), "no row may be rewritten");
+    }
+
+    fn tmp_files_in(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .expect("read loop dir")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .filter(|name| name.ends_with(".tmp"))
+            .collect()
+    }
+
+    /// Opens `path` with the default (fully shared) OpenOptions and keeps the
+    /// handle for `hold`, from another thread.
+    #[cfg(windows)]
+    fn hold_open_for(path: &Path, hold: std::time::Duration) -> std::thread::JoinHandle<()> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(path)
+            .expect("open holder");
+        std::thread::spawn(move || {
+            std::thread::sleep(hold);
+            drop(file);
+        })
+    }
+
+    /// T1 - every patch field that resets the schedule is exactly a field the
+    /// delivery comparison sees. The exhaustive destructure makes a new patch
+    /// field a compile error here.
+    #[test]
+    fn t1_patch_reset_fields_match_delivery_comparison() {
+        let base = sample_config();
+        let LoopUpdatePatch {
+            name,
+            expr,
+            workgroup,
+            prompt_body,
+            busy_coordinator,
+            session_start,
+            enabled,
+        } = LoopUpdatePatch {
+            name: Some("Other name".to_string()),
+            expr: Some("30 9 * * 1-5".to_string()),
+            workgroup: Some("wg-2-dev-team".to_string()),
+            prompt_body: Some("Other prompt".to_string()),
+            busy_coordinator: Some(BusyCoordinatorPolicy::ForceInject),
+            session_start: Some(LoopSessionStart::Accumulate),
+            enabled: Some(false),
+        };
+        let patches = [
+            (
+                "name",
+                LoopUpdatePatch {
+                    name,
+                    ..LoopUpdatePatch::default()
+                },
+            ),
+            (
+                "expr",
+                LoopUpdatePatch {
+                    expr,
+                    ..LoopUpdatePatch::default()
+                },
+            ),
+            (
+                "workgroup",
+                LoopUpdatePatch {
+                    workgroup,
+                    ..LoopUpdatePatch::default()
+                },
+            ),
+            (
+                "prompt_body",
+                LoopUpdatePatch {
+                    prompt_body,
+                    ..LoopUpdatePatch::default()
+                },
+            ),
+            (
+                "busy_coordinator",
+                LoopUpdatePatch {
+                    busy_coordinator,
+                    ..LoopUpdatePatch::default()
+                },
+            ),
+            (
+                "session_start",
+                LoopUpdatePatch {
+                    session_start,
+                    ..LoopUpdatePatch::default()
+                },
+            ),
+            (
+                "enabled",
+                LoopUpdatePatch {
+                    enabled,
+                    ..LoopUpdatePatch::default()
+                },
+            ),
+        ];
+        for (field, patch) in patches {
+            let mut patched = base.clone();
+            let reset = apply_loop_update_patch(&mut patched, patch).expect("patch applies");
+            let matches = loop_delivery_config_matches(&base, &patched);
+            assert_eq!(
+                reset, !matches,
+                "{field}: reset_schedule must equal !matches"
+            );
+            if field == "name" {
+                assert!(!reset && matches, "name must neither reset nor differ");
+            } else {
+                assert!(reset, "{field} must reset the schedule");
+            }
+        }
+    }
+
+    /// T4 - a real holder on state.json: two positive controls, then the
+    /// retry succeeding and giving up.
+    #[cfg(windows)]
+    #[test]
+    fn t4_replace_retry_under_a_real_holder() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let tmp = fixture_project();
+        let dir = write_loop_config(&tmp.path().join(".ac"), &sample_config()).expect("config");
+        let state_path = dir.join(LOOP_STATE_FILE);
+        write_loop_state_atomic(&dir, &LoopState::default()).expect("initial state");
+
+        for (label, share) in [
+            ("default", None),
+            ("FILE_SHARE_READ", Some(FILE_SHARE_READ)),
+        ] {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            if let Some(mode) = share {
+                options.share_mode(mode);
+            }
+            let holder = options.open(&state_path).expect("holder");
+            let src = dir.join("control.tmp");
+            std::fs::write(&src, "{}").expect("control tmp");
+            let err = replace_file(&src, &state_path)
+                .expect_err("positive control: a held destination must fail the replace");
+            println!(
+                "T4 positive control ({label}): {err} raw={:?}",
+                err.raw_os_error()
+            );
+            assert_eq!(err.raw_os_error(), Some(5), "{label} holder");
+            drop(holder);
+            std::fs::remove_file(&src).expect("remove control tmp");
+        }
+
+        let next = LoopState {
+            last_checked_at: Some(Utc::now()),
+            ..LoopState::default()
+        };
+        let releaser = hold_open_for(&state_path, Duration::from_millis(40));
+        let started = Instant::now();
+        write_loop_state_atomic(&dir, &next).expect("retry succeeds after a 40 ms hold");
+        println!("T4 success leg: Ok after {:?}", started.elapsed());
+        releaser.join().expect("releaser");
+        let (read_back, _) = read_loop_state_with_raw(&dir).expect("state parses");
+        assert_eq!(read_back.last_checked_at, next.last_checked_at);
+
+        let holder = std::fs::OpenOptions::new()
+            .read(true)
+            .open(&state_path)
+            .expect("long holder");
+        let started = Instant::now();
+        let err = write_loop_state_atomic(&dir, &LoopState::default()).expect_err("gives up");
+        let elapsed = started.elapsed();
+        drop(holder);
+        println!("T4 give-up leg: {err} after {elapsed:?}");
+        assert!(err.starts_with("Failed to finalize Loop state"), "{err}");
+        assert!(elapsed >= Duration::from_millis(150), "{elapsed:?}");
+        assert!(tmp_files_in(&dir).is_empty(), "{:?}", tmp_files_in(&dir));
+    }
+
+    /// T5 - the transient classifier.
+    #[test]
+    fn t5_transient_replace_error_classifier() {
+        #[cfg(windows)]
+        {
+            assert!(is_transient_replace_error(
+                &std::io::Error::from_raw_os_error(5)
+            ));
+            assert!(is_transient_replace_error(
+                &std::io::Error::from_raw_os_error(32)
+            ));
+        }
+        #[cfg(not(windows))]
+        assert!(is_transient_replace_error(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+        assert!(!is_transient_replace_error(&std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        )));
+    }
+
+    /// T6 - config writes are atomic and leave no tmp file.
+    #[test]
+    fn t6_atomic_config_write_leaves_no_tmp() {
+        let tmp = fixture_project();
+        let ac_root = tmp.path().join(".ac");
+        let mut config = sample_config();
+        let dir = write_loop_config(&ac_root, &config).expect("first write");
+        assert!(dir.join(LOOP_CONFIG_FILE).is_file());
+        assert!(tmp_files_in(&dir).is_empty());
+        assert_eq!(
+            toml::to_string(&read_loop_config(&dir).expect("read")).expect("toml"),
+            toml::to_string(&config).expect("toml")
+        );
+
+        config.loop_def.name = "Second write".to_string();
+        write_loop_config(&ac_root, &config).expect("second write");
+        assert!(tmp_files_in(&dir).is_empty());
+        assert_eq!(
+            read_loop_config(&dir).expect("read").loop_def.name,
+            "Second write"
+        );
+
+        #[cfg(windows)]
+        {
+            let releaser = hold_open_for(
+                &dir.join(LOOP_CONFIG_FILE),
+                std::time::Duration::from_millis(40),
+            );
+            config.loop_def.name = "Held write".to_string();
+            write_loop_config(&ac_root, &config).expect("retry covers the config path");
+            releaser.join().expect("releaser");
+            assert_eq!(
+                read_loop_config(&dir).expect("read").loop_def.name,
+                "Held write"
+            );
+            assert!(tmp_files_in(&dir).is_empty());
+        }
+    }
+
+    /// A failing tmp write removes the tmp file and leaves config.toml intact.
+    /// The failure is real: the tmp path already exists as a read-only file,
+    /// so opening it for writing is refused.
+    #[test]
+    fn failed_config_tmp_write_leaves_no_tmp() {
+        let tmp = fixture_project();
+        let config = sample_config();
+        let dir = write_loop_config(&tmp.path().join(".ac"), &config).expect("config");
+        let config_path = dir.join(LOOP_CONFIG_FILE);
+        let before = std::fs::read(&config_path).expect("before");
+
+        let tmp_path = dir.join(format!("{}.blocked.tmp", LOOP_CONFIG_FILE));
+        std::fs::write(&tmp_path, "partial").expect("pre-create tmp");
+        let mut perms = std::fs::metadata(&tmp_path).expect("meta").permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&tmp_path, perms).expect("read-only");
+        assert!(
+            std::fs::write(&tmp_path, "probe").is_err(),
+            "positive control: the read-only tmp must refuse a write"
+        );
+
+        let err =
+            write_config_via_tmp(&tmp_path, &config_path, "new = 1").expect_err("tmp write fails");
+        assert!(err.starts_with("Failed to write Loop config"), "{err}");
+        assert!(!tmp_path.exists(), "tmp file must be removed on failure");
+        assert!(tmp_files_in(&dir).is_empty());
+        assert_eq!(std::fs::read(&config_path).expect("after"), before);
+    }
+
+    #[test]
+    fn read_loop_config_if_present_distinguishes_absent_from_malformed() {
+        let tmp = fixture_project();
+        let dir = tmp.path().join(".ac").join("loop-missing");
+        assert!(read_loop_config_if_present(&dir)
+            .expect("absent dir")
+            .is_none());
+        std::fs::create_dir_all(&dir).expect("dir");
+        assert!(read_loop_config_if_present(&dir)
+            .expect("absent file")
+            .is_none());
+        std::fs::write(dir.join(LOOP_CONFIG_FILE), "not = [toml").expect("bad");
+        let err = read_loop_config_if_present(&dir).expect_err("malformed");
+        assert!(err.starts_with("Failed to parse"), "{err}");
+    }
+
+    /// T11 - the compare-and-swap primitive.
+    #[test]
+    fn t11_state_compare_and_swap() {
+        let tmp = fixture_project();
+        let dir = write_loop_config(&tmp.path().join(".ac"), &sample_config()).expect("config");
+        let state_path = dir.join(LOOP_STATE_FILE);
+
+        let (state, raw) = read_loop_state_with_raw(&dir).expect("absent");
+        assert!(raw.is_none());
+        assert_eq!(
+            serde_json::to_string(&state).expect("json"),
+            serde_json::to_string(&LoopState::default()).expect("json")
+        );
+
+        let first = LoopState {
+            last_checked_at: Some(Utc::now()),
+            ..LoopState::default()
+        };
+        assert_eq!(
+            write_loop_state_if_unchanged(&dir, &first, None).expect("absent/absent"),
+            LoopStateWrite::Written
+        );
+        let (_, raw) = read_loop_state_with_raw(&dir).expect("present");
+        let raw = raw.expect("raw present");
+        assert_eq!(raw, std::fs::read_to_string(&state_path).expect("bytes"));
+
+        assert_eq!(
+            write_loop_state_if_unchanged(&dir, &LoopState::default(), Some(&raw)).expect("match"),
+            LoopStateWrite::Written
+        );
+
+        let before = std::fs::read(&state_path).expect("before");
+        assert_eq!(
+            write_loop_state_if_unchanged(&dir, &first, Some(&raw)).expect("changed underneath"),
+            LoopStateWrite::Stale
+        );
+        assert_eq!(
+            write_loop_state_if_unchanged(&dir, &first, None).expect("expected absent"),
+            LoopStateWrite::Stale
+        );
+        assert_eq!(std::fs::read(&state_path).expect("after"), before);
+        assert!(tmp_files_in(&dir).is_empty());
+    }
+
+    // #2682 - the cross-process Loop lock.
+
+    const LOCK_CHILD_ACTION_ENV: &str = "AC_2682_LOOP_LOCK_CHILD_ACTION";
+    const LOCK_CHILD_AC_ROOT_ENV: &str = "AC_2682_LOOP_LOCK_CHILD_AC_ROOT";
+    const LOCK_CHILD_DIR_ENV: &str = "AC_2682_LOOP_LOCK_CHILD_DIR";
+    const LOCK_CHILD_TEST_FQN: &str = "config::loops::tests::issue_2682_loop_lock_child";
+    const LOCK_CHILD_READY_FILE: &str = "lock-child-ready";
+    const LOCK_CHILD_RELEASE_FILE: &str = "lock-child-release";
+    /// Two yearly schedules whose due times can never coincide (T2a).
+    const EXPR_JANUARY: &str = "0 0 1 1 *";
+    const EXPR_JULY: &str = "0 0 1 7 *";
+
+    fn lock_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = fixture_project();
+        let ac_root = tmp.path().join(".ac");
+        let config = sample_config();
+        let (dir, _) = create_loop_files(tmp.path(), &ac_root, &config).expect("create Loop");
+        (tmp, ac_root, dir)
+    }
+
+    fn expr_patch(expr: &str) -> LoopUpdatePatch {
+        LoopUpdatePatch {
+            expr: Some(expr.to_string()),
+            ..LoopUpdatePatch::default()
+        }
+    }
+
+    fn wait_until(what: &str, bound: Duration, mut done: impl FnMut() -> bool) {
+        let started = std::time::Instant::now();
+        while !done() {
+            assert!(
+                started.elapsed() < bound,
+                "{what}: not reached in {bound:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Gives an unlocked writer every chance to run its whole section; a
+    /// locked one stays blocked on acquire, so this returns after `bound`.
+    fn let_it_finish_if_unblocked(handle: &std::thread::JoinHandle<impl Send>, bound: Duration) {
+        let started = std::time::Instant::now();
+        while !handle.is_finished() && started.elapsed() < bound {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The on-disk pair agrees: `state.next_due_at` is what the on-disk cron
+    /// yields from that state's own `last_checked_at`.
+    fn assert_pair_agrees(dir: &Path) -> (LoopConfigToml, LoopState) {
+        let config = read_loop_config(dir).expect("config on disk");
+        let state = read_loop_state(dir).expect("state on disk");
+        let checked = state.last_checked_at.expect("state has last_checked_at");
+        assert_eq!(
+            state.next_due_at,
+            next_due_after(&config.trigger.expr, checked).expect("next due"),
+            "config.toml ({}) and state.json disagree",
+            config.trigger.expr
+        );
+        (config, state)
+    }
+
+    fn spawn_lock_child(action: &str, ac_root: &Path, rendezvous: &Path) -> std::process::Child {
+        std::process::Command::new(std::env::current_exe().expect("current test exe"))
+            .args([
+                "--exact",
+                LOCK_CHILD_TEST_FQN,
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(LOCK_CHILD_ACTION_ENV, action)
+            .env(LOCK_CHILD_AC_ROOT_ENV, ac_root)
+            .env(LOCK_CHILD_DIR_ENV, rendezvous)
+            .env_remove(pause::PAUSE_DIR_ENV)
+            .env_remove(pause::PAUSE_STAGE_ENV)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn Loop lock child")
+    }
+
+    fn wait_child(mut child: std::process::Child, bound: Duration) -> String {
+        let started = std::time::Instant::now();
+        while child.try_wait().expect("poll child").is_none() {
+            if started.elapsed() >= bound {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Loop lock child exceeded its {bound:?} bound and was killed");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().expect("child output");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(
+            output.status.success()
+                && stdout.contains(&format!("test {LOCK_CHILD_TEST_FQN} ..."))
+                && stdout.contains("test result: ok. 1 passed; 0 failed"),
+            "Loop lock child failed: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            output.status
+        );
+        stdout
+    }
+
+    /// #2682 - the child half of T1. A no-op without the child-only action
+    /// environment, so an ordinary suite run passes it untouched.
+    #[test]
+    fn issue_2682_loop_lock_child() {
+        let Some(action) = std::env::var_os(LOCK_CHILD_ACTION_ENV) else {
+            return;
+        };
+        let ac_root = PathBuf::from(std::env::var_os(LOCK_CHILD_AC_ROOT_ENV).expect("ac root"));
+        let rendezvous = PathBuf::from(std::env::var_os(LOCK_CHILD_DIR_ENV).expect("dir"));
+        match action.to_string_lossy().as_ref() {
+            "hold" => {
+                let _lock = acquire_loop_lock(&ac_root, "weekday-standup", LOOP_LOCK_TIMEOUT)
+                    .expect("child acquires the Loop lock");
+                std::fs::write(rendezvous.join(LOCK_CHILD_READY_FILE), b"ready").expect("ready");
+                wait_until("child release", Duration::from_secs(60), || {
+                    rendezvous.join(LOCK_CHILD_RELEASE_FILE).exists()
+                });
+            }
+            other => panic!("unknown child action {other}"),
+        }
+        println!("AC_2682_LOOP_LOCK_CHILD_DONE");
+    }
+
+    /// #2682 T0 - two handles on one sidecar in one process exclude each
+    /// other. The in-process legs of T2a/T2b/T7 and the no-self-lock rule for
+    /// the leaf writers rest on this.
+    #[test]
+    fn issue_2682_t0_same_process_handles_exclude() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sidecar = tmp.path().join("._loop_x.lock");
+        let open = || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&sidecar)
+                .expect("open sidecar")
+        };
+        let first = open();
+        let second = open();
+        first.try_lock().expect("first handle locks");
+        assert!(
+            matches!(second.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+            "a second handle in the same process must see WouldBlock"
+        );
+        drop(first);
+        second
+            .try_lock()
+            .expect("the lock frees when the first handle closes");
+    }
+
+    /// #2682 T1 - a child process holds the Loop lock; the parent times out
+    /// with `loopLockTimeout` naming the sidecar, then acquires once released
+    /// (the positive control: a sidecar that never opens also times out).
+    #[test]
+    fn issue_2682_t1_lock_excludes_another_process() {
+        let (_tmp, ac_root, _dir) = lock_fixture();
+        let rendezvous = tempfile::tempdir().expect("rendezvous");
+        let child = spawn_lock_child("hold", &ac_root, rendezvous.path());
+        let ready = rendezvous.path().join(LOCK_CHILD_READY_FILE);
+        wait_until("child ready", Duration::from_secs(60), || ready.exists());
+
+        let err = acquire_loop_lock(&ac_root, "weekday-standup", Duration::from_millis(200))
+            .expect_err("a held Loop lock must time out");
+        assert!(err.contains("loopLockTimeout"), "{err}");
+        assert!(err.contains("._loop_weekday-standup.lock"), "{err}");
+        assert!(err.contains("waiting for Loop write lock"), "{err}");
+        assert!(!err.contains("local config"), "{err}");
+
+        std::fs::write(rendezvous.path().join(LOCK_CHILD_RELEASE_FILE), b"go").expect("release");
+        let stdout = wait_child(child, Duration::from_secs(60));
+        assert!(stdout.contains("AC_2682_LOOP_LOCK_CHILD_DONE"), "{stdout}");
+        acquire_loop_lock(&ac_root, "weekday-standup", Duration::from_secs(5))
+            .expect("positive control: acquires after the child releases");
+    }
+
+    /// #2682 T2a - two update sections with different crons. Writer A stops
+    /// between its config and state writes while writer B runs. With the lock
+    /// B waits, so the on-disk pair agrees; without it B's config sits next to
+    /// A's state and the pair disagrees.
+    #[test]
+    fn issue_2682_t2a_update_sections_keep_config_and_state_agreeing() {
+        let (tmp, ac_root, dir) = lock_fixture();
+        let armed = pause::arm("between_config_and_state", &dir);
+        let (project, root) = (tmp.path().to_path_buf(), ac_root.clone());
+        let writer_a = std::thread::spawn(move || {
+            update_loop_files(&project, &root, "weekday-standup", expr_patch(EXPR_JANUARY))
+        });
+        armed
+            .reached
+            .recv_timeout(Duration::from_secs(10))
+            .expect("writer A reaches the pause");
+        let (project, root) = (tmp.path().to_path_buf(), ac_root.clone());
+        let writer_b = std::thread::spawn(move || {
+            update_loop_files(&project, &root, "weekday-standup", expr_patch(EXPR_JULY))
+        });
+        let_it_finish_if_unblocked(&writer_b, Duration::from_millis(500));
+        armed.release.send(()).expect("release writer A");
+        writer_a
+            .join()
+            .expect("writer A")
+            .expect("writer A section");
+        writer_b
+            .join()
+            .expect("writer B")
+            .expect("writer B section");
+
+        let (config, _) = assert_pair_agrees(&dir);
+        assert_eq!(config.trigger.expr, EXPR_JULY, "B's section runs after A's");
+    }
+
+    /// #2682 T3 - the sidecar lives outside the Loop directory, so removing the
+    /// Loop leaves it in place, and a re-created Loop reuses it.
+    #[test]
+    fn issue_2682_t3_sidecar_survives_loop_removal() {
+        let (tmp, ac_root, dir) = lock_fixture();
+        let sidecar = std::fs::canonicalize(&ac_root)
+            .expect("canonical root")
+            .join("._loop_weekday-standup.lock");
+        drop(acquire_loop_lock(&ac_root, "weekday-standup", LOOP_LOCK_TIMEOUT).expect("lock"));
+        remove_loop_files(&ac_root, "weekday-standup").expect("remove Loop");
+        assert!(!dir.exists(), "Loop directory is gone");
+        assert!(sidecar.is_file(), "sidecar survives the removal");
+        let held = acquire_loop_lock(&ac_root, "weekday-standup", LOOP_LOCK_TIMEOUT)
+            .expect("sidecar still acquirable");
+        drop(held);
+
+        create_loop_files(tmp.path(), &ac_root, &sample_config()).expect("re-create Loop");
+        let _held = acquire_loop_lock(&ac_root, "weekday-standup", LOOP_LOCK_TIMEOUT)
+            .expect("re-created Loop lock");
+        let lock_files: Vec<_> = std::fs::read_dir(&ac_root)
+            .expect("read root")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".lock"))
+            .collect();
+        assert_eq!(lock_files, vec!["._loop_weekday-standup.lock".to_string()]);
+    }
+
+    /// #2682 T4 - a section holding the Loop lock calls every leaf writer and
+    /// completes: the leaves never take the lock themselves. Bounded, so a
+    /// regression fails instead of hanging the job.
+    #[test]
+    fn issue_2682_t4_leaf_writers_do_not_self_deadlock() {
+        let (tmp, ac_root, dir) = lock_fixture();
+        let project = tmp.path().to_string_lossy().to_string();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<(), String> {
+                let _lock = acquire_loop_lock(&ac_root, "weekday-standup", LOOP_LOCK_TIMEOUT)?;
+                write_loop_config(&ac_root, &sample_config())?;
+                write_loop_state_atomic(&dir, &LoopState::default())?;
+                let now = Utc::now();
+                append_loop_audit_once(
+                    &dir,
+                    &LoopAuditEntry {
+                        run_id: Uuid::new_v4(),
+                        loop_id: "weekday-standup".to_string(),
+                        project_path: project,
+                        kind: LoopAuditKind::Delivered,
+                        due_at: now,
+                        started_at: now,
+                        completed_at: Some(now),
+                        target: None,
+                        session_id: None,
+                        busy_coordinator_policy: BusyCoordinatorPolicy::default(),
+                        session_start: None,
+                        error: None,
+                        prompt_snapshot: None,
+                    },
+                )?;
+                Ok(())
+            })();
+            let _ = done_tx.send(result);
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the locked section finishes within 20 s")
+            .expect("every leaf writer succeeds under the held lock");
+    }
+
+    /// #2682 T5 - raw, dot-segment and (on Windows) case-variant spellings of
+    /// one AC root resolve to one sidecar and exclude each other.
+    #[test]
+    fn issue_2682_t5_root_aliases_share_one_lock() {
+        let (tmp, ac_root, _dir) = lock_fixture();
+        let mut aliases = vec![ac_root.join("..").join(".ac")];
+        if cfg!(windows) {
+            aliases.push(PathBuf::from(
+                tmp.path().to_string_lossy().to_uppercase() + "\\.AC",
+            ));
+        }
+        let _held = acquire_loop_lock(&ac_root, "weekday-standup", LOOP_LOCK_TIMEOUT)
+            .expect("raw spelling");
+        for alias in aliases {
+            let err = acquire_loop_lock(&alias, "weekday-standup", Duration::from_millis(100))
+                .expect_err("an alias must hit the held sidecar");
+            assert!(
+                err.contains("loopLockTimeout"),
+                "{}: {err}",
+                alias.display()
+            );
+        }
+    }
+
+    /// #2682 T7 - writer A (an update) stops between config and state while
+    /// writer B removes the Loop. The only clean outcomes: A's section then B's
+    /// removal, or B first and A fails "not found" from a check under the lock.
+    /// Never a failed half-write, never `state.json` without `config.toml`.
+    #[test]
+    fn issue_2682_t7_removal_waits_for_an_update_section() {
+        let (tmp, ac_root, dir) = lock_fixture();
+        let armed = pause::arm("between_config_and_state", &dir);
+        let (project, root) = (tmp.path().to_path_buf(), ac_root.clone());
+        let writer_a = std::thread::spawn(move || {
+            update_loop_files(&project, &root, "weekday-standup", expr_patch(EXPR_JANUARY))
+        });
+        armed
+            .reached
+            .recv_timeout(Duration::from_secs(10))
+            .expect("writer A reaches the pause");
+        let root = ac_root.clone();
+        let writer_b = std::thread::spawn(move || remove_loop_files(&root, "weekday-standup"));
+        let_it_finish_if_unblocked(&writer_b, Duration::from_millis(500));
+        armed.release.send(()).expect("release writer A");
+        let a = writer_a.join().expect("writer A");
+        let b = writer_b.join().expect("writer B");
+
+        assert!(
+            !(dir.join(LOOP_STATE_FILE).exists() && !dir.join(LOOP_CONFIG_FILE).exists()),
+            "a Loop directory holds state.json without config.toml"
+        );
+        match a {
+            Ok(_) => {
+                b.expect("B removes after A's section");
+                assert!(!dir.exists(), "B's removal ran last");
+            }
+            Err(e) => assert!(e.contains("not found"), "A failed mid-section: {e}"),
+        }
+    }
+
+    /// #2682 gate 4 - the pause hook is inert unless armed: no environment
+    /// arming leaks into an ordinary run, and an unarmed stage returns at once.
+    #[test]
+    fn issue_2682_pause_hook_is_disarmed_by_default() {
+        assert!(std::env::var_os(pause::PAUSE_DIR_ENV).is_none());
+        assert!(std::env::var_os(pause::PAUSE_STAGE_ENV).is_none());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let started = std::time::Instant::now();
+        loop_write_pause_hook("between_config_and_state", tmp.path());
+        loop_write_pause_hook("after_cas_compare", tmp.path());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

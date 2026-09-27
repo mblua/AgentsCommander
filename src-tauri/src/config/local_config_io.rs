@@ -24,7 +24,7 @@ const CONFIG_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// closes the handle and releases the OS lock. The sidecar file itself is
 /// deliberately left on disk.
 #[derive(Debug)]
-struct ConfigFileWriteLock {
+pub(crate) struct SidecarWriteLock {
     _file: std::fs::File,
 }
 
@@ -53,7 +53,7 @@ fn config_lock_path(parent: &Path, config_path: &Path) -> Result<PathBuf, String
 fn acquire_config_file_write_lock(
     config_path: &Path,
     timeout: Duration,
-) -> Result<ConfigFileWriteLock, String> {
+) -> Result<SidecarWriteLock, String> {
     let parent = config_path.parent().ok_or_else(|| {
         format!(
             "Local config {} has no parent directory",
@@ -68,11 +68,34 @@ fn acquire_config_file_write_lock(
         )
     })?;
     let lock_path = config_lock_path(&canonical_parent, config_path)?;
+    acquire_sidecar_write_lock(
+        &lock_path,
+        timeout,
+        "configLockTimeout",
+        "local config write lock",
+    )
+}
 
-    match std::fs::symlink_metadata(&lock_path) {
+/// #1938 - open (creating once) and acquire the sidecar lock at `lock_path`.
+/// The caller resolves the path; `timeout_marker` prefixes the deadline error
+/// so each caller's timeout stays distinguishable. Shared by the local-config
+/// lock and the Loop lock (#2682); this is the one `try_lock` poll loop.
+pub(crate) fn acquire_sidecar_write_lock(
+    lock_path: &Path,
+    timeout: Duration,
+    timeout_marker: &str,
+    subject: &str,
+) -> Result<SidecarWriteLock, String> {
+    let mut chars = subject.chars();
+    let subject_capitalized: String = chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
+    match std::fs::symlink_metadata(lock_path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             return Err(format!(
-                "Local config write lock '{}' must be a regular non-symlink file",
+                "{} '{}' must be a regular non-symlink file",
+                subject_capitalized,
                 lock_path.display()
             ));
         }
@@ -80,7 +103,8 @@ fn acquire_config_file_write_lock(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
             return Err(format!(
-                "Failed to inspect local config write lock '{}': {}",
+                "Failed to inspect {} '{}': {}",
+                subject,
                 lock_path.display(),
                 e
             ));
@@ -92,10 +116,11 @@ fn acquire_config_file_write_lock(
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&lock_path)
+        .open(lock_path)
         .map_err(|e| {
             format!(
-                "Failed to open local config write lock '{}': {}",
+                "Failed to open {} '{}': {}",
+                subject,
                 lock_path.display(),
                 e
             )
@@ -104,7 +129,8 @@ fn acquire_config_file_write_lock(
         .metadata()
         .map_err(|e| {
             format!(
-                "Failed to inspect opened local config write lock '{}': {}",
+                "Failed to inspect opened {} '{}': {}",
+                subject,
                 lock_path.display(),
                 e
             )
@@ -112,7 +138,8 @@ fn acquire_config_file_write_lock(
         .is_file()
     {
         return Err(format!(
-            "Local config write lock '{}' must be a regular file",
+            "{} '{}' must be a regular file",
+            subject_capitalized,
             lock_path.display()
         ));
     }
@@ -123,8 +150,10 @@ fn acquire_config_file_write_lock(
             Ok(()) => break,
             Err(std::fs::TryLockError::WouldBlock) if started.elapsed() >= timeout => {
                 return Err(format!(
-                    "configLockTimeout: timed out after {} ms waiting for local config write lock '{}'",
+                    "{}: timed out after {} ms waiting for {} '{}'",
+                    timeout_marker,
                     timeout.as_millis(),
+                    subject,
                     lock_path.display()
                 ));
             }
@@ -134,7 +163,8 @@ fn acquire_config_file_write_lock(
             }
             Err(std::fs::TryLockError::Error(e)) => {
                 return Err(format!(
-                    "Failed to acquire local config write lock '{}': {}",
+                    "Failed to acquire {} '{}': {}",
+                    subject,
                     lock_path.display(),
                     e
                 ));
@@ -142,7 +172,7 @@ fn acquire_config_file_write_lock(
         }
     }
 
-    Ok(ConfigFileWriteLock { _file: file })
+    Ok(SidecarWriteLock { _file: file })
 }
 
 pub fn update_config_json_object<F>(

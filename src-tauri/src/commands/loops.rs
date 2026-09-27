@@ -7,11 +7,11 @@ use tauri::{AppHandle, State};
 
 use crate::config::ac_root::existing_ac_root;
 use crate::config::loops::{
-    apply_loop_update_patch, baseline_loop_state, details_from_parts, loop_dir, next_due_after,
-    read_loop_config, read_loop_state, sanitize_loop_id, validate_cron_expr, validate_loop_config,
-    validate_loop_id, write_loop_config, write_loop_state_atomic, BusyCoordinatorPolicy,
-    LoopConfigDetails, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopSessionStart,
-    LoopTarget, LoopTargetKind, LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
+    create_loop_files, details_from_parts, loop_dir, next_due_after, read_loop_config,
+    read_loop_state, remove_loop_files, sanitize_loop_id, update_loop_files, validate_cron_expr,
+    validate_loop_id, BusyCoordinatorPolicy, LoopConfigDetails, LoopConfigToml, LoopDef,
+    LoopPolicy, LoopPrompt, LoopSessionStart, LoopTarget, LoopTargetKind, LoopTrigger,
+    LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
 // #1252: keep private. A `pub use` here would re-expose the emitter and kill the E0603 backstop.
 use crate::loops::events::emit_loop_change;
@@ -97,15 +97,11 @@ pub async fn create_loop(
     let project_dir = PathBuf::from(&request.project_path);
     let ac_root = ac_root_for_project(&project_dir)?;
     crate::commands::ac_discovery::ensure_ac_root_gitignore(&ac_root)?;
-    let _guard = scheduler.mutation_guard().await;
+    let _guard = scheduler.io_guard().await;
     let id = match request.id.as_deref() {
         Some(id) => sanitize_loop_id(id)?,
         None => sanitize_loop_id(&request.name)?,
     };
-    let dir = loop_dir(&ac_root, &id);
-    if dir.exists() {
-        return Err(format!("Loop '{}' already exists", id));
-    }
     let policy = policy_from_create_request(&request);
     let prompt_body = validated_prompt(request.prompt_body)?;
     let config = LoopConfigToml {
@@ -126,10 +122,8 @@ pub async fn create_loop(
         prompt: LoopPrompt { body: prompt_body },
         policy,
     };
-    validate_loop_config(&project_dir, &config)?;
-    let dir = write_loop_config(&ac_root, &config)?;
-    let state = baseline_loop_state(&config, Utc::now())?;
-    write_loop_state_atomic(&dir, &state)?;
+    let (dir, state) = create_loop_files(&project_dir, &ac_root, &config)?;
+    scheduler.bump_loop_generation(&dir);
     let details = details_from_parts(&dir, &config, &state);
     emit_loop_change(
         &app,
@@ -154,24 +148,15 @@ pub async fn update_loop(
     let project_dir = PathBuf::from(&request.project_path);
     let ac_root = ac_root_for_project(&project_dir)?;
     crate::commands::ac_discovery::ensure_ac_root_gitignore(&ac_root)?;
-    let _guard = scheduler.mutation_guard().await;
-    let dir = loop_dir(&ac_root, &request.id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", request.id));
-    }
-    let mut config = read_loop_config(&dir)?;
-    let reset_schedule = apply_loop_update_patch(&mut config, patch_from_update_request(request))?;
-
-    validate_loop_config(&project_dir, &config)?;
-    let dir = write_loop_config(&ac_root, &config)?;
-    let state = if reset_schedule {
-        baseline_loop_state(&config, Utc::now())?
-    } else {
-        read_loop_state(&dir).unwrap_or_default()
-    };
-    if reset_schedule {
-        write_loop_state_atomic(&dir, &state)?;
-    }
+    let _guard = scheduler.io_guard().await;
+    let loop_id = request.id.clone();
+    let (dir, config, state) = update_loop_files(
+        &project_dir,
+        &ac_root,
+        &loop_id,
+        patch_from_update_request(request),
+    )?;
+    scheduler.bump_loop_generation(&dir);
     let details = details_from_parts(&dir, &config, &state);
     emit_loop_change(
         &app,
@@ -196,12 +181,9 @@ pub async fn delete_loop(
     validate_loop_id(&id)?;
     let project_dir = PathBuf::from(&project_path);
     let ac_root = ac_root_for_project(&project_dir)?;
-    let _guard = scheduler.mutation_guard().await;
-    let dir = loop_dir(&ac_root, &id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", id));
-    }
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to remove Loop directory: {}", e))?;
+    let _guard = scheduler.io_guard().await;
+    let dir = remove_loop_files(&ac_root, &id)?;
+    scheduler.bump_loop_generation(&dir);
     emit_loop_change(&app, &project_dir, &dir, &id, "deleted", None, None);
     scheduler.request_scan();
     Ok(())
@@ -218,29 +200,17 @@ pub async fn toggle_loop(
     validate_loop_id(&id)?;
     let project_dir = PathBuf::from(&project_path);
     let ac_root = ac_root_for_project(&project_dir)?;
-    let _guard = scheduler.mutation_guard().await;
-    let dir = loop_dir(&ac_root, &id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", id));
-    }
-    let mut config = read_loop_config(&dir)?;
-    let reset_schedule = apply_loop_update_patch(
-        &mut config,
+    let _guard = scheduler.io_guard().await;
+    let (dir, config, state) = update_loop_files(
+        &project_dir,
+        &ac_root,
+        &id,
         LoopUpdatePatch {
             enabled: Some(enabled),
             ..LoopUpdatePatch::default()
         },
     )?;
-    validate_loop_config(&project_dir, &config)?;
-    let dir = write_loop_config(&ac_root, &config)?;
-    let state = if reset_schedule {
-        baseline_loop_state(&config, Utc::now())?
-    } else {
-        read_loop_state(&dir).unwrap_or_default()
-    };
-    if reset_schedule {
-        write_loop_state_atomic(&dir, &state)?;
-    }
+    scheduler.bump_loop_generation(&dir);
     let details = details_from_parts(&dir, &config, &state);
     emit_loop_change(
         &app,
@@ -341,7 +311,11 @@ pub async fn list_unresolved_loop_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::loops::{LoopSessionStart, MissedWhileClosedPolicy};
+    use crate::config::loops::{
+        apply_loop_update_patch, write_loop_config, write_loop_state_atomic, LoopSessionStart,
+        MissedWhileClosedPolicy,
+    };
+    use tauri::Manager;
 
     /// A stored Loop whose `sessionStart` is `Accumulate`, so an update that
     /// leaves the field alone is distinguishable from one that defaults it.
@@ -487,5 +461,324 @@ mod tests {
         assert_eq!(patch.busy_coordinator, Some(BusyCoordinatorPolicy::Skip));
         assert_eq!(patch.enabled, Some(true));
         assert_eq!(patch.session_start, None);
+    }
+
+    /// #2695 command fixture: a project whose Room resolves (the shape of
+    /// `make_coordinator_fixture`), one Loop with a pending run, a real
+    /// `LoopScheduler` managed on a test app.
+    struct CommandFixture {
+        _tmp: tempfile::TempDir,
+        project: PathBuf,
+        dir: PathBuf,
+        scheduler: Arc<LoopScheduler>,
+        app: tauri::App,
+    }
+
+    fn command_fixture() -> CommandFixture {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        let team_dir = ac_root.join("_team_dev-team");
+        let replica = ac_root.join("wg-1-dev-team").join("__agent_tech-lead");
+        for dir in [&team_dir, &ac_root.join("_agent_tech-lead"), &replica] {
+            std::fs::create_dir_all(dir).expect("fixture dir");
+        }
+        std::fs::write(
+            team_dir.join("config.json"),
+            r#"{"agents":["../_agent_tech-lead"],"coordinator":"../_agent_tech-lead"}"#,
+        )
+        .expect("team config");
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../_agent_tech-lead"}"#,
+        )
+        .expect("replica config");
+        let dir = write_loop_config(&ac_root, &accumulate_config()).expect("loop config");
+        let state = crate::config::loops::LoopState {
+            last_checked_at: Some(Utc::now() - Duration::minutes(5)),
+            pending_due_at: Some(Utc::now() - Duration::minutes(5)),
+            pending_run_id: Some(uuid::Uuid::new_v4()),
+            ..Default::default()
+        };
+        write_loop_state_atomic(&dir, &state).expect("loop state");
+        let scheduler = Arc::new(LoopScheduler::new());
+        let app = crate::test_support::test_builder()
+            .manage(Arc::clone(&scheduler))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build app");
+        CommandFixture {
+            _tmp: tmp,
+            project,
+            dir,
+            scheduler,
+            app,
+        }
+    }
+
+    struct GatedScan {
+        release: tokio::sync::oneshot::Sender<()>,
+        scan: tokio::task::JoinHandle<Result<(), String>>,
+        s0_raw: String,
+    }
+
+    /// Starts a real scan and returns once it is held inside the delivery.
+    async fn gated_command_fixture() -> (CommandFixture, GatedScan) {
+        let fixture = command_fixture();
+        let s0_raw =
+            std::fs::read_to_string(fixture.dir.join(crate::config::loops::LOOP_STATE_FILE))
+                .expect("s0 state");
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        fixture
+            .scheduler
+            .install_delivery_gate(crate::loops::scheduler::LoopDeliveryGate {
+                entered: Some(entered_tx),
+                release: Some(release_rx),
+                report: Some(crate::loops::delivery::LoopDeliveryReport {
+                    kind: crate::config::loops::LoopAuditKind::Delivered,
+                    message: "gated delivery".to_string(),
+                    target: None,
+                    session_id: None,
+                    error: None,
+                    prompt_snapshot: None,
+                    completed_at: Some(Utc::now()),
+                }),
+            });
+        let scheduler = Arc::clone(&fixture.scheduler);
+        let handle = fixture.app.handle().clone();
+        let project = fixture.project.clone();
+        let scan = tokio::spawn(async move {
+            scheduler
+                .scan_project_under_scan_lock(handle, project)
+                .await
+        });
+        entered_rx.await.expect("scan entered the delivery");
+        (
+            fixture,
+            GatedScan {
+                release: release_tx,
+                scan,
+                s0_raw,
+            },
+        )
+    }
+
+    impl CommandFixture {
+        fn project_path(&self) -> String {
+            self.project.to_string_lossy().to_string()
+        }
+
+        fn state_raw(&self) -> String {
+            std::fs::read_to_string(self.dir.join(crate::config::loops::LOOP_STATE_FILE))
+                .expect("state")
+        }
+
+        fn assert_no_scan_audit_row(&self) {
+            let audit = self.dir.join(crate::config::loops::LOOP_AUDIT_FILE);
+            let rows = std::fs::read_to_string(audit).unwrap_or_default();
+            assert!(rows.trim().is_empty(), "no scan audit row: {}", rows);
+        }
+
+        fn create_request(&self) -> LoopCreateRequest {
+            let config = accumulate_config();
+            LoopCreateRequest {
+                project_path: self.project_path(),
+                id: Some(config.loop_def.id),
+                name: config.loop_def.name,
+                expr: config.trigger.expr,
+                workgroup: config.target.workgroup,
+                prompt_body: config.prompt.body,
+                busy_coordinator: None,
+                session_start: Some(config.policy.session_start),
+                enabled: Some(true),
+            }
+        }
+
+        async fn toggle(&self, enabled: bool) {
+            toggle_loop(
+                self.app.handle().clone(),
+                self.app.state::<Arc<LoopScheduler>>(),
+                self.project_path(),
+                "daily-sync".to_string(),
+                enabled,
+            )
+            .await
+            .expect("toggle_loop");
+        }
+
+        async fn delete(&self) {
+            delete_loop(
+                self.app.handle().clone(),
+                self.app.state::<Arc<LoopScheduler>>(),
+                self.project_path(),
+                "daily-sync".to_string(),
+            )
+            .await
+            .expect("delete_loop");
+        }
+
+        async fn create(&self) {
+            create_loop(
+                self.app.handle().clone(),
+                self.app.state::<Arc<LoopScheduler>>(),
+                self.create_request(),
+            )
+            .await
+            .expect("create_loop");
+        }
+    }
+
+    impl GatedScan {
+        async fn finish(self) -> Result<(), String> {
+            self.release.send(()).expect("release the gate");
+            self.scan.await.expect("join scan")
+        }
+    }
+
+    /// #2695 T2 - a whole `update_loop` completes while a delivery is held.
+    #[tokio::test]
+    async fn update_loop_completes_while_a_delivery_is_held() {
+        let (fixture, gated) = gated_command_fixture().await;
+        let request = LoopUpdateRequest {
+            project_path: fixture.project_path(),
+            id: "daily-sync".to_string(),
+            name: None,
+            expr: Some("30 9 * * *".to_string()),
+            workgroup: None,
+            prompt_body: None,
+            busy_coordinator: None,
+            session_start: None,
+            enabled: None,
+        };
+
+        let started = std::time::Instant::now();
+        let result = update_loop(
+            fixture.app.handle().clone(),
+            fixture.app.state::<Arc<LoopScheduler>>(),
+            request,
+        )
+        .await;
+        let elapsed = started.elapsed();
+        eprintln!("T2: update_loop returned in {:?}", elapsed);
+
+        result.expect("update_loop");
+        assert!(elapsed < std::time::Duration::from_millis(250));
+        let config = read_loop_config(&fixture.dir).expect("config");
+        assert_eq!(config.trigger.expr, "30 9 * * *");
+        let baseline = fixture.state_raw();
+        let state = read_loop_state(&fixture.dir).expect("state");
+        assert!(
+            state.pending_run_id.is_none(),
+            "the command wrote a baseline"
+        );
+
+        gated.finish().await.expect("scan");
+        assert_eq!(fixture.state_raw(), baseline);
+        fixture.assert_no_scan_audit_row();
+    }
+
+    /// #2695 T8 - the value guard alone: an unconditional writer that bumps
+    /// no generation and changes no config.
+    #[tokio::test]
+    async fn scan_does_not_overwrite_a_state_changed_during_delivery() {
+        let (fixture, gated) = gated_command_fixture().await;
+        let mut state = read_loop_state(&fixture.dir).expect("state");
+        state.last_checked_at = Some(Utc::now() + Duration::minutes(1));
+        write_loop_state_atomic(&fixture.dir, &state).expect("external write");
+        let written = fixture.state_raw();
+        assert_ne!(written, gated.s0_raw);
+
+        gated.finish().await.expect("scan");
+
+        assert_eq!(fixture.state_raw(), written);
+        fixture.assert_no_scan_audit_row();
+    }
+
+    /// #2695 T8b - the realistic ABA: toggle off then on.
+    #[tokio::test]
+    async fn scan_does_not_overwrite_a_toggle_off_then_on() {
+        let (fixture, gated) = gated_command_fixture().await;
+        fixture.toggle(false).await;
+        fixture.toggle(true).await;
+        let baseline = fixture.state_raw();
+
+        gated.finish().await.expect("scan");
+
+        assert_eq!(fixture.state_raw(), baseline);
+        fixture.assert_no_scan_audit_row();
+    }
+
+    /// #2695 T9 - the identity guard alone: delete, recreate with equal
+    /// fields, restore the S0 bytes. Only the generation differs.
+    #[tokio::test]
+    async fn scan_does_not_write_into_a_recreated_loop() {
+        let (fixture, gated) = gated_command_fixture().await;
+        fixture.delete().await;
+        fixture.create().await;
+        std::fs::write(
+            fixture.dir.join(crate::config::loops::LOOP_STATE_FILE),
+            &gated.s0_raw,
+        )
+        .expect("restore s0 bytes");
+        let s0_raw = gated.s0_raw.clone();
+
+        gated.finish().await.expect("scan");
+
+        assert_eq!(fixture.state_raw(), s0_raw);
+        fixture.assert_no_scan_audit_row();
+    }
+
+    /// #2695 T10 - a Loop deleted during delivery. No log capture exists in
+    /// this crate, so the leg is: the scan is Ok and nothing was recreated.
+    #[tokio::test]
+    async fn scan_survives_a_delete_during_delivery() {
+        let (fixture, gated) = gated_command_fixture().await;
+        fixture.delete().await;
+
+        gated.finish().await.expect("scan is Ok");
+
+        assert!(
+            !fixture.dir.exists(),
+            "nothing recreated the Loop directory"
+        );
+    }
+
+    /// #2695 T14 - every command bumps the Loop generation.
+    #[tokio::test]
+    async fn every_loop_command_bumps_the_generation() {
+        let fixture = command_fixture();
+        let generation = || fixture.scheduler.loop_generation(&fixture.dir);
+
+        let before = generation();
+        update_loop(
+            fixture.app.handle().clone(),
+            fixture.app.state::<Arc<LoopScheduler>>(),
+            LoopUpdateRequest {
+                project_path: fixture.project_path(),
+                id: "daily-sync".to_string(),
+                name: Some("Renamed".to_string()),
+                expr: None,
+                workgroup: None,
+                prompt_body: None,
+                busy_coordinator: None,
+                session_start: None,
+                enabled: None,
+            },
+        )
+        .await
+        .expect("update_loop");
+        assert_ne!(generation(), before, "update_loop must bump");
+
+        let before = generation();
+        fixture.toggle(false).await;
+        assert_ne!(generation(), before, "toggle_loop must bump");
+
+        let before = generation();
+        fixture.delete().await;
+        assert_ne!(generation(), before, "delete_loop must bump");
+
+        let before = generation();
+        fixture.create().await;
+        assert_ne!(generation(), before, "create_loop must bump");
     }
 }

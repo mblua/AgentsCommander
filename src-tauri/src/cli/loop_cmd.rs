@@ -1,17 +1,14 @@
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use crate::cli::workgroup::{resolve_cli_ac_root, resolve_cli_project, write_refresh};
 use crate::config::loops::{
-    apply_loop_update_patch, baseline_loop_state, details_from_parts, discover_loops_in_project,
-    loop_dir, read_loop_config, read_loop_state, sanitize_loop_id, validate_loop_config,
-    validate_loop_id, write_loop_config, write_loop_state_atomic, AcLoopSummary,
-    BusyCoordinatorPolicy, LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopSessionStart,
-    LoopState, LoopTarget, LoopTargetKind, LoopTrigger, LoopTriggerKind, LoopUpdatePatch,
-    LOOP_TIMEZONE_LOCAL,
+    create_loop_files, details_from_parts, discover_loops_in_project, remove_loop_files,
+    sanitize_loop_id, update_loop_files, validate_loop_id, AcLoopSummary, BusyCoordinatorPolicy,
+    LoopConfigToml, LoopDef, LoopPolicy, LoopPrompt, LoopSessionStart, LoopTarget, LoopTargetKind,
+    LoopTrigger, LoopTriggerKind, LoopUpdatePatch, LOOP_TIMEZONE_LOCAL,
 };
 
 pub const MAX_LOOP_PROMPT_FILE_BYTES: u64 = 128 * 1024;
@@ -188,11 +185,6 @@ fn create(args: LoopCreateArgs) -> Result<(), String> {
         Some(id) => sanitize_loop_id(id)?,
         None => sanitize_loop_id(&args.name)?,
     };
-    let dir = loop_dir(&ac_root, &id);
-    if dir.exists() {
-        return Err(format!("Loop '{}' already exists", id));
-    }
-
     let prompt = resolve_prompt(args.prompt.as_deref(), args.prompt_file.as_deref())?;
     let busy_coordinator = resolve_busy_policy(args.busy_coordinator, args.force_inject_when_busy)?;
     let config = LoopConfigToml {
@@ -220,10 +212,7 @@ fn create(args: LoopCreateArgs) -> Result<(), String> {
             ..LoopPolicy::default()
         },
     };
-    validate_loop_config(&project_path, &config)?;
-    let dir = write_loop_config(&ac_root, &config)?;
-    let state = initial_state(&config)?;
-    write_loop_state_atomic(&dir, &state)?;
+    let (dir, state) = create_loop_files(&project_path, &ac_root, &config)?;
     write_refresh(&project_path, &dir, &id, "loopCreated");
     print_json(&details_from_parts(&dir, &config, &state))
 }
@@ -232,11 +221,6 @@ fn update(args: LoopUpdateArgs) -> Result<(), String> {
     validate_loop_id(&args.loop_id)?;
     let project_path = resolve_cli_project(&args.project)?;
     let ac_root = resolve_cli_ac_root(&project_path)?;
-    let dir = loop_dir(&ac_root, &args.loop_id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", args.loop_id));
-    }
-    let mut config = read_loop_config(&dir)?;
     let prompt_body = if args.prompt.is_some() || args.prompt_file.is_some() {
         Some(resolve_prompt(
             args.prompt.as_deref(),
@@ -253,8 +237,10 @@ fn update(args: LoopUpdateArgs) -> Result<(), String> {
     } else {
         None
     };
-    let reset_schedule = apply_loop_update_patch(
-        &mut config,
+    let (dir, config, state) = update_loop_files(
+        &project_path,
+        &ac_root,
+        &args.loop_id,
         LoopUpdatePatch {
             name: args.name,
             expr: args.cron,
@@ -265,17 +251,6 @@ fn update(args: LoopUpdateArgs) -> Result<(), String> {
             enabled: None,
         },
     )?;
-
-    validate_loop_config(&project_path, &config)?;
-    let dir = write_loop_config(&ac_root, &config)?;
-    let state = if reset_schedule {
-        initial_state(&config)?
-    } else {
-        read_loop_state(&dir).unwrap_or_default()
-    };
-    if reset_schedule {
-        write_loop_state_atomic(&dir, &state)?;
-    }
     write_refresh(&project_path, &dir, &args.loop_id, "loopUpdated");
     print_json(&details_from_parts(&dir, &config, &state))
 }
@@ -284,11 +259,7 @@ fn remove(args: LoopRemoveArgs) -> Result<(), String> {
     validate_loop_id(&args.loop_id)?;
     let project_path = resolve_cli_project(&args.project)?;
     let ac_root = resolve_cli_ac_root(&project_path)?;
-    let dir = loop_dir(&ac_root, &args.loop_id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", args.loop_id));
-    }
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to remove Loop directory: {}", e))?;
+    let dir = remove_loop_files(&ac_root, &args.loop_id)?;
     write_refresh(&project_path, &dir, &args.loop_id, "loopRemoved");
     if std::env::var_os("AC_MACHINE_OUTPUT").is_some() {
         print_json(&serde_json::json!({
@@ -305,28 +276,15 @@ fn set_enabled(args: LoopToggleArgs, enabled: bool) -> Result<(), String> {
     validate_loop_id(&args.loop_id)?;
     let project_path = resolve_cli_project(&args.project)?;
     let ac_root = resolve_cli_ac_root(&project_path)?;
-    let dir = loop_dir(&ac_root, &args.loop_id);
-    if !dir.is_dir() {
-        return Err(format!("Loop '{}' not found", args.loop_id));
-    }
-    let mut config = read_loop_config(&dir)?;
-    let reset_schedule = apply_loop_update_patch(
-        &mut config,
+    let (dir, config, state) = update_loop_files(
+        &project_path,
+        &ac_root,
+        &args.loop_id,
         LoopUpdatePatch {
             enabled: Some(enabled),
             ..LoopUpdatePatch::default()
         },
     )?;
-    validate_loop_config(&project_path, &config)?;
-    let dir = write_loop_config(&ac_root, &config)?;
-    let state = if reset_schedule {
-        initial_state(&config)?
-    } else {
-        read_loop_state(&dir).unwrap_or_default()
-    };
-    if reset_schedule {
-        write_loop_state_atomic(&dir, &state)?;
-    }
     write_refresh(
         &project_path,
         &dir,
@@ -338,10 +296,6 @@ fn set_enabled(args: LoopToggleArgs, enabled: bool) -> Result<(), String> {
         },
     );
     print_json(&details_from_parts(&dir, &config, &state))
-}
-
-fn initial_state(config: &LoopConfigToml) -> Result<LoopState, String> {
-    baseline_loop_state(config, Utc::now())
 }
 
 fn resolve_busy_policy(
