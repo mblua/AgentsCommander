@@ -337,13 +337,19 @@ pub fn write_loop_config(ac_root: &Path, config: &LoopConfigToml) -> Result<Path
     // (including the CLI) ever sees a torn config.toml.
     let config_path = dir.join(LOOP_CONFIG_FILE);
     let tmp_path = dir.join(format!("{}.{}.tmp", LOOP_CONFIG_FILE, Uuid::new_v4()));
-    std::fs::write(&tmp_path, content)
-        .map_err(|e| format!("Failed to write Loop config: {}", e))?;
-    replace_file_with_retry(&tmp_path, &config_path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        format!("Failed to write Loop config: {}", e)
-    })?;
+    write_config_via_tmp(&tmp_path, &config_path, &content)?;
     Ok(dir)
+}
+
+/// Writes `content` to `tmp_path` and replaces `config_path` with it. On any
+/// failure, including a partial tmp write, the tmp file is removed.
+fn write_config_via_tmp(tmp_path: &Path, config_path: &Path, content: &str) -> Result<(), String> {
+    std::fs::write(tmp_path, content)
+        .and_then(|()| replace_file_with_retry(tmp_path, config_path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(tmp_path);
+            format!("Failed to write Loop config: {}", e)
+        })
 }
 
 pub fn read_loop_state(loop_dir: &Path) -> Result<LoopState, String> {
@@ -1440,6 +1446,35 @@ busyCoordinator = "waitUntilIdle"
             );
             assert!(tmp_files_in(&dir).is_empty());
         }
+    }
+
+    /// A failing tmp write removes the tmp file and leaves config.toml intact.
+    /// The failure is real: the tmp path already exists as a read-only file,
+    /// so opening it for writing is refused.
+    #[test]
+    fn failed_config_tmp_write_leaves_no_tmp() {
+        let tmp = fixture_project();
+        let config = sample_config();
+        let dir = write_loop_config(&tmp.path().join(".ac"), &config).expect("config");
+        let config_path = dir.join(LOOP_CONFIG_FILE);
+        let before = std::fs::read(&config_path).expect("before");
+
+        let tmp_path = dir.join(format!("{}.blocked.tmp", LOOP_CONFIG_FILE));
+        std::fs::write(&tmp_path, "partial").expect("pre-create tmp");
+        let mut perms = std::fs::metadata(&tmp_path).expect("meta").permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&tmp_path, perms).expect("read-only");
+        assert!(
+            std::fs::write(&tmp_path, "probe").is_err(),
+            "positive control: the read-only tmp must refuse a write"
+        );
+
+        let err =
+            write_config_via_tmp(&tmp_path, &config_path, "new = 1").expect_err("tmp write fails");
+        assert!(err.starts_with("Failed to write Loop config"), "{err}");
+        assert!(!tmp_path.exists(), "tmp file must be removed on failure");
+        assert!(tmp_files_in(&dir).is_empty());
+        assert_eq!(std::fs::read(&config_path).expect("after"), before);
     }
 
     #[test]
