@@ -47,12 +47,13 @@ import { bridgesStore } from "../stores/bridges";
 import { settingsStore } from "../../shared/stores/settings";
 import { toastStore } from "../../shared/stores/toasts";
 import { voiceRecorder } from "../../shared/voice-recorder";
-import { isWgReplicaPath, profileDisplayLabel, sessionProfileBadge, sessionTierBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
+import { isWgReplicaPath, orphanNoticeKey, profileDisplayLabel, sessionOrphanNotice, sessionProfileBadge, sessionTierBadge, shouldOfferRestartAfterAssign } from "../../shared/profile-utils";
 import { clockStore } from "../stores/clock";
 import { coordinatorIdleBadge } from "../../shared/coordinator-badge";
 import { COORD_IDLE_CLASS } from "./coordinator-badge-class";
 import SessionItem, { type SessionContextExtraAction } from "./SessionItem";
 import ProfileOutdatedBadge from "./ProfileOutdatedBadge";
+import OrphanNotice from "./OrphanNotice";
 import ContextBadge from "./ContextBadge";
 import { contextBadgeConfigured } from "./session-context";
 import NewEntityAgentModal from "./NewEntityAgentModal";
@@ -2802,6 +2803,19 @@ const ProjectPanel: Component = () => {
             const s = session();
             return s ? sessionTierBadge(s) : null;
           };
+          // #2568 - same rule: a dormant row has no session, so no notice. The
+          // key reads the session's fields, not replica.path, so one agent has
+          // one key on both surfaces.
+          const orphanNotice = () => {
+            const s = session();
+            if (!s) return null;
+            const key = orphanNoticeKey(s);
+            if (!key || sessionsStore.orphanNoticeDismissedByAgentKey[key]) return null;
+            const notice = sessionOrphanNotice(s);
+            return notice ? { text: notice.text, key } : null;
+          };
+          const orphanNoticeTestId = () =>
+            `replica.orphanNotice.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`;
           const ctxVisible = () =>
             contextBadgeConfigured(settingsStore.current?.agents, session()?.agentId);
           const ctxPercent = () => {
@@ -3032,6 +3046,15 @@ const ProjectPanel: Component = () => {
                     </For>
                   </Show>
                 </div>
+                <Show when={orphanNotice()}>
+                  {(notice) => (
+                    <OrphanNotice
+                      text={notice().text}
+                      onDismiss={() => sessionsStore.dismissOrphanNotice(notice().key)}
+                      testId={orphanNoticeTestId()}
+                    />
+                  )}
+                </Show>
               </div>
               <Show when={isLive()}>
                 <Show when={isRecording()}>

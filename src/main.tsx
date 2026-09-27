@@ -1,3 +1,4 @@
+import "./shared/styles/scrollbars.css";
 import "./shared/console-capture";
 import { render } from "solid-js/web";
 import { isTauri } from "./shared/platform";

@@ -203,17 +203,6 @@ html.light-theme .titlebar-version {
   overflow-y: auto;
 }
 
-.workgroup-task-panel::-webkit-scrollbar,
-.last-prompt-panel::-webkit-scrollbar {
-  width: 3px;
-}
-
-.workgroup-task-panel::-webkit-scrollbar-thumb,
-.last-prompt-panel::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 2px;
-}
-
 .workgroup-task-label,
 .last-prompt-label {
   font-size: 9px;
@@ -454,9 +443,16 @@ html.light-theme .last-prompt-panel {
   border-bottom-color: rgba(0, 0, 0, 0.08);
 }
 
-html.light-theme .workgroup-task-panel::-webkit-scrollbar-thumb,
-html.light-theme .last-prompt-panel::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.12);
+/* #2579: xterm draws its own DOM slider over the viewport, so the global
+   pseudo-element rules cannot reach it. xterm writes the bar and slider width
+   inline, hence !important; colors come from the theme keys in
+   terminal-options.ts. */
+.xterm .xterm-scrollable-element > .scrollbar {
+  width: 4px !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar > .slider {
+  width: 4px !important;
+  border-radius: 2px;
 }
 
 /* Terminal container */
