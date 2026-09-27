@@ -98,7 +98,8 @@ import {
   shouldMaskEnvValue,
   sortedProfileLetters,
   suggestedContextRegex,
-  suggestedQuotaRegex,
+  suggestedQuotaSource,
+  type SuggestedQuotaSource,
   validateEnvRows,
 } from "../../shared/profile-utils";
 
@@ -178,11 +179,12 @@ export function isPlausibleCompleteExecutablePath(value: string): boolean {
 }
 
 /** #2482 - the full runtime shape check, exported for its own tests. Accepts
- *  exactly what p1's `QuotaSourceConfig::ScreenRegex` deserializes, nothing more. */
-export function isScreenRegexSource(v: unknown): v is QuotaSourceConfig {
+ *  exactly what `QuotaSourceConfig::ScreenRegex` and `::ScreenRegexRemaining`
+ *  deserialize, nothing more. */
+export function isQuotaSource(v: unknown): v is QuotaSourceConfig {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const o = v as Record<string, unknown>;
-  if (o.kind !== "screenRegex") return false;
+  if (o.kind !== "screenRegex" && o.kind !== "screenRegexRemaining") return false;
   if (typeof o.pattern !== "string") return false;
   if (o.enabled !== undefined && typeof o.enabled !== "boolean") return false;
   return true;
@@ -1750,7 +1752,13 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const quotaPattern = (agentId: string): string => {
     const entry = settings.data?.quotaSources?.[agentId];
     // Narrows the FULL shape, not just `kind`: p1's fallback arm is any JSON value.
-    return isScreenRegexSource(entry) ? entry.pattern : "";
+    return isQuotaSource(entry) ? entry.pattern : "";
+  };
+
+  /** #2687 - the stored kind; an absent or invalid entry falls back to `screenRegex`. */
+  const quotaKind = (agentId: string): QuotaSourceConfig["kind"] => {
+    const entry = settings.data?.quotaSources?.[agentId];
+    return isQuotaSource(entry) ? entry.kind : "screenRegex";
   };
 
   /** #2482 - write, or remove the key when the field is cleared. */
@@ -1766,8 +1774,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       // REPLACES the whole entry and spreads siblings untouched.
       blank
         ? { ...map, [agentId]: undefined }
-        : { ...(map ?? {}), [agentId]: { kind: "screenRegex", pattern } },
+        : { ...(map ?? {}), [agentId]: { kind: quotaKind(agentId), pattern } },
     );
+  };
+
+  /** #2687 - the suggest button writes the suggestion's kind along with its pattern. */
+  const setQuotaSource = (agentId: string, source: SuggestedQuotaSource): void => {
+    if (!settings.data) return;
+    setDraftDirty(true);
+    setSettings("data", "quotaSources", (map) => ({
+      ...(map ?? {}),
+      [agentId]: { kind: source.kind, pattern: source.pattern },
+    }));
   };
 
   const setAgentConfigSeedEnabled = (index: number, enabled: boolean) => {
@@ -3864,17 +3882,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 class="settings-input"
                 value={quotaPattern(agent.id)}
                 onInput={(e) => setQuotaPattern(agent.id, e.currentTarget.value)}
-                placeholder={suggestedQuotaRegex(agent.command) ?? ""}
+                placeholder={suggestedQuotaSource(agent.command)?.pattern ?? ""}
                 data-ac-testid={`settings.agentRow.${i()}.quotaPattern`}
                 data-ac-role="textbox"
                 spellcheck={false}
               />
             </label>
-            <Show when={suggestedQuotaRegex(agent.command)}>
+            <Show when={suggestedQuotaSource(agent.command)}>
               {(suggested) => (
                 <button
                   class="settings-add-btn"
-                  onClick={() => setQuotaPattern(agent.id, suggested())}
+                  onClick={() => setQuotaSource(agent.id, suggested())}
                   data-ac-testid={`settings.agentRow.${i()}.quotaPattern.suggest`}
                   data-ac-role="button"
                 >
@@ -3882,10 +3900,16 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 </button>
               )}
             </Show>
-            <div class="settings-hint">
+            <div
+              class="settings-hint"
+              data-ac-testid={`settings.agentRow.${i()}.quotaPattern.hint`}
+            >
               Best-effort pattern AC runs over what this agent draws in its terminal, to fill its
-              chip with the remaining 7-day quota. Capture group 1 is the USED percentage. The
-              reading can be unavailable or stale; then the chip looks as it does with this field blank.
+              chip with the remaining 7-day quota.{" "}
+              {quotaKind(agent.id) === "screenRegexRemaining"
+                ? "Capture group 1 is the REMAINING percentage."
+                : "Capture group 1 is the USED percentage."}{" "}
+              The reading can be unavailable or stale; then the chip looks as it does with this field blank.
             </div>
             <label class="settings-checkbox-field">
               <input

@@ -361,9 +361,10 @@ export type UnrecognizedWatcherEntry = JsonValue;
 
 /** #2482 - one configured weekly-quota source. Mirrors `QuotaSourceConfig`
  *  (`config/settings.rs`); `kind` is the discriminant and the extension point, so a
- *  second agent's source is a second member of this union. */
+ *  second agent's source is a second member of this union. Capture group 1 is the USED
+ *  percentage for `screenRegex` and the REMAINING percentage for `screenRegexRemaining`. */
 export type QuotaSourceConfig = {
-  kind: "screenRegex";
+  kind: "screenRegex" | "screenRegexRemaining";
   pattern: string;
   enabled?: boolean;
 };

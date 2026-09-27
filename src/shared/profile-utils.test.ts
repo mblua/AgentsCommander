@@ -4,6 +4,7 @@ import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
   CLAUDE_CONTEXT_REGEX,
   CLAUDE_WEEKLY_QUOTA_REGEX,
+  CODEX_WEEKLY_QUOTA_REGEX,
   CODEX_CONTEXT_REGEX,
   PI_CONTEXT_REGEX,
   commandExecutableBasename,
@@ -35,7 +36,7 @@ import {
   shouldOfferRestartAfterAssign,
   stringifyArgv,
   suggestedContextRegex,
-  suggestedQuotaRegex,
+  suggestedQuotaSource,
   validateEnvRows,
 } from "./profile-utils";
 
@@ -664,23 +665,58 @@ describe("profileSlotHolders and profileCellHoldsData (#2057 slot-delete guard)"
   });
 });
 
-describe("suggestedQuotaRegex (#2482 weekly quota)", () => {
+describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
   const row = "ctx 10% | 5h 3% | 7d 28%";
+  const claude = { kind: "screenRegex", pattern: CLAUDE_WEEKLY_QUOTA_REGEX };
+  const codex = { kind: "screenRegexRemaining", pattern: CODEX_WEEKLY_QUOTA_REGEX };
+  const codexRow = "Context 0% used \u00b7 Weekly 100% left \u00b7 GPT-6-Sol low";
 
-  it("suggested_quota_regex_returns_the_claude_pattern_for_a_claude_command", () => {
-    expect(suggestedQuotaRegex("claude")).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
-    expect(suggestedQuotaRegex("C:\\tools\\claude.exe --model opus")).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
+  it("suggested_quota_source_returns_the_claude_kind_and_pattern_for_a_claude_command", () => {
+    expect(suggestedQuotaSource("claude")).toEqual(claude);
+    expect(suggestedQuotaSource("C:\\tools\\claude.exe --model opus")).toEqual(claude);
   });
 
-  it("suggested_quota_regex_unwraps_cmd_slash_c", () => {
-    expect(suggestedQuotaRegex("cmd.exe /c claude")).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
-    expect(suggestedQuotaRegex("cmd /C claude.cmd")).toBe(CLAUDE_WEEKLY_QUOTA_REGEX);
+  it("suggested_quota_source_unwraps_cmd_slash_c", () => {
+    expect(suggestedQuotaSource("cmd.exe /c claude")).toEqual(claude);
+    expect(suggestedQuotaSource("cmd /C claude.cmd")).toEqual(claude);
   });
 
-  it("suggested_quota_regex_returns_null_for_codex_pi_and_antigravity", () => {
-    for (const command of ["codex", "pi", "antigravity", "cmd.exe /c codex", ""]) {
-      expect(suggestedQuotaRegex(command)).toBeNull();
+  it("suggested_quota_source_returns_null_for_pi_and_antigravity", () => {
+    for (const command of ["pi", "antigravity", ""]) {
+      expect(suggestedQuotaSource(command)).toBeNull();
     }
+  });
+
+  it("codex commands suggest the remaining kind", () => {
+    expect(suggestedQuotaSource("codex")).toEqual(codex);
+    expect(suggestedQuotaSource("C:\\tools\\codex.exe --model x")).toEqual(codex);
+    expect(suggestedQuotaSource("cmd.exe /c codex")).toEqual(codex);
+    expect(suggestedQuotaSource("cmd /C codex.cmd")).toEqual(codex);
+  });
+
+  it("an unknown or empty command suggests nothing", () => {
+    expect(suggestedQuotaSource("")).toBeNull();
+    expect(suggestedQuotaSource("   ")).toBeNull();
+    expect(suggestedQuotaSource("npm run dev")).toBeNull();
+  });
+
+  it("the codex pattern is the thirty-seven stored bytes", () => {
+    expect(CODEX_WEEKLY_QUOTA_REGEX.length).toBe(37);
+    expect(CODEX_WEEKLY_QUOTA_REGEX.includes(String.raw`\u00b7`)).toBe(true);
+  });
+
+  it("the codex pattern reads the real statusline row as one hundred remaining", () => {
+    const re = new RegExp(CODEX_WEEKLY_QUOTA_REGEX);
+    expect(re.exec(codexRow)?.[1]).toBe("100");
+    expect(re.exec("Context 0% used \u00b7 Weekly 100%")).toBeNull();
+  });
+
+  it("the quota suggestion reads only the executable stem", () => {
+    expect(suggestedQuotaSource("echo claude")).toBeNull();
+    expect(suggestedQuotaSource("echo codex")).toBeNull();
+    expect(suggestedQuotaSource("cmd.exe /c echo codex")).toBeNull();
+    expect(suggestedContextRegex("echo claude")).toBe(CLAUDE_CONTEXT_REGEX);
+    expect(suggestedContextRegex("echo codex")).toBe(CODEX_CONTEXT_REGEX);
   });
 
   it("the_claude_quota_pattern_extracts_28_from_a_real_statusline_row", () => {
