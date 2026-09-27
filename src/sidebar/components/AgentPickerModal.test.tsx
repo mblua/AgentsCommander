@@ -24,6 +24,7 @@ import type {
 import { resolveProfilePreview } from "../../shared/profile-utils";
 import { baseSettings } from "../../shared/testing/base-settings";
 import { dispatchPointer, stubAgentRowGeometry } from "./settings/agentReorderDnd.testkit";
+import { sessionsStore } from "../stores/sessions";
 
 const mockSettingsApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -3555,5 +3556,67 @@ describe("AgentPickerModal", () => {
       expect(maybe("agentPicker.scopeFaults")).not.toBeNull();
       view.dispose();
     });
+  });
+});
+
+// #2681 - weekly quota remaining next to the agent name in the provider list.
+describe("AgentPickerModal weekly quota remaining", () => {
+  beforeEach(() => {
+    currentSettings = settings();
+    mockSettingsApi.get.mockResolvedValue(currentSettings);
+    mockSettingsApi.resolveCodingAgentProfile.mockImplementation(defaultBackendResolve);
+    scopeAwarePreview();
+    lockAwareRemovalPreviews();
+    mockSettingsApi.getReplicaSelectionDefault.mockImplementation(() => Promise.resolve(defaultResult()));
+    mockSettingsApi.onCodingAgentProfileSelectionUpdated.mockImplementation(() => Promise.resolve(() => {}));
+    mockSettingsApi.onCodingAgentSettingsUpdated.mockImplementation(() => Promise.resolve(() => {}));
+  });
+
+  afterEach(() => {
+    sessionsStore.resetQuotaReadingsForTests();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  const cardOrder = () =>
+    Array.from(document.querySelectorAll("[data-ac-agent-id]")).map((el) => el.getAttribute("data-ac-agent-id"));
+
+  it("shows_the_label_only_without_a_reading", async () => {
+    const { dispose } = renderPicker();
+    await settle();
+
+    const card = target("agentPicker.provider.claude");
+    expect(card.querySelector(".agent-profile-provider-name")?.textContent).toBe("Claude Code");
+    expect(card.textContent?.startsWith("Claude Code")).toBe(true);
+    expect(card.textContent).not.toContain("% left");
+    expect(card.querySelector(".agent-quota-remaining")).toBeNull();
+
+    dispose();
+  });
+
+  it("shows_remaining_for_the_agent_with_a_reading_and_updates_live", async () => {
+    const { dispose } = renderPicker();
+    await settle();
+    const orderBefore = cardOrder();
+
+    sessionsStore.setAgentQuota("claude", 28);
+    const claude = target("agentPicker.provider.claude");
+    const codex = target("agentPicker.provider.codex");
+    expect(claude.textContent).toContain("72% left");
+    expect(codex.querySelector(".agent-quota-remaining")).toBeNull();
+
+    const badge = claude.querySelector(".agent-quota-remaining")!;
+    const name = claude.querySelector(".agent-profile-provider-name")!;
+    expect(badge.parentElement).toBe(name.parentElement);
+    expect(badge.parentElement?.classList.contains("agent-quota-name-line")).toBe(true);
+    expect(badge.parentElement?.querySelector(".agent-profile-provider-command")).toBeNull();
+
+    sessionsStore.setAgentQuota("claude", 40);
+    expect(target("agentPicker.provider.claude").textContent).toContain("60% left");
+    sessionsStore.setAgentQuota("claude", null);
+    expect(target("agentPicker.provider.claude").querySelector(".agent-quota-remaining")).toBeNull();
+
+    expect(cardOrder()).toEqual(orderBefore);
+    dispose();
   });
 });

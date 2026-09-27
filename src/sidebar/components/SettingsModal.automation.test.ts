@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
-import SettingsModal, { isScreenRegexSource } from "./SettingsModal";
+import SettingsModal, { isQuotaSource } from "./SettingsModal";
 import type {
   MoveCodingAgentRequest,
   ReorderCodingAgentRequest,
@@ -16,6 +16,7 @@ import {
   AC_REPLICA_ROOT_PLACEHOLDER,
   AC_WORKSPACE_ROOT_PLACEHOLDER,
   CLAUDE_WEEKLY_QUOTA_REGEX,
+  CODEX_WEEKLY_QUOTA_REGEX,
   PI_CONTEXT_REGEX,
 } from "../../shared/profile-utils";
 import { registerShortcuts, unregisterShortcuts } from "../../shared/shortcuts";
@@ -157,6 +158,7 @@ vi.mock("../../shared/sound", () => ({
 vi.mock("../stores/sessions", () => ({
   sessionsStore: {
     setRepos: vi.fn(),
+    weeklyQuotaUsedByAgentId: {},
   },
 }));
 
@@ -4563,11 +4565,11 @@ describe("SettingsModal compact hotkey capture (#2236)", () => {
 
 // #2482 p5a - the quota-source shape predicate, bound to the normative
 // malformed-entry table of the p5a plan. p5b binds the rendering to the same rows.
-describe("isScreenRegexSource (#2482)", () => {
+describe("isQuotaSource (#2482, #2687)", () => {
   it("is_screen_regex_source_accepts_a_minimal_entry_and_one_with_enabled_true_and_false", () => {
-    expect(isScreenRegexSource({ kind: "screenRegex", pattern: "7d (\\d+)%" })).toBe(true);
-    expect(isScreenRegexSource({ kind: "screenRegex", pattern: "7d (\\d+)%", enabled: true })).toBe(true);
-    expect(isScreenRegexSource({ kind: "screenRegex", pattern: "7d (\\d+)%", enabled: false })).toBe(true);
+    expect(isQuotaSource({ kind: "screenRegex", pattern: "7d (\\d+)%" })).toBe(true);
+    expect(isQuotaSource({ kind: "screenRegex", pattern: "7d (\\d+)%", enabled: true })).toBe(true);
+    expect(isQuotaSource({ kind: "screenRegex", pattern: "7d (\\d+)%", enabled: false })).toBe(true);
   });
 
   it("is_screen_regex_source_rejects_every_row_of_the_table_above", () => {
@@ -4584,8 +4586,13 @@ describe("isScreenRegexSource (#2482)", () => {
     ];
     expect(rows).toHaveLength(9);
     for (const row of rows) {
-      expect(isScreenRegexSource(row), JSON.stringify(row)).toBe(false);
+      expect(isQuotaSource(row), JSON.stringify(row)).toBe(false);
     }
+  });
+
+  it("is_quota_source_accepts_the_remaining_kind_and_still_rejects_an_unknown_kind", () => {
+    expect(isQuotaSource({ kind: "screenRegexRemaining", pattern: "x (\\d+)" })).toBe(true);
+    expect(isQuotaSource({ kind: "screenRegexOther", pattern: "x" })).toBe(false);
   });
 });
 
@@ -4723,10 +4730,10 @@ describe("SettingsModal weekly quota pattern (#2482)", () => {
     dispose();
   });
 
-  it("the_suggest_button_is_absent_for_a_non_claude_agent", async () => {
+  it("typing_into_an_empty_codex_field_falls_back_to_a_screen_regex_entry", async () => {
     const dispose = await mountQuota(seed(), 1);
-    expect(field(1).placeholder).toBe("");
-    expect(suggestButton(1)).toBeNull();
+    expect(field(1).placeholder).toBe(CODEX_WEEKLY_QUOTA_REGEX);
+    expect(suggestButton(1)).not.toBeNull();
     await typeInto(field(1), "X (\\d+)%");
     const { wire } = views(await saveAndReadDraft());
     expect(wire.b2).toStrictEqual({ kind: "screenRegex", pattern: "X (\\d+)%" });
@@ -4806,6 +4813,53 @@ describe("SettingsModal weekly quota pattern (#2482)", () => {
     await typeInto(field(), "NEW (\\d+)%");
     const { wire } = views(await saveAndReadDraft());
     expect(wire.a1).toStrictEqual({ kind: "screenRegex", pattern: "NEW (\\d+)%" });
+    dispose();
+  });
+  // #2687 - the Codex kind: written by the suggest button, preserved by typing.
+  const REMAINING = { kind: "screenRegexRemaining", pattern: "Weekly (\\d+)% left" };
+
+  it("the suggest button writes the codex kind", async () => {
+    const dispose = await mountQuota(seed(), 1);
+    expect(field(1).placeholder).toBe(CODEX_WEEKLY_QUOTA_REGEX);
+    suggestButton(1)!.click();
+    await settle();
+    const expected = { kind: "screenRegexRemaining", pattern: CODEX_WEEKLY_QUOTA_REGEX };
+    const { store, wire } = views(await saveAndReadDraft());
+    expect(store.b2).toEqual(expected);
+    expect(wire.b2).toStrictEqual(expected);
+    dispose();
+  });
+
+  it("typing into a codex field preserves the remaining kind", async () => {
+    const dispose = await mountQuota(seed({ b2: REMAINING }), 1);
+    expect(field(1).value).toBe(REMAINING.pattern);
+    await typeInto(field(1), `${REMAINING.pattern}x`);
+    const expected = { kind: "screenRegexRemaining", pattern: `${REMAINING.pattern}x` };
+    const { store, wire } = views(await saveAndReadDraft());
+    expect(store.b2).toEqual(expected);
+    expect(wire.b2).toStrictEqual(expected);
+    dispose();
+  });
+
+  it("clearing a codex field removes the key", async () => {
+    const dispose = await mountQuota(seed({ b2: REMAINING }), 1);
+    await typeInto(field(1), "");
+    const { store, wire } = views(await saveAndReadDraft());
+    expect("b2" in store).toBe(false);
+    expect("b2" in wire).toBe(false);
+    dispose();
+  });
+
+  it("the hint sentence follows the stored kind", async () => {
+    const hint = () => byTestId<HTMLDivElement>("settings.agentRow.0.quotaPattern.hint").textContent ?? "";
+    let dispose = await mountQuota(seed({ a1: { kind: "screenRegex", pattern: "7d (\\d+)%" } }));
+    expect(hint()).toContain("Capture group 1 is the USED percentage.");
+    expect(hint()).not.toContain("REMAINING");
+    dispose();
+    document.body.innerHTML = "";
+    dispose = await mountQuota(seed({ a1: REMAINING }));
+    expect(hint()).toContain("Capture group 1 is the REMAINING percentage.");
+    expect(hint()).not.toContain("the USED percentage");
     dispose();
   });
 });

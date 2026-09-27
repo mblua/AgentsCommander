@@ -4,6 +4,7 @@ import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../s
 import { AcDiscoveryAPI, SessionAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import AgentPickerModal from "./AgentPickerModal";
+import { automationIdPart } from "./replica-repo-badges";
 import { sessionsStore } from "../stores/sessions";
 import { stripFrontmatter } from "../../shared/markdown";
 import { homeStore } from "../../main/stores/home";
@@ -240,6 +241,8 @@ const AcDiscoveryPanel: Component = () => {
                 return (
                   <div
                     class="replica-item"
+                    data-ac-testid={`acDiscovery.agent.${automationIdPart(agent.name)}`}
+                    data-ac-role="button"
                     onClick={() => handleAgentClick(agent)}
                     title={agent.path}
                   >
@@ -297,6 +300,8 @@ const AcDiscoveryPanel: Component = () => {
                         return (
                           <div
                             class="replica-item"
+                            data-ac-testid={`acDiscovery.replica.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
+                            data-ac-role="button"
                             onClick={() => handleReplicaClick(replica, wg)}
                             onContextMenu={(e) => handleReplicaContextMenu(e, replica)}
                             title={replica.path}
