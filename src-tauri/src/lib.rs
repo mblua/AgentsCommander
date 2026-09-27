@@ -1013,40 +1013,40 @@ fn naming_migration_error(reason: impl Into<String>, path: PathBuf) -> StartupEr
     }
 }
 
-fn refusal_reason(refusal: config::naming_migration::Refusal) -> String {
+fn refusal_reason(refusal: crate::config::naming_migration::Refusal) -> String {
     match refusal {
-        config::naming_migration::Refusal::LockUnavailable => "lock unavailable".to_string(),
-        config::naming_migration::Refusal::Io(message) => message,
+        crate::config::naming_migration::Refusal::LockUnavailable => "lock unavailable".to_string(),
+        crate::config::naming_migration::Refusal::Io(message) => message,
     }
 }
 
 /// #2714 - the pre-migration names of the two single files, in rename order.
-const INSTANCE_FAMILIES_RENAMES: [config::naming_migration::Rename; 2] = [
-    config::naming_migration::Rename {
+const INSTANCE_FAMILIES_RENAMES: [crate::config::naming_migration::Rename; 2] = [
+    crate::config::naming_migration::Rename {
         from: "settings.json",
         to: config::instance_artifacts::SETTINGS_FILE_NAME,
     },
-    config::naming_migration::Rename {
+    crate::config::naming_migration::Rename {
         from: "settings.local.json",
         to: config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME,
     },
 ];
 
 /// #2714 - the four blocking-menus files, renamed after the settings families.
-const BLOCKING_MENUS_RENAMES: [config::naming_migration::Rename; 4] = [
-    config::naming_migration::Rename {
+const BLOCKING_MENUS_RENAMES: [crate::config::naming_migration::Rename; 4] = [
+    crate::config::naming_migration::Rename {
         from: "settings-blocking-menus.json",
         to: config::instance_artifacts::BLOCKING_MENUS_SHIPPED_FILE_NAME,
     },
-    config::naming_migration::Rename {
+    crate::config::naming_migration::Rename {
         from: "settings-blocking-menus.local.json",
         to: config::instance_artifacts::BLOCKING_MENUS_LOCAL_FILE_NAME,
     },
-    config::naming_migration::Rename {
+    crate::config::naming_migration::Rename {
         from: "settings-blocking-menus.remote.json",
         to: config::instance_artifacts::BLOCKING_MENUS_REMOTE_FILE_NAME,
     },
-    config::naming_migration::Rename {
+    crate::config::naming_migration::Rename {
         from: "blocking-menus-remote-check.json",
         to: config::instance_artifacts::BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
     },
@@ -1057,8 +1057,8 @@ const BLOCKING_MENUS_RENAMES: [config::naming_migration::Rename; 4] = [
 /// blocking-menus files. Returns the post-logger summary, `None` when the scope
 /// was already settled.
 fn migrate_instance_families(dir: &Path) -> Result<Option<String>, StartupError> {
+    use crate::config::naming_migration as nm;
     use config::instance_artifacts as names;
-    use config::naming_migration as nm;
 
     let scope = INSTANCE_FAMILIES_SCOPE;
     let journal_path = dir.join(names::NAMING_MIGRATION_STATE_NAME);
