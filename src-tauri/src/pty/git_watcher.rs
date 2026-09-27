@@ -377,6 +377,7 @@ pub(crate) async fn detect_git_status(working_dir: &str) -> Option<GitStatus> {
 
     let mut cmd = tokio::process::Command::new("git");
     crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
+    crate::config::agent_path::apply_search_path_to_tokio_command(&mut cmd);
     cmd.args([
         "--no-optional-locks",
         "status",

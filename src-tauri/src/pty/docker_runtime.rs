@@ -1065,6 +1065,7 @@ impl DockerRuntime {
             .envs(&spec.secret_env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        crate::config::agent_path::apply_search_path_to_std_command(&mut cmd);
 
         #[cfg(windows)]
         {
