@@ -1151,11 +1151,11 @@ jobs:
         run: |
           set -euo pipefail
           FILTER='issue_2683'
-          # T1-T5 all compile on this unix leg. The Windows leg of
+          # T1-T6 all compile on this unix leg. The Windows leg of
           # rust-regression has no such step because T1 and T2 are cfg(unix).
           # Update EXPECTED and the name list below in the same commit that
           # adds, removes or renames an issue_2683 test.
-          EXPECTED=5
+          EXPECTED=6
           cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2683.log
 
           T1=issue_2683_spawn_sync_resolves_a_program_only_in_the_injected_search_path

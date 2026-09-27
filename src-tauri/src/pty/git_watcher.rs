@@ -424,7 +424,9 @@ pub(crate) async fn detect_git_status(working_dir: &str) -> Option<GitStatus> {
 
 pub struct GitWatcher {
     session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
-    app_handle: AppHandle,
+    /// `None` only for the #2683 headless test constructor; production always
+    /// stores `Some` through `new`.
+    app_handle: Option<AppHandle>,
     /// Last-emitted per-repo state keyed by session id. Equality gate for `session_git_repos`.
     /// `Vec` equality is order-sensitive; callers preserve replica config.json `repos` order.
     cache: Mutex<HashMap<Uuid, Vec<SessionRepo>>>,
@@ -451,7 +453,20 @@ impl GitWatcher {
     ) -> Arc<Self> {
         Arc::new(Self {
             session_manager,
-            app_handle,
+            app_handle: Some(app_handle),
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// #2683 - a watcher with no `AppHandle`, for the unix `spawn_sync` tests
+    /// that cannot build a `tauri::App` on a headless runner. It never emits.
+    #[cfg(all(test, unix))]
+    pub(crate) fn new_headless_for_tests(
+        session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            session_manager,
+            app_handle: None,
             cache: Mutex::new(HashMap::new()),
         })
     }
@@ -547,13 +562,15 @@ impl GitWatcher {
                 };
 
                 if wrote {
-                    let _ = self.app_handle.emit(
-                        "session_git_repos",
-                        GitReposPayload {
-                            session_id: id.to_string(),
-                            repos: refreshed.clone(),
-                        },
-                    );
+                    if let Some(app_handle) = &self.app_handle {
+                        let _ = app_handle.emit(
+                            "session_git_repos",
+                            GitReposPayload {
+                                session_id: id.to_string(),
+                                repos: refreshed.clone(),
+                            },
+                        );
+                    }
                     self.cache.lock().unwrap().insert(id, refreshed);
                 } else {
                     log::debug!(

@@ -4502,7 +4502,8 @@ mod launch_witness_tests {
 /// #2683 T1/T2: the REAL `spawn_sync` resolves a bare program name through the
 /// search path its production adapter call applies. The value is injected with
 /// the thread-local `SearchPathOverrideGuard`, which is only visible because
-/// `spawn_sync` runs the whole builder on the calling test thread.
+/// `spawn_sync` runs the whole builder on the calling test thread. Headless:
+/// no `tauri::App` is built, so no GTK is needed on a display-less runner.
 #[cfg(all(test, unix))]
 mod issue_2683_spawn_sync_search_path_tests {
     use super::*;
@@ -4512,18 +4513,12 @@ mod issue_2683_spawn_sync_search_path_tests {
 
     const PROBE: &str = "ac-2683-probe";
 
-    fn test_backend() -> (LocalProcessBackend, tauri::App) {
+    fn test_backend() -> LocalProcessBackend {
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
-        let app = crate::test_support::test_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build #2683 spawn-sync test app");
-        let git_watcher = GitWatcher::new(session_mgr, app.handle().clone());
+        let git_watcher = GitWatcher::new_headless_for_tests(session_mgr);
         let idle_detector = IdleDetector::new(|_| {}, |_| {});
         let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
-        (
-            LocalProcessBackend::new(output_senders, idle_detector, git_watcher, None),
-            app,
-        )
+        LocalProcessBackend::new(output_senders, idle_detector, git_watcher, None)
     }
 
     fn spawn_spec(cmd: &str, cwd: &std::path::Path) -> BackendSpawnSpec {
@@ -4585,7 +4580,7 @@ mod issue_2683_spawn_sync_search_path_tests {
         assert_ambient_path_cannot_resolve_probe();
         let _guard = SearchPathOverrideGuard::new(probe_dir.path().as_os_str());
 
-        let (backend, _app) = test_backend();
+        let backend = test_backend();
         let spec = spawn_spec(PROBE, cwd.path());
         let id = spec.id;
         backend
@@ -4606,7 +4601,7 @@ mod issue_2683_spawn_sync_search_path_tests {
         assert_ambient_path_cannot_resolve_probe();
         let _guard = SearchPathOverrideGuard::new(empty_dir.path().as_os_str());
 
-        let (backend, _app) = test_backend();
+        let backend = test_backend();
         let spec = spawn_spec(PROBE, cwd.path());
         let error = backend
             .spawn_sync(spec)
@@ -4621,8 +4616,13 @@ mod issue_2683_spawn_sync_search_path_tests {
 
 /// #2683 T5: the search path is applied before the env-removal and
 /// configured-env loops in `spawn_sync`, so explicit configuration still wins.
+/// #2683 T6: the production `GitWatcher::new` still demands a real `AppHandle`.
 #[cfg(test)]
 mod issue_2683_search_path_order_tests {
+    use crate::pty::git_watcher::GitWatcher;
+    use crate::session::manager::SessionManager;
+    use std::sync::Arc;
+
     // Split so this file never contains a needle whole; see the no-self-match rule.
     const N_APPLY: &str = concat!("apply_search_path", "_to_pty_command(&mut command)");
     const N_REMOVE: &str = concat!("for key in ", "&env_remove", "_keys");
@@ -4654,5 +4654,11 @@ mod issue_2683_search_path_order_tests {
             apply < configured,
             "search path must be applied before the configured-env loop"
         );
+    }
+
+    #[test]
+    fn issue_2683_git_watcher_production_constructor_still_requires_an_app_handle() {
+        let _: fn(Arc<tokio::sync::RwLock<SessionManager>>, tauri::AppHandle) -> Arc<GitWatcher> =
+            GitWatcher::new;
     }
 }
