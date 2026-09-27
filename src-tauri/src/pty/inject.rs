@@ -213,6 +213,137 @@ pub(crate) fn supports_self_handoff_switch(shell: &str) -> bool {
     )
 }
 
+/// #2586 D3 - the readiness decision that preceded an injection, carried only
+/// so the submit-seam observation can say whether the settle gate timed out.
+/// `Unknown` is for non-wake injection paths, which run no settle gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettleReadiness {
+    Ready,
+    TimedOut,
+    Unknown,
+}
+
+/// #2586 D2 - chars in one redaction window. A row sharing any run of this many
+/// consecutive chars with the payload (after whitespace collapsing) is redacted.
+const REDACTION_WINDOW: usize = 8;
+
+/// #2586 D2 - rows kept per observation: the last non-empty ones.
+const SEAM_OBSERVATION_ROWS: usize = 6;
+
+/// Trim, then collapse every whitespace run (including `\n` and `\r`) to one
+/// space, so the payload compare form is a single line.
+fn seam_compare_form(text: &str) -> Vec<char> {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .collect()
+}
+
+fn contains_chars(haystack: &[char], needle: &[char]) -> bool {
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+/// A row leaks when any `REDACTION_WINDOW`-char window of it occurs in the
+/// payload, or, for a shorter row, when the whole row is a payload substring.
+/// Windows are taken over chars, never bytes, so no multi-byte char is split.
+fn seam_row_leaks(row: &[char], payload: &[char]) -> bool {
+    if row.len() >= REDACTION_WINDOW {
+        row.windows(REDACTION_WINDOW)
+            .any(|window| contains_chars(payload, window))
+    } else {
+        contains_chars(payload, row)
+    }
+}
+
+/// Trailing whitespace and trailing box-drawing noise removed. Restates the
+/// trim of `telegram::bridge::strip_trailing_decoration` locally on purpose:
+/// importing it across module boundaries would add an arc for one helper.
+fn strip_seam_row_decoration(row: &str) -> &str {
+    row.trim_end()
+        .trim_end_matches(|c: char| {
+            "\u{2500}\u{2501}\u{2550}\u{2502}\u{2503}\u{250C}\u{2510}\u{2514}\u{2518}\u{251C}\u{2524}\u{252C}\u{2534}\u{253C}\u{2554}\u{2557}\u{255A}\u{255D}\u{2560}\u{2563}\u{2566}\u{2569}\u{256C}".contains(c)
+        })
+        .trim_end()
+}
+
+/// #2586 D2 - render one submit-seam observation. Pure: no timer, no PTY.
+///
+/// Stated leak limit, not a no-leak guarantee: no run of `REDACTION_WINDOW` or
+/// more consecutive payload chars (modulo whitespace collapsing) survives, and
+/// no row that is itself a payload substring survives. A row sharing only a
+/// shorter fragment with the payload is printed verbatim.
+pub(crate) fn format_submit_seam_observation(
+    instant: &str,
+    settle: SettleReadiness,
+    rows: Option<&[String]>,
+    written_payload: &str,
+) -> String {
+    let Some(rows) = rows else {
+        return format!("[inject] seam={instant} settle={settle:?} rows=unavailable");
+    };
+    let payload = seam_compare_form(written_payload);
+    let mut kept: Vec<(usize, &str)> = rows
+        .iter()
+        .enumerate()
+        .map(|(idx, row)| (idx, strip_seam_row_decoration(row)))
+        .filter(|(_, row)| !row.trim().is_empty())
+        .collect();
+    let first = kept.len().saturating_sub(SEAM_OBSERVATION_ROWS);
+    kept.drain(..first);
+
+    let mut payload_rows = 0usize;
+    let mut rendered = Vec::with_capacity(kept.len());
+    for (idx, row) in kept {
+        let text = row.trim();
+        if seam_row_leaks(&seam_compare_form(text), &payload) {
+            payload_rows += 1;
+            let marker = matches!(text.chars().next(), Some('\u{276F}' | '>'));
+            rendered.push(format!(
+                "idx={idx}:<payload> chars={} marker={marker}",
+                text.chars().count()
+            ));
+        } else {
+            rendered.push(format!("idx={idx}:{text}"));
+        }
+    }
+    let mut out = format!(
+        "[inject] seam={instant} settle={settle:?} rows={} payload_on_screen={} payload_rows={payload_rows}",
+        rows.len(),
+        payload_rows > 0
+    );
+    for row in rendered {
+        out.push_str(" | ");
+        out.push_str(&row);
+    }
+    out
+}
+
+/// #2586 D2 - one observation of the submit seam. The `PtyManager` mutex is
+/// taken and released inside this synchronous fn, so no guard crosses an
+/// await; a poisoned mutex answers `None`, never a panic or an error.
+fn observe_submit_seam(
+    pty_manager: &Arc<Mutex<PtyManager>>,
+    session_id: Uuid,
+    instant: &str,
+    settle: SettleReadiness,
+    written_payload: &str,
+) {
+    let rows = match pty_manager.lock() {
+        Ok(pty) => pty.screen_rows_snapshot(session_id),
+        Err(_) => None,
+    };
+    let observation =
+        format_submit_seam_observation(instant, settle, rows.as_deref(), written_payload);
+    log::info!("{} session={}", observation, session_id);
+    #[cfg(test)]
+    tests::record_seam_observation(session_id, observation);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentSubmitOutcome {
     TextWriteFailed,
@@ -275,9 +406,10 @@ pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
     session_id: Uuid,
     text: &str,
     message_id: &str,
+    settle: SettleReadiness,
 ) -> Result<(), String> {
     let result =
-        inject_text_into_session_impl(app, session_id, text, Some(message_id), |session| {
+        inject_text_into_session_impl(app, session_id, text, Some(message_id), settle, |session| {
             session.ok_or_else(|| format!("Session not found: {}", session_id))?;
             Ok(())
         })
@@ -300,10 +432,17 @@ where
     R: tauri::Runtime,
     F: FnOnce() -> Result<(), String>,
 {
-    inject_text_into_session_impl(app, session_id, text, None, move |session| {
-        session.ok_or_else(|| format!("Session not found: {}", session_id))?;
-        pre_write_check()
-    })
+    inject_text_into_session_impl(
+        app,
+        session_id,
+        text,
+        None,
+        SettleReadiness::Unknown,
+        move |session| {
+            session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+            pre_write_check()
+        },
+    )
     .await
 }
 
@@ -345,16 +484,23 @@ where
     R: tauri::Runtime,
     F: FnOnce(&Session) -> Result<(), String>,
 {
-    inject_text_into_session_impl(app, session_id, text, None, move |session| {
-        let session = session.ok_or_else(|| {
-            format!(
-                "Session {} is missing before supported-agent injection",
-                session_id
-            )
-        })?;
-        validate_supported_agent_session(session, session_id)?;
-        pre_write_check(session)
-    })
+    inject_text_into_session_impl(
+        app,
+        session_id,
+        text,
+        None,
+        SettleReadiness::Unknown,
+        move |session| {
+            let session = session.ok_or_else(|| {
+                format!(
+                    "Session {} is missing before supported-agent injection",
+                    session_id
+                )
+            })?;
+            validate_supported_agent_session(session, session_id)?;
+            pre_write_check(session)
+        },
+    )
     .await
 }
 
@@ -363,6 +509,7 @@ async fn inject_text_into_session_impl<R, F>(
     session_id: Uuid,
     text: &str,
     hold_message_id: Option<&str>,
+    settle: SettleReadiness,
     pre_write_check: F,
 ) -> Result<(), String>
 where
@@ -426,6 +573,15 @@ where
     // filesystem/config guard here.
     pre_write_check(session.as_ref())?;
 
+    // #2586 D1 - on a `send_enter` shell the two later lone `\r` are the submit;
+    // the wake render's trailing `\n\r` rides inside the pasted burst and can
+    // only add a blank line. Strip exactly that two-byte suffix and nothing
+    // else, never down to empty. Plain shells keep every byte.
+    let text = match text.strip_suffix("\n\r") {
+        Some(stripped) if send_enter && !stripped.is_empty() => stripped,
+        _ => text,
+    };
+
     // Write the text block through the held permit.
     PtyManager::write_with_permit(&permit, text.as_bytes()).map_err(|error| {
         log::error!(
@@ -446,11 +602,13 @@ where
     // second is nonfatal because the first may already have submitted the text.
     if send_enter {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        observe_submit_seam(&pty_manager, session_id, "T0", settle, text);
         log::info!("[inject] sending Enter (1/2) for session {}", session_id);
         PtyManager::write_with_permit(&permit, b"\r")
             .map_err(|error| format!("PTY Enter (1/2) write failed: {}", error))?;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        observe_submit_seam(&pty_manager, session_id, "T1", settle, text);
         log::info!("[inject] sending Enter (2/2) for session {}", session_id);
         if let Err(error) = PtyManager::write_with_permit(&permit, b"\r") {
             log::warn!(
@@ -459,6 +617,10 @@ where
                 error
             );
         }
+
+        // #2586 D2 - T2: one added wait after the second Enter, observation only.
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        observe_submit_seam(&pty_manager, session_id, "T2", settle, text);
     }
 
     // #1682 - an injected text block is a message to the agent, submitted on
@@ -1054,6 +1216,9 @@ mod tests {
     #[derive(Default)]
     struct RecordingBackend {
         writes: Mutex<Vec<(Uuid, Vec<u8>)>>,
+        /// #2586 - scripted screen rows. `None` keeps the `SessionOver` answer,
+        /// `Some(None)` answers `Unavailable`, `Some(Some(rows))` answers `Rows`.
+        screen_rows: Mutex<Option<Option<Vec<String>>>>,
     }
 
     impl PtyBackend for RecordingBackend {
@@ -1099,7 +1264,12 @@ mod tests {
         }
 
         fn get_screen_rows(&self, _id: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
-            crate::pty::context_scrape::ScreenRowsRead::SessionOver
+            use crate::pty::context_scrape::ScreenRowsRead;
+            match self.screen_rows.lock().unwrap().clone() {
+                None => ScreenRowsRead::SessionOver,
+                Some(None) => ScreenRowsRead::Unavailable,
+                Some(Some(rows)) => ScreenRowsRead::Rows(rows),
+            }
         }
 
         fn register_response_watcher(
@@ -1323,9 +1493,15 @@ mod tests {
         let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
         hold.lock().unwrap().note_qualifying_key(id);
 
-        let err = inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-1")
-            .await
-            .unwrap_err();
+        let err = inject_peer_wake_text_into_session(
+            app.handle(),
+            id,
+            "echo hello",
+            "msg-1",
+            SettleReadiness::Unknown,
+        )
+        .await
+        .unwrap_err();
         assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(&err));
         assert!(err.contains(&id.to_string()));
         assert!(
@@ -1335,16 +1511,29 @@ mod tests {
         assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
 
         // A repeated poll of the same message never increases the unique count.
-        let _ = inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-1").await;
+        let _ = inject_peer_wake_text_into_session(
+            app.handle(),
+            id,
+            "echo hello",
+            "msg-1",
+            SettleReadiness::Unknown,
+        )
+        .await;
         assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
 
         // The closed-click release suppresses the window, so the next attempt
         // delivers and the observed id drops out of the count.
         let released = hold.lock().unwrap().toggle_manual(id, window);
         assert!(!released.closed);
-        inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-1")
-            .await
-            .unwrap();
+        inject_peer_wake_text_into_session(
+            app.handle(),
+            id,
+            "echo hello",
+            "msg-1",
+            SettleReadiness::Unknown,
+        )
+        .await
+        .unwrap();
         let writes: Vec<Vec<u8>> = backend
             .writes
             .lock()
@@ -1413,7 +1602,14 @@ mod tests {
         let permit = PtyManager::acquire_input_writer(&pty, id).await.unwrap();
         let app_clone = app.handle().clone();
         let queued = tokio::spawn(async move {
-            inject_peer_wake_text_into_session(&app_clone, id, "echo hello", "msg-race").await
+            inject_peer_wake_text_into_session(
+                &app_clone,
+                id,
+                "echo hello",
+                "msg-race",
+                SettleReadiness::Unknown,
+            )
+            .await
         });
         // Let the queued wake reach the permit wait.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1432,9 +1628,15 @@ mod tests {
 
         // Release: the next attempt delivers exactly once and clears the count.
         assert!(!hold.lock().unwrap().toggle_manual(id, window).closed);
-        inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-race")
-            .await
-            .unwrap();
+        inject_peer_wake_text_into_session(
+            app.handle(),
+            id,
+            "echo hello",
+            "msg-race",
+            SettleReadiness::Unknown,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             recorded_writes(&backend, id),
             vec![b"echo hello".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
@@ -1451,9 +1653,15 @@ mod tests {
         let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
         hold.lock().unwrap().note_qualifying_key(id);
 
-        let err = inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-expiry")
-            .await
-            .unwrap_err();
+        let err = inject_peer_wake_text_into_session(
+            app.handle(),
+            id,
+            "echo hello",
+            "msg-expiry",
+            SettleReadiness::Unknown,
+        )
+        .await
+        .unwrap_err();
         assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(&err));
         assert!(recorded_writes(&backend, id).is_empty());
         assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 1);
@@ -1463,13 +1671,363 @@ mod tests {
             .unwrap()
             .backdate_last_key_for_test(id, window + std::time::Duration::from_secs(1));
 
-        inject_peer_wake_text_into_session(app.handle(), id, "echo hello", "msg-expiry")
-            .await
-            .unwrap();
+        inject_peer_wake_text_into_session(
+            app.handle(),
+            id,
+            "echo hello",
+            "msg-expiry",
+            SettleReadiness::Unknown,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             recorded_writes(&backend, id),
             vec![b"echo hello".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
         );
         assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
+    }
+
+    // #2586 - submit-seam observation sink. Keyed by session id so parallel
+    // tests never read each other's observations.
+    static SEAM_OBSERVATIONS: Mutex<Vec<(Uuid, String)>> = Mutex::new(Vec::new());
+
+    pub(super) fn record_seam_observation(session_id: Uuid, observation: String) {
+        SEAM_OBSERVATIONS
+            .lock()
+            .unwrap()
+            .push((session_id, observation));
+    }
+
+    fn seam_observations(session_id: Uuid) -> Vec<String> {
+        SEAM_OBSERVATIONS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, _)| *id == session_id)
+            .map(|(_, observation)| observation.clone())
+            .collect()
+    }
+
+    /// The wake render shape of `phone::messaging::format_pty_wrap`, restated so
+    /// this test module adds no `pty::inject` -> `phone::messaging` reference.
+    fn wake_wrap(from: &str, body: &str) -> String {
+        format!("\n[Message from {}] {}\n\r", from, body)
+    }
+
+    const SEAM_FROM: &str = "proj:room-1/tech-lead";
+
+    /// Drive one peer-wake injection with `settle` and optional scripted rows
+    /// (`Some(None)` = `Unavailable`, `None` = the default `SessionOver`).
+    async fn seam_run(
+        shell: &str,
+        text: &str,
+        settle: SettleReadiness,
+        rows: Option<Option<Vec<String>>>,
+    ) -> (Result<(), String>, Vec<Vec<u8>>, Vec<String>) {
+        let (app, id, backend) = typing_hold_app(shell).await;
+        *backend.screen_rows.lock().unwrap() = rows;
+        let result =
+            inject_peer_wake_text_into_session(app.handle(), id, text, "msg-seam", settle).await;
+        (result, recorded_writes(&backend, id), seam_observations(id))
+    }
+
+    /// T1 - send_enter: the wrap's final `\n\r` is removed, then two Enters.
+    #[tokio::test]
+    async fn seam_send_enter_strips_the_wrap_suffix_then_two_enters() {
+        let payload = wake_wrap(SEAM_FROM, "please review the plan");
+        let (result, writes, _) = seam_run("claude", &payload, SettleReadiness::Ready, None).await;
+        result.unwrap();
+        assert_eq!(writes.len(), 3);
+        assert_eq!(writes[0], payload.as_bytes()[..payload.len() - 2].to_vec());
+        assert_eq!(payload.len() - writes[0].len(), 2);
+        assert!(!writes[0].ends_with(b"\r") && !writes[0].ends_with(b"\n"));
+        assert_eq!(writes[1], b"\r".to_vec());
+        assert_eq!(writes[2], b"\r".to_vec());
+    }
+
+    /// T2 - plain shell: byte-identical single write, no Enter, no observation.
+    #[tokio::test]
+    async fn seam_plain_shell_writes_payload_byte_for_byte() {
+        let payload = wake_wrap(SEAM_FROM, "please review the plan");
+        let (result, writes, observations) = seam_run(
+            "muse",
+            &payload,
+            SettleReadiness::Ready,
+            Some(Some(vec!["chrome".to_string()])),
+        )
+        .await;
+        result.unwrap();
+        assert_eq!(writes, vec![payload.as_bytes().to_vec()]);
+        assert!(observations.is_empty(), "{observations:?}");
+    }
+
+    async fn assert_send_enter_first_write_unchanged(text: &str) {
+        let (result, writes, _) = seam_run("claude", text, SettleReadiness::Unknown, None).await;
+        result.unwrap();
+        assert_eq!(writes.len(), 3, "text={text:?}");
+        assert_eq!(writes[0], text.as_bytes().to_vec(), "text={text:?}");
+    }
+
+    /// T2a - Telegram-shaped text ending in a single `\n`.
+    #[tokio::test]
+    async fn seam_send_enter_keeps_a_trailing_lone_newline() {
+        assert_send_enter_first_write_unchanged("hello\n").await;
+    }
+
+    /// T2b - text ending in a single `\r`.
+    #[tokio::test]
+    async fn seam_send_enter_keeps_a_trailing_lone_carriage_return() {
+        assert_send_enter_first_write_unchanged("hello\r").await;
+    }
+
+    /// T2c - Loop-prompt-shaped text with no trailing newline.
+    #[tokio::test]
+    async fn seam_send_enter_keeps_text_without_trailing_newline() {
+        assert_send_enter_first_write_unchanged("Run the scheduled loop step now.").await;
+    }
+
+    /// T2d - the suffix is present but not final.
+    #[tokio::test]
+    async fn seam_send_enter_keeps_a_non_final_wrap_suffix() {
+        assert_send_enter_first_write_unchanged("hello\n\r\n").await;
+    }
+
+    /// T3 - interior newlines survive the strip.
+    #[tokio::test]
+    async fn seam_send_enter_keeps_interior_newlines() {
+        let payload = wake_wrap(SEAM_FROM, "a\nb");
+        let (result, writes, _) = seam_run("claude", &payload, SettleReadiness::Ready, None).await;
+        result.unwrap();
+        assert!(payload.ends_with("a\nb\n\r"));
+        assert_eq!(
+            writes[0],
+            payload.trim_end_matches("\n\r").as_bytes().to_vec()
+        );
+        assert!(writes[0].ends_with(b"a\nb"));
+    }
+
+    /// T4 - an all-newline payload is never stripped to empty; Enters follow.
+    #[tokio::test]
+    async fn seam_send_enter_never_strips_to_empty() {
+        let (result, writes, _) = seam_run("claude", "\n\r", SettleReadiness::Ready, None).await;
+        result.unwrap();
+        assert_eq!(
+            writes,
+            vec![b"\n\r".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+    }
+
+    /// T5 - three observations, in order T0, T1, T2, each with the settle.
+    #[tokio::test]
+    async fn seam_observations_are_emitted_in_order() {
+        let payload = wake_wrap(SEAM_FROM, "please review the plan");
+        let (result, _, observations) = seam_run(
+            "claude",
+            &payload,
+            SettleReadiness::TimedOut,
+            Some(Some(vec!["? for shortcuts".to_string()])),
+        )
+        .await;
+        result.unwrap();
+        assert_eq!(observations.len(), 3, "{observations:?}");
+        for (observation, instant) in observations.iter().zip(["T0", "T1", "T2"]) {
+            assert!(
+                observation
+                    .starts_with(&format!("[inject] seam={instant} settle=TimedOut rows=1 ")),
+                "{observation}"
+            );
+            assert!(
+                observation.ends_with("idx=0:? for shortcuts"),
+                "{observation}"
+            );
+        }
+    }
+
+    /// T6 - unavailable rows are logged and the injection still succeeds.
+    #[tokio::test]
+    async fn seam_unavailable_rows_never_fail_the_injection() {
+        let payload = wake_wrap(SEAM_FROM, "please review the plan");
+        let (result, writes, observations) =
+            seam_run("claude", &payload, SettleReadiness::Unknown, Some(None)).await;
+        assert_eq!(result, Ok(()));
+        assert_eq!(writes.len(), 3);
+        assert_eq!(observations.len(), 3);
+        assert_eq!(
+            observations[0],
+            "[inject] seam=T0 settle=Unknown rows=unavailable"
+        );
+    }
+
+    fn rows(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn observe(body: &str, screen: &[String]) -> String {
+        format_submit_seam_observation(
+            "T0",
+            SettleReadiness::Ready,
+            Some(screen),
+            &wake_wrap(SEAM_FROM, body),
+        )
+    }
+
+    fn assert_fixture_is_screen_shaped(screen: &[String]) {
+        for row in screen {
+            assert!(!row.contains('\n') && !row.contains('\r'), "{row:?}");
+        }
+    }
+
+    /// T8 - the last six non-empty rows, top to bottom, with real indices and
+    /// trailing box-drawing noise removed.
+    #[test]
+    fn seam_observation_keeps_the_last_six_non_empty_rows() {
+        let screen: Vec<String> = (0..20)
+            .map(|idx| {
+                if idx % 2 == 1 {
+                    "   ".to_string()
+                } else {
+                    format!("chrome {idx} \u{2500}\u{2500}  ")
+                }
+            })
+            .collect();
+        let rendered = observe("zzzzzzzzzzzzzz", &screen);
+        assert_eq!(
+            rendered,
+            "[inject] seam=T0 settle=Ready rows=20 payload_on_screen=false payload_rows=0 \
+             | idx=8:chrome 8 | idx=10:chrome 10 | idx=12:chrome 12 | idx=14:chrome 14 \
+             | idx=16:chrome 16 | idx=18:chrome 18"
+        );
+    }
+
+    /// T9 - the settle readiness is rendered as given.
+    #[test]
+    fn seam_observation_renders_settle_readiness() {
+        let payload = wake_wrap(SEAM_FROM, "body");
+        assert!(
+            format_submit_seam_observation("T1", SettleReadiness::TimedOut, None, &payload)
+                .contains(" settle=TimedOut ")
+        );
+        assert_eq!(
+            format_submit_seam_observation("T1", SettleReadiness::Unknown, None, &payload),
+            "[inject] seam=T1 settle=Unknown rows=unavailable"
+        );
+        assert!(
+            format_submit_seam_observation("T1", SettleReadiness::Ready, Some(&[]), &payload)
+                .starts_with("[inject] seam=T1 settle=Ready rows=0 ")
+        );
+    }
+
+    /// T7a - a multirow body: each body line is its own row and is redacted.
+    #[test]
+    fn seam_redaction_hides_each_row_of_a_multirow_body() {
+        let body = "line one of the body\nline two of the body";
+        let screen = rows(&[
+            "line one of the body",
+            "line two of the body",
+            "? for shortcuts",
+            "\u{273B} Welcome to Claude Code!",
+        ]);
+        assert_fixture_is_screen_shaped(&screen);
+        assert!(body.contains(&screen[0]) && body.contains(&screen[1]));
+        let rendered = observe(body, &screen);
+        assert!(!rendered.contains("line one") && !rendered.contains("line two"));
+        assert!(rendered.contains(" payload_on_screen=true payload_rows=2 "));
+        assert!(rendered.contains("idx=0:<payload> chars=20 marker=false"));
+        assert!(rendered.contains("idx=1:<payload> chars=20 marker=false"));
+        assert!(rendered.contains("idx=2:? for shortcuts"));
+        assert!(rendered.contains("idx=3:\u{273B} Welcome to Claude Code!"));
+    }
+
+    /// T7b - a wrapped row: a 120-char body cut at char 47 into two rows.
+    #[test]
+    fn seam_redaction_hides_both_halves_of_a_wrapped_row() {
+        let body: String = "the quick brown fox jumps over a lazy dog while seven wizards \
+                            box nimbly and quartz judges vex the grumpy sphinx of black"
+            .chars()
+            .take(120)
+            .collect();
+        assert_eq!(body.chars().count(), 120);
+        let head: String = body.chars().take(47).collect();
+        let tail: String = body.chars().skip(47).collect();
+        let screen = vec![head.clone(), tail.clone()];
+        assert_fixture_is_screen_shaped(&screen);
+        assert!(body.contains(&head) && body.contains(&tail));
+        let rendered = observe(&body, &screen);
+        assert!(rendered.contains(" payload_rows=2 "), "{rendered}");
+        assert!(!rendered.contains(tail.trim()) && !rendered.contains(head.trim()));
+    }
+
+    /// T7c - a short body is redacted by the substring clause.
+    #[test]
+    fn seam_redaction_hides_a_short_body_row() {
+        let screen = rows(&["ok"]);
+        assert!(wake_wrap(SEAM_FROM, "ok").contains(&screen[0]));
+        let rendered = observe("ok", &screen);
+        assert!(rendered.contains(" payload_on_screen=true payload_rows=1 "));
+        assert!(rendered.ends_with("idx=0:<payload> chars=2 marker=false"));
+    }
+
+    /// T7d - chrome plus the first 12 body chars: not a payload substring, but
+    /// it shares an 8-char window, so it is redacted.
+    #[test]
+    fn seam_redaction_hides_a_suffix_only_overlap() {
+        let body = "deliver the parcel to the north gate";
+        let row = format!("* Thinking... {}", &body[..12]);
+        let payload = wake_wrap(SEAM_FROM, body);
+        assert!(row.ends_with("deliver the "));
+        assert!(!payload.contains(row.trim()));
+        let rendered = observe(body, std::slice::from_ref(&row));
+        assert!(rendered.contains(" payload_rows=1 "), "{rendered}");
+        assert!(!rendered.contains("deliver"));
+    }
+
+    /// T7e - the STATED leak limit, not a no-leak guarantee: a row sharing only
+    /// six consecutive body chars is printed verbatim. Strengthening the rule
+    /// must edit this test deliberately.
+    #[test]
+    fn seam_redaction_leak_limit_prints_a_six_char_fragment() {
+        let body = "deliver the parcel to the north gate";
+        let screen = rows(&["Tokens:parcel|42"]);
+        assert!(screen[0].contains("parcel") && body.contains("parcel"));
+        let rendered = observe(body, &screen);
+        assert!(rendered.contains(" payload_on_screen=false payload_rows=0 "));
+        assert!(rendered.ends_with("idx=0:Tokens:parcel|42"), "{rendered}");
+    }
+
+    /// T7f - a redacted row keeps its composer-marker signal.
+    #[test]
+    fn seam_redaction_keeps_the_composer_marker() {
+        let body = "deliver the parcel to the north gate";
+        let screen = rows(&["\u{276F} deliver the parcel", "deliver the parcel to"]);
+        assert!(body.contains("deliver the parcel"));
+        let rendered = observe(body, &screen);
+        assert!(
+            rendered.contains("idx=0:<payload> chars=20 marker=true"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("idx=1:<payload> chars=21 marker=false"),
+            "{rendered}"
+        );
+    }
+
+    /// T7g - the absence leg: chrome-only rows all survive verbatim.
+    #[test]
+    fn seam_redaction_leaves_chrome_only_rows_verbatim() {
+        let body = "deliver the parcel to the north gate";
+        let screen = rows(&[
+            "? for shortcuts",
+            "\u{273B} Welcome to Claude Code!",
+            "\u{276F}",
+        ]);
+        let payload = wake_wrap(SEAM_FROM, body);
+        for row in &screen {
+            assert!(!payload.contains(row.as_str()), "{row}");
+        }
+        assert_eq!(
+            observe(body, &screen),
+            "[inject] seam=T0 settle=Ready rows=3 payload_on_screen=false payload_rows=0 \
+             | idx=0:? for shortcuts | idx=1:\u{273B} Welcome to Claude Code! | idx=2:\u{276F}"
+        );
     }
 }
