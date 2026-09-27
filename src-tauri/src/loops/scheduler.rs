@@ -1542,4 +1542,79 @@ mod tests {
         );
         assert!(tmp_files_in(&dir).is_empty(), "no tmp file left");
     }
+
+    /// #2679 - a failed state write appends no audit row. Windows-only: the
+    /// failure is forced with an open read handle on `state.json`, which
+    /// blocks the replace with `os error 5` on Windows but not on Unix. The
+    /// ordering contract is cross-platform; a Linux green is not coverage.
+    #[cfg(windows)]
+    #[test]
+    fn issue_2679_a_failed_state_write_appends_no_audit_row() {
+        let (tmp, dir) = pending_loop_fixture();
+        let config = sample_config();
+        let state_path = dir.join(LOOP_STATE_FILE);
+        let audit_path = dir.join(crate::config::loops::LOOP_AUDIT_FILE);
+        let scheduler = LoopScheduler::new();
+        let now = Utc::now();
+        let entry_for = |run_id| LoopAuditEntry {
+            run_id,
+            loop_id: config.loop_def.id.clone(),
+            project_path: tmp.path().to_string_lossy().to_string(),
+            kind: LoopAuditKind::Delivered,
+            due_at: now,
+            started_at: now,
+            completed_at: Some(now),
+            target: None,
+            session_id: None,
+            busy_coordinator_policy: config.policy.busy_coordinator.clone(),
+            session_start: Some(config.policy.session_start),
+            error: None,
+            prompt_snapshot: None,
+        };
+        let state = LoopState {
+            last_checked_at: Some(now),
+            ..LoopState::default()
+        };
+
+        // Positive control: with no holder the same commit writes and audits.
+        let s0_raw = read_raw_loop_state(&dir)
+            .expect("raw")
+            .expect("state exists");
+        let s0_generation = scheduler.loop_generation(&dir);
+        let control = scheduler.commit_scan_section(
+            &dir,
+            s0_generation,
+            Some(&s0_raw),
+            Some(&entry_for(Uuid::new_v4())),
+            &state,
+        );
+        assert_eq!(control, Ok(LoopStateWrite::Written));
+        assert!(audit_path.exists(), "control leg appends the audit row");
+        std::fs::remove_file(&audit_path).expect("remove control audit");
+        std::fs::write(&state_path, &s0_raw).expect("restore state");
+
+        // Failure leg: hold state.json open past the replace-retry budget.
+        let s0_raw = read_raw_loop_state(&dir)
+            .expect("raw")
+            .expect("state exists");
+        let s0_generation = scheduler.loop_generation(&dir);
+        let holder = std::fs::OpenOptions::new()
+            .read(true)
+            .open(&state_path)
+            .expect("holder");
+        let result = scheduler.commit_scan_section(
+            &dir,
+            s0_generation,
+            Some(&s0_raw),
+            Some(&entry_for(Uuid::new_v4())),
+            &state,
+        );
+        drop(holder);
+
+        assert!(!audit_path.exists(), "no audit row without its state write");
+        let err = result.expect_err("the held state write fails");
+        assert!(err.starts_with("Failed to finalize Loop state"), "{err}");
+        assert_eq!(read_raw_loop_state(&dir).expect("raw"), Some(s0_raw));
+        assert!(tmp_files_in(&dir).is_empty(), "{:?}", tmp_files_in(&dir));
+    }
 }
