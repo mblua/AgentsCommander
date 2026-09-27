@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import AgentPickerModal, {
+  clickToSetup,
+  startSettleTimer,
   type AgentPickerScopeContext,
   type AgentPickerSelection,
 } from "./AgentPickerModal";
@@ -3555,6 +3557,269 @@ describe("AgentPickerModal", () => {
       await settle();
       expect(maybe("agentPicker.scopeFaults")).not.toBeNull();
       view.dispose();
+    });
+
+    describe("#2555 picker timing instrumentation", () => {
+      const DOM_MARK = "agentPicker.countsDom";
+      const FRAME_MARK = "agentPicker.countsFrame";
+      let infoSpy: { mock: { calls: unknown[][] }; mockRestore: () => void };
+      let frames: FrameRequestCallback[] = [];
+      let nextFrameId = 0;
+      const cancelFrame = vi.fn();
+
+      beforeEach(() => {
+        infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+        performance.clearMarks(DOM_MARK);
+        performance.clearMarks(FRAME_MARK);
+        frames = [];
+        nextFrameId = 0;
+        cancelFrame.mockReset();
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+          frames.push(callback);
+          nextFrameId += 1;
+          return nextFrameId;
+        });
+        vi.stubGlobal("cancelAnimationFrame", cancelFrame);
+      });
+
+      afterEach(() => {
+        vi.unstubAllGlobals();
+        infoSpy.mockRestore();
+      });
+
+      function drainFrames(): void {
+        const pending = frames;
+        frames = [];
+        for (const callback of pending) callback(performance.now());
+      }
+
+      function detail(): string | null {
+        return target("agentPicker.overlay").getAttribute("data-ac-detail");
+      }
+
+      function lines(command: string): string[] {
+        return infoSpy.mock.calls
+          .map((call: unknown[]) => call[0])
+          .filter(
+            (first: unknown): first is string =>
+              typeof first === "string" && first.startsWith(`[selection-timing] command=${command} `),
+          );
+      }
+
+      function markCount(name: string): number {
+        return performance.getEntriesByName(name, "mark").length;
+      }
+
+      // Every preview call waits until released; release() resolves one call with its default result.
+      function deferPreviews() {
+        const pending: Array<() => void> = [];
+        for (const api of [
+          mockSettingsApi.previewCodingAgentProfileSelection,
+          mockSettingsApi.previewSelectionLockRemoval,
+        ]) {
+          const original = api.getMockImplementation()!;
+          api.mockImplementation(
+            (req: unknown) =>
+              new Promise((resolve, reject) => {
+                pending.push(() => {
+                  (original(req) as Promise<unknown>).then(resolve, reject);
+                });
+              }),
+          );
+        }
+        return {
+          pending,
+          release(count = pending.length) {
+            for (const run of pending.splice(0, count)) run();
+          },
+        };
+      }
+
+      async function openAndSettleCounts() {
+        const previews = deferPreviews();
+        const view = renderWgPicker();
+        await microtasks();
+        expect(previews.pending).toHaveLength(6);
+        previews.release();
+        await microtasks();
+        return { previews, view };
+      }
+
+      it("issue_2555_settings_get_interval_and_detail", async () => {
+        const releaseSettings = controlledSettings();
+        const { dispose } = renderWgPicker();
+
+        expect(lines("picker_open")).toHaveLength(1);
+        expect(lines("picker_open")[0]).toMatch(/ click_to_setup_ms=na .* open_event=none click_clock=na$/);
+        expect(lines("settings_get")).toHaveLength(0);
+        expect(detail()).toMatch(/^clickToSetupMs=na clickClock=na setupToMountMs=\d+\.\d$/);
+
+        releaseSettings();
+        await microtasks();
+
+        expect(lines("settings_get")).toHaveLength(1);
+        expect(lines("settings_get")[0]).toMatch(/ work_ms=\d+\.\d ok=true$/);
+        expect(detail()).toMatch(/^clickToSetupMs=na clickClock=na setupToMountMs=\d+\.\d settingsGetMs=\d+\.\d$/);
+
+        dispose();
+      });
+
+      it("issue_2555_counts_dom_then_frame", async () => {
+        const previews = deferPreviews();
+        const { dispose } = renderWgPicker();
+        await microtasks();
+        expect(previews.pending).toHaveLength(6);
+
+        previews.release(5);
+        await microtasks();
+        drainFrames();
+        expect(lines("picker_counts")).toHaveLength(0);
+        expect(markCount(DOM_MARK)).toBe(0);
+        expect(markCount(FRAME_MARK)).toBe(0);
+        expect(frames).toHaveLength(0);
+
+        previews.release();
+        await microtasks();
+        expect(markCount(DOM_MARK)).toBe(1);
+        expect(text("agentPicker.removeScopeCount.replica")).toBe("0 protected");
+        expect(text("agentPicker.removeScopeCount.kind")).toBe("2 of 3 protected");
+        expect(text("agentPicker.removeScopeCount.workgroup")).toBe("3 of 4 protected");
+        expect(text("agentPicker.scope.kind")).toContain("3 replicas");
+        expect(text("agentPicker.scope.workgroup")).toContain("4 replicas");
+        expect(lines("picker_counts")).toHaveLength(0);
+        expect(frames).toHaveLength(1);
+
+        drainFrames();
+        const counts = lines("picker_counts");
+        expect(counts).toHaveLength(1);
+        const match = counts[0].match(
+          /^\[selection-timing\] command=picker_counts dom_ms=(\d+\.\d) frame_ms=(\d+\.\d) ok=true$/,
+        );
+        expect(match).not.toBeNull();
+        expect(Number(match![2])).toBeGreaterThanOrEqual(Number(match![1]));
+        expect(markCount(FRAME_MARK)).toBe(1);
+        expect(detail()).toMatch(/ countsDomMs=\d+\.\d countsFrameMs=\d+\.\d countsOk=true$/);
+
+        dispose();
+      });
+
+      it("issue_2555_counts_reports_failed_preview", async () => {
+        const message = "removal preview exploded";
+        mockSettingsApi.previewSelectionLockRemoval.mockImplementation(
+          (req: { scope: ProfileAssignmentScope }) =>
+            req.scope === "replica"
+              ? Promise.reject(new Error(message))
+              : Promise.resolve(removePreview(req.scope)),
+        );
+        const { dispose } = renderWgPicker();
+        await settle();
+        drainFrames();
+
+        const counts = lines("picker_counts");
+        expect(counts).toHaveLength(1);
+        expect(counts[0]).toMatch(/ ok=false$/);
+        expect(detail()).toMatch(/ countsOk=false$/);
+        expect(text("agentPicker.removeScopeCount.replica")).toBe("count failed");
+        expect(text("agentPicker.removeNote")).toBe(message);
+
+        dispose();
+      });
+
+      it("issue_2555_counts_mark_once_per_open", async () => {
+        const { previews, view } = await openAndSettleCounts();
+        drainFrames();
+        expect(lines("picker_counts")).toHaveLength(1);
+
+        target<HTMLButtonElement>("agentPicker.profile.B").click();
+        await microtasks();
+        previews.release();
+        await microtasks();
+        previews.release();
+        await microtasks();
+        drainFrames();
+
+        expect(lines("picker_counts")).toHaveLength(1);
+        expect(markCount(DOM_MARK)).toBe(1);
+        expect(markCount(FRAME_MARK)).toBe(1);
+        expect(frames).toHaveLength(0);
+
+        view.dispose();
+      });
+
+      it("issue_2555_unmount_before_frame", async () => {
+        const { view } = await openAndSettleCounts();
+        expect(frames).toHaveLength(1);
+
+        view.dispose();
+        expect(cancelFrame).toHaveBeenCalledTimes(1);
+        expect(cancelFrame).toHaveBeenCalledWith(nextFrameId);
+
+        expect(() => drainFrames()).not.toThrow();
+        expect(lines("picker_counts")).toHaveLength(0);
+        expect(markCount(FRAME_MARK)).toBe(0);
+      });
+
+      it("issue_2555_non_wg_logs_open_and_settings_only", async () => {
+        const { dispose } = renderPicker();
+        await settle();
+        drainFrames();
+
+        expect(lines("picker_open")).toHaveLength(1);
+        expect(lines("settings_get")).toHaveLength(1);
+        expect(lines("picker_counts")).toHaveLength(0);
+        expect(frames).toHaveLength(0);
+
+        dispose();
+      });
+
+      it("issue_2555_click_boundary", async () => {
+        const button = document.createElement("button");
+        document.body.append(button);
+        let dispose: (() => void) | undefined;
+        button.addEventListener("click", () => {
+          dispose = renderWgPicker().dispose;
+        });
+        button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+        expect(lines("picker_open")).toHaveLength(1);
+        expect(lines("picker_open")[0]).toMatch(
+          / click_to_setup_ms=(\d+\.\d|na) .* open_event=click click_clock=epoch$/,
+        );
+
+        dispose?.();
+      });
+
+      it("issue_2555_settle_timer_boundaries", () => {
+        const now = vi.spyOn(performance, "now").mockReturnValueOnce(10).mockReturnValueOnce(35.25);
+        const onSettle = vi.fn();
+        const done = startSettleTimer(onSettle);
+        expect(onSettle).not.toHaveBeenCalled();
+        expect(now).toHaveBeenCalledTimes(1);
+        done(true);
+        expect(onSettle).toHaveBeenCalledTimes(1);
+        expect(onSettle).toHaveBeenCalledWith(25.25, true);
+        expect(now).toHaveBeenCalledTimes(2);
+
+        now.mockReset();
+        now.mockReturnValueOnce(100).mockReturnValueOnce(142);
+        const failed = vi.fn();
+        const doneFailed = startSettleTimer(failed);
+        doneFailed(false);
+        expect(failed).toHaveBeenCalledTimes(1);
+        expect(failed).toHaveBeenCalledWith(42, false);
+        now.mockRestore();
+      });
+
+      it("issue_2555_click_clock_normalization", () => {
+        const origin = 1_700_000_000_000;
+        expect(clickToSetup(130, 100, origin)).toEqual({ ms: 30, clock: "perf" });
+        expect(clickToSetup(130, origin + 100, origin)).toEqual({ ms: 30, clock: "epoch" });
+        expect(clickToSetup(99.5, origin + 100, origin)).toEqual({ ms: null, clock: "epoch" });
+        expect(clickToSetup(50, 60, origin)).toEqual({ ms: null, clock: "perf" });
+        expect(clickToSetup(130, undefined, origin)).toEqual({ ms: null, clock: "na" });
+        expect(clickToSetup(130, 0, origin)).toEqual({ ms: null, clock: "na" });
+        expect(clickToSetup(130, NaN, origin)).toEqual({ ms: null, clock: "na" });
+      });
     });
   });
 });
