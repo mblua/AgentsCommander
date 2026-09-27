@@ -1449,3 +1449,226 @@ fn reap_on_drop_kills_the_child_when_the_caller_panics() {
         request_file.display()
     );
 }
+
+#[test]
+fn normal_binary_refuses_ui_pointer_with_json_stdout_and_silent_stderr() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-pointer-non-testable");
+    let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-pointer",
+            "--selector",
+            "settings.agentRow.0.dragHandle",
+            "down",
+        ],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    assert_eq!(
+        first_json(&stdout)["error"],
+        "refusing_non_testeable_binary"
+    );
+}
+
+#[test]
+fn normal_binary_refuses_ui_key_with_json_stdout_and_silent_stderr() {
+    let _guard = test_lock();
+    let tmp = Tmp::new("ui-key-non-testable");
+    let bin = copy_binary_as(tmp.path(), "agentscommander.exe");
+    let (code, stdout, stderr) = run(
+        &bin,
+        &[
+            "ui-key",
+            "--selector",
+            "settings.agentRow.0.dragHandle",
+            "Escape",
+        ],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    assert_eq!(
+        first_json(&stdout)["error"],
+        "refusing_non_testeable_binary"
+    );
+}
+
+fn ok_response(request: &Value) -> Value {
+    json!({
+        "ok": true,
+        "requestId": request["requestId"],
+        "window": request["window"],
+        "action": request["action"],
+        "selector": request["selector"],
+        "target": null
+    })
+}
+
+fn run_fake_success(label: &str, args: &[&str], check: fn(&Value)) {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    let tmp = Tmp::new(label);
+    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+    write_session(&bin, pid, &["main"]);
+    let responder = spawn_fake_responder(&bin, move |request| {
+        assert_eq!(request["window"], "main");
+        check(request);
+        ok_response(request)
+    });
+    let (code, stdout, stderr) = run(&bin, args);
+    responder.finish();
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_empty_output("stderr", &stderr);
+    assert_eq!(first_json(&stdout)["ok"], true);
+}
+
+#[test]
+fn fake_response_makes_ui_pointer_down_succeed() {
+    run_fake_success(
+        "ui-pointer-down-fake-response",
+        &[
+            "ui-pointer",
+            "--selector",
+            "settings.agentRow.0.dragHandle",
+            "--timeout-ms",
+            "3000",
+            "down",
+        ],
+        |request| {
+            assert_eq!(request["action"], "pointer");
+            assert_eq!(request["selector"], "settings.agentRow.0.dragHandle");
+            assert_eq!(request["value"], "down");
+        },
+    );
+}
+
+#[test]
+fn fake_response_makes_ui_pointer_up_succeed() {
+    run_fake_success(
+        "ui-pointer-up-fake-response",
+        &["ui-pointer", "--timeout-ms", "3000", "up"],
+        |request| {
+            assert_eq!(request["action"], "pointer");
+            assert_eq!(request["selector"], "");
+            assert_eq!(request["value"], "up");
+        },
+    );
+}
+
+#[test]
+fn fake_response_makes_ui_key_succeed() {
+    run_fake_success(
+        "ui-key-fake-response",
+        &[
+            "ui-key",
+            "--selector",
+            "settings.agentRow.0.dragHandle",
+            "--timeout-ms",
+            "3000",
+            "Alt+ArrowUp",
+        ],
+        |request| {
+            assert_eq!(request["action"], "key");
+            assert_eq!(request["selector"], "settings.agentRow.0.dragHandle");
+            assert_eq!(request["value"], "Alt+ArrowUp");
+        },
+    );
+}
+
+#[test]
+fn ui_pointer_and_ui_key_preflight_errors_create_no_request_file() {
+    let _guard = test_lock();
+    let cases: [(&str, &[&str], &str); 4] = [
+        (
+            "pointer-op",
+            &["ui-pointer", "--selector", "x", "drag"],
+            "invalid_pointer_operation",
+        ),
+        (
+            "pointer-required",
+            &["ui-pointer", "move"],
+            "pointer_selector_required",
+        ),
+        (
+            "pointer-not-allowed",
+            &["ui-pointer", "--selector", "x", "up"],
+            "pointer_selector_not_allowed",
+        ),
+        (
+            "key-chord",
+            &["ui-key", "--selector", "x", "alt+ArrowUp"],
+            "invalid_key_chord",
+        ),
+    ];
+    for (label, args, expected) in cases {
+        let tmp = Tmp::new(&format!("ui-preflight-{label}"));
+        let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+        let (code, stdout, stderr) = run(&bin, args);
+        assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+        assert_empty_output("stderr", &stderr);
+        assert_eq!(first_json(&stdout)["error"], expected);
+
+        let requests_dir = config_dir_for(&bin).join("ui-automation").join("requests");
+        let request_count = std::fs::read_dir(&requests_dir)
+            .map(|entries| entries.filter_map(Result::ok).count())
+            .unwrap_or(0);
+        assert_eq!(request_count, 0, "{label} created a request file");
+    }
+}
+
+#[test]
+fn fake_response_passes_pointer_frontend_error_through() {
+    let _guard = test_lock();
+    let Some(pid) = fake_live_pid() else {
+        eprintln!("skip: no fake live pid available");
+        return;
+    };
+    // Interim codes until P2 teaches the bridge the pointer action.
+    let cases: [(&str, &[&str], &str); 2] = [
+        (
+            "unsupported_action",
+            &[
+                "ui-pointer",
+                "--selector",
+                "row",
+                "--timeout-ms",
+                "3000",
+                "down",
+            ],
+            "row",
+        ),
+        (
+            "missing_selector",
+            &["ui-pointer", "--timeout-ms", "3000", "up"],
+            "",
+        ),
+    ];
+    for (error, args, selector) in cases {
+        let tmp = Tmp::new(&format!("ui-pointer-{error}"));
+        let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
+        write_session(&bin, pid, &["main"]);
+        let responder = spawn_fake_responder(&bin, move |request| {
+            assert_eq!(request["action"], "pointer");
+            json!({
+                "ok": false,
+                "requestId": request["requestId"],
+                "window": "main",
+                "action": "pointer",
+                "selector": request["selector"],
+                "error": error,
+                "message": "pointer request failed"
+            })
+        });
+        let (code, stdout, stderr) = run(&bin, args);
+        responder.finish();
+        assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+        assert_empty_output("stderr", &stderr);
+        let parsed = first_json(&stdout);
+        assert_eq!(parsed["error"], error);
+        assert_eq!(parsed["selector"], selector);
+    }
+}
