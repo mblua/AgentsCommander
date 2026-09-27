@@ -157,6 +157,7 @@ vi.mock("../../shared/sound", () => ({
 vi.mock("../stores/sessions", () => ({
   sessionsStore: {
     setRepos: vi.fn(),
+    weeklyQuotaUsedByAgentId: {},
   },
 }));
 
