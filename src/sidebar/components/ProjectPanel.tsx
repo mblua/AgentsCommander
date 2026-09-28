@@ -79,6 +79,7 @@ import {
 } from "./replica-repo-badges";
 import { sessionDotClass } from "./session-status";
 import { replicaDotClass } from "./replica-dot";
+import { RowKeyProxy, onRowKey } from "./RowKeyProxy";
 import {
   configuredReplicaRepoBadgesLive,
   findReplicaSession as replicaSession,
@@ -3106,8 +3107,10 @@ const ProjectPanel: Component = () => {
                 class="ac-wg-header ac-wg-header--collapsible"
                 title={wg.path}
                 onClick={() => togglePanelCollapsed(wgCollapsedKey)}
+                onKeyDown={onRowKey(() => togglePanelCollapsed(wgCollapsedKey))}
                 onContextMenu={(e) => handleWgContextMenu(e, wg)}
               >
+                <RowKeyProxy label={`Toggle ${wg.name}`} />
                 <span class="ac-discovery-chevron" classList={{ collapsed: wgCollapsed() }}>
                   &#x25BE;
                 </span>
@@ -3312,7 +3315,9 @@ const ProjectPanel: Component = () => {
                         <div
                           class="ac-wg-header ac-wg-header--collapsible"
                           onClick={() => togglePanelCollapsed(coordinatorsCollapsedKey)}
+                          onKeyDown={onRowKey(() => togglePanelCollapsed(coordinatorsCollapsedKey))}
                         >
+                          <RowKeyProxy label="Toggle Orchestrators" />
                           <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(coordinatorsCollapsedKey) }}>
                             &#x25BE;
                           </span>
@@ -3365,7 +3370,9 @@ const ProjectPanel: Component = () => {
                         <div
                           class="ac-wg-header ac-wg-header--collapsible"
                           onClick={() => togglePanelCollapsed(selectedWorkgroupCollapsedKey)}
+                          onKeyDown={onRowKey(() => togglePanelCollapsed(selectedWorkgroupCollapsedKey))}
                         >
+                          <RowKeyProxy label="Toggle Selected Room" />
                           <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(selectedWorkgroupCollapsedKey) }}>
                             &#x25BE;
                           </span>
@@ -3421,8 +3428,10 @@ const ProjectPanel: Component = () => {
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
                         onClick={() => togglePanelCollapsed(workgroupsCollapsedKey)}
+                        onKeyDown={onRowKey(() => togglePanelCollapsed(workgroupsCollapsedKey))}
                         onContextMenu={handleWorkgroupsHeaderContextMenu}
                       >
+                        <RowKeyProxy label="Toggle Rooms" />
                         <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(workgroupsCollapsedKey) }}>
                           &#x25BE;
                         </span>
@@ -3509,9 +3518,11 @@ const ProjectPanel: Component = () => {
                       <div
                         class="ac-wg-header ac-wg-header--collapsible"
                         onClick={() => togglePanelCollapsed(loopsCollapsedKey)}
+                        onKeyDown={onRowKey(() => togglePanelCollapsed(loopsCollapsedKey))}
                         onContextMenu={handleLoopsHeaderContextMenu}
                         data-ac-testid={`project.loops.header.${projectAutomationId()}`}
                       >
+                        <RowKeyProxy label="Toggle Loops" />
                         <span class="ac-discovery-chevron" classList={{ collapsed: isPanelCollapsed(loopsCollapsedKey) }}>
                           &#x25BE;
                         </span>
