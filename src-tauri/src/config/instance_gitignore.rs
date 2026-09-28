@@ -1129,7 +1129,7 @@ mod tests {
             // Depth independence of the atomic-write glob, inside a directory
             // this policy deliberately tracks: exactly the leftover class an
             // anchored rule would leave visible in `git status`.
-            "coding-agents/.agents.json.4242.0.tmp",
+            "coding-agents/.agents.10.default.json.4242.0.tmp",
             ".agentscommander-context-templates.json",
             ".agentscommander-injected-messages.json",
             ".api-clients-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed.tmp",
@@ -1172,11 +1172,15 @@ mod tests {
             "coding-agent-requests/results/res-1.json",
             // #1968: the machine-local catalog children and every publication
             // temporary shape, including the doubled-dot journal temporary.
-            "coding-agents/agents.local.json",
+            "coding-agents/agents.50.personal.no-git.json",
             "coding-agents/agents.migration-v1.backup.json",
             "coding-agents/.agents.migration-v1.json",
+            "coding-agents/.agents.10.default.json.lock",
+            "coding-agents/.agents.50.personal.no-git.json.4242.0.tmp",
+            // #2715: a catalog file the naming migration set aside.
+            "coding-agents/agents.json.deprecated-1.no-git",
+            // #2715: the retired catalog lock sidecar the migration holds.
             "coding-agents/.agents.json.lock",
-            "coding-agents/.agents.local.json.4242.0.tmp",
             "coding-agents/.agents.migration-v1.backup.json.4242.0.tmp",
             "coding-agents/..agents.migration-v1.json.4242.0.tmp",
             "context-cache/ac-context-1.md",
@@ -1341,7 +1345,7 @@ mod tests {
             "agency-agents_templates/engineering/role.md",
             // Load-bearing: this is what proves the `coding-agent-requests/` row
             // does not reach its byte-order neighbour.
-            "coding-agents/agents.json",
+            "coding-agents/agents.10.default.json",
             // #1968: the tracked base and the tracked masters stay visible.
             "coding-agents/_seed/.claude/settings.json",
             // #1737: these two also prove the `*.local.md` glob does not reach the
@@ -1808,8 +1812,8 @@ mod tests {
     }
 
     /// #2714 E4 - B1b switches every settings and blocking-menus live name to
-    /// its Phase A target constant, never to a retyped literal. The coding-agent
-    /// names belong to B2 and stay unchanged here.
+    /// its Phase A target constant, never to a retyped literal. #2715 (B2)
+    /// switches the three coding-agent names; the two #1968 sidecars stay.
     #[test]
     fn live_names_are_the_target_names() {
         let switched = [
@@ -1844,15 +1848,18 @@ mod tests {
                 BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
                 BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME,
             ),
+            (CODING_AGENTS_BASE_FILENAME, CODING_AGENTS_BASE_TARGET_NAME),
+            (
+                CODING_AGENTS_LOCAL_FILENAME,
+                CODING_AGENTS_LOCAL_TARGET_NAME,
+            ),
+            (CODING_AGENTS_LOCK_FILENAME, CODING_AGENTS_LOCK_TARGET_NAME),
         ];
         for (live, target) in switched {
             assert_eq!(live, target);
         }
         assert_eq!(SETTINGS_BACKUP_SUFFIX, ".json");
         let unchanged = [
-            (CODING_AGENTS_BASE_FILENAME, "agents.json"),
-            (CODING_AGENTS_LOCAL_FILENAME, "agents.local.json"),
-            (CODING_AGENTS_LOCK_FILENAME, ".agents.json.lock"),
             (
                 CODING_AGENTS_MIGRATION_BACKUP_FILENAME,
                 "agents.migration-v1.backup.json",

@@ -214,7 +214,7 @@ pub(crate) const AGENCY_TEMPLATES_DIR: &str = "agency-agents_templates";
 pub(crate) const AGENT_TEMPLATES_DIR_NAME: &str = "agent-templates";
 pub(crate) const CODING_AGENTS_CATALOG_DIR_NAME: &str = "coding-agents";
 /// The catalog manifest inside `coding-agents/`. The catalog module aliases it.
-pub(crate) const CODING_AGENTS_BASE_FILENAME: &str = "agents.json";
+pub(crate) const CODING_AGENTS_BASE_FILENAME: &str = CODING_AGENTS_BASE_TARGET_NAME;
 
 /// #1968 - declares one machine-local coding-agent catalog child: the FILE name
 /// constant the catalog module aliases for its path composition, plus the
@@ -227,14 +227,10 @@ macro_rules! coding_agents_child {
     };
 }
 
-// The user-owned overrides layer, the two immutable migration sidecars and the
-// catalog write lock. The catalog module aliases these FILE names for its path
-// composition, while the table rows use the derived root-relative names.
-coding_agents_child!(
-    CODING_AGENTS_LOCAL_FILENAME,
-    CODING_AGENTS_LOCAL_ARTIFACT,
-    "agents.local.json"
-);
+// The two immutable migration sidecars. The catalog module aliases these FILE
+// names for its path composition, while the table rows use the derived
+// root-relative names. The overrides layer and the write lock follow the
+// layered target names below.
 // Immutable by contract: an interrupted #1968 catalog migration resumes by this
 // exact name, so it has no layered target name and is never renamed.
 coding_agents_child!(
@@ -248,20 +244,15 @@ coding_agents_child!(
     CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
     ".agents.migration-v1.json"
 );
-coding_agents_child!(
-    CODING_AGENTS_LOCK_FILENAME,
-    CODING_AGENTS_LOCK_ARTIFACT,
-    ".agents.json.lock"
-);
 
 // #1968 - the four publication temporaries. The catalog writer composes each
 // name at runtime from its destination (`managed_catalog_temp_name_for_destination`),
 // so no production code imports these file-name constants; they exist so the
 // registry can prove the table's policy patterns are the writer's real shapes.
 #[allow(dead_code)] // used by the registry's derivation test only
-pub(crate) const CODING_AGENTS_BASE_TMP_GLOB: &str = ".agents.json.*.tmp";
+pub(crate) const CODING_AGENTS_BASE_TMP_GLOB: &str = ".agents.10.default.json.*.tmp";
 #[allow(dead_code)] // used by the registry's derivation test only
-pub(crate) const CODING_AGENTS_LOCAL_TMP_GLOB: &str = ".agents.local.json.*.tmp";
+pub(crate) const CODING_AGENTS_LOCAL_TMP_GLOB: &str = ".agents.50.personal.no-git.json.*.tmp";
 #[allow(dead_code)] // used by the registry's derivation test only
 pub(crate) const CODING_AGENTS_MIGRATION_BACKUP_TMP_GLOB: &str =
     ".agents.migration-v1.backup.json.*.tmp";
@@ -269,8 +260,10 @@ pub(crate) const CODING_AGENTS_MIGRATION_BACKUP_TMP_GLOB: &str =
 pub(crate) const CODING_AGENTS_MIGRATION_JOURNAL_TMP_GLOB: &str =
     "..agents.migration-v1.json.*.tmp";
 
-pub(crate) const CODING_AGENTS_BASE_TMP_ARTIFACT: &str = "coding-agents/.agents.json.*.tmp";
-pub(crate) const CODING_AGENTS_LOCAL_TMP_ARTIFACT: &str = "coding-agents/.agents.local.json.*.tmp";
+pub(crate) const CODING_AGENTS_BASE_TMP_ARTIFACT: &str =
+    "coding-agents/.agents.10.default.json.*.tmp";
+pub(crate) const CODING_AGENTS_LOCAL_TMP_ARTIFACT: &str =
+    "coding-agents/.agents.50.personal.no-git.json.*.tmp";
 pub(crate) const CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT: &str =
     "coding-agents/.agents.migration-v1.backup.json.*.tmp";
 pub(crate) const CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT: &str =
@@ -367,17 +360,33 @@ pub(crate) const SETTINGS_MIGRATION_BACKUP_384_V1_NAME: &str =
 pub(crate) const SETTINGS_BACKUP_ROTATION_TARGET_GLOB: &str =
     layered_name!("settings", instance, no_git, "backup.*.json");
 /// Tracked, so no `.no-git`.
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const CODING_AGENTS_BASE_TARGET_NAME: &str = layered_name!("agents", default, "json");
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const CODING_AGENTS_LOCAL_TARGET_NAME: &str =
     layered_name!("agents", personal, no_git, "json");
 /// Tracked; the file does not exist yet, the location work creates it.
 #[allow(dead_code)] // switched on in Phase B
 pub(crate) const CODING_AGENTS_PROJECT_TARGET_NAME: &str = layered_name!("agents", project, "json");
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const CODING_AGENTS_LOCK_TARGET_NAME: &str =
     concat!(".", layered_name!("agents", default, "json"), ".lock");
+/// #2715 - the user-owned overrides layer and the catalog write lock, switched
+/// to their target names. The table rows use the root-relative twins.
+pub(crate) const CODING_AGENTS_LOCAL_FILENAME: &str = CODING_AGENTS_LOCAL_TARGET_NAME;
+pub(crate) const CODING_AGENTS_LOCAL_ARTIFACT: &str = concat!(
+    "coding-agents/",
+    layered_name!("agents", personal, no_git, "json")
+);
+pub(crate) const CODING_AGENTS_LOCK_FILENAME: &str = CODING_AGENTS_LOCK_TARGET_NAME;
+pub(crate) const CODING_AGENTS_LOCK_ARTIFACT: &str = concat!(
+    "coding-agents/.",
+    layered_name!("agents", default, "json"),
+    ".lock"
+);
+/// #2715 - the pre-migration catalog lock sidecar. A retired name kept only so
+/// the leftover the naming migration deliberately never deletes stays ignored.
+pub(crate) const CODING_AGENTS_RETIRED_LOCK_ARTIFACT: &str = "coding-agents/.agents.json.lock";
+/// #2715 - every catalog file the naming migration demotes,
+/// `<old name>.deprecated-<n>.no-git`: one glob keeps each set-aside copy out of Git.
+pub(crate) const CODING_AGENTS_SET_ASIDE_ARTIFACT: &str = "coding-agents/*.deprecated-*.no-git";
 /// The file does not exist yet; Phase B creates it.
 #[allow(dead_code)] // switched on in Phase B
 pub(crate) const AGENTS_INSTANCE_TARGET_NAME: &str =
@@ -598,6 +607,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: CLI-to-app coding-agent mutation request queue, including its results/ subdirectory",
     },
     InstanceArtifact {
+        name: CODING_AGENTS_SET_ASIDE_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: coding-agent catalog files the naming migration set aside (<old name>.deprecated-<n>.no-git); every byte kept, never committed",
+    },
+    InstanceArtifact {
         name: CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
@@ -620,6 +635,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::RootRelativeGlob,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: transient coding-agent local override publication temporaries",
+    },
+    InstanceArtifact {
+        name: CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
+        kind: ArtifactKind::RootRelativeGlob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: retired coding-agent catalog write-lock sidecar; created once, never renamed or deleted",
     },
     InstanceArtifact {
         name: CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
@@ -903,11 +924,13 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
 /// may carry. A registry test pins the table to this set, so widening the kind
 /// to another directory is a policy change rather than a table tweak.
 #[cfg(test)]
-pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 8] = [
+pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 10] = [
+    CODING_AGENTS_SET_ASIDE_ARTIFACT,
     CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
     CODING_AGENTS_BASE_TMP_ARTIFACT,
     CODING_AGENTS_LOCK_ARTIFACT,
     CODING_AGENTS_LOCAL_TMP_ARTIFACT,
+    CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
     CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
     CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
     CODING_AGENTS_LOCAL_ARTIFACT,
