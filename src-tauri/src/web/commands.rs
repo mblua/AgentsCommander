@@ -202,6 +202,15 @@ async fn dispatch_agent_update_command(
                 },
             )
         }
+        "get_coding_agent_welcome_status" => Some(
+            // #2736 - argument-free read: `args` is ignored, like the catalog arm.
+            match crate::commands::config::coding_agent_welcome_status_inner(&state.settings).await
+            {
+                Ok(rows) => serde_json::to_value(rows)
+                    .map_err(|e| format!("Failed to serialize coding agent welcome status: {e}")),
+                Err(unavailable) => Err(unavailable),
+            },
+        ),
         "get_coding_agent_catalog_report" => {
             let report =
                 crate::commands::config::coding_agent_catalog_report_inner(&state.settings).await;
@@ -3026,6 +3035,85 @@ mod tests {
             .expect("status route");
         assert_eq!(status["answered"], json!({ "claude": true }));
         assert_eq!(status["prompt"], Value::Null);
+    }
+
+    fn welcome_status_state_2736() -> (tempfile::TempDir, WsState) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let catalog_dir = dir.path().join(".ac").join("coding-agents");
+        std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
+        std::fs::write(
+            catalog_dir.join("agents.10.default.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 1,
+                "agents": [
+                    {
+                        "key": "claude",
+                        "label": "Claude",
+                        "description": "d",
+                        "color": "#000000",
+                        "command": "claude-2736-absent",
+                        "envs": [],
+                        "isolatedHome": false,
+                        "removable": true,
+                        "installCommands": { "default": "npm i -g claude" }
+                    },
+                    {
+                        "key": "mine-2736",
+                        "label": "Mine",
+                        "description": "d",
+                        "color": "#111111",
+                        "command": "mine-2736-absent",
+                        "envs": [],
+                        "isolatedHome": false,
+                        "removable": true
+                    }
+                ]
+            }))
+            .expect("manifest json"),
+        )
+        .expect("write catalog");
+        let settings = AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        let (state, _rx, _gate) = ws_state_with_agent_update(settings, false, false);
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn get_coding_agent_welcome_status_route_matches_the_shared_inner() {
+        let (_dir, state) = welcome_status_state_2736();
+        let inner = crate::commands::config::coding_agent_welcome_status_inner(&state.settings)
+            .await
+            .expect("shared inner");
+        assert_eq!(
+            inner.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(),
+            vec!["claude", "mine-2736"]
+        );
+        let routed = dispatch_inner(&state, "get_coding_agent_welcome_status", &json!({}))
+            .await
+            .expect("welcome status route");
+        assert_eq!(routed, serde_json::to_value(&inner).expect("rows json"));
+        assert_eq!(routed[0]["testedLevel"], json!("high"));
+        assert_eq!(routed[0]["installCommand"], json!("npm i -g claude"));
+        assert_eq!(routed[1]["testedLevel"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn get_coding_agent_welcome_status_route_ignores_extra_args() {
+        let (_dir, state) = welcome_status_state_2736();
+        let plain = dispatch_inner(&state, "get_coding_agent_welcome_status", &json!({}))
+            .await
+            .expect("plain route");
+        let extra = dispatch_inner(
+            &state,
+            "get_coding_agent_welcome_status",
+            &json!({ "unexpected": true }),
+        )
+        .await
+        .expect("extra args must not be rejected");
+        assert_eq!(extra, plain);
+        assert_eq!(extra.as_array().expect("rows").len(), 2);
     }
 
     #[tokio::test]

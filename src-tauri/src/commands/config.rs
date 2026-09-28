@@ -582,6 +582,31 @@ pub async fn coding_agent_catalog_inner(
         .map_err(|unavailable| unavailable.to_string())
 }
 
+/// #2736 - per catalog entry: installed (PATH only, no process spawn), the
+/// code-only tested level and this host's install command. Read-only; an
+/// unavailable persisted catalog is `Err` exactly as `get_coding_agent_catalog`.
+#[tauri::command]
+pub async fn get_coding_agent_welcome_status(
+    settings: State<'_, SettingsState>,
+) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentWelcomeStatus>, String> {
+    coding_agent_welcome_status_inner(settings.inner()).await
+}
+
+/// #2736 - shared by the Tauri command and the WebSocket router. Takes one
+/// settings snapshot and releases the async settings lock BEFORE any filesystem
+/// work (mirrors `coding_agent_catalog_inner`). The embedded default is NEVER
+/// substituted; never seeds, refreshes or writes.
+pub async fn coding_agent_welcome_status_inner(
+    settings: &SettingsState,
+) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentWelcomeStatus>, String> {
+    let snapshot = settings.read().await.clone();
+    let catalog = crate::config::coding_agents_catalog::load_catalog_for_settings(&snapshot)
+        .map_err(|unavailable| unavailable.to_string())?;
+    Ok(crate::config::coding_agents_catalog::welcome_status_for(
+        &catalog,
+    ))
+}
+
 /// #1963 (P1) - read-only persisted-catalog report for the pre-migration UI.
 /// Additive IPC: since P4 the array endpoint above resolves through the SAME
 /// resolver, so both agree about availability and the persisted selection.
@@ -4753,6 +4778,36 @@ mod tests {
 
     fn state_for(settings: AppSettings) -> SettingsState {
         Arc::new(RwLock::new(settings))
+    }
+
+    #[tokio::test]
+    async fn welcome_status_command_2736_returns_err_for_an_unavailable_catalog() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = state_for(AppSettings {
+            project_paths: vec![temp.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        });
+        let catalog_err = super::coding_agent_catalog_inner(&state)
+            .await
+            .expect_err("no persisted catalog");
+        let welcome_err = super::coding_agent_welcome_status_inner(&state)
+            .await
+            .expect_err("no persisted catalog");
+        assert_eq!(welcome_err, catalog_err);
+    }
+
+    #[tokio::test]
+    async fn welcome_status_command_2736_releases_the_settings_lock_before_filesystem_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = state_for(AppSettings {
+            project_paths: vec![temp.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        });
+        // A concurrent reader must not block the call, and no guard outlives it.
+        let held = state.read().await;
+        let _ = super::coding_agent_welcome_status_inner(&state).await;
+        drop(held);
+        assert!(state.try_write().is_ok(), "settings lock still held");
     }
 
     fn write_settings_file(dir: &Path, settings: &AppSettings) {
