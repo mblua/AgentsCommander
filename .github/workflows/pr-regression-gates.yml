@@ -274,6 +274,11 @@ jobs:
             exit 1
           fi
           grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-refusal.log || { echo "::error::expected exactly two passing tests"; exit 1; }
+          grep -qE '^ISSUE1850_REFUSAL_SELFCONTROL_OK entries=3$' test-1850-refusal.log || { echo "::error::the refusal census self-control did not report success"; exit 1; }
+          if grep -qF 'ISSUE1850_REFUSAL_OCCUPIED' test-1850-refusal.log; then
+            echo "::error::the hosted runner profile is not clean; the occupied refusal route was taken"
+            exit 1
+          fi
 
       # IS #1850: focused debug execution of every issue_1850 test. Guards
       # mirror the #1577 step: pipefail catches a failing test, the identifier
@@ -1761,6 +1766,11 @@ jobs:
           grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=7$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
           grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
           grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
+          grep -qE '^ISSUE1850_REFUSAL_SELFCONTROL_OK entries=3$' test-1850-default-root.log || { echo "::error::the refusal census self-control did not report success"; exit 1; }
+          if grep -qF 'ISSUE1850_REFUSAL_OCCUPIED' test-1850-default-root.log; then
+            echo "::error::the hosted runner profile is not clean; the occupied refusal route was taken"
+            exit 1
+          fi
 
       # IS #2589: agent binaries resolve through the composed search path. The
       # Phase 2 and integration tests are cfg(unix), so they run only here.
@@ -2723,6 +2733,11 @@ jobs:
           grep -qE '^ISSUE1850_DEFAULT_ROOT_PROOF_OK cases=7$' test-1850-default-root.log || { echo "::error::final proof record missing"; exit 1; }
           grep -qE '^test result: ok\. 2 passed; 0 failed' test-1850-default-root.log || { echo "::error::expected exactly two passing tests"; exit 1; }
           grep -qE '^ISSUE1850_REFUSAL_ONLY' test-1850-default-root.log && { echo "::error::refusal-only route taken on a non-Windows leg"; exit 1; } || true
+          grep -qE '^ISSUE1850_REFUSAL_SELFCONTROL_OK entries=3$' test-1850-default-root.log || { echo "::error::the refusal census self-control did not report success"; exit 1; }
+          if grep -qF 'ISSUE1850_REFUSAL_OCCUPIED' test-1850-default-root.log; then
+            echo "::error::the hosted runner profile is not clean; the occupied refusal route was taken"
+            exit 1
+          fi
 
       # IS #2589: agent binaries resolve through the composed search path. The
       # Phase 2 and integration tests are cfg(unix), so they run only here.
@@ -3033,6 +3048,8 @@ jobs:
           if ($text -notmatch '(?m)^ISSUE1850_WINDOWS_PROFILE_PROOF_OK cases=7\s*$') { Fail 'the final profile-proof record is missing' }
           if ($text -notmatch '(?m)^test result: ok\. 2 passed; 0 failed') { Fail 'expected exactly two passing tests' }
           if ($text -match 'ISSUE1850_REFUSAL_ONLY') { Fail 'a refusal-only record is present; the real-profile route was not taken' }
+          if ($text -notmatch '(?m)^ISSUE1850_REFUSAL_SELFCONTROL_OK entries=3\s*$') { Fail 'the refusal census self-control did not report success' }
+          if ($text -match 'ISSUE1850_REFUSAL_OCCUPIED') { Fail 'an occupied refusal record is present; the real-profile route was not taken' }
           Write-Host "IS #1850 ($mode): real-profile proof verified, 7 cases"
 
       - name: "Upload IS #1850 profile-proof logs"
