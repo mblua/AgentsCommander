@@ -4977,6 +4977,36 @@ mod tests {
         assert_eq!(last.command, "muse");
     }
 
+    /// #2736 P1 - the shipped `installCommands` pin, kept OUT of
+    /// `embedded_default_matches_current_presets_exactly` so that test stays
+    /// under the pinned cognitive complexity threshold of 25.
+    fn assert_shipped_install_commands_2736(key: &str, def: &CodingAgentDefinition) {
+        let expected_install = match key {
+            "claude" => Some("npm install -g @anthropic-ai/claude-code"),
+            "codex" => Some("npm install -g @openai/codex"),
+            "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
+            "opencode" => Some("npm install -g opencode-ai"),
+            _ => None,
+        };
+        match expected_install {
+            Some(expected) => {
+                let ic = def
+                    .install_commands
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{key} must ship installCommands"));
+                assert_eq!(ic.default, expected, "{key} installCommands.default");
+                assert!(
+                    ic.windows.is_none() && ic.macos.is_none() && ic.linux.is_none(),
+                    "{key} must ship no per-OS override"
+                );
+            }
+            None => assert!(
+                def.install_commands.is_none(),
+                "{key} must ship no installCommands"
+            ),
+        }
+    }
+
     #[test]
     fn embedded_default_matches_current_presets_exactly() {
         // Drift guard for every current preset field.
@@ -5022,30 +5052,7 @@ mod tests {
                 Some(60.0),
                 "{key} idleBurst priorSilenceSecs"
             );
-            let expected_install = match key {
-                "claude" => Some("npm install -g @anthropic-ai/claude-code"),
-                "codex" => Some("npm install -g @openai/codex"),
-                "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
-                "opencode" => Some("npm install -g opencode-ai"),
-                _ => None,
-            };
-            match expected_install {
-                Some(expected) => {
-                    let ic = def
-                        .install_commands
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("{key} must ship installCommands"));
-                    assert_eq!(ic.default, expected, "{key} installCommands.default");
-                    assert!(
-                        ic.windows.is_none() && ic.macos.is_none() && ic.linux.is_none(),
-                        "{key} must ship no per-OS override"
-                    );
-                }
-                None => assert!(
-                    def.install_commands.is_none(),
-                    "{key} must ship no installCommands"
-                ),
-            }
+            assert_shipped_install_commands_2736(key, def);
         }
         let raw: serde_json::Value = serde_json::from_str(EMBEDDED_DEFAULT_CATALOG_JSON).unwrap();
         assert_eq!(raw["schemaVersion"], 1);
