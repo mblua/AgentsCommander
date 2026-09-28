@@ -16,7 +16,7 @@ use crate::config::instance_artifacts::{
     CODING_AGENTS_LOCAL_TMP_ARTIFACT, CODING_AGENTS_LOCK_ARTIFACT,
     CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT, CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
     CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT, CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
-    SETTINGS_FILE_NAME,
+    CODING_AGENTS_RETIRED_LOCK_ARTIFACT, CODING_AGENTS_SET_ASIDE_ARTIFACT, SETTINGS_FILE_NAME,
 };
 use crate::config::settings::SettingsState;
 use crate::pty::manager::{PendingSpawn, PtyManager};
@@ -1643,7 +1643,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     const SEED_MANIFEST_MANIFEST_PATTERN: &str = "/seed-manifest.toml";
 
     // #1968 - the machine-local coding-agent catalog children, rooted at `.ac/`.
-    let [catalog_local, catalog_migration_backup, catalog_migration_journal, catalog_lock, catalog_base_tmp, catalog_local_tmp, catalog_migration_backup_tmp, catalog_migration_journal_tmp] =
+    let [catalog_local, catalog_migration_backup, catalog_migration_journal, catalog_lock, catalog_base_tmp, catalog_local_tmp, catalog_migration_backup_tmp, catalog_migration_journal_tmp, catalog_retired_lock, catalog_set_aside] =
         [
             CODING_AGENTS_LOCAL_ARTIFACT,
             CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
@@ -1653,6 +1653,8 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             CODING_AGENTS_LOCAL_TMP_ARTIFACT,
             CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
             CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
+            CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
+            CODING_AGENTS_SET_ASIDE_ARTIFACT,
         ]
         .map(|artifact| format!("/{artifact}"));
 
@@ -1792,6 +1794,16 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             catalog_migration_journal_tmp.as_str(),
             "# AgentsCommander: exclude coding-agent migration journal publication temporaries (the journal name starts with a dot).",
         ),
+        // #2715 - the pre-migration lock sidecar the naming migration leaves on
+        // disk for good, and every catalog file it sets aside.
+        (
+            catalog_retired_lock.as_str(),
+            "# AgentsCommander: exclude the retired coding-agent catalog write-lock sidecar.",
+        ),
+        (
+            catalog_set_aside.as_str(),
+            "# AgentsCommander: exclude coding-agent catalog files the naming migration set aside.",
+        ),
     ];
     for pattern in &custom_patterns {
         required_entries.push((
@@ -1804,6 +1816,13 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         let content = std::fs::read_to_string(&gitignore_path)
             .map_err(|e| format!("Failed to read Project AC Root .gitignore: {}", e))?;
         let (content, migrated) = migrate_legacy_seed_manifest_gitignore(content);
+        // #2715 - the append-only writer never removes a row, so the catalog
+        // rows the naming migration renamed are retired here.
+        let (content, retired) = crate::config::naming_migration::retire_ignore_pairs(
+            &content,
+            &RETIRED_CATALOG_IGNORE_PAIRS,
+        );
+        let migrated = migrated || retired;
 
         let mut additions = String::new();
         for (pattern, comment) in &required_entries {
@@ -1855,6 +1874,23 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
 
     Ok(())
 }
+
+/// #2715 - the three `.ac/.gitignore` pairs whose value the `agents.*` rename
+/// changed. The lock row is not here: its leftover stays on disk and ignored.
+const RETIRED_CATALOG_IGNORE_PAIRS: [(&str, &str); 3] = [
+    (
+        "# AgentsCommander: exclude machine-local coding-agent overrides.",
+        "/coding-agents/agents.local.json",
+    ),
+    (
+        "# AgentsCommander: exclude coding-agent base publication temporaries.",
+        "/coding-agents/.agents.json.*.tmp",
+    ),
+    (
+        "# AgentsCommander: exclude coding-agent local override publication temporaries.",
+        "/coding-agents/.agents.local.json.*.tmp",
+    ),
+];
 
 /// #2090 - migrate the retired `!/seed-manifest.toml` un-ignore pair written by
 /// older builds. Only the two AC-managed lines (the retired comment directly
@@ -4853,14 +4889,16 @@ mod tests {
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         for pattern in [
-            "/coding-agents/agents.local.json",
+            "/coding-agents/agents.50.personal.no-git.json",
             "/coding-agents/agents.migration-v1.backup.json",
             "/coding-agents/.agents.migration-v1.json",
-            "/coding-agents/.agents.json.lock",
-            "/coding-agents/.agents.json.*.tmp",
-            "/coding-agents/.agents.local.json.*.tmp",
+            "/coding-agents/.agents.10.default.json.lock",
+            "/coding-agents/.agents.10.default.json.*.tmp",
+            "/coding-agents/.agents.50.personal.no-git.json.*.tmp",
             "/coding-agents/.agents.migration-v1.backup.json.*.tmp",
             "/coding-agents/..agents.migration-v1.json.*.tmp",
+            "/coding-agents/.agents.json.lock",
+            "/coding-agents/*.deprecated-*.no-git",
         ] {
             assert_eq!(
                 content

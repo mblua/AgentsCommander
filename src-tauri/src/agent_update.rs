@@ -3756,7 +3756,7 @@ mod tests {
         });
         let mut bytes = serde_json::to_vec_pretty(&legacy).unwrap();
         bytes.push(b'\n');
-        std::fs::write(catalog_dir.join("agents.json"), &bytes).unwrap();
+        std::fs::write(catalog_dir.join("agents.10.default.json"), &bytes).unwrap();
         assert!(
             ensure_seeded(&ac_dir, None).is_some(),
             "the legacy catalog migrates"
@@ -3833,7 +3833,7 @@ mod tests {
         });
         let mut bytes = serde_json::to_vec_pretty(&local).unwrap();
         bytes.push(b'\n');
-        std::fs::write(catalog_dir.join("agents.local.json"), &bytes).unwrap();
+        std::fs::write(catalog_dir.join("agents.50.personal.no-git.json"), &bytes).unwrap();
 
         let settings = AppSettings {
             project_paths: vec![project.to_string_lossy().to_string()],
@@ -4372,7 +4372,7 @@ mod tests {
             ]
         });
         std::fs::write(
-            catalog_dir.join("agents.json"),
+            catalog_dir.join("agents.10.default.json"),
             serde_json::to_vec_pretty(&manifest).expect("manifest json"),
         )
         .expect("write catalog");
@@ -5674,7 +5674,7 @@ mod tests {
             dir.path()
                 .join(".ac")
                 .join("coding-agents")
-                .join("agents.json")
+                .join("agents.10.default.json")
                 .display()
                 .to_string()
         );
@@ -5698,7 +5698,7 @@ mod tests {
         let catalog_dir = dir.path().join(".ac").join("coding-agents");
         std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
         std::fs::write(
-            catalog_dir.join("agents.json"),
+            catalog_dir.join("agents.10.default.json"),
             serde_json::to_vec_pretty(&json!({
                 "schemaVersion": 1,
                 "agents": [
@@ -5771,7 +5771,7 @@ mod tests {
         let catalog_dir = dir.path().join(".ac").join("coding-agents");
         std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
         std::fs::write(
-            catalog_dir.join("agents.json"),
+            catalog_dir.join("agents.10.default.json"),
             serde_json::to_vec_pretty(&json!({
                 "schemaVersion": 1,
                 "agents": [

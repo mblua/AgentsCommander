@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::agent_command::is_safe_instructions_filename;
+use crate::config::naming_migration;
 use crate::config::seed_manifest::{
     acquire_project_gate_soft, has_catalog_publication, ManifestActivationToken,
     ManifestPathIdentity, ProjectSeedManifestGuard, PublishedManifestRow, SoftProjectGate,
@@ -2391,9 +2392,15 @@ struct CatalogPaths {
 
 impl CatalogPaths {
     fn new(dir: &Path) -> Self {
+        Self::with_names(dir, CATALOG_MANIFEST_FILENAME, LOCAL_CATALOG_FILENAME)
+    }
+
+    /// #2715 - the same composition over explicit data-file names, so an
+    /// interrupted #1968 migration is recovered over the PRE-migration names.
+    fn with_names(dir: &Path, base: &str, local: &str) -> Self {
         Self {
-            base: dir.join(CATALOG_MANIFEST_FILENAME),
-            local: dir.join(LOCAL_CATALOG_FILENAME),
+            base: dir.join(base),
+            local: dir.join(local),
             backup: dir.join(MIGRATION_BACKUP_FILENAME),
             journal: dir.join(MIGRATION_JOURNAL_FILENAME),
             lock: dir.join(CATALOG_LOCK_FILENAME),
@@ -3617,8 +3624,14 @@ fn initialize_catalog_under_lock(
 fn run_catalog_initialization(
     ac_dir: &Path,
     legacy_catalog_dir: Option<&Path>,
+    journal_dir: Option<&Path>,
 ) -> CatalogInitOutcome {
-    run_catalog_initialization_with_scope(ac_dir, legacy_catalog_dir, InitScope::Project)
+    run_catalog_initialization_with_scope(
+        ac_dir,
+        legacy_catalog_dir,
+        journal_dir,
+        InitScope::Project,
+    )
 }
 
 /// #2021: initialize or refresh the INSTANCE catalog at
@@ -3632,17 +3645,44 @@ fn run_catalog_initialization(
 /// instance neither imports from nor publishes to another location. Returns
 /// the publication time when the managed base was actually written.
 pub(crate) fn ensure_seeded_instance(config_dir: &Path) -> Option<DateTime<Utc>> {
-    run_catalog_initialization_with_scope(config_dir, None, InitScope::Instance).published_at
+    ensure_seeded_instance_in(config_dir, Some(config_dir))
+}
+
+/// [`ensure_seeded_instance`] with the naming-migration journal directory
+/// injected (#2715), so a test never touches the process-wide `config_dir()`.
+fn ensure_seeded_instance_in(
+    config_dir: &Path,
+    journal_dir: Option<&Path>,
+) -> Option<DateTime<Utc>> {
+    run_catalog_initialization_with_scope(config_dir, None, journal_dir, InitScope::Instance)
+        .published_at
 }
 
 fn run_catalog_initialization_with_scope(
     ac_dir: &Path,
     legacy_catalog_dir: Option<&Path>,
+    journal_dir: Option<&Path>,
     scope: InitScope,
 ) -> CatalogInitOutcome {
+    // #2715 5.4: the legacy instance catalog first, before any project lock
+    // exists for this pass, so the two catalog locks never nest. A failure
+    // seeds nothing: a project must not get defaults beside a source that
+    // could not be moved.
+    if let Some(legacy) = legacy_catalog_dir {
+        if let Err(diagnostic) = migrate_legacy_catalog_scope(legacy, journal_dir) {
+            return fail_soft_outcome(diagnostic);
+        }
+    }
     let dir = match ensure_catalog_dir(ac_dir) {
         Ok(dir) => dir,
         Err(reason) => {
+            // Recorded and retried: an unreachable directory is never settled.
+            let _ = naming_migration::update_journal(journal_dir, |journal| {
+                journal.set_status(
+                    &catalog_scope_key(&catalog_dir(ac_dir)),
+                    naming_migration::ScopeStatus::Unreachable,
+                );
+            });
             return CatalogInitOutcome {
                 published_at: None,
                 base_verified_managed: false,
@@ -3651,7 +3691,7 @@ fn run_catalog_initialization_with_scope(
                     ac_dir,
                     reason,
                 )],
-            }
+            };
         }
     };
     let paths = CatalogPaths::new(&dir);
@@ -3669,7 +3709,31 @@ fn run_catalog_initialization_with_scope(
             }
         }
     };
-    let outcome = initialize_catalog_under_lock(&paths, legacy_catalog_dir, scope);
+    // #2715 5.1: the family rename under the held catalog lock, immediately
+    // before the base can be created. `lock_scope_under_held` adds only the old
+    // sidecar: re-opening the new one would block on this pass's own handle.
+    let migrated = naming_migration::lock_scope_under_held(
+        &dir,
+        Some(RETIRED_CATALOG_LOCK_FILENAME),
+        naming_migration::MIGRATION_LOCK_BUDGET,
+    )
+    .map_err(|refusal| {
+        catalog_diagnostic(
+            REPORT_CODE_REFRESH_FAILED,
+            &dir.join(RETIRED_CATALOG_LOCK_FILENAME),
+            format!(
+                "the naming migration could not lock the retired catalog sidecar: {}",
+                naming_refusal_reason(refusal)
+            ),
+        )
+    })
+    .and_then(|held| migrate_catalog_family(&dir, legacy_catalog_dir, journal_dir, scope, &held));
+    let migration_published_at = match migrated {
+        Ok(published_at) => published_at,
+        Err(diagnostic) => return fail_soft_outcome(diagnostic),
+    };
+    let mut outcome = initialize_catalog_under_lock(&paths, legacy_catalog_dir, scope);
+    outcome.published_at = outcome.published_at.or(migration_published_at);
     for warning in &outcome.warnings {
         log::warn!(
             "[coding-agents] {} at {}: {}",
@@ -3681,6 +3745,248 @@ fn run_catalog_initialization_with_scope(
     outcome
 }
 
+// ---------------------------------------------------------------------------
+// #2715 (phase B2 of #2703) - the `agents.*` family rename, per catalog
+// directory, inside the one function every seeding entry point reaches.
+// ---------------------------------------------------------------------------
+
+/// The pre-migration names of the two catalog data files, in rename order.
+const CATALOG_FAMILY_RENAMES: [naming_migration::Rename; 2] = [
+    naming_migration::Rename {
+        from: "agents.json",
+        to: CATALOG_MANIFEST_FILENAME,
+    },
+    naming_migration::Rename {
+        from: "agents.local.json",
+        to: LOCAL_CATALOG_FILENAME,
+    },
+];
+
+/// The pre-migration catalog lock sidecar. Held beside the new one for the
+/// whole scope, so a pre-migration binary is still excluded; never renamed.
+const RETIRED_CATALOG_LOCK_FILENAME: &str = ".agents.json.lock";
+
+/// One scope per canonical catalog directory, whether it is reached as a
+/// project `ac_dir` or as the legacy instance directory.
+fn catalog_scope_key(canonical_dir: &Path) -> String {
+    format!("catalog:{}", canonical_dir.display())
+}
+
+fn naming_refusal_reason(refusal: naming_migration::Refusal) -> String {
+    match refusal {
+        naming_migration::Refusal::LockUnavailable => "lock unavailable".to_string(),
+        naming_migration::Refusal::Io(message) => message,
+    }
+}
+
+fn catalog_path_present(path: &Path) -> Result<bool, CatalogDiagnostic> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(catalog_diagnostic(
+            REPORT_CODE_REFRESH_FAILED,
+            path,
+            format!("the naming migration could not inspect this path ({error})"),
+        )),
+    }
+}
+
+/// Move the catalog family in `dir` (canonical) to its target names under the
+/// caller's held locks. Rule F1: in a project directory an interrupted #1968
+/// migration is finished first, over the PRE-migration names, and a blocked
+/// one defers the scope and renames nothing. The instance directory never
+/// resumes a sidecar (#2021). Returns the recovery's publication instant.
+fn migrate_catalog_family(
+    dir: &Path,
+    legacy_catalog_dir: Option<&Path>,
+    journal_dir: Option<&Path>,
+    scope: InitScope,
+    held: &naming_migration::ScopeLock,
+) -> Result<Option<DateTime<Utc>>, CatalogDiagnostic> {
+    let key = catalog_scope_key(dir);
+    let journal_error = |refusal| {
+        catalog_diagnostic(
+            REPORT_CODE_REFRESH_FAILED,
+            dir,
+            format!(
+                "the naming-migration journal failed: {}",
+                naming_refusal_reason(refusal)
+            ),
+        )
+    };
+    // `scope_is_settled`, never `is_complete`: a `Complete` the disk
+    // contradicts is re-run.
+    let journal = naming_migration::read_journal(journal_dir).map_err(journal_error)?;
+    if naming_migration::scope_is_settled(journal.as_ref(), &key) {
+        return Ok(None);
+    }
+
+    let old = CatalogPaths::with_names(
+        dir,
+        CATALOG_FAMILY_RENAMES[0].from,
+        CATALOG_FAMILY_RENAMES[1].from,
+    );
+    let journal_present = catalog_path_present(&old.journal)?;
+    let backup_present = catalog_path_present(&old.backup)?;
+    // With neither old data file on disk there is no rename to protect, so F1
+    // has nothing to do; `initialize_catalog_under_lock` recovers over the new
+    // names as before.
+    let has_old_data = catalog_path_present(&old.base)? || catalog_path_present(&old.local)?;
+    let mut published_at = None;
+    if scope == InitScope::Project && has_old_data && (journal_present || backup_present) {
+        let (recovered, sidecar) = if journal_present {
+            (recover_interrupted_migration(&old), &old.journal)
+        } else {
+            (
+                resume_backup_only_migration(&old, legacy_catalog_dir),
+                &old.backup,
+            )
+        };
+        match recovered {
+            Ok(at) => published_at = at,
+            Err(reason) => {
+                // Blocked: the genuinely in-flight case. Rename nothing; the
+                // next pass retries, so restoring the backup heals it.
+                let _ = naming_migration::update_journal(journal_dir, |j| {
+                    j.note(&key, &format!("deferred: {reason}"));
+                    j.set_status(&key, naming_migration::ScopeStatus::Deferred);
+                });
+                return Err(catalog_diagnostic(
+                    REPORT_CODE_MIGRATION_CONFLICT,
+                    sidecar,
+                    reason,
+                ));
+            }
+        }
+    }
+
+    let mut base_moved = false;
+    for (index, rename) in CATALOG_FAMILY_RENAMES.iter().enumerate() {
+        match naming_migration::rename_step(dir, rename, &key, journal_dir, held) {
+            naming_migration::Outcome::Refused(refusal) => {
+                return Err(catalog_diagnostic(
+                    REPORT_CODE_REFRESH_FAILED,
+                    &dir.join(rename.from),
+                    format!(
+                        "the naming migration could not move {} to {}: {}",
+                        rename.from,
+                        rename.to,
+                        naming_refusal_reason(refusal)
+                    ),
+                ))
+            }
+            naming_migration::Outcome::Renamed | naming_migration::Outcome::SetAside(_) => {
+                base_moved |= index == 0;
+            }
+            naming_migration::Outcome::AlreadyDone | naming_migration::Outcome::SourceAbsent => {}
+        }
+    }
+
+    // A lock sidecar and the two immutable #1968 sidecars are never renamed
+    // or deleted, only noted.
+    let mut notes = Vec::new();
+    for (name, why) in [
+        (
+            RETIRED_CATALOG_LOCK_FILENAME,
+            "a lock sidecar is never renamed or deleted",
+        ),
+        (
+            MIGRATION_JOURNAL_FILENAME,
+            "an immutable #1968 migration sidecar is never renamed or deleted",
+        ),
+        (
+            MIGRATION_BACKUP_FILENAME,
+            "an immutable #1968 migration sidecar is never renamed or deleted",
+        ),
+    ] {
+        if matches!(catalog_path_present(&dir.join(name)), Ok(true)) {
+            notes.push(format!("left on disk: {name} ({why})"));
+        }
+    }
+    naming_migration::update_journal(journal_dir, |j| {
+        for note in &notes {
+            j.note(&key, note);
+        }
+        j.set_status(&key, naming_migration::ScopeStatus::Complete);
+    })
+    .map_err(journal_error)?;
+
+    if base_moved && scope == InitScope::Project {
+        log::warn!(
+            "[coding-agents] renamed {} to {} in {}; Git shows the tracked {} as deleted and {} as new (a delete plus an add), and AC runs no Git",
+            CATALOG_FAMILY_RENAMES[0].from,
+            CATALOG_FAMILY_RENAMES[0].to,
+            dir.display(),
+            CATALOG_FAMILY_RENAMES[0].from,
+            CATALOG_FAMILY_RENAMES[0].to,
+        );
+    }
+    Ok(published_at)
+}
+
+/// #2715 5.4 - the legacy instance catalog is its own scope, migrated before
+/// any project lock is taken, so a new project imports the real instance
+/// catalog. It holds no caller lock, so it takes both sidecars itself. A
+/// directory that does not exist holds nothing to rename and is not created.
+fn migrate_legacy_catalog_scope(
+    legacy_catalog_dir: &Path,
+    journal_dir: Option<&Path>,
+) -> Result<(), CatalogDiagnostic> {
+    let conflict = |reason: String| {
+        catalog_diagnostic(
+            REPORT_CODE_MIGRATION_CONFLICT,
+            legacy_catalog_dir,
+            format!(
+                "the instance catalog {} could not be moved to {}: {reason}",
+                legacy_catalog_dir
+                    .join(CATALOG_FAMILY_RENAMES[0].from)
+                    .display(),
+                legacy_catalog_dir
+                    .join(CATALOG_FAMILY_RENAMES[0].to)
+                    .display()
+            ),
+        )
+    };
+    let dir = match std::fs::canonicalize(legacy_catalog_dir) {
+        Ok(dir) => dir,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(conflict(error.to_string())),
+    };
+    let key = catalog_scope_key(&dir);
+    // Settled already: skip without contending for the instance lock.
+    let journal = naming_migration::read_journal(journal_dir)
+        .map_err(|refusal| conflict(naming_refusal_reason(refusal)))?;
+    if naming_migration::scope_is_settled(journal.as_ref(), &key) {
+        return Ok(());
+    }
+    let held = naming_migration::lock_scope(
+        &dir,
+        CATALOG_LOCK_FILENAME,
+        Some(RETIRED_CATALOG_LOCK_FILENAME),
+        naming_migration::MIGRATION_LOCK_BUDGET,
+    )
+    .map_err(|r| conflict(naming_refusal_reason(r)))?;
+    migrate_catalog_family(&dir, None, journal_dir, InitScope::Instance, &held)
+        .map(|_| ())
+        .map_err(|diagnostic| conflict(diagnostic.reason))
+}
+
+/// A fail-soft outcome carrying one diagnostic: nothing published, nothing
+/// verified, and `initialize_catalog_under_lock` not reached.
+fn fail_soft_outcome(diagnostic: CatalogDiagnostic) -> CatalogInitOutcome {
+    log::warn!(
+        "[coding-agents] {} at {}: {}",
+        diagnostic.code,
+        diagnostic.path,
+        diagnostic.reason
+    );
+    CatalogInitOutcome {
+        published_at: None,
+        base_verified_managed: false,
+        warnings: vec![diagnostic],
+    }
+}
+
 /// Initialize the catalog for `ac_dir` under the catalog lock: recover or
 /// refresh a managed base, migrate a legacy catalog, or fresh-seed the managed
 /// defaults plus the create-once local stub. Returns the `Utc::now()`
@@ -3688,7 +3994,7 @@ fn run_catalog_initialization_with_scope(
 /// actually written or replaced; `None` means no base publication. Fail-soft:
 /// every failure is logged and surfaced as a warning, never a panic.
 pub fn ensure_seeded(ac_dir: &Path, legacy_catalog_dir: Option<&Path>) -> Option<DateTime<Utc>> {
-    run_catalog_initialization(ac_dir, legacy_catalog_dir).published_at
+    run_catalog_initialization(ac_dir, legacy_catalog_dir, None).published_at
 }
 
 // ---------------------------------------------------------------------------
@@ -3994,6 +4300,26 @@ pub(crate) fn ensure_seeded_for_project_with_token(
     project_root: &Path,
     activation: Option<&ManifestActivationToken>,
 ) {
+    // #2715: the one place this seeding chain reads `config_dir()`; it names
+    // both the legacy instance catalog and the naming-migration journal.
+    let config_dir = crate::config::config_dir();
+    let legacy = config_dir.as_ref().map(|dir| dir.join(CATALOG_DIR_NAME));
+    ensure_seeded_for_project_in(
+        project_root,
+        activation,
+        legacy.as_deref(),
+        config_dir.as_deref(),
+    );
+}
+
+/// [`ensure_seeded_for_project_with_token`] with the legacy catalog and the
+/// naming-migration journal directory injected (#2715).
+fn ensure_seeded_for_project_in(
+    project_root: &Path,
+    activation: Option<&ManifestActivationToken>,
+    legacy: Option<&Path>,
+    journal_dir: Option<&Path>,
+) {
     if !project_root.is_absolute() {
         log::warn!(
             "[coding-agents] skipping seed for non-absolute registered project root {}",
@@ -4009,18 +4335,17 @@ pub(crate) fn ensure_seeded_for_project_with_token(
         return;
     }
     let ac_dir = project_root.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
-    let legacy = crate::config::config_dir().map(|dir| dir.join(CATALOG_DIR_NAME));
 
     let Some(token) = activation else {
-        run_catalog_initialization(&ac_dir, legacy.as_deref());
-        ensure_seeded_masters(&ac_dir, legacy.as_deref());
+        run_catalog_initialization(&ac_dir, legacy, journal_dir);
+        ensure_seeded_masters(&ac_dir, legacy);
         return;
     };
 
     match acquire_project_gate_soft(project_root) {
         SoftProjectGate::Held(mut guard) => {
-            let outcome = run_catalog_initialization(&ac_dir, legacy.as_deref());
-            ensure_seeded_masters(&ac_dir, legacy.as_deref());
+            let outcome = run_catalog_initialization(&ac_dir, legacy, journal_dir);
+            ensure_seeded_masters(&ac_dir, legacy);
             let recorded_at = match outcome.published_at {
                 Some(published_at) => Some(published_at),
                 None if outcome.base_verified_managed => {
@@ -4044,8 +4369,8 @@ pub(crate) fn ensure_seeded_for_project_with_token(
             guard.release();
         }
         SoftProjectGate::DegradedUntracked => {
-            run_catalog_initialization(&ac_dir, legacy.as_deref());
-            ensure_seeded_masters(&ac_dir, legacy.as_deref());
+            run_catalog_initialization(&ac_dir, legacy, journal_dir);
+            ensure_seeded_masters(&ac_dir, legacy);
         }
         SoftProjectGate::Unavailable(error) => {
             log::warn!(
@@ -4940,7 +5265,11 @@ mod tests {
         assert_eq!(journal["sourceKind"], "instance");
         assert_eq!(
             journal["sourcePath"],
-            legacy.path().join("agents.json").display().to_string()
+            legacy
+                .path()
+                .join("agents.10.default.json")
+                .display()
+                .to_string()
         );
         assert_eq!(
             journal["managedBase"]["managed"]["revision"],
@@ -4975,10 +5304,11 @@ mod tests {
             local_before
         );
         assert_eq!(
-            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            std::fs::read(legacy.path().join("agents.10.default.json")).unwrap(),
             legacy_bytes,
-            "the instance source stays read-only"
+            "the instance source bytes survive the rename, never rewritten"
         );
+        assert!(!legacy.path().join("agents.json").exists());
     }
 
     #[test]
@@ -5376,14 +5706,14 @@ mod tests {
         assert!(!catalog.join(MIGRATION_JOURNAL_FILENAME).exists());
         assert!(!local_catalog_path(project.path()).exists());
         assert_eq!(
-            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            std::fs::read(legacy.path().join("agents.10.default.json")).unwrap(),
             garbage
         );
         let unavailable = load_catalog(project.path()).expect_err("no project base");
         assert_eq!(unavailable.code, "baseUnavailable");
 
         // Recovery: remove the corrupt source; the next initialization seeds.
-        std::fs::remove_file(legacy.path().join("agents.json")).unwrap();
+        std::fs::remove_file(legacy.path().join("agents.10.default.json")).unwrap();
         assert!(ensure_seeded(project.path(), Some(legacy.path())).is_some());
         assert_eq!(
             load_catalog(project.path())
@@ -7620,7 +7950,7 @@ mod tests {
             .iter()
             .all(|definition| definition.key != "secret"));
         assert_eq!(
-            read_text(&legacy.path().join("agents.local.json")),
+            read_text(&legacy.path().join("agents.50.personal.no-git.json")),
             instance_local,
             "the instance local file is read-only"
         );
@@ -8426,7 +8756,7 @@ mod tests {
         // for the BASE destination only, so the earlier backup, journal and
         // local publications run for real.
         arm_catalog_path_fault("hard_link", &base, std::io::ErrorKind::Unsupported);
-        let outcome = run_catalog_initialization(project.path(), Some(legacy.path()));
+        let outcome = run_catalog_initialization(project.path(), Some(legacy.path()), None);
         clear_catalog_path_faults();
 
         assert!(outcome.published_at.is_none(), "no base was published");
@@ -8445,7 +8775,7 @@ mod tests {
         assert!(journal.is_file(), "the journal survives");
         let local_bytes = std::fs::read(&local).expect("the extracted local survives");
         assert_eq!(
-            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            std::fs::read(legacy.path().join("agents.10.default.json")).unwrap(),
             legacy_bytes,
             "the source is never modified"
         );
@@ -8465,7 +8795,7 @@ mod tests {
             "recovery never re-extracts or rewrites the local layer"
         );
         assert_eq!(
-            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            std::fs::read(legacy.path().join("agents.10.default.json")).unwrap(),
             legacy_bytes
         );
         assert!(ensure_seeded(project.path(), Some(legacy.path())).is_none());
@@ -8523,7 +8853,7 @@ mod tests {
             .open(&base)
             .unwrap();
 
-        let outcome = run_catalog_initialization(dir.path(), None);
+        let outcome = run_catalog_initialization(dir.path(), None, None);
         assert!(outcome.published_at.is_none(), "ReplaceFileW must fail");
         assert!(
             outcome.warnings.iter().any(|warning| {
@@ -8557,10 +8887,10 @@ mod tests {
 
         // Release the denial: two restarts refresh once and then stay idempotent.
         drop(blocker);
-        let refreshed = run_catalog_initialization(dir.path(), None);
+        let refreshed = run_catalog_initialization(dir.path(), None, None);
         assert!(refreshed.published_at.is_some(), "release then refresh");
         let base_after = std::fs::read(&base).unwrap();
-        let second = run_catalog_initialization(dir.path(), None);
+        let second = run_catalog_initialization(dir.path(), None, None);
         assert!(second.published_at.is_none(), "the refresh is idempotent");
         assert_eq!(std::fs::read(&base).unwrap(), base_after);
         assert_eq!(
@@ -8676,10 +9006,11 @@ mod tests {
             .iter()
             .any(|warning| warning.code == "migrationPending"));
         assert_eq!(
-            std::fs::read(legacy.path().join("agents.json")).unwrap(),
+            std::fs::read(legacy.path().join("agents.10.default.json")).unwrap(),
             legacy_bytes,
-            "the instance source is never written by reads"
+            "reads never write the instance source; its bytes survive the rename at the new name"
         );
+        assert!(!legacy.path().join("agents.json").exists());
     }
 
     // ---- F5: transient stub failure, no persistent state -------------------
@@ -8695,7 +9026,7 @@ mod tests {
         // Destination-aware fault at the STUB publication only: the base link
         // runs for real because it targets a different path.
         arm_catalog_path_fault("hard_link", &local, std::io::ErrorKind::Unsupported);
-        let outcome = run_catalog_initialization(&ac_dir, None);
+        let outcome = run_catalog_initialization(&ac_dir, None, None);
         clear_catalog_path_faults();
 
         assert!(
@@ -8750,7 +9081,7 @@ mod tests {
         assert!(crate::config::seed_manifest::has_catalog_publication(&root).unwrap());
         assert_eq!(std::fs::read(manifest_path(&ac_dir)).unwrap(), base_before);
         assert!(!local.exists());
-        let _ = run_catalog_initialization(&ac_dir, None);
+        let _ = run_catalog_initialization(&ac_dir, None, None);
         assert!(!local.exists());
     }
 
@@ -8920,6 +9251,1037 @@ mod tests {
         );
     }
 
+    // ---- #2715 (B2): the `agents.*` family rename -------------------------
+
+    const OLD_BASE: &str = "agents.json";
+    const OLD_LOCAL: &str = "agents.local.json";
+
+    /// A project root plus a config dir that holds the journal and the legacy
+    /// instance catalog, both fixtures the test controls.
+    struct B2Fixture {
+        project: tempfile::TempDir,
+        config: tempfile::TempDir,
+    }
+
+    impl B2Fixture {
+        fn new() -> Self {
+            let fixture = B2Fixture {
+                project: tempfile::tempdir().expect("project tempdir"),
+                config: tempfile::tempdir().expect("config tempdir"),
+            };
+            std::fs::create_dir_all(fixture.project_catalog()).unwrap();
+            fixture
+        }
+        fn root(&self) -> &Path {
+            self.project.path()
+        }
+        fn ac_dir(&self) -> PathBuf {
+            self.root()
+                .join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR)
+        }
+        fn project_catalog(&self) -> PathBuf {
+            catalog_dir(&self.ac_dir())
+        }
+        fn journal_dir(&self) -> &Path {
+            self.config.path()
+        }
+        fn legacy(&self) -> PathBuf {
+            self.config.path().join(CATALOG_DIR_NAME)
+        }
+        fn seed(&self) {
+            ensure_seeded_for_project_in(
+                self.root(),
+                None,
+                Some(&self.legacy()),
+                Some(self.journal_dir()),
+            );
+        }
+        fn project_key(&self) -> String {
+            catalog_scope_key(&std::fs::canonicalize(self.project_catalog()).unwrap())
+        }
+        fn legacy_key(&self) -> String {
+            catalog_scope_key(&std::fs::canonicalize(self.legacy()).unwrap())
+        }
+        fn record(&self, key: &str) -> naming_migration::ScopeRecord {
+            naming_migration::read_journal(Some(self.journal_dir()))
+                .expect("journal readable")
+                .expect("journal exists")
+                .scope(key)
+                .cloned()
+                .unwrap_or_else(|| panic!("scope {key} recorded"))
+        }
+    }
+
+    /// A managed base carrying a recognisable extra agent: an EDITED managed
+    /// base, so no initialization pass ever refreshes, migrates or replaces it.
+    fn preserved_base_bytes(key: &str) -> Vec<u8> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&build_managed_base_bytes(&supported_shipped_definitions()))
+                .unwrap();
+        value["agents"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "key": key, "label": key, "description": "d", "color": "#111",
+                "command": key, "envs": [], "isolatedHome": false, "removable": true
+            }));
+        let mut bytes = serde_json::to_vec_pretty(&value).unwrap();
+        bytes.push(b'\n');
+        bytes
+    }
+
+    fn local_bytes(tag: &str) -> Vec<u8> {
+        format!("{{\"schemaVersion\":1,\"agents\":[],\"_tag\":\"{tag}\"}}\n").into_bytes()
+    }
+
+    fn scope_keys(journal_dir: &Path) -> Vec<String> {
+        let journal = naming_migration::read_journal(Some(journal_dir))
+            .unwrap()
+            .expect("journal exists");
+        let value = serde_json::to_value(&journal).unwrap();
+        value["scopes"]
+            .as_object()
+            .map(|scopes| scopes.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn deprecated_entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.contains(".deprecated-"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Leaves a genuinely interrupted #1968 project migration under the
+    /// PRE-migration names: the transaction stops at `point`.
+    fn interrupted_1968_migration(catalog: &Path, point: &'static str) -> Vec<u8> {
+        let source = legacy_catalog_json();
+        std::fs::write(catalog.join(OLD_BASE), &source).unwrap();
+        let old = CatalogPaths::with_names(catalog, OLD_BASE, OLD_LOCAL);
+        CATALOG_FAILURE_POINT.with(|cell| cell.set(Some(point)));
+        let result = migrate_legacy(&old, MIGRATION_SOURCE_PROJECT, &old.base, &source);
+        CATALOG_FAILURE_POINT.with(|cell| cell.set(None));
+        assert!(
+            result.is_err(),
+            "the fixture migration must stop at {point}"
+        );
+        source
+    }
+
+    fn local_carries(path: &Path, key: &str) -> bool {
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        value["agents"]
+            .as_array()
+            .is_some_and(|agents| agents.iter().any(|agent| agent["key"] == key))
+    }
+
+    #[test]
+    fn the_migration_runs_before_the_base_is_seeded_in_one_locked_pass() {
+        let fx = B2Fixture::new();
+        let catalog = fx.project_catalog();
+        let user = preserved_base_bytes("mine");
+        std::fs::write(catalog.join(OLD_BASE), &user).unwrap();
+
+        fx.seed();
+
+        assert_eq!(
+            std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            user,
+            "the user's catalog survives at the new name; no fresh base was written"
+        );
+        assert!(!catalog.join(OLD_BASE).exists());
+        assert!(
+            deprecated_entries(&catalog).is_empty(),
+            "nothing was set aside"
+        );
+        assert_eq!(
+            fx.record(&fx.project_key()).status,
+            naming_migration::ScopeStatus::Complete
+        );
+    }
+
+    #[test]
+    fn every_seeding_entry_point_migrates_before_it_creates() {
+        // ensure_seeded_for_project_in, gated.
+        let fx = B2Fixture::new();
+        let user = preserved_base_bytes("mine");
+        std::fs::write(fx.project_catalog().join(OLD_BASE), &user).unwrap();
+        let token = ManifestActivationToken::for_test();
+        ensure_seeded_for_project_in(
+            fx.root(),
+            Some(&token),
+            Some(&fx.legacy()),
+            Some(fx.journal_dir()),
+        );
+        // ensure_seeded_for_project_in, activation None.
+        let plain = B2Fixture::new();
+        std::fs::write(plain.project_catalog().join(OLD_BASE), &user).unwrap();
+        plain.seed();
+        for (label, catalog) in [
+            ("gated", fx.project_catalog()),
+            ("activation None", plain.project_catalog()),
+        ] {
+            assert_eq!(
+                std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+                user,
+                "{label}"
+            );
+            assert!(!catalog.join(OLD_BASE).exists(), "{label}");
+            assert!(deprecated_entries(&catalog).is_empty(), "{label}");
+        }
+        // ensure_seeded_instance_in.
+        let instance = tempfile::tempdir().unwrap();
+        let catalog = catalog_dir(instance.path());
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::write(catalog.join(OLD_BASE), &user).unwrap();
+        ensure_seeded_instance_in(instance.path(), Some(instance.path()));
+        assert_eq!(
+            std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            user,
+            "instance"
+        );
+        assert!(!catalog.join(OLD_BASE).exists(), "instance");
+        assert!(deprecated_entries(&catalog).is_empty(), "instance");
+    }
+
+    #[test]
+    fn a_recoverable_sidecar_recovers_then_renames_in_one_pass() {
+        let fx = B2Fixture::new();
+        let catalog = fx.project_catalog();
+        interrupted_1968_migration(&catalog, "after_local");
+        let backup = std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).unwrap();
+        let journal = std::fs::read(catalog.join(MIGRATION_JOURNAL_FILENAME)).unwrap();
+
+        fx.seed();
+
+        assert!(!catalog.join(OLD_BASE).exists());
+        assert!(!catalog.join(OLD_LOCAL).exists());
+        let base: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            base["managed"]["owner"], "agentscommander",
+            "the recovered base"
+        );
+        assert!(
+            local_carries(&catalog.join(LOCAL_CATALOG_FILENAME), "mine"),
+            "the recovered agent is at the new local name"
+        );
+        let report = load_catalog_report(&fx.ac_dir());
+        assert!(
+            report.catalog.iter().any(|agent| agent.key == "mine"),
+            "the effective catalog loaded from disk serves the recovered agent: {:?}",
+            report.warnings
+        );
+        assert_eq!(
+            std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).unwrap(),
+            backup
+        );
+        assert_eq!(
+            std::fs::read(catalog.join(MIGRATION_JOURNAL_FILENAME)).unwrap(),
+            journal
+        );
+        let record = fx.record(&fx.project_key());
+        assert_eq!(record.status, naming_migration::ScopeStatus::Complete);
+        for sidecar in [MIGRATION_BACKUP_FILENAME, MIGRATION_JOURNAL_FILENAME] {
+            assert!(
+                record.notes.iter().any(|note| note.contains(sidecar)),
+                "{sidecar} noted: {:?}",
+                record.notes
+            );
+        }
+        assert!(deprecated_entries(&catalog).is_empty());
+    }
+
+    /// E8e: data already at the new names beside a #1968 sidecar, with no
+    /// journal dir. F1 must not resurrect the old names; without its
+    /// `has_old_data` guard the set-aside ordinal grows by one every pass.
+    #[test]
+    fn a_sidecar_without_old_data_runs_no_recovery() {
+        let fx = B2Fixture::new();
+        let catalog = fx.project_catalog();
+        interrupted_1968_migration(&catalog, "after_local");
+        // Finish the data move by hand: the old names are gone.
+        std::fs::rename(
+            catalog.join(OLD_BASE),
+            catalog.join(CATALOG_MANIFEST_FILENAME),
+        )
+        .unwrap();
+        std::fs::rename(
+            catalog.join(OLD_LOCAL),
+            catalog.join(LOCAL_CATALOG_FILENAME),
+        )
+        .unwrap();
+        assert!(catalog.join(MIGRATION_JOURNAL_FILENAME).exists());
+        assert!(catalog.join(MIGRATION_BACKUP_FILENAME).exists());
+        for pass in 1..=2 {
+            ensure_seeded_for_project_in(fx.root(), None, None, None);
+            assert!(
+                !catalog.join(OLD_BASE).exists(),
+                "pass {pass}: agents.json recreated"
+            );
+            assert!(
+                !catalog.join(OLD_LOCAL).exists(),
+                "pass {pass}: agents.local.json recreated"
+            );
+            assert_eq!(
+                deprecated_entries(&catalog),
+                Vec::<String>::new(),
+                "pass {pass}: nothing set aside"
+            );
+        }
+        fx.seed();
+        assert_eq!(
+            fx.record(&fx.project_key()).status,
+            naming_migration::ScopeStatus::Complete
+        );
+        assert!(deprecated_entries(&catalog).is_empty());
+    }
+
+    #[test]
+    fn a_blocked_recovery_defers_and_renames_nothing() {
+        let fx = B2Fixture::new();
+        let catalog = fx.project_catalog();
+        let source = interrupted_1968_migration(&catalog, "after_local");
+        let backup_path = catalog.join(MIGRATION_BACKUP_FILENAME);
+        let backup = std::fs::read(&backup_path).unwrap();
+        let local = std::fs::read(catalog.join(OLD_LOCAL)).unwrap();
+        std::fs::remove_file(&backup_path).unwrap();
+
+        let outcome = run_catalog_initialization_with_scope(
+            &fx.ac_dir(),
+            Some(&fx.legacy()),
+            Some(fx.journal_dir()),
+            InitScope::Project,
+        );
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.code == REPORT_CODE_MIGRATION_CONFLICT));
+        assert_eq!(std::fs::read(catalog.join(OLD_BASE)).unwrap(), source);
+        assert_eq!(std::fs::read(catalog.join(OLD_LOCAL)).unwrap(), local);
+        assert!(
+            !catalog.join(CATALOG_MANIFEST_FILENAME).exists(),
+            "nothing seeded"
+        );
+        assert!(
+            !catalog.join(LOCAL_CATALOG_FILENAME).exists(),
+            "nothing renamed"
+        );
+        let record = fx.record(&fx.project_key());
+        assert_eq!(record.status, naming_migration::ScopeStatus::Deferred);
+        assert!(
+            record.notes.iter().any(|note| note.contains("backup")),
+            "{:?}",
+            record.notes
+        );
+
+        // Restoring the backup heals it with no journal surgery.
+        std::fs::write(&backup_path, &backup).unwrap();
+        fx.seed();
+        assert!(!catalog.join(OLD_BASE).exists());
+        assert!(local_carries(&catalog.join(LOCAL_CATALOG_FILENAME), "mine"));
+        assert_eq!(
+            fx.record(&fx.project_key()).status,
+            naming_migration::ScopeStatus::Complete
+        );
+
+        // Backup only (follow-up #2709): both renames done, every byte kept,
+        // and the pass ends with the one pre-existing MIGRATION_CONFLICT.
+        let only = B2Fixture::new();
+        let catalog = only.project_catalog();
+        let source = interrupted_1968_migration(&catalog, "after_backup");
+        assert!(!catalog.join(MIGRATION_JOURNAL_FILENAME).exists());
+        for pass in 1..=2 {
+            let outcome = run_catalog_initialization_with_scope(
+                &only.ac_dir(),
+                Some(&only.legacy()),
+                Some(only.journal_dir()),
+                InitScope::Project,
+            );
+            let conflicts: Vec<_> = outcome
+                .warnings
+                .iter()
+                .filter(|warning| warning.code == REPORT_CODE_MIGRATION_CONFLICT)
+                .collect();
+            assert_eq!(conflicts.len(), 1, "pass {pass}: {:?}", outcome.warnings);
+            assert!(!catalog.join(OLD_BASE).exists(), "pass {pass}");
+            assert!(!catalog.join(OLD_LOCAL).exists(), "pass {pass}");
+            assert_eq!(
+                std::fs::read(catalog.join(MIGRATION_BACKUP_FILENAME)).unwrap(),
+                source,
+                "pass {pass}"
+            );
+            let base: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(base["managed"]["owner"], "agentscommander", "pass {pass}");
+            assert!(
+                local_carries(&catalog.join(LOCAL_CATALOG_FILENAME), "mine"),
+                "pass {pass}"
+            );
+            assert!(deprecated_entries(&catalog).is_empty(), "pass {pass}");
+            assert_eq!(
+                only.record(&only.project_key()).status,
+                naming_migration::ScopeStatus::Complete,
+                "pass {pass}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_instance_directory_never_resumes_a_sidecar() {
+        let config = tempfile::tempdir().unwrap();
+        let catalog = catalog_dir(config.path());
+        std::fs::create_dir_all(&catalog).unwrap();
+        let base = legacy_catalog_json();
+        let local = local_bytes("instance-local");
+        let journal = b"{\"not\":\"ours\"}".to_vec();
+        std::fs::write(catalog.join(OLD_BASE), &base).unwrap();
+        std::fs::write(catalog.join(OLD_LOCAL), &local).unwrap();
+        std::fs::write(catalog.join(MIGRATION_JOURNAL_FILENAME), &journal).unwrap();
+
+        ensure_seeded_instance_in(config.path(), Some(config.path()));
+
+        assert_eq!(
+            std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            base
+        );
+        assert_eq!(
+            std::fs::read(catalog.join(LOCAL_CATALOG_FILENAME)).unwrap(),
+            local
+        );
+        assert_eq!(
+            std::fs::read(catalog.join(MIGRATION_JOURNAL_FILENAME)).unwrap(),
+            journal
+        );
+        assert!(
+            !catalog.join(MIGRATION_BACKUP_FILENAME).exists(),
+            "no recovery ran"
+        );
+        let key = catalog_scope_key(&std::fs::canonicalize(&catalog).unwrap());
+        let record = naming_migration::read_journal(Some(config.path()))
+            .unwrap()
+            .unwrap()
+            .scope(&key)
+            .cloned()
+            .unwrap();
+        assert_eq!(record.status, naming_migration::ScopeStatus::Complete);
+        assert!(record
+            .notes
+            .iter()
+            .any(|note| note.contains(MIGRATION_JOURNAL_FILENAME)));
+    }
+
+    #[test]
+    fn happy_path_is_byte_preserving_and_idempotent() {
+        let fx = B2Fixture::new();
+        let catalog = fx.project_catalog();
+        let base = preserved_base_bytes("mine");
+        let local = local_bytes("happy");
+        std::fs::write(catalog.join(OLD_BASE), &base).unwrap();
+        std::fs::write(catalog.join(OLD_LOCAL), &local).unwrap();
+        std::fs::write(catalog.join(RETIRED_CATALOG_LOCK_FILENAME), b"").unwrap();
+
+        fx.seed();
+        assert_eq!(
+            std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            base
+        );
+        assert_eq!(
+            std::fs::read(catalog.join(LOCAL_CATALOG_FILENAME)).unwrap(),
+            local
+        );
+        assert!(
+            catalog.join(RETIRED_CATALOG_LOCK_FILENAME).is_file(),
+            "lock not renamed"
+        );
+        let record = fx.record(&fx.project_key());
+        assert_eq!(record.status, naming_migration::ScopeStatus::Complete);
+        assert!(record
+            .notes
+            .iter()
+            .any(|note| note.contains(RETIRED_CATALOG_LOCK_FILENAME)));
+
+        let before = fx.record(&fx.project_key());
+        fx.seed();
+        assert_eq!(
+            std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            base
+        );
+        assert_eq!(
+            std::fs::read(catalog.join(LOCAL_CATALOG_FILENAME)).unwrap(),
+            local
+        );
+        assert_eq!(
+            fx.record(&fx.project_key()),
+            before,
+            "a second run is a no-op"
+        );
+        assert!(deprecated_entries(&catalog).is_empty());
+    }
+
+    #[test]
+    fn a_pre_existing_target_wins_and_the_old_catalog_is_set_aside() {
+        let fx = B2Fixture::new();
+        let catalog = fx.project_catalog();
+        let old = preserved_base_bytes("old");
+        let winner = preserved_base_bytes("winner");
+        std::fs::write(catalog.join(OLD_BASE), &old).unwrap();
+        std::fs::write(catalog.join(CATALOG_MANIFEST_FILENAME), &winner).unwrap();
+        crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(
+            &fx.ac_dir(),
+            &["CLAUDE.md".to_string(), "AGENTS.md".to_string()],
+        )
+        .unwrap();
+
+        fx.seed();
+
+        assert_eq!(
+            std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            winner
+        );
+        assert!(!catalog.join(OLD_BASE).exists());
+        let set_aside = catalog.join("agents.json.deprecated-1.no-git");
+        assert_eq!(std::fs::read(&set_aside).unwrap(), old);
+        assert_eq!(
+            deprecated_entries(&catalog),
+            ["agents.json.deprecated-1.no-git"]
+        );
+        let record = fx.record(&fx.project_key());
+        assert_eq!(record.status, naming_migration::ScopeStatus::Complete);
+        assert!(record.steps.iter().any(
+            |step| step.from == OLD_BASE && step.state == naming_migration::StepState::SetAside
+        ));
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(fx.root())
+                .output()
+                .expect("git runs")
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        let ignored = git(&[
+            "check-ignore",
+            "-q",
+            ".ac/coding-agents/agents.json.deprecated-1.no-git",
+        ]);
+        assert!(ignored.status.success(), "the set-aside catalog is ignored");
+        let tracked = git(&[
+            "check-ignore",
+            "-q",
+            ".ac/coding-agents/agents.10.default.json",
+        ]);
+        assert_eq!(
+            tracked.status.code(),
+            Some(1),
+            "the new base stays trackable"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_catalog_dir_is_recorded_and_retried() {
+        let journal = tempfile::tempdir().unwrap();
+        let base = preserved_base_bytes("mine");
+        // A root that does not exist, and one that is a file: skipped before
+        // the chokepoint, no scope row, nothing Complete.
+        let parent = tempfile::tempdir().unwrap();
+        let missing = parent.path().join("missing");
+        let file_root = parent.path().join("file-root");
+        std::fs::write(&file_root, b"x").unwrap();
+        for root in [&missing, &file_root] {
+            ensure_seeded_for_project_in(root, None, None, Some(journal.path()));
+        }
+        assert!(naming_migration::read_journal(Some(journal.path()))
+            .unwrap()
+            .is_none());
+        // A root whose `.ac` cannot be created: recorded Unreachable.
+        let blocked = tempfile::tempdir().unwrap();
+        let ac = blocked
+            .path()
+            .join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
+        std::fs::write(&ac, b"not a directory").unwrap();
+        ensure_seeded_for_project_in(blocked.path(), None, None, Some(journal.path()));
+        let keys = scope_keys(journal.path());
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        let journal_now = naming_migration::read_journal(Some(journal.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            naming_migration::status(&journal_now, &keys[0]),
+            Some(naming_migration::ScopeStatus::Unreachable)
+        );
+
+        // Each made reachable migrates on the next pass.
+        std::fs::create_dir_all(missing.join(".ac").join(CATALOG_DIR_NAME)).unwrap();
+        std::fs::remove_file(&file_root).unwrap();
+        std::fs::create_dir_all(file_root.join(".ac").join(CATALOG_DIR_NAME)).unwrap();
+        std::fs::remove_file(&ac).unwrap();
+        std::fs::create_dir_all(ac.join(CATALOG_DIR_NAME)).unwrap();
+        for root in [missing.as_path(), file_root.as_path(), blocked.path()] {
+            let catalog = catalog_dir(&root.join(".ac"));
+            std::fs::write(catalog.join(OLD_BASE), &base).unwrap();
+            ensure_seeded_for_project_in(root, None, None, Some(journal.path()));
+            assert_eq!(
+                std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+                base,
+                "{}",
+                root.display()
+            );
+            let key = catalog_scope_key(&std::fs::canonicalize(&catalog).unwrap());
+            let journal_now = naming_migration::read_journal(Some(journal.path()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                naming_migration::status(&journal_now, &key),
+                Some(naming_migration::ScopeStatus::Complete)
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_project_still_imports_the_legacy_instance_catalog() {
+        let registered = B2Fixture::new();
+        let legacy = registered.legacy();
+        std::fs::create_dir_all(&legacy).unwrap();
+        let instance = legacy_catalog_json();
+        std::fs::write(legacy.join(OLD_BASE), &instance).unwrap();
+        // A project already registered, with its own catalog.
+        std::fs::write(
+            registered.project_catalog().join(OLD_BASE),
+            preserved_base_bytes("registered"),
+        )
+        .unwrap();
+        registered.seed();
+
+        // A second project created later, same instance.
+        let second = tempfile::tempdir().unwrap();
+        ensure_seeded_for_project_in(
+            second.path(),
+            None,
+            Some(&legacy),
+            Some(registered.journal_dir()),
+        );
+        let catalog = catalog_dir(&second.path().join(".ac"));
+        assert!(
+            local_carries(&catalog.join(LOCAL_CATALOG_FILENAME), "mine"),
+            "the new project imported the real instance catalog"
+        );
+        assert_eq!(
+            std::fs::read(legacy.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            instance
+        );
+        assert!(!legacy.join(OLD_BASE).exists());
+        for key in [registered.legacy_key(), registered.project_key()] {
+            assert_eq!(
+                registered.record(&key).status,
+                naming_migration::ScopeStatus::Complete
+            );
+        }
+        let second_key = catalog_scope_key(&std::fs::canonicalize(&catalog).unwrap());
+        assert_eq!(
+            registered.record(&second_key).status,
+            naming_migration::ScopeStatus::Complete
+        );
+    }
+
+    #[test]
+    fn a_failed_legacy_scope_seeds_nothing() {
+        let fx = B2Fixture::new();
+        let legacy = fx.legacy();
+        std::fs::create_dir_all(&legacy).unwrap();
+        let instance = legacy_catalog_json();
+        std::fs::write(legacy.join(OLD_BASE), &instance).unwrap();
+        // The new lock sidecar is a directory: the scope's lock open fails
+        // with an I/O refusal.
+        std::fs::create_dir(legacy.join(CATALOG_LOCK_FILENAME)).unwrap();
+
+        let outcome = run_catalog_initialization_with_scope(
+            &fx.ac_dir(),
+            Some(&legacy),
+            Some(fx.journal_dir()),
+            InitScope::Project,
+        );
+        let conflict = outcome
+            .warnings
+            .iter()
+            .find(|warning| warning.code == REPORT_CODE_MIGRATION_CONFLICT)
+            .expect("a MIGRATION_CONFLICT outcome");
+        assert!(conflict.reason.contains(OLD_BASE), "{}", conflict.reason);
+        assert!(
+            conflict.reason.contains(CATALOG_MANIFEST_FILENAME),
+            "{}",
+            conflict.reason
+        );
+        let catalog = fx.project_catalog();
+        assert!(
+            !catalog.join(CATALOG_MANIFEST_FILENAME).exists(),
+            "no base written"
+        );
+        assert!(!catalog.join(LOCAL_CATALOG_FILENAME).exists());
+        assert_eq!(std::fs::read(legacy.join(OLD_BASE)).unwrap(), instance);
+        assert!(!legacy.join(CATALOG_MANIFEST_FILENAME).exists());
+
+        // Both names present in the legacy dir: the winner is imported.
+        let both = B2Fixture::new();
+        let legacy = both.legacy();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(OLD_BASE), legacy_catalog_json()).unwrap();
+        let winner = manifest_json(
+            r##"[{"key":"winner","label":"Winner","description":"d","color":"#111","command":"win","envs":[],"isolatedHome":false,"removable":true}]"##,
+        );
+        std::fs::write(legacy.join(CATALOG_MANIFEST_FILENAME), &winner).unwrap();
+        both.seed();
+        assert_eq!(
+            std::fs::read_to_string(legacy.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            winner
+        );
+        assert_eq!(
+            deprecated_entries(&legacy),
+            ["agents.json.deprecated-1.no-git"]
+        );
+        assert!(local_carries(
+            &both.project_catalog().join(LOCAL_CATALOG_FILENAME),
+            "winner"
+        ));
+    }
+
+    #[test]
+    fn the_two_catalog_locks_never_nest() {
+        let fx = B2Fixture::new();
+        let legacy = fx.legacy();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(OLD_BASE), legacy_catalog_json()).unwrap();
+        let canonical_legacy = std::fs::canonicalize(&legacy).unwrap();
+        let project_catalog = std::fs::canonicalize(fx.project_catalog()).unwrap();
+        let project_paths = CatalogPaths::new(&project_catalog);
+        let armed = naming_migration::pause::arm("before_rename", &canonical_legacy);
+
+        let root = fx.root().to_path_buf();
+        let journal = fx.journal_dir().to_path_buf();
+        let worker = std::thread::spawn(move || {
+            ensure_seeded_for_project_in(&root, None, Some(&legacy), Some(&journal));
+        });
+        armed
+            .reached
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the legacy scope reached its rename");
+        // Leg 1: the project's section has not started.
+        assert!(
+            !project_paths.lock.exists(),
+            "acquire_catalog_lock for the project has not run"
+        );
+        // Leg 2: the project lock is free while the legacy scope is held.
+        let probe = acquire_catalog_lock(&project_paths);
+        assert!(probe.is_ok(), "the project lock is free: {:?}", probe.err());
+        drop(probe);
+        armed.release.send(()).unwrap();
+        worker.join().expect("worker completes");
+        assert!(project_catalog.join(CATALOG_MANIFEST_FILENAME).exists());
+    }
+
+    #[test]
+    fn a_recovered_publication_is_still_recorded() {
+        for point in ["after_local", "after_backup"] {
+            // The pass's outcome carries the recovery's instant.
+            let fx = B2Fixture::new();
+            interrupted_1968_migration(&fx.project_catalog(), point);
+            let outcome = run_catalog_initialization_with_scope(
+                &fx.ac_dir(),
+                Some(&fx.legacy()),
+                Some(fx.journal_dir()),
+                InitScope::Project,
+            );
+            assert!(
+                outcome.published_at.is_some(),
+                "{point}: {:?}",
+                outcome.warnings
+            );
+            let conflicts = outcome
+                .warnings
+                .iter()
+                .filter(|warning| warning.code == REPORT_CODE_MIGRATION_CONFLICT)
+                .count();
+            assert_eq!(conflicts, usize::from(point == "after_backup"), "{point}");
+
+            // Under the held project gate it is recorded exactly once.
+            let gated = B2Fixture::new();
+            interrupted_1968_migration(&gated.project_catalog(), point);
+            let token = ManifestActivationToken::for_test();
+            ensure_seeded_for_project_in(
+                gated.root(),
+                Some(&token),
+                Some(&gated.legacy()),
+                Some(gated.journal_dir()),
+            );
+            assert!(
+                has_catalog_publication(gated.root()).unwrap(),
+                "{point}: the publication row was recorded"
+            );
+            let manifest =
+                std::fs::read_to_string(gated.ac_dir().join(SEED_MANIFEST_FILENAME)).unwrap();
+            assert_eq!(
+                manifest.matches("kind = \"coding_agent_catalog\"").count(),
+                1,
+                "{point}: {manifest}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_migration_does_not_re_acquire_the_catalog_lock() {
+        let fx = B2Fixture::new();
+        let catalog = fx.project_catalog();
+        std::fs::write(catalog.join(OLD_BASE), preserved_base_bytes("mine")).unwrap();
+        std::fs::write(catalog.join(OLD_LOCAL), local_bytes("lock")).unwrap();
+        let started = Instant::now();
+        run_catalog_initialization_with_scope(
+            &fx.ac_dir(),
+            None,
+            Some(fx.journal_dir()),
+            InitScope::Project,
+        );
+        assert!(started.elapsed() < naming_migration::MIGRATION_LOCK_BUDGET);
+        assert!(catalog.join(CATALOG_MANIFEST_FILENAME).is_file());
+        assert!(catalog.join(LOCAL_CATALOG_FILENAME).is_file());
+        assert!(!catalog.join(OLD_BASE).exists());
+        assert!(!catalog.join(OLD_LOCAL).exists());
+    }
+
+    const B2_CHILD_ROOT_ENV: &str = "AC_2715_CATALOG_CHILD_ROOT";
+    const B2_CHILD_JOURNAL_ENV: &str = "AC_2715_CATALOG_CHILD_JOURNAL";
+    const B2_CHILD_TEST_FQN: &str =
+        "config::coding_agents_catalog::tests::b2_catalog_migration_child";
+
+    #[test]
+    fn b2_catalog_migration_child() {
+        let (Some(root), Some(journal)) = (
+            std::env::var_os(B2_CHILD_ROOT_ENV),
+            std::env::var_os(B2_CHILD_JOURNAL_ENV),
+        ) else {
+            return;
+        };
+        ensure_seeded_for_project_in(Path::new(&root), None, None, Some(Path::new(&journal)));
+        println!("AC_2715_CATALOG_CHILD_DONE");
+    }
+
+    #[test]
+    fn two_catalog_scopes_keep_both_record_sets() {
+        let journal = tempfile::tempdir().unwrap();
+        let rendezvous = tempfile::tempdir().unwrap();
+        let projects = [B2Fixture::new(), B2Fixture::new()];
+        let bytes = [
+            preserved_base_bytes("first"),
+            preserved_base_bytes("second"),
+        ];
+        for (fx, base) in projects.iter().zip(&bytes) {
+            std::fs::write(fx.project_catalog().join(OLD_BASE), base).unwrap();
+            std::fs::write(fx.project_catalog().join(OLD_LOCAL), local_bytes("two")).unwrap();
+        }
+        // The child migrates the first project and pauses mid-scope, holding
+        // that project's locks while its first journal records exist.
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                B2_CHILD_TEST_FQN,
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(B2_CHILD_ROOT_ENV, projects[0].root())
+            .env(B2_CHILD_JOURNAL_ENV, journal.path())
+            .env(naming_migration::pause::PAUSE_DIR_ENV, rendezvous.path())
+            .env(naming_migration::pause::PAUSE_STAGE_ENV, "after_rename")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn the migration child");
+        wait_for_path(
+            &rendezvous.path().join(naming_migration::pause::READY_FILE),
+            Duration::from_secs(60),
+            "migration child",
+        );
+        // This process migrates the second project in full meanwhile.
+        ensure_seeded_for_project_in(projects[1].root(), None, None, Some(journal.path()));
+        std::fs::write(
+            rendezvous
+                .path()
+                .join(naming_migration::pause::RELEASE_FILE),
+            b"go",
+        )
+        .unwrap();
+        let output = child.wait_with_output().expect("reap the child");
+        assert!(
+            output.status.success(),
+            "child: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("AC_2715_CATALOG_CHILD_DONE"));
+
+        let journal_now = naming_migration::read_journal(Some(journal.path()))
+            .unwrap()
+            .unwrap();
+        for (fx, base) in projects.iter().zip(&bytes) {
+            let key = fx.project_key();
+            let record = journal_now
+                .scope(&key)
+                .cloned()
+                .expect("both scopes recorded");
+            assert_eq!(
+                record.status,
+                naming_migration::ScopeStatus::Complete,
+                "{key}"
+            );
+            for rename in &CATALOG_FAMILY_RENAMES {
+                assert!(
+                    record.steps.iter().any(|step| step.from == rename.from
+                        && step.state == naming_migration::StepState::Renamed),
+                    "{key}: {} step: {:?}",
+                    rename.from,
+                    record.steps
+                );
+            }
+            assert_eq!(
+                std::fs::read(fx.project_catalog().join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+                *base
+            );
+        }
+    }
+
+    #[test]
+    fn the_instance_directory_has_one_scope_key() {
+        let config = tempfile::tempdir().unwrap();
+        let catalog = config.path().join(CATALOG_DIR_NAME);
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::write(catalog.join(OLD_BASE), legacy_catalog_json()).unwrap();
+        let mut spellings = vec![
+            catalog.clone(),
+            config.path().join(".").join(CATALOG_DIR_NAME),
+        ];
+        if cfg!(windows) {
+            spellings.push(PathBuf::from(catalog.to_string_lossy().to_uppercase()));
+        }
+        for legacy in &spellings {
+            let project = tempfile::tempdir().unwrap();
+            ensure_seeded_for_project_in(project.path(), None, Some(legacy), Some(config.path()));
+        }
+        ensure_seeded_instance_in(config.path(), Some(config.path()));
+        let instance_key = catalog_scope_key(&ensure_catalog_dir(config.path()).unwrap());
+        let keys = scope_keys(config.path());
+        let for_instance: Vec<_> = keys
+            .iter()
+            .filter(|key| key.to_lowercase() == instance_key.to_lowercase())
+            .collect();
+        assert_eq!(for_instance, [&instance_key], "{keys:?}");
+    }
+
+    #[test]
+    fn a_complete_scope_whose_old_name_is_back_is_re_run() {
+        for both_present in [false, true] {
+            let fx = B2Fixture::new();
+            let catalog = std::fs::canonicalize(fx.project_catalog()).unwrap();
+            let key = fx.project_key();
+            naming_migration::update_journal(Some(fx.journal_dir()), |journal| {
+                for rename in &CATALOG_FAMILY_RENAMES {
+                    journal.record_step(
+                        &key,
+                        naming_migration::StepRecord::new(
+                            &catalog,
+                            rename.from,
+                            rename.to,
+                            naming_migration::StepState::Renamed,
+                        ),
+                    );
+                }
+                journal.set_status(&key, naming_migration::ScopeStatus::Complete);
+            })
+            .unwrap();
+            let old = preserved_base_bytes("back");
+            std::fs::write(catalog.join(OLD_BASE), &old).unwrap();
+            let winner = preserved_base_bytes("winner");
+            if both_present {
+                std::fs::write(catalog.join(CATALOG_MANIFEST_FILENAME), &winner).unwrap();
+            }
+
+            fx.seed();
+
+            assert!(!catalog.join(OLD_BASE).exists(), "both={both_present}");
+            let expected = if both_present { &winner } else { &old };
+            assert_eq!(
+                &std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+                expected,
+                "both={both_present}: no fresh base"
+            );
+            if both_present {
+                assert_eq!(
+                    std::fs::read(catalog.join("agents.json.deprecated-1.no-git")).unwrap(),
+                    old
+                );
+            } else {
+                assert!(deprecated_entries(&catalog).is_empty());
+            }
+            assert_eq!(
+                fx.record(&key).status,
+                naming_migration::ScopeStatus::Complete
+            );
+        }
+    }
+
+    #[test]
+    fn no_config_dir_still_migrates_and_never_seeds_a_second_base() {
+        let fx = B2Fixture::new();
+        let catalog = fx.project_catalog();
+        let base = preserved_base_bytes("mine");
+        let local = local_bytes("none");
+        std::fs::write(catalog.join(OLD_BASE), &base).unwrap();
+        std::fs::write(catalog.join(OLD_LOCAL), &local).unwrap();
+
+        ensure_seeded_for_project_in(fx.root(), None, None, None);
+
+        assert_eq!(
+            std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            base
+        );
+        assert_eq!(
+            std::fs::read(catalog.join(LOCAL_CATALOG_FILENAME)).unwrap(),
+            local
+        );
+        assert!(
+            !catalog.join(OLD_BASE).exists(),
+            "no base seeded beside agents.json"
+        );
+        let journal_names = |dir: &Path| -> Vec<String> {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .filter(|name| name.contains("naming-migration"))
+                .collect()
+        };
+        assert!(journal_names(&catalog).is_empty());
+        assert!(journal_names(&fx.ac_dir()).is_empty());
+        assert!(journal_names(fx.journal_dir()).is_empty());
+
+        // A second pass with a real journal finds nothing to do.
+        fx.seed();
+        assert_eq!(
+            std::fs::read(catalog.join(CATALOG_MANIFEST_FILENAME)).unwrap(),
+            base
+        );
+        assert!(deprecated_entries(&catalog).is_empty(), "nothing demoted");
+        assert_eq!(
+            fx.record(&fx.project_key()).status,
+            naming_migration::ScopeStatus::Complete
+        );
+    }
+
     // ---- #2021: no-project instance catalog seeding ------------------------
 
     /// The no-project report as the settings wrapper builds it for `config_dir`.
@@ -9006,8 +10368,11 @@ mod tests {
         );
         assert_eq!(
             non_lock_entries(instance.path()),
-            vec![CATALOG_MANIFEST_FILENAME.to_string()],
-            "a legacy instance file creates no local, backup or journal sidecar"
+            vec![
+                RETIRED_CATALOG_LOCK_FILENAME.to_string(),
+                CATALOG_MANIFEST_FILENAME.to_string(),
+            ],
+            "a legacy instance file creates no local, backup or journal sidecar; the retired lock sidecar is the scope lock"
         );
         let report = instance_report(instance.path());
         assert!(report.unavailable.is_none());
@@ -9064,7 +10429,8 @@ mod tests {
 
         let project = seed_dir();
         let ac_dir = ac_dir_for(project.path());
-        let outcome = run_catalog_initialization(&ac_dir, Some(&catalog_dir(instance.path())));
+        let outcome =
+            run_catalog_initialization(&ac_dir, Some(&catalog_dir(instance.path())), None);
         assert!(
             !outcome
                 .warnings
