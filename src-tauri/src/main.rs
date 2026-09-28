@@ -67,6 +67,7 @@ fn main() {
                             // GATED on `cli.command.is_some()` so the GUI branch
                             // below initializes via `lib::run()` exactly once.
                             agentscommander_lib::logging::init_logger();
+                            agentscommander_lib::log_naming_migration_summary();
 
                             // Issue #609 Phase 2 - one-line "update available" notice for
                             // terminal runs. Cache-only (no network, no blocking). M1: gate

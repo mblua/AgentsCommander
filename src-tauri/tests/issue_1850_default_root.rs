@@ -745,7 +745,7 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
         }
     }
 
-    let settings_path = canonical.join("settings.json");
+    let settings_path = canonical.join("settings.30.instance.no-git.json");
     if case.canonical != CanonicalFixture::Invalid {
         // Settings identity: whenever a settings file appeared, it parses.
         // The invalid fixture is the explicit exception, asserted below.

@@ -159,15 +159,16 @@ pub(crate) const SESSION_REQUESTS_DIR_NAME: &str = "session-requests";
 /// not committed by accident.
 pub(crate) const LOCAL_MARKDOWN_OVERRIDE_GLOB: &str = "*.local.md";
 /// #1737 - the operator-owned settings overlay, read at load and never written by AC.
-pub(crate) const SETTINGS_LOCAL_OVERRIDE_FILE_NAME: &str = "settings.local.json";
+pub(crate) const SETTINGS_LOCAL_OVERRIDE_FILE_NAME: &str = SETTINGS_LOCAL_TARGET_NAME;
 /// #1905 - AC-owned shipped blocking-menu patterns; rewritten from embedded content at startup.
-pub(crate) const BLOCKING_MENUS_SHIPPED_FILE_NAME: &str = "settings-blocking-menus.json";
+pub(crate) const BLOCKING_MENUS_SHIPPED_FILE_NAME: &str = BLOCKING_MENUS_SHIPPED_TARGET_NAME;
 /// #1905 - the operator-owned blocking-menu overlay, read at load; written once by the export.
-pub(crate) const BLOCKING_MENUS_LOCAL_FILE_NAME: &str = "settings-blocking-menus.local.json";
+pub(crate) const BLOCKING_MENUS_LOCAL_FILE_NAME: &str = BLOCKING_MENUS_LOCAL_TARGET_NAME;
 /// #1925 - blocking-menu patterns downloaded from GitHub; written only by the startup download.
-pub(crate) const BLOCKING_MENUS_REMOTE_FILE_NAME: &str = "settings-blocking-menus.remote.json";
+pub(crate) const BLOCKING_MENUS_REMOTE_FILE_NAME: &str = BLOCKING_MENUS_REMOTE_TARGET_NAME;
 /// #1925 - time of the last remote blocking-menu download attempt; throttles it to once per 24 h.
-pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME: &str = "blocking-menus-remote-check.json";
+pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME: &str =
+    BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME;
 /// #2133 - the operator-owned per-agent help overlay, read at load and never written by AC.
 pub(crate) const AGENT_HELP_LOCAL_FILE_NAME: &str = "agent-help.local.json";
 /// #2133 - AC-owned shipped per-agent help; rewritten from embedded content at startup.
@@ -178,18 +179,25 @@ pub(crate) const AGENT_HELP_REMOTE_FILE_NAME: &str = "agent-help.remote.json";
 pub(crate) const AGENT_HELP_REMOTE_CHECK_FILE_NAME: &str = "agent-help-remote-check.json";
 /// AC's own instance settings file. Every production reader and writer of the
 /// instance file names it through this constant.
-pub(crate) const SETTINGS_FILE_NAME: &str = "settings.json";
-pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = "settings.json.lock";
+pub(crate) const SETTINGS_FILE_NAME: &str = SETTINGS_TARGET_NAME;
+pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = SETTINGS_LOCK_TARGET_NAME;
+/// #2714 - the pre-migration lock sidecar. A retired name kept only so the
+/// leftover the naming migration deliberately never deletes stays ignored; the
+/// one row deliberately not composed by `layered_name!`.
+pub(crate) const SETTINGS_RETIRED_LOCK_NAME: &str = "settings.json.lock";
 /// Covers every settings migration backup instance. The concrete names are
 /// composed by their own migrations, so this glob is registry-owned and no
 /// writer imports it.
-pub(crate) const SETTINGS_MIGRATION_BACKUP_GLOB: &str = "settings.pre-*.json";
+pub(crate) const SETTINGS_MIGRATION_BACKUP_GLOB: &str = SETTINGS_MIGRATION_BACKUP_TARGET_GLOB;
 /// #2058 - the bounded rotation of previous `settings.json` generations. Slot 1
 /// is the version the most recent save replaced. The writer composes the index
 /// at runtime, so the glob is the only tie between the rule and the artifact.
-pub(crate) const SETTINGS_BACKUP_PREFIX: &str = "settings.backup.";
+pub(crate) const SETTINGS_BACKUP_PREFIX: &str = SETTINGS_BACKUP_TARGET_PREFIX;
 pub(crate) const SETTINGS_BACKUP_SUFFIX: &str = ".json";
-pub(crate) const SETTINGS_BACKUP_ROTATION_GLOB: &str = "settings.backup.*.json";
+pub(crate) const SETTINGS_BACKUP_ROTATION_GLOB: &str = SETTINGS_BACKUP_ROTATION_TARGET_GLOB;
+/// #2714 - every file the naming migration demotes, `<old name>.deprecated-<n>.no-git`,
+/// in any family: one glob keeps every set-aside copy out of Git.
+pub(crate) const SET_ASIDE_GLOB: &str = "*.deprecated-*.no-git";
 pub(crate) const TELEGRAM_BRIDGE_LOG_FILE_NAME: &str = "telegram-bridge.log";
 pub(crate) const UI_AUTOMATION_DIR_NAME: &str = "ui-automation";
 pub(crate) const ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME: &str = "Context.root-agent.md";
@@ -323,35 +331,41 @@ pub(crate) const LAYERED_NAME_PROBES: [(&str, &str); 7] = [
     (layered_name!("x", instance, no_git, "e"), NO_GIT_MARKER),
 ];
 
-// Target names, declared but not used until Phase B switches each live name.
-#[allow(dead_code)] // switched on in Phase B
+// Target names. B1b (#2714) switched the settings and blocking-menus ones;
+// the rest stay unused until their own phase.
 pub(crate) const SETTINGS_TARGET_NAME: &str = layered_name!("settings", instance, no_git, "json");
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const SETTINGS_LOCAL_TARGET_NAME: &str =
     layered_name!("settings", personal, no_git, "json");
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const SETTINGS_LOCK_TARGET_NAME: &str =
     concat!(layered_name!("settings", instance, no_git, "json"), ".lock");
 /// A prefix, not a name: the writer composes the slot index at runtime and
 /// appends `SETTINGS_BACKUP_SUFFIX`.
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const SETTINGS_BACKUP_TARGET_PREFIX: &str =
     layered_name!("settings", instance, no_git, "backup.");
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const SETTINGS_MIGRATION_BACKUP_TARGET_GLOB: &str =
     layered_name!("settings", instance, no_git, "pre-*.json");
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const BLOCKING_MENUS_SHIPPED_TARGET_NAME: &str =
     layered_name!("blocking-menus", default, no_git, "json");
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const BLOCKING_MENUS_REMOTE_TARGET_NAME: &str =
     layered_name!("blocking-menus", remote, no_git, "json");
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const BLOCKING_MENUS_LOCAL_TARGET_NAME: &str =
     layered_name!("blocking-menus", personal, no_git, "json");
-#[allow(dead_code)] // switched on in Phase B
 pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME: &str =
     layered_name!("blocking-menus", state, no_git, "json");
+/// #2714 - the settings writer's temporaries, `<name>.<pid>.<op>.tmp`: no
+/// leading dot, so the atomic-write glob cannot match them.
+pub(crate) const SETTINGS_TMP_GLOB: &str = concat!(
+    layered_name!("settings", instance, no_git, "json"),
+    ".*.tmp"
+);
+/// #2714 - the one concrete migration backup, written by
+/// `write_pre_384_v1_backup`; a registry test ties it to `SETTINGS_MIGRATION_BACKUP_GLOB`.
+pub(crate) const SETTINGS_MIGRATION_BACKUP_384_V1_NAME: &str =
+    layered_name!("settings", instance, no_git, "pre-384-v1.json");
+/// #2714 - the rotation glob in the layered spelling; a registry test derives
+/// it from `SETTINGS_BACKUP_PREFIX` and `SETTINGS_BACKUP_SUFFIX`.
+pub(crate) const SETTINGS_BACKUP_ROTATION_TARGET_GLOB: &str =
+    layered_name!("settings", instance, no_git, "backup.*.json");
 /// Tracked, so no `.no-git`.
 #[allow(dead_code)] // switched on in Phase B
 pub(crate) const CODING_AGENTS_BASE_TARGET_NAME: &str = layered_name!("agents", default, "json");
@@ -411,6 +425,12 @@ pub(crate) fn publication_temp_name_for_destination(
 /// generated file is rewritten, or names whose writer is deliberately left
 /// alone and guarded by the git fixture instead.
 pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
+    InstanceArtifact {
+        name: SET_ASIDE_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: files the naming migration set aside (<old name>.deprecated-<n>.no-git); every byte kept, never committed",
+    },
     InstanceArtifact {
         name: LOCAL_MARKDOWN_OVERRIDE_GLOB,
         kind: ArtifactKind::Glob,
@@ -540,6 +560,24 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: rotated generations of the application log; the same runtime artifact under a numeric suffix",
+    },
+    InstanceArtifact {
+        name: BLOCKING_MENUS_SHIPPED_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at every start",
+    },
+    InstanceArtifact {
+        name: BLOCKING_MENUS_REMOTE_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: downloaded blocking-menu patterns; replaced by the next accepted download",
+    },
+    InstanceArtifact {
+        name: BLOCKING_MENUS_LOCAL_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: operator-owned blocking-menu overlay; machine-local by design",
     },
     InstanceArtifact {
         name: BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
@@ -746,24 +784,6 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: persisted session state",
     },
     InstanceArtifact {
-        name: BLOCKING_MENUS_SHIPPED_FILE_NAME,
-        kind: ArtifactKind::File,
-        disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at every start",
-    },
-    InstanceArtifact {
-        name: BLOCKING_MENUS_LOCAL_FILE_NAME,
-        kind: ArtifactKind::File,
-        disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: operator-owned blocking-menu overlay; machine-local by design",
-    },
-    InstanceArtifact {
-        name: BLOCKING_MENUS_REMOTE_FILE_NAME,
-        kind: ArtifactKind::File,
-        disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: downloaded blocking-menu patterns; replaced by the next accepted download",
-    },
-    InstanceArtifact {
         name: SETTINGS_BACKUP_ROTATION_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
@@ -776,10 +796,22 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: application settings",
     },
     InstanceArtifact {
+        name: SETTINGS_TMP_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: transient settings write temporaries ({name}.{pid}.{op}.tmp); survive only a crash mid-save",
+    },
+    InstanceArtifact {
         name: SETTINGS_LOCK_FILE_NAME,
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: transient settings write lock",
+    },
+    InstanceArtifact {
+        name: SETTINGS_MIGRATION_BACKUP_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: settings migration backups",
     },
     InstanceArtifact {
         name: SETTINGS_LOCAL_OVERRIDE_FILE_NAME,
@@ -788,10 +820,10 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: operator-owned settings overlay; machine-local by design and never written by AC",
     },
     InstanceArtifact {
-        name: SETTINGS_MIGRATION_BACKUP_GLOB,
-        kind: ArtifactKind::Glob,
+        name: SETTINGS_RETIRED_LOCK_NAME,
+        kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
-        comment: "# AgentsCommander: settings migration backups",
+        comment: "# AgentsCommander: retired pre-migration settings write lock; the naming migration never deletes it, so the leftover stays ignored",
     },
     InstanceArtifact {
         name: TELEGRAM_BRIDGE_LOG_FILE_NAME,
@@ -1217,6 +1249,30 @@ mod tests {
             SETTINGS_BACKUP_ROTATION_GLOB,
             format!("{SETTINGS_BACKUP_PREFIX}*{SETTINGS_BACKUP_SUFFIX}")
         );
+    }
+
+    #[test]
+    fn the_384_v1_name_matches_its_glob() {
+        assert_eq!(
+            SETTINGS_MIGRATION_BACKUP_384_V1_NAME,
+            SETTINGS_MIGRATION_BACKUP_GLOB.replace('*', "384-v1")
+        );
+    }
+
+    #[test]
+    fn the_settings_tmp_glob_derives_from_the_settings_name() {
+        assert_eq!(SETTINGS_TMP_GLOB, format!("{SETTINGS_FILE_NAME}.*.tmp"));
+    }
+
+    #[test]
+    fn the_retired_lock_row_is_the_pre_migration_literal() {
+        assert_eq!(SETTINGS_RETIRED_LOCK_NAME, "settings.json.lock");
+        assert_ne!(SETTINGS_RETIRED_LOCK_NAME, SETTINGS_LOCK_FILE_NAME);
+        assert!(INSTANCE_ARTIFACTS
+            .iter()
+            .any(|row| row.name == SETTINGS_RETIRED_LOCK_NAME
+                && row.kind == ArtifactKind::File
+                && row.disposition == Disposition::Ignore));
     }
 
     #[test]

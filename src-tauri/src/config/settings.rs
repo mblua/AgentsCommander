@@ -1695,8 +1695,9 @@ pub(crate) fn write_remote_blocking_menus_cache(
     fetched_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), String> {
     file.note = Some(format!(
-        "Downloaded by AgentsCommander from {source_url} (source ref {REMOTE_BLOCKING_MENUS_SOURCE_REF}) at {}. Replaced by the next accepted download and ignored at start if it fails validation; put your own patterns in settings-blocking-menus.local.json.",
-        fetched_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        "Downloaded by AgentsCommander from {source_url} (source ref {REMOTE_BLOCKING_MENUS_SOURCE_REF}) at {}. Replaced by the next accepted download and ignored at start if it fails validation; put your own patterns in {}.",
+        fetched_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        crate::config::instance_artifacts::BLOCKING_MENUS_LOCAL_FILE_NAME
     ));
     let bytes = pretty_json_bytes(&file).map_err(|e| e.to_string())?;
     crate::config::local_config_io::write_file_atomic(
@@ -3502,7 +3503,8 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
                             legacy_profiles_detected = true;
                             legacy_profiles_contents = Some(contents);
                             log::warn!(
-                                "[settings-migration] #2015 legacy pre-v2 codingAgentProfiles fields are no longer supported and were ignored; v2 fields kept; original kept in settings.pre-384-v1.json"
+                                "[settings-migration] #2015 legacy pre-v2 codingAgentProfiles fields are no longer supported and were ignored; v2 fields kept; original kept in {}",
+                                crate::config::instance_artifacts::SETTINGS_MIGRATION_BACKUP_384_V1_NAME
                             );
                         }
                         s
@@ -3634,7 +3636,8 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
 }
 
 fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> Result<(), String> {
-    let backup_path = settings_path.with_file_name("settings.pre-384-v1.json");
+    let backup_path = settings_path
+        .with_file_name(crate::config::instance_artifacts::SETTINGS_MIGRATION_BACKUP_384_V1_NAME);
     if backup_path.exists() {
         return Ok(());
     }
@@ -6824,7 +6827,7 @@ mod tests {
             let name = entry.unwrap().file_name();
             let name = name.to_string_lossy();
             assert!(
-                !(name.starts_with("settings.json.") && name.ends_with(".tmp")),
+                !(name.starts_with("settings.30.instance.no-git.json.") && name.ends_with(".tmp")),
                 "unexpected settings temp file: {name}"
             );
         }
@@ -6840,7 +6843,9 @@ mod tests {
         super::save_settings_to_path_preserving_project_paths(settings, path).unwrap();
         let bytes = std::fs::read(path).unwrap();
         assert!(
-            !path.with_file_name("settings.backup.1.json").exists(),
+            !path
+                .with_file_name("settings.30.instance.no-git.backup.1.json")
+                .exists(),
             "seeding must not rotate"
         );
         bytes
@@ -6850,9 +6855,9 @@ mod tests {
         for slot in 1..=super::SETTINGS_BACKUP_KEEP {
             assert!(
                 !path
-                    .with_file_name(format!("settings.backup.{slot}.json"))
+                    .with_file_name(format!("settings.30.instance.no-git.backup.{slot}.json"))
                     .exists(),
-                "settings.backup.{slot}.json must not exist"
+                "settings.30.instance.no-git.backup.{slot}.json must not exist"
             );
         }
     }
@@ -6872,7 +6877,8 @@ mod tests {
         };
         super::save_settings_to_path_preserving_project_paths(&b, &path).unwrap();
         assert_eq!(
-            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            std::fs::read(path.with_file_name("settings.30.instance.no-git.backup.1.json"))
+                .unwrap(),
             seed,
             "slot 1 holds the replaced bytes A"
         );
@@ -6882,7 +6888,9 @@ mod tests {
             "settings.json holds the new bytes"
         );
         assert!(
-            !path.with_file_name("settings.backup.2.json").exists(),
+            !path
+                .with_file_name("settings.30.instance.no-git.backup.2.json")
+                .exists(),
             "slot 2 must not exist after a single rotation"
         );
     }
@@ -6905,7 +6913,8 @@ mod tests {
         };
         super::save_settings_to_path_preserving_project_paths(&b, &path).unwrap();
         assert_eq!(
-            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            std::fs::read(path.with_file_name("settings.30.instance.no-git.backup.1.json"))
+                .unwrap(),
             first_bytes,
             "positive control: slot 1 holds the first save's bytes"
         );
@@ -6930,7 +6939,8 @@ mod tests {
         };
         super::save_settings_to_path_preserving_project_paths(&c, &path).unwrap();
         assert_eq!(
-            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            std::fs::read(path.with_file_name("settings.30.instance.no-git.backup.1.json"))
+                .unwrap(),
             seed,
             "positive control: slot 1 holds exactly A"
         );
@@ -6958,7 +6968,9 @@ mod tests {
             );
         }
         assert!(
-            !path.with_file_name("settings.backup.6.json").exists(),
+            !path
+                .with_file_name("settings.30.instance.no-git.backup.6.json")
+                .exists(),
             "slot 6 must not exist"
         );
         for slot in 1..=5u32 {
@@ -6981,13 +6993,14 @@ mod tests {
             ..super::AppSettings::default()
         };
         let seed = seed_settings_with_production_bytes(&path, &a);
-        std::fs::create_dir(path.with_file_name("settings.backup.1.json")).unwrap();
+        std::fs::create_dir(path.with_file_name("settings.30.instance.no-git.backup.1.json"))
+            .unwrap();
         let b = super::AppSettings {
             root_token: Some("b".to_string()),
             ..super::AppSettings::default()
         };
         super::save_settings_to_path_preserving_project_paths(&b, &path).unwrap();
-        let slot_one = path.with_file_name("settings.backup.1.json");
+        let slot_one = path.with_file_name("settings.30.instance.no-git.backup.1.json");
         assert!(slot_one.is_dir(), "slot 1 is still a directory");
         assert!(
             slot_one.read_dir().unwrap().next().is_none(),
@@ -6999,7 +7012,9 @@ mod tests {
             "settings.json holds B's bytes"
         );
         assert!(
-            !path.with_file_name("settings.backup.2.json").exists(),
+            !path
+                .with_file_name("settings.30.instance.no-git.backup.2.json")
+                .exists(),
             "slot 2 must not exist"
         );
         // Positive control: the same sequence without the directory creates slot 1.
@@ -7008,7 +7023,8 @@ mod tests {
         let ctrl_seed = seed_settings_with_production_bytes(&ctrl_path, &a);
         super::save_settings_to_path_preserving_project_paths(&b, &ctrl_path).unwrap();
         assert_eq!(
-            std::fs::read(ctrl_path.with_file_name("settings.backup.1.json")).unwrap(),
+            std::fs::read(ctrl_path.with_file_name("settings.30.instance.no-git.backup.1.json"))
+                .unwrap(),
             ctrl_seed,
             "positive control: slot 1 holds A"
         );
@@ -7038,12 +7054,16 @@ mod tests {
         super::save_settings_to_path_preserving_project_paths(&b, &path).unwrap();
         let b_bytes = std::fs::read(&path).unwrap();
         assert_eq!(
-            std::fs::read_to_string(path.with_file_name("settings.pre-384-v1.json")).unwrap(),
+            std::fs::read_to_string(
+                path.with_file_name("settings.30.instance.no-git.pre-384-v1.json")
+            )
+            .unwrap(),
             legacy,
             "pre-384 backup holds the legacy bytes"
         );
         assert_eq!(
-            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            std::fs::read(path.with_file_name("settings.30.instance.no-git.backup.1.json"))
+                .unwrap(),
             legacy.as_bytes(),
             "slot 1 holds the legacy bytes"
         );
@@ -7059,17 +7079,22 @@ mod tests {
         };
         super::save_settings_to_path_preserving_project_paths(&c, &path).unwrap();
         assert_eq!(
-            std::fs::read_to_string(path.with_file_name("settings.pre-384-v1.json")).unwrap(),
+            std::fs::read_to_string(
+                path.with_file_name("settings.30.instance.no-git.pre-384-v1.json")
+            )
+            .unwrap(),
             legacy,
             "pre-384 backup is still byte-identical to legacy"
         );
         assert_eq!(
-            std::fs::read(path.with_file_name("settings.backup.1.json")).unwrap(),
+            std::fs::read(path.with_file_name("settings.30.instance.no-git.backup.1.json"))
+                .unwrap(),
             b_bytes,
             "slot 1 now holds B's bytes"
         );
         assert_eq!(
-            std::fs::read(path.with_file_name("settings.backup.2.json")).unwrap(),
+            std::fs::read(path.with_file_name("settings.30.instance.no-git.backup.2.json"))
+                .unwrap(),
             legacy.as_bytes(),
             "slot 2 holds the legacy bytes"
         );
@@ -7100,7 +7125,10 @@ mod tests {
         let added: Vec<&String> = after.difference(&before).collect();
         let removed: Vec<&String> = before.difference(&after).collect();
         assert_eq!(added.len(), 1, "exactly one file added: {added:?}");
-        assert_eq!(added[0].as_str(), "settings.backup.1.json");
+        assert_eq!(
+            added[0].as_str(),
+            "settings.30.instance.no-git.backup.1.json"
+        );
         assert!(removed.is_empty(), "no file removed: {removed:?}");
         assert_no_issue_1330_temp_files(temp.path());
     }
@@ -7699,7 +7727,10 @@ mod tests {
         assert_eq!(recorded_pid, std::process::id());
         assert_eq!(recorded_temp.parent(), Some(temp.path()));
         let temp_name = recorded_temp.file_name().unwrap().to_string_lossy();
-        assert!(temp_name.starts_with(&format!("settings.json.{}.", recorded_pid)));
+        assert!(temp_name.starts_with(&format!(
+            "settings.30.instance.no-git.json.{}.",
+            recorded_pid
+        )));
         assert!(temp_name.ends_with(".tmp"));
 
         let (records, _capture_guard) = capture_settings_save_diagnostics();
@@ -9154,7 +9185,9 @@ mod tests {
             .get("codex")
             .is_some_and(|cells| cells.values().any(|cell| cell.command.contains("--model"))));
 
-        let backup_path = temp.path().join("settings.pre-384-v1.json");
+        let backup_path = temp
+            .path()
+            .join("settings.30.instance.no-git.pre-384-v1.json");
         assert_eq!(
             std::fs::read_to_string(backup_path).unwrap(),
             LEGACY_PROFILES_SETTINGS_FIXTURE
@@ -9185,7 +9218,9 @@ mod tests {
 
         super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
 
-        let backup_path = temp.path().join("settings.pre-384-v1.json");
+        let backup_path = temp
+            .path()
+            .join("settings.30.instance.no-git.pre-384-v1.json");
         assert_eq!(
             std::fs::read_to_string(&backup_path).unwrap(),
             LEGACY_PROFILES_SETTINGS_FIXTURE
@@ -9221,7 +9256,10 @@ mod tests {
         let saved_raw = std::fs::read_to_string(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_str(&saved_raw).unwrap();
         assert!(saved["codingAgentProfiles"].get("letters").is_some());
-        assert!(!temp.path().join("settings.pre-384-v1.json").exists());
+        assert!(!temp
+            .path()
+            .join("settings.30.instance.no-git.pre-384-v1.json")
+            .exists());
     }
 
     #[test]
@@ -9324,7 +9362,9 @@ mod tests {
 
         let settings = super::load_settings_from_path(&path);
 
-        let backup_path = temp.path().join("settings.pre-384-v1.json");
+        let backup_path = temp
+            .path()
+            .join("settings.30.instance.no-git.pre-384-v1.json");
         assert_eq!(std::fs::read_to_string(backup_path).unwrap(), original);
         assert_eq!(
             settings.coding_agent_profiles.profile_labels_by_agent["codex"]["A"],
@@ -9394,7 +9434,10 @@ mod tests {
             raw["codingAgentProfiles"]["profileLabelsByAgent"]["codex"]["B"],
             "Second"
         );
-        assert!(!temp.path().join("settings.pre-384-v1.json").exists());
+        assert!(!temp
+            .path()
+            .join("settings.30.instance.no-git.pre-384-v1.json")
+            .exists());
     }
 
     #[test]
@@ -12795,7 +12838,7 @@ mod tests {
                 "n never held them"
             );
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
-            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            std::fs::remove_file(temp.path().join("settings.50.personal.no-git.json")).unwrap();
 
             let profiles = &disk_object(&path)["codingAgentProfiles"];
             for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
@@ -12830,7 +12873,7 @@ mod tests {
             validate_and_repair_settings(&mut settings).unwrap();
             assert_eq!(a_command(&settings, "o").as_deref(), Some("--special"));
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
-            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            std::fs::remove_file(temp.path().join("settings.50.personal.no-git.json")).unwrap();
 
             let profiles = &disk_object(&path)["codingAgentProfiles"];
             assert_eq!(
@@ -12923,7 +12966,7 @@ mod tests {
             }
             if let Some(local) = local {
                 std::fs::write(
-                    dir.join("settings.local.json"),
+                    dir.join("settings.50.personal.no-git.json"),
                     serde_json::to_string_pretty(local).unwrap(),
                 )
                 .unwrap();
@@ -13042,7 +13085,7 @@ mod tests {
             settings.gemini_api_key = "unrelated-change".to_string();
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
 
-            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            std::fs::remove_file(temp.path().join("settings.50.personal.no-git.json")).unwrap();
             let reloaded = load_settings_from_path(&path);
 
             let control_temp = tempfile::tempdir().unwrap();
@@ -13560,7 +13603,7 @@ mod tests {
                 "the overlay-introduced agent's cells must not reach the base file"
             );
 
-            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            std::fs::remove_file(temp.path().join("settings.50.personal.no-git.json")).unwrap();
             let reloaded = load_settings_from_path(&path);
             assert!(!reloaded
                 .coding_agent_profiles
@@ -13702,7 +13745,7 @@ mod tests {
                 "the created file holds the DEFAULT value, not the override"
             );
 
-            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            std::fs::remove_file(temp.path().join("settings.50.personal.no-git.json")).unwrap();
             let reloaded = load_settings_from_path(&path);
             assert_eq!(reloaded.log_level, None);
         }
@@ -13714,7 +13757,7 @@ mod tests {
             let path = temp.path().join("settings.json");
             std::fs::write(&path, "{ not json").unwrap();
             std::fs::write(
-                temp.path().join("settings.local.json"),
+                temp.path().join("settings.50.personal.no-git.json"),
                 r#"{"logLevel": "trace"}"#,
             )
             .unwrap();
@@ -13764,7 +13807,7 @@ mod tests {
             let path = temp.path().join("settings.json");
             std::fs::write(&path, "{ not json").unwrap();
             std::fs::write(
-                temp.path().join("settings.local.json"),
+                temp.path().join("settings.50.personal.no-git.json"),
                 r#"{"logLevel": "trace", "activityLogEnabled": true}"#,
             )
             .unwrap();
@@ -13801,7 +13844,11 @@ mod tests {
 
             // 1. Rejection.
             let path = seed(temp.path(), Some(&base_fixture()), None);
-            std::fs::write(temp.path().join("settings.local.json"), "{ not json").unwrap();
+            std::fs::write(
+                temp.path().join("settings.50.personal.no-git.json"),
+                "{ not json",
+            )
+            .unwrap();
             let contents = std::fs::read_to_string(&path).unwrap();
             let (settings, _) = parse_settings_json(&contents, "test", Some(&path)).unwrap();
             let records = settings.local_overlay_state.diagnostics("local");
@@ -14161,7 +14208,7 @@ mod tests {
             for (label, bytes) in cases {
                 let temp = tempfile::tempdir().unwrap();
                 let path = temp.path().join("settings.json");
-                let local = temp.path().join("settings.local.json");
+                let local = temp.path().join("settings.50.personal.no-git.json");
                 match bytes {
                     Some(bytes) => std::fs::write(&local, bytes).unwrap(),
                     None => std::fs::create_dir(&local).unwrap(),
@@ -14297,7 +14344,7 @@ mod tests {
                 "the legacy carrier is deferred, not dropped"
             );
 
-            std::fs::remove_file(temp.path().join("settings.local.json")).unwrap();
+            std::fs::remove_file(temp.path().join("settings.50.personal.no-git.json")).unwrap();
             let reloaded = load_settings_from_path(&path);
             assert!(reloaded.restore_coordinator_wake_state);
             assert!(
@@ -14904,7 +14951,7 @@ mod tests {
             )];
             let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
             let tmp_dir = temp.path().join(format!(
-                ".settings-blocking-menus.local.json.{}.tmp",
+                ".blocking-menus.50.personal.no-git.json.{}.tmp",
                 std::process::id()
             ));
             std::fs::create_dir(&tmp_dir).unwrap();
@@ -16021,7 +16068,7 @@ mod tests {
         // A non-order save restores the base `agents` array to disk byte-for-byte,
         // keeps the effective overlay order only in memory, and never writes the
         // local file.
-        let local_path = temp.path().join("settings.local.json");
+        let local_path = temp.path().join("settings.50.personal.no-git.json");
         let overlay_before = std::fs::read(&local_path).unwrap();
         settings.gemini_api_key = "unrelated".to_string();
         let written =
@@ -16047,7 +16094,7 @@ mod tests {
             ]
         });
         let path = seed(temp.path(), None, Some(&local));
-        let local_path = temp.path().join("settings.local.json");
+        let local_path = temp.path().join("settings.50.personal.no-git.json");
         let overlay_before = std::fs::read(&local_path).unwrap();
 
         let settings = super::load_settings_from_path(&path);
@@ -16253,7 +16300,7 @@ mod tests {
                 }),
             );
             seed_json(
-                &temp.path().join("settings.local.json"),
+                &temp.path().join("settings.50.personal.no-git.json"),
                 &json!({
                     "mainGeometry": { "x": 9.0, "y": 8.0, "width": 700.0, "height": 600.0 },
                     "mainWindowDisplayState": "normal",

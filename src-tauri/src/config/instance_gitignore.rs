@@ -204,6 +204,10 @@ fn ensure_existing_file(path: &Path, rules: &[RenderedRule]) -> Result<AttemptRe
     validate_opened_regular_file(path, &read_file, "read target")?;
     let bytes = read_all(path, &mut read_file)?;
     validate_opened_regular_file(path, &read_file, "read target after inspection")?;
+    if retire(&bytes).is_some() {
+        drop(read_file);
+        return rewrite_retired_file(path, rules);
+    }
     if missing_rule_indexes(&bytes, rules).is_empty() {
         return Ok(AttemptResult::Done);
     }
@@ -236,6 +240,100 @@ fn ensure_existing_file(path: &Path, rules: &[RenderedRule]) -> Result<AttemptRe
     append_file.write_all(&suffix).map_err(|error| {
         format!(
             "failed to append instance .gitignore rules at {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(AttemptResult::Done)
+}
+
+/// #2714 - the AC-written pairs of the nine rows B1b renamed, as the generator
+/// wrote them before the switch. The retired settings lock keeps a row of its
+/// own under a new comment, so its old pair retires too.
+const RETIRED_PAIRS: [(&str, &str); 9] = [
+    (
+        "# AgentsCommander: remote blocking-menu download throttle stamp",
+        "/blocking-menus-remote-check.json",
+    ),
+    (
+        "# AgentsCommander: shipped blocking-menu patterns; rewritten from the binary at every start",
+        "/settings-blocking-menus.json",
+    ),
+    (
+        "# AgentsCommander: operator-owned blocking-menu overlay; machine-local by design",
+        "/settings-blocking-menus.local.json",
+    ),
+    (
+        "# AgentsCommander: downloaded blocking-menu patterns; replaced by the next accepted download",
+        "/settings-blocking-menus.remote.json",
+    ),
+    (
+        "# AgentsCommander: rotated previous generations of the application settings; the same runtime artifact under a numeric slot",
+        "/settings.backup.*.json",
+    ),
+    (
+        "# AgentsCommander: application settings",
+        "/settings.json",
+    ),
+    (
+        "# AgentsCommander: transient settings write lock",
+        "/settings.json.lock",
+    ),
+    (
+        "# AgentsCommander: operator-owned settings overlay; machine-local by design and never written by AC",
+        "/settings.local.json",
+    ),
+    (
+        "# AgentsCommander: settings migration backups",
+        "/settings.pre-*.json",
+    ),
+];
+
+/// The body with every retired pair removed, or `None` when there is none to
+/// remove. A body that is not UTF-8 is left to the append-only path.
+fn retire(bytes: &[u8]) -> Option<Vec<u8>> {
+    let content = std::str::from_utf8(bytes).ok()?;
+    let (retired, changed) = super::naming_migration::retire_ignore_pairs(content, &RETIRED_PAIRS);
+    changed.then(|| retired.into_bytes())
+}
+
+/// #2714 - the one non-append path: a body carrying retired pairs is rewritten
+/// in place through a read-write handle, under the same lock and the same
+/// validation as the append path, and gains any missing rule in the same write.
+/// An append handle cannot truncate on Windows, hence the separate handle.
+fn rewrite_retired_file(path: &Path, rules: &[RenderedRule]) -> Result<AttemptResult, String> {
+    let mut file = match open_read_write_no_follow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(AttemptResult::RetryClassification);
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to open instance .gitignore for rule retirement at {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    validate_opened_regular_file(path, &file, "retirement target")?;
+    acquire_nonblocking_lock(path, &file)?;
+    validate_opened_regular_file(path, &file, "locked retirement target")?;
+
+    let locked_bytes = read_all(path, &mut file)?;
+    validate_opened_regular_file(path, &file, "retirement target after locked read")?;
+    let retired = retire(&locked_bytes);
+    let kept = retired.as_deref().unwrap_or(&locked_bytes);
+    let missing = missing_rule_indexes(kept, rules);
+    if retired.is_none() && missing.is_empty() {
+        return Ok(AttemptResult::Done);
+    }
+    let mut body = kept.to_vec();
+    body.extend(append_buffer(kept, rules, &missing));
+    let written = file
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| file.set_len(0))
+        .and_then(|()| file.write_all(&body));
+    written.map_err(|error| {
+        format!(
+            "failed to rewrite instance .gitignore for rule retirement at {}: {error}",
             path.display()
         )
     })?;
@@ -453,6 +551,13 @@ fn open_read_no_follow(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+fn open_read_write_no_follow(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    apply_safe_open_flags(&mut options);
+    options.open(path)
+}
+
 fn open_append_no_follow(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).append(true);
@@ -479,10 +584,11 @@ mod tests {
         CODING_AGENTS_MIGRATION_JOURNAL_FILENAME, CODING_AGENTS_PROJECT_TARGET_NAME,
         LAYERED_NAME_PROBES, LAYER_DEFAULT, LAYER_INSTANCE, LAYER_PERSONAL, LAYER_PROJECT,
         LAYER_REMOTE, NO_GIT_MARKER, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_ROTATION_GLOB,
-        SETTINGS_BACKUP_SUFFIX, SETTINGS_BACKUP_TARGET_PREFIX, SETTINGS_FILE_NAME,
-        SETTINGS_LOCAL_OVERRIDE_FILE_NAME, SETTINGS_LOCAL_TARGET_NAME, SETTINGS_LOCK_FILE_NAME,
-        SETTINGS_LOCK_TARGET_NAME, SETTINGS_MIGRATION_BACKUP_GLOB,
-        SETTINGS_MIGRATION_BACKUP_TARGET_GLOB, SETTINGS_TARGET_NAME, STATE_MARKER,
+        SETTINGS_BACKUP_ROTATION_TARGET_GLOB, SETTINGS_BACKUP_SUFFIX,
+        SETTINGS_BACKUP_TARGET_PREFIX, SETTINGS_FILE_NAME, SETTINGS_LOCAL_OVERRIDE_FILE_NAME,
+        SETTINGS_LOCAL_TARGET_NAME, SETTINGS_LOCK_FILE_NAME, SETTINGS_LOCK_TARGET_NAME,
+        SETTINGS_MIGRATION_BACKUP_GLOB, SETTINGS_MIGRATION_BACKUP_TARGET_GLOB,
+        SETTINGS_TARGET_NAME, STATE_MARKER,
     };
 
     const TEST_AGENT_LOCAL_DIR: &str = ".agentscommander_amp-office";
@@ -1058,7 +1164,7 @@ mod tests {
             // narrowness control, because it is a live rotated generation.
             "app.log.1",
             "app.log.5",
-            "blocking-menus-remote-check.json",
+            "blocking-menus.state.no-git.json",
             "codex-home/agent-1/config.toml",
             // The nested sample proves the Dir row covers the `results/` subtree
             // in one rule.
@@ -1095,13 +1201,23 @@ mod tests {
             "session-requests/create-1.json",
             "sessions.json",
             // #2058: the first and last rotation slots, the `SETTINGS_BACKUP_KEEP` edge.
-            "settings.backup.1.json",
-            "settings.backup.5.json",
-            "settings.json",
+            "settings.30.instance.no-git.backup.1.json",
+            "settings.30.instance.no-git.backup.5.json",
+            "settings.30.instance.no-git.json",
+            "settings.30.instance.no-git.json.lock",
+            // #2714: the settings writer's temporary, and the retired lock the
+            // naming migration leaves on disk forever.
+            "settings.30.instance.no-git.json.1.2.tmp",
             "settings.json.lock",
-            "settings-blocking-menus.json",
-            "settings-blocking-menus.local.json",
-            "settings-blocking-menus.remote.json",
+            // #2714: the naming-migration journal, its lock, and two set-aside
+            // copies from different families.
+            "naming-migration.state.no-git.json",
+            ".naming-migration.state.no-git.json.lock",
+            "settings.json.deprecated-1.no-git",
+            "blocking-menus.json.deprecated-7.no-git",
+            "blocking-menus.10.default.no-git.json",
+            "blocking-menus.50.personal.no-git.json",
+            "blocking-menus.20.remote.no-git.json",
             // #2133: the operator-owned per-agent help overlay.
             "agent-help.local.json",
             // #2133: the shipped per-agent help, rewritten by AC at every start.
@@ -1110,13 +1226,13 @@ mod tests {
             "agent-help-remote-check.json",
             "agent-help.remote.json",
             // #1737: the operator-owned overlay and the two managed context
-            // template overrides. The `settings.json` row is an exact-name rule and
-            // does not reach `settings.local.json`, which is why the row exists.
-            "settings.local.json",
+            // template overrides. The settings row is an exact-name rule and does
+            // not reach the personal overlay, which is why the row exists.
+            "settings.50.personal.no-git.json",
             "Context.AgentsCommander.local.md",
             "Context.root-agent.local.md",
-            "settings.pre-384-v1.json",
-            "settings.pre-999-v9.json",
+            "settings.30.instance.no-git.pre-384-v1.json",
+            "settings.30.instance.no-git.pre-999-v9.json",
             "telegram-bridge.log",
             "ui-automation/session.json",
             "update-check.json",
@@ -1159,6 +1275,53 @@ mod tests {
                 "required path was not ignored: {repo_relative}; stderr={}",
                 String::from_utf8_lossy(&output.stderr)
             );
+        }
+
+        // #2714 E11: each of these is ignored by its own anchored rule, the two
+        // set-aside copies by `SET_ASIDE_GLOB`.
+        for (relative, rule) in [
+            (
+                "settings.30.instance.no-git.json",
+                "/settings.30.instance.no-git.json",
+            ),
+            (
+                "settings.30.instance.no-git.json.lock",
+                "/settings.30.instance.no-git.json.lock",
+            ),
+            ("settings.json.lock", "/settings.json.lock"),
+            (
+                "settings.30.instance.no-git.json.1.2.tmp",
+                "/settings.30.instance.no-git.json.*.tmp",
+            ),
+            (
+                "naming-migration.state.no-git.json",
+                "/naming-migration.state.no-git.json",
+            ),
+            (
+                ".naming-migration.state.no-git.json.lock",
+                "/.naming-migration.state.no-git.json.lock",
+            ),
+            (
+                "settings.json.deprecated-1.no-git",
+                "/*.deprecated-*.no-git",
+            ),
+            (
+                "blocking-menus.json.deprecated-7.no-git",
+                "/*.deprecated-*.no-git",
+            ),
+        ] {
+            let repo_relative = format!("instance/{relative}");
+            let output = assert_git_success(
+                repo,
+                &["check-ignore", "--no-index", "-v", "--", &repo_relative],
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let matched = stdout
+                .split('\t')
+                .next()
+                .and_then(|source| source.rsplit(':').next())
+                .unwrap_or_default();
+            assert_eq!(matched, rule, "{repo_relative} matched by: {stdout}");
         }
 
         let control_paths = [
@@ -1644,33 +1807,49 @@ mod tests {
         }
     }
 
-    /// #2470 E7 - Phase A declares target names but moves no live name.
+    /// #2714 E4 - B1b switches every settings and blocking-menus live name to
+    /// its Phase A target constant, never to a retyped literal. The coding-agent
+    /// names belong to B2 and stay unchanged here.
     #[test]
-    fn live_names_are_unchanged_by_phase_a() {
-        let live = [
-            (SETTINGS_FILE_NAME, "settings.json"),
-            (SETTINGS_LOCAL_OVERRIDE_FILE_NAME, "settings.local.json"),
-            (SETTINGS_LOCK_FILE_NAME, "settings.json.lock"),
-            (SETTINGS_BACKUP_PREFIX, "settings.backup."),
-            (SETTINGS_BACKUP_SUFFIX, ".json"),
-            (SETTINGS_BACKUP_ROTATION_GLOB, "settings.backup.*.json"),
-            (SETTINGS_MIGRATION_BACKUP_GLOB, "settings.pre-*.json"),
+    fn live_names_are_the_target_names() {
+        let switched = [
+            (SETTINGS_FILE_NAME, SETTINGS_TARGET_NAME),
+            (
+                SETTINGS_LOCAL_OVERRIDE_FILE_NAME,
+                SETTINGS_LOCAL_TARGET_NAME,
+            ),
+            (SETTINGS_LOCK_FILE_NAME, SETTINGS_LOCK_TARGET_NAME),
+            (SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_TARGET_PREFIX),
+            (
+                SETTINGS_BACKUP_ROTATION_GLOB,
+                SETTINGS_BACKUP_ROTATION_TARGET_GLOB,
+            ),
+            (
+                SETTINGS_MIGRATION_BACKUP_GLOB,
+                SETTINGS_MIGRATION_BACKUP_TARGET_GLOB,
+            ),
             (
                 BLOCKING_MENUS_SHIPPED_FILE_NAME,
-                "settings-blocking-menus.json",
+                BLOCKING_MENUS_SHIPPED_TARGET_NAME,
             ),
             (
                 BLOCKING_MENUS_REMOTE_FILE_NAME,
-                "settings-blocking-menus.remote.json",
+                BLOCKING_MENUS_REMOTE_TARGET_NAME,
             ),
             (
                 BLOCKING_MENUS_LOCAL_FILE_NAME,
-                "settings-blocking-menus.local.json",
+                BLOCKING_MENUS_LOCAL_TARGET_NAME,
             ),
             (
                 BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
-                "blocking-menus-remote-check.json",
+                BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME,
             ),
+        ];
+        for (live, target) in switched {
+            assert_eq!(live, target);
+        }
+        assert_eq!(SETTINGS_BACKUP_SUFFIX, ".json");
+        let unchanged = [
             (CODING_AGENTS_BASE_FILENAME, "agents.json"),
             (CODING_AGENTS_LOCAL_FILENAME, "agents.local.json"),
             (CODING_AGENTS_LOCK_FILENAME, ".agents.json.lock"),
@@ -1683,9 +1862,52 @@ mod tests {
                 ".agents.migration-v1.json",
             ),
         ];
-        for (constant, literal) in live {
+        for (constant, literal) in unchanged {
             assert_eq!(constant, literal);
         }
+    }
+
+    /// #2714 E10 - the nine retired pairs go, the retired lock keeps a row of
+    /// its own, this phase's three new rows arrive, and a user-authored bare
+    /// pattern with no AC comment above it survives byte for byte.
+    #[test]
+    fn the_nine_retired_pairs_go_and_the_lock_row_stays() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut seeded = String::from("# my own rules\n/settings.json\n");
+        for (comment, pattern) in RETIRED_PAIRS {
+            seeded.push_str(&format!("{comment}\n{pattern}\n"));
+        }
+        let path = temp.path().join(".gitignore");
+        std::fs::write(&path, &seeded).expect("seed .gitignore");
+
+        ensure_instance_gitignore_at(temp.path(), TEST_AGENT_LOCAL_DIR).expect("ensure");
+        let body = std::fs::read_to_string(&path).expect("read .gitignore");
+        let lines: Vec<&str> = body.lines().collect();
+
+        assert!(
+            body.starts_with("# my own rules\n/settings.json\n"),
+            "{body}"
+        );
+        for (comment, pattern) in RETIRED_PAIRS {
+            assert!(
+                !lines.windows(2).any(|pair| pair == [comment, pattern]),
+                "retired pair survived: {pattern}"
+            );
+        }
+        for pattern in [
+            "/settings.json.lock",
+            "/settings.30.instance.no-git.json.*.tmp",
+            "/*.deprecated-*.no-git",
+        ] {
+            assert_eq!(
+                lines.iter().filter(|line| **line == pattern).count(),
+                1,
+                "{pattern} in {body}"
+            );
+        }
+
+        ensure_instance_gitignore_at(temp.path(), TEST_AGENT_LOCAL_DIR).expect("ensure again");
+        assert_eq!(std::fs::read_to_string(&path).expect("reread"), body);
     }
 
     /// #2470 - the lock is named after the live settings file, and until now

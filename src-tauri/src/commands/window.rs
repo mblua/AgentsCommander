@@ -1639,7 +1639,7 @@ mod tests {
         let path = temp.path().join("settings.json");
         write_placement_base(&path, serde_json::json!({}));
         std::fs::write(
-            temp.path().join("settings.local.json"),
+            temp.path().join("settings.50.personal.no-git.json"),
             serde_json::to_string_pretty(&serde_json::json!({ key: value })).unwrap(),
         )
         .unwrap();
