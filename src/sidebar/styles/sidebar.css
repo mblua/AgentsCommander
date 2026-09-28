@@ -7483,6 +7483,7 @@ html.light-theme .ac-discovery-badge.running-peer {
 }
 
 .ac-loop-row {
+  position: relative;
   margin: 0 8px 2px 16px;
   padding: 7px 8px;
   border-radius: 6px;
@@ -7652,6 +7653,7 @@ html.light-theme .ac-discovery-badge.running-peer {
 }
 
 .ac-team-header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
