@@ -120,9 +120,9 @@ import type {
   WatcherReachRow,
   CoManagedConfig,
   CoManagedState,
+  AgentHelpFile,
 } from "./types";
 import { decodeSessionSelection } from "./session-selection";
-import type { AgentHelpFile } from "./agent-help";
 
 export type { UiTerminalOperation };
 

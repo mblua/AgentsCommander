@@ -670,7 +670,7 @@ describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
   const row = "ctx 10% | 5h 3% | 7d 28%";
   const claude = { kind: "screenRegex", pattern: CLAUDE_WEEKLY_QUOTA_REGEX };
   const codex = { kind: "screenRegexRemaining", pattern: CODEX_WEEKLY_QUOTA_REGEX };
-  const codexRow = "Context 0% used \u00b7 Weekly 100% left \u00b7 GPT-6-Sol low";
+  const codexRow = "Context 52% used \u00b7 weekly 87% left \u00b7 258K window \u00b7 GPT-6-Sol low";
 
   it("suggested_quota_source_returns_the_claude_kind_and_pattern_for_a_claude_command", () => {
     expect(suggestedQuotaSource("claude")).toEqual(claude);
@@ -701,15 +701,16 @@ describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
     expect(suggestedQuotaSource("npm run dev")).toBeNull();
   });
 
-  it("the codex pattern is the thirty-seven stored bytes", () => {
-    expect(CODEX_WEEKLY_QUOTA_REGEX.length).toBe(37);
+  it("the codex pattern is the forty stored bytes", () => {
+    expect(CODEX_WEEKLY_QUOTA_REGEX.length).toBe(40);
     expect(CODEX_WEEKLY_QUOTA_REGEX.includes(String.raw`\u00b7`)).toBe(true);
   });
 
-  it("the codex pattern reads the real statusline row as one hundred remaining", () => {
+  it("the codex pattern reads the real statusline row as eighty-seven remaining", () => {
     const re = new RegExp(CODEX_WEEKLY_QUOTA_REGEX);
-    expect(re.exec(codexRow)?.[1]).toBe("100");
-    expect(re.exec("Context 0% used \u00b7 Weekly 100%")).toBeNull();
+    expect(re.exec(codexRow)?.[1]).toBe("87");
+    expect(re.exec("Context 52% used \u00b7 weekly 87%")).toBeNull();
+    expect(re.exec("Context 0% used \u00b7 Weekly 100% left")?.[1]).toBe("100");
   });
 
   it("defaultQuotaSourceForNewAgent seeds codex and never claude", () => {

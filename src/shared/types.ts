@@ -2139,4 +2139,23 @@ export interface SpecBoardChangedEvent {
   external: boolean;
 }
 
+export interface AgentHelpTip {
+  title: string;
+  body: string;
+  link?: { label: string; url: string };
+}
 
+export interface AgentHelpEntry {
+  label?: string;
+  paramsExample?: string;
+  docsUrl?: string;
+  tips?: AgentHelpTip[];
+}
+
+export interface AgentHelpFile {
+  schemaVersion: number;
+  note?: string;
+  general?: AgentHelpEntry;
+  byCommand?: Record<string, AgentHelpEntry>;
+  byAgent?: Record<string, AgentHelpEntry>;
+}

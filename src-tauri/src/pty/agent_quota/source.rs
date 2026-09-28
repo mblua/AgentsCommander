@@ -68,10 +68,11 @@ pub fn spec_key(spec: &SourceSpec) -> String {
 mod tests {
     use super::*;
 
-    // The 37 ASCII bytes the settings file holds. RAW string: the backslash survives.
-    const CODEX_PATTERN: &str = r"(?:^|[ \u00b7])Weekly (\d{1,3})% left";
+    // The 40 ASCII bytes the settings file holds. RAW string: the backslash survives.
+    const CODEX_PATTERN: &str = r"(?:^|[ \u00b7])[Ww]eekly (\d{1,3})% left";
     // The row Codex draws. Real U+00B7 characters, written with a Rust escape.
-    const CODEX_ROW: &str = "Context 0% used \u{b7} Weekly 100% left \u{b7} GPT-6-Sol low";
+    const CODEX_ROW: &str =
+        "Context 52% used \u{b7} weekly 87% left \u{b7} 258K window \u{b7} GPT-6-Sol low";
 
     const PATTERN: &str = r"Weekly (\d{1,3})% used";
 
@@ -150,18 +151,22 @@ mod tests {
     }
 
     #[test]
-    fn the_persisted_codex_pattern_is_thirty_seven_ascii_bytes() {
-        assert_eq!(CODEX_PATTERN.len(), 37);
+    fn the_persisted_codex_pattern_is_forty_ascii_bytes() {
+        assert_eq!(CODEX_PATTERN.len(), 40);
         assert!(CODEX_PATTERN.contains(r"\u00b7"));
     }
 
     #[test]
-    fn the_real_codex_statusline_row_reads_one_hundred_remaining() {
+    fn the_real_codex_statusline_row_reads_eighty_seven_remaining() {
         let source = resolve(&remaining(CODEX_PATTERN)).unwrap();
-        assert_eq!(sample(&source, &one(CODEX_ROW)), Some(0));
+        assert_eq!(sample(&source, &one(CODEX_ROW)), Some(13));
         assert_eq!(
-            sample(&source, &one("Context 0% used \u{b7} Weekly 100%")),
+            sample(&source, &one("Context 52% used \u{b7} weekly 87%")),
             None
+        );
+        assert_eq!(
+            sample(&source, &one("Context 0% used \u{b7} Weekly 100% left")),
+            Some(0)
         );
     }
 
