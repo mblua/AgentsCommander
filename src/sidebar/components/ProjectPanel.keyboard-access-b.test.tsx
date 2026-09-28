@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import ProjectPanel from "./ProjectPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -24,18 +24,14 @@ const projectId = automationIdPart(root);
 const loopId = automationIdPart("loop-standup");
 
 const q = (selector: string) => document.body.querySelector<HTMLElement>(selector);
-const byText = (selector: string, text: string): HTMLElement => {
-  const found = Array.from(document.querySelectorAll<HTMLElement>(selector))
-    .find((el) => el.textContent?.includes(text));
-  if (!found) throw new Error(`Not found: ${selector} "${text}"`);
+const find = (selector: string, match: (el: HTMLElement) => boolean): HTMLElement => {
+  const found = Array.from(document.querySelectorAll<HTMLElement>(selector)).find(match);
+  if (!found) throw new Error(`Not found: ${selector}`);
   return found;
 };
-const header = (name: string): HTMLElement => {
-  const found = Array.from(document.querySelectorAll<HTMLElement>(".ac-wg-header--collapsible"))
-    .find((h) => h.querySelector(".ac-wg-name")?.textContent?.trim() === name);
-  if (!found) throw new Error(`Header not found: ${name}`);
-  return found;
-};
+const byText = (selector: string, text: string) => find(selector, (el) => !!el.textContent?.includes(text));
+const header = (name: string) =>
+  find(".ac-wg-header--collapsible", (h) => h.querySelector(".ac-wg-name")?.textContent?.trim() === name);
 const teamHeader = () => byText(".ac-team-header", "frontend-team");
 const collapsed = (row: HTMLElement) =>
   row.querySelector(".ac-discovery-chevron")!.classList.contains("collapsed");
@@ -44,33 +40,37 @@ const agentRow = () => byText(".replica-item", "dev-webpage-ui");
 const loopEditor = () => q('[data-ac-testid="loop.edit.name"]');
 const notice = () => q('[data-ac-testid="agentMatrixNotice.modal"]');
 
+/** Enter/Space reach the row through its proxy, which must be the row's first child. */
 const press = (key: string) => (row: HTMLElement) => {
-  const proxy = row.firstElementChild!;
-  expect(proxy.classList.contains(ROW_KEY_PROXY_CLASS)).toBe(true);
-  proxy.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  const proxy = row.querySelector<HTMLElement>(`:scope > .${ROW_KEY_PROXY_CLASS}`);
+  expect(row.firstElementChild).toBe(proxy);
+  proxy!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
 };
 
 describe("ProjectPanel Phase B row keyboard access", () => {
-  let cleanupDom: (() => void) | null = null;
+  // The returned teardown runs after each test.
   beforeEach(() => {
-    cleanupDom = installBrowserDomStubs();
+    const restoreDom = installBrowserDomStubs();
     resetUiStoresForTests();
-  });
-  afterEach(() => {
-    cleanupDom?.();
-    resetUiStoresForTests();
-    document.body.replaceChildren();
+    return () => {
+      restoreDom();
+      resetUiStoresForTests();
+      document.body.replaceChildren();
+    };
   });
 
   const mount = async () => {
     const fake = new FakeTransport();
-    fake.resolve("new_project", { path: root, registered: true, created: false });
-    fake.resolve("discover_project", discovery({
-      agents: [{ name: agent, path: `${root}\\.ac\\_agent_dev-webpage-ui`, roleExists: true }],
-      teams: [{ name: "frontend-team", agents: [agent], coordinator: agent }],
-      loops: [loop()],
-    }));
-    fake.resolve("list_unresolved_loop_targets", []);
+    const replies: Record<string, unknown> = {
+      new_project: { path: root, registered: true, created: false },
+      discover_project: discovery({
+        agents: [{ name: agent, path: `${root}\\.ac\\_agent_dev-webpage-ui`, roleExists: true }],
+        teams: [{ name: "frontend-team", agents: [agent], coordinator: agent }],
+        loops: [loop()],
+      }),
+      list_unresolved_loop_targets: [],
+    };
+    for (const [command, reply] of Object.entries(replies)) fake.resolve(command, reply);
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     await projectStore.createAndLoad(root);
     await waitFor(() => void loopRow().tagName);
