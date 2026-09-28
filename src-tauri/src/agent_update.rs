@@ -3512,6 +3512,7 @@ mod tests {
             update_commands: update_commands.into_iter().map(str::to_string).collect(),
             auto_update: false,
             idle_burst: None,
+            install_commands: None,
         }
     }
 
