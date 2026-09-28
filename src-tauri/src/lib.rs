@@ -897,6 +897,13 @@ enum StartupErrorKind {
         app_outbox_path: PathBuf,
         source: io::Error,
     },
+    /// #2714 - a fatal outcome of the startup naming migration: an expired lock
+    /// budget with no winner, an I/O error, or an unreadable journal.
+    NamingMigration {
+        scope: String,
+        reason: String,
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for StartupError {
@@ -914,6 +921,17 @@ impl fmt::Display for StartupError {
                 config_dir.display(),
                 source
             ),
+            StartupErrorKind::NamingMigration {
+                scope,
+                reason,
+                path,
+            } => write!(
+                formatter,
+                "AgentsCommander cannot start because the file-naming migration \"{}\" could not finish at \"{}\": {}. If another AgentsCommander process is running, retry once it has finished; otherwise make the directory writable, or move an unreadable naming-migration journal aside, and restart.",
+                scope,
+                path.display(),
+                reason
+            ),
         }
     }
 }
@@ -923,17 +941,278 @@ impl std::error::Error for StartupError {
         match &self.kind {
             StartupErrorKind::Config(error) => Some(error),
             StartupErrorKind::AppOutboxCreate { source, .. } => Some(source),
+            StartupErrorKind::NamingMigration { .. } => None,
         }
     }
 }
 
 pub fn preflight_config_startup() -> Result<(), StartupError> {
-    match config::config_startup_error() {
-        Some(error) => Err(StartupError {
+    if let Some(error) = config::config_startup_error() {
+        return Err(StartupError {
             kind: StartupErrorKind::Config(error),
-        }),
-        None => Ok(()),
+        });
     }
+    preflight_config_startup_for(config::config_dir().as_deref())
+}
+
+/// #2714 - the scope key of the one naming migration that runs at startup.
+const INSTANCE_FAMILIES_SCOPE: &str = "instance-families";
+
+/// The summary `run()` logs once `init_logger` has run: the migration runs
+/// before the logger, so `log::*` from inside it goes nowhere.
+static NAMING_MIGRATION_SUMMARY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn record_naming_migration_summary(summary: Option<String>) {
+    if let Ok(mut slot) = NAMING_MIGRATION_SUMMARY.lock() {
+        *slot = summary;
+    }
+}
+
+fn take_naming_migration_summary() -> Option<String> {
+    NAMING_MIGRATION_SUMMARY
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+}
+
+/// Called by both entries right after `init_logger`.
+pub fn log_naming_migration_summary() {
+    if let Some(summary) = take_naming_migration_summary() {
+        log::info!("{summary}");
+    }
+}
+
+/// Decides the `None` case: with no configuration directory every path this
+/// scope renames is absent, so the migration is skipped and startup continues.
+pub(crate) fn preflight_config_startup_for(config_dir: Option<&Path>) -> Result<(), StartupError> {
+    match config_dir {
+        Some(config_dir) => preflight_config_startup_in(config_dir),
+        None => {
+            record_naming_migration_summary(Some(format!(
+                "[naming-migration] {INSTANCE_FAMILIES_SCOPE}: skipped, no configuration directory"
+            )));
+            Ok(())
+        }
+    }
+}
+
+/// All of the startup migration work, against an explicit directory.
+pub(crate) fn preflight_config_startup_in(config_dir: &Path) -> Result<(), StartupError> {
+    let summary = migrate_instance_families(config_dir)?;
+    record_naming_migration_summary(summary);
+    Ok(())
+}
+
+fn naming_migration_error(reason: impl Into<String>, path: PathBuf) -> StartupError {
+    StartupError {
+        kind: StartupErrorKind::NamingMigration {
+            scope: INSTANCE_FAMILIES_SCOPE.to_string(),
+            reason: reason.into(),
+            path,
+        },
+    }
+}
+
+fn refusal_reason(refusal: crate::config::naming_migration::Refusal) -> String {
+    match refusal {
+        crate::config::naming_migration::Refusal::LockUnavailable => "lock unavailable".to_string(),
+        crate::config::naming_migration::Refusal::Io(message) => message,
+    }
+}
+
+/// #2714 - the pre-migration names of the two single files, in rename order.
+const INSTANCE_FAMILIES_RENAMES: [crate::config::naming_migration::Rename; 2] = [
+    crate::config::naming_migration::Rename {
+        from: "settings.json",
+        to: config::instance_artifacts::SETTINGS_FILE_NAME,
+    },
+    crate::config::naming_migration::Rename {
+        from: "settings.local.json",
+        to: config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME,
+    },
+];
+
+/// #2714 - the four blocking-menus files, renamed after the settings families.
+const BLOCKING_MENUS_RENAMES: [crate::config::naming_migration::Rename; 4] = [
+    crate::config::naming_migration::Rename {
+        from: "settings-blocking-menus.json",
+        to: config::instance_artifacts::BLOCKING_MENUS_SHIPPED_FILE_NAME,
+    },
+    crate::config::naming_migration::Rename {
+        from: "settings-blocking-menus.local.json",
+        to: config::instance_artifacts::BLOCKING_MENUS_LOCAL_FILE_NAME,
+    },
+    crate::config::naming_migration::Rename {
+        from: "settings-blocking-menus.remote.json",
+        to: config::instance_artifacts::BLOCKING_MENUS_REMOTE_FILE_NAME,
+    },
+    crate::config::naming_migration::Rename {
+        from: "blocking-menus-remote-check.json",
+        to: config::instance_artifacts::BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME,
+    },
+];
+
+/// The ordered rename list of B1b section 3.5, under both settings locks: the
+/// settings file, its personal overlay, the two derived families, then the four
+/// blocking-menus files. Returns the post-logger summary, `None` when the scope
+/// was already settled.
+fn migrate_instance_families(dir: &Path) -> Result<Option<String>, StartupError> {
+    use crate::config::naming_migration as nm;
+    use config::instance_artifacts as names;
+
+    let scope = INSTANCE_FAMILIES_SCOPE;
+    let journal_path = dir.join(names::NAMING_MIGRATION_STATE_NAME);
+    let read = || {
+        nm::read_journal(Some(dir)).map_err(|refusal| {
+            naming_migration_error(refusal_reason(refusal), journal_path.clone())
+        })
+    };
+
+    // A directory that does not exist yet holds nothing to rename, and it is
+    // not created here. Anything else that is not a readable directory is fatal.
+    match dir.metadata() {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(naming_migration_error(
+                "the configuration directory path is not a directory",
+                dir.to_path_buf(),
+            ))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(Some(format!(
+                "[naming-migration] {scope}: skipped, configuration directory {} does not exist",
+                dir.display()
+            )))
+        }
+        Err(e) => {
+            return Err(naming_migration_error(
+                format!("failed to inspect the configuration directory: {e}"),
+                dir.to_path_buf(),
+            ))
+        }
+    }
+    // `scope_is_settled`, never `is_complete`: a `Complete` the disk
+    // contradicts is re-run.
+    if nm::scope_is_settled(read()?.as_ref(), scope) {
+        return Ok(None);
+    }
+    let held = match nm::lock_scope(
+        dir,
+        names::SETTINGS_LOCK_FILE_NAME,
+        Some(names::SETTINGS_RETIRED_LOCK_NAME),
+        nm::MIGRATION_LOCK_BUDGET,
+    ) {
+        Ok(held) => held,
+        Err(nm::Refusal::LockUnavailable) => {
+            // Another process may have completed the scope while we waited.
+            if nm::scope_is_settled(read()?.as_ref(), scope) {
+                return Ok(None);
+            }
+            return Err(naming_migration_error(
+                "the settings lock was still held after the five-second budget",
+                dir.join(names::SETTINGS_LOCK_FILE_NAME),
+            ));
+        }
+        Err(refusal) => {
+            return Err(naming_migration_error(
+                refusal_reason(refusal),
+                dir.join(names::SETTINGS_LOCK_FILE_NAME),
+            ))
+        }
+    };
+    // Re-check under the lock: a winner of the race leaves nothing to do.
+    if nm::scope_is_settled(read()?.as_ref(), scope) {
+        return Ok(None);
+    }
+
+    let journal_dir = Some(dir);
+    let fail = |from: &str, outcome: nm::Outcome| match outcome {
+        nm::Outcome::Refused(refusal) => Err(naming_migration_error(
+            refusal_reason(refusal),
+            dir.join(from),
+        )),
+        _ => Ok(()),
+    };
+    for rename in &INSTANCE_FAMILIES_RENAMES {
+        fail(
+            rename.from,
+            nm::rename_step(dir, rename, scope, journal_dir, &held),
+        )?;
+    }
+    let pre_glob = names::SETTINGS_MIGRATION_BACKUP_GLOB;
+    let (pre_prefix, pre_suffix) = pre_glob.split_once('*').unwrap_or((pre_glob, ""));
+    for (old_prefix, new_prefix, suffix) in [
+        (
+            "settings.backup.",
+            names::SETTINGS_BACKUP_PREFIX,
+            names::SETTINGS_BACKUP_SUFFIX,
+        ),
+        ("settings.pre-", pre_prefix, pre_suffix),
+    ] {
+        for (from, outcome) in nm::rename_prefix_family(
+            dir,
+            old_prefix,
+            new_prefix,
+            suffix,
+            scope,
+            journal_dir,
+            &held,
+        ) {
+            fail(&from, outcome)?;
+        }
+    }
+    for rename in &BLOCKING_MENUS_RENAMES {
+        fail(
+            rename.from,
+            nm::rename_step(dir, rename, scope, journal_dir, &held),
+        )?;
+    }
+
+    // A lock sidecar or a stale write temporary is never renamed or deleted,
+    // only noted.
+    let mut notes = Vec::new();
+    if dir.join(names::SETTINGS_RETIRED_LOCK_NAME).exists() {
+        notes.push(format!(
+            "left on disk: {} (a lock sidecar is never renamed or deleted)",
+            names::SETTINGS_RETIRED_LOCK_NAME
+        ));
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut stale: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.starts_with("settings.json.") && name.ends_with(".tmp"))
+            .collect();
+        stale.sort();
+        notes.extend(stale.into_iter().map(|name| {
+            format!("left on disk: {name} (a stale write temporary is never renamed or deleted)")
+        }));
+    }
+    let record = nm::update_journal(journal_dir, |journal| {
+        for note in &notes {
+            journal.note(scope, note);
+        }
+        journal.set_status(scope, nm::ScopeStatus::Complete);
+        journal.scope(scope).cloned()
+    })
+    .map_err(|refusal| naming_migration_error(refusal_reason(refusal), journal_path.clone()))?
+    .flatten();
+    drop(held);
+
+    let steps = record.map(|record| record.steps).unwrap_or_default();
+    let renamed = steps
+        .iter()
+        .filter(|step| step.state == nm::StepState::Renamed)
+        .count();
+    let set_aside: Vec<&str> = steps
+        .iter()
+        .filter_map(|step| step.set_aside.as_deref())
+        .collect();
+    let mut summary = format!("[naming-migration] {scope}: complete, {renamed} renamed");
+    if !set_aside.is_empty() {
+        summary.push_str(&format!(", set aside: {}", set_aside.join(", ")));
+    }
+    Ok(Some(summary))
 }
 
 fn prepare_app_outbox(
@@ -3828,6 +4107,7 @@ pub fn run(
     // for the rationale. Idempotent, so a hypothetical second call (or the
     // CLI path having already run in this process) is a no-op.
     crate::logging::init_logger();
+    log_naming_migration_summary();
 
     // Generate master token — printed to stdout and persisted to master-token.txt for CLI use
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
@@ -7087,6 +7367,518 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::{oneshot, watch};
     use tokio_util::sync::CancellationToken;
+
+    // #2714 (B1b) - the startup naming migration. Every test drives the inner
+    // functions against a tempdir; none calls `preflight_config_startup()`,
+    // which would read the developer's own configuration directory. File names
+    // are literals on purpose: an independent oracle, not the constants.
+
+    /// Serializes the tests that record or take the process-wide summary.
+    static NAMING_MIGRATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn naming_migration_guard() -> std::sync::MutexGuard<'static, ()> {
+        NAMING_MIGRATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    const INSTANCE_FAMILIES_FIXTURE: [(&str, &str); 8] = [
+        ("settings.json", "settings.30.instance.no-git.json"),
+        ("settings.local.json", "settings.50.personal.no-git.json"),
+        (
+            "settings.backup.1.json",
+            "settings.30.instance.no-git.backup.1.json",
+        ),
+        (
+            "settings.pre-384-v1.json",
+            "settings.30.instance.no-git.pre-384-v1.json",
+        ),
+        (
+            "settings-blocking-menus.json",
+            "blocking-menus.10.default.no-git.json",
+        ),
+        (
+            "settings-blocking-menus.local.json",
+            "blocking-menus.50.personal.no-git.json",
+        ),
+        (
+            "settings-blocking-menus.remote.json",
+            "blocking-menus.20.remote.no-git.json",
+        ),
+        (
+            "blocking-menus-remote-check.json",
+            "blocking-menus.state.no-git.json",
+        ),
+    ];
+
+    fn seed_instance_families(dir: &Path) {
+        for (from, _) in INSTANCE_FAMILIES_FIXTURE {
+            std::fs::write(dir.join(from), format!("bytes of {from}")).unwrap();
+        }
+    }
+
+    fn instance_families_record(dir: &Path) -> crate::config::naming_migration::ScopeRecord {
+        crate::config::naming_migration::read_journal(Some(dir))
+            .unwrap()
+            .expect("journal exists")
+            .scope("instance-families")
+            .expect("scope recorded")
+            .clone()
+    }
+
+    fn directory_snapshot(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| {
+                (
+                    entry.file_name().into_string().unwrap(),
+                    std::fs::read(entry.path()).unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    /// The files the migration itself creates: the journal, its lock and the
+    /// two settings lock sidecars.
+    fn is_migration_artifact(name: &str) -> bool {
+        matches!(
+            name,
+            "naming-migration.state.no-git.json"
+                | ".naming-migration.state.no-git.json.lock"
+                | "settings.30.instance.no-git.json.lock"
+                | "settings.json.lock"
+        )
+    }
+
+    fn data_files(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        directory_snapshot(dir)
+            .into_iter()
+            .filter(|(name, _)| !is_migration_artifact(name))
+            .collect()
+    }
+
+    /// E7.
+    #[test]
+    fn instance_families_happy_path() {
+        let _guard = naming_migration_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        seed_instance_families(dir);
+
+        crate::preflight_config_startup_in(dir).expect("migration succeeds");
+
+        for (from, to) in INSTANCE_FAMILIES_FIXTURE {
+            assert!(!dir.join(from).exists(), "{from} survived");
+            assert_eq!(
+                std::fs::read_to_string(dir.join(to)).unwrap(),
+                format!("bytes of {from}"),
+                "{to} must hold the exact bytes of {from}"
+            );
+        }
+        let record = instance_families_record(dir);
+        assert_eq!(
+            record.status,
+            crate::config::naming_migration::ScopeStatus::Complete
+        );
+
+        let before = directory_snapshot(dir);
+        crate::preflight_config_startup_in(dir).expect("second run is a no-op");
+        assert_eq!(
+            directory_snapshot(dir),
+            before,
+            "a second run changed bytes"
+        );
+    }
+
+    /// The personal overlay is still read after the migration renamed it.
+    #[test]
+    fn the_overlay_is_read_under_its_new_name_after_migration() {
+        let _guard = naming_migration_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        std::fs::write(dir.join("settings.json"), r#"{"logLevel":"info"}"#).unwrap();
+        std::fs::write(dir.join("settings.local.json"), r#"{"logLevel":"debug"}"#).unwrap();
+
+        crate::preflight_config_startup_in(dir).unwrap();
+
+        let mut base = serde_json::json!({"logLevel": "info"});
+        let overlay = crate::config::local_overlay::LocalSettingsOverlay::load_and_merge(
+            &dir.join("settings.30.instance.no-git.json"),
+            &mut base,
+            &[],
+            &[],
+            &[],
+        );
+        assert!(!overlay.is_empty(), "the overlay was not found");
+        assert_eq!(base["logLevel"], serde_json::json!("debug"));
+    }
+
+    /// E8.
+    #[test]
+    fn a_pre_existing_target_wins_and_the_old_file_is_set_aside() {
+        let _guard = naming_migration_guard();
+        for existing_ordinals in [0_u32, 1] {
+            let temp = tempfile::tempdir().unwrap();
+            let dir = temp.path();
+            seed_instance_families(dir);
+            std::fs::write(dir.join("settings.30.instance.no-git.json"), "the new file").unwrap();
+            for n in 1..=existing_ordinals {
+                std::fs::write(
+                    dir.join(format!("settings.json.deprecated-{n}.no-git")),
+                    format!("older set-aside {n}"),
+                )
+                .unwrap();
+            }
+            let expected_name =
+                format!("settings.json.deprecated-{}.no-git", existing_ordinals + 1);
+            let before = data_files(dir);
+
+            crate::preflight_config_startup_in(dir).expect("both-present is not fatal");
+
+            assert_eq!(
+                std::fs::read_to_string(dir.join("settings.30.instance.no-git.json")).unwrap(),
+                "the new file"
+            );
+            assert!(!dir.join("settings.json").exists());
+            assert_eq!(
+                std::fs::read_to_string(dir.join(&expected_name)).unwrap(),
+                "bytes of settings.json"
+            );
+            for n in 1..=existing_ordinals {
+                assert_eq!(
+                    std::fs::read_to_string(
+                        dir.join(format!("settings.json.deprecated-{n}.no-git"))
+                    )
+                    .unwrap(),
+                    format!("older set-aside {n}"),
+                    "an older set-aside copy was touched"
+                );
+            }
+            let record = instance_families_record(dir);
+            assert_eq!(
+                record.status,
+                crate::config::naming_migration::ScopeStatus::Complete
+            );
+            let step = record
+                .steps
+                .iter()
+                .find(|step| step.from == "settings.json")
+                .expect("settings.json step");
+            assert_eq!(
+                step.state,
+                crate::config::naming_migration::StepState::SetAside
+            );
+            assert_eq!(step.set_aside.as_deref(), Some(expected_name.as_str()));
+
+            // Every byte stays on disk: the same number of data files, one of
+            // them under its set-aside name, and every seeded content present.
+            let after = data_files(dir);
+            assert_eq!(after.len(), before.len(), "{after:?}");
+            let mut before_bytes: Vec<&Vec<u8>> = before.values().collect();
+            let mut after_bytes: Vec<&Vec<u8>> = after.values().collect();
+            before_bytes.sort();
+            after_bytes.sort();
+            assert_eq!(after_bytes, before_bytes, "a byte was lost or duplicated");
+        }
+    }
+
+    /// E9.
+    #[test]
+    fn a_stale_lock_or_temp_is_left_on_disk_and_noted() {
+        let _guard = naming_migration_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        seed_instance_families(dir);
+        std::fs::write(dir.join("settings.json.lock"), "old lock bytes").unwrap();
+        std::fs::write(dir.join("settings.json.99.op.tmp"), "stale temp bytes").unwrap();
+
+        crate::preflight_config_startup_in(dir).expect("migration succeeds");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json.lock")).unwrap(),
+            "old lock bytes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json.99.op.tmp")).unwrap(),
+            "stale temp bytes"
+        );
+        let notes = instance_families_record(dir).notes;
+        for name in ["settings.json.lock", "settings.json.99.op.tmp"] {
+            assert!(
+                notes.iter().any(|note| note.contains(name)),
+                "{name} not noted: {notes:?}"
+            );
+        }
+    }
+
+    /// E12.
+    #[test]
+    fn only_the_three_fatal_outcomes_stop_startup() {
+        let _guard = naming_migration_guard();
+
+        // An unreadable journal.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        seed_instance_families(dir);
+        let journal = dir.join("naming-migration.state.no-git.json");
+        std::fs::write(&journal, "not json").unwrap();
+        let message = crate::preflight_config_startup_in(dir)
+            .expect_err("an unreadable journal is fatal")
+            .to_string();
+        assert!(
+            message.contains(&journal.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("move an unreadable naming-migration journal aside"));
+        assert!(dir.join("settings.json").exists(), "nothing renamed");
+
+        // An `Io` refusal: the new lock sidecar cannot be opened.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        seed_instance_families(dir);
+        let lock = dir.join("settings.30.instance.no-git.json.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let message = crate::preflight_config_startup_in(dir)
+            .expect_err("an Io refusal is fatal")
+            .to_string();
+        assert!(message.contains(&lock.display().to_string()), "{message}");
+        assert!(message.contains("make the directory writable"), "{message}");
+
+        // Both names present is resolved, never fatal.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        seed_instance_families(dir);
+        std::fs::write(dir.join("settings.30.instance.no-git.json"), "the new file").unwrap();
+        crate::preflight_config_startup_in(dir).expect("both-present is not fatal");
+        assert_eq!(
+            instance_families_record(dir).status,
+            crate::config::naming_migration::ScopeStatus::Complete
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json.deprecated-1.no-git")).unwrap(),
+            "bytes of settings.json"
+        );
+    }
+
+    /// E13.
+    #[test]
+    fn a_contended_migration_waits_then_defers_to_the_winner() {
+        use crate::config::naming_migration as nm;
+        let _guard = naming_migration_guard();
+
+        // The winner completes the scope inside the budget.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
+        std::fs::write(dir.join("settings.json"), "bytes of settings.json").unwrap();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let winner = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                let held = nm::lock_scope(
+                    &dir,
+                    "settings.30.instance.no-git.json.lock",
+                    Some("settings.json.lock"),
+                    nm::MIGRATION_LOCK_BUDGET,
+                )
+                .unwrap();
+                held_tx.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                for rename in &crate::INSTANCE_FAMILIES_RENAMES {
+                    nm::rename_step(&dir, rename, "instance-families", Some(&dir), &held);
+                }
+                nm::update_journal(Some(&dir), |journal| {
+                    journal.set_status("instance-families", nm::ScopeStatus::Complete)
+                })
+                .unwrap();
+                drop(held);
+            })
+        };
+        held_rx.recv().unwrap();
+        crate::preflight_config_startup_in(&dir).expect("the winner completed the scope");
+        winner.join().unwrap();
+        let record = instance_families_record(&dir);
+        assert_eq!(record.status, nm::ScopeStatus::Complete);
+        let renamed: Vec<_> = record
+            .steps
+            .iter()
+            .filter(|step| step.state == nm::StepState::Renamed)
+            .map(|step| step.from.as_str())
+            .collect();
+        assert_eq!(renamed, ["settings.json"]);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.30.instance.no-git.json")).unwrap(),
+            "bytes of settings.json"
+        );
+
+        // The holder outlives the budget and never completes.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
+        std::fs::write(dir.join("settings.json"), "bytes of settings.json").unwrap();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                let held = nm::lock_scope(
+                    &dir,
+                    "settings.30.instance.no-git.json.lock",
+                    Some("settings.json.lock"),
+                    nm::MIGRATION_LOCK_BUDGET,
+                )
+                .unwrap();
+                held_tx.send(()).unwrap();
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(30));
+                drop(held);
+            })
+        };
+        held_rx.recv().unwrap();
+        let message = crate::preflight_config_startup_in(&dir)
+            .expect_err("an expired budget with no winner is fatal")
+            .to_string();
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(message.contains("retry once it has finished"), "{message}");
+        assert!(dir.join("settings.json").exists(), "nothing renamed");
+    }
+
+    /// E14. Both entries, the GUI `run()` and the CLI branch of `main.rs`, call
+    /// `log_naming_migration_summary` right after `init_logger`, and it logs
+    /// exactly what `take_naming_migration_summary` returns.
+    #[test]
+    fn the_post_logger_summary_names_what_was_renamed() {
+        let _guard = naming_migration_guard();
+        let _ = crate::take_naming_migration_summary();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        seed_instance_families(dir);
+        std::fs::write(dir.join("settings.30.instance.no-git.json"), "the new file").unwrap();
+
+        crate::preflight_config_startup_in(dir).unwrap();
+        let summary = crate::take_naming_migration_summary().expect("a migrating start logs");
+        assert!(summary.contains("instance-families"), "{summary}");
+        assert!(summary.contains("7 renamed"), "{summary}");
+        assert!(
+            summary.contains("settings.json.deprecated-1.no-git"),
+            "the demoted file must be named: {summary}"
+        );
+        assert_eq!(crate::take_naming_migration_summary(), None, "taken once");
+
+        crate::preflight_config_startup_in(dir).unwrap();
+        assert_eq!(
+            crate::take_naming_migration_summary(),
+            None,
+            "a no-op start logs nothing"
+        );
+    }
+
+    /// E19.
+    #[test]
+    fn a_complete_scope_whose_old_name_is_back_is_re_run() {
+        let _guard = naming_migration_guard();
+
+        // The data rename was lost behind a durable `Complete`.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        seed_instance_families(dir);
+        crate::preflight_config_startup_in(dir).unwrap();
+        std::fs::rename(
+            dir.join("settings.30.instance.no-git.json"),
+            dir.join("settings.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            instance_families_record(dir).status,
+            crate::config::naming_migration::ScopeStatus::Complete
+        );
+        crate::preflight_config_startup_in(dir).expect("re-run succeeds");
+        assert!(
+            !dir.join("settings.json").exists(),
+            "the stale Complete was trusted"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.30.instance.no-git.json")).unwrap(),
+            "bytes of settings.json"
+        );
+
+        // Both names present behind a durable `Complete`.
+        std::fs::write(dir.join("settings.json"), "a restored old file").unwrap();
+        crate::preflight_config_startup_in(dir).expect("both-present is not fatal");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.30.instance.no-git.json")).unwrap(),
+            "bytes of settings.json"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json.deprecated-1.no-git")).unwrap(),
+            "a restored old file"
+        );
+    }
+
+    /// E21. An absent configuration directory is skipped and not created; a
+    /// path that exists but is not a readable directory is fatal.
+    #[test]
+    fn a_missing_config_dir_skips_and_a_bad_one_is_fatal() {
+        let _guard = naming_migration_guard();
+        let temp = tempfile::tempdir().unwrap();
+
+        // Absent: skipped, recorded, and nothing is written anywhere.
+        let _ = crate::take_naming_migration_summary();
+        let absent = temp.path().join("absent-config");
+        crate::preflight_config_startup_in(&absent).expect("an absent directory is skipped");
+        assert!(!absent.exists(), "the directory was created");
+        assert_eq!(
+            std::fs::read_dir(temp.path()).unwrap().count(),
+            0,
+            "a journal, lock or temporary was written"
+        );
+        let summary = crate::take_naming_migration_summary().expect("the skip is recorded");
+        assert!(summary.contains("skipped"), "{summary}");
+
+        // A regular file where the directory should be.
+        let file = temp.path().join("config-is-a-file");
+        std::fs::write(&file, "not a directory").unwrap();
+        let message = crate::preflight_config_startup_in(&file)
+            .expect_err("a regular file is fatal")
+            .to_string();
+        assert!(message.contains(&file.display().to_string()), "{message}");
+
+        // A path below a regular file. Unix reports ENOTDIR, which is fatal.
+        // Windows reports ERROR_PATH_NOT_FOUND (3), which std maps to
+        // `NotFound`, so there it is the absent case: skipped, nothing created.
+        let child = file.join("child");
+        #[cfg(unix)]
+        {
+            let message = crate::preflight_config_startup_in(&child)
+                .expect_err("a path below a file is fatal")
+                .to_string();
+            assert!(message.contains(&child.display().to_string()), "{message}");
+        }
+        #[cfg(windows)]
+        {
+            crate::preflight_config_startup_in(&child)
+                .expect("Windows reports a path below a file as not found");
+            assert!(std::fs::metadata(&file).unwrap().is_file());
+            assert!(!child.exists());
+        }
+    }
+
+    /// E20.
+    #[test]
+    fn no_config_dir_skips_the_migration_and_starts() {
+        let _guard = naming_migration_guard();
+        let _ = crate::take_naming_migration_summary();
+        let untouched = tempfile::tempdir().unwrap();
+
+        crate::preflight_config_startup_for(None).expect("no configuration directory is not fatal");
+
+        assert_eq!(
+            std::fs::read_dir(untouched.path()).unwrap().count(),
+            0,
+            "the migration wrote somewhere"
+        );
+        let summary = crate::take_naming_migration_summary().expect("the skip is recorded");
+        assert!(summary.contains("skipped"), "{summary}");
+    }
 
     #[test]
     fn issue_1577_app_outbox_error_is_typed_and_exact() {

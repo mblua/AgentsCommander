@@ -98,7 +98,7 @@ fn write_settings(config_dir: &Path, project_parent: &Path) {
         "projectPaths": [project_parent.to_string_lossy().to_string()]
     });
     std::fs::write(
-        config_dir.join("settings.json"),
+        config_dir.join("settings.30.instance.no-git.json"),
         serde_json::to_string_pretty(&settings).expect("settings json"),
     )
     .expect("write settings");
@@ -2923,7 +2923,7 @@ fn room_activity_forces_unknown_without_a_live_daemon_or_current_bytes() {
     );
 
     // Disabled CI dial: the same current, live bytes are ignored.
-    let settings_path = config_dir.join("settings.json");
+    let settings_path = config_dir.join("settings.30.instance.no-git.json");
     let mut settings: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read settings"))
             .expect("settings json");

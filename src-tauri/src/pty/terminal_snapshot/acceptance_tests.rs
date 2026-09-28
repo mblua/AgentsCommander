@@ -370,7 +370,7 @@ impl AcceptanceFixture {
         let paths = ReplicaPaths::create(temporary.path());
         let config = temporary.path().join("config");
         std::fs::create_dir_all(&config).expect("config directory");
-        let settings_path = config.join("settings.json");
+        let settings_path = config.join("settings.30.instance.no-git.json");
         write_security_settings(&settings_path, &paths.collection, true);
 
         let app_settings = crate::config::settings::AppSettings {
@@ -3854,7 +3854,7 @@ fn assert_cleanup_and_secondary_surfaces(
         if name.starts_with("api-messages.sqlite3") {
             sqlite_files += 1;
         }
-        if name == "settings.json" {
+        if name == "settings.30.instance.no-git.json" {
             settings_files += 1;
         }
         assert!(!name.contains("terminal-snapshot-processing"));
