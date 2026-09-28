@@ -49,3 +49,10 @@ export function quotaChipAttrs(
     "aria-valuemax": 100,
   };
 }
+
+/** #2681 - "N% left" next to an agent name in the picker and Settings lists,
+ *  or null when there is no valid reading. */
+export function quotaRemainingLabel(weeklyUsedPercent: number | null | undefined): string | null {
+  const fill = quotaFill(weeklyUsedPercent);
+  return fill ? `${fill.remaining}% left` : null;
+}

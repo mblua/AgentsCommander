@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_QUOTA_TOOLTIP_PREFIX, agentQuotaTitle, quotaChipAttrs, quotaFill } from "./agent-quota";
+import { readFileSync } from "node:fs";
+import {
+  AGENT_QUOTA_TOOLTIP_PREFIX,
+  agentQuotaTitle,
+  quotaChipAttrs,
+  quotaFill,
+  quotaRemainingLabel,
+} from "./agent-quota";
 
 const BAD_NUMBERS = [NaN, Infinity, -Infinity, -1, 101, 12.5];
 
@@ -54,5 +61,47 @@ describe("quotaChipAttrs", () => {
     expect(attrs["aria-valuenow"]).toBe(0);
     expect(attrs["aria-valuemin"]).toBe(0);
     expect(attrs["aria-valuemax"]).toBe(100);
+  });
+});
+
+// #2681 - the "N% left" text next to agent names in the picker and Settings.
+describe("quotaRemainingLabel", () => {
+  it("gives_remaining_for_a_valid_reading_and_null_otherwise", () => {
+    const cases: [number | null | undefined, string | null][] = [
+      [28, "72% left"],
+      [0, "100% left"],
+      [100, "0% left"],
+      [null, null],
+      [undefined, null],
+      [101, null],
+      [12.5, null],
+    ];
+    for (const [value, expected] of cases) expect(quotaRemainingLabel(value)).toBe(expected);
+  });
+});
+
+// jsdom has no layout, so the one-line name + badge layout is guarded on the
+// stylesheet text itself.
+describe("#2681 quota name line CSS", () => {
+  const css = readFileSync(new URL("../styles/sidebar.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const rule = (selector: string): { body: string; start: number } => {
+    const start = css.indexOf(`${selector} {`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    return { body: css.slice(start, css.indexOf("}", start)), start };
+  };
+
+  it("keeps_name_and_badge_on_one_line_with_the_name_ellipsised", () => {
+    expect(rule(".agent-quota-name-line").body).toContain("display: flex;");
+    const name = rule(".agent-quota-name-line > .agent-profile-provider-name,\n.agent-quota-name-line > .agent-quota-name").body;
+    expect(name).toContain("min-width: 0;");
+    expect(name).toContain("text-overflow: ellipsis;");
+    expect(name).toContain("white-space: nowrap;");
+    expect(rule(".agent-quota-remaining").body).toContain("flex: 0 0 auto;");
+  });
+
+  it("places_the_line_rule_after_the_provider_name_rule", () => {
+    const providerName = css.indexOf(".agent-profile-provider-name,\n.agent-profile-card-title {");
+    expect(providerName).toBeGreaterThanOrEqual(0);
+    expect(rule(".agent-quota-name-line").start).toBeGreaterThan(providerName);
   });
 });

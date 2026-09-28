@@ -29,6 +29,7 @@ import { GripIcon } from "./settings/GripIcon";
 import { reorderedIds } from "./settings/agentReorderDnd";
 import { createAgentDragReorder } from "./settings/agentDragReorder";
 import { automationAttrs } from "../../shared/automation-hooks";
+import { QuotaRemaining } from "./AgentQuotaRemaining";
 import {
   agentNameFromPathOrSession,
   composeEffectiveCommand,
@@ -116,6 +117,37 @@ const REORDER_FILTER_REASON = "Clear the filter to reorder.";
  *  "Remove lock from" group both render them. */
 const LOCK_SCOPES: ProfileAssignmentScope[] = ["replica", "kind", "workgroup"];
 
+/** #2555 - instrumentation only: picker open timings. */
+const COUNTS_DOM_MARK = "agentPicker.countsDom";
+const COUNTS_FRAME_MARK = "agentPicker.countsFrame";
+const timingMs = (ms: number) => ms.toFixed(1);
+const markOnce = (name: string) => {
+  performance.clearMarks(name);
+  performance.mark(name);
+};
+
+/** #2555 - sync timer: reads the clock now and when done(ok) is called. Adds no microtask. */
+export function startSettleTimer(
+  onSettle: (ms: number, ok: boolean) => void,
+): (ok: boolean) => void {
+  const start = performance.now();
+  return (ok) => onSettle(performance.now() - start, ok);
+}
+
+/** #2555 - Event.timeStamp -> performance clock. Browser: perf origin; jsdom: Unix epoch. */
+export function clickToSetup(
+  setupAt: number,
+  eventTs: number | undefined,
+  timeOrigin: number,
+): { ms: number | null; clock: "perf" | "epoch" | "na" } {
+  if (eventTs === undefined || !Number.isFinite(eventTs) || eventTs <= 0) {
+    return { ms: null, clock: "na" };
+  }
+  const clock = eventTs > timeOrigin ? "epoch" : "perf";
+  const ms = setupAt - (clock === "epoch" ? eventTs - timeOrigin : eventTs);
+  return { ms: ms < 0 ? null : ms, clock };
+}
+
 const LOCK_SCOPE_LABEL: Record<ProfileAssignmentScope, string> = {
   replica: "This replica",
   kind: "All replicas of this kind",
@@ -177,6 +209,9 @@ const AgentPickerModal: Component<{
   onSelect: (selection: AgentPickerSelection) => void | Promise<void>;
   onClose: () => void;
 }> = (props) => {
+  // #2555 - instrumentation only.
+  const setupAt = performance.now();
+  const openEvent = typeof window !== "undefined" ? window.event : undefined;
   const [settings, setSettings] = createSignal<AppSettings | null>(null);
   const [agents, setAgents] = createSignal<AgentConfig[]>([]);
   const [highlightIndex, setHighlightIndex] = createSignal(0);
@@ -256,6 +291,41 @@ const AgentPickerModal: Component<{
   const [removePreviewErrorMap, setRemovePreviewErrorMap] = createSignal<
     Record<ProfileAssignmentScope, string>
   >({ replica: "", kind: "", workgroup: "" });
+  // #2555 - instrumentation only; nothing here changes what the picker shows or does.
+  const [timingDetail, setTimingDetail] = createSignal<string | undefined>(undefined);
+  const appendTiming = (part: string) =>
+    setTimingDetail((prev) => (prev ? `${prev} ${part}` : part));
+  const [countsWatchStart, setCountsWatchStart] = createSignal<number | null>(null);
+  let countsMarked = false;
+  let pickerDisposed = false;
+  let countsFrameId: number | undefined;
+  onCleanup(() => {
+    pickerDisposed = true;
+    if (countsFrameId !== undefined) cancelAnimationFrame(countsFrameId);
+  });
+  createEffect(() => {
+    const start = countsWatchStart();
+    if (start === null || countsMarked) return;
+    const assignBusy = scopePreviewBusyMap();
+    const removeBusy = removePreviewBusyMap();
+    if (LOCK_SCOPES.some((scope) => assignBusy[scope] || removeBusy[scope])) return;
+    countsMarked = true;
+    const domMs = timingMs(performance.now() - start);
+    markOnce(COUNTS_DOM_MARK);
+    const ok = LOCK_SCOPES.every(
+      (scope) => !scopePreviewErrorMap()[scope] && !removePreviewErrorMap()[scope],
+    );
+    countsFrameId = requestAnimationFrame(() => {
+      countsFrameId = undefined;
+      if (pickerDisposed) return;
+      const frameMs = timingMs(performance.now() - start);
+      markOnce(COUNTS_FRAME_MARK);
+      console.info(
+        `[selection-timing] command=picker_counts dom_ms=${domMs} frame_ms=${frameMs} ok=${ok}`,
+      );
+      appendTiming(`countsDomMs=${domMs} countsFrameMs=${frameMs} countsOk=${ok}`);
+    });
+  });
   const [removeResult, setRemoveResult] = createSignal<ApplySelectionLockRemovalResult | null>(null);
   const [removeErrors, setRemoveErrors] = createSignal<SelectionError[]>([]);
   const [removeBusy, setRemoveBusy] = createSignal(false);
@@ -620,6 +690,14 @@ const AgentPickerModal: Component<{
   };
 
   onMount(async () => {
+    const mountAt = performance.now();
+    const click = clickToSetup(setupAt, openEvent?.timeStamp, performance.timeOrigin);
+    const clickMs = click.ms === null ? "na" : timingMs(click.ms);
+    const setupToMount = timingMs(mountAt - setupAt);
+    console.info(
+      `[selection-timing] command=picker_open click_to_setup_ms=${clickMs} setup_to_mount_ms=${setupToMount} open_event=${openEvent?.type ?? "none"} click_clock=${click.clock}`,
+    );
+    appendTiming(`clickToSetupMs=${clickMs} clickClock=${click.clock} setupToMountMs=${setupToMount}`);
     overlayRef?.focus();
     // #1943 - reload this modal's own previews and default on external updates.
     // App already owns the global project/settings refresh; these listeners are
@@ -656,7 +734,18 @@ const AgentPickerModal: Component<{
       unlisteners.length = 0;
     });
 
-    const loaded = await SettingsAPI.get();
+    const settleDone = startSettleTimer((ms, ok) => {
+      console.info(`[selection-timing] command=settings_get work_ms=${timingMs(ms)} ok=${ok}`);
+      if (ok) appendTiming(`settingsGetMs=${timingMs(ms)}`);
+    });
+    let loaded: Awaited<ReturnType<typeof SettingsAPI.get>>;
+    try {
+      loaded = await SettingsAPI.get();
+    } catch (err) {
+      settleDone(false);
+      throw err;
+    }
+    settleDone(true);
     // #2306 - vector order decides the initial selection: no alphabetical remap.
     const agentIndex = loaded.agents.findIndex((agent) => agent.id === props.currentAgentId);
     // #2484 - one batch so the snapshot and the requested profile trigger one preview round.
@@ -674,6 +763,7 @@ const AgentPickerModal: Component<{
     if (isWgReplica()) {
       refreshRemovePreviews();
       void refreshSelectionDefault();
+      if (!disposed) setCountsWatchStart(mountAt);
     }
   });
 
@@ -1394,6 +1484,7 @@ const AgentPickerModal: Component<{
       onKeyDown={handleKeyDown}
       data-component="Coding Agent profile assignment modal overlay"
       {...automationAttrs("agentPicker.overlay", "overlay")}
+      data-ac-detail={timingDetail()}
     >
       <div
         class="agent-modal agent-picker-modal"
@@ -1509,7 +1600,10 @@ const AgentPickerModal: Component<{
                             {...automationAttrs(`agentPicker.provider.${agent.id}`, "button", active() ? "active" : "inactive")}
                           >
                             <span>
-                              <span class="agent-profile-provider-name">{agent.label}</span>
+                              <span class="agent-quota-name-line">
+                                <span class="agent-profile-provider-name" title={agent.label}>{agent.label}</span>
+                                <QuotaRemaining agentId={agent.id} />
+                              </span>
                               <span class="agent-profile-provider-command">{agent.command}</span>
                             </span>
                             <span class="agent-profile-provider-chip">

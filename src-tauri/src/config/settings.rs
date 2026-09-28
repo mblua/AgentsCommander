@@ -994,7 +994,9 @@ impl QuotaSourceEntry {
 /// `kind` is the discriminant: adding Codex, Gemini or any other agent is one new
 /// variant here plus one match arm in `pty::agent_quota::source`. Nothing else in
 /// the engine changes, and an unrecognized `kind` from a newer AC lands in
-/// `QuotaSourceEntry::Invalid` rather than destroying the file.
+/// `QuotaSourceEntry::Invalid` rather than destroying the file. Capture group 1 of
+/// `ScreenRegex` is the USED percentage; group 1 of `ScreenRegexRemaining` is the
+/// REMAINING one, which the engine converts to used.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum QuotaSourceConfig {
@@ -1002,6 +1004,13 @@ pub enum QuotaSourceConfig {
     /// screen-row scrape #1032 uses for the context badge. Capture group 1 is the
     /// USED percentage of the 7-day window.
     ScreenRegex {
+        pattern: String,
+        #[serde(default = "default_true")]
+        enabled: bool,
+    },
+    /// #2686 - the same screen-row scrape, for an agent that draws what is LEFT of the
+    /// window. Capture group 1 is the REMAINING percentage.
+    ScreenRegexRemaining {
         pattern: String,
         #[serde(default = "default_true")]
         enabled: bool,
@@ -11259,6 +11268,46 @@ mod tests {
             written["claude"],
             serde_json::json!({ "kind": "screenRegex", "pattern": r"Weekly (\d+)%", "enabled": true })
         );
+    }
+
+    /// #2686 - the remaining kind round-trips, defaults `enabled` to true, and the tag
+    /// addition does not capture a `screenRegex` entry.
+    #[test]
+    fn a_remaining_kind_round_trips_and_defaults_enabled_true() {
+        let contents = serde_json::json!({
+            "defaultShell": "powershell.exe",
+            "defaultShellArgs": [],
+            "agents": [],
+            "quotaSources": {
+                "codex": { "kind": "screenRegexRemaining", "pattern": r"Weekly (\d+)% left" },
+                "claude": { "kind": "screenRegex", "pattern": r"Weekly (\d+)%" }
+            }
+        })
+        .to_string();
+        let (settings, _) = super::parse_settings_json(&contents, "test", None).expect("parses");
+
+        assert_eq!(
+            settings.quota_sources["codex"].valid(),
+            Some(&super::QuotaSourceConfig::ScreenRegexRemaining {
+                pattern: r"Weekly (\d+)% left".to_string(),
+                enabled: true,
+            })
+        );
+        assert_eq!(
+            settings.quota_sources["claude"].valid(),
+            Some(&super::QuotaSourceConfig::ScreenRegex {
+                pattern: r"Weekly (\d+)%".to_string(),
+                enabled: true,
+            })
+        );
+
+        let written = serde_json::to_value(&settings.quota_sources).expect("serializes");
+        assert_eq!(
+            written["codex"]["kind"],
+            serde_json::json!("screenRegexRemaining")
+        );
+        assert_eq!(written["codex"]["enabled"], serde_json::json!(true));
+        assert_eq!(written["claude"]["kind"], serde_json::json!("screenRegex"));
     }
 
     #[test]

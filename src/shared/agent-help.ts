@@ -1,27 +1,9 @@
 import embeddedAgentHelp from "../../src-tauri/resources/agent-help/agent-help.json";
 import { AgentHelpAPI } from "./ipc";
 import { executableBasename } from "./profile-utils";
+import type { AgentHelpEntry, AgentHelpFile } from "./types";
 
-export interface AgentHelpTip {
-  title: string;
-  body: string;
-  link?: { label: string; url: string };
-}
-
-export interface AgentHelpEntry {
-  label?: string;
-  paramsExample?: string;
-  docsUrl?: string;
-  tips?: AgentHelpTip[];
-}
-
-export interface AgentHelpFile {
-  schemaVersion: number;
-  note?: string;
-  general?: AgentHelpEntry;
-  byCommand?: Record<string, AgentHelpEntry>;
-  byAgent?: Record<string, AgentHelpEntry>;
-}
+export type { AgentHelpTip, AgentHelpEntry, AgentHelpFile } from "./types";
 
 export interface AgentHelpOverlay {
   local: AgentHelpFile | null;

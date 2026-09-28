@@ -315,6 +315,7 @@ fn command_from_spec(spec: GhCommandSpec) -> tokio::process::Command {
     }
     command.kill_on_drop(true);
     crate::pty::credentials::scrub_credentials_from_tokio_command(&mut command);
+    crate::config::agent_path::apply_search_path_to_tokio_command(&mut command);
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(command.as_std_mut(), creation_flags);
     // On non-Windows there is no API to apply creation flags; the read keeps the
@@ -338,6 +339,7 @@ fn git_command(path: &str, args: &[String]) -> tokio::process::Command {
         .args(args)
         .kill_on_drop(true);
     crate::pty::credentials::scrub_credentials_from_tokio_command(&mut command);
+    crate::config::agent_path::apply_search_path_to_tokio_command(&mut command);
 
     if let Some(parent) = Path::new(path).parent() {
         if let Ok(ceiling) = std::env::join_paths(std::iter::once(parent)) {

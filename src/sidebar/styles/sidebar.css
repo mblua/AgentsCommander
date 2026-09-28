@@ -5103,6 +5103,30 @@ html.light-theme .settings-hint-error {
   font-weight: 700;
 }
 
+/* #2681 - agent name plus weekly quota remaining on one line. */
+.agent-quota-name-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.agent-quota-name-line > .agent-profile-provider-name,
+.agent-quota-name-line > .agent-quota-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-quota-remaining {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--sidebar-fg-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .agent-profile-provider-command,
 .agent-profile-card-subtitle {
   display: block;
