@@ -4671,7 +4671,11 @@ mod tests {
             let snap = settings_snapshot_from(&AppSettings::default(), None);
             match (crate::config::config_dir(), snap.settings_file_path) {
                 (Some(dir), Some(path)) => {
-                    assert_eq!(path, dir.join("settings.json").to_string_lossy())
+                    assert_eq!(
+                        path,
+                        dir.join("settings.30.instance.no-git.json")
+                            .to_string_lossy()
+                    )
                 }
                 (None, None) => {}
                 (dir, path) => {
@@ -6775,7 +6779,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            dir.join("settings.local.json"),
+            dir.join("settings.50.personal.no-git.json"),
             serde_json::to_string_pretty(&json!({ "agents": local_agents })).unwrap(),
         )
         .unwrap();
@@ -7239,7 +7243,7 @@ mod tests {
         // Capture AFTER the loader: the first load of this minimal fixture may
         // run its one-time repair write. Snapshot building must add no write.
         let base_before = std::fs::read(&path).unwrap();
-        let local_path = temp.path().join("settings.local.json");
+        let local_path = temp.path().join("settings.50.personal.no-git.json");
         let local_before = std::fs::read(&local_path).unwrap();
         assert!(settings
             .local_overlay_state
@@ -7976,7 +7980,7 @@ mod tests {
             let path = dir.join("settings.json");
             std::fs::write(&path, serde_json::to_string_pretty(&base).unwrap()).unwrap();
             std::fs::write(
-                dir.join("settings.local.json"),
+                dir.join("settings.50.personal.no-git.json"),
                 serde_json::to_string_pretty(local).unwrap(),
             )
             .unwrap();

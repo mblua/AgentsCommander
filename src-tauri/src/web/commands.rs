@@ -1619,7 +1619,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            dir.join("settings.local.json"),
+            dir.join("settings.50.personal.no-git.json"),
             serde_json::to_string_pretty(&json!({
                 "agents": [
                     { "id": "ov-a", "label": "A", "command": "claude", "color": "#111111", "order": 1 },

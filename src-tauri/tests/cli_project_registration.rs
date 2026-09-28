@@ -86,7 +86,7 @@ fn write_settings(config_dir: &Path, project_paths: &[&Path]) {
             .collect::<Vec<_>>()
     });
     std::fs::write(
-        config_dir.join("settings.json"),
+        config_dir.join("settings.30.instance.no-git.json"),
         serde_json::to_string_pretty(&settings).expect("settings json"),
     )
     .expect("write settings");
@@ -305,7 +305,7 @@ fn new_project_bad_parent_path_does_not_write_settings_or_refresh() {
 
     assert!(!bad_project.exists());
     assert!(
-        !config_dir.join("settings.json").exists(),
+        !config_dir.join("settings.30.instance.no-git.json").exists(),
         "settings.json should not be written on failed new-project"
     );
     assert!(project_refresh_request_paths(&config_dir).is_empty());
@@ -881,7 +881,7 @@ fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
     write_settings(&config_dir, &[&project]);
 
     // One unrelated, pre-existing registration.
-    let settings_path = config_dir.join("settings.json");
+    let settings_path = config_dir.join("settings.30.instance.no-git.json");
     let mut settings: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read settings"))
             .expect("settings json");

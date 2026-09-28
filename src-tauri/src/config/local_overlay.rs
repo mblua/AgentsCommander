@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 /// The name of the JSON overlay file, read next to the base `settings.json`.
-const SETTINGS_LOCAL_FILE_NAME: &str = "settings.local.json";
+const SETTINGS_LOCAL_FILE_NAME: &str = "settings.50.personal.no-git.json";
 
 /// The suffix that turns `<name>.md` into its operator-owned override.
 const MARKDOWN_LOCAL_SUFFIX: &str = ".local.md";
@@ -832,7 +832,11 @@ mod tests {
     fn invalid_json_is_rejected_and_leaves_the_base_untouched() {
         let temp = tempfile::tempdir().unwrap();
         let settings = temp.path().join("settings.json");
-        std::fs::write(temp.path().join("settings.local.json"), "{ not json").unwrap();
+        std::fs::write(
+            temp.path().join("settings.50.personal.no-git.json"),
+            "{ not json",
+        )
+        .unwrap();
         let mut base = json!({"logLevel": "info"});
         let state = LocalSettingsOverlay::load_and_merge(&settings, &mut base, &[], &[], &[]);
         assert!(matches!(
@@ -851,7 +855,11 @@ mod tests {
     fn a_top_level_non_object_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let settings = temp.path().join("settings.json");
-        std::fs::write(temp.path().join("settings.local.json"), "[1, 2]").unwrap();
+        std::fs::write(
+            temp.path().join("settings.50.personal.no-git.json"),
+            "[1, 2]",
+        )
+        .unwrap();
         let mut base = json!({"logLevel": "info"});
         let state = LocalSettingsOverlay::load_and_merge(&settings, &mut base, &[], &[], &[]);
         assert_eq!(state.rejection(), Some(&OverlayRejection::NotAnObject));
@@ -865,7 +873,7 @@ mod tests {
     fn an_unreadable_overlay_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let settings = temp.path().join("settings.json");
-        std::fs::create_dir(temp.path().join("settings.local.json")).unwrap();
+        std::fs::create_dir(temp.path().join("settings.50.personal.no-git.json")).unwrap();
         let mut base = json!({"logLevel": "info"});
         let state = LocalSettingsOverlay::load_and_merge(&settings, &mut base, &[], &[], &[]);
         assert!(matches!(
