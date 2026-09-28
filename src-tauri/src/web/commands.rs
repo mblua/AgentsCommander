@@ -3034,7 +3034,7 @@ mod tests {
         let catalog_dir = dir.path().join(".ac").join("coding-agents");
         std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
         std::fs::write(
-            catalog_dir.join("agents.json"),
+            catalog_dir.join("agents.10.default.json"),
             serde_json::to_vec_pretty(&json!({
                 "schemaVersion": 1,
                 "agents": [
@@ -3140,7 +3140,7 @@ mod tests {
         let catalog_dir = dir.path().join(".ac").join("coding-agents");
         std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
         std::fs::write(
-            catalog_dir.join("agents.json"),
+            catalog_dir.join("agents.10.default.json"),
             serde_json::to_vec_pretty(&json!({
                 "schemaVersion": 1,
                 "agents": [{
@@ -3212,7 +3212,7 @@ mod tests {
         let catalog_dir = dir.path().join(".ac").join("coding-agents");
         std::fs::create_dir_all(&catalog_dir).expect("catalog dir");
         std::fs::write(
-            catalog_dir.join("agents.json"),
+            catalog_dir.join("agents.10.default.json"),
             serde_json::to_vec_pretty(&json!({
                 "schemaVersion": 1,
                 "agents": [

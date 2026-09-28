@@ -852,7 +852,7 @@ mod tests {
         let dir = project.join(".ac").join("coding-agents");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join("agents.json"),
+            dir.join("agents.10.default.json"),
             format!("{{\"schemaVersion\":1,\"agents\":{agents_json}}}"),
         )
         .unwrap();
@@ -887,7 +887,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let error = resolve_catalog_for_cli(&settings_for(dir.path())).expect_err("absent catalog");
         assert!(error.contains("baseUnavailable"), "{error}");
-        assert!(error.contains("agents.json"), "{error}");
+        assert!(error.contains("agents.10.default.json"), "{error}");
         assert!(error.contains("no persisted catalog"), "{error}");
     }
 

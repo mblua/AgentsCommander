@@ -6439,7 +6439,7 @@ mod tests {
     }
 
     /// #2124 T15 - from the seeded files on disk to the resolved tuning: an
-    /// `agents.local.json` edit applies at the next spawn without touching
+    /// `agents.50.personal.no-git.json` edit applies at the next spawn without touching
     /// `settings.agents[]`.
     #[test]
     fn resolve_launch_idle_tuning_reads_the_effective_catalog_from_disk() {
@@ -6470,7 +6470,7 @@ mod tests {
         let local = project
             .join(".ac")
             .join("coding-agents")
-            .join("agents.local.json");
+            .join("agents.50.personal.no-git.json");
         std::fs::write(
             &local,
             r#"{"schemaVersion":1,"agents":[{"key":"claude","idleBurst":{"maxBytes":0}}]}"#,

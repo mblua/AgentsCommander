@@ -707,9 +707,9 @@ fn new_project_seeds_catalog_into_ac() {
     let catalog_path = project
         .join(".ac")
         .join("coding-agents")
-        .join("agents.json");
+        .join("agents.10.default.json");
     let catalog = std::fs::read_to_string(&catalog_path)
-        .expect("fresh new-project must seed .ac/coding-agents/agents.json");
+        .expect("fresh new-project must seed .ac/coding-agents/agents.10.default.json");
     let parsed: serde_json::Value = serde_json::from_str(&catalog).expect("catalog parses");
     assert_eq!(
         parsed["agents"].as_array().map(Vec::len),
@@ -804,7 +804,7 @@ fn new_project_seeds_catalog_into_ac() {
 }
 
 // #1318/#1967 CLI read contract: `coding-agent catalog` with no registered
-// project serves the legacy `<config_dir>/coding-agents/agents.json` when one
+// project serves the legacy `<config_dir>/coding-agents/agents.10.default.json` when one
 // exists (read-only; pre-migration installs keep today's read behavior). With
 // no legacy catalog the persisted-only read is UNAVAILABLE: nonzero exit, the
 // baseUnavailable diagnostic (code + selected path + reason) on stderr, no
@@ -821,7 +821,7 @@ fn cli_catalog_serves_legacy_then_unavailable_without_projects() {
     let legacy_dir = config_dir.join("coding-agents");
     std::fs::create_dir_all(&legacy_dir).unwrap();
     let legacy = r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true}]}"##;
-    std::fs::write(legacy_dir.join("agents.json"), legacy).unwrap();
+    std::fs::write(legacy_dir.join("agents.10.default.json"), legacy).unwrap();
     let (served, stderr) = run_json(&bin, &["coding-agent", "catalog"]);
     assert_eq!(
         served.as_array().map(Vec::len),
@@ -832,17 +832,17 @@ fn cli_catalog_serves_legacy_then_unavailable_without_projects() {
     assert_eq!(served[0]["updateCommands"], serde_json::json!([]));
     assert!(stderr.contains("migrationPending"), "stderr: {stderr}");
     assert_eq!(
-        std::fs::read_to_string(legacy_dir.join("agents.json")).unwrap(),
+        std::fs::read_to_string(legacy_dir.join("agents.10.default.json")).unwrap(),
         legacy,
         "the read leaves the legacy bytes untouched"
     );
 
     // No legacy -> unavailable. Direct output capture (run_failure now returns
-    // the raw Output): nonzero, the selected agents.json path plus reason on
+    // the raw Output): nonzero, the selected agents.10.default.json path plus reason on
     // stderr, no success catalog on stdout, and repeated calls never recreate
     // the legacy directory.
     std::fs::remove_dir_all(&legacy_dir).unwrap();
-    let selected = legacy_dir.join("agents.json");
+    let selected = legacy_dir.join("agents.10.default.json");
     for _ in 0..2 {
         let out = run_failure(&bin, &["coding-agent", "catalog"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -854,7 +854,7 @@ fn cli_catalog_serves_legacy_then_unavailable_without_projects() {
         assert!(stderr.contains("baseUnavailable"), "stderr: {stderr}");
         assert!(
             stderr.contains(&selected.display().to_string()),
-            "stderr must name the selected agents.json path: {stderr}"
+            "stderr must name the selected agents.10.default.json path: {stderr}"
         );
         assert!(
             stderr.contains("no persisted catalog"),
@@ -904,7 +904,7 @@ fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
     let catalog_dir = project.join(".ac").join("coding-agents");
     std::fs::create_dir_all(&catalog_dir).expect("create catalog dir");
     std::fs::write(
-        catalog_dir.join("agents.json"),
+        catalog_dir.join("agents.10.default.json"),
         r##"{"schemaVersion":1,"agents":[{"key":"sentinel-1967","label":"Sentinel","description":"d","color":"#654321","command":"sentinel-1967-command","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["sentinel update"]}]}"##,
     )
     .expect("write catalog");
@@ -973,7 +973,8 @@ fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
     let (shown, _) = run_json(&bin, &["coding-agent", "show", "--id", "added-1967"]);
     assert_eq!(shown["order"], serde_json::json!(1));
     assert_eq!(
-        std::fs::read_to_string(catalog_dir.join("agents.json")).expect("catalog persists"),
+        std::fs::read_to_string(catalog_dir.join("agents.10.default.json"))
+            .expect("catalog persists"),
         r##"{"schemaVersion":1,"agents":[{"key":"sentinel-1967","label":"Sentinel","description":"d","color":"#654321","command":"sentinel-1967-command","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["sentinel update"]}]}"##,
         "add --from-catalog never writes the persisted catalog"
     );
