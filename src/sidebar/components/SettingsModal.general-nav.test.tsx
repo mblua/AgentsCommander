@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsModal from "./SettingsModal";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -31,62 +31,61 @@ const pane = (id: string) => tid(`settings.general.pane.${id}`);
 const cat = (id: string) => tid(`settings.general.category.${id}`);
 
 // Every always-rendered General testid on main (2bd7242c) before this change.
-const PRE_EXISTING_TESTIDS = [
-  "settings.apiClientMint.expiry",
-  "settings.apiClientMint.label",
-  "settings.apiClientMint.root",
-  "settings.apiClientMint.submit",
-  "settings.apiClientMint.surface",
-  "settings.apiClientMint.scope.send",
-  "settings.apiClientMint.scope.list-peers-lean",
-  "settings.apiClientMint.scope.session-transport",
-  "settings.general.activityLogEnabled",
-  "settings.general.activityLogEnabled.hint",
-  "settings.general.apiServerBind",
-  "settings.general.apiServerEnabled",
-  "settings.general.apiServerPort",
-  "settings.general.apiServerStatus",
-  "settings.general.autoSelfClearEnabled",
-  "settings.general.containerCredentialsFromHost",
-  "settings.general.containerCredentialsFromHost.hint",
-  "settings.general.coordinatorAutoCloseEnabled",
-  "settings.general.coordinatorAutoCloseMinutes",
-  "settings.general.coordinatorAutoCloseSkipTelegramAssigned",
-  "settings.general.coordinatorCascadeCloseEnabled",
-  "settings.general.coordinatorIdleBadgeRedMinutes",
-  "settings.general.coordinatorIdleBadgeYellowMinutes",
-  "settings.general.defaultShell",
-  "settings.general.logLevel",
-  "settings.general.npmUpdateNotificationsEnabled",
-  "settings.general.remoteBlockingMenusEnabled",
-  "settings.general.restartResumeAgentPrompt",
-  "settings.general.restartResumeOrchestratorPrompt",
-  "settings.general.restartResumeWakeWorkingAgents",
-  "settings.general.restoreCoordinatorWakeState",
-  "settings.general.roomNumberMask",
-  "settings.general.roomNumberMask.example",
-  "settings.general.screenshotCaptureHotkey",
-  "settings.general.selectedRowRailColor",
-  "settings.general.selectedRowRailWidth",
-  "settings.general.sidebarCompactHotkey",
-  "settings.general.terminalSnapshotsEnabled",
-  "settings.general.terminalSnapshotsEnabled.warning",
-  "settings.general.typingHoldSeconds",
-];
+const PRE_EXISTING_TESTIDS = `
+  settings.apiClientMint.expiry
+  settings.apiClientMint.label
+  settings.apiClientMint.root
+  settings.apiClientMint.submit
+  settings.apiClientMint.surface
+  settings.apiClientMint.scope.send
+  settings.apiClientMint.scope.list-peers-lean
+  settings.apiClientMint.scope.session-transport
+  settings.general.activityLogEnabled
+  settings.general.activityLogEnabled.hint
+  settings.general.apiServerBind
+  settings.general.apiServerEnabled
+  settings.general.apiServerPort
+  settings.general.apiServerStatus
+  settings.general.autoSelfClearEnabled
+  settings.general.containerCredentialsFromHost
+  settings.general.containerCredentialsFromHost.hint
+  settings.general.coordinatorAutoCloseEnabled
+  settings.general.coordinatorAutoCloseMinutes
+  settings.general.coordinatorAutoCloseSkipTelegramAssigned
+  settings.general.coordinatorCascadeCloseEnabled
+  settings.general.coordinatorIdleBadgeRedMinutes
+  settings.general.coordinatorIdleBadgeYellowMinutes
+  settings.general.defaultShell
+  settings.general.logLevel
+  settings.general.npmUpdateNotificationsEnabled
+  settings.general.remoteBlockingMenusEnabled
+  settings.general.restartResumeAgentPrompt
+  settings.general.restartResumeOrchestratorPrompt
+  settings.general.restartResumeWakeWorkingAgents
+  settings.general.restoreCoordinatorWakeState
+  settings.general.roomNumberMask
+  settings.general.roomNumberMask.example
+  settings.general.screenshotCaptureHotkey
+  settings.general.selectedRowRailColor
+  settings.general.selectedRowRailWidth
+  settings.general.sidebarCompactHotkey
+  settings.general.terminalSnapshotsEnabled
+  settings.general.terminalSnapshotsEnabled.warning
+  settings.general.typingHoldSeconds
+`
+  .trim()
+  .split(/\s+/);
 
 describe("SettingsModal General categories + search (#2704)", () => {
-  let cleanupDom: (() => void) | null = null;
-
+  // The returned function is Vitest's per-test teardown (runs where afterEach did).
   beforeEach(() => {
-    cleanupDom = installBrowserDomStubs();
+    const cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
-  });
-
-  afterEach(() => {
-    cleanupDom?.();
-    cleanupDom = null;
-    resetUiStoresForTests();
-    document.body.replaceChildren();
+    return () => {
+      cleanupDom();
+      resetUiStoresForTests();
+      document.body.replaceChildren();
+    };
   });
 
   async function renderModal(overrides: Partial<AppSettings> = {}) {
@@ -195,8 +194,8 @@ describe("SettingsModal General categories + search (#2704)", () => {
       expect(scopeEntries.map((e) => e.key)).toEqual(["apiClientMintScopes"]);
       expect(searchGeneralSettings("session-transport").map((e) => e.key)).toEqual(["apiClientMintScopes"]);
       const wrappers = rendered.root.querySelectorAll('[data-ac-setting="apiClientMintScopes"]');
-      expect(wrappers.length).toBe(1);
-      expect(wrappers[0].querySelectorAll('input[type="checkbox"]').length).toBe(3);
+      expect(wrappers).toHaveLength(1);
+      expect(wrappers[0].querySelectorAll('input[type="checkbox"]')).toHaveLength(3);
       type($<HTMLInputElement>(SEARCH), "session-transport");
       $<HTMLButtonElement>(tid("settings.general.result.apiClientMintScopes")).click();
       await waitFor(() =>
@@ -249,7 +248,7 @@ describe("SettingsModal General categories + search (#2704)", () => {
     const { rendered, $ } = await renderModal();
     try {
       type($<HTMLInputElement>(SEARCH), "hotkey");
-      expect(rendered.root.querySelectorAll(".settings-general-result").length).toBe(2);
+      expect(rendered.root.querySelectorAll(".settings-general-result")).toHaveLength(2);
       for (const c of GENERAL_CATEGORIES) expect($(pane(c.id)).hidden).toBe(true);
       const counts = GENERAL_CATEGORIES.map(
         (c) => $(cat(c.id)).querySelector(".settings-general-cat-count")!.textContent,

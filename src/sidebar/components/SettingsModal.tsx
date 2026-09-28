@@ -2732,6 +2732,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     buttons[e.key === "ArrowDown" ? Math.min(index + 1, buttons.length - 1) : index - 1]?.focus();
   };
 
+  const isActiveGeneralCategory = (id: GeneralCategoryId) =>
+    generalCategory() === id && !generalSearching();
+
   const renderGeneralTab = () => (
     <div class="settings-general" ref={generalLayoutRef} data-ac-testid="settings.general.layout">
       <nav class="settings-general-nav" aria-label="General settings categories">
@@ -2752,10 +2755,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               type="button"
               class="settings-general-cat"
               classList={{
-                active: generalCategory() === cat.id && !generalSearching(),
+                active: isActiveGeneralCategory(cat.id),
                 "is-empty": generalSearching() && generalCounts()[cat.id] === 0,
               }}
-              aria-current={generalCategory() === cat.id && !generalSearching() ? "page" : undefined}
+              aria-current={isActiveGeneralCategory(cat.id) ? "page" : undefined}
               data-ac-state={generalInvalid()[cat.id] ? "invalid" : undefined}
               onClick={() => selectGeneralCategory(cat.id)}
               data-ac-testid={`settings.general.category.${cat.id}`}
