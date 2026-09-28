@@ -2886,6 +2886,7 @@ const ProjectPanel: Component = () => {
               }}
               data-ac-testid={rowTestId()}
               onClick={() => handleReplicaClick(replica, wg)}
+              onKeyDown={onRowKey(() => void handleReplicaClick(replica, wg))}
               onContextMenu={(e) => {
                 const s = session();
                 if (s) {
@@ -2896,6 +2897,7 @@ const ProjectPanel: Component = () => {
               }}
               title={replica.path}
             >
+              <RowKeyProxy label={replica.name} />
               <div
                 class={`session-item-status ${dotClass()}${isComanaged() ? " comanaged" : ""}`}
                 data-ac-comanaged={isComanaged() ? "true" : "false"}

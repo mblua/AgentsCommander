@@ -959,3 +959,70 @@ describe("SessionItem orphan notice (#2568)", () => {
     }
   });
 });
+
+describe("SessionItem row keyboard access (#2659)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  const press = (el: Element, key: string) =>
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  const row = (root: ParentNode, id: string) =>
+    root.querySelector<HTMLElement>(`[data-ac-testid="session.${id}"]`)!;
+  const switches = (rendered: Awaited<ReturnType<typeof renderRow>>) =>
+    rendered.fake.calls.filter((call) => call.cmd === "switch_session");
+
+  it("Enter and Space on the proxy switch the session once, like a click", async () => {
+    const rendered = await renderRow({ id: "kb-1" }, baseSettings());
+    rendered.fake.resolve("switch_session", undefined);
+    try {
+      const proxy = row(rendered.root, "kb-1").firstElementChild as HTMLElement;
+      expect(proxy.classList.contains("ac-row-key-proxy")).toBe(true);
+      for (const act of [() => press(proxy, "Enter"), () => press(proxy, " "), () => click(row(rendered.root, "kb-1"))]) {
+        rendered.fake.clearCalls();
+        act();
+        await waitFor(() => expect(switches(rendered)).toHaveLength(1));
+      }
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("Enter on the nested telegram and close buttons does not activate the row", async () => {
+    const rendered = await renderRow({ id: "kb-2" }, baseSettings());
+    rendered.fake.resolve("switch_session", undefined);
+    try {
+      const r = row(rendered.root, "kb-2");
+      rendered.fake.clearCalls();
+      for (const sel of [".session-item-telegram", ".session-item-close"]) {
+        const btn = r.querySelector<HTMLElement>(sel)!;
+        expect(btn).not.toBeNull();
+        press(btn, "Enter");
+        press(btn, " ");
+      }
+      await Promise.resolve();
+      expect(switches(rendered)).toHaveLength(0);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("an inactive row has no key proxy", async () => {
+    const rendered = await renderRow({ id: "inactive-kb-3" }, baseSettings());
+    try {
+      expect(row(rendered.root, "inactive-kb-3").querySelector(".ac-row-key-proxy")).toBeNull();
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});
