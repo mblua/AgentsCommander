@@ -113,11 +113,7 @@ function resolve(value: string | null, map: Record<string, string>, depth = 0): 
     if (token !== undefined) return resolve(token, map, depth + 1);
     return ref[2] ? resolve(ref[2], map, depth + 1) : null;
   }
-  // A shorthand such as `background: #fff url(x)` yields its color literal.
-  const literal = /#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|\bwhite\b|\bblack\b|\btransparent\b/.exec(v);
-  if (!literal) return null;
-  if (/var\(/.test(v) && literal.index > v.indexOf("var(")) return null;
-  return parseColor(literal[0]);
+  return parseColor(v);
 }
 
 function over(top: Rgba | null, base: Rgba): Rgba {
@@ -142,7 +138,9 @@ function contrast(a: Rgba, b: Rgba): number {
 function ratio(paint: Paint, map: Record<string, string>, base: Rgba): number | null {
   const fg = resolve(paint.color, map);
   if (!fg) return null;
-  const bg = over(paint.background ? resolve(paint.background, map) : null, base);
+  const top = paint.background === null ? null : resolve(paint.background, map);
+  if (paint.background !== null && !top) return null;
+  const bg = over(top, base);
   return contrast(over(fg, bg), bg);
 }
 
@@ -182,11 +180,9 @@ function declared(body: string, ...names: string[]): string | null {
       return i < 0 ? null : [d.slice(0, i).trim().toLowerCase(), d.slice(i + 1).trim()];
     })
     .filter((d): d is string[] => d !== null);
-  for (const name of names) {
-    const hit = decls.filter((d) => d[0] === name);
-    if (hit.length) return hit[hit.length - 1][1];
-  }
-  return null;
+  // The last declaration of any listed name wins, as in the cascade.
+  const hit = decls.filter((d) => names.includes(d[0]));
+  return hit.length ? hit[hit.length - 1][1] : null;
 }
 
 const paintOf = (body: string): Paint => ({
@@ -284,6 +280,17 @@ describe("theme contrast (fixtures)", () => {
     expect(v[0]).toMatchObject({ file: "fixture.css", line: 2, selector: ".bad" });
     expect(v[0].light).toBeLessThan(MIN_RATIO);
     expect(evaluate(v, EMPTY).unallowed).toEqual(v);
+    // The last background declaration wins, whichever property name it uses.
+    const tokens = ":root { --bg: #0a0a0f; }\nhtml.light-theme { --bg: #f5f5f7; }\n";
+    const last = (decls: string) =>
+      findViolations([{ path: "src/f.css", text: `.x { color: #f2d98a; ${decls} }` }], tokens, "");
+    expect(last("background: var(--bg); background-color: #0a0a0f;")).toEqual([]);
+    expect(last("background-color: #0a0a0f; background: var(--bg);")).toHaveLength(1);
+    expect(paintOf("color: #f2d98a; background: #0a0a0f; background-color: #f5f5f7;").background).toBe(
+      "#f5f5f7",
+    );
+    // An unparseable value (e.g. a shorthand) skips the rule.
+    expect(fixture(".bad { color: #f2d98a; background: #fff url(x); }")).toEqual([]);
   });
 
   it("binds a stale entry", () => {
@@ -336,6 +343,9 @@ describe("theme contrast (real tree)", () => {
   });
 
   it("the allowlist has no stale entries", () => {
+    // A duplicate key could mask a deleted violation behind its twin.
+    const keys = allowlist.entries.map(key);
+    expect(keys.filter((k, i) => keys.indexOf(k) !== i)).toEqual([]);
     const { stale } = evaluate(violations, allowlist);
     expect(
       stale,
