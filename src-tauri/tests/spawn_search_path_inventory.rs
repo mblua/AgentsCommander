@@ -196,9 +196,9 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/config/coding_agents_catalog.rs",
-        2,
+        4,
         0,
-        &[(TestOnly, 2)],
+        &[(TestOnly, 4)],
     ),
     (
         "src-tauri/src/config/config_seed.rs",

@@ -42,6 +42,12 @@ export function loopToastFromEvent(data: LoopEventPayload): LoopToast | null {
       if (next) message += ` · next ${next}`;
       return { message, className: "toast-info" };
     }
+    case "unresolved":
+    case "targetUnresolved":
+      return {
+        message: `Loop "${name}" paused on this machine: ${data.message ?? "its room was not found"}`,
+        className: "toast-info",
+      };
     case "coalesced":
     case "coalescedPending":
       return {

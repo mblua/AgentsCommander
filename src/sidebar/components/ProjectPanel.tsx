@@ -637,6 +637,26 @@ const ProjectPanel: Component = () => {
     }
   };
 
+  /** #2733 - disable the Loop from the notice (config is synced: every machine). */
+  const disableLoopFromAlert = async (alert: UnresolvedLoopTarget) => {
+    const generation = loopTargetNoticeGeneration;
+    setAlertOpenError(alert.loopId, "");
+    setLoopTargetBusyLoopId(alert.loopId);
+    try {
+      await LoopAPI.setEnabled(alert.projectPath, alert.loopId, false);
+      if (loopTargetNoticeGeneration !== generation) return;
+      setLoopTargetAlerts((prev) =>
+        prev.filter((a) => !(a.loopId === alert.loopId && a.projectPath === alert.projectPath))
+      );
+    } catch (error) {
+      console.warn("[ProjectPanel] failed to disable the Loop from the notice:", error);
+      if (loopTargetNoticeGeneration !== generation) return;
+      setAlertOpenError(alert.loopId, `Could not disable this Loop: ${String(error)}`);
+    } finally {
+      setLoopTargetBusyLoopId(null);
+    }
+  };
+
   const inactiveCodingAgentResolved = createMemo(() => {
     const target = inactiveCodingAgentTarget();
     if (!target) return null;
@@ -4801,6 +4821,7 @@ const ProjectPanel: Component = () => {
           openErrors={loopTargetOpenErrors()}
           busyLoopId={loopTargetBusyLoopId()}
           onOpenConfig={(alert) => void openLoopConfigFromAlert(alert)}
+          onDisable={(alert) => void disableLoopFromAlert(alert)}
           onDismiss={dismissLoopTargetNotice}
         />
       </Portal>

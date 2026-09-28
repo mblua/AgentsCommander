@@ -50,7 +50,7 @@ pub async fn deliver_loop_prompt(
     let target = match resolve_loop_target(project_dir, config) {
         Ok(target) => target,
         Err(e) => {
-            return failed_report(None, None, e);
+            return target_unresolved_report(e);
         }
     };
     let target_fqn = target.target_fqn.clone();
@@ -358,6 +358,20 @@ fn stale_delivery_report(
         target: Some(target_fqn.to_string()),
         session_id: Some(session_id),
         error: Some(message),
+        prompt_snapshot: None,
+        completed_at: Some(Utc::now()),
+    }
+}
+
+/// #2733 - the target room/orchestrator does not resolve on this machine.
+/// Its own kind so the scheduler notifies once per transition, not per tick.
+fn target_unresolved_report(error: String) -> LoopDeliveryReport {
+    LoopDeliveryReport {
+        kind: LoopAuditKind::TargetUnresolved,
+        message: error.clone(),
+        target: None,
+        session_id: None,
+        error: Some(error),
         prompt_snapshot: None,
         completed_at: Some(Utc::now()),
     }
@@ -2057,6 +2071,99 @@ mod tests {
             !post_delivery_stamp,
             "a successful inject clears the fresh intent (#756)"
         );
+
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .close_and_join()
+            .await;
+    }
+
+    /// #2733 T-B1 - an unresolved target is its own kind, never a session.
+    #[tokio::test]
+    async fn issue_2733_missing_room_reports_target_unresolved() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join(".ac")).expect("ac root");
+        let mut config = sample_config();
+        config.target.workgroup = "room-99-missing".to_string();
+        let app = crate::test_support::test_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build app");
+
+        let report = deliver_loop_prompt(
+            app.handle(),
+            tmp.path(),
+            &config,
+            Uuid::new_v4(),
+            Utc::now(),
+        )
+        .await;
+
+        assert_eq!(report.kind, LoopAuditKind::TargetUnresolved);
+        assert!(
+            report
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("not found in project")),
+            "{:?}",
+            report.error
+        );
+        assert_eq!(report.session_id, None);
+        assert_eq!(report.target, None);
+    }
+
+    /// #2733 T-B9 - real delivery: unresolved while the room is away, then a
+    /// real spawn + inject once the room appears again.
+    #[tokio::test]
+    async fn issue_2733_real_delivery_resumes_after_room_appears() {
+        let (_tmp, config, project, replica) = loop_delivery_fixture();
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../_agent_lead","tooling":{"lastCodingAgent":"pi"}}"#,
+        )
+        .expect("replica tooling config");
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(LoopSpawnBackend::default());
+        let settings = AppSettings {
+            agents: vec![loop_test_agent("pi", "pi --model x")],
+            ..AppSettings::default()
+        };
+        let app =
+            make_restartable_loop_app(Arc::clone(&session_mgr), Arc::clone(&backend), settings);
+
+        let room = project.join(".ac").join("wg-1-dev-team");
+        let away = project.join(".ac").join("wg-1-dev-team.away");
+        std::fs::rename(&room, &away).expect("move room away");
+        let report =
+            deliver_loop_prompt(app.handle(), &project, &config, Uuid::new_v4(), Utc::now()).await;
+        assert_eq!(report.kind, LoopAuditKind::TargetUnresolved);
+        assert_eq!(report.session_id, None);
+        assert!(backend.spawned().is_empty());
+        assert!(session_mgr.read().await.list_sessions().await.is_empty());
+
+        std::fs::rename(&away, &room).expect("room appears");
+        let handle = app.handle().clone();
+        let spawned_config = config.clone();
+        let spawned_project = project.clone();
+        let delivery = tokio::spawn(async move {
+            deliver_loop_prompt(
+                &handle,
+                &spawned_project,
+                &spawned_config,
+                Uuid::new_v4(),
+                Utc::now(),
+            )
+            .await
+        });
+        let new_id = wait_for_new_session(&session_mgr, None).await;
+        mark_session_idle(&session_mgr, new_id).await;
+        let report = delivery.await.expect("join delivery");
+
+        assert_eq!(report.kind, LoopAuditKind::Delivered);
+        assert_eq!(report.session_id, Some(new_id));
+        assert_eq!(
+            report.prompt_snapshot.as_deref(),
+            Some(config.prompt.body.as_str())
+        );
+        assert!(backend.spawned().contains(&new_id));
 
         app.state::<crate::session::selection::SelectionCoordinator>()
             .close_and_join()

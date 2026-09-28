@@ -104,3 +104,22 @@ describe("loopToastFromEvent delivered", () => {
     expect(loopToastFromEvent(event("delivered"))?.message).toBe(`Loop "standup" delivered`);
   });
 });
+
+describe("loopToastFromEvent unresolved (#2733)", () => {
+  it("T-C1 uses info styling and names the Loop and the backend message", () => {
+    for (const kind of ["unresolved", "targetUnresolved"]) {
+      const toast = loopToastFromEvent(
+        event(kind, { summary: summary(), message: "Room 'room-9-x' not found in project C:\\Project" }),
+      );
+      expect(toast?.className).toBe("toast-info");
+      expect(toast?.message).toContain("Standup");
+      expect(toast?.message).toContain("Room 'room-9-x' not found in project");
+    }
+  });
+
+  it("T-C2 falls back to a generic reason without a message", () => {
+    const toast = loopToastFromEvent(event("unresolved", { message: null }));
+    expect(toast?.className).toBe("toast-info");
+    expect(toast?.message).toContain("its room was not found");
+  });
+});

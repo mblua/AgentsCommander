@@ -158,6 +158,7 @@ pub enum LoopAuditKind {
     MissedWhileClosed,
     DeliveryFailed,
     CoalescedPending,
+    TargetUnresolved,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -571,7 +572,10 @@ pub fn validate_loop_config(project_dir: &Path, config: &LoopConfigToml) -> Resu
     if config.prompt.body.trim().is_empty() {
         return Err("Loop prompt cannot be empty".to_string());
     }
-    resolve_loop_target(project_dir, config)?;
+    if config.loop_def.enabled {
+        resolve_loop_target(project_dir, config)
+            .map_err(|e| format!("{e}. Disable the Loop or choose an existing room."))?;
+    }
     Ok(())
 }
 
@@ -1033,6 +1037,194 @@ mod tests {
         )
         .expect("replica config");
         tmp
+    }
+
+    const ISSUE_2733_HINT: &str = "Disable the Loop or choose an existing room";
+
+    fn issue_2733_config_bytes(ac_root: &Path, id: &str) -> Vec<u8> {
+        std::fs::read(loop_dir(ac_root, id).join(LOOP_CONFIG_FILE)).expect("config bytes")
+    }
+
+    #[test]
+    fn issue_2733_disable_with_missing_room_succeeds() {
+        let tmp = fixture_project();
+        let ac_root = tmp.path().join(".ac");
+        let config = sample_config();
+        create_loop_files(tmp.path(), &ac_root, &config).expect("create with room present");
+        // Positive control: the same kind of update succeeds while the room resolves.
+        update_loop_files(
+            tmp.path(),
+            &ac_root,
+            &config.loop_def.id,
+            LoopUpdatePatch {
+                name: Some("Still resolvable".to_string()),
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect("update while room resolves");
+
+        std::fs::remove_dir_all(ac_root.join("wg-1-dev-team")).expect("remove room");
+        update_loop_files(
+            tmp.path(),
+            &ac_root,
+            &config.loop_def.id,
+            LoopUpdatePatch {
+                enabled: Some(false),
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect("disable with missing room");
+
+        let reread = read_loop_config(&loop_dir(&ac_root, &config.loop_def.id)).expect("reread");
+        assert!(!reread.loop_def.enabled);
+        let text = String::from_utf8(issue_2733_config_bytes(&ac_root, &config.loop_def.id))
+            .expect("utf8");
+        assert!(text.contains("enabled = false"), "{text}");
+    }
+
+    #[test]
+    fn issue_2733_edit_disabled_loop_with_missing_room_succeeds() {
+        let tmp = fixture_project();
+        let ac_root = tmp.path().join(".ac");
+        let mut config = sample_config();
+        config.loop_def.enabled = false;
+        create_loop_files(tmp.path(), &ac_root, &config).expect("create disabled");
+
+        update_loop_files(
+            tmp.path(),
+            &ac_root,
+            &config.loop_def.id,
+            LoopUpdatePatch {
+                name: Some("Retargeted".to_string()),
+                workgroup: Some("room-99-missing".to_string()),
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect("edit disabled loop to a missing room");
+
+        let reread = read_loop_config(&loop_dir(&ac_root, &config.loop_def.id)).expect("reread");
+        assert_eq!(reread.loop_def.name, "Retargeted");
+        assert_eq!(reread.target.workgroup, "room-99-missing");
+        assert!(!reread.loop_def.enabled);
+    }
+
+    #[test]
+    fn issue_2733_enable_with_missing_room_is_rejected() {
+        let tmp = fixture_project();
+        let ac_root = tmp.path().join(".ac");
+        let mut config = sample_config();
+        config.loop_def.enabled = false;
+        config.target.workgroup = "room-99-missing".to_string();
+        create_loop_files(tmp.path(), &ac_root, &config).expect("create disabled");
+        let before = issue_2733_config_bytes(&ac_root, &config.loop_def.id);
+
+        let err = update_loop_files(
+            tmp.path(),
+            &ac_root,
+            &config.loop_def.id,
+            LoopUpdatePatch {
+                enabled: Some(true),
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect_err("enable must be rejected");
+
+        assert!(err.contains("not found in project"), "{err}");
+        assert!(err.contains(ISSUE_2733_HINT), "{err}");
+        assert_eq!(
+            issue_2733_config_bytes(&ac_root, &config.loop_def.id),
+            before
+        );
+    }
+
+    #[test]
+    fn issue_2733_update_while_enabled_with_missing_room_is_rejected() {
+        let tmp = fixture_project();
+        let ac_root = tmp.path().join(".ac");
+        let config = sample_config();
+        create_loop_files(tmp.path(), &ac_root, &config).expect("create enabled");
+        std::fs::remove_dir_all(ac_root.join("wg-1-dev-team")).expect("remove room");
+        let before = issue_2733_config_bytes(&ac_root, &config.loop_def.id);
+
+        let err = update_loop_files(
+            tmp.path(),
+            &ac_root,
+            &config.loop_def.id,
+            LoopUpdatePatch {
+                name: Some("Renamed".to_string()),
+                ..LoopUpdatePatch::default()
+            },
+        )
+        .expect_err("save while enabled must be rejected");
+
+        assert!(err.contains("not found in project"), "{err}");
+        assert!(err.contains(ISSUE_2733_HINT), "{err}");
+        assert_eq!(
+            issue_2733_config_bytes(&ac_root, &config.loop_def.id),
+            before
+        );
+    }
+
+    #[test]
+    fn issue_2733_create_disabled_missing_room_ok_enabled_rejected() {
+        let tmp = fixture_project();
+        let ac_root = tmp.path().join(".ac");
+        let mut disabled = sample_config();
+        disabled.loop_def.enabled = false;
+        disabled.target.workgroup = "room-99-missing".to_string();
+        create_loop_files(tmp.path(), &ac_root, &disabled).expect("create disabled");
+
+        let mut enabled = disabled.clone();
+        enabled.loop_def.id = "enabled-missing".to_string();
+        enabled.loop_def.enabled = true;
+        let err = create_loop_files(tmp.path(), &ac_root, &enabled)
+            .expect_err("create enabled must be rejected");
+        assert!(err.contains(ISSUE_2733_HINT), "{err}");
+        assert!(!loop_dir(&ac_root, "enabled-missing").exists());
+    }
+
+    #[test]
+    fn issue_2733_structural_errors_rejected_when_disabled() {
+        let tmp = fixture_project();
+        let mut base = sample_config();
+        base.loop_def.enabled = false;
+        validate_loop_config(tmp.path(), &base).expect("disabled baseline is valid");
+
+        let mut cases = Vec::new();
+        let mut c = base.clone();
+        c.trigger.expr = "bad".to_string();
+        cases.push(("cron", c));
+        let mut c = base.clone();
+        c.target.workgroup = "team-1".to_string();
+        cases.push(("prefix", c));
+        let mut c = base.clone();
+        c.prompt.body = "  ".to_string();
+        cases.push(("prompt", c));
+        let mut c = base.clone();
+        c.loop_def.name = String::new();
+        cases.push(("name", c));
+        let mut c = base.clone();
+        c.trigger.timezone = "utc".to_string();
+        cases.push(("timezone", c));
+
+        for (label, config) in cases {
+            assert!(
+                validate_loop_config(tmp.path(), &config).is_err(),
+                "{label} must be rejected while disabled"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_2733_audit_kind_round_trips() {
+        let json = serde_json::to_string(&LoopAuditKind::TargetUnresolved).expect("serialize");
+        assert_eq!(json, "\"targetUnresolved\"");
+        let back: LoopAuditKind = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, LoopAuditKind::TargetUnresolved);
+
+        let legacy = r#"{"runId":"6a7cfa8e-0e0a-4a0f-9d1e-2f3d9a1b4c55","loopId":"daily-sync","projectPath":"/tmp/project","kind":"pendingBusy","dueAt":"2025-01-01T09:00:00Z","startedAt":"2025-01-01T09:00:01Z","completedAt":null,"target":"proj:wg-1-dev-team/tech-lead","sessionId":null,"busyCoordinatorPolicy":"waitUntilIdle","error":null,"promptSnapshot":null}"#;
+        let parsed = serde_json::from_str::<LoopAuditEntry>(legacy).expect("legacy row parses");
+        assert_eq!(parsed.kind, LoopAuditKind::PendingBusy);
     }
 
     fn sample_config() -> LoopConfigToml {

@@ -288,4 +288,51 @@ describe("ProjectPanel Loop target notice (#2171)", () => {
       rendered.cleanup();
     }
   });
+
+  it("T-C5 disables the Loop from the notice and closes it (#2733)", async () => {
+    const fake = new FakeTransport();
+    setupProject(fake);
+    fake.resolve("list_unresolved_loop_targets", [alert()]);
+    fake.resolve("toggle_loop", { summary: { ...loop(), enabled: false }, promptBody: "x" });
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(byTestId("loopTargetMissing.disable.daily-release")).toBeTruthy());
+
+      click(byTestId("loopTargetMissing.disable.daily-release")!);
+
+      await waitFor(() => expect(byTestId("loopTargetMissing.modal")).toBeNull());
+      expect(fake.lastCall("toggle_loop")?.args).toEqual({
+        projectPath,
+        id: "daily-release",
+        enabled: false,
+      });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("T-C6 keeps the notice open with a row error when disabling fails (#2733)", async () => {
+    const fake = new FakeTransport();
+    setupProject(fake);
+    fake.resolve("list_unresolved_loop_targets", [alert()]);
+    fake.reject("toggle_loop", "boom");
+
+    const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    try {
+      await projectStore.createAndLoad(projectPath);
+      await waitFor(() => expect(byTestId("loopTargetMissing.disable.daily-release")).toBeTruthy());
+
+      click(byTestId("loopTargetMissing.disable.daily-release")!);
+
+      await waitFor(() => expect(document.querySelector(".new-agent-error")).toBeTruthy());
+      expect(byTestId("loopTargetMissing.modal")).toBeTruthy();
+      const text = document.querySelector(".new-agent-error")!.textContent ?? "";
+      expect(text).toContain("Could not disable this Loop: ");
+      expect(text).toContain("boom");
+    } finally {
+      rendered.cleanup();
+    }
+  });
 });
