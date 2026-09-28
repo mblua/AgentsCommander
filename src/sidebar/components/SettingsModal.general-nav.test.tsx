@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsModal from "./SettingsModal";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -15,9 +16,13 @@ import {
   GENERAL_SETTINGS_INDEX,
   searchGeneralSettings,
 } from "./settings/generalSettingsIndex";
+import { declValue, declarations, scanRules } from "../styles/css-test-helpers";
 
 // #2704 - Settings > General is split into categories with a cross-category search.
 
+// Vite rewrites the literal `new URL(..., import.meta.url)` form into a served
+// asset; a binding keeps the file: URL that node:fs accepts.
+const moduleUrl = import.meta.url;
 const tid = (id: string) => `[data-ac-testid="${id}"]`;
 const LAYOUT = tid("settings.general.layout");
 const SEARCH = tid("settings.general.search");
@@ -379,6 +384,52 @@ describe("SettingsModal General categories + search (#2704)", () => {
         btn.click();
         expect(modal.classList.contains("modal-container-general")).toBe(false);
       }
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  // Round 4: at <=760px the categories wrap as chips. The bytes come from disk
+  // because a CSS ?raw import evaluates to "" under Vitest (see agent-badge-css.test.ts).
+  it("stacks the categories as wrapping chips at 760px and keeps the red dot on the chip", async () => {
+    const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const mediaStart = css.indexOf("@media (max-width: 760px)");
+    expect(mediaStart).toBeGreaterThan(-1);
+    let depth = 0;
+    let end = -1;
+    for (let i = css.indexOf("{", mediaStart); i < css.length; i++) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}" && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    const rules = scanRules(css.slice(css.indexOf("{", mediaStart) + 1, end));
+    const rule = (sel: string) => {
+      const found = rules.find((r) => r.selectors.includes(sel));
+      if (!found) throw new Error(`missing rule in 760px block: ${sel}`);
+      return found.body;
+    };
+    const nav = rule(".settings-general-nav");
+    expect(declValue(nav, "flex-wrap")).toBe("wrap");
+    expect(declValue(nav, "flex-direction")).toBe("row");
+    for (const [p, v] of declarations(nav)) if (p === "max-height") expect(v).toBe("none");
+    expect(declValue(rule(".settings-general-cat"), "width")).toBe("auto");
+
+    const { rendered, $ } = await renderModal({ typingHoldSeconds: 120 });
+    try {
+      const input = $<HTMLInputElement>(tid("settings.general.typingHoldSeconds"));
+      await waitFor(() => expect(input.value).toBe("120"));
+      $<HTMLButtonElement>(cat("terminal")).click();
+      type(input, "0");
+      $<HTMLButtonElement>(cat("appearance")).click();
+      await waitFor(() => expect($(cat("terminal")).getAttribute("data-ac-state")).toBe("invalid"));
+      const dot = rendered.root.querySelector(".settings-general-cat-invalid-dot");
+      expect(dot).toBeTruthy();
+      expect($(cat("terminal")).contains(dot)).toBe(true);
     } finally {
       rendered.cleanup();
     }

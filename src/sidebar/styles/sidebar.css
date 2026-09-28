@@ -1941,11 +1941,39 @@ html.light-theme .settings-general-cat-invalid-dot {
     flex-direction: column;
   }
 
+  /* Round 4: stacked mode shows the categories as a wrapping row of chips. */
   .settings-general-nav {
     width: auto;
-    max-height: 180px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    max-height: none;
+    overflow: visible;
     border-right: none;
     border-bottom: 1px solid var(--sidebar-border);
+  }
+
+  .settings-general-search {
+    flex: 1 1 100%;
+  }
+
+  .settings-general-cat {
+    width: auto;
+    flex: none;
+    padding: 4px 10px;
+    border-left: none;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 999px;
+  }
+
+  .settings-general-cat-label {
+    flex: none;
+  }
+
+  .settings-general-cat.active,
+  .settings-general-cat[aria-current="page"] {
+    border-color: var(--sidebar-accent);
   }
 }
 
