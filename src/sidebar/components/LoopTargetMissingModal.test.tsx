@@ -29,6 +29,7 @@ function mount(props: {
   openErrors?: Record<string, string>;
   busyLoopId?: string | null;
   onOpenConfig?: (a: UnresolvedLoopTarget) => void;
+  onDisable?: (a: UnresolvedLoopTarget) => void;
   onDismiss?: () => void;
 }): () => void {
   const root = document.createElement("div");
@@ -40,6 +41,7 @@ function mount(props: {
         openErrors={props.openErrors ?? {}}
         busyLoopId={props.busyLoopId ?? null}
         onOpenConfig={props.onOpenConfig ?? (() => {})}
+        onDisable={props.onDisable ?? (() => {})}
         onDismiss={props.onDismiss ?? (() => {})}
       />
     ),
@@ -146,5 +148,27 @@ describe("LoopTargetMissingModal (#2171)", () => {
       new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
     );
     expect(onDismiss).toHaveBeenCalledTimes(2);
+  });
+
+  it("T-C3 calls onDisable once with that row's alert (#2733)", async () => {
+    const onDisable = vi.fn();
+    dispose = mount({ alerts: [alert()], onDisable });
+
+    await waitFor(() => expect(byTestId("loopTargetMissing.disable.daily-release")).toBeTruthy());
+    click(byTestId("loopTargetMissing.disable.daily-release"));
+
+    expect(onDisable).toHaveBeenCalledTimes(1);
+    expect(onDisable.mock.calls[0][0]).toEqual(alert());
+  });
+
+  it("T-C4 disables the disable button of the busy row (#2733)", async () => {
+    dispose = mount({
+      alerts: [alert(), alert({ loopId: "other", loopName: "Other" })],
+      busyLoopId: "daily-release",
+    });
+
+    await waitFor(() => expect(byTestId("loopTargetMissing.modal")).toBeTruthy());
+    expect(byTestId<HTMLButtonElement>("loopTargetMissing.disable.daily-release").disabled).toBe(true);
+    expect(byTestId<HTMLButtonElement>("loopTargetMissing.disable.other").disabled).toBe(false);
   });
 });
