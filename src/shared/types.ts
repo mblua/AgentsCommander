@@ -361,9 +361,10 @@ export type UnrecognizedWatcherEntry = JsonValue;
 
 /** #2482 - one configured weekly-quota source. Mirrors `QuotaSourceConfig`
  *  (`config/settings.rs`); `kind` is the discriminant and the extension point, so a
- *  second agent's source is a second member of this union. */
+ *  second agent's source is a second member of this union. Capture group 1 is the USED
+ *  percentage for `screenRegex` and the REMAINING percentage for `screenRegexRemaining`. */
 export type QuotaSourceConfig = {
-  kind: "screenRegex";
+  kind: "screenRegex" | "screenRegexRemaining";
   pattern: string;
   enabled?: boolean;
 };
@@ -2138,4 +2139,23 @@ export interface SpecBoardChangedEvent {
   external: boolean;
 }
 
+export interface AgentHelpTip {
+  title: string;
+  body: string;
+  link?: { label: string; url: string };
+}
 
+export interface AgentHelpEntry {
+  label?: string;
+  paramsExample?: string;
+  docsUrl?: string;
+  tips?: AgentHelpTip[];
+}
+
+export interface AgentHelpFile {
+  schemaVersion: number;
+  note?: string;
+  general?: AgentHelpEntry;
+  byCommand?: Record<string, AgentHelpEntry>;
+  byAgent?: Record<string, AgentHelpEntry>;
+}

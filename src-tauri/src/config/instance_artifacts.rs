@@ -369,6 +369,22 @@ pub(crate) const CODING_AGENTS_LOCK_TARGET_NAME: &str =
 pub(crate) const AGENTS_INSTANCE_TARGET_NAME: &str =
     layered_name!("agents", instance, no_git, "json");
 
+/// #2713 - the naming-migration journal, which is also its completion marker:
+/// one file, so there is one source of truth. `config::naming_migration` owns it.
+pub(crate) const NAMING_MIGRATION_STATE_NAME: &str =
+    layered_name!("naming-migration", state, no_git, "json");
+/// The journal's atomic-commit temporaries, `<name>.<pid>.<seq>.tmp`.
+pub(crate) const NAMING_MIGRATION_STATE_TMP_GLOB: &str = concat!(
+    layered_name!("naming-migration", state, no_git, "json"),
+    ".*.tmp"
+);
+/// The journal writer lock, `.<name>.lock`: created once, never deleted.
+pub(crate) const NAMING_MIGRATION_LOCK_NAME: &str = concat!(
+    ".",
+    layered_name!("naming-migration", state, no_git, "json"),
+    ".lock"
+);
+
 /// #1968 - the single publication temporary-name formula,
 /// `.{destination}.{pid}.{counter}.tmp`. The catalog writer aliases it and the
 /// generated-policy test derives the journal temporary from it, so the writer
@@ -424,6 +440,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: transient API client registry write temporaries",
+    },
+    InstanceArtifact {
+        name: NAMING_MIGRATION_LOCK_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: naming-migration journal writer lock; created once and never deleted",
     },
     InstanceArtifact {
         name: ACTIVITY_LOG_FILE_NAME,
@@ -668,6 +690,18 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: local API master token",
+    },
+    InstanceArtifact {
+        name: NAMING_MIGRATION_STATE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: naming-migration journal and completion marker",
+    },
+    InstanceArtifact {
+        name: NAMING_MIGRATION_STATE_TMP_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: transient naming-migration journal write temporaries",
     },
     InstanceArtifact {
         name: ORPHAN_ARCHIVE_FILENAME,
@@ -1182,6 +1216,30 @@ mod tests {
         assert_eq!(
             SETTINGS_BACKUP_ROTATION_GLOB,
             format!("{SETTINGS_BACKUP_PREFIX}*{SETTINGS_BACKUP_SUFFIX}")
+        );
+    }
+
+    #[test]
+    fn naming_migration_state_name_is_the_layered_state_no_git_journal_name() {
+        assert_eq!(
+            NAMING_MIGRATION_STATE_NAME,
+            format!("naming-migration.{STATE_MARKER}.{NO_GIT_MARKER}.json")
+        );
+    }
+
+    #[test]
+    fn naming_migration_state_tmp_glob_derives_from_the_state_name() {
+        assert_eq!(
+            NAMING_MIGRATION_STATE_TMP_GLOB,
+            format!("{NAMING_MIGRATION_STATE_NAME}.*.tmp")
+        );
+    }
+
+    #[test]
+    fn naming_migration_lock_name_derives_from_the_state_name() {
+        assert_eq!(
+            NAMING_MIGRATION_LOCK_NAME,
+            format!(".{NAMING_MIGRATION_STATE_NAME}.lock")
         );
     }
 

@@ -4203,6 +4203,8 @@ const ProjectPanel: Component = () => {
                         </button>
                         <button
                           class="session-context-option"
+                          data-ac-testid={`replica.${menu().sessionId}.menu.coding-agent`}
+                          data-ac-role="menuitem"
                           onClick={() => {
                             const sessionId = menu().sessionId;
                             const sessionName = menu().sessionName;
@@ -4365,6 +4367,8 @@ const ProjectPanel: Component = () => {
                         <>
                           <button
                             class="session-context-option"
+                            data-ac-testid="replica.inactive.menu.coding-agent"
+                            data-ac-role="menuitem"
                             onClick={() => {
                               const wg = menu().wg;
                               const replica = menu().replica;

@@ -2223,3 +2223,93 @@ fn the_root_agent_dir_name_constant_is_defined_exactly_once() {
          OBSERVED: {homes:?}"
     );
 }
+
+/// #2713: `config::naming_migration` is called from the crate root in B1b, and
+/// the crate root is a member of the one cyclic SCC. A module the root calls
+/// joins that SCC the moment it names any member, so this leaf may name
+/// `super::instance_artifacts` and nothing else in the crate. Modelled on
+/// `instance_gitignore_names_nothing_that_reaches_the_knot`.
+const MIGRATION_MODULE: [&str; 2] = ["config", "naming_migration"];
+const MIGRATION_FILE: &str = "src/config/naming_migration.rs";
+
+/// The SCC members section 3.1 of the B1a plan names, plus the framework.
+/// `super::<name>` and `crate::` are already refused by the equalities below;
+/// this catches a bare `<name>::` path reached through an import this scan
+/// cannot resolve.
+const MIGRATION_FORBIDDEN_SEGMENTS: [&str; 7] = [
+    "settings",
+    "loops",
+    "coding_agents_catalog",
+    "local_config_io",
+    "sessions_persistence",
+    "commands",
+    "tauri",
+];
+
+#[test]
+fn naming_migration_names_nothing_that_reaches_the_knot() {
+    let seen = observe(&MIGRATION_MODULE, Reach::WithSubmodules);
+
+    assert!(
+        seen.anchored.is_empty(),
+        "config::naming_migration must not name any `crate::` path: the crate root \
+         is in the cyclic SCC and B1b calls this module from it. OBSERVED: {:?}",
+        seen.anchored
+    );
+    assert!(
+        seen.aliases.is_empty(),
+        "config::naming_migration must not rename the crate root or the config \
+         group; the scan cannot follow a renamed path. OFFENDING FILES: {}",
+        seen.aliases.join(", ")
+    );
+    assert!(
+        seen.forbidden.is_empty(),
+        "config::naming_migration names `root_agent`, a knot member. OFFENDING \
+         FILES: {}",
+        seen.forbidden.join(", ")
+    );
+    assert!(
+        seen.own_module.is_empty(),
+        "config::naming_migration uses a `self::` path; name items directly. \
+         OBSERVED: {:?}",
+        seen.own_module
+    );
+    assert_eq!(
+        seen.relative_up,
+        expected(&[
+            (MIGRATION_FILE, "*"),
+            (MIGRATION_FILE, "instance_artifacts"),
+        ]),
+        "the set of names reached by `super::` from config::naming_migration \
+         moved. The only allowed pair is its one arc, to \
+         `config::instance_artifacts`, which has no outgoing arcs; the `*` is \
+         the test module's `use super::*;`, whose `super` is this module. \
+         Anything else must be argued as a change to the arc budget of B1a."
+    );
+    assert_eq!(
+        seen.globs, 1,
+        "config::naming_migration must contain exactly one glob import, the test \
+         module's `use super::*;`"
+    );
+
+    let files = files_of(&MIGRATION_MODULE, Reach::WithSubmodules).expect("module files");
+    for path in &files {
+        let code = normalized(&scrubbed(path, Literals::Drop).expect("scrub"));
+        for segment in MIGRATION_FORBIDDEN_SEGMENTS {
+            let needle = format!("{segment}::");
+            let named = code.match_indices(&needle).any(|(at, _)| {
+                !code[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|character| character.is_alphanumeric() || character == '_')
+            });
+            assert!(
+                !named,
+                "{} names `{segment}::`, a module inside the cyclic SCC or the \
+                 framework; this leaf may name only super::instance_artifacts, \
+                 std, serde, serde_json, chrono and the OS bindings",
+                relative_of(path)
+            );
+        }
+    }
+}

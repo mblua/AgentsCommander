@@ -1926,6 +1926,7 @@ fn detect_git_branch(dir: &str) -> Option<String> {
 
     let mut cmd = std::process::Command::new("git");
     crate::pty::credentials::scrub_credentials_from_std_command(&mut cmd);
+    crate::config::agent_path::apply_search_path_to_std_command(&mut cmd);
     cmd.args(["-C", dir, "branch", "--show-current"]);
 
     #[cfg(windows)]

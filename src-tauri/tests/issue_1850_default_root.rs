@@ -404,18 +404,27 @@ fn issue_1850_default_root_acceptance() {
         inherited_home_env.as_deref().unwrap_or("<unset>"),
     );
 
+    refusal_census_self_control();
+
     if mode == Mode::RefusalOnly {
         let profile = user_profile
             .as_deref()
             .expect("refusal-only admission requires USERPROFILE");
-        for entry in PROFILE_ENTRIES {
-            profile_entry_absent(profile, entry).expect("refusal-only pre-check");
-        }
+        let pre = profile_census(profile).expect("refusal-only pre-census");
         mechanism_control();
-        for entry in PROFILE_ENTRIES {
-            profile_entry_absent(profile, entry).expect("refusal-only post-check");
+        let post = profile_census(profile).expect("refusal-only post-census");
+        census_unchanged(&pre, &post).expect("refusal-only census must be unchanged");
+        let occupied = post.iter().filter(|(_, kind)| kind.is_some()).count();
+        if occupied == 0 {
+            println!("ISSUE1850_REFUSAL_ONLY");
+        } else {
+            let entries = post
+                .iter()
+                .map(|(name, kind)| format!("{name}={}", kind.unwrap_or("absent")))
+                .collect::<Vec<_>>()
+                .join(",");
+            println!("ISSUE1850_REFUSAL_OCCUPIED occupied={occupied} entries={entries}");
         }
-        println!("ISSUE1850_REFUSAL_ONLY");
         return;
     }
 
@@ -879,6 +888,111 @@ fn copy_product_binary(bin_dir: &Path) -> Result<PathBuf, String> {
             .map_err(|error| format!("set executable mode failed: {error}"))?;
     }
     Ok(destination)
+}
+
+/// Entry-level census of one profile entry. The only filesystem contact is
+/// `fs::symlink_metadata`, which neither opens the object nor follows a link
+/// or reparse point.
+fn profile_entry_kind(home: &Path, name: &str) -> Result<Option<&'static str>, String> {
+    let path = home.join(name);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "symlink_metadata {} failed with {:?}: {error}",
+            path.display(),
+            error.kind()
+        )),
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            // Symlink first: a Windows junction or directory symlink reports both.
+            Ok(Some(if file_type.is_symlink() {
+                "symlink"
+            } else if file_type.is_dir() {
+                "dir"
+            } else if file_type.is_file() {
+                "file"
+            } else {
+                "other"
+            }))
+        }
+    }
+}
+
+fn profile_census(home: &Path) -> Result<[(&'static str, Option<&'static str>); 3], String> {
+    let entry = |name: &'static str| profile_entry_kind(home, name).map(|kind| (name, kind));
+    Ok([
+        entry(PROFILE_ENTRIES[0])?,
+        entry(PROFILE_ENTRIES[1])?,
+        entry(PROFILE_ENTRIES[2])?,
+    ])
+}
+
+/// Snapshot invariance at entry level only: it does not observe the interval
+/// between the two censuses, nor the contents of a present entry.
+fn census_unchanged(
+    pre: &[(&'static str, Option<&'static str>); 3],
+    post: &[(&'static str, Option<&'static str>); 3],
+) -> Result<(), String> {
+    for (before, after) in pre.iter().zip(post.iter()) {
+        if before != after {
+            return Err(format!(
+                "profile entry {} changed: before={:?} after={:?}",
+                before.0, before.1, after.1
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Positive and inverse battery for the census over a `TempDir` fake profile.
+/// It never touches the real profile.
+fn refusal_census_self_control() {
+    let fake = tempfile::TempDir::new().expect("self-control tempdir");
+    let root: &Path = fake.path();
+    let dir_entry = root.join(PROFILE_ENTRIES[0]);
+    fs::create_dir(&dir_entry).expect("self-control create dir entry");
+    fs::write(root.join(PROFILE_ENTRIES[1]), b"").expect("self-control create file entry");
+
+    let pre = profile_census(root).expect("self-control pre-census");
+    assert_eq!(
+        pre,
+        [
+            (PROFILE_ENTRIES[0], Some("dir")),
+            (PROFILE_ENTRIES[1], Some("file")),
+            (PROFILE_ENTRIES[2], None),
+        ],
+        "self-control pre-census shape"
+    );
+
+    let same = profile_census(root).expect("self-control positive re-census");
+    census_unchanged(&pre, &same).expect("self-control positive leg must be unchanged");
+
+    fs::remove_dir(&dir_entry).expect("self-control leg 1 remove dir");
+    let post = profile_census(root).expect("self-control leg 1 census");
+    assert!(
+        census_unchanged(&pre, &post).is_err(),
+        "leg 1: present becomes absent must be Err"
+    );
+    fs::create_dir(&dir_entry).expect("self-control leg 1 recreate dir");
+
+    fs::remove_dir(&dir_entry).expect("self-control leg 2 remove dir");
+    fs::write(&dir_entry, b"").expect("self-control leg 2 create file");
+    let post = profile_census(root).expect("self-control leg 2 census");
+    assert!(
+        census_unchanged(&pre, &post).is_err(),
+        "leg 2: dir becomes file must be Err"
+    );
+    fs::remove_file(&dir_entry).expect("self-control leg 2 remove file");
+    fs::create_dir(&dir_entry).expect("self-control leg 2 recreate dir");
+
+    fs::create_dir(root.join(PROFILE_ENTRIES[2])).expect("self-control leg 3 create dir");
+    let post = profile_census(root).expect("self-control leg 3 census");
+    assert!(
+        census_unchanged(&pre, &post).is_err(),
+        "leg 3: absent becomes present must be Err"
+    );
+
+    println!("ISSUE1850_REFUSAL_SELFCONTROL_OK entries=3");
 }
 
 fn profile_entry_absent(home: &Path, name: &str) -> Result<(), String> {
