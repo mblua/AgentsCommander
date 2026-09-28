@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, createMemo, For, Index, Show, onMount, onCleanup } from "solid-js";
+import { Component, type JSX, createSignal, createEffect, createMemo, For, Index, Show, onMount, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { isTauri, isWindows } from "../../shared/platform";
 import type {
@@ -57,6 +57,14 @@ import {
   type AgentHelpOverlay,
 } from "../../shared/agent-help";
 import { mergeSettingsForSavePreservingProjects } from "./settings-save";
+import {
+  GENERAL_CATEGORIES,
+  countByCategory,
+  generalCategoryLabel,
+  searchGeneralSettings,
+  type GeneralCategoryId,
+  type GeneralSettingEntry,
+} from "./settings/generalSettingsIndex";
 import { applySelectedRowRail, isValidRailColor, isValidRailWidth } from "../selected-row-rail";
 import { QuotaRemaining } from "./AgentQuotaRemaining";
 import {
@@ -809,6 +817,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   } | null>(null);
   const initialTab: SettingsTab = resolveSettingsSection(props.section);
   const [activeTab, setActiveTab] = createSignal<SettingsTab>(initialTab);
+  const [generalCategory, setGeneralCategory] = createSignal<GeneralCategoryId>("appearance");
+  const [generalQuery, setGeneralQuery] = createSignal("");
+  const generalResults = createMemo(() => searchGeneralSettings(generalQuery()));
+  const generalCounts = createMemo(() => countByCategory(generalResults()));
+  const generalSearching = () => generalQuery().trim() !== "";
+  let generalLayoutRef: HTMLDivElement | undefined;
+  let generalContentRef: HTMLDivElement | undefined;
+  let generalSearchRef: HTMLInputElement | undefined;
   createEffect(() => {
     const s = props.section;
     if (s) setActiveTab(resolveSettingsSection(s));
@@ -1589,7 +1605,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     hint: string;
   }) => (
     <>
-      <label class="settings-field">
+      <label class="settings-field" data-ac-setting={p.field}>
         <span class="settings-label">{p.label}</span>
         <input
           class="settings-input"
@@ -2439,6 +2455,15 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
+  // #2704 - which General category holds a blocking validation error (red dot cue).
+  const generalInvalid = createMemo((): Record<GeneralCategoryId, boolean> => ({
+    appearance: !!(validateScreenshotHotkey() || validateSidebarCompactHotkey() || validateRoomNumberMask()),
+    terminal: !!validateTypingHoldSeconds(),
+    agents: !!validateCoordinatorIdle(),
+    network: !!validateApiServerSettings(),
+    system: false,
+  }));
+
   const currentValidationError = (): string | null =>
     validateAgents() ??
     validateResources() ??
@@ -2571,7 +2596,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const renderWebRemoteSection = () => (
     <div class="settings-section">
       <div class="settings-section-title">Web Remote Access</div>
-      <label class="settings-checkbox-field">
+      <label data-ac-setting="webServerEnabled" class="settings-checkbox-field">
         <input
           type="checkbox"
           class="settings-checkbox"
@@ -2626,777 +2651,948 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     </div>
   );
 
+  // #2704 - General tab categories + search. All five panes stay mounted (inactive ones
+  // get `hidden`) so field drafts, hints, mint results and testids survive switching.
+  const generalPane = (id: GeneralCategoryId, children: JSX.Element) => (
+    <section
+      class="settings-general-pane"
+      hidden={generalSearching() || generalCategory() !== id}
+      data-ac-testid={`settings.general.pane.${id}`}
+    >
+      <h2 class="settings-general-cat-title">{generalCategoryLabel(id)}</h2>
+      {children}
+    </section>
+  );
+
+  const selectGeneralCategory = (id: GeneralCategoryId) => {
+    setGeneralQuery("");
+    setGeneralCategory(id);
+    if (generalContentRef) generalContentRef.scrollTop = 0;
+  };
+
+  const openGeneralSetting = (entry: GeneralSettingEntry) => {
+    setGeneralCategory(entry.category);
+    setGeneralQuery("");
+    queueMicrotask(() => {
+      const root = generalLayoutRef;
+      if (!root) return;
+      const target = root.querySelector<HTMLElement>(`[data-ac-setting="${entry.key}"]`);
+      if (!target) {
+        const pane = root.querySelector(`[data-ac-testid="settings.general.pane.${entry.category}"]`);
+        const title = Array.from(pane?.querySelectorAll(".settings-section-title") ?? []).find(
+          (el) => el.textContent?.trim() === entry.section,
+        );
+        title?.scrollIntoView?.({ block: "center" });
+        return;
+      }
+      target.scrollIntoView?.({ block: "center" });
+      target
+        .querySelector<HTMLElement>("input, select, textarea, button")
+        ?.focus({ preventScroll: true });
+      target.classList.add("settings-general-flash");
+      window.setTimeout(() => target.classList.remove("settings-general-flash"), 1200);
+    });
+  };
+
+  const generalResultButtons = () =>
+    Array.from(
+      generalContentRef?.querySelectorAll<HTMLButtonElement>(".settings-general-result") ?? [],
+    );
+
+  const onGeneralSearchKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      if (generalQuery() !== "") {
+        e.stopPropagation();
+        e.preventDefault();
+        setGeneralQuery("");
+      }
+    } else if (e.key === "Enter") {
+      const first = generalResults()[0];
+      if (first) {
+        e.preventDefault();
+        openGeneralSetting(first);
+      }
+    } else if (e.key === "ArrowDown") {
+      const first = generalResultButtons()[0];
+      if (first) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  };
+
+  const onGeneralResultKeyDown = (e: KeyboardEvent, index: number) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const buttons = generalResultButtons();
+    if (e.key === "ArrowUp" && index === 0) {
+      generalSearchRef?.focus();
+      return;
+    }
+    buttons[e.key === "ArrowDown" ? Math.min(index + 1, buttons.length - 1) : index - 1]?.focus();
+  };
+
+  const isActiveGeneralCategory = (id: GeneralCategoryId) =>
+    generalCategory() === id && !generalSearching();
+
   const renderGeneralTab = () => (
-    <>
-      <div class="settings-section">
-        <div class="settings-section-title">Shell</div>
-        <label class="settings-field">
-          <span class="settings-label">Default Shell (Complete path)</span>
-          <input
-            class="settings-input"
-            value={settings.data!.defaultShell}
-            onInput={(e) => updateField("defaultShell", e.currentTarget.value)}
-            data-ac-testid="settings.general.defaultShell"
-          />
-        </label>
-        <Show when={!isPlausibleCompleteExecutablePath(settings.data?.defaultShell ?? "")}>
-          <div
-            class="settings-hint settings-hint-error"
-            data-ac-testid="settings.general.defaultShell.warning"
-          >
-            {isWindows ? WINDOWS_DEFAULT_SHELL_HINT : POSIX_DEFAULT_SHELL_HINT}
-          </div>
-        </Show>
-        <label class="settings-field">
-          <span class="settings-label">Shell Arguments</span>
-          <input
-            class="settings-input"
-            value={settings.data!.defaultShellArgs.join(" ")}
-            onInput={(e) =>
-              updateField(
-                "defaultShellArgs",
-                e.currentTarget.value.split(" ").filter(Boolean)
-              )
-            }
-          />
-        </label>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">Window</div>
-        <label class="settings-field">
-          <span class="settings-label">App Theme</span>
-          <select
-            class="settings-input"
-            value={settings.data!.sidebarStyle ?? "noir-minimal"}
-            onChange={(e) => {
-              updateField("sidebarStyle", e.currentTarget.value);
-              document.documentElement.dataset.sidebarStyle = e.currentTarget.value;
-            }}
-          >
-            <option value="noir-minimal">Noir Minimal</option>
-            <option value="card-sections">Card Sections</option>
-            <option value="command-center">Command Center</option>
-            <option value="deep-space">Deep Space</option>
-            <option value="arctic-ops">Arctic Ops</option>
-            <option value="obsidian-mesh">Obsidian Mesh</option>
-            <option value="neon-circuit">Neon Circuit</option>
-          </select>
-        </label>
-        {railField({
-          field: "selectedRowRailWidth",
-          label: "Selected Row Bar Width",
-          testId: "settings.general.selectedRowRailWidth",
-          isValid: isValidRailWidth,
-          hint: "Not a valid width. Enter a whole number from 1 to 14, optionally followed by px, for example 9px. While this is invalid the bar shows the default 9px.",
-        })}
-        {railField({
-          field: "selectedRowRailColor",
-          label: "Selected Row Bar Color",
-          testId: "settings.general.selectedRowRailColor",
-          isValid: isValidRailColor,
-          hint: "Not a valid colour. Enter a hash followed by six hex digits, for example #FFFFFF. While this is invalid the bar shows the default #FFFFFF.",
-        })}
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.sidebarAlwaysOnTop}
-            onChange={(e) =>
-              updateField("sidebarAlwaysOnTop", e.currentTarget.checked)
-            }
-          />
-          <span>Sidebar always on top</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.raiseTerminalOnClick}
-            onChange={(e) =>
-              updateField("raiseTerminalOnClick", e.currentTarget.checked)
-            }
-          />
-          <span>Raise terminal when clicking sidebar</span>
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">Screenshot hotkey</span>
-          <input
-            class="settings-input settings-input-sm"
-            value={settings.data!.screenshotCaptureHotkey ?? "Ctrl+Q"}
-            onInput={(e) =>
-              updateField("screenshotCaptureHotkey", e.currentTarget.value)
-            }
-            data-ac-testid="settings.general.screenshotCaptureHotkey"
-          />
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">Compact sidebar hotkey</span>
-          <input
-            class="settings-input settings-input-sm"
-            readOnly
-            value={displaySidebarCompactHotkey()}
-            onFocus={() => setCapturingHotkey(true)}
-            onBlur={() => setCapturingHotkey(false)}
-            data-ac-testid="settings.general.sidebarCompactHotkey"
-          />
-          <Show when={hotkeyCaptureError()}>
-            {(message) => (
-              <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.sidebarCompactHotkey.error">
-                {message()}
-              </div>
-            )}
-          </Show>
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">Room number mask</span>
-          <input
-            class="settings-input settings-input-sm"
-            value={settings.data?.roomNumberMask ?? DEFAULT_ROOM_NUMBER_MASK}
-            onInput={(e) => updateField("roomNumberMask", e.currentTarget.value)}
-            data-ac-testid="settings.general.roomNumberMask"
-          />
-          <div class="settings-hint" data-ac-testid="settings.general.roomNumberMask.example">
-            {roomNumberMaskExample()}
-          </div>
-          <Show when={validateRoomNumberMask()}>
-            {(message) => (
-              <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.roomNumberMask.error">
-                {message()}
-              </div>
-            )}
-          </Show>
-        </label>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">On app restart</div>
-        <div class="settings-hint">
-          What AgentsCommander does with agents that were running when the app
-          was last closed. Each checkbox tries to bring back one class of agent, and the
-          matching text box is what AgentsCommander tries to type into the ones that were mid-task.
-          A session you restarted, or whose conversation you cleared from the phone, is never typed into, even when it comes back.
-          A text box does nothing on its own: if the checkbox for that class is
-          off, nothing in that class is woken and nothing is typed. Leave a text
-          box empty to type nothing into that class.
-        </div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.restoreCoordinatorWakeState}
-            onChange={(e) =>
-              updateField("restoreCoordinatorWakeState", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.restoreCoordinatorWakeState"
-          />
-          <span>On start, wake orchestrators that were awake when the app closed</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.restartResumeWakeWorkingAgents}
-            onChange={(e) =>
-              updateField("restartResumeWakeWorkingAgents", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.restartResumeWakeWorkingAgents"
-          />
-          <span>On start, wake agent replicas that were working when the app closed</span>
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">Type into orchestrators that were working</span>
-          <input
-            class="settings-input"
-            value={settings.data!.restartResumeOrchestratorPrompt}
-            onInput={(e) =>
-              updateField("restartResumeOrchestratorPrompt", e.currentTarget.value)
-            }
-            data-ac-testid="settings.general.restartResumeOrchestratorPrompt"
-          />
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">Type into agent replicas that were working</span>
-          <input
-            class="settings-input"
-            value={settings.data!.restartResumeAgentPrompt}
-            onInput={(e) =>
-              updateField("restartResumeAgentPrompt", e.currentTarget.value)
-            }
-            data-ac-testid="settings.general.restartResumeAgentPrompt"
-          />
-        </label>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">Typing hold</div>
-        <label class="settings-field">
-          <span class="settings-label">Hold message delivery after typing (seconds)</span>
-          <input
-            class="settings-input settings-input-sm"
-            type="number"
-            min={TYPING_HOLD_SECONDS_MIN}
-            max={TYPING_HOLD_SECONDS_MAX}
-            step="1"
-            value={typingHoldSecondsText()}
-            onInput={(e) => {
-              const raw = e.currentTarget.value;
-              setTypingHoldSecondsText(raw);
-              const value = parseTypingHoldSeconds(raw);
-              if (value !== null) updateField("typingHoldSeconds", value);
-            }}
-            data-ac-testid="settings.general.typingHoldSeconds"
-            data-ac-role="spinbutton"
-          />
-        </label>
-        <Show when={validateTypingHoldSeconds()}>
-          <div
-            class="settings-hint settings-hint-error"
-            data-ac-testid="settings.general.typingHoldSeconds.error"
-          >
-            {validateTypingHoldSeconds()}
-          </div>
-        </Show>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">Orchestrator idle</div>
-        <label class="settings-field">
-          <span class="settings-label">Badge turns yellow after (minutes)</span>
-          <input
-            class="settings-input settings-input-sm"
-            type="number"
-            min="1"
-            step="1"
-            value={settings.data!.coordinatorIdleBadgeYellowMinutes}
-            onInput={intFieldInput("coordinatorIdleBadgeYellowMinutes")}
-            data-ac-testid="settings.general.coordinatorIdleBadgeYellowMinutes"
-            data-ac-role="spinbutton"
-          />
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">Badge turns red after (minutes)</span>
-          <input
-            class="settings-input settings-input-sm"
-            type="number"
-            min="1"
-            step="1"
-            value={settings.data!.coordinatorIdleBadgeRedMinutes}
-            onInput={intFieldInput("coordinatorIdleBadgeRedMinutes")}
-            data-ac-testid="settings.general.coordinatorIdleBadgeRedMinutes"
-            data-ac-role="spinbutton"
-          />
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.coordinatorAutoCloseEnabled}
-            onChange={(e) =>
-              updateField("coordinatorAutoCloseEnabled", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.coordinatorAutoCloseEnabled"
-          />
-          <span>Auto-close idle teams (terminate sessions to free resources)</span>
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">Auto-close after (minutes of total silence)</span>
-          <input
-            class="settings-input settings-input-sm"
-            type="number"
-            min="1"
-            step="1"
-            disabled={!settings.data!.coordinatorAutoCloseEnabled}
-            value={settings.data!.coordinatorAutoCloseMinutes}
-            onInput={intFieldInput("coordinatorAutoCloseMinutes")}
-            data-ac-testid="settings.general.coordinatorAutoCloseMinutes"
-            data-ac-role="spinbutton"
-          />
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.coordinatorAutoCloseSkipTelegramAssigned}
-            disabled={!settings.data!.coordinatorAutoCloseEnabled}
-            onChange={(e) =>
-              updateField(
-                "coordinatorAutoCloseSkipTelegramAssigned",
-                e.currentTarget.checked,
-              )
-            }
-            data-ac-testid="settings.general.coordinatorAutoCloseSkipTelegramAssigned"
-          />
-          <span>Skip Telegram-assigned sessions during auto-close</span>
-        </label>
-        <div class="settings-hint">
-          The idle badge shows minutes since your last message to an orchestrator
-          (green below yellow, yellow up to red, red beyond). Auto-close
-          terminates a team's sessions after the whole team is silent for the
-          configured minutes; the orchestrator stays as a dormant row you can
-          reopen by messaging it.
-        </div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.coordinatorCascadeCloseEnabled}
-            onChange={(e) =>
-              updateField("coordinatorCascadeCloseEnabled", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.coordinatorCascadeCloseEnabled"
-          />
-          <span>Always close team members when manually closing Orchestrator</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.npmUpdateNotificationsEnabled}
-            onChange={(e) =>
-              updateField("npmUpdateNotificationsEnabled", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.npmUpdateNotificationsEnabled"
-          />
-          <span>Notify me when a new version is available</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.remoteBlockingMenusEnabled}
-            onChange={(e) =>
-              updateField("remoteBlockingMenusEnabled", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.remoteBlockingMenusEnabled"
-          />
-          <span>Download blocking-menu pattern updates from GitHub</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.autoSelfClearEnabled}
-            onChange={(e) =>
-              updateField("autoSelfClearEnabled", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.autoSelfClearEnabled"
-          />
-          <span>
-            Auto-clear and hand off context after 3 closed topics (on for
-            orchestrators and Root; other agents opt in per agent)
-          </span>
-        </label>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">Container Coding Agents</div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.containerCredentialsFromHost}
-            disabled={saving()}
-            onChange={(e) =>
-              updateField("containerCredentialsFromHost", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.containerCredentialsFromHost"
-          />
-          <span>Reuse host login for container coding agents</span>
-        </label>
-        <div
-          class="settings-hint"
-          data-ac-testid="settings.general.containerCredentialsFromHost.hint"
-        >
-          In progress: a container coding agent cannot reach your repos yet (#935), so keep repo
-          work on the Local runtime. On by default. When a coding agent runs under the Container
-          runtime, AC copies your host credential file for that agent (for Claude,
-          ~/.claude/.credentials.json) into the container at launch and deletes it when the
-          session stops. So the agent starts signed in instead of stopping at its first-run
-          prompts, AC also writes that agent's first-run state inside the container: onboarding
-          is marked complete, and the container's
-          /workspace folder is marked as trusted. That means AC answers the "do you trust this
-          folder?" safety prompt on your behalf, for that agent's replica folder, which AC
-          mounts into the container. Your host config is never modified. Turn this off to supply
-          credentials yourself (for example a CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is
-          copied and nothing is marked. Host and containers share one login, so a token refresh
-          in one place can require re-login in another.
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">Terminal snapshots</div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.terminalSnapshotsEnabled}
-            disabled={saving()}
-            onChange={(e) =>
-              updateField("terminalSnapshotsEnabled", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.terminalSnapshotsEnabled"
-            data-ac-role="checkbox"
-            data-ac-state={
-              settings.data!.terminalSnapshotsEnabled ? "checked" : "unchecked"
-            }
-          />
-          <span>Allow authorized terminal snapshots</span>
-        </label>
-        <div
-          class="settings-hint settings-hint-warning"
-          data-ac-testid="settings.general.terminalSnapshotsEnabled.warning"
-        >
-          Allow authorized Root Agents and same-room Orchestrators to capture live terminal
-          contents as JSON or PNG. Terminal screens can contain passwords, tokens, source code,
-          prompts, and personal data. Enabled by default.
-        </div>
-      </div>
-
-      {renderWebRemoteSection()}
-
-      <div class="settings-section">
-        <div class="settings-section-title">Control Plane API</div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={apiServerChecked()}
-            disabled={apiServerBusy()}
-            onChange={(e) => {
-              void handleApiServerToggle(e.currentTarget.checked);
-            }}
-            data-ac-testid="settings.general.apiServerEnabled"
-            data-ac-role="checkbox"
-            data-ac-state={
-              apiServerBusy()
-                ? "updating"
-                : apiServerChecked()
-                  ? "checked"
-                  : "unchecked"
-            }
-          />
-          <span>Enable API server</span>
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">IP/address</span>
-          <input
-            class="settings-input"
-            value={settings.data!.apiServerBind}
-            onInput={(e) => updateField("apiServerBind", e.currentTarget.value)}
-            placeholder="127.0.0.1"
-            data-ac-testid="settings.general.apiServerBind"
-            data-ac-role="textbox"
-          />
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">Port</span>
-          <input
-            class="settings-input settings-input-sm"
-            type="number"
-            min="1"
-            max="65535"
-            step="1"
-            value={settings.data!.apiServerPort}
-            onInput={(e) => {
-              const raw = e.currentTarget.value.trim();
-              const value = raw === "" ? 0 : Number(e.currentTarget.value);
-              updateField(
-                "apiServerPort",
-                Number.isFinite(value) ? Math.trunc(value) : 0,
-              );
-            }}
-            data-ac-testid="settings.general.apiServerPort"
-            data-ac-role="spinbutton"
-          />
-        </label>
-        <Show when={apiServerBindWarning()}>
-          <div
-            class="settings-hint settings-hint-warning"
-            data-ac-testid="settings.general.apiServerBind.warning"
-            data-ac-role="status"
-          >
-            Non-loopback binds can expose the API beyond this machine. Use firewall
-            rules; API client tokens are the trust boundary.
-          </div>
-        </Show>
-        <div
-          class="settings-hint"
-          data-ac-testid="settings.general.apiServerStatus"
-          data-ac-role="status"
-          data-ac-state={apiServerBusy() ? "updating" : apiServerRunning() ? "running" : "stopped"}
-        >
-          {apiServerBusy()
-            ? "Updating..."
-            : apiServerRunning()
-              ? `Running on ${apiServerStatusAddress()}`
-              : "Stopped"}
-        </div>
-        <div
-          class="settings-api-client-mint"
-          data-ac-testid="settings.apiClientMint.surface"
-          data-ac-role="region"
-        >
-          <div class="settings-subsection-title">API client credential</div>
-          <label class="settings-field">
-            <span class="settings-label">Replica root</span>
-            <select
-              class="settings-input"
-              value={apiClientMintRoot()}
-              disabled={apiClientRootOptions().length === 0 || apiClientMinting()}
-              onChange={(e) => {
-                setApiClientMintError("");
-                setApiClientMintRoot(e.currentTarget.value);
+    <div class="settings-general" ref={generalLayoutRef} data-ac-testid="settings.general.layout">
+      <nav class="settings-general-nav" aria-label="General settings categories">
+        <input
+          type="search"
+          class="settings-general-search"
+          placeholder="Search all General settings…"
+          aria-label="Search General settings"
+          value={generalQuery()}
+          onInput={(e) => setGeneralQuery(e.currentTarget.value)}
+          on:keydown={onGeneralSearchKeyDown}
+          ref={generalSearchRef}
+          data-ac-testid="settings.general.search"
+        />
+        <For each={GENERAL_CATEGORIES}>
+          {(cat) => (
+            <button
+              type="button"
+              class="settings-general-cat"
+              classList={{
+                active: isActiveGeneralCategory(cat.id),
+                "is-empty": generalSearching() && generalCounts()[cat.id] === 0,
               }}
-              data-ac-testid="settings.apiClientMint.root"
-              data-ac-role="combobox"
-              data-ac-state={apiClientRootOptions().length === 0 ? "empty" : "ready"}
+              aria-current={isActiveGeneralCategory(cat.id) ? "page" : undefined}
+              data-ac-state={generalInvalid()[cat.id] ? "invalid" : undefined}
+              onClick={() => selectGeneralCategory(cat.id)}
+              data-ac-testid={`settings.general.category.${cat.id}`}
             >
-              <For each={apiClientRootOptions()}>
-                {(option) => (
-                  <option value={option.path}>
-                    {option.label}
-                  </option>
+              <span class="settings-general-cat-label">{cat.label}</span>
+              <Show when={generalSearching()}>
+                <span class="settings-general-cat-count">{generalCounts()[cat.id]}</span>
+              </Show>
+              <Show when={generalInvalid()[cat.id]}>
+                <span class="settings-general-cat-invalid-dot" aria-hidden="true" />
+                <span class="settings-visually-hidden">, has an invalid value</span>
+              </Show>
+            </button>
+          )}
+        </For>
+      </nav>
+      <div class="settings-general-content" ref={generalContentRef}>
+        <Show when={generalSearching()}>
+          <Show
+            when={generalResults().length > 0}
+            fallback={
+              <p class="settings-general-empty" data-ac-testid="settings.general.search.empty">
+                No General settings match “{generalQuery().trim()}”.
+              </p>
+            }
+          >
+            <p class="settings-general-result-count">
+              {generalResults().length} {generalResults().length === 1 ? "result" : "results"}
+            </p>
+            <ul role="list" class="settings-general-results">
+              <For each={generalResults()}>
+                {(entry, i) => (
+                  <li>
+                    <button
+                      type="button"
+                      class="settings-general-result"
+                      onClick={() => openGeneralSetting(entry)}
+                      onKeyDown={(e) => onGeneralResultKeyDown(e, i())}
+                      data-ac-testid={`settings.general.result.${entry.key}`}
+                    >
+                      <span class="settings-general-result-path">
+                        {generalCategoryLabel(entry.category)} › {entry.section}
+                      </span>
+                      <span>{entry.label}</span>
+                    </button>
+                  </li>
                 )}
               </For>
-            </select>
-          </label>
-          <Show when={apiClientRootOptions().length === 0}>
-            <div
-              class="settings-hint"
-              data-ac-testid="settings.apiClientMint.noRoots"
-              data-ac-role="status"
-            >
-              Load a project with room replicas before minting an API client.
-            </div>
+            </ul>
           </Show>
-          <div class="settings-field">
-            <span class="settings-label">Scopes</span>
-            <div class="settings-api-client-scopes">
-              <For each={API_CLIENT_SCOPE_OPTIONS}>
-                {(scope) => (
-                  <label class="settings-checkbox-field settings-api-client-scope">
-                    <input
-                      type="checkbox"
-                      class="settings-checkbox"
-                      checked={apiClientMintScopes().includes(scope.value)}
-                      disabled={apiClientMinting()}
-                      onChange={(e) => updateApiClientScope(scope.value, e.currentTarget.checked)}
-                      data-ac-testid={`settings.apiClientMint.scope.${scope.value}`}
-                      data-ac-role="checkbox"
-                      data-ac-state={
-                        apiClientMintScopes().includes(scope.value) ? "checked" : "unchecked"
-                      }
-                    />
-                    <span>{scope.label}</span>
-                  </label>
-                )}
-              </For>
+        </Show>
+          {generalPane("appearance", <>
+            <div class="settings-section">
+              <div class="settings-section-title">Window</div>
+              <label data-ac-setting="sidebarStyle" class="settings-field">
+                <span class="settings-label">App Theme</span>
+                <select
+                  class="settings-input"
+                  value={settings.data!.sidebarStyle ?? "noir-minimal"}
+                  onChange={(e) => {
+                    updateField("sidebarStyle", e.currentTarget.value);
+                    document.documentElement.dataset.sidebarStyle = e.currentTarget.value;
+                  }}
+                >
+                  <option value="noir-minimal">Noir Minimal</option>
+                  <option value="card-sections">Card Sections</option>
+                  <option value="command-center">Command Center</option>
+                  <option value="deep-space">Deep Space</option>
+                  <option value="arctic-ops">Arctic Ops</option>
+                  <option value="obsidian-mesh">Obsidian Mesh</option>
+                  <option value="neon-circuit">Neon Circuit</option>
+                </select>
+              </label>
+              {railField({
+                field: "selectedRowRailWidth",
+                label: "Selected Row Bar Width",
+                testId: "settings.general.selectedRowRailWidth",
+                isValid: isValidRailWidth,
+                hint: "Not a valid width. Enter a whole number from 1 to 14, optionally followed by px, for example 9px. While this is invalid the bar shows the default 9px.",
+              })}
+              {railField({
+                field: "selectedRowRailColor",
+                label: "Selected Row Bar Color",
+                testId: "settings.general.selectedRowRailColor",
+                isValid: isValidRailColor,
+                hint: "Not a valid colour. Enter a hash followed by six hex digits, for example #FFFFFF. While this is invalid the bar shows the default #FFFFFF.",
+              })}
+              <label data-ac-setting="sidebarAlwaysOnTop" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.sidebarAlwaysOnTop}
+                  onChange={(e) =>
+                    updateField("sidebarAlwaysOnTop", e.currentTarget.checked)
+                  }
+                />
+                <span>Sidebar always on top</span>
+              </label>
+              <label data-ac-setting="raiseTerminalOnClick" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.raiseTerminalOnClick}
+                  onChange={(e) =>
+                    updateField("raiseTerminalOnClick", e.currentTarget.checked)
+                  }
+                />
+                <span>Raise terminal when clicking sidebar</span>
+              </label>
+              <label data-ac-setting="roomNumberMask" class="settings-field">
+                <span class="settings-label">Room number mask</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  value={settings.data?.roomNumberMask ?? DEFAULT_ROOM_NUMBER_MASK}
+                  onInput={(e) => updateField("roomNumberMask", e.currentTarget.value)}
+                  data-ac-testid="settings.general.roomNumberMask"
+                />
+                <div class="settings-hint" data-ac-testid="settings.general.roomNumberMask.example">
+                  {roomNumberMaskExample()}
+                </div>
+                <Show when={validateRoomNumberMask()}>
+                  {(message) => (
+                    <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.roomNumberMask.error">
+                      {message()}
+                    </div>
+                  )}
+                </Show>
+              </label>
             </div>
-          </div>
-          <label class="settings-field">
-            <span class="settings-label">Label</span>
-            <input
-              class="settings-input"
-              value={apiClientMintLabel()}
-              disabled={apiClientMinting()}
-              onInput={(e) => {
-                setApiClientMintError("");
-                setApiClientMintLabel(e.currentTarget.value);
-              }}
-              placeholder="optional audit label"
-              data-ac-testid="settings.apiClientMint.label"
-              data-ac-role="textbox"
-            />
-          </label>
-          <label class="settings-field">
-            <span class="settings-label">Expiry</span>
-            <select
-              class="settings-input"
-              value={apiClientMintExpiry()}
-              disabled={apiClientMinting()}
-              onChange={(e) => {
-                setApiClientMintError("");
-                setApiClientMintExpiry(e.currentTarget.value as ApiClientExpiryOption);
-              }}
-              data-ac-testid="settings.apiClientMint.expiry"
-              data-ac-role="combobox"
-            >
-              <For each={API_CLIENT_EXPIRY_OPTIONS}>
-                {(option) => <option value={option.value}>{option.label}</option>}
-              </For>
-            </select>
-          </label>
-          <button
-            class="settings-add-btn settings-api-client-mint-btn"
-            onClick={() => void handleMintApiClient()}
-            disabled={
-              apiClientMinting() ||
-              apiClientRootOptions().length === 0 ||
-              !selectedApiClientScopesValid()
-            }
-            data-ac-testid="settings.apiClientMint.submit"
-            data-ac-role="button"
-            data-ac-state={apiClientMinting() ? "minting" : "ready"}
-          >
-            {apiClientMinting() ? "Minting..." : "Mint credential"}
-          </button>
-          <Show when={apiClientMintError()}>
-            <div
-              class="settings-api-client-error"
-              role="alert"
-              data-ac-testid="settings.apiClientMint.error"
-              data-ac-role="alert"
-            >
-              {apiClientMintError()}
+
+            <div class="settings-section">
+              <div class="settings-section-title">Hotkeys</div>
+              <label data-ac-setting="screenshotCaptureHotkey" class="settings-field">
+                <span class="settings-label">Screenshot hotkey</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  value={settings.data!.screenshotCaptureHotkey ?? "Ctrl+Q"}
+                  onInput={(e) =>
+                    updateField("screenshotCaptureHotkey", e.currentTarget.value)
+                  }
+                  data-ac-testid="settings.general.screenshotCaptureHotkey"
+                />
+              </label>
+              <label data-ac-setting="sidebarCompactHotkey" class="settings-field">
+                <span class="settings-label">Compact sidebar hotkey</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  readOnly
+                  value={displaySidebarCompactHotkey()}
+                  onFocus={() => setCapturingHotkey(true)}
+                  onBlur={() => setCapturingHotkey(false)}
+                  data-ac-testid="settings.general.sidebarCompactHotkey"
+                />
+                <Show when={hotkeyCaptureError()}>
+                  {(message) => (
+                    <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.sidebarCompactHotkey.error">
+                      {message()}
+                    </div>
+                  )}
+                </Show>
+              </label>
             </div>
-          </Show>
-          <Show when={apiClientMintResult()}>
-            {(result) => (
-              <div
-                class="settings-api-client-secret"
-                data-ac-testid="settings.apiClientMint.result"
-                data-ac-role="surface"
-              >
+
+            <div class="settings-section">
+              <div class="settings-section-title">Notifications</div>
+              <label data-ac-setting="soundsEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.soundsEnabled}
+                  onChange={(e) =>
+                    updateField("soundsEnabled", e.currentTarget.checked)
+                  }
+                />
+                <span>Enable app sounds (master switch)</span>
+              </label>
+              <label data-ac-setting="teamIdleBeepEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.teamIdleBeepEnabled}
+                  disabled={!settings.data!.soundsEnabled}
+                  onChange={(e) =>
+                    updateField("teamIdleBeepEnabled", e.currentTarget.checked)
+                  }
+                />
+                <span>Beep when a team finishes working (all agents idle)</span>
+              </label>
+            </div>
+          </>)}
+          {generalPane("terminal", <>
+            <div class="settings-section">
+              <div class="settings-section-title">Shell</div>
+              <label data-ac-setting="defaultShell" class="settings-field">
+                <span class="settings-label">Default Shell (Complete path)</span>
+                <input
+                  class="settings-input"
+                  value={settings.data!.defaultShell}
+                  onInput={(e) => updateField("defaultShell", e.currentTarget.value)}
+                  data-ac-testid="settings.general.defaultShell"
+                />
+              </label>
+              <Show when={!isPlausibleCompleteExecutablePath(settings.data?.defaultShell ?? "")}>
                 <div
-                  class="settings-api-client-warning"
-                  data-ac-testid="settings.apiClientMint.warning"
+                  class="settings-hint settings-hint-error"
+                  data-ac-testid="settings.general.defaultShell.warning"
+                >
+                  {isWindows ? WINDOWS_DEFAULT_SHELL_HINT : POSIX_DEFAULT_SHELL_HINT}
+                </div>
+              </Show>
+              <label data-ac-setting="defaultShellArgs" class="settings-field">
+                <span class="settings-label">Shell Arguments</span>
+                <input
+                  class="settings-input"
+                  value={settings.data!.defaultShellArgs.join(" ")}
+                  onInput={(e) =>
+                    updateField(
+                      "defaultShellArgs",
+                      e.currentTarget.value.split(" ").filter(Boolean)
+                    )
+                  }
+                />
+              </label>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-title">Typing hold</div>
+              <label data-ac-setting="typingHoldSeconds" class="settings-field">
+                <span class="settings-label">Hold message delivery after typing (seconds)</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  type="number"
+                  min={TYPING_HOLD_SECONDS_MIN}
+                  max={TYPING_HOLD_SECONDS_MAX}
+                  step="1"
+                  value={typingHoldSecondsText()}
+                  onInput={(e) => {
+                    const raw = e.currentTarget.value;
+                    setTypingHoldSecondsText(raw);
+                    const value = parseTypingHoldSeconds(raw);
+                    if (value !== null) updateField("typingHoldSeconds", value);
+                  }}
+                  data-ac-testid="settings.general.typingHoldSeconds"
+                  data-ac-role="spinbutton"
+                />
+              </label>
+              <Show when={validateTypingHoldSeconds()}>
+                <div
+                  class="settings-hint settings-hint-error"
+                  data-ac-testid="settings.general.typingHoldSeconds.error"
+                >
+                  {validateTypingHoldSeconds()}
+                </div>
+              </Show>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-title">Terminal snapshots</div>
+              <label data-ac-setting="terminalSnapshotsEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.terminalSnapshotsEnabled}
+                  disabled={saving()}
+                  onChange={(e) =>
+                    updateField("terminalSnapshotsEnabled", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.terminalSnapshotsEnabled"
+                  data-ac-role="checkbox"
+                  data-ac-state={
+                    settings.data!.terminalSnapshotsEnabled ? "checked" : "unchecked"
+                  }
+                />
+                <span>Allow authorized terminal snapshots</span>
+              </label>
+              <div
+                class="settings-hint settings-hint-warning"
+                data-ac-testid="settings.general.terminalSnapshotsEnabled.warning"
+              >
+                Allow authorized Root Agents and same-room Orchestrators to capture live terminal
+                contents as JSON or PNG. Terminal screens can contain passwords, tokens, source code,
+                prompts, and personal data. Enabled by default.
+              </div>
+            </div>
+          </>)}
+          {generalPane("agents", <>
+            <div class="settings-section">
+              <div class="settings-section-title">On app restart</div>
+              <div class="settings-hint">
+                What AgentsCommander does with agents that were running when the app
+                was last closed. Each checkbox tries to bring back one class of agent, and the
+                matching text box is what AgentsCommander tries to type into the ones that were mid-task.
+                A session you restarted, or whose conversation you cleared from the phone, is never typed into, even when it comes back.
+                A text box does nothing on its own: if the checkbox for that class is
+                off, nothing in that class is woken and nothing is typed. Leave a text
+                box empty to type nothing into that class.
+              </div>
+              <label data-ac-setting="restoreCoordinatorWakeState" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.restoreCoordinatorWakeState}
+                  onChange={(e) =>
+                    updateField("restoreCoordinatorWakeState", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.restoreCoordinatorWakeState"
+                />
+                <span>On start, wake orchestrators that were awake when the app closed</span>
+              </label>
+              <label data-ac-setting="restartResumeWakeWorkingAgents" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.restartResumeWakeWorkingAgents}
+                  onChange={(e) =>
+                    updateField("restartResumeWakeWorkingAgents", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.restartResumeWakeWorkingAgents"
+                />
+                <span>On start, wake agent replicas that were working when the app closed</span>
+              </label>
+              <label data-ac-setting="restartResumeOrchestratorPrompt" class="settings-field">
+                <span class="settings-label">Type into orchestrators that were working</span>
+                <input
+                  class="settings-input"
+                  value={settings.data!.restartResumeOrchestratorPrompt}
+                  onInput={(e) =>
+                    updateField("restartResumeOrchestratorPrompt", e.currentTarget.value)
+                  }
+                  data-ac-testid="settings.general.restartResumeOrchestratorPrompt"
+                />
+              </label>
+              <label data-ac-setting="restartResumeAgentPrompt" class="settings-field">
+                <span class="settings-label">Type into agent replicas that were working</span>
+                <input
+                  class="settings-input"
+                  value={settings.data!.restartResumeAgentPrompt}
+                  onInput={(e) =>
+                    updateField("restartResumeAgentPrompt", e.currentTarget.value)
+                  }
+                  data-ac-testid="settings.general.restartResumeAgentPrompt"
+                />
+              </label>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-title">Orchestrator idle</div>
+              <label data-ac-setting="coordinatorIdleBadgeYellowMinutes" class="settings-field">
+                <span class="settings-label">Badge turns yellow after (minutes)</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={settings.data!.coordinatorIdleBadgeYellowMinutes}
+                  onInput={intFieldInput("coordinatorIdleBadgeYellowMinutes")}
+                  data-ac-testid="settings.general.coordinatorIdleBadgeYellowMinutes"
+                  data-ac-role="spinbutton"
+                />
+              </label>
+              <label data-ac-setting="coordinatorIdleBadgeRedMinutes" class="settings-field">
+                <span class="settings-label">Badge turns red after (minutes)</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={settings.data!.coordinatorIdleBadgeRedMinutes}
+                  onInput={intFieldInput("coordinatorIdleBadgeRedMinutes")}
+                  data-ac-testid="settings.general.coordinatorIdleBadgeRedMinutes"
+                  data-ac-role="spinbutton"
+                />
+              </label>
+              <label data-ac-setting="coordinatorAutoCloseEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.coordinatorAutoCloseEnabled}
+                  onChange={(e) =>
+                    updateField("coordinatorAutoCloseEnabled", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.coordinatorAutoCloseEnabled"
+                />
+                <span>Auto-close idle teams (terminate sessions to free resources)</span>
+              </label>
+              <label data-ac-setting="coordinatorAutoCloseMinutes" class="settings-field">
+                <span class="settings-label">Auto-close after (minutes of total silence)</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  type="number"
+                  min="1"
+                  step="1"
+                  disabled={!settings.data!.coordinatorAutoCloseEnabled}
+                  value={settings.data!.coordinatorAutoCloseMinutes}
+                  onInput={intFieldInput("coordinatorAutoCloseMinutes")}
+                  data-ac-testid="settings.general.coordinatorAutoCloseMinutes"
+                  data-ac-role="spinbutton"
+                />
+              </label>
+              <label data-ac-setting="coordinatorAutoCloseSkipTelegramAssigned" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.coordinatorAutoCloseSkipTelegramAssigned}
+                  disabled={!settings.data!.coordinatorAutoCloseEnabled}
+                  onChange={(e) =>
+                    updateField(
+                      "coordinatorAutoCloseSkipTelegramAssigned",
+                      e.currentTarget.checked,
+                    )
+                  }
+                  data-ac-testid="settings.general.coordinatorAutoCloseSkipTelegramAssigned"
+                />
+                <span>Skip Telegram-assigned sessions during auto-close</span>
+              </label>
+              <div class="settings-hint">
+                The idle badge shows minutes since your last message to an orchestrator
+                (green below yellow, yellow up to red, red beyond). Auto-close
+                terminates a team's sessions after the whole team is silent for the
+                configured minutes; the orchestrator stays as a dormant row you can
+                reopen by messaging it.
+              </div>
+              <label data-ac-setting="coordinatorCascadeCloseEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.coordinatorCascadeCloseEnabled}
+                  onChange={(e) =>
+                    updateField("coordinatorCascadeCloseEnabled", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.coordinatorCascadeCloseEnabled"
+                />
+                <span>Always close team members when manually closing Orchestrator</span>
+              </label>
+              <label data-ac-setting="autoSelfClearEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.autoSelfClearEnabled}
+                  onChange={(e) =>
+                    updateField("autoSelfClearEnabled", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.autoSelfClearEnabled"
+                />
+                <span>
+                  Auto-clear and hand off context after 3 closed topics (on for
+                  orchestrators and Root; other agents opt in per agent)
+                </span>
+              </label>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-title">Container Coding Agents</div>
+              <label data-ac-setting="containerCredentialsFromHost" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.containerCredentialsFromHost}
+                  disabled={saving()}
+                  onChange={(e) =>
+                    updateField("containerCredentialsFromHost", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.containerCredentialsFromHost"
+                />
+                <span>Reuse host login for container coding agents</span>
+              </label>
+              <div
+                class="settings-hint"
+                data-ac-testid="settings.general.containerCredentialsFromHost.hint"
+              >
+                In progress: a container coding agent cannot reach your repos yet (#935), so keep repo
+                work on the Local runtime. On by default. When a coding agent runs under the Container
+                runtime, AC copies your host credential file for that agent (for Claude,
+                ~/.claude/.credentials.json) into the container at launch and deletes it when the
+                session stops. So the agent starts signed in instead of stopping at its first-run
+                prompts, AC also writes that agent's first-run state inside the container: onboarding
+                is marked complete, and the container's
+                /workspace folder is marked as trusted. That means AC answers the "do you trust this
+                folder?" safety prompt on your behalf, for that agent's replica folder, which AC
+                mounts into the container. Your host config is never modified. Turn this off to supply
+                credentials yourself (for example a CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is
+                copied and nothing is marked. Host and containers share one login, so a token refresh
+                in one place can require re-login in another.
+              </div>
+            </div>
+          </>)}
+          {generalPane("network", <>
+            <div class="settings-section">
+              <div class="settings-section-title">Control Plane API</div>
+              <label data-ac-setting="apiServerEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={apiServerChecked()}
+                  disabled={apiServerBusy()}
+                  onChange={(e) => {
+                    void handleApiServerToggle(e.currentTarget.checked);
+                  }}
+                  data-ac-testid="settings.general.apiServerEnabled"
+                  data-ac-role="checkbox"
+                  data-ac-state={
+                    apiServerBusy()
+                      ? "updating"
+                      : apiServerChecked()
+                        ? "checked"
+                        : "unchecked"
+                  }
+                />
+                <span>Enable API server</span>
+              </label>
+              <label data-ac-setting="apiServerBind" class="settings-field">
+                <span class="settings-label">IP/address</span>
+                <input
+                  class="settings-input"
+                  value={settings.data!.apiServerBind}
+                  onInput={(e) => updateField("apiServerBind", e.currentTarget.value)}
+                  placeholder="127.0.0.1"
+                  data-ac-testid="settings.general.apiServerBind"
+                  data-ac-role="textbox"
+                />
+              </label>
+              <label data-ac-setting="apiServerPort" class="settings-field">
+                <span class="settings-label">Port</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  type="number"
+                  min="1"
+                  max="65535"
+                  step="1"
+                  value={settings.data!.apiServerPort}
+                  onInput={(e) => {
+                    const raw = e.currentTarget.value.trim();
+                    const value = raw === "" ? 0 : Number(e.currentTarget.value);
+                    updateField(
+                      "apiServerPort",
+                      Number.isFinite(value) ? Math.trunc(value) : 0,
+                    );
+                  }}
+                  data-ac-testid="settings.general.apiServerPort"
+                  data-ac-role="spinbutton"
+                />
+              </label>
+              <Show when={apiServerBindWarning()}>
+                <div
+                  class="settings-hint settings-hint-warning"
+                  data-ac-testid="settings.general.apiServerBind.warning"
                   data-ac-role="status"
                 >
-                  Shown once. Store this token now; it cannot be recovered later.
+                  Non-loopback binds can expose the API beyond this machine. Use firewall
+                  rules; API client tokens are the trust boundary.
                 </div>
-                <label class="settings-field">
-                  <span class="settings-label">Token</span>
-                  <div class="settings-api-client-token-row">
-                    <input
-                      class="settings-input settings-api-client-token"
-                      readOnly
-                      value={result().token}
-                      data-ac-testid="settings.apiClientMint.token"
-                      data-ac-role="textbox"
-                    />
-                    <button
-                      class="settings-add-btn"
-                      onClick={() => void copyApiClientToken()}
-                      data-ac-testid="settings.apiClientMint.copy"
-                      data-ac-role="button"
-                      data-ac-state={apiClientSecretCopied() ? "copied" : "ready"}
-                    >
-                      {apiClientSecretCopied() ? "Copied" : "Copy"}
-                    </button>
-                  </div>
-                </label>
-                <dl class="settings-api-client-result-grid">
-                  <div>
-                    <dt>Client ID</dt>
-                    <dd data-ac-testid="settings.apiClientMint.clientId">{result().clientId}</dd>
-                  </div>
-                  <div>
-                    <dt>Bound FQN</dt>
-                    <dd data-ac-testid="settings.apiClientMint.boundFqn">{result().boundFqn}</dd>
-                  </div>
-                  <div>
-                    <dt>Expires</dt>
-                    <dd data-ac-testid="settings.apiClientMint.expiresAt">
-                      {result().expiresAt ?? "No expiry"}
-                    </dd>
-                  </div>
-                </dl>
-                <button
-                  class="settings-add-btn"
-                  onClick={clearApiClientSecret}
-                  data-ac-testid="settings.apiClientMint.clear"
-                  data-ac-role="button"
-                >
-                  Clear secret
-                </button>
+              </Show>
+              <div
+                class="settings-hint"
+                data-ac-testid="settings.general.apiServerStatus"
+                data-ac-role="status"
+                data-ac-state={apiServerBusy() ? "updating" : apiServerRunning() ? "running" : "stopped"}
+              >
+                {apiServerBusy()
+                  ? "Updating..."
+                  : apiServerRunning()
+                    ? `Running on ${apiServerStatusAddress()}`
+                    : "Stopped"}
               </div>
-            )}
-          </Show>
-        </div>
-      </div>
+              <div
+                class="settings-api-client-mint"
+                data-ac-testid="settings.apiClientMint.surface"
+                data-ac-role="region"
+              >
+                <div class="settings-subsection-title">API client credential</div>
+                <label data-ac-setting="apiClientMintRoot" class="settings-field">
+                  <span class="settings-label">Replica root</span>
+                  <select
+                    class="settings-input"
+                    value={apiClientMintRoot()}
+                    disabled={apiClientRootOptions().length === 0 || apiClientMinting()}
+                    onChange={(e) => {
+                      setApiClientMintError("");
+                      setApiClientMintRoot(e.currentTarget.value);
+                    }}
+                    data-ac-testid="settings.apiClientMint.root"
+                    data-ac-role="combobox"
+                    data-ac-state={apiClientRootOptions().length === 0 ? "empty" : "ready"}
+                  >
+                    <For each={apiClientRootOptions()}>
+                      {(option) => (
+                        <option value={option.path}>
+                          {option.label}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                </label>
+                <Show when={apiClientRootOptions().length === 0}>
+                  <div
+                    class="settings-hint"
+                    data-ac-testid="settings.apiClientMint.noRoots"
+                    data-ac-role="status"
+                  >
+                    Load a project with room replicas before minting an API client.
+                  </div>
+                </Show>
+                <div class="settings-field" data-ac-setting="apiClientMintScopes">
+                  <span class="settings-label">Scopes</span>
+                  <div class="settings-api-client-scopes">
+                    <For each={API_CLIENT_SCOPE_OPTIONS}>
+                      {(scope) => (
+                        <label class="settings-checkbox-field settings-api-client-scope">
+                          <input
+                            type="checkbox"
+                            class="settings-checkbox"
+                            checked={apiClientMintScopes().includes(scope.value)}
+                            disabled={apiClientMinting()}
+                            onChange={(e) => updateApiClientScope(scope.value, e.currentTarget.checked)}
+                            data-ac-testid={`settings.apiClientMint.scope.${scope.value}`}
+                            data-ac-role="checkbox"
+                            data-ac-state={
+                              apiClientMintScopes().includes(scope.value) ? "checked" : "unchecked"
+                            }
+                          />
+                          <span>{scope.label}</span>
+                        </label>
+                      )}
+                    </For>
+                  </div>
+                </div>
+                <label data-ac-setting="apiClientMintLabel" class="settings-field">
+                  <span class="settings-label">Label</span>
+                  <input
+                    class="settings-input"
+                    value={apiClientMintLabel()}
+                    disabled={apiClientMinting()}
+                    onInput={(e) => {
+                      setApiClientMintError("");
+                      setApiClientMintLabel(e.currentTarget.value);
+                    }}
+                    placeholder="optional audit label"
+                    data-ac-testid="settings.apiClientMint.label"
+                    data-ac-role="textbox"
+                  />
+                </label>
+                <label data-ac-setting="apiClientMintExpiry" class="settings-field">
+                  <span class="settings-label">Expiry</span>
+                  <select
+                    class="settings-input"
+                    value={apiClientMintExpiry()}
+                    disabled={apiClientMinting()}
+                    onChange={(e) => {
+                      setApiClientMintError("");
+                      setApiClientMintExpiry(e.currentTarget.value as ApiClientExpiryOption);
+                    }}
+                    data-ac-testid="settings.apiClientMint.expiry"
+                    data-ac-role="combobox"
+                  >
+                    <For each={API_CLIENT_EXPIRY_OPTIONS}>
+                      {(option) => <option value={option.value}>{option.label}</option>}
+                    </For>
+                  </select>
+                </label>
+                <button
+                  class="settings-add-btn settings-api-client-mint-btn"
+                  onClick={() => void handleMintApiClient()}
+                  disabled={
+                    apiClientMinting() ||
+                    apiClientRootOptions().length === 0 ||
+                    !selectedApiClientScopesValid()
+                  }
+                  data-ac-testid="settings.apiClientMint.submit"
+                  data-ac-role="button"
+                  data-ac-state={apiClientMinting() ? "minting" : "ready"}
+                >
+                  {apiClientMinting() ? "Minting..." : "Mint credential"}
+                </button>
+                <Show when={apiClientMintError()}>
+                  <div
+                    class="settings-api-client-error"
+                    role="alert"
+                    data-ac-testid="settings.apiClientMint.error"
+                    data-ac-role="alert"
+                  >
+                    {apiClientMintError()}
+                  </div>
+                </Show>
+                <Show when={apiClientMintResult()}>
+                  {(result) => (
+                    <div
+                      class="settings-api-client-secret"
+                      data-ac-testid="settings.apiClientMint.result"
+                      data-ac-role="surface"
+                    >
+                      <div
+                        class="settings-api-client-warning"
+                        data-ac-testid="settings.apiClientMint.warning"
+                        data-ac-role="status"
+                      >
+                        Shown once. Store this token now; it cannot be recovered later.
+                      </div>
+                      <label class="settings-field">
+                        <span class="settings-label">Token</span>
+                        <div class="settings-api-client-token-row">
+                          <input
+                            class="settings-input settings-api-client-token"
+                            readOnly
+                            value={result().token}
+                            data-ac-testid="settings.apiClientMint.token"
+                            data-ac-role="textbox"
+                          />
+                          <button
+                            class="settings-add-btn"
+                            onClick={() => void copyApiClientToken()}
+                            data-ac-testid="settings.apiClientMint.copy"
+                            data-ac-role="button"
+                            data-ac-state={apiClientSecretCopied() ? "copied" : "ready"}
+                          >
+                            {apiClientSecretCopied() ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                      </label>
+                      <dl class="settings-api-client-result-grid">
+                        <div>
+                          <dt>Client ID</dt>
+                          <dd data-ac-testid="settings.apiClientMint.clientId">{result().clientId}</dd>
+                        </div>
+                        <div>
+                          <dt>Bound FQN</dt>
+                          <dd data-ac-testid="settings.apiClientMint.boundFqn">{result().boundFqn}</dd>
+                        </div>
+                        <div>
+                          <dt>Expires</dt>
+                          <dd data-ac-testid="settings.apiClientMint.expiresAt">
+                            {result().expiresAt ?? "No expiry"}
+                          </dd>
+                        </div>
+                      </dl>
+                      <button
+                        class="settings-add-btn"
+                        onClick={clearApiClientSecret}
+                        data-ac-testid="settings.apiClientMint.clear"
+                        data-ac-role="button"
+                      >
+                        Clear secret
+                      </button>
+                    </div>
+                  )}
+                </Show>
+              </div>
+            </div>
 
-      <div class="settings-section">
-        <div class="settings-section-title">Notifications</div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.soundsEnabled}
-            onChange={(e) =>
-              updateField("soundsEnabled", e.currentTarget.checked)
-            }
-          />
-          <span>Enable app sounds (master switch)</span>
-        </label>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.teamIdleBeepEnabled}
-            disabled={!settings.data!.soundsEnabled}
-            onChange={(e) =>
-              updateField("teamIdleBeepEnabled", e.currentTarget.checked)
-            }
-          />
-          <span>Beep when a team finishes working (all agents idle)</span>
-        </label>
-      </div>
+            {renderWebRemoteSection()}
+          </>)}
+          {generalPane("system", <>
+            <div class="settings-section">
+              <div class="settings-section-title">Updates</div>
+              <label data-ac-setting="npmUpdateNotificationsEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.npmUpdateNotificationsEnabled}
+                  onChange={(e) =>
+                    updateField("npmUpdateNotificationsEnabled", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.npmUpdateNotificationsEnabled"
+                />
+                <span>Notify me when a new version is available</span>
+              </label>
+              <label data-ac-setting="remoteBlockingMenusEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.remoteBlockingMenusEnabled}
+                  onChange={(e) =>
+                    updateField("remoteBlockingMenusEnabled", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.remoteBlockingMenusEnabled"
+                />
+                <span>Download blocking-menu pattern updates from GitHub</span>
+              </label>
+            </div>
 
-      <div class="settings-section">
-        <div class="settings-section-title">Logging</div>
-        <label class="settings-field">
-          <span class="settings-label">Log level</span>
-          <select
-            class="settings-input"
-            value={settings.data!.logLevel ?? "info"}
-            onChange={(e) =>
-              updateField("logLevel", e.currentTarget.value as LogLevel)
-            }
-            data-ac-testid="settings.general.logLevel"
-            data-ac-role="combobox"
-          >
-            <option value="error">Error</option>
-            <option value="warn">Warn</option>
-            <option value="info">Info</option>
-            <option value="debug">Debug</option>
-            <option value="trace">Trace</option>
-          </select>
-        </label>
-        <div class="settings-hint">
-          Controls AgentsCommander log verbosity (applies immediately, no
-          restart). Higher levels are noisier. The RUST_LOG env var, if set,
-          overrides this until restart.
-        </div>
-        <label class="settings-checkbox-field">
-          <input
-            type="checkbox"
-            class="settings-checkbox"
-            checked={settings.data!.activityLogEnabled}
-            disabled={saving()}
-            onChange={(e) =>
-              updateField("activityLogEnabled", e.currentTarget.checked)
-            }
-            data-ac-testid="settings.general.activityLogEnabled"
-            data-ac-role="checkbox"
-            data-ac-state={
-              settings.data!.activityLogEnabled ? "checked" : "unchecked"
-            }
-          />
-          <span>Record activity log (activity.jsonl)</span>
-        </label>
-        <div
-          class="settings-hint"
-          data-ac-testid="settings.general.activityLogEnabled.hint"
-        >
-          Writes a diagnostic timeline (app start/stop, heartbeat, session busy/idle
-          edges) that no other feature reads. Applies on the next launch; the current
-          session is unaffected. Existing activity.jsonl files are left untouched.
-          Disabled by default.
-        </div>
+            <div class="settings-section">
+              <div class="settings-section-title">Logging</div>
+              <label data-ac-setting="logLevel" class="settings-field">
+                <span class="settings-label">Log level</span>
+                <select
+                  class="settings-input"
+                  value={settings.data!.logLevel ?? "info"}
+                  onChange={(e) =>
+                    updateField("logLevel", e.currentTarget.value as LogLevel)
+                  }
+                  data-ac-testid="settings.general.logLevel"
+                  data-ac-role="combobox"
+                >
+                  <option value="error">Error</option>
+                  <option value="warn">Warn</option>
+                  <option value="info">Info</option>
+                  <option value="debug">Debug</option>
+                  <option value="trace">Trace</option>
+                </select>
+              </label>
+              <div class="settings-hint">
+                Controls AgentsCommander log verbosity (applies immediately, no
+                restart). Higher levels are noisier. The RUST_LOG env var, if set,
+                overrides this until restart.
+              </div>
+              <label data-ac-setting="activityLogEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.activityLogEnabled}
+                  disabled={saving()}
+                  onChange={(e) =>
+                    updateField("activityLogEnabled", e.currentTarget.checked)
+                  }
+                  data-ac-testid="settings.general.activityLogEnabled"
+                  data-ac-role="checkbox"
+                  data-ac-state={
+                    settings.data!.activityLogEnabled ? "checked" : "unchecked"
+                  }
+                />
+                <span>Record activity log (activity.jsonl)</span>
+              </label>
+              <div
+                class="settings-hint"
+                data-ac-testid="settings.general.activityLogEnabled.hint"
+              >
+                Writes a diagnostic timeline (app start/stop, heartbeat, session busy/idle
+                edges) that no other feature reads. Applies on the next launch; the current
+                session is unaffected. Existing activity.jsonl files are left untouched.
+                Disabled by default.
+              </div>
+            </div>
+          </>)}
       </div>
-
-    </>
+    </div>
   );
 
   const renderAgentEnvEditor = (agent: AgentConfig, agentIndex: number) => {
@@ -5198,7 +5394,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     >
       <div
         class="modal-container modal-container-lg"
-        classList={{ "modal-container-config": activeTab() === "agents" }}
+        classList={{
+          "modal-container-config": activeTab() === "agents",
+          "modal-container-general": activeTab() === "general",
+        }}
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
@@ -5238,7 +5437,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
         >
           <div
             class="modal-body"
-            classList={{ "modal-body-config": activeTab() === "agents" }}
+            classList={{
+              "modal-body-config": activeTab() === "agents",
+              "modal-body-general": activeTab() === "general",
+            }}
           >
             <Show when={activeTab() === "general"}>{renderGeneralTab()}</Show>
             <Show when={activeTab() === "agents"}>{renderCodingAgentsScreen()}</Show>
