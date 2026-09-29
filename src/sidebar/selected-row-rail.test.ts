@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,14 +9,16 @@ import {
   RAIL_WIDTH_MAX,
   RAIL_WIDTH_PROPERTY,
   applySelectedRowRail,
+  isRailColorDefault,
   isValidRailColor,
   isValidRailWidth,
   railWidthToCss,
 } from "./selected-row-rail";
 
-// #1796 P3. One predicate, two consumers. The load-bearing invariant is that a
-// value that warns is never published and a value that does not warn always is,
-// so the validators and the writer are measured against the same literals here.
+// #1796 P3. One predicate, two consumers. The load-bearing invariant has two
+// halves (#2751): a value warns exactly when its validator is false, and a value
+// is published exactly when it is valid and, for the colour, is not the factory
+// default. The validators and the writer are measured against the same literals.
 
 const VALID_WIDTHS = ["1", "9", "9px", "14", "14px", " 12px "];
 
@@ -43,6 +46,10 @@ const INVALID_WIDTHS = [
 const VALID_COLORS = ["#00ff5f", "#ABCDEF", " #000000 "];
 
 const INVALID_COLORS = ["", "#fff", "#00ff5f80", "00ff5f", "red", "#00ff5g"];
+
+/** The shape-valid colours of the agreement list, stated as data rather than
+ *  derived from the validator under test. */
+const COLOR_CASES_VALID = new Set([...VALID_COLORS, "#FFFFFF"]);
 
 /** A fresh element for every case. The writer's production root is
  *  document.documentElement, which is shared across cases in this file, and a
@@ -163,13 +170,84 @@ describe("agreement between the hint predicate and the writer", () => {
     }
   );
 
-  it.each([...VALID_COLORS, ...INVALID_COLORS])(
-    "colour %j warns exactly when it is not published",
+  const COLOR_CASES = [...VALID_COLORS, ...INVALID_COLORS, "#FFFFFF"];
+
+  it.each(COLOR_CASES)("colour %j warns exactly when isValidRailColor is false", (value) => {
+    const warns = !COLOR_CASES_VALID.has(value);
+    expect(warns).toBe(!isValidRailColor(value));
+  });
+
+  it.each(COLOR_CASES)(
+    "colour %j is published exactly when it is valid and not the default",
     (value) => {
       const el = freshElement();
       applySelectedRowRail(el, RAIL_WIDTH_DEFAULT, value);
       const published = el.style.getPropertyValue(RAIL_COLOR_PROPERTY) !== "";
-      expect(published).toBe(isValidRailColor(value));
+      expect(published).toBe(isValidRailColor(value) && !isRailColorDefault(value));
     }
   );
+});
+
+// #2751 - the factory default means "follow the theme", so it is never published
+// inline: the :root and html.light-theme declarations in variables.css decide.
+describe("the factory default colour follows the theme", () => {
+  it.each(["#FFFFFF", "#ffffff", " #FFFFFF "])("does not publish %j", (value) => {
+    const el = freshElement();
+    applySelectedRowRail(el, "9px", value);
+    expect(el.style.getPropertyValue(RAIL_COLOR_PROPERTY)).toBe("");
+    expect(el.style.getPropertyValue(RAIL_WIDTH_PROPERTY)).toBe("9px");
+  });
+
+  // Stale control S3: ONE element, so a default branch that skips instead of
+  // removing leaves the green on screen and fails here.
+  it("S3 - the default removes a previously published colour", () => {
+    const el = freshElement();
+    applySelectedRowRail(el, "9px", "#00ff5f");
+    applySelectedRowRail(el, "9px", "#FFFFFF");
+    expect(el.style.getPropertyValue(RAIL_COLOR_PROPERTY)).toBe("");
+  });
+
+  it.each(["#FFFFFE", "#FEFFFF"])("still publishes the near-default %j", (value) => {
+    const el = freshElement();
+    applySelectedRowRail(el, "9px", value);
+    expect(el.style.getPropertyValue(RAIL_COLOR_PROPERTY)).toBe(value);
+  });
+
+  it("the default does not warn", () => {
+    expect(isValidRailColor("#FFFFFF")).toBe(true);
+  });
+});
+
+// Cross-file pins. jsdom never loads these files, so the bytes on disk are read.
+// Vite rewrites the literal `new URL(..., import.meta.url)` form into a served
+// asset; a binding keeps the file: URL that node:fs accepts.
+const moduleUrl = import.meta.url;
+
+describe("cross-file pins", () => {
+  it("the TS default still matches the Rust default", () => {
+    const rust = readFileSync(
+      new URL("../../src-tauri/src/config/settings.rs", moduleUrl),
+      "utf8"
+    );
+    const body = rust.match(/fn default_selected_row_rail_color\(\)[^{]*\{([^}]*)\}/);
+    expect(body, "default_selected_row_rail_color not found").not.toBeNull();
+    expect(body![1]).toContain(`"${RAIL_COLOR_DEFAULT}"`);
+  });
+
+  it("variables.css declares the default in :root and #1A1A2E in html.light-theme", () => {
+    const css = readFileSync(new URL("./styles/variables.css", moduleUrl), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      ""
+    );
+    const decl = (selector: string): string[] => {
+      const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(
+        (m) => m[1].trim() === selector
+      );
+      return blocks.flatMap((m) =>
+        [...m[2].matchAll(/--ac-selected-rail-color\s*:\s*([^;]+);/g)].map((d) => d[1].trim())
+      );
+    };
+    expect(decl(":root")).toEqual([RAIL_COLOR_DEFAULT]);
+    expect(decl("html.light-theme")).toEqual(["#1A1A2E"]);
+  });
 });

@@ -1,8 +1,11 @@
 /** #1796 - the selected-row rail is a `border-left` on every session and replica
  *  row. Two settings drive it, and the same two predicates decide both the red
  *  hint in Settings > General and whether a value is published to the DOM.
- *  Keeping one source for both is the point of this module: a value that warns
- *  must not reach the stylesheet, and a value that does not warn must. */
+ *  Keeping one source for both is the point of this module. The rule has two
+ *  halves: a value WARNS exactly when its validator is false, and a value is
+ *  PUBLISHED exactly when it is valid and, for the colour, is not the factory
+ *  default (#2744: the default means "follow the theme", see
+ *  `isRailColorDefault`). */
 
 export const RAIL_WIDTH_DEFAULT = "9px";
 export const RAIL_COLOR_DEFAULT = "#FFFFFF";
@@ -38,6 +41,15 @@ export function isValidRailColor(value: string): boolean {
   return COLOR_RE.test(value.trim());
 }
 
+/** The factory default is not "white", it is "follow the theme". Publishing it
+ *  inline would beat the html.light-theme declaration in variables.css and pin
+ *  the rail to white in both modes, so the default is deliberately NOT
+ *  published: the two :root / html.light-theme declarations then decide.
+ *  Case-insensitive, so a hand-typed `#ffffff` reads as the default too. */
+export function isRailColorDefault(value: string): boolean {
+  return value.trim().toUpperCase() === RAIL_COLOR_DEFAULT.toUpperCase();
+}
+
 /** `12` and `12px` both persist as the user typed them; the stylesheet needs a
  *  length. Only called on a value that already passed `isValidRailWidth`. */
 export function railWidthToCss(value: string): string {
@@ -66,7 +78,7 @@ export function applySelectedRowRail(
   } else {
     root.style.removeProperty(RAIL_WIDTH_PROPERTY);
   }
-  if (isValidRailColor(color)) {
+  if (isValidRailColor(color) && !isRailColorDefault(color)) {
     root.style.setProperty(RAIL_COLOR_PROPERTY, color.trim());
   } else {
     root.style.removeProperty(RAIL_COLOR_PROPERTY);

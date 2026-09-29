@@ -67,6 +67,7 @@ const PRE_EXISTING_TESTIDS = `
   settings.general.roomNumberMask.example
   settings.general.screenshotCaptureHotkey
   settings.general.selectedRowRailColor
+  settings.general.selectedRowRailColor.note
   settings.general.selectedRowRailWidth
   settings.general.sidebarCompactHotkey
   settings.general.terminalSnapshotsEnabled
@@ -176,6 +177,11 @@ describe("SettingsModal General categories + search (#2704)", () => {
       for (const k of ["selectedRowRailWidth", "selectedRowRailColor"]) {
         expect($(pane("appearance")).querySelector(`[data-ac-setting="${k}"]`)).toBeTruthy();
       }
+      // #2751 - the colour field explains the theme-aware default; the width field has no note.
+      expect($(tid("settings.general.selectedRowRailColor.note")).textContent).toBe(
+        "Default: the bar follows the theme, white in dark mode and #1A1A2E (near-black) in light mode. Any colour you enter here is used in both themes.",
+      );
+      expect(rendered.root.querySelector(tid("settings.general.selectedRowRailWidth.note"))).toBeNull();
       expect(searchGeneralSettings("bar color").map((e) => e.key)).toContain("selectedRowRailColor");
       type($<HTMLInputElement>(SEARCH), "bar color");
       $<HTMLButtonElement>(tid("settings.general.result.selectedRowRailColor")).click();
