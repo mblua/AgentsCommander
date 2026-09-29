@@ -2656,6 +2656,16 @@ pub(crate) fn export_agents_to_instance_file(
     settings: &mut AppSettings,
     settings_path: &Path,
 ) -> bool {
+    // #2716 (B3) r12n: the read, the existence check and the write are one
+    // decision, so they run under the settings lock. It is released on return,
+    // before the loader's own save takes it again.
+    let _lock = match SettingsFileLock::acquire(settings_path, std::time::Duration::from_secs(2)) {
+        Ok(lock) => lock,
+        Err(e) => {
+            log::error!("[settings-migration] #2716 - {e}; nothing exported, nothing stripped");
+            return false;
+        }
+    };
     let legacy = match std::fs::read_to_string(settings_path)
         .ok()
         .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
@@ -18393,5 +18403,75 @@ mod tests {
                 "{name}: key not removed"
             );
         }
+    }
+
+    /// #2716 (B3) E43, r12o: with no agents file on disk, only the export's lock
+    /// can stop its write. Held by this thread, the export on another thread
+    /// cannot acquire it, writes nothing and strips nothing; the three-agent file
+    /// written under the guard is what a later load returns.
+    #[test]
+    fn the_export_cannot_write_a_sidecar_while_the_lock_is_held() {
+        let two_agents = |dir: &std::path::Path| {
+            let path = b3_settings_path(dir);
+            let mut legacy = b3_legacy_fixture("Alpha", "P");
+            legacy["agents"] =
+                serde_json::json!([b3_agent("alpha", "Alpha"), b3_agent("beta", "Beta")]);
+            b3_write(&path, &legacy);
+            path
+        };
+
+        // Positive control: the same fixture with no lock held exports two agents.
+        let control = tempfile::tempdir().unwrap();
+        let control_path = two_agents(control.path());
+        let mut settings = super::load_settings_for_cli_from_path(&control_path);
+        assert!(super::export_agents_to_instance_file(
+            &mut settings,
+            &control_path
+        ));
+        let exported = b3_object(&b3_sidecar_path(control.path()));
+        assert_eq!(exported["agents"].as_array().map(Vec::len), Some(2));
+
+        // Under the lock.
+        let temp = tempfile::tempdir().unwrap();
+        let path = two_agents(temp.path());
+        let seeded = std::fs::read(&path).unwrap();
+        let guard =
+            super::SettingsFileLock::acquire(&path, std::time::Duration::from_secs(1)).unwrap();
+        let export_path = path.clone();
+        let exported = std::thread::spawn(move || {
+            let mut settings = super::load_settings_for_cli_from_path(&export_path);
+            super::export_agents_to_instance_file(&mut settings, &export_path)
+        })
+        .join()
+        .unwrap();
+        assert!(
+            !b3_sidecar_path(temp.path()).exists(),
+            "the export wrote the agents file while the lock was held"
+        );
+        assert!(!exported, "the export ran while the lock was held");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            seeded,
+            "the legacy keys changed"
+        );
+
+        // Still under the guard: another writer's three agents.
+        b3_write(
+            &b3_sidecar_path(temp.path()),
+            &serde_json::json!({
+                "agents": [
+                    b3_agent("alpha", "Alpha"),
+                    b3_agent("beta", "Beta"),
+                    b3_agent("gamma", "Gamma"),
+                ],
+            }),
+        );
+        drop(guard);
+
+        let loaded = super::load_settings_from_path(&path);
+        assert_eq!(
+            b3_labels(&loaded),
+            vec!["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()]
+        );
     }
 }
