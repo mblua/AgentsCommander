@@ -2704,7 +2704,7 @@ fn start_agent_install_with_timeout(
 ) -> Result<(), String> {
     let in_flight = InstallInFlight::acquire(&command)?;
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
+    let task = async move {
         log::info!("[agent-install] running '{command}' for {key}");
         let run = run_agent_install(&app, &key, &command, &cwd, timeout).await;
         drop(in_flight);
@@ -2713,7 +2713,23 @@ fn start_agent_install_with_timeout(
             "coding_agent_install_finished",
             install_finished_payload(&key, &command, &run),
         );
-    });
+    };
+    // Test-only: carry a caller's settlement hook into the detached task, so a
+    // test can inject a cleanup defect and still observe the emitted frame.
+    #[cfg(test)]
+    let task = {
+        let hook = TARGET_SETTLEMENT_HOOK
+            .try_with(|hook| hook.borrow_mut().take())
+            .ok()
+            .flatten();
+        async move {
+            match hook {
+                Some(hook) => with_target_settlement_hook(hook, task).await,
+                None => task.await,
+            }
+        }
+    };
+    tauri::async_runtime::spawn(task);
     Ok(())
 }
 
@@ -2792,9 +2808,14 @@ fn install_run_from_settlement(
         defects,
     } = settlement;
     let (ok, exit_code, detail) = if !defects.is_empty() {
+        // A status observed before the defective cleanup is still reported.
+        let observed = match &waited {
+            TargetWait::Exited(Ok(status)) => status.code(),
+            _ => None,
+        };
         (
             false,
-            None,
+            observed,
             format!("process cleanup defective: {}", defects.join("; ")),
         )
     } else {
@@ -2827,21 +2848,46 @@ fn install_run_from_settlement(
 
 /// #2736 - the COMPLETE captured output goes to the log, never `output_tail`.
 fn log_agent_install_run(key: &str, command: &str, run: &AgentInstallRun) {
-    log::info!(
-        "[agent-install] stdout for {key} ({command}): {}",
-        String::from_utf8_lossy(&run.stdout)
-    );
+    for (level, line) in agent_install_log_lines(key, command, run) {
+        log::log!(level, "{line}");
+    }
+}
+
+/// #2736 - the exact lines `log_agent_install_run` writes, pure so tests can
+/// read them without installing a process-wide logger.
+fn agent_install_log_lines(
+    key: &str,
+    command: &str,
+    run: &AgentInstallRun,
+) -> Vec<(log::Level, String)> {
+    let mut lines = vec![(
+        log::Level::Info,
+        format!(
+            "[agent-install] stdout for {key} ({command}): {}",
+            String::from_utf8_lossy(&run.stdout)
+        ),
+    )];
     if !run.stderr.is_empty() {
-        log::info!(
-            "[agent-install] stderr for {key} ({command}): {}",
-            String::from_utf8_lossy(&run.stderr)
-        );
+        lines.push((
+            log::Level::Info,
+            format!(
+                "[agent-install] stderr for {key} ({command}): {}",
+                String::from_utf8_lossy(&run.stderr)
+            ),
+        ));
     }
-    if run.ok {
-        log::info!("[agent-install] {key} ({command}): {}", run.detail);
+    lines.push(if run.ok {
+        (
+            log::Level::Info,
+            format!("[agent-install] {key} ({command}): {}", run.detail),
+        )
     } else {
-        log::warn!("[agent-install] {key} ({command}) FAILED: {}", run.detail);
-    }
+        (
+            log::Level::Warn,
+            format!("[agent-install] {key} ({command}) FAILED: {}", run.detail),
+        )
+    });
+    lines
 }
 
 /// #2736 - one stream for the event: the last `OUTPUT_TAIL_BYTES`, behind one
@@ -9048,6 +9094,19 @@ echo 'ac-2589-fake-agent 4.5.6'
             "the complete output keeps the first byte output_tail would drop"
         );
         assert!(!output_tail(&run.stdout).starts_with("FIRSTBYTE-2736"));
+        let lines = agent_install_log_lines("claude", &command, &run);
+        let stdout_line = &lines[0].1;
+        assert!(
+            stdout_line.starts_with(&format!(
+                "[agent-install] stdout for claude ({command}): FIRSTBYTE-2736"
+            )),
+            "the log line carries the first byte"
+        );
+        assert_eq!(
+            stdout_line.len(),
+            format!("[agent-install] stdout for claude ({command}): ").len() + run.stdout.len(),
+            "the log line carries the COMPLETE stdout"
+        );
 
         start_agent_install(
             app.handle(),
@@ -9078,6 +9137,18 @@ echo 'ac-2589-fake-agent 4.5.6'
         assert!(!run.ok);
         assert_eq!(run.exit_code, Some(3));
         assert!(String::from_utf8_lossy(&run.stderr).contains("boom-2736"));
+        let lines = agent_install_log_lines("claude", &command, &run);
+        assert!(lines.iter().any(|(level, line)| *level == log::Level::Info
+            && line.starts_with(&format!(
+                "[agent-install] stderr for claude ({command}): boom-2736"
+            ))));
+        assert_eq!(
+            lines.last().expect("outcome line"),
+            &(
+                log::Level::Warn,
+                format!("[agent-install] claude ({command}) FAILED: exit code 3")
+            )
+        );
 
         start_agent_install(
             app.handle(),
@@ -9116,10 +9187,26 @@ echo 'ac-2589-fake-agent 4.5.6'
             "tree kill must be prompt, took {:?}",
             started.elapsed()
         );
+
+        // The same outcome through the real emit path.
+        let (app, mut rx) = app_with_broadcaster();
+        let command = long_sleep("timeout-frame-2736");
+        start_agent_install_with_timeout(
+            app.handle(),
+            "claude".to_string(),
+            command.clone(),
+            dir.path().to_path_buf(),
+            Duration::from_millis(200),
+        )
+        .expect("install accepted");
+        let frame = next_install_frame(&mut rx, &mut Vec::new()).await;
+        assert_eq!(frame["payload"]["command"], json!(command));
+        assert_eq!(frame["payload"]["ok"], json!(false));
         assert_eq!(
-            install_finished_payload("claude", "x", &run)["ok"],
-            json!(false)
+            frame["payload"]["detail"],
+            json!("timed out after 0s (killed)")
         );
+        assert_eq!(frame["payload"]["exitCode"], Value::Null);
     }
 
     #[tokio::test]
@@ -9299,19 +9386,20 @@ echo 'ac-2589-fake-agent 4.5.6'
     async fn agent_install_2736_cleanup_defects_make_a_zero_exit_not_ok() {
         let app = build_mock_app(crate::test_support::test_builder());
         let dir = tempfile::tempdir().expect("tempdir");
+        let defect_hook = || TargetSettlementHook {
+            before_native_proof: None,
+            release_native_proof: None,
+            settlement_window: None,
+            native_observations: std::collections::VecDeque::from([
+                TargetNativeObservation::Error("injected install cleanup defect"),
+                TargetNativeObservation::Empty,
+            ]),
+            panic_after_native_proof_release: false,
+            panic_after_native_query_defect: false,
+            stdout_reader: None,
+        };
         let run = with_target_settlement_hook(
-            TargetSettlementHook {
-                before_native_proof: None,
-                release_native_proof: None,
-                settlement_window: None,
-                native_observations: std::collections::VecDeque::from([
-                    TargetNativeObservation::Error("injected install cleanup defect"),
-                    TargetNativeObservation::Empty,
-                ]),
-                panic_after_native_proof_release: false,
-                panic_after_native_query_defect: false,
-                stdout_reader: None,
-            },
+            defect_hook(),
             run_agent_install(
                 app.handle(),
                 "claude",
@@ -9329,9 +9417,33 @@ echo 'ac-2589-fake-agent 4.5.6'
             run.detail
         );
         assert_eq!(
-            install_finished_payload("claude", "exit 0", &run)["ok"],
-            json!(false)
+            run.exit_code,
+            Some(0),
+            "the observed status survives the defect"
         );
+
+        // The same outcome through the real emit path: the hook rides into
+        // the detached task that `start_agent_install` spawns.
+        let (app, mut rx) = app_with_broadcaster();
+        let command = shell("echo defect-frame-2736", "echo defect-frame-2736");
+        with_target_settlement_hook(defect_hook(), async {
+            start_agent_install(
+                app.handle(),
+                "claude".to_string(),
+                command.clone(),
+                dir.path().to_path_buf(),
+            )
+        })
+        .await
+        .expect("install accepted");
+        let frame = next_install_frame(&mut rx, &mut Vec::new()).await;
+        assert_eq!(frame["payload"]["command"], json!(command));
+        assert_eq!(frame["payload"]["ok"], json!(false));
+        assert_eq!(frame["payload"]["exitCode"], json!(0));
+        assert!(frame["payload"]["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("injected install cleanup defect"));
     }
 
     #[tokio::test]
