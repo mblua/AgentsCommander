@@ -65,6 +65,17 @@
   --ac-selected-rail-width: 9px;
   --ac-selected-rail-color: #FFFFFF;
   --ac-rail-delta: calc(var(--ac-selected-rail-width) - 3px);
+
+  /* #2744 - these four were read as var(--x, <dark literal>) across the
+     stylesheets and defined nowhere, so the dark fallback won in both modes.
+     Every consumer passes the identical fallback (see the census in this
+     phase and token-fallback-parity.test.ts, which keeps that true), so the
+     :root value below is that same literal and dark rendering is unchanged.
+     html.light-theme carries the light one. */
+  --btn-primary-bg: rgba(0, 212, 255, 0.2);
+  --btn-primary-fg: #00d4ff;
+  --sidebar-fg-muted: rgba(255, 255, 255, 0.5);
+  --sidebar-warning: #e0a83a;
 }
 
 html.light-theme {
@@ -83,7 +94,7 @@ html.light-theme {
   --status-exited: #dc2626;
   --status-comanaged: #dc2626;
   --status-waiting: #16a34a;
-  --status-pending: #ca8a04;
+  --status-pending: #8a6400;
   --status-blocked: #c2410c;
   --status-offline: rgba(0, 0, 0, 0.2);
 
@@ -96,4 +107,9 @@ html.light-theme {
   --toolbar-btn-bg: rgba(0, 102, 204, 0.1);
   --toolbar-btn-hover: rgba(0, 102, 204, 0.2);
   --toolbar-btn-fg: #0066cc;
+
+  --btn-primary-bg: rgba(0, 102, 204, 0.12);
+  --btn-primary-fg: #0b5ed7;
+  --sidebar-fg-muted: #5a6172;
+  --sidebar-warning: #8a6400;
 }

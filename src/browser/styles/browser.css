@@ -209,3 +209,13 @@
     height: auto;
   }
 }
+
+/* #2744 - these two read --text-muted and --text-primary, undefined and left
+   undefined because spec-board.css reads both with no fallback at all. */
+html.light-theme .browser-side-toggle {
+  color: #5a6172;
+}
+
+html.light-theme .browser-side-toggle:hover {
+  color: #1a1a2e;
+}
