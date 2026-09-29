@@ -1642,6 +1642,11 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         .each_ref()
         .map(|(pattern, comment)| (pattern.as_str(), *comment));
     let project_settings_gitignore_pattern = project_settings_row.0;
+    // #2718 - the Loop state rows, shared with the Loop scope's sweep.
+    let loop_state_rows = crate::config::naming_migration::loop_state_ignore_rows();
+    let [loop_state_row, loop_state_tmp_row, loop_set_aside_row] = loop_state_rows
+        .each_ref()
+        .map(|(pattern, comment)| (pattern.as_str(), *comment));
     const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
     const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n/seed-manifest.toml\n";
     const SEED_MANIFEST_COORDINATION_PATTERNS: [&str; 2] =
@@ -1697,10 +1702,9 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             ".deleting-*/",
             "# AgentsCommander: exclude temporary room delete sentinels/orphans.",
         ),
-        (
-            "_loop_*/state.json",
-            "# AgentsCommander: exclude Loop scheduler runtime state.",
-        ),
+        loop_state_row,
+        loop_state_tmp_row,
+        loop_set_aside_row,
         (
             "_loop_*/audit.jsonl",
             "# AgentsCommander: exclude Loop runtime audit logs with prompt snapshots.",
@@ -1830,6 +1834,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             &[
                 RETIRED_CATALOG_IGNORE_PAIRS.as_slice(),
                 &RETIRED_PROJECT_SETTINGS_IGNORE_PAIRS,
+                &RETIRED_LOOP_STATE_IGNORE_PAIRS,
             ]
             .concat(),
         );
@@ -1908,6 +1913,12 @@ const RETIRED_CATALOG_IGNORE_PAIRS: [(&str, &str); 3] = [
 const RETIRED_PROJECT_SETTINGS_IGNORE_PAIRS: [(&str, &str); 1] = [(
     "# AgentsCommander: exclude generated project-local settings.",
     "/project-settings.json",
+)];
+
+/// #2718 - the `.ac/.gitignore` pair whose value the Loop state rename changed.
+const RETIRED_LOOP_STATE_IGNORE_PAIRS: [(&str, &str); 1] = [(
+    "# AgentsCommander: exclude Loop scheduler runtime state.",
+    "_loop_*/state.json",
 )];
 
 /// #2090 - migrate the retired `!/seed-manifest.toml` un-ignore pair written by
@@ -5011,8 +5022,20 @@ mod tests {
         assert!(
             content
                 .lines()
-                .any(|line| line.trim() == "_loop_*/state.json"),
+                .any(|line| line.trim() == "_loop_*/loop.state.no-git.json"),
             "workspace .gitignore must ignore Loop state files"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_loop_*/loop.state.no-git.json.*.tmp"),
+            "workspace .gitignore must ignore Loop state write temporaries"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_loop_*/*.deprecated-*.no-git"),
+            "workspace .gitignore must ignore Loop files the naming migration set aside"
         );
         assert!(
             content
@@ -7135,6 +7158,76 @@ mod tests {
                 source_and_pattern.starts_with(".ac/.gitignore:"),
                 "{relative}: {source_and_pattern}"
             );
+        }
+    }
+
+    /// #2718 E14: the renamed Loop state, its write temporary and a set-aside
+    /// state file are each ignored by their own rule; the retired row is gone
+    /// and a user-authored bare pattern survives.
+    #[test]
+    fn ac_root_gitignore_covers_the_renamed_loop_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(ac_root.join("_loop_a")).expect("create loop dir");
+        std::fs::write(
+            ac_root.join(".gitignore"),
+            "# User rules\n_loop_*/state.json\n\n# AgentsCommander: exclude Loop scheduler runtime state.\n_loop_*/state.json\n",
+        )
+        .expect("seed .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
+
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read");
+        assert!(
+            !content.contains(
+                "# AgentsCommander: exclude Loop scheduler runtime state.\n_loop_*/state.json"
+            ),
+            "the retired row is still there"
+        );
+        assert_eq!(
+            content
+                .lines()
+                .filter(|line| *line == "_loop_*/state.json")
+                .count(),
+            1,
+            "a user-authored bare pattern was eaten"
+        );
+
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .expect("git init must execute");
+        assert!(init.success());
+        for (relative, rule) in [
+            (
+                ".ac/_loop_a/loop.state.no-git.json",
+                "_loop_*/loop.state.no-git.json",
+            ),
+            (
+                ".ac/_loop_a/loop.state.no-git.json.1.tmp",
+                "_loop_*/loop.state.no-git.json.*.tmp",
+            ),
+            (
+                ".ac/_loop_a/state.json.deprecated-1.no-git",
+                "_loop_*/*.deprecated-*.no-git",
+            ),
+        ] {
+            std::fs::write(project.join(relative), []).expect("fixture file");
+            let output = std::process::Command::new("git")
+                .args(["check-ignore", "-v", "--no-index", "--", relative])
+                .current_dir(&project)
+                .output()
+                .expect("git check-ignore must execute");
+            assert!(output.status.success(), "{relative} is not ignored");
+            let stdout = String::from_utf8(output.stdout).expect("UTF-8");
+            let (source_and_pattern, _) = stdout
+                .trim_end()
+                .split_once('\t')
+                .expect("verbose output has a tab");
+            let pattern = source_and_pattern.rsplit(':').next().expect("pattern");
+            assert_eq!(pattern, rule, "{relative} matched the wrong rule");
         }
     }
 }

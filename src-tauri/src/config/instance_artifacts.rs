@@ -394,6 +394,13 @@ pub(crate) const CODING_AGENTS_RETIRED_LOCK_ARTIFACT: &str = "coding-agents/.age
 pub(crate) const CODING_AGENTS_SET_ASIDE_ARTIFACT: &str = "coding-agents/*.deprecated-*.no-git";
 /// #2716 (B3) - the instance file that holds `agents` and `codingAgentProfiles`,
 /// beside the settings file.
+/// #2718 (B4b) - a Loop's `_loop_*/state.json`: AC working memory with no
+/// competing layer.
+pub(crate) const LOOP_STATE_TARGET_NAME: &str = layered_name!("loop", state, no_git, "json");
+/// #2718 (B4b) - the Loop state write temporary, `<name>.<uuid>.tmp`, derived
+/// from the destination name.
+pub(crate) const LOOP_STATE_TMP_TARGET_GLOB: &str =
+    concat!(layered_name!("loop", state, no_git, "json"), ".*.tmp");
 pub(crate) const AGENTS_INSTANCE_TARGET_NAME: &str =
     layered_name!("agents", instance, no_git, "json");
 pub(crate) const AGENTS_INSTANCE_FILE_NAME: &str = AGENTS_INSTANCE_TARGET_NAME;
@@ -1377,5 +1384,15 @@ mod tests {
             PROJECT_SETTINGS_TARGET_NAME,
             "settings.50.personal.no-git.json"
         );
+    }
+
+    /// #2718 (B4b) E5: the Loop state write temporary derives from its name.
+    #[test]
+    fn loop_state_tmp_glob_derives_from_the_loop_state_name() {
+        assert_eq!(
+            LOOP_STATE_TMP_TARGET_GLOB,
+            format!("{LOOP_STATE_TARGET_NAME}.*.tmp")
+        );
+        assert_eq!(LOOP_STATE_TARGET_NAME, "loop.state.no-git.json");
     }
 }
