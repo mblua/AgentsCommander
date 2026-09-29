@@ -36,7 +36,7 @@ You can cancel a recording mid-press with Escape, or before transcription comple
 | `voiceAutoExecute` | `true` | Press Enter after transcription. |
 | `voiceAutoExecuteDelay` | `15` (seconds) | Delay before pressing Enter, so you can review or cancel. |
 
-All values live in `settings.json` under the keys above. See [Settings reference](../reference/settings.md).
+All values live in `settings.30.instance.no-git.json` under the keys above. See [Settings reference](../reference/settings.md).
 
 ## Keyboard shortcut
 

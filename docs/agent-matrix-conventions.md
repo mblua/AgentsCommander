@@ -302,9 +302,9 @@ Rooms are isolated working environments created when a team needs to work on a t
 
 ---
 
-## 4. project-settings.json
+## 4. settings.50.personal.no-git.json
 
-Located at `.ac/project-settings.json`. Defines the coding agent configurations available for the project.
+Located at `.ac/settings.50.personal.no-git.json`. Defines the coding agent configurations available for the project.
 
 ```json
 {
@@ -332,7 +332,7 @@ Located at `.ac/project-settings.json`. Defines the coding agent configurations 
 
 > These tokens are used **inside** a coding agent's own ENVIRONMENT rows, inside a profile cell's command or env, or inside the effective launch command. For the profile matrix itself (the lettered A/B/C launch variants per coding agent), see [Coding Agent Profiles](features/coding-agent-profiles.md).
 
-Coding-agent command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Three command and env value surfaces are expanded: the effective launch command tokens, the coding agent's own ENVIRONMENT rows (`agents[].envs` in `settings.json`, edited in Settings → Coding Agents), and a profile cell's `env` map. The same three tokens are also substituted inside the **content** of seeded files, under different rules; see [Config seed](features/config-seed.md#token-substitution). Only the three tokens below are recognized. There is no shell to evaluate values, so `$`-style forms such as `$(pwd)` and `${VAR}` are **not** expanded; they pass through to the child process **verbatim**. Any other `%WORD%` marker (one that is not one of the three AC tokens) is **not** taken literally: it is **rejected** at launch as an unknown placeholder (fail-closed), and for `CODEX_HOME` it also fails at settings save-time.
+Coding-agent command strings and `env` values may use a small set of `%...%` path placeholders that AgentsCommander expands to absolute paths **at launch**. Three command and env value surfaces are expanded: the effective launch command tokens, the coding agent's own ENVIRONMENT rows (`agents[].envs` in `agents.30.instance.no-git.json`, edited in Settings → Coding Agents), and a profile cell's `env` map. The same three tokens are also substituted inside the **content** of seeded files, under different rules; see [Config seed](features/config-seed.md#token-substitution). Only the three tokens below are recognized. There is no shell to evaluate values, so `$`-style forms such as `$(pwd)` and `${VAR}` are **not** expanded; they pass through to the child process **verbatim**. Any other `%WORD%` marker (one that is not one of the three AC tokens) is **not** taken literally: it is **rejected** at launch as an unknown placeholder (fail-closed), and for `CODEX_HOME` it also fails at settings save-time.
 
 The tokens map onto the matrix layout from the sections above: a replica is a `__agent_<name>` dir under a `room-*` room, the workspace is the project's `.ac` root, and the matrix is the canonical `_agent_<name>` dir.
 
@@ -417,7 +417,7 @@ When creating a full agent team for a new project:
 ```text
 .ac/
 ├── .gitignore                    # Must exclude room-*/
-├── project-settings.json         # Coding agent config
+├── settings.50.personal.no-git.json # Coding agent config
 ├── _agent_ORCHESTRATOR/
 │   └── Role.md
 ├── _agent_WORKER_1/

@@ -20,7 +20,7 @@ Terminal screens can contain passwords, tokens, source code, prompts, and person
 
 In the app, open **Settings > General > Terminal snapshots**, set **Allow authorized terminal snapshots**, and save.
 
-The corresponding `settings.json` field is:
+The corresponding `settings.30.instance.no-git.json` field is:
 
 ```json
 {
@@ -28,7 +28,7 @@ The corresponding `settings.json` field is:
 }
 ```
 
-The default is `true`. A fresh installation starts enabled, and an older `settings.json` that has no `terminalSnapshotsEnabled` key is read as enabled too. To disable the capability you must write the value explicitly:
+The default is `true`. A fresh installation starts enabled, and an older `settings.30.instance.no-git.json` that has no `terminalSnapshotsEnabled` key is read as enabled too. To disable the capability you must write the value explicitly:
 
 ```json
 {

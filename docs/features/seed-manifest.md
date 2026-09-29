@@ -19,13 +19,13 @@ publication by AgentsCommander. Two publisher families write rows:
   `context:coordinator`), created or refreshed when AC registers a project, scans
   it during discovery, materializes a session's context, or you explicitly
   overwrite a template.
-- **Coding-agent catalog** (#1318) - `.ac/coding-agents/agents.json` (scope
+- **Coding-agent catalog** (#1318) - `.ac/coding-agents/agents.10.default.json` (scope
   `catalog:coding-agents`, source `builtin`). One row is recorded for every
   actual base publication: the first management of a fresh catalog, a one-time
   legacy migration, or a later refresh to a new shipped revision. The row is
   re-timestamped on each such publication; a bookkeeping retry can add the row
   for an already-published base without republishing it. The user-owned
-  `agents.local.json`, the migration backup `agents.migration-v1.backup.json`
+  `agents.50.personal.no-git.json`, the migration backup `agents.migration-v1.backup.json`
   and the journal `.agents.migration-v1.json` are never published files and
   never get rows. The `_seed/` masters tree is not rowed.
 
@@ -58,7 +58,7 @@ source = "builtin"
 last_seeded_at = "2026-07-16T19:40:07.123Z"
 
 [[files]]
-path = ".ac/coding-agents/agents.json"
+path = ".ac/coding-agents/agents.10.default.json"
 path_encoding = "utf8"
 kind = "coding_agent_catalog"
 scope = "catalog:coding-agents"

@@ -153,10 +153,10 @@ The disposable project/room registration persists or restores according to docum
 Evidence Required:
 
 - `SET-003-pre-restart-projects.png`.
-- Optional `SET-003-pre-restart-settings.json`.
+- Optional `SET-003-pre-restart-settings.30.instance.no-git.json`.
 - `SET-003-post-window-info.json`.
 - `SET-003-post-restart-projects.png`.
-- Optional `SET-003-post-restart-settings.json`.
+- Optional `SET-003-post-restart-settings.30.instance.no-git.json`.
 
 Pass/Fail Criteria:
 
@@ -283,20 +283,20 @@ PASS if a documented safe method is used and recovery/error behavior is clear an
 
 Purpose:
 
-Verify that registering active and archived projects writes all six project fields in `settings.json` with correctly aligned companion arrays, portable companions in `/`-separated form, and a `null` companion for a cross-drive/share project.
+Verify that registering active and archived projects writes all six project fields in `settings.30.instance.no-git.json` with correctly aligned companion arrays, portable companions in `/`-separated form, and a `null` companion for a cross-drive/share project.
 
 Preconditions:
 
 - Depends on SET-001.
 - A disposable testable identity with at least one disposable AC project on the same drive/share as the binary, and, if available, one disposable project on a different drive or UNC share.
-- Read-only inspection of the disposable `settings.json` is available.
+- Read-only inspection of the disposable `settings.30.instance.no-git.json` is available.
 
 Steps:
 
 1. Register one disposable project on the binary's drive/share through the UI or CLI.
 2. If a second drive/share is available, register a disposable project located there.
 3. Archive one registered project so the archived arrays are populated.
-4. Capture a `settings.json` snapshot and inspect the six fields: `projectPath`, `projectPathRelativeToInstance`, `projectPaths`, `projectPathsRelativeToInstance`, `archivedProjectPaths`, `archivedProjectPathsRelativeToInstance`.
+4. Capture a `settings.30.instance.no-git.json` snapshot and inspect the six fields: `projectPath`, `projectPathRelativeToInstance`, `projectPaths`, `projectPathsRelativeToInstance`, `archivedProjectPaths`, `archivedProjectPathsRelativeToInstance`.
 5. Confirm each companion array has the same length and order as its absolute array, companion strings use `/` separators, and the cross-drive/share project (if present) has a `null` companion while keeping its absolute path.
 
 Expected Result:
@@ -310,26 +310,26 @@ Evidence Required:
 
 Pass/Fail Criteria:
 
-PASS if all six fields are present and aligned and the `null` cross-drive/share case is correct (or noted as untested when no second drive/share exists). PARTIAL if fields are correct but the cross-drive/share case could not be exercised. FAIL if arrays are misaligned, a companion is absolute or backslash-separated, or a same-drive project stores `null`. BLOCKED if `settings.json` cannot be inspected.
+PASS if all six fields are present and aligned and the `null` cross-drive/share case is correct (or noted as untested when no second drive/share exists). PARTIAL if fields are correct but the cross-drive/share case could not be exercised. FAIL if arrays are misaligned, a companion is absolute or backslash-separated, or a same-drive project stores `null`. BLOCKED if `settings.30.instance.no-git.json` cannot be inspected.
 
 ### SET-008: Legacy, new, and mixed schemas all load
 
 Purpose:
 
-Verify that a legacy absolute-only `settings.json`, a fully paired new-schema file, and a mixed file (some entries paired, some companion-absent) all load their projects, and that a legacy entry gains a companion only after a validating operation.
+Verify that a legacy absolute-only `settings.30.instance.no-git.json`, a fully paired new-schema file, and a mixed file (some entries paired, some companion-absent) all load their projects, and that a legacy entry gains a companion only after a validating operation.
 
 Preconditions:
 
 - The testable GUI is closed.
-- The test edits only the disposable testable identity's `settings.json` under `.agentscommander_testeable`.
+- The test edits only the disposable testable identity's `settings.30.instance.no-git.json` under `.agentscommander_testeable`.
 - Two or more disposable AC projects exist on disk for registration in each variant.
 
 Steps:
 
-1. Prepare variant A (legacy): `settings.json` with `projectPaths` populated and no companion fields at all.
+1. Prepare variant A (legacy): `settings.30.instance.no-git.json` with `projectPaths` populated and no companion fields at all.
 2. Launch the testable app, confirm the projects load, then close it. Confirm the file still has no companion fields (loading alone does not migrate).
 3. Trigger a validating operation (register or archive a project through the UI/CLI) and confirm a companion is then added for the reconciled entries.
-4. Prepare variant B (new): `settings.json` with fully aligned companion arrays. Launch, confirm the projects load, close.
+4. Prepare variant B (new): `settings.30.instance.no-git.json` with fully aligned companion arrays. Launch, confirm the projects load, close.
 5. Prepare variant C (mixed): `projectPaths` with an aligned companion array where one slot is `null` and one legacy singular-only carrier is present. Launch, confirm every valid entry loads and no entry is dropped.
 
 Expected Result:
@@ -338,13 +338,13 @@ Each schema variant loads its valid projects; a legacy file gains companions onl
 
 Evidence Required:
 
-- The three input `settings.json` variants (or diffs) captured before launch.
+- The three input `settings.30.instance.no-git.json` variants (or diffs) captured before launch.
 - Post-launch sidebar screenshots for each variant.
-- Post-operation `settings.json` snapshot for variant A showing companions added only after the validating operation.
+- Post-operation `settings.30.instance.no-git.json` snapshot for variant A showing companions added only after the validating operation.
 
 Pass/Fail Criteria:
 
-PASS if all three variants load correctly and legacy migration happens only after a validating operation. PARTIAL if loading is correct but one migration snapshot is missing. FAIL if any valid project fails to load, a plain load rewrites a legacy file, or a mixed entry is dropped. BLOCKED if the disposable `settings.json` cannot be prepared safely.
+PASS if all three variants load correctly and legacy migration happens only after a validating operation. PARTIAL if loading is correct but one migration snapshot is missing. FAIL if any valid project fails to load, a plain load rewrites a legacy file, or a mixed entry is dropped. BLOCKED if the disposable `settings.30.instance.no-git.json` cannot be prepared safely.
 
 ### SET-009: Misaligned companion is retained, not normalized
 
@@ -355,16 +355,16 @@ Verify that a structurally malformed project pair (a companion array whose lengt
 Preconditions:
 
 - The testable GUI is closed.
-- The test edits only the disposable testable identity's `settings.json` under `.agentscommander_testeable`.
+- The test edits only the disposable testable identity's `settings.30.instance.no-git.json` under `.agentscommander_testeable`.
 - A documented safe method exists to create the malformed disposable file. If not, mark this case `BLOCKED`.
 
 Steps:
 
-1. Capture a baseline `settings.json` snapshot and its byte size/mtime.
+1. Capture a baseline `settings.30.instance.no-git.json` snapshot and its byte size/mtime.
 2. Edit the disposable file so `projectPathsRelativeToInstance` has a different length than `projectPaths` (a misaligned companion).
 3. Launch the testable app.
 4. Confirm the malformed list produces no loaded projects from that list and the app reports the malformed condition rather than crashing.
-5. Without triggering a project mutation, capture the `settings.json` bytes/mtime and confirm they are unchanged (no auto-normalization write).
+5. Without triggering a project mutation, capture the `settings.30.instance.no-git.json` bytes/mtime and confirm they are unchanged (no auto-normalization write).
 6. Change one unrelated harmless setting and save; confirm the save succeeds and the malformed project fields are still present verbatim.
 7. Attempt a project mutation (open, archive, or remove); confirm it is refused while the malformed field is present.
 
@@ -387,7 +387,7 @@ PASS if the malformed pair is preserved, reported, and blocks mutation while unr
 
 Purpose:
 
-Verify that when a settings write cannot complete, the on-disk `settings.json` is left unchanged, the app still uses the validated selected project paths for the current run, and the failure is reported as an actionable diagnostic.
+Verify that when a settings write cannot complete, the on-disk `settings.30.instance.no-git.json` is left unchanged, the app still uses the validated selected project paths for the current run, and the failure is reported as an actionable diagnostic.
 
 Preconditions:
 
@@ -397,11 +397,11 @@ Preconditions:
 
 Steps:
 
-1. With a disposable project registered, capture a baseline `settings.json` snapshot and its bytes/mtime.
+1. With a disposable project registered, capture a baseline `settings.30.instance.no-git.json` snapshot and its bytes/mtime.
 2. Make the disposable settings directory or file unwritable using the documented safe method.
 3. Launch the app (or trigger an operation that would reconcile/write settings).
 4. Confirm the registered project still loads and is usable for this run from the validated selected path.
-5. Capture the `settings.json` bytes/mtime and confirm they are unchanged.
+5. Capture the `settings.30.instance.no-git.json` bytes/mtime and confirm they are unchanged.
 6. Capture the diagnostic warning/error and confirm it is actionable and does not claim a successful write.
 7. Restore writability and confirm a later save succeeds normally.
 
@@ -430,15 +430,15 @@ Preconditions:
 - Depends on SET-001.
 - The testable GUI is running for the interleaving steps.
 - Two or more disposable AC projects exist for registration.
-- Read-only inspection of the disposable `settings.json` is available.
+- Read-only inspection of the disposable `settings.30.instance.no-git.json` is available.
 
 Steps:
 
-1. With the GUI open and at least one project already registered, capture the baseline project list and `settings.json`.
+1. With the GUI open and at least one project already registered, capture the baseline project list and `settings.30.instance.no-git.json`.
 2. Run a CLI `open-project` for a second disposable project against the same testable identity.
 3. In the GUI, perform an unrelated settings save (a harmless setting change).
 4. In the GUI, perform a project mutation (archive or unarchive an existing project).
-5. Capture the final `settings.json` and project list.
+5. Capture the final `settings.30.instance.no-git.json` and project list.
 6. Confirm both projects remain registered, the CLI-registered entry survives, and every active and archived entry has an aligned absolute path and companion.
 
 Expected Result:
@@ -447,7 +447,7 @@ After the interleaving, no registration or companion is lost, the CLI-registered
 
 Evidence Required:
 
-- Baseline and final `settings.json` snapshots.
+- Baseline and final `settings.30.instance.no-git.json` snapshots.
 - Baseline and final project-list screenshots.
 - Notes confirming pair alignment for every active and archived entry.
 
@@ -466,19 +466,19 @@ Verify that a legacy project catalog migrates into an AC-managed base plus a use
 Preconditions:
 
 - A disposable testable identity with a disposable registered project. The GUI is closed while fixtures are prepared.
-- This case deliberately extends the suite's hand-edit boundary to the disposable test project's `.ac/coding-agents/` directory only. Back up `agents.json` and `agents.local.json` (when present) before replacing anything, and restore those originals afterwards. Do not touch a live project.
-- A legacy fixture `agents.json` without a `managed` marker: one shipped entry with a changed command and no `updateCommands`, one shipped entry with its current command and an explicit field, and no `agents.local.json`.
+- This case deliberately extends the suite's hand-edit boundary to the disposable test project's `.ac/coding-agents/` directory only. Back up `agents.10.default.json` and `agents.50.personal.no-git.json` (when present) before replacing anything, and restore those originals afterwards. Do not touch a live project.
+- A legacy fixture `agents.10.default.json` without a `managed` marker: one shipped entry with a changed command and no `updateCommands`, one shipped entry with its current command and an explicit field, and no `agents.50.personal.no-git.json`.
 
 Steps:
 
-1. Capture the fixture bytes and the disposable `settings.json` snapshot. Launch `agentscommander_testeable.exe --app` and let startup finish, then close it.
-2. Inspect `.ac/coding-agents/`: confirm `agents.json` now carries the `managed` marker, `agents.local.json` exists, and both `agents.migration-v1.backup.json` and `.agents.migration-v1.json` exist. Confirm the backup bytes equal the original legacy fixture byte-for-byte.
+1. Capture the fixture bytes and the disposable `agents.30.instance.no-git.json` snapshot. Launch `agentscommander_testeable.exe --app` and let startup finish, then close it.
+2. Inspect `.ac/coding-agents/`: confirm `agents.10.default.json` now carries the `managed` marker, `agents.50.personal.no-git.json` exists, and both `agents.migration-v1.backup.json` and `.agents.migration-v1.json` exist. Confirm the backup bytes equal the original legacy fixture byte-for-byte.
 3. Confirm the extraction: the changed/custom command has `updateCommands: []`, the unchanged shipped entry keeps its explicit values and inherits absent update commands, and shipped keys absent from the fixture have `remove: true` tombstones.
 4. Relaunch and close. Confirm the base and local bytes are unchanged (no re-extraction) and the seed manifest records one `catalog:coding-agents` row.
-5. Blocked recovery: while the GUI is closed, recreate the interrupted-before-base-publication state without deleting anything: copy `agents.migration-v1.backup.json` over `agents.json` (the backup is byte-equal to the legacy source, so the base now holds exactly the bytes the transaction started from), then edit `agents.local.json` (for example, change one inherited value). Relaunch, open Settings > Coding Agents, and confirm every byte is preserved:
+5. Blocked recovery: while the GUI is closed, recreate the interrupted-before-base-publication state without deleting anything: copy `agents.migration-v1.backup.json` over `agents.10.default.json` (the backup is byte-equal to the legacy source, so the base now holds exactly the bytes the transaction started from), then edit `agents.50.personal.no-git.json` (for example, change one inherited value). Relaunch, open Settings > Coding Agents, and confirm every byte is preserved:
    - `app.log` records a `migrationConflict` line naming the journal path and stating that the local overrides file does not match the interrupted migration;
    - the surfaces report `migrationPending` for the local path (`settings.catalog.warning.<index>`) while the readable base entries remain selectable;
-   - `agents.json`, `agents.local.json`, `agents.migration-v1.backup.json` and `.agents.migration-v1.json` are byte-for-byte unchanged.
+   - `agents.10.default.json`, `agents.50.personal.no-git.json`, `agents.migration-v1.backup.json` and `.agents.migration-v1.json` are byte-for-byte unchanged.
 6. Reconcile per [Coding agents § Migration, sidecars, and recovery](../integrations/coding-agents.md#migration-sidecars-and-recovery): write a valid local file, move the conflicting base and sidecars to archival names of your choice (do not delete them), and restart. Confirm AC initializes a fresh managed base and preserves the reconciled local file.
 7. Restore the fixture originals saved in the preconditions.
 
@@ -488,8 +488,8 @@ A legacy catalog migrates once into a managed base plus a local layer with exact
 
 Evidence Required:
 
-- Before/after byte listings and hashes of `agents.json`, `agents.local.json`, `agents.migration-v1.backup.json`, and `.agents.migration-v1.json` at every step.
-- `settings.json` snapshots before and after migration proving registered agents are unchanged.
+- Before/after byte listings and hashes of `agents.10.default.json`, `agents.50.personal.no-git.json`, `agents.migration-v1.backup.json`, and `.agents.migration-v1.json` at every step.
+- `agents.30.instance.no-git.json` snapshots before and after migration proving registered agents are unchanged.
 - The extracted local file content and the seed-manifest `catalog:coding-agents` row.
 - The `migrationConflict` `app.log` line and the `settings.catalog.warning.<index>` path and reason for the blocked recovery, with before/after hashes proving every fixture byte is unchanged.
 - Proof the original fixture files were restored afterwards.
@@ -509,16 +509,16 @@ Verify that changing the catalog base or local layer does not rewrite already re
 Preconditions:
 
 - A disposable testable identity with a disposable project and at least one agent registered from the catalog.
-- A backup of the disposable catalog files and `settings.json`; restore them afterwards.
+- A backup of the disposable catalog files and `agents.30.instance.no-git.json`; restore them afterwards.
 
 Steps:
 
-1. Capture the registered agent's `settings.json` row and its launcher entry.
-2. With the GUI closed, change that catalog entry's `label` and `command` in `agents.local.json`, then relaunch.
-3. Confirm the existing registered row in `settings.json` is byte-unchanged and the launcher still shows the stored snapshot.
+1. Capture the registered agent's `agents.30.instance.no-git.json` row and its launcher entry.
+2. With the GUI closed, change that catalog entry's `label` and `command` in `agents.50.personal.no-git.json`, then relaunch.
+3. Confirm the existing registered row in `agents.30.instance.no-git.json` is byte-unchanged and the launcher still shows the stored snapshot.
 4. Add a new agent from the same catalog entry and confirm the new row carries the changed label and command.
 5. Restart and confirm both rows remain as recorded.
-6. Restore the fixture originals and the `settings.json` snapshot.
+6. Restore the fixture originals and the `agents.30.instance.no-git.json` snapshot.
 
 Expected Result:
 
@@ -526,7 +526,7 @@ Registered agents are launch snapshots: catalog edits never rewrite them, and on
 
 Evidence Required:
 
-- Before/after `settings.json` snapshots showing the existing row unchanged.
+- Before/after `agents.30.instance.no-git.json` snapshots showing the existing row unchanged.
 - Semantic results for the existing launcher entry and the newly added row.
 - Proof the fixture originals were restored afterwards.
 

@@ -80,7 +80,7 @@ Two buttons answer it: `Yes` and `No`. `No` holds the focus when the prompt open
 
 Pressing **Enter or Escape answers No**. Both keys take the safe answer rather than the focused-button answer, so dismissing the prompt out of reflex never signs you up for automatic updates. The one exception is Enter on a focused cancel control, which cancels that update and leaves the question unanswered. While an answer is in flight the buttons are disabled and the keys are ignored, so you cannot answer twice.
 
-The prompt does not replace the timeline. The question sits between the progress bar and the row list, so the row buttons and `Cancel all` stay reachable while it is open. Cancelling the row that is being asked about closes its question without recording any answer: nothing is written to `settings.json`, and AC asks about that command again at the next startup.
+The prompt does not replace the timeline. The question sits between the progress bar and the row list, so the row buttons and `Cancel all` stay reachable while it is open. Cancelling the row that is being asked about closes its question without recording any answer: nothing is written to `settings.30.instance.no-git.json`, and AC asks about that command again at the next startup.
 
 Answering **No** removes that agent's row from the timeline. The counter's total drops with it, so a pass of three agents where you decline one continues as `<n> of 2 completed`.
 
@@ -99,7 +99,7 @@ Closing a window, or navigating away from it, does not cancel anything. The pass
 
 ## How your answer is remembered
 
-Your answer is written into `agentAutoUpdateByCommand` in `settings.json`, a map from coding-agent command to your answer:
+Your answer is written into `agentAutoUpdateByCommand` in `settings.30.instance.no-git.json`, a map from coding-agent command to your answer:
 
 - `true` means AC updates that command at every startup and does not ask again.
 - `false` means AC never updates that command and does not ask again.
@@ -107,7 +107,7 @@ Your answer is written into `agentAutoUpdateByCommand` in `settings.json`, a map
 
 AC persists your answer **before** it tries to act on it. The point is that a failure while starting the update cannot cost you the answer: whatever happens next, that command is not asked about again.
 
-To change your mind later, edit the entry in `settings.json`. Setting a command back to an absent key (removing it from the map) makes AC ask you again on the next startup.
+To change your mind later, edit the entry in `settings.30.instance.no-git.json`. Setting a command back to an absent key (removing it from the map) makes AC ask you again on the next startup.
 
 ## Settings
 
@@ -147,7 +147,7 @@ Commands come only from the persisted catalog: AC never substitutes the shipped 
 
 **"AC updated an agent I never approved."** Check `agentAutoUpdateByCommand` for the agent's **command**, not its label or id. Two profiles sharing one command share one answer, so approving the update for one profile approves it for the binary they both use.
 
-**"My agents never update although I answered Yes."** The persisted catalog entry for that command has no `updateCommands`, so there is nothing to run. Commands come only from the persisted catalog - AC does not substitute the shipped defaults at read time. If your catalog was seeded before update commands shipped, restart AC: a supported restart migrates a legacy catalog and persists the built-in sequences (a custom or changed command with no persisted sequence stays empty). Otherwise add the command to `agents.local.json` (see [Managed catalog: base, local overrides, and migration](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration)). Settings > Coding Agents and the New Agent picker show the warning with the file path and reason, and **Reload catalog** re-reads the files. The preference control remains `agentAutoUpdateByCommand`. Users who registered `hermes`, `opencode`, or `agy` and were never asked may see ONE first prompt at the next startup (default No) - answering it is how the per-command preference is set.
+**"My agents never update although I answered Yes."** The persisted catalog entry for that command has no `updateCommands`, so there is nothing to run. Commands come only from the persisted catalog - AC does not substitute the shipped defaults at read time. If your catalog was seeded before update commands shipped, restart AC: a supported restart migrates a legacy catalog and persists the built-in sequences (a custom or changed command with no persisted sequence stays empty). Otherwise add the command to `agents.50.personal.no-git.json` (see [Managed catalog: base, local overrides, and migration](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration)). Settings > Coding Agents and the New Agent picker show the warning with the file path and reason, and **Reload catalog** re-reads the files. The preference control remains `agentAutoUpdateByCommand`. Users who registered `hermes`, `opencode`, or `agy` and were never asked may see ONE first prompt at the next startup (default No) - answering it is how the per-command preference is set.
 
 **"I want to be asked again."** Remove that command's key from `agentAutoUpdateByCommand`. An absent key is what makes AC ask.
 

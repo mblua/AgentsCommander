@@ -42,7 +42,7 @@ In AgentsCommander:
 
 If **Test** reports that no messages were found, send another message to the bot in Telegram and click **Test** again.
 
-**Test** writes the discovered chat ID into the Settings modal draft only. The bot configuration is persisted to `settings.json` after you click **Save**.
+**Test** writes the discovered chat ID into the Settings modal draft only. The bot configuration is persisted to `settings.30.instance.no-git.json` after you click **Save**.
 
 ## Security model
 
@@ -55,7 +55,7 @@ Telegram bridge authorization is chat-level:
 - In a group, the configured `chat_id` is the group chat. Any group member whose text or voice message is delivered to the bot can send accepted input. Telegram privacy mode and group permissions can affect which messages the bot receives, but AC does not enforce a per-member allowlist after the group `chat_id` matches.
 - Delivered text messages from the bound chat are written into the attached session. Delivered voice messages from the bound chat can be transcribed and injected when a Gemini API key is configured.
 
-Protect the bot token. Anyone with the token can call Telegram Bot API methods for that bot. Keep `settings.json` and logs private, and rotate the token in BotFather if it is exposed.
+Protect the bot token. Anyone with the token can call Telegram Bot API methods for that bot. Keep `settings.30.instance.no-git.json` and logs private, and rotate the token in BotFather if it is exposed.
 
 ## 4. Attach to a session
 

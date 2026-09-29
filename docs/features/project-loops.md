@@ -114,9 +114,9 @@ The practical consequence: a Loop wakes a room you closed yesterday. If you do n
 
 ## Where the configuration lives
 
-**There is no Loop key in `settings.json`.** Loops are per project, not a global preference.
+**There is no Loop key in `settings.30.instance.no-git.json`.** Loops are per project, not a global preference.
 
-Each Loop is a directory inside the project's AC root: `_loop_<id>/config.toml` holds the definition, and its scheduler state (last check, pending delivery) sits beside it. AC writes both, through the sidebar modals or the CLI; you do not need to edit them by hand.
+Each Loop is a directory inside the project's AC root: `_loop_<id>/config.toml` holds the definition, and its scheduler state (last check, pending delivery) sits beside it in `loop.state.no-git.json`. AC writes both, through the sidebar modals or the CLI; you do not need to edit them by hand.
 
 Because the storage is on-disk project files, `loop` CLI commands need **no token**: any process that can already write to the project can write them.
 

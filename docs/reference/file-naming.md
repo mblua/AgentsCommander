@@ -2,8 +2,8 @@
 
 For contributors who add, rename, or review an AgentsCommander config file. Check this page before you name a file, so that the name tells every reader who owns it, which layer wins, and whether it may be committed.
 
-> **Status: target convention, mostly NOT implemented.**
-> The product owner decided this convention on 2026-09-23 ([#2448](https://github.com/mblua/AgentsCommander/issues/2448)). Most renames below are still pending and will land in a dedicated epic. Until then, the shipped product still reads and writes today's names. When another doc names a file differently, this page wins for new work; the other doc describes today's code until someone updates it.
+> **Status: implemented, except `agents.40.project.json`.**
+> The product owner decided this convention on 2026-09-23 ([#2448](https://github.com/mblua/AgentsCommander/issues/2448)). The file-naming epic ([#2470](https://github.com/mblua/AgentsCommander/issues/2470)) shipped the renames below. AC now reads and writes only the new names. `agents.40.project.json` is reserved: its name exists in code, but no build reads or writes it yet.
 > The migration is **forward only**: once a version renames your files, you cannot downgrade past it.
 
 ## The rule
@@ -58,11 +58,11 @@ The 7 git-tracked instance entries also keep their names (`src-tauri/src/config/
 
 The name does not say the scope; the folder does. The instance dir (`.agentscommander*/`) holds instance files, and the project dir (`.ac/`) holds project files. Being inside `.ac/` does not mean a file is tracked: rooms are never committed. See [Directory layout](directory-layout.md).
 
-## Today's names and their targets
+## Old names and their new names
 
 ### `settings.*`
 
-| Today | Target |
+| Old name | Target |
 |---|---|
 | `settings.json` | `settings.30.instance.no-git.json` |
 | `settings.local.json` | `settings.50.personal.no-git.json` |
@@ -74,7 +74,7 @@ Lock and backup files follow the live file's name.
 
 ### `blocking-menus.*`
 
-| Today | Target |
+| Old name | Target |
 |---|---|
 | `settings-blocking-menus.json` | `blocking-menus.10.default.no-git.json` |
 | `settings-blocking-menus.remote.json` | `blocking-menus.20.remote.no-git.json` |
@@ -83,7 +83,7 @@ Lock and backup files follow the live file's name.
 
 ### `agents.*`
 
-| Today | Target |
+| Old name | Target |
 |---|---|
 | `.ac/coding-agents/agents.json` | `agents.10.default.json` (tracked, so no `.no-git`) |
 | `agents.local.json` | `agents.50.personal.no-git.json` |
@@ -93,12 +93,22 @@ Lock and backup files follow the live file's name.
 
 Never renamed: `agents.migration-v1.backup.json` and `.agents.migration-v1.json`. An interrupted catalog migration resumes by those exact names.
 
+## Names phase B added
+
+These names are not in the three tables above. Two replace an older name, and two are new files.
+
+| File | Where | What it holds |
+|---|---|---|
+| `.ac/settings.50.personal.no-git.json` | Each project's `.ac/` | Project settings, formerly `.ac/project-settings.json`. Personal: never committed. |
+| `_loop_*/loop.state.no-git.json` | Each Loop directory under `.ac/` | The Loop's scheduler state, formerly `state.json` beside its `config.toml`. |
+| `agents.30.instance.no-git.json` | The instance dir | Coding agents (`agents`) and their profiles (`codingAgentProfiles`), moved out of the instance settings file. |
+| `naming-migration.state.no-git.json` | The instance dir | The migration journal: what the migration renamed and set aside. It also marks the migration as done. |
+
 ## Planned splits
 
 | From | To |
 |---|---|
-| Coding agents and profiles in `settings.json` | `agents.30.instance.no-git.json` |
-| Window geometry and zoom in `settings.json` | `window.state.no-git.json` |
+| Window geometry and zoom in `settings.30.instance.no-git.json` | `window.state.no-git.json` |
 | Agent `config.json` | Decisions stay in `config.json` (tracked); state moves to `config.state.no-git.json` |
 
 ## The model: blocking-menu precedence
@@ -112,8 +122,17 @@ Blocking menus already resolve layers the way this convention generalizes (`src-
 
 ## Migration policy
 
-- AC migrates once, at startup, and writes a log of what it renamed. After that, the code knows only the new names.
-- The migration is **forward only**. You cannot downgrade past the version that migrates your files.
+- **When it runs.** AC migrates the instance dir at startup, before it reads its settings; each registered project is migrated when AC loads it. The migration is one-shot and idempotent: once a directory is done, later starts skip it. A project that did not finish is retried on the next startup.
+- **What it records.** It writes the journal `naming-migration.state.no-git.json` in the instance dir, and logs one summary line of what it renamed. After that, the code knows only the new names.
+- **It never deletes or overwrites.** Each file is renamed in place. When both the old and the new name exist, the **new** file wins and AC keeps running. The old file is renamed beside it to `<old name>.deprecated-<n>.no-git`, which the ignore rules keep out of Git. No dialog appears. If you wanted the older file's contents, open that `.deprecated-<n>.no-git` file.
+- **Lock sidecars.** After the rename, AC writes a new lock sidecar beside each renamed file, for example `.agents.10.default.json.lock`. The old sidecar, such as `.agents.json.lock`, stays on disk as an inert leftover that AC ignores.
+- **When it stops AC.** Three outcomes stop AC at startup with a message, and none of them is repaired by guesswork:
+  - Another process holds the migration lock for longer than five seconds and has not finished. Retry once that process has exited.
+  - An I/O error while renaming. Fix the permission or disk problem the message names.
+  - A migration journal that cannot be read, or that carries an unknown version. The message names the file; send it to support.
+
+  In every case AC starts normally on the next run once the named condition is gone. Both names being present is **not** one of these outcomes.
+- **Forward only.** You cannot downgrade past the version that migrates your files, and there is no compatibility shim. An older build finds none of the old names, starts from defaults, and leaves your real settings untouched under names it does not know.
 - Renaming the tracked `agents.json` shows up in your repo as a delete plus an add. The migration log says so.
 
 ## Rules for new files
@@ -122,9 +141,9 @@ Blocking menus already resolve layers the way this convention generalizes (`src-
 - Never invent a new suffix meaning.
 - Generate `<NN>` and `<owner>` from one constant per layer in `src-tauri/src/config/instance_artifacts.rs`; never type them by hand.
 
-The constants are `LAYER_DEFAULT`, `LAYER_REMOTE`, `LAYER_INSTANCE`, `LAYER_PROJECT` and `LAYER_PERSONAL` (each one `NN.owner` token), `NO_GIT_MARKER` and `STATE_MARKER`; the `layered_name!` macro composes a name from them. Every target name in the tables above already exists there as a constant, and none is in use until the rename ships.
+The constants are `LAYER_DEFAULT`, `LAYER_REMOTE`, `LAYER_INSTANCE`, `LAYER_PROJECT` and `LAYER_PERSONAL` (each one `NN.owner` token), `NO_GIT_MARKER` and `STATE_MARKER`; the `layered_name!` macro composes a name from them. Every target name in the tables above exists there as a constant.
 
 ## Cross-references
 
 - [Directory layout](directory-layout.md): where the instance dir and `.ac/` live
-- [Settings reference](settings.md): today's `settings.json` schema
+- [Settings reference](settings.md): the `settings.30.instance.no-git.json` schema

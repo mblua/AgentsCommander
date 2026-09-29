@@ -34,13 +34,13 @@ Three patterns ship, across exactly two stems:
 | `codex` | `^\s*Do you trust the contents of this directory\?` | `codex is waiting for you to answer the folder-trust menu in this terminal` |
 | `codex` | `^[^A-Za-z0-9]*Hooks need review\b` | `codex is waiting for you to answer the hooks-review menu in this terminal` |
 
-Those patterns live in `settings-blocking-menus.json`, under `byCommand`.
+Those patterns live in `blocking-menus.10.default.no-git.json`, under `byCommand`.
 
 At startup AC can also download the published pattern file from the Agents Commander repository. A downloaded file can update the patterns for a stem it names between app releases; a validated copy applies at the next start.
 
-**Every other stem ships nothing.** That includes Claude Code, Antigravity, and anything you added yourself. A legacy array still on the agent, or an entry in `settings-blocking-menus.local.json`, can still apply; the walkthrough below shows how.
+**Every other stem ships nothing.** That includes Claude Code, Antigravity, and anything you added yourself. A legacy array still on the agent, or an entry in `blocking-menus.50.personal.no-git.json`, can still apply; the walkthrough below shows how.
 
-AC owns `settings-blocking-menus.json` and rewrites it at start whenever its content differs from the running version's embedded content, so edits there are lost.
+AC owns `blocking-menus.10.default.no-git.json` and rewrites it at start whenever its content differs from the running version's embedded content, so edits there are lost.
 
 ## How a pattern is matched
 
@@ -73,11 +73,11 @@ An **episode** is one appearance of one menu. Episodes exist so that `Resolved b
 - When the menu **disappears**, AC clears the notice and forgets the suppression. The next appearance is a fresh episode and raises a fresh notice. That is the re-arm.
 - A **different** pattern matching also opens a new episode, so a suppressed folder-trust prompt does not silence a hooks-review prompt that follows it.
 
-Turning the guard off at the root also ends every episode it is currently holding: the next tick clears each blocked session, drops its toast and its chip, and lets writes through again. No session restart is needed for that; the app restart you need is the one that reads your edited `settings.json` in the first place.
+Turning the guard off at the root also ends every episode it is currently holding: the next tick clears each blocked session, drops its toast and its chip, and lets writes through again. No session restart is needed for that; the app restart you need is the one that reads your edited `settings.30.instance.no-git.json` in the first place.
 
 ## Adding a pattern by hand
 
-There is no Settings screen and no CLI verb for the blocking-menu patterns. You edit `settings-blocking-menus.local.json`.
+There is no Settings screen and no CLI verb for the blocking-menu patterns. You edit `blocking-menus.50.personal.no-git.json`.
 
 Apart from the one-time upgrade migration, AC never rewrites that file, so editing it while AC is running loses nothing. The guard reads it once, when AC starts, so restart AC after editing.
 
@@ -103,7 +103,7 @@ Escape the `?`. In JSON, every backslash doubles.
 
 ### 3. Add it to your file
 
-Create `settings-blocking-menus.local.json` next to `settings.json` and add the agent under `byAgent`. Adding it to the `claude` agent looks like this:
+Create `blocking-menus.50.personal.no-git.json` next to `settings.30.instance.no-git.json` and add the agent under `byAgent`. Adding it to the `claude` agent looks like this:
 
 ```json
 {
@@ -130,22 +130,22 @@ Start AgentsCommander, launch the agent, and trigger the dialog again. Within ab
 
 ## The three files and their precedence
 
-The patterns live in three files next to `settings.json`:
+The patterns live in three files next to `settings.30.instance.no-git.json`:
 
 | File | Who writes it | When |
 |---|---|---|
-| `settings-blocking-menus.json` | AC | Rewritten at start whenever its content differs from the running version's embedded content, so edits there are lost. |
-| `settings-blocking-menus.local.json` | You | Read at start. AC writes it only when the upgrade migration runs, and that write adds `byAgent` rows without overwriting an existing one. |
-| `settings-blocking-menus.remote.json` | AC's startup download | Written only after the whole file passes validation; read and validated again at every start. |
+| `blocking-menus.10.default.no-git.json` | AC | Rewritten at start whenever its content differs from the running version's embedded content, so edits there are lost. |
+| `blocking-menus.50.personal.no-git.json` | You | Read at start. AC writes it only when the upgrade migration runs, and that write adds `byAgent` rows without overwriting an existing one. |
+| `blocking-menus.20.remote.no-git.json` | AC's startup download | Written only after the whole file passes validation; read and validated again at every start. |
 
 All three files share one shape: `schemaVersion` (must be `1`), an optional `note`, `byCommand` (keys are the lowercase executable stem, exact match) and `byAgent` (keys are agent ids); the remote file must also keep `byAgent` empty. A `.local` file that is not an object, carries another `schemaVersion`, or gives the wrong type for `note`, `byCommand` or `byAgent` is ignored whole, with one error line in the log. The remote file is validated whole on arrival and again at every start, including its entry, text and regex limits; any failed check rejects the file whole, never one entry, and the layers below it apply. The shipped file is never parsed at runtime: AC rewrites it from the binary's embedded copy at start and evaluates that embedded copy. An entry inside an array that AC cannot read is kept verbatim and skipped, as before.
 
 The guard picks one array per agent. The first layer that supplies one wins, replacing the layers below it whole:
 
-1. an array still on the agent: a legacy `blockingMenus` in `settings.json` that the migration could not move, or one inside an `agents` array owned by `settings.local.json`
+1. an array still on the agent: a legacy `blockingMenus` on a coding-agent entry that the migration could not move, or one inside an `agents` array owned by `settings.50.personal.no-git.json`
 2. `byAgent[id]` in `.local`
 3. `byCommand[stem]` in `.local`
-4. `byCommand[stem]` in `settings-blocking-menus.remote.json`
+4. `byCommand[stem]` in `blocking-menus.20.remote.no-git.json`
 5. `byCommand[stem]` in the shipped file
 6. otherwise nothing: the agent detects nothing
 
@@ -153,7 +153,7 @@ Use `byCommand` when the pattern should follow the command and reach every agent
 
 **Replace-whole has a cost.** A `byAgent.<id>` row in `.local` - written by hand or by the migration - freezes that agent against every future shipped pattern for its stem, because the row replaces the shipped array instead of adding to it. A remote array replaces the shipped array the same way. To keep shipped updates plus one extra pattern, keep the shipped entries in that row and revisit it after upgrades.
 
-`menuGuardEnabled` is not part of any of those files. It stays a key in `settings.json`, and `settings.local.json` can still override it.
+`menuGuardEnabled` is not part of any of those files. It stays a key in `settings.30.instance.no-git.json`, and `settings.50.personal.no-git.json` can still override it.
 
 ## Turning the guard off
 
@@ -162,26 +162,26 @@ The scopes, smallest first:
 | What you want | What to write |
 |---|---|
 | Stop one pattern, keep the rest | `"enabled": false` on that entry, inside a `.local` array |
-| Stop every pattern for one agent | `"byAgent": {"<id>": []}` in `settings-blocking-menus.local.json` |
-| Stop every pattern for one command | `"byCommand": {"<stem>": []}` in `settings-blocking-menus.local.json` |
+| Stop every pattern for one agent | `"byAgent": {"<id>": []}` in `blocking-menus.50.personal.no-git.json` |
+| Stop every pattern for one command | `"byCommand": {"<stem>": []}` in `blocking-menus.50.personal.no-git.json` |
 | Override a downloaded pattern for one command | Write that stem in `.local` `byCommand`, with the entries you want to keep |
-| Stop the feature everywhere | `"menuGuardEnabled": false` at the root, or in the `settings.local.json` overlay |
+| Stop the feature everywhere | `"menuGuardEnabled": false` at the root, or in the `settings.50.personal.no-git.json` overlay |
 
-The first four forms live in `.local` and each is effective only when no higher layer supplies an array for that agent: a legacy array still on the agent wins over `.local`. To switch off one shipped entry with `"enabled": false`, copy that stem's shipped entries into your `.local` array first, because the `.local` array replaces the shipped array whole. The download has its own switch: clear **Download blocking-menu pattern updates from GitHub** to stop future downloads. It stops downloads only, and a file already downloaded keeps applying until you delete `settings-blocking-menus.remote.json`.
+The first four forms live in `.local` and each is effective only when no higher layer supplies an array for that agent: a legacy array still on the agent wins over `.local`. To switch off one shipped entry with `"enabled": false`, copy that stem's shipped entries into your `.local` array first, because the `.local` array replaces the shipped array whole. The download has its own switch: clear **Download blocking-menu pattern updates from GitHub** to stop future downloads. It stops downloads only, and a file already downloaded keeps applying until you delete `blocking-menus.20.remote.no-git.json`.
 
-For a stem that ships nothing (Claude Code, Antigravity, ...), the durable off form is now `"byAgent": {"<id>": []}` in `.local`. A `[]` left in `settings.json` for such a stem is AC's own materialized default and is dropped by the migration.
+For a stem that ships nothing (Claude Code, Antigravity, ...), the durable off form is now `"byAgent": {"<id>": []}` in `.local`. A `[]` left on a coding-agent entry for such a stem is AC's own materialized default and is dropped by the migration.
 
 An entry can be removed durably by owning the array in `.local` without it. Once the array lives there, the Codex hooks-review entry is no longer special - the migration still back-fills it once, on the way in, as the next section describes.
 
 ## Upgrading from a `blockingMenus` array
 
-The first settings load after the upgrade moves every `blockingMenus` array out of `settings.json`. Each array still there is compared with the shipped set for its command stem:
+The first settings load after the upgrade moves every `blockingMenus` array off the coding-agent entries. Each array still there is compared with the shipped set for its command stem:
 
 - An array equal to the shipped set is dropped.
 - `[]` on a stem that ships nothing (Claude Code, Antigravity, ...) is also dropped, because that is what AC itself wrote there.
-- Every other array is copied into `settings-blocking-menus.local.json` under `byAgent.<id>`: `[]` on `pi` or `codex`, and any array holding a disabled entry, a custom entry, or an entry AC cannot read. Readable entries are written in AC's own form, with `enabled` written out; unreadable entries are copied verbatim.
+- Every other array is copied into `blocking-menus.50.personal.no-git.json` under `byAgent.<id>`: `[]` on `pi` or `codex`, and any array holding a disabled entry, a custom entry, or an entry AC cannot read. Readable entries are written in AC's own form, with `enabled` written out; unreadable entries are copied verbatim.
 
-Then the `blockingMenus` key leaves `settings.json`. An id that already exists in `.local` is kept, not overwritten, and the copy in `settings.json` is discarded rather than merged; the `.local` file is written before `settings.json` is touched.
+Then the `blockingMenus` key leaves the coding-agent entry. An id that already exists in `.local` is kept, not overwritten, and the copy on the entry is discarded rather than merged; the `.local` file is written before the entry is touched.
 
 **The back-fill runs first.** Before the compare, a non-empty array on a `codex`-stem agent that lacks the hooks-review pattern gets that entry appended (the #1757 back-fill, run once more inside the migration; a disabled copy counts as present). Two consequences:
 
@@ -194,11 +194,11 @@ Then the `blockingMenus` key leaves `settings.json`. An id that already exists i
 - `.local` exists but does not parse or has the wrong shape.
 - `.local` cannot be written.
 - Two agents share an id with different arrays or different commands.
-- The `agents` array is owned by `settings.local.json`.
+- The `agents` array is owned by `settings.50.personal.no-git.json`.
 
 AC retries on every settings load: every GUI start, every settings reload the running GUI performs, and every CLI verb that validates a session token (send, list-peers, close-session and the others). Verbs such as open-project, new-project and create-agent-matrix load settings another way and never retry. Each attempt logs one line until the cause is fixed: an error line, or for an overlay-owned `agents` array one info line per agent. For that overlay case, move the entries into `.local` by hand and delete those agents' `blockingMenus` keys from the overlay.
 
-**Undoing the move** needs an older binary. With AC closed, copy each `byAgent.<id>` array from `.local` back under that agent as `blockingMenus` in `settings.json`, delete both new files, and run the older version. Starting the new version instead migrates again at once. Command-wide entries you added under `byCommand` have no place in `settings.json` and are lost by this undo.
+**There is no undo.** Undoing the move would need an older binary, and the file-naming migration has also renamed the settings files, so an older binary finds none of them and starts from defaults. Downgrading past the file-naming release is not supported; see [File naming convention](../reference/file-naming.md#migration-policy).
 
 ## Settings
 
@@ -206,9 +206,9 @@ AC retries on every settings load: every GUI start, every settings reload the ru
 |---|---|
 | `menuGuardEnabled` | Root switch for the whole feature. `true` by default. With `false`, each tick clears any session the guard was holding and evaluates nothing. |
 | `remoteBlockingMenusEnabled` | Download the published blocking-menu patterns at startup, at most once per 24 h; they apply at the next start. `true` by default. Off stops the download only. |
-| `blockingMenus` | Legacy. Moved to `settings-blocking-menus.local.json` on the first start after upgrade; while still present it applies as before. |
+| `blockingMenus` | Legacy. Moved to `blocking-menus.50.personal.no-git.json` on the first start after upgrade; while still present it applies as before. |
 
-Three files next to `settings.json`, not keys in it, also control this feature: `settings-blocking-menus.json` (AC-owned, rewritten at start when it differs from the running version), `settings-blocking-menus.local.json` (yours, read at start) and `settings-blocking-menus.remote.json` (downloaded, read and validated at start); see [Settings reference](../reference/settings.md#menu-guard) for their shape and precedence.
+Three files next to `settings.30.instance.no-git.json`, not keys in it, also control this feature: `blocking-menus.10.default.no-git.json` (AC-owned, rewritten at start when it differs from the running version), `blocking-menus.50.personal.no-git.json` (yours, read at start) and `blocking-menus.20.remote.no-git.json` (downloaded, read and validated at start); see [Settings reference](../reference/settings.md#menu-guard) for their shape and precedence.
 
 See [Settings reference](../reference/settings.md#menu-guard) for the full `BlockingMenuConfig` shape, field by field.
 
@@ -221,10 +221,10 @@ See [Settings reference](../reference/settings.md#menu-guard) for the full `Bloc
 1. You edited `.local` while AC was running. It is read once at start, so restart AC.
 2. The pattern does not compile. Look for `[menu_guard] Invalid regex pattern` in the log. Lookahead and backreferences are the common ones, and neither is supported.
 3. The pattern is anchored past the row's real start. The row keeps its leading spaces and any box-drawing prefix, so `^Do you trust` fails on `| Do you trust ...`. Drop the `^`, or use `^[^A-Za-z0-9]*`.
-4. You edited `settings-blocking-menus.json`. AC rewrites that file at start, so those edits are lost.
+4. You edited `blocking-menus.10.default.no-git.json`. AC rewrites that file at start, so those edits are lost.
 5. A higher layer holds an array for that agent. A `byAgent.<id>` row in `.local` - the migration writes one for every agent whose array was not the shipped set - replaces `byCommand`, and a legacy `blockingMenus` array still on the agent replaces both.
 
-**"My edit disappeared."** One of three things happened. (a) You edited `settings.json` while AC was running: it loads that file into memory at startup, never refreshes that copy from disk, and writes it back on save, so the running app is authoritative until you close it. (b) You edited `settings-blocking-menus.json`: AC rewrites it at start, so those edits are lost. (c) The migration moved your legacy `blockingMenus` array from `settings.json` into `.local` under `byAgent.<id>`, so look for it there.
+**"My edit disappeared."** One of three things happened. (a) You edited `settings.30.instance.no-git.json` while AC was running: it loads that file into memory at startup, never refreshes that copy from disk, and writes it back on save, so the running app is authoritative until you close it. (b) You edited `blocking-menus.10.default.no-git.json`: AC rewrites it at start, so those edits are lost. (c) The migration moved your legacy `blockingMenus` array from `settings.30.instance.no-git.json` into `.local` under `byAgent.<id>`, so look for it there.
 
 **"The pattern matches text I can see on one line, but nothing fires."** The line is wrapping across the top edge of the screen. A wrapped logical row that starts at physical row 0 is skipped, because its beginning may have scrolled away. Make the terminal wider, or scroll, and it evaluates on the next tick.
 

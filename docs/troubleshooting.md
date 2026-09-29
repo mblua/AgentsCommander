@@ -45,7 +45,7 @@ If the install or launch fails, file a [reproducible platform report](install-wi
 
 ### "No coding agents detected"
 
-AC launches the commands configured under `settings.json → agents[]`. Verify that the CLI you use is on the `PATH` inherited by AC:
+AC launches the commands configured under `agents.30.instance.no-git.json → agents[]`. Verify that the CLI you use is on the `PATH` inherited by AC:
 
 ```powershell
 where.exe claude
@@ -146,7 +146,7 @@ Two reasons:
 
 ### Mic button does nothing
 
-Voice requires a Gemini API key in **Settings → Integrations → Voice**. Without a key the button stays disabled. The key is stored locally in `settings.json` — see [`PRIVACY.md`](../PRIVACY.md).
+Voice requires a Gemini API key in **Settings → Integrations → Voice**. Without a key the button stays disabled. The key is stored locally in `settings.30.instance.no-git.json` — see [`PRIVACY.md`](../PRIVACY.md).
 
 ### Transcription is wrong every time
 
@@ -154,7 +154,7 @@ The Gemini transcription model is `gemini-2.5-flash` by default. Switch to `gemi
 
 ## Logs
 
-If something fails and you cannot tell why, raise the log level. Pick a level in **Settings -> General -> Logging** (it applies live, no restart), set `logLevel` in `settings.json`, or set `RUST_LOG` before launching for per-module filtering from a terminal:
+If something fails and you cannot tell why, raise the log level. Pick a level in **Settings -> General -> Logging** (it applies live, no restart), set `logLevel` in `settings.30.instance.no-git.json`, or set `RUST_LOG` before launching for per-module filtering from a terminal:
 
 ```bash
 RUST_LOG=agentscommander=trace agentscommander.exe

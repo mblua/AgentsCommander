@@ -15,7 +15,7 @@ The destination is replaced atomically. AC renames any existing folder to a tras
 
 ## Enabling it
 
-Config seed is configured **per coding agent**, on the agent's entry in `settings.json` under `configSeed`:
+Config seed is configured **per coding agent**, on the agent's entry in `agents.30.instance.no-git.json` under `configSeed`:
 
 ```json
 {
@@ -131,7 +131,7 @@ One further condition sits in front of both the master above and the button belo
 
 Use it when you have edited a factory master and want AC's original default back.
 
-**Re-seed is not the managed catalog.** The button writes only the tier-5 master under the primary registered project's `.ac/coding-agents/_seed/`; with no primary project it uses the legacy `<config_dir>/coding-agents/_seed/`. It never touches the project's managed `agents.json`, its `agents.local.json`, a registered agent, or a running session. Settings' **Reload catalog** re-reads the persisted catalog files (it does not re-seed), and a restart is what retries managed-base refresh or migration. See [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
+**Re-seed is not the managed catalog.** The button writes only the tier-5 master under the primary registered project's `.ac/coding-agents/_seed/`; with no primary project it uses the legacy `<config_dir>/coding-agents/_seed/`. It never touches the project's managed `agents.10.default.json`, its `agents.50.personal.no-git.json`, a registered agent, or a running session. Settings' **Reload catalog** re-reads the persisted catalog files (it does not re-seed), and a restart is what retries managed-base refresh or migration. See [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
 
 ## Token substitution
 
@@ -187,7 +187,7 @@ Config seed copies the template. That is all. In particular:
 
 **"My agent's config is overwritten on every launch."** That is expected: the destination is replaced atomically on every spawn. If `dest` matches the coding agent's actual config directory, the seed overwrites that live config each time. AC logs a heuristic warning when `dest` lines up with, or exactly matches, the agent's configured config-dir env. Point `dest` at a directory you intend AC to own, or turn seeding off for that agent.
 
-**"`invalid dest '...'` in the logs."** `dest` must be a plain, safe folder name with no path separators or traversal. Fix the value in `settings.json`.
+**"`invalid dest '...'` in the logs."** `dest` must be a plain, safe folder name with no path separators or traversal. Fix the value in `agents.30.instance.no-git.json`.
 
 ## See also
 

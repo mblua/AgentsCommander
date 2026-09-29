@@ -57,9 +57,9 @@ The rail entry shows that derived name. The project panel does not: its non-stop
 
 ## Where the configuration lives
 
-**There is no non-stop key in `settings.json`.** Non-stop is not a global preference, so it is not in the global settings file and there is no key to add there.
+**There is no non-stop key in `settings.30.instance.no-git.json`.** Non-stop is not a global preference, so it is not in the global settings file and there is no key to add there.
 
-The configuration is per project, in the project's `.ac/project-settings.json`, alongside the rest of the project's group configuration. AC writes that file for you when you use the rail or the project panel; you do not need to edit it by hand.
+The configuration is per project, in the project's `.ac/settings.50.personal.no-git.json`, alongside the rest of the project's group configuration. AC writes that file for you when you use the rail or the project panel; you do not need to edit it by hand.
 
 What that file holds for the group: its name, its member rooms, its tolerance in seconds, and the two measures (Telegram, with its bot, and sound, with its duration).
 

@@ -51,7 +51,7 @@ Residual test data:
 
 - The disposable project folder remains at `C:\Users\maria\0_repos\AgentsCommander_ac\.ac\room-1-dev-team\__agent_ac-cli-tester\evidence\testing-phase-1\ac-regression-prj-20260611-020008`.
 - The folder contains a generated `.ac/` Project AC Root.
-- The project remains registered in `C:\Users\maria\0_mmb\0_AC\.agentscommander_standalone_wg-1\settings.json`.
+- The project remains registered in `C:\Users\maria\0_mmb\0_AC\.agentscommander_standalone_wg-1\settings.30.instance.no-git.json`.
 - No cleanup was performed because the current app has no safe reset command for normal binaries; planned support is tracked by #475.
 
 Automation gaps observed:
@@ -340,27 +340,27 @@ Preconditions:
 
 - A disposable portable tree under a scratch area: a copy of the AC binary in `<tree>/app/` (for example `agentscommander_reloc.exe`), its config directory created next to it on first run, and a disposable AC project at `<tree>/projects/alpha` containing `.ac/`.
 - The tester can move the whole tree and later launch it from an unrelated working directory.
-- Read-only inspection of the disposable `settings.json` is available.
+- Read-only inspection of the disposable `settings.30.instance.no-git.json` is available.
 
 Steps:
 
 1. Register the project from the source tree: `<tree>/app/agentscommander_reloc.exe open-project <tree>/projects/alpha`.
-2. Inspect the disposable `settings.json` and record `projectPaths` and `projectPathsRelativeToInstance` (expect the absolute path plus a companion such as `../projects/alpha`).
+2. Inspect the disposable `settings.30.instance.no-git.json` and record `projectPaths` and `projectPathsRelativeToInstance` (expect the absolute path plus a companion such as `../projects/alpha`).
 3. Launch the app from the source tree, confirm alpha loads in the sidebar, then close it.
 4. Move the entire tree (the `app/` folder, its `.agentscommander*` config directory, and the `projects/` folder together) to a new parent, for example `<tree2>/`. Remove or rename the original tree.
 5. From an unrelated working directory, launch `<tree2>/app/agentscommander_reloc.exe --app`.
 6. Confirm alpha appears in the sidebar and resolves to the new absolute path under `<tree2>`.
-7. Re-inspect `settings.json` and confirm `projectPaths` reconciled to the new absolute path while the companion is retained.
+7. Re-inspect `settings.30.instance.no-git.json` and confirm `projectPaths` reconciled to the new absolute path while the companion is retained.
 
 Expected Result:
 
-The project loads at its new location with no manual re-registration; `settings.json` reconciles the absolute path to the moved location and keeps the companion.
+The project loads at its new location with no manual re-registration; `settings.30.instance.no-git.json` reconciles the absolute path to the moved location and keeps the companion.
 
 Evidence Required:
 
-- Pre-move `settings.json` snapshot showing both the absolute and companion fields.
+- Pre-move `settings.30.instance.no-git.json` snapshot showing both the absolute and companion fields.
 - Post-move sidebar screenshot showing alpha loaded.
-- Post-move `settings.json` snapshot showing the reconciled absolute path.
+- Post-move `settings.30.instance.no-git.json` snapshot showing the reconciled absolute path.
 
 Pass/Fail Criteria:
 
@@ -380,11 +380,11 @@ Preconditions:
 Steps:
 
 1. Launch the app from the source tree and register `<tree>/projects/alpha` through `New / Open`.
-2. Inspect `settings.json` and record the absolute path plus its companion.
+2. Inspect `settings.30.instance.no-git.json` and record the absolute path plus its companion.
 3. Confirm alpha is visible in the sidebar, then close the app.
 4. Move the entire tree to a new parent `<tree2>/` and remove or rename the original.
 5. Relaunch `<tree2>/app/agentscommander_reloc.exe --app` from an unrelated working directory.
-6. Confirm alpha loads at the new absolute path and `settings.json` reconciled to it.
+6. Confirm alpha loads at the new absolute path and `settings.30.instance.no-git.json` reconciled to it.
 
 Expected Result:
 
@@ -392,9 +392,9 @@ A GUI-registered project reloads at the moved location with no re-registration, 
 
 Evidence Required:
 
-- Pre-move `settings.json` snapshot.
+- Pre-move `settings.30.instance.no-git.json` snapshot.
 - Post-move sidebar screenshot showing alpha loaded.
-- Post-move `settings.json` snapshot showing the reconciled absolute path.
+- Post-move `settings.30.instance.no-git.json` snapshot showing the reconciled absolute path.
 
 Pass/Fail Criteria:
 
@@ -409,12 +409,12 @@ Verify that an archived registration carries its companion, survives relocation,
 Preconditions:
 
 - A disposable portable tree with one registered project alpha (the PRJ-009 or PRJ-010 setup).
-- Read-only inspection of the disposable `settings.json` is available after each step.
+- Read-only inspection of the disposable `settings.30.instance.no-git.json` is available after each step.
 
 Steps:
 
 1. In the source tree, archive alpha through the UI.
-2. Inspect `settings.json`: confirm the entry moved to `archivedProjectPaths` and `archivedProjectPathsRelativeToInstance` with an aligned companion, and that the active arrays no longer contain it.
+2. Inspect `settings.30.instance.no-git.json`: confirm the entry moved to `archivedProjectPaths` and `archivedProjectPathsRelativeToInstance` with an aligned companion, and that the active arrays no longer contain it.
 3. Close the app, move the entire tree to a new parent `<tree2>/`, and remove the original.
 4. Launch `<tree2>/app/agentscommander_reloc.exe --app`.
 5. List archived projects and confirm the archived entry is present and resolves to the moved absolute path.
@@ -427,7 +427,7 @@ The archived pair relocates with the tree, and archive, unarchive, and remove ea
 
 Evidence Required:
 
-- `settings.json` snapshots after archive, after unarchive, and after remove, each showing aligned arrays.
+- `settings.30.instance.no-git.json` snapshots after archive, after unarchive, and after remove, each showing aligned arrays.
 - Screenshots of the archived list and of alpha back in the active list after unarchive.
 
 Pass/Fail Criteria:
@@ -444,7 +444,7 @@ Preconditions:
 
 - A disposable portable source tree with the binary and a valid project alpha registered so that both stored forms resolve to the same directory.
 - The tester can copy the tree while retaining the original, and can launch the copy.
-- Read-only inspection of the copied `settings.json` is available.
+- Read-only inspection of the copied `settings.30.instance.no-git.json` is available.
 
 Steps:
 
@@ -454,7 +454,7 @@ Steps:
 4. Launch the copied instance.
 5. Observe the sidebar: confirm alpha does not load, exactly one sticky red error toast appears listing both resolved paths (source alpha and copy alpha), and beta loads normally.
 6. Confirm the toast is dismissible and does not reappear after dismissing and re-initializing (for example a window reload or reconnect).
-7. Inspect the copied `settings.json` and confirm alpha's stored fields are unchanged (no mutation for the conflicted entry).
+7. Inspect the copied `settings.30.instance.no-git.json` and confirm alpha's stored fields are unchanged (no mutation for the conflicted entry).
 
 Expected Result:
 
@@ -464,7 +464,7 @@ Evidence Required:
 
 - Screenshot of the single sticky red toast showing both resolved paths.
 - Screenshot showing beta loaded while alpha is absent.
-- Before and after `settings.json` snapshots for alpha showing no change.
+- Before and after `settings.30.instance.no-git.json` snapshots for alpha showing no change.
 
 Pass/Fail Criteria:
 

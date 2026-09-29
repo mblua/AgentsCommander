@@ -2,7 +2,7 @@
 
 For developers who want to know when a pattern appears in an agent's terminal, across every agent rather than one at a time. After this page you can configure a watcher, choose the mode and the deduplication that fit what you are matching, read the activity window, and work out why a watcher you configured is not running.
 
-A watcher is a pattern AC matches against the terminal output of your agent sessions. Watchers live at the root of `settings.json`, keyed by watcher id, so one pattern can apply to every agent at once. Matches land in the Watcher Activity window.
+A watcher is a pattern AC matches against the terminal output of your agent sessions. Watchers live at the root of `settings.30.instance.no-git.json`, keyed by watcher id, so one pattern can apply to every agent at once. Matches land in the Watcher Activity window.
 
 ## What a watcher is
 

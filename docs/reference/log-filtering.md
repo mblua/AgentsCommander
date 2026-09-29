@@ -2,7 +2,7 @@
 
 For developers debugging AgentsCommander or chasing an intermittent issue. How AC sets its log verbosity, how to change it live, and the one escape hatch for fine-grained filters.
 
-AC has one log verbosity setting, `logLevel`, with five levels. You pick a level in Settings or in `settings.json`, and the change applies immediately with no restart. For ad-hoc, per-module filtering from a terminal, the `RUST_LOG` environment variable still works as an escape hatch.
+AC has one log verbosity setting, `logLevel`, with five levels. You pick a level in Settings or in `settings.30.instance.no-git.json`, and the change applies immediately with no restart. For ad-hoc, per-module filtering from a terminal, the `RUST_LOG` environment variable still works as an escape hatch.
 
 ## The five levels
 
@@ -26,7 +26,7 @@ The level applies the moment you change it. No restart.
 
 **From Settings.** Open **Settings -> General -> Logging** and choose a level from the **Log level** dropdown (Error, Warn, Info, Debug, Trace). AC applies it to the running backend and every open window immediately.
 
-**From `settings.json`.** Set `logLevel` to one of the five names:
+**From `settings.30.instance.no-git.json`.** Set `logLevel` to one of the five names:
 
 ```json
 {
@@ -86,7 +86,7 @@ set RUST_LOG=info,agentscommander_lib::pty=trace && agentscommander.exe
 | In-app console capture | The DevTools console plus a rolling 500-entry in-memory buffer |
 | Debug logs export | `<config-dir>/debug-logs.txt`, written by the `save_debug_logs` IPC command with caller-supplied content (a console snapshot export). Not written automatically. |
 
-`<config-dir>` is the configuration directory selected by the exact binary version, the same directory as `settings.json` (see the [settings reference](settings.md#file-location)). Attach `app.log` to any bug report.
+`<config-dir>` is the configuration directory selected by the exact binary version, the same directory as `settings.30.instance.no-git.json` (see the [settings reference](settings.md#file-location)). Attach `app.log` to any bug report.
 
 ## See also
 

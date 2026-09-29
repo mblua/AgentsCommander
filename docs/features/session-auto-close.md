@@ -73,7 +73,7 @@ This key does **not** change what auto-close does. Auto-close closes orchestrato
 
 ## Settings
 
-These keys live in `settings.json` (see the [settings reference](../reference/settings.md#session-auto-close)). Defaults shown.
+These keys live in `settings.30.instance.no-git.json` (see the [settings reference](../reference/settings.md#session-auto-close)). Defaults shown.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

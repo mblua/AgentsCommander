@@ -27,7 +27,7 @@ In AgentsCommander:
    - **Delay before auto-execute** — seconds AC waits before pressing Enter (default 15s). Gives you time to read the transcription and cancel if wrong.
 6. **Save**.
 
-The key is stored locally in `settings.json` under `geminiApiKey`. Plaintext — protect your user account.
+The key is stored locally in `settings.30.instance.no-git.json` under `geminiApiKey`. Plaintext — protect your user account.
 
 ## 3. Try it
 

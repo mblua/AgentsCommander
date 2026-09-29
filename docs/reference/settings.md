@@ -1,50 +1,50 @@
 # Settings reference
 
-For developers editing `settings.json` by hand, or scripting AgentsCommander configuration. The full schema of the `settings.json` file AC reads at startup.
+For developers editing `settings.30.instance.no-git.json` by hand, or scripting AgentsCommander configuration. The full schema of the `settings.30.instance.no-git.json` file AC reads at startup.
 
 ## File location
 
-`settings.json` lives in the configuration directory selected once at runtime. Selection depends on the exact binary version:
+`settings.30.instance.no-git.json` lives in the configuration directory selected once at runtime. Selection depends on the exact binary version:
 
-| Verified version and selected case | Config directory | Settings file |
-|---|---|---|
-| `v0.30.3`, executable parent and stem available for `C:\tools\agentscommander.exe` | `C:\tools\.agentscommander\` | `C:\tools\.agentscommander\settings.json` |
-| `v0.30.3`, executable parent or stem unavailable, normal production identity | `$HOME/.agentscommander-new` | `$HOME/.agentscommander-new/settings.json` |
-| `v0.33.0` and `main`, nonblank `AGENTSCOMMANDER_CONFIG_DIR` | Override value, verbatim | `<override>/settings.json` |
-| `v0.33.0` and `main`, executable without an underscore suffix (for example `agentscommander.exe`), no override | `$HOME/.agentscommander` | `$HOME/.agentscommander/settings.json` |
-| `v0.33.0` and `main`, `agentscommander_<suffix>.exe`, no override, adjacent folder writable | `<executable folder>/.agentscommander_<suffix>` | `<executable folder>/.agentscommander_<suffix>/settings.json` |
+| Verified version and selected case | Config directory |
+|---|---|
+| `v0.30.3`, executable parent and stem available for `C:\tools\agentscommander.exe` | `C:\tools\.agentscommander\` |
+| `v0.30.3`, executable parent or stem unavailable, normal production identity | `$HOME/.agentscommander-new` |
+| `v0.33.0` and `main`, nonblank `AGENTSCOMMANDER_CONFIG_DIR` | Override value, verbatim |
+| `v0.33.0` and `main`, executable without an underscore suffix (for example `agentscommander.exe`), no override | `$HOME/.agentscommander` |
+| `v0.33.0` and `main`, `agentscommander_<suffix>.exe`, no override, adjacent folder writable | `<executable folder>/.agentscommander_<suffix>` |
 
 Published `v0.30.3` has no public override or writability probe; it does not fall back because a derivable adjacent path is read-only. The public override and writability-probe behavior are in `v0.33.0` and `main`; before relying on them for any other release, verify that exact release tag. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the complete versioned contract.
 
 On `v0.33.0` and `main`, `agentscommander_<suffix>.exe` never uses `$HOME`. If its adjacent folder cannot be written, it does not start. A conclusively unwritable folder gives a message that tells you to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`; when the write result is indeterminate, the message tells you to set `AGENTSCOMMANDER_CONFIG_DIR`. Neither a `v0.33.0` nor a `main` build moves, copies or merges settings from an older folder; each reads a folder only when its own rule selects it. To find and reuse them, see [Settings left by published releases](../features/portable-instances.md#settings-left-by-published-releases).
 
-A future release renames `settings.json` to `settings.30.instance.no-git.json`. This is not implemented yet; see [File naming convention](file-naming.md).
+The settings file in that directory is `settings.30.instance.no-git.json`. Releases up to `v0.40.0` named it `settings.json`; the first start of a newer build renames it once, and there is no way back to an older build. See [File naming convention](file-naming.md#migration-policy).
 
 ## Editing rules
 
 - The file is **JSON** (not JSONC, not YAML). Comments are not allowed.
 - AC reads at startup and on `update_settings` IPC calls.
-- If you edit `settings.json` **while the app is running**, your changes may be clobbered by the next in-memory save. For manual-only fields such as `specBoardEnabled`, edit while AC is closed, or reload settings before using any Settings save path.
+- If you edit `settings.30.instance.no-git.json` **while the app is running**, your changes may be clobbered by the next in-memory save. For manual-only fields such as `specBoardEnabled`, edit while AC is closed, or reload settings before using any Settings save path.
 - `terminalSnapshotsEnabled` is security-sensitive and defaults to `true`. AgentsCommander's own writers serialize through a file lock, and only the dedicated Settings compare-and-set action can change an explicit value. One exception follows from the default: in a legacy file with no `terminalSnapshotsEnabled` key, any unrelated whole-settings save materializes `true`, because an absent key already means enabled. Write an explicit `false` if you want the capability off. An out-of-process editor that ignores that lock remains last-writer authority.
 - AC tolerates unknown fields (`serde` skips them) so adding a field will not break an older binary, but the older binary will not honor it.
 
 ## Recovering a previous version
 
-AgentsCommander keeps a bounded history of previous `settings.json` versions beside the live file: `settings.backup.1.json` through `settings.backup.5.json`. Slot 1 is the version the most recent save replaced; slot 5 is the oldest kept. A save that produces bytes identical to the file already on disk does not rotate, so repeated no-op saves do not evict real history.
+AgentsCommander keeps a bounded history of previous `settings.30.instance.no-git.json` versions beside the live file: `settings.30.instance.no-git.backup.1.json` through `settings.30.instance.no-git.backup.5.json`. Slot 1 is the version the most recent save replaced; slot 5 is the oldest kept. A save that produces bytes identical to the file already on disk does not rotate, so repeated no-op saves do not evict real history.
 
-Recovery is a manual copy: while AgentsCommander is closed, copy the slot you want over `settings.json`. The slots hold the same secrets as `settings.json`, so treat them with the same care.
+Recovery is a manual copy: while AgentsCommander is closed, copy the slot you want over `settings.30.instance.no-git.json`. The slots hold the same secrets as `settings.30.instance.no-git.json`, so treat them with the same care.
 
 > A slot is written without a temp-and-rename, so a crash during rotation can leave
-> `settings.backup.1.json` truncated. AgentsCommander does not report a truncated
-> `settings.json` as an error: it logs the parse failure and starts from default
+> `settings.30.instance.no-git.backup.1.json` truncated. AgentsCommander does not report a truncated
+> `settings.30.instance.no-git.json` as an error: it logs the parse failure and starts from default
 > settings, so a bad copy looks like a silently reset configuration, not a failure.
 > Before starting AgentsCommander, confirm the file you copied is complete and valid
-> JSON. If slot 1 is short or does not parse, use `settings.backup.2.json`, which holds
+> JSON. If slot 1 is short or does not parse, use `settings.30.instance.no-git.backup.2.json`, which holds
 > the generation before it.
 
 ## Example
 
-A minimal `settings.json`:
+A minimal `settings.30.instance.no-git.json`:
 
 ```json
 {
@@ -96,6 +96,8 @@ The `terminalSnapshotsEnabled: false` line above is an explicit opt-out, not the
 
 ### Coding agents
 
+`agents` and `codingAgentProfiles` are not stored in this file. They live in `agents.30.instance.no-git.json`, in the same directory, under the same key names. The first start of this build moves them there from a settings file that still carries them. One exception: while `settings.50.personal.no-git.json` sets `agents`, AC leaves both keys where they are and logs that it did not move them.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `agents` | `AgentConfig[]` | See example | The dropdown of available coding agents. |
@@ -103,7 +105,7 @@ The `terminalSnapshotsEnabled: false` line above is an explicit opt-out, not the
 
 Besides the GUI Settings dialog and Onboarding, `agents[]` has a scriptable writer: the [`coding-agent`](cli.md#coding-agent) CLI verb (`list`/`show`/`catalog`/`add`/`update`/`remove`). It writes safely whether or not the GUI is running.
 
-The catalog entry's own `autoUpdate` field is inert: only `agentAutoUpdateByCommand` authorizes an update, keyed by the exact command string, and a changed command never inherits another command's answer. `updateCommands` likewise resolve only from the persisted catalog (project `.ac/coding-agents/agents.json` layered with `agents.local.json`); see [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
+The catalog entry's own `autoUpdate` field is inert: only `agentAutoUpdateByCommand` authorizes an update, keyed by the exact command string, and a changed command never inherits another command's answer. `updateCommands` likewise resolve only from the persisted catalog (project `.ac/coding-agents/agents.10.default.json` layered with `agents.50.personal.no-git.json`); see [Coding agents § Managed catalog](../integrations/coding-agents.md#managed-catalog-base-local-overrides-and-migration).
 
 `AgentConfig`:
 
@@ -117,7 +119,7 @@ The catalog entry's own `autoUpdate` field is inert: only `agentAutoUpdateByComm
 | `isolatedHome` | bool | `false` | Provide an isolated `CODEX_HOME` at spawn (Codex). |
 | `instructionsFilename` | string \| null | `null` | Bare `.md` filename AC writes into the agent root at launch. |
 | `contextRegex` | string \| null | `null` | Regex pattern for the per-agent context scraper reading. Absent or blank disables the reading; the value is used byte-for-byte (never trimmed). |
-| `blockingMenus` | `BlockingMenuEntry[]` \| absent | absent | Legacy. Moved to `settings-blocking-menus.local.json` on the first start after upgrade and then absent, unless the migration could not run (see [Menu guard](#menu-guard)); while present it applies as before. |
+| `blockingMenus` | `BlockingMenuEntry[]` \| absent | absent | Legacy. Moved to `blocking-menus.50.personal.no-git.json` on the first start after upgrade and then absent, unless the migration could not run (see [Menu guard](#menu-guard)); while present it applies as before. |
 | `backend` | `AgentBackendConfig` | `{ "kind": "local" }` | Runtime backend. See below. |
 | `configSeed` | `ConfigSeedConfig` \| absent | absent | Optional config-folder seed copied into each replica at spawn. Absent (the default) means no seeding. See [Config seed](../features/config-seed.md). |
 
@@ -150,7 +152,7 @@ See [Context tracking](../features/context-tracking.md).
 
 ### Coding agent profiles
 
-Lettered launch variants (`A`, `B`, `C`, ...) per coding agent. See [Coding Agent Profiles](../features/coding-agent-profiles.md) for the feature; this is the `settings.json` schema.
+Lettered launch variants (`A`, `B`, `C`, ...) per coding agent. See [Coding Agent Profiles](../features/coding-agent-profiles.md) for the feature; this is the schema of `codingAgentProfiles` in `agents.30.instance.no-git.json`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -160,7 +162,7 @@ Lettered launch variants (`A`, `B`, `C`, ...) per coding agent. See [Coding Agen
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schemaVersion` | number | `2` | Schema version. Older pre-v2 profile fields are no longer read: they are ignored. Before any save drops them, AC keeps the original once as `settings.pre-384-v1.json` and writes settings without them; the `open-project` and `new-project` CLI commands keep them and write no backup. |
+| `schemaVersion` | number | `2` | Schema version. Older pre-v2 profile fields are no longer read: they are ignored. Before any save drops them, AC keeps the original once as `settings.30.instance.no-git.pre-384-v1.json` and writes settings without them; the `open-project` and `new-project` CLI commands keep them and write no backup. |
 | `profileSlots` | `{ <LETTER>: { label: string } }` | `{ "A": { "label": "" } }` | The defined profile letters. |
 | `defaultProfileByAgent` | `{ <agent>: <LETTER> }` | `{}` | Tier-4 fallback letter per agent matrix. Rarely set by hand. |
 | `profilesByAgent` | `{ <coding-agent-id>: { <LETTER>: ProfileCellConfig } }` | `{}` | The matrix: per coding agent, the cell for each letter. |
@@ -224,7 +226,7 @@ See [Project archiving](../features/project-archiving.md).
 
 **Array alignment.** Each plural companion array has exactly the same length and index meaning as its absolute array: slot `i` in `projectPathsRelativeToInstance` is the portable form of `projectPaths[i]`, or `null`. A length mismatch, an orphan companion (a companion present while its absolute field is absent), a wrong-typed field, or a non-null companion beside a `null` primary is structural corruption (see below).
 
-**Legacy migration.** A `settings.json` written by an older build has the three absolute fields and no companions. AC loads it unchanged (absolute-only) and adds a companion only after that project successfully validates, at the first reconciliation boundary or an explicit register/archive operation. Absent companions are valid legacy metadata, never corruption.
+**Legacy migration.** A `settings.30.instance.no-git.json` written by an older build has the three absolute fields and no companions. AC loads it unchanged (absolute-only) and adds a companion only after that project successfully validates, at the first reconciliation boundary or an explicit register/archive operation. Absent companions are valid legacy metadata, never corruption.
 
 **Resolution at load (fail-closed).** On every load AC resolves and validates both candidates for each registration. Validation canonicalizes on the filesystem and requires an existing directory that is either a project containing `.ac/` or a legacy collection root with a project child. The per-registration outcome:
 
@@ -320,7 +322,7 @@ At startup AC converts the saved physical rectangle to logical pixels and restor
 
 Every writer that saves the whole settings object keeps a present, non-`null` on-disk value of each key, so unrelated settings saves do not clobber a hand-edited placement; a missing key or an explicit `null` counts as absent and can be filled from the caller's value. The narrow placement command is the only writer that changes the values deliberately. A window move or an accepted quit rewrites them, so edit these keys while AC is closed.
 
-If `settings.local.json` pins either key, the placement command refuses with `main_window_placement_overlay_pinned` and changes neither the file nor memory. On quit, AC shows one alert per accepted close round: `Window placement is pinned by the local settings overlay and was not saved.` Quitting continues after the alert.
+If `settings.50.personal.no-git.json` pins either key, the placement command refuses with `main_window_placement_overlay_pinned` and changes neither the file nor memory. On quit, AC shows one alert per accepted close round: `Window placement is pinned by the local settings overlay and was not saved.` Quitting continues after the alert.
 
 ### On app restart
 
@@ -379,11 +381,11 @@ See [Telegram bridge setup](../integrations/telegram.md).
 
 ### Co-managed (Jev)
 
-Seven top-level keys, all in `settings.json`, all global. `coManagedEnabled` is the global switch, and the other six configure the classifier; the per-room on/off flag is **not** here, it lives under the room root. See [Co-managed rooms](../features/co-managed-rooms.md).
+Seven top-level keys, all in `settings.30.instance.no-git.json`, all global. `coManagedEnabled` is the global switch, and the other six configure the classifier; the per-room on/off flag is **not** here, it lives under the room root. See [Co-managed rooms](../features/co-managed-rooms.md).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `coManagedEnabled` | bool | `false` | Global Co-managed switch. **Off by default because the feature is in development.** While `false`, no room is co-managed, the **Co-managed** checkbox is not drawn and no Jev call is made, whatever the room flags say. No UI control: edit `settings.json` and restart AC. |
+| `coManagedEnabled` | bool | `false` | Global Co-managed switch. **Off by default because the feature is in development.** While `false`, no room is co-managed, the **Co-managed** checkbox is not drawn and no Jev call is made, whatever the room flags say. No UI control: edit `settings.30.instance.no-git.json` and restart AC. |
 | `jevApiKey` | string | `""` | Jev API key. Plaintext — protect your account. **Empty means the feature is inert**, in every room, whatever the room flags say. |
 | `jevModel` | string | `jev-1.13.0` | Classification model. A **pinned** version, not a floating tag. |
 | `jevEndpoint` | string | `https://api.typesafe.ai/v1/systemone` | The Typesafe System One endpoint the candidate text and catalog questions are sent to. |
@@ -452,7 +454,7 @@ the listener.
 To configure Web Remote Access for a trusted LAN:
 
 1. Close AC. Use the [File location](#file-location) section above to find the
-   active selected `settings.json`. Do not edit a guessed adjacent, global, or
+   active selected `settings.30.instance.no-git.json`. Do not edit a guessed adjacent, global, or
    shared `.ac/` file.
 2. Change only the existing `webServerBind` and `webServerPort` keys. Do not
    replace the whole JSON document. Substitute the host's real private LAN
@@ -562,7 +564,7 @@ See [Watchers](../features/watchers.md).
 
 ### Menu guard
 
-Proactive detection of terminal blocking menus, such as a folder-trust prompt an agent will not move past. One root switch, plus three blocking-menus files next to `settings.json`. The startup download has a Settings checkbox, **Download blocking-menu pattern updates from GitHub**; there is no CLI verb, and hand-editing `settings-blocking-menus.local.json` is still the only way to add your own patterns. That file is read at the next start.
+Proactive detection of terminal blocking menus, such as a folder-trust prompt an agent will not move past. One root switch, plus three blocking-menus files next to `settings.30.instance.no-git.json`. The startup download has a Settings checkbox, **Download blocking-menu pattern updates from GitHub**; there is no CLI verb, and hand-editing `blocking-menus.50.personal.no-git.json` is still the only way to add your own patterns. That file is read at the next start.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -571,9 +573,9 @@ Proactive detection of terminal blocking menus, such as a folder-trust prompt an
 
 | File | Who writes it | When |
 |---|---|---|
-| `settings-blocking-menus.json` | AC | Rewritten at start whenever its content differs from the running version's embedded content; edits there are lost. |
-| `settings-blocking-menus.local.json` | You | Read at start. AC writes it only when the #1905 migration succeeds, and that write inserts `byAgent` rows without overwriting an existing one. |
-| `settings-blocking-menus.remote.json` | AC | Written only by the startup download, and only after the whole file passes validation. Read and validated again at every start. |
+| `blocking-menus.10.default.no-git.json` | AC | Rewritten at start whenever its content differs from the running version's embedded content; edits there are lost. |
+| `blocking-menus.50.personal.no-git.json` | You | Read at start. AC writes it only when the #1905 migration succeeds, and that write inserts `byAgent` rows without overwriting an existing one. |
+| `blocking-menus.20.remote.no-git.json` | AC | Written only by the startup download, and only after the whole file passes validation. Read and validated again at every start. |
 
 `BlockingMenusFile` (all three files share this shape; the remote file must also have an empty `byAgent`):
 
@@ -584,7 +586,7 @@ Proactive detection of terminal blocking menus, such as a folder-trust prompt an
 | `byCommand` | object | `{}` | Keys are the lowercase executable stem, exact match; values are entry arrays. |
 | `byAgent` | object | `{}` | Keys are agent ids; values are entry arrays. The migration writes the exported legacy array here. |
 
-Precedence, first present wins and replaces the layers below it whole: (1) an array still on the agent (a legacy `blockingMenus` array the migration could not move, or one inside an `agents` array owned by `settings.local.json`); (2) `byAgent[id]` in `.local`; (3) `byCommand[stem]` in `.local`; (4) `byCommand[stem]` in `settings-blocking-menus.remote.json`; (5) `byCommand[stem]` in the shipped file; (6) nothing. A remote array for a stem replaces the shipped array for that stem whole and can be `[]`; to override a remote entry, put that stem in `.local` `byCommand`. `byAgent` is never read from the remote file.
+Precedence, first present wins and replaces the layers below it whole: (1) an array still on the agent (a legacy `blockingMenus` array the migration could not move, or one inside an `agents` array owned by `settings.50.personal.no-git.json`); (2) `byAgent[id]` in `.local`; (3) `byCommand[stem]` in `.local`; (4) `byCommand[stem]` in `blocking-menus.20.remote.no-git.json`; (5) `byCommand[stem]` in the shipped file; (6) nothing. A remote array for a stem replaces the shipped array for that stem whole and can be `[]`; to override a remote entry, put that stem in `.local` `byCommand`. `byAgent` is never read from the remote file.
 
 Use `byCommand` when the pattern should follow the command, `byAgent` when it should follow one agent id; a `byAgent` row always wins.
 
@@ -597,7 +599,7 @@ Use `byCommand` when the pattern should follow the command, `byAgent` when it sh
 | `enabled` | bool | `true` | Whether this entry is evaluated. `false` is the durable way to switch off a shipped default. |
 | `capturedAgainst` | string \| null | `null` | Free text (e.g. "codex 0.153.2 / Windows"). Never validated, never parsed. Omitted from the file when absent. |
 
-The first settings load after an upgrade moves every legacy `blockingMenus` array from `settings.json` into `.local` under `byAgent.<id>`, dropping only arrays equal to the shipped set (a `[]` on a stem that ships nothing counts as equal); an id already present in `.local` is kept and the legacy copy in `settings.json` is discarded, not merged, and the `.local` file is written before `settings.json` is touched. Before the compare, a non-empty codex array missing the hooks-review pattern gets it back-filled once. If the migration cannot run, the arrays stay in place and apply as before: a `.local` that cannot be read, a `.local` that does not parse or has the wrong shape, a `.local` that cannot be written, two agents sharing an id with different arrays or commands, or an `agents` array owned by `settings.local.json`. Each settings load retries and logs one line per attempt while the cause stands; for an overlay-owned `agents` array, move the entries into `.local` by hand and delete those agents' legacy arrays from the overlay.
+The first settings load after an upgrade moves every legacy `blockingMenus` array from the coding-agent entries into `.local` under `byAgent.<id>`, dropping only arrays equal to the shipped set (a `[]` on a stem that ships nothing counts as equal); an id already present in `.local` is kept and the legacy copy on the entry is discarded, not merged, and the `.local` file is written before the entry is touched. Before the compare, a non-empty codex array missing the hooks-review pattern gets it back-filled once. If the migration cannot run, the arrays stay in place and apply as before: a `.local` that cannot be read, a `.local` that does not parse or has the wrong shape, a `.local` that cannot be written, two agents sharing an id with different arrays or commands, or an `agents` array owned by `settings.50.personal.no-git.json`. Each settings load retries and logs one line per attempt while the cause stands; for an overlay-owned `agents` array, move the entries into `.local` by hand and delete those agents' legacy arrays from the overlay.
 
 An entry AC cannot read as a `BlockingMenuConfig` is kept verbatim, skipped at evaluation, and left in place; it never invalidates the file. A `.local` file with the wrong shape — not an object, another `schemaVersion`, or the wrong type for `note`, `byCommand` or `byAgent` — is ignored whole, with one error line in the log, and the layers below it still apply. The shipped file is never parsed at runtime: AC rewrites it from the binary's embedded copy at start and evaluates that embedded copy.
 
@@ -641,7 +643,7 @@ See [Log filtering](log-filtering.md).
 | `startOnlyCoordinators` | bool \| null | Legacy name for `restoreCoordinatorWakeState`. Read on deserialize, dropped on next save. |
 | `darkfactoryZoom` | number | Legacy zoom for the removed Dark Factory window. Retained for backwards-compat reads only. |
 
-These will silently disappear from your `settings.json` on the next save after AC reads them.
+These will silently disappear from your `settings.30.instance.no-git.json` on the next save after AC reads them.
 
 ## Validating a file
 
@@ -652,5 +654,5 @@ Use any JSON validator. AC will refuse to start if the file is not valid JSON an
 - [Portable instances](../features/portable-instances.md) — per-instance config rules
 - [CLI reference](cli.md) — verbs that read/write this file
 - [Terminal snapshots](../features/terminal-snapshots.md) - the default-on screen-content read capability
-- [Menu guard](../features/menu-guard.md) - `menuGuardEnabled` and the three `settings-blocking-menus` files in use
+- [Menu guard](../features/menu-guard.md) - `menuGuardEnabled` and the three `blocking-menus.*` files in use
 - [`PRIVACY.md`](../../PRIVACY.md) — what credentials live here and how they are transmitted
