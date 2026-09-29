@@ -152,9 +152,9 @@ const INVENTORY: &[Row] = &[
     ("src-tauri/src/cli/mod.rs", 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/commands/ac_discovery.rs",
-        26,
+        28,
         1,
-        &[(TestOnly, 25)],
+        &[(TestOnly, 27)],
     ),
     (
         "src-tauri/src/commands/config.rs",
@@ -231,6 +231,14 @@ const INVENTORY: &[Row] = &[
         1,
         0,
         &[(TestOnly, 1)],
+    ),
+    // #2717 (B4a): all three inside `#[cfg(test)]`: `git init` and `git
+    // check-ignore` of E7, and the `current_exe()` child of E7d and E13.
+    (
+        "src-tauri/src/config/project_settings.rs",
+        3,
+        0,
+        &[(TestOnly, 3)],
     ),
     ("src-tauri/src/config/session_context.rs", 1, 1, &[]),
     ("src-tauri/src/config/teams.rs", 1, 0, &[(TestOnly, 1)]),
