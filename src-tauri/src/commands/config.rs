@@ -624,6 +624,69 @@ async fn coding_agent_welcome_status_inner_with(
     ))
 }
 
+/// #2736 - run the catalog entry's install command for THIS host with no
+/// visible window. Returns as soon as the install task is spawned; the outcome
+/// arrives as the `coding_agent_install_finished` event.
+#[tauri::command]
+pub async fn install_coding_agent(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    key: String,
+) -> Result<(), String> {
+    install_coding_agent_inner(&app, settings.inner(), key).await
+}
+
+/// #2736 - shared by the Tauri command and the WebSocket router. Never awaits
+/// the install itself.
+pub async fn install_coding_agent_inner(
+    app: &AppHandle,
+    settings: &SettingsState,
+    key: String,
+) -> Result<(), String> {
+    install_coding_agent_inner_with(app, settings, key, |snapshot| {
+        crate::config::coding_agents_catalog::load_catalog_for_settings(snapshot)
+            .map_err(|unavailable| unavailable.to_string())
+    })
+    .await
+}
+
+/// Testable twin: `load` carries the catalog read, so a test can supply a
+/// fixture catalog without writing one to disk.
+async fn install_coding_agent_inner_with(
+    app: &AppHandle,
+    settings: &SettingsState,
+    key: String,
+    load: impl FnOnce(
+        &AppSettings,
+    ) -> Result<
+        Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>,
+        String,
+    >,
+) -> Result<(), String> {
+    let snapshot = settings.read().await.clone();
+    let catalog = load(&snapshot)?;
+    let entry = catalog
+        .iter()
+        .find(|entry| entry.key == key)
+        .ok_or_else(|| format!("unknown coding agent '{key}'"))?;
+    let command = entry
+        .install_commands
+        .as_ref()
+        .map(crate::config::coding_agents_catalog::resolve_install_command)
+        .ok_or_else(|| format!("no install command is available for '{key}' on this platform"))?
+        .to_string();
+    let cwd = install_cwd_for(&snapshot);
+    crate::agent_update::start_agent_install(app, key, command, cwd)
+}
+
+/// #2736 - the install cwd, same precedence the updater uses. Pure over the
+/// snapshot so test 15 can assert the precedence without spawning anything.
+fn install_cwd_for(snapshot: &AppSettings) -> PathBuf {
+    crate::config::coding_agents_catalog::primary_project_root(snapshot)
+        .or_else(crate::config::config_dir)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
 /// #1963 (P1) - read-only persisted-catalog report for the pre-migration UI.
 /// Additive IPC: since P4 the array endpoint above resolves through the SAME
 /// resolver, so both agree about availability and the persisted selection.
@@ -4831,6 +4894,96 @@ mod tests {
             "settings lock held during filesystem work"
         );
         assert_eq!(rows, Ok(Vec::new()));
+    }
+
+    fn install_fixture_entry_2736(
+        key: &str,
+        install_commands: Option<crate::config::coding_agents_catalog::InstallCommands>,
+    ) -> crate::config::coding_agents_catalog::CodingAgentDefinition {
+        crate::config::coding_agents_catalog::CodingAgentDefinition {
+            key: key.to_string(),
+            label: key.to_string(),
+            description: String::new(),
+            color: String::new(),
+            command: key.to_string(),
+            instructions_filename: None,
+            envs: Vec::new(),
+            isolated_home: false,
+            config_seed: None,
+            removable: true,
+            update_commands: Vec::new(),
+            auto_update: false,
+            idle_burst: None,
+            install_commands,
+        }
+    }
+
+    fn install_mock_app_2736() -> tauri::App {
+        crate::test_support::test_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build test app")
+    }
+
+    #[tokio::test]
+    async fn install_coding_agent_2736_rejects_an_unknown_key() {
+        let app = install_mock_app_2736();
+        let state = state_for(AppSettings::default());
+        let result = super::install_coding_agent_inner_with(
+            app.handle(),
+            &state,
+            "nope-2736".to_string(),
+            |_| Ok(vec![install_fixture_entry_2736("claude", None)]),
+        )
+        .await;
+        assert_eq!(result, Err("unknown coding agent 'nope-2736'".to_string()));
+    }
+
+    #[tokio::test]
+    async fn install_coding_agent_2736_rejects_a_key_with_no_install_command() {
+        let app = install_mock_app_2736();
+        let state = state_for(AppSettings::default());
+        let result = super::install_coding_agent_inner_with(
+            app.handle(),
+            &state,
+            "bare-2736".to_string(),
+            |_| Ok(vec![install_fixture_entry_2736("bare-2736", None)]),
+        )
+        .await;
+        assert_eq!(
+            result,
+            Err("no install command is available for 'bare-2736' on this platform".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn install_coding_agent_2736_reports_catalog_unavailability_verbatim() {
+        let app = install_mock_app_2736();
+        let temp = tempfile::tempdir().unwrap();
+        let state = state_for(AppSettings {
+            project_paths: vec![temp.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        });
+        let catalog_err = super::coding_agent_catalog_inner(&state)
+            .await
+            .expect_err("no persisted catalog");
+        let install_err =
+            super::install_coding_agent_inner(app.handle(), &state, "claude".to_string())
+                .await
+                .expect_err("no persisted catalog");
+        assert_eq!(install_err, catalog_err);
+    }
+
+    #[test]
+    fn install_coding_agent_2736_resolves_the_cwd_with_the_updater_precedence() {
+        let temp = tempfile::tempdir().unwrap();
+        let with_project = AppSettings {
+            project_paths: vec![temp.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        assert_eq!(super::install_cwd_for(&with_project), temp.path());
+
+        let fallback = crate::config::config_dir().expect("test config dir");
+        assert_eq!(super::install_cwd_for(&AppSettings::default()), fallback);
     }
 
     fn write_settings_file(dir: &Path, settings: &AppSettings) {
