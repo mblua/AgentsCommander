@@ -1,24 +1,19 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import AcDiscoveryPanel from "./AcDiscoveryPanel";
-import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
-  baseSettings,
   click,
   contextMenu,
-  discovery,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
   waitFor,
 } from "../../shared/testing/ui-harness";
+import { acDiscoveryTransport, agentRowSel, filterSel, replicaRowSel } from "./ac-discovery-fixture";
 import { ROW_KEY_PROXY_CLASS } from "./RowKeyProxy";
 
 // #2659 - the agent and replica rows open the Coding Agent picker by keyboard
 // through their row key proxy; mouse click and right-click are unchanged.
-const agentRowSel = '[data-ac-testid="acDiscovery.agent.proj-dev"]';
-const replicaRowSel = '[data-ac-testid="acDiscovery.replica.wg-1-team.dev"]';
-const filterSel = '[data-ac-testid="agentPicker.agentFilter"]';
 
 const press = (key: string) => (row: HTMLElement) => {
   const proxy = row.querySelector<HTMLElement>(`:scope > .${ROW_KEY_PROXY_CLASS}`);
@@ -33,20 +28,7 @@ describe("AcDiscoveryPanel row keyboard access (#2659)", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
-    const fake = new FakeTransport();
-    fake.resolve("discover_ac_agents", discovery({
-      agents: [{ name: "proj/dev", path: "C:\\Project\\.ac\\_agent_dev", roleExists: true }],
-      workgroups: [{
-        name: "wg-1-team",
-        path: "C:\\Project\\.ac\\wg-1-team",
-        task: null,
-        taskTitle: null,
-        agents: [{ name: "dev", path: "C:\\Project\\.ac\\wg-1-team\\__agent_dev", repoPaths: [], isCoordinator: false }],
-      }],
-    }));
-    fake.resolve("get_settings", baseSettings({
-      agents: [{ id: "codex", label: "Codex", command: "codex", color: "#10b981", envs: [], isolatedHome: false }],
-    }));
+    const fake = acDiscoveryTransport();
     fake.resolve("get_replica_context_files", []);
     rendered = renderWithFakeTransport(() => <AcDiscoveryPanel />, fake);
   });

@@ -1,21 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import AcDiscoveryPanel from "./AcDiscoveryPanel";
-import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
-  baseSettings,
   click,
-  discovery,
   installBrowserDomStubs,
   renderWithFakeTransport,
   resetUiStoresForTests,
   waitFor,
 } from "../../shared/testing/ui-harness";
+import { acDiscoveryTransport, agentRowSel, filterSel, replicaRowSel } from "./ac-discovery-fixture";
 
 // #2528: automation testids on the AcDiscoveryPanel rows that open the Coding Agent picker.
-const agentRowSel = '[data-ac-testid="acDiscovery.agent.proj-dev"]';
-const replicaRowSel = '[data-ac-testid="acDiscovery.replica.wg-1-team.dev"]';
-const filterSel = '[data-ac-testid="agentPicker.agentFilter"]';
 
 describe("AcDiscoveryPanel automation testids (#2528)", () => {
   let cleanupDom: (() => void) | null = null;
@@ -24,21 +19,7 @@ describe("AcDiscoveryPanel automation testids (#2528)", () => {
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
-    const fake = new FakeTransport();
-    fake.resolve("discover_ac_agents", discovery({
-      agents: [{ name: "proj/dev", path: "C:\\Project\\.ac\\_agent_dev", roleExists: true }],
-      workgroups: [{
-        name: "wg-1-team",
-        path: "C:\\Project\\.ac\\wg-1-team",
-        task: null,
-        taskTitle: null,
-        agents: [{ name: "dev", path: "C:\\Project\\.ac\\wg-1-team\\__agent_dev", repoPaths: [], isCoordinator: false }],
-      }],
-    }));
-    // The picker filter renders only with at least one coding agent.
-    fake.resolve("get_settings", baseSettings({
-      agents: [{ id: "codex", label: "Codex", command: "codex", color: "#10b981", envs: [], isolatedHome: false }],
-    }));
+    const fake = acDiscoveryTransport();
     rendered = renderWithFakeTransport(() => <AcDiscoveryPanel />, fake);
   });
 
