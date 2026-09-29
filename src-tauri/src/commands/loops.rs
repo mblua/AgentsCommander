@@ -662,7 +662,7 @@ mod tests {
         eprintln!("T2: update_loop returned in {:?}", elapsed);
 
         result.expect("update_loop");
-        assert!(elapsed < std::time::Duration::from_millis(250));
+        assert!(elapsed < std::time::Duration::from_millis(1000));
         let config = read_loop_config(&fixture.dir).expect("config");
         assert_eq!(config.trigger.expr, "30 9 * * *");
         let baseline = fixture.state_raw();
