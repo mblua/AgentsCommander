@@ -226,7 +226,7 @@ See [Project archiving](../features/project-archiving.md).
 
 **Array alignment.** Each plural companion array has exactly the same length and index meaning as its absolute array: slot `i` in `projectPathsRelativeToInstance` is the portable form of `projectPaths[i]`, or `null`. A length mismatch, an orphan companion (a companion present while its absolute field is absent), a wrong-typed field, or a non-null companion beside a `null` primary is structural corruption (see below).
 
-**Legacy migration.** A `settings.30.instance.no-git.json` written by an older build has the three absolute fields and no companions. AC loads it unchanged (absolute-only) and adds a companion only after that project successfully validates, at the first reconciliation boundary or an explicit register/archive operation. Absent companions are valid legacy metadata, never corruption.
+**Legacy migration.** A settings file written by an older build has the three absolute fields and no companions. AC loads it unchanged (absolute-only) and adds a companion only after that project successfully validates, at the first reconciliation boundary or an explicit register/archive operation. Absent companions are valid legacy metadata, never corruption.
 
 **Resolution at load (fail-closed).** On every load AC resolves and validates both candidates for each registration. Validation canonicalizes on the filesystem and requires an existing directory that is either a project containing `.ac/` or a legacy collection root with a project child. The per-registration outcome:
 
