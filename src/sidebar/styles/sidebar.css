@@ -10406,3 +10406,18 @@ html.light-theme .selection-lock-remove {
 html.light-theme .selection-lock-remove:hover:not(:disabled) {
   border-color: rgba(138, 100, 0, 0.6);
 }
+
+/* #2744 - these rules read --danger and --status-error, which are undefined
+   and are deliberately left undefined because their call sites pass different
+   literals (--danger: #ff6b6b, #ef4444, #c0392b; --status-error: #e06c75,
+   #ff5f56). The var() declarations stay exactly as written, so dark keeps each
+   author's literal; light gets one readable red. */
+html.light-theme .session-context-error,
+html.light-theme .session-context-title-error,
+html.light-theme .workgroup-group-rail-error,
+html.light-theme .workgroup-groups-errors,
+html.light-theme .project-filter-error,
+html.light-theme .project-load-status[data-ac-state="error"] .ac-empty-hint,
+html.light-theme .tpl-agency-install-error {
+  color: #b91c1c;
+}
