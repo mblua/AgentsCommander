@@ -9790,7 +9790,6 @@ html.light-theme .onboarding-card.selected {
    state colour is selected by data-ac-state, not by a class per state. */
 .onboarding-card-chips {
   display: flex;
-  flex-wrap: wrap;
   gap: var(--spacing-xs);
   margin-top: 2px;
 }

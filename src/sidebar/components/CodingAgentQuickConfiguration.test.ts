@@ -853,10 +853,16 @@ describe("CodingAgentQuickConfiguration", () => {
     });
 
     it("welcome_2736_card_accessible_name_includes_the_status_and_tested_chips", async () => {
-      useWelcomeCatalog();
+      useWelcomeCatalog([
+        statusRow("codex", true, "high"),
+        statusRow("claude", true, "medium"),
+        statusRow("pi", false, "low"),
+        statusRow("mine", false, null),
+      ]);
       const dispose = renderWelcome(true);
       await settle();
 
+      expect(cardLabel("codex")).toBe("Select Codex, Installed, Tested: High");
       expect(cardLabel("claude")).toBe("Select Claude Code, Installed, Tested: Medium");
       expect(cardLabel("mine")).toBe("Select My Agent, Not installed");
       expect(cardLabel("custom")).toBe("Select Custom Agent, Not needed");
