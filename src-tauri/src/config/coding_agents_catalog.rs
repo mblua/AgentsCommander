@@ -97,6 +97,116 @@ pub(crate) const BUILTIN_AGENT_SUPPORT: &[(&str, bool)] = &[
     ("muse", false),
 ];
 
+/// #2736 - how thoroughly AgentsCommander has tested each SUPPORTED built-in.
+/// CODE ONLY: never read from, and never patchable through, any catalog file.
+/// One row per ENABLED row of `BUILTIN_AGENT_SUPPORT`, in the same order (a test
+/// pins both). A key absent here (every user-authored key) has NO level.
+pub(crate) const BUILTIN_TESTED_LEVEL: &[(&str, TestedLevel)] = &[
+    ("claude", TestedLevel::High),
+    ("codex", TestedLevel::High),
+    ("hermes", TestedLevel::Low),
+    ("cursor", TestedLevel::Low),
+    ("pi", TestedLevel::High),
+    ("opencode", TestedLevel::Low),
+    ("antigravity", TestedLevel::Medium),
+    ("grok", TestedLevel::Low),
+];
+
+/// #2736 - wire strings are `"high" | "medium" | "low"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TestedLevel {
+    High,
+    Medium,
+    Low,
+}
+
+/// #2736 - the tested level of a built-in key; `None` for any other key.
+pub(crate) fn tested_level_for(key: &str) -> Option<TestedLevel> {
+    BUILTIN_TESTED_LEVEL
+        .iter()
+        .find(|(candidate, _)| *candidate == key)
+        .map(|(_, level)| *level)
+}
+
+/// #2736 - the install command for THIS host: the platform key when present,
+/// else `default`. `windows` for target_os = "windows", `macos` for "macos",
+/// `linux` for every other target.
+pub(crate) fn resolve_install_command(commands: &InstallCommands) -> &str {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    install_command_for_os(commands, os)
+}
+
+fn install_command_for_os<'a>(commands: &'a InstallCommands, os: &str) -> &'a str {
+    let platform = match os {
+        "windows" => commands.windows.as_deref(),
+        "macos" => commands.macos.as_deref(),
+        "linux" => commands.linux.as_deref(),
+        _ => None,
+    };
+    platform.unwrap_or(&commands.default)
+}
+
+/// #2736 - is this catalog entry's command present on this machine? PATH math
+/// only: `normalize_legacy_agent_command` reduces the catalog string to its
+/// program token, then `agent_command::resolve_program` resolves it (bare name
+/// through `effective_search_path` plus PATHEXT on Windows; explicit path by
+/// is_file()). NO process is executed and nothing is cached or persisted.
+pub(crate) fn command_is_present(command: &str) -> bool {
+    command_is_present_with(command, crate::config::agent_command::resolve_program)
+}
+
+/// Testable twin of [`command_is_present`] with the resolver injected
+/// (mirrors `resolve_command_install_probe_with`).
+fn command_is_present_with(command: &str, resolve: impl FnOnce(&str) -> Option<PathBuf>) -> bool {
+    match crate::config::agent_command::normalize_legacy_agent_command(command) {
+        Ok(normalized) if !normalized.shell.is_empty() => resolve(&normalized.shell).is_some(),
+        _ => false,
+    }
+}
+
+/// #2736 - one welcome-status row. A SEPARATE type from
+/// `CodingAgentDefinition`: that struct is persisted and hashed, and a catalog
+/// field would be patchable from disk.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingAgentWelcomeStatus {
+    pub key: String,
+    pub installed: bool,
+    pub tested_level: Option<TestedLevel>,
+    pub install_command: Option<String>,
+}
+
+/// One row per effective catalog entry, in catalog order.
+pub fn welcome_status_for(catalog: &[CodingAgentDefinition]) -> Vec<CodingAgentWelcomeStatus> {
+    welcome_status_for_with(catalog, command_is_present)
+}
+
+fn welcome_status_for_with(
+    catalog: &[CodingAgentDefinition],
+    is_present: impl Fn(&str) -> bool,
+) -> Vec<CodingAgentWelcomeStatus> {
+    catalog
+        .iter()
+        .map(|def| CodingAgentWelcomeStatus {
+            key: def.key.clone(),
+            installed: is_present(&def.command),
+            tested_level: tested_level_for(&def.key),
+            install_command: def
+                .install_commands
+                .as_ref()
+                .map(resolve_install_command)
+                .map(str::to_string),
+        })
+        .collect()
+}
+
 /// Unique-suffix counter for the seed temp file (mirrors the pattern in
 /// `seeded_context_templates::unique_state_temp_path`).
 static SEED_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -11441,5 +11551,192 @@ mod tests {
             command_account_key("\"C:/Program Files/a/claude.exe\" --x"),
             Some("C:/Program Files/a/claude.exe".to_string())
         );
+    }
+
+    fn welcome_def_2736(
+        key: &str,
+        command: &str,
+        install: Option<serde_json::Value>,
+    ) -> CodingAgentDefinition {
+        let mut raw = serde_json::json!({
+            "key": key,
+            "label": key,
+            "description": "d",
+            "color": "#000000",
+            "command": command,
+            "envs": [],
+            "isolatedHome": false,
+            "removable": true
+        });
+        if let Some(install) = install {
+            raw["installCommands"] = install;
+        }
+        serde_json::from_value(raw).expect("fixture definition")
+    }
+
+    #[test]
+    fn tested_level_2736_table_keys_equal_the_enabled_support_rows_in_order() {
+        let tested: Vec<&str> = BUILTIN_TESTED_LEVEL.iter().map(|(key, _)| *key).collect();
+        let enabled: Vec<&str> = BUILTIN_AGENT_SUPPORT
+            .iter()
+            .filter(|(_, enabled)| *enabled)
+            .map(|(key, _)| *key)
+            .collect();
+        assert_eq!(tested, enabled);
+    }
+
+    #[test]
+    fn tested_level_2736_assigns_high_medium_low_exactly_as_specified() {
+        for key in ["claude", "codex", "pi"] {
+            assert_eq!(tested_level_for(key), Some(TestedLevel::High), "{key}");
+        }
+        assert_eq!(tested_level_for("antigravity"), Some(TestedLevel::Medium));
+        for key in ["hermes", "cursor", "opencode", "grok"] {
+            assert_eq!(tested_level_for(key), Some(TestedLevel::Low), "{key}");
+        }
+        assert_eq!(tested_level_for("muse"), None);
+        assert_eq!(tested_level_for("my-agent"), None);
+    }
+
+    #[test]
+    fn tested_level_2736_serializes_to_lowercase_wire_strings() {
+        assert_eq!(
+            serde_json::to_value(TestedLevel::High).unwrap(),
+            serde_json::json!("high")
+        );
+        assert_eq!(
+            serde_json::to_value(TestedLevel::Medium).unwrap(),
+            serde_json::json!("medium")
+        );
+        assert_eq!(
+            serde_json::to_value(TestedLevel::Low).unwrap(),
+            serde_json::json!("low")
+        );
+    }
+
+    #[test]
+    fn install_command_2736_prefers_the_platform_key_over_default() {
+        let commands = InstallCommands {
+            default: "npm i -g x".to_string(),
+            windows: Some("winget install x".to_string()),
+            macos: None,
+            linux: None,
+        };
+        assert_eq!(
+            install_command_for_os(&commands, "windows"),
+            "winget install x"
+        );
+        assert_eq!(install_command_for_os(&commands, "macos"), "npm i -g x");
+        assert_eq!(install_command_for_os(&commands, "linux"), "npm i -g x");
+        let all = InstallCommands {
+            default: "d".to_string(),
+            windows: Some("w".to_string()),
+            macos: Some("m".to_string()),
+            linux: Some("l".to_string()),
+        };
+        assert_eq!(install_command_for_os(&all, "windows"), "w");
+        assert_eq!(install_command_for_os(&all, "macos"), "m");
+        assert_eq!(install_command_for_os(&all, "linux"), "l");
+    }
+
+    #[test]
+    fn install_command_2736_unknown_os_name_falls_back_to_default() {
+        let all = InstallCommands {
+            default: "d".to_string(),
+            windows: Some("w".to_string()),
+            macos: Some("m".to_string()),
+            linux: Some("l".to_string()),
+        };
+        assert_eq!(install_command_for_os(&all, "freebsd"), "d");
+        assert_eq!(install_command_for_os(&all, ""), "d");
+    }
+
+    #[test]
+    fn command_is_present_2736_true_for_a_resolvable_token_false_otherwise() {
+        let stub = |token: &str| (token == "claude").then(|| PathBuf::from("/bin/claude"));
+        assert!(command_is_present_with("claude", stub));
+        assert!(command_is_present_with("claude --flag", stub));
+        assert!(!command_is_present_with("codex", stub));
+        assert!(!command_is_present_with("", stub));
+        assert!(!command_is_present_with("   ", stub));
+    }
+
+    #[test]
+    fn command_is_present_2736_executes_no_process() {
+        // The injected closure is the ONLY resolution step: no version probe
+        // (which would spawn a process) sits on this path.
+        let mut calls = Vec::new();
+        let present = command_is_present_with("\"my tool\" --x", |token| {
+            calls.push(token.to_string());
+            None
+        });
+        assert!(!present);
+        assert_eq!(calls, vec!["my tool".to_string()]);
+        let mut empty_calls = 0;
+        assert!(!command_is_present_with("", |_| {
+            empty_calls += 1;
+            Some(PathBuf::from("x"))
+        }));
+        assert_eq!(empty_calls, 0);
+    }
+
+    #[test]
+    fn welcome_status_2736_row_per_entry_in_catalog_order_with_computed_fields() {
+        let catalog = vec![
+            welcome_def_2736(
+                "codex",
+                "codex",
+                Some(serde_json::json!({ "default": "npm i -g codex" })),
+            ),
+            welcome_def_2736("claude", "claude --x", None),
+            welcome_def_2736(
+                "my-agent",
+                "my-agent",
+                Some(
+                    serde_json::json!({ "default": "d", "windows": "d", "macos": "d", "linux": "d" }),
+                ),
+            ),
+        ];
+        let rows = welcome_status_for_with(&catalog, |command| command == "claude --x");
+        assert_eq!(
+            rows,
+            vec![
+                CodingAgentWelcomeStatus {
+                    key: "codex".to_string(),
+                    installed: false,
+                    tested_level: Some(TestedLevel::High),
+                    install_command: Some("npm i -g codex".to_string()),
+                },
+                CodingAgentWelcomeStatus {
+                    key: "claude".to_string(),
+                    installed: true,
+                    tested_level: Some(TestedLevel::High),
+                    install_command: None,
+                },
+                CodingAgentWelcomeStatus {
+                    key: "my-agent".to_string(),
+                    installed: false,
+                    tested_level: None,
+                    install_command: Some("d".to_string()),
+                },
+            ]
+        );
+        let wire = serde_json::to_value(&rows).unwrap();
+        assert_eq!(wire[0]["testedLevel"], serde_json::json!("high"));
+        assert_eq!(wire[1]["installCommand"], serde_json::Value::Null);
+        assert_eq!(wire[2]["testedLevel"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn welcome_status_2736_never_adds_a_field_to_the_persisted_definition() {
+        let def = welcome_def_2736(
+            "claude",
+            "claude",
+            Some(serde_json::json!({ "default": "d" })),
+        );
+        let value = serde_json::to_value(&def).unwrap();
+        let object = value.as_object().expect("definition object");
+        assert!(!object.contains_key("testedLevel"));
+        assert!(!object.contains_key("installed"));
     }
 }
