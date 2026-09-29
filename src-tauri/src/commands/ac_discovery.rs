@@ -54,9 +54,9 @@ fn read_preferred_agent_id_logged(
     warnings: &mut Vec<String>,
 ) -> Option<String> {
     let config_path = dir.join("config.json");
-    let content = std::fs::read_to_string(&config_path).ok()?;
-    let v: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
+    // #2786 (C1) - through the shared loader: state file first, key-wise.
+    let v = match crate::config::agent_config::read_agent_local_config_json(dir) {
+        Ok(v) => v?,
         Err(e) => {
             warnings.push(format!(
                 "malformed '{}', no coding-agent reference: {}",
@@ -67,8 +67,7 @@ fn read_preferred_agent_id_logged(
         }
     };
     let foreign_id = v.get("tooling")?.get("lastCodingAgent")?.as_str()?;
-    let reference =
-        crate::config::agent_command::StoredReference::from_config(Some(&v), foreign_id);
+    let reference = crate::config::agent_command::StoredReference::from_config(dir, foreign_id);
     match crate::config::agent_command::resolve_portable_reference(settings, &reference) {
         crate::config::agent_command::MatchOutcome::Matched(found) => Some(found.agent_id),
         crate::config::agent_command::MatchOutcome::NoMatch { reference } => {

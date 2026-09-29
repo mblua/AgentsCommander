@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
 
 use crate::config::agent_command::AgentSpawnCommand;
-use crate::config::agent_config::{self, AgentLocalConfig};
+use crate::config::agent_config;
 use crate::config::coding_agents_catalog::{command_executable_basename, CodingAgentDefinition};
 use crate::config::coordinator_clocks::{ClearedCloseMarkers, CoordinatorClocksState};
 use crate::config::sessions_persistence::persist_current_state;
@@ -3747,14 +3747,10 @@ pub(crate) async fn attach_local_config_telegram_if_any<R: tauri::Runtime>(
     session_id: Uuid,
     cwd: &str,
 ) {
-    let config_path = std::path::Path::new(cwd)
-        .join(crate::config::agent_local_dir_name())
-        .join("config.json");
+    let config_dir = std::path::Path::new(cwd).join(crate::config::agent_local_dir_name());
 
-    let Some(bot_label) = tokio::fs::read_to_string(&config_path)
-        .await
-        .ok()
-        .and_then(|contents| serde_json::from_str::<AgentLocalConfig>(&contents).ok())
+    // #2786 (C1) - through the shared loader.
+    let Some(bot_label) = agent_config::read_agent_local_config(&config_dir)
         .and_then(|local_config| local_config.tooling.telegram_bot)
     else {
         return;
@@ -4503,7 +4499,7 @@ pub(crate) fn matched_selection(
         return MatchedSelection::NoAgent;
     };
     let mut reference =
-        crate::config::agent_command::StoredReference::from_config(config.as_ref(), &id);
+        crate::config::agent_command::StoredReference::from_config(std::path::Path::new(cwd), &id);
     reference.source_letter = source_letter.map(str::to_string);
     match crate::config::agent_command::resolve_portable_reference(settings, &reference) {
         crate::config::agent_command::MatchOutcome::Matched(found) => MatchedSelection::Agent {

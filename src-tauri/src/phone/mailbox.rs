@@ -9,7 +9,6 @@ use serde::Serialize;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
-use crate::config::agent_config::AgentLocalConfig;
 use crate::config::injected_messages::{
     render, BRANCH_STALE_MESSAGE_ID, CI_FINISHED_MESSAGE_ID, CI_STARTED_MESSAGE_ID,
     CONTEXT_ALERT_MESSAGE_ID, MAX_RENDERED_BYTES, NOTICE_BLIND_GAP_MESSAGE_ID, TOKEN_AT,
@@ -6661,8 +6660,13 @@ impl MailboxPoller {
         .map_err(|_| C::UnsafePath)?;
         let config_value = crate::path_identity::parse_json_no_duplicates(&config_bytes)
             .map_err(|_| C::UnsupportedProfile)?;
-        let local_config: AgentLocalConfig =
-            serde_json::from_value(config_value).map_err(|_| C::UnsupportedProfile)?;
+        // #2786 (C1) - the guarded config.json read stays; the shared loader
+        // overlays the state file's keys on it.
+        let config_value =
+            crate::config::agent_config::overlay_agent_local_state(&target_root, config_value);
+        let local_config =
+            serde_json::from_value::<crate::config::agent_config::AgentLocalConfig>(config_value)
+                .map_err(|_| C::UnsupportedProfile)?;
         let exited = select_persistent_exited_pty_candidate(matching, |session| {
             crate::config::teams::verify_pty_input_replica_cwd(Path::new(
                 &session.working_directory,
@@ -8516,12 +8520,9 @@ impl MailboxPoller {
             let current = crate::config::coding_agent_profiles::read_replica_current_coding_agent(
                 &replica_dir,
             );
-            let config_path = replica_dir
-                .join(crate::config::agent_local_dir_name())
-                .join("config.json");
-            let last = std::fs::read_to_string(&config_path)
-                .ok()
-                .and_then(|content| serde_json::from_str::<AgentLocalConfig>(&content).ok())
+            let config_dir = replica_dir.join(crate::config::agent_local_dir_name());
+            let config_path = config_dir.join("config.json");
+            let last = crate::config::agent_config::read_agent_local_config(&config_dir)
                 .and_then(|config| config.tooling.last_coding_agent);
             resolve_wake_agent_command_from_sources(
                 &agents,
@@ -12718,15 +12719,13 @@ impl MailboxPoller {
             destination_current_agent =
                 crate::config::coding_agent_profiles::read_replica_current_coding_agent(dest);
 
-            let config_path = dest
-                .join(crate::config::agent_local_dir_name())
-                .join("config.json");
-            destination_config_path = Some(config_path.clone());
+            let config_dir = dest.join(crate::config::agent_local_dir_name());
+            destination_config_path = Some(config_dir.join("config.json"));
 
-            if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&content) {
-                    destination_last_agent = local_config.tooling.last_coding_agent;
-                }
+            if let Some(local_config) =
+                crate::config::agent_config::read_agent_local_config(&config_dir)
+            {
+                destination_last_agent = local_config.tooling.last_coding_agent;
             }
         }
 

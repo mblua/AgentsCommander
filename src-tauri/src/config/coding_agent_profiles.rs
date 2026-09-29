@@ -51,8 +51,11 @@ fn read_json_object(path: &Path) -> Option<Value> {
     serde_json::from_str::<Value>(&content).ok()
 }
 
+/// #2786 (C1) - through the shared loader, so a state key such as
+/// `profileContentHash` is served from the state file first.
 fn read_tooling_string(agent_dir: &Path, key: &str) -> Option<String> {
-    read_json_object(&agent_dir.join("config.json"))?
+    crate::config::agent_config::read_agent_local_config_json(agent_dir)
+        .ok()??
         .get("tooling")?
         .get(key)?
         .as_str()
@@ -2910,5 +2913,32 @@ mod tests {
             .unwrap();
         assert!(temp_obstruction.is_dir());
         assert_eq!(config_bytes(&fixture.replica), before);
+    }
+
+    /// #2786 (C1) E8 - `profileContentHash` has no struct field, so it is the
+    /// one state key a typed reader cannot route; it must still go state-first.
+    #[test]
+    fn the_content_hash_reads_through_the_loader() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"tooling":{"profileContentHash":"tracked-hash"}}"#,
+        )
+        .expect("seed decisions");
+        assert_eq!(
+            read_replica_profile_content_hash(dir).as_deref(),
+            Some("tracked-hash")
+        );
+
+        std::fs::write(
+            dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+            r#"{"tooling":{"profileContentHash":"state-hash"}}"#,
+        )
+        .expect("seed state");
+        assert_eq!(
+            read_replica_profile_content_hash(dir).as_deref(),
+            Some("state-hash")
+        );
     }
 }

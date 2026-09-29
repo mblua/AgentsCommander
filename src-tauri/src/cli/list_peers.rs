@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::ac_root::existing_ac_root;
-use crate::config::agent_config::{AgentLocalConfig, CodingAgentEntry};
+use crate::config::agent_config::{read_agent_local_config, CodingAgentEntry};
 use crate::config::sessions_persistence::{load_sessions_raw, PersistedSession};
 use crate::session::session::{SessionCommunicationKind, SessionStatus, TEMP_SESSION_PREFIX};
 
@@ -715,12 +715,8 @@ fn build_wg_peer(
     let _ = std::fs::create_dir_all(replica_ac.join("inbox"));
     let _ = std::fs::create_dir_all(replica_ac.join("outbox"));
 
-    let peer_config: AgentLocalConfig = replica_ac
-        .join("config.json")
-        .to_str()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or_default();
+    // #2786 (C1) - through the shared loader: state file first, key-wise.
+    let peer_config = read_agent_local_config(&replica_ac).unwrap_or_default();
 
     let expected_session_name = format!("{}/{}", wg_name, agent_name);
     let ps = compute_peer_status(
@@ -958,12 +954,7 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
                     PathBuf::from(&path_str).join(crate::config::agent_local_dir_name())
                 });
 
-            let peer_config: AgentLocalConfig = peer_ac
-                .join("config.json")
-                .to_str()
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .and_then(|c| serde_json::from_str(&c).ok())
-                .unwrap_or_default();
+            let peer_config = read_agent_local_config(&peer_ac).unwrap_or_default();
 
             let ps = compute_peer_status(&path_str, None, &session_index);
             peers.push(PeerInfo {

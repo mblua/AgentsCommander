@@ -2112,14 +2112,9 @@ fn context_array_matches(arr: &[Value], expected: &[&str]) -> bool {
 }
 
 pub fn read_last_coding_agent(root_dir: &str) -> Option<String> {
-    let config_path = Path::new(root_dir).join("config.json");
-    let contents = std::fs::read_to_string(config_path).ok()?;
-    let value: Value = serde_json::from_str(&contents).ok()?;
-    value
-        .get("tooling")
-        .and_then(|tooling| tooling.get("lastCodingAgent"))
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
+    crate::config::agent_config::read_agent_local_config(Path::new(root_dir))?
+        .tooling
+        .last_coding_agent
 }
 
 fn paths_equivalent(left: &Path, right: &Path) -> bool {

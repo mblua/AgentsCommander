@@ -252,13 +252,111 @@ pub fn set_last_agent_message_at(repo_path: &str, at_rfc3339: &str) -> Result<bo
 /// unparseable, or carries no `tooling.lastAgentMessageAt`. Never validates the
 /// string: rendering owns that.
 pub fn read_last_agent_message_at(repo_path: &str) -> Option<String> {
-    let path = Path::new(repo_path)
-        .join(crate::config::agent_local_dir_name().as_str())
-        .join("config.json");
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| serde_json::from_str::<AgentLocalConfig>(&c).ok())
-        .and_then(|cfg| cfg.tooling.last_agent_message_at)
+    let dir = Path::new(repo_path).join(crate::config::agent_local_dir_name().as_str());
+    read_agent_local_config(&dir).and_then(|cfg| cfg.tooling.last_agent_message_at)
+}
+
+// ── State file loader (#2786, C1) ───────────────────────────────────────────
+/// #2786 (C1) - the D7 split marker's top-level key in the state file.
+pub(crate) const SPLIT_MARKER_KEY: &str = "split";
+/// #2786 (C1) - a marker whose integer `v` is at least this reads as present.
+pub(crate) const SPLIT_MARKER_VERSION: u64 = 1;
+
+/// #2786 (C1) - the `tooling` keys whose home is the state file.
+const STATE_KEYS: [&str; 4] = [
+    "lastCodingAgent",
+    "codingAgents",
+    "lastAgentMessageAt",
+    "profileContentHash",
+];
+
+/// #2786 (C1) - the one reader of an agent's local config: `config.json` in
+/// `dir`, with the state keys served key-wise from the state file beside it.
+/// `None` when neither file yields a config.
+pub fn read_agent_local_config(dir: &Path) -> Option<AgentLocalConfig> {
+    let value = read_agent_local_config_json(dir).ok()??;
+    serde_json::from_value(value).ok()
+}
+
+/// #2786 (C1) - the raw JSON the loader serves: `config.json` in `dir` with
+/// the state file's keys overlaid. `Ok(None)` when neither file exists; `Err`
+/// when `config.json` exists but is not JSON. A pure read: it writes nothing.
+pub fn read_agent_local_config_json(dir: &Path) -> Result<Option<serde_json::Value>, String> {
+    let path = dir.join("config.json");
+    let decisions = match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            Some(serde_json::from_str::<serde_json::Value>(&content).map_err(|e| e.to_string())?)
+        }
+        Err(_) => None,
+    };
+    let state = read_state_file(dir);
+    if decisions.is_none() && state.is_none() {
+        return Ok(None);
+    }
+    let decisions = decisions.unwrap_or_else(|| serde_json::json!({}));
+    Ok(Some(overlay_state(decisions, state)))
+}
+
+/// #2786 (C1) - overlay the state file in `dir` on a `config.json` the caller
+/// has already read and parsed through its own guarded path.
+pub fn overlay_agent_local_state(dir: &Path, decisions: serde_json::Value) -> serde_json::Value {
+    overlay_state(decisions, read_state_file(dir))
+}
+
+/// The state file as an object, or `None` when it is absent or unusable: a
+/// reader falls back to `config.json` rather than failing.
+fn read_state_file(dir: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let path = dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+    let content = std::fs::read_to_string(path).ok()?;
+    match serde_json::from_str::<serde_json::Value>(&content).ok()? {
+        serde_json::Value::Object(map) => Some(map),
+        _ => None,
+    }
+}
+
+/// D7, "present" is exact: an object whose `v` is an integer at or above
+/// [`SPLIT_MARKER_VERSION`]. A newer version reads as present on purpose.
+fn split_marker_present(marker: Option<&serde_json::Value>) -> bool {
+    marker
+        .and_then(|marker| marker.get("v"))
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|v| v >= SPLIT_MARKER_VERSION)
+}
+
+/// Key-wise overlay. Marker absent: the state file wins for every key it
+/// holds. Marker present: a key the tracked file holds keeps the tracked value.
+/// `split.keys` is not consulted, and the marker is never returned.
+fn overlay_state(
+    mut decisions: serde_json::Value,
+    state: Option<serde_json::Map<String, serde_json::Value>>,
+) -> serde_json::Value {
+    let Some(state) = state else {
+        return decisions;
+    };
+    let Some(state_tooling) = state.get("tooling").and_then(|t| t.as_object()) else {
+        return decisions;
+    };
+    let tracked_wins = split_marker_present(state.get(SPLIT_MARKER_KEY));
+    let Some(root) = decisions.as_object_mut() else {
+        return decisions;
+    };
+    let Some(tooling) = root
+        .entry("tooling")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+    else {
+        return decisions;
+    };
+    for key in STATE_KEYS {
+        let Some(value) = state_tooling.get(key) else {
+            continue;
+        };
+        if tracked_wins && tooling.contains_key(key) {
+            continue;
+        }
+        tooling.insert(key.to_string(), value.clone());
+    }
+    decisions
 }
 
 /// Ensure a key in a JSON map is an object, inserting `{}` if missing or resetting if corrupted.
@@ -774,5 +872,154 @@ mod tests {
         let entry = &value["tooling"]["codingAgents"]["gone"];
         assert!(entry.get("command").is_none(), "{entry}");
         assert!(entry.get("identity").is_none(), "{entry}");
+    }
+
+    /// #2786 (C1) E7 - seed `config.json` and the state file in a fresh dir.
+    fn loader_fixture(
+        decisions: Option<serde_json::Value>,
+        state: Option<serde_json::Value>,
+    ) -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("tempdir");
+        if let Some(value) = decisions {
+            std::fs::write(temp.path().join("config.json"), value.to_string())
+                .expect("seed decisions");
+        }
+        if let Some(value) = state {
+            std::fs::write(
+                temp.path()
+                    .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+                value.to_string(),
+            )
+            .expect("seed state");
+        }
+        temp
+    }
+
+    /// Every file in `dir` with its bytes, to prove the loader wrote nothing.
+    fn dir_bytes(dir: &Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .expect("read dir")
+            .map(|entry| {
+                let entry = entry.expect("entry");
+                (
+                    entry.file_name(),
+                    std::fs::read(entry.path()).expect("read"),
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// The four state keys, read through the loader, as one JSON object.
+    fn loaded_state_keys(dir: &Path) -> serde_json::Value {
+        let before = dir_bytes(dir);
+        let config = read_agent_local_config(dir).expect("the loader returns a config");
+        let raw = read_agent_local_config_json(dir)
+            .expect("parseable")
+            .expect("present");
+        assert_eq!(dir_bytes(dir), before, "the loader must write nothing");
+        serde_json::json!({
+            "lastCodingAgent": config.tooling.last_coding_agent,
+            "codingAgents": config.tooling.coding_agents.keys().collect::<Vec<_>>(),
+            "lastAgentMessageAt": config.tooling.last_agent_message_at,
+            "profileContentHash": raw["tooling"]["profileContentHash"],
+        })
+    }
+
+    fn all_four(tag: &str) -> serde_json::Value {
+        serde_json::json!({
+            "lastCodingAgent": format!("{tag}-agent"),
+            "codingAgents": {format!("{tag}-agent"): {"app": tag}},
+            "lastAgentMessageAt": format!("{tag}-at"),
+            "profileContentHash": format!("{tag}-hash"),
+        })
+    }
+
+    fn expect_all_four(tag: &str) -> serde_json::Value {
+        serde_json::json!({
+            "lastCodingAgent": format!("{tag}-agent"),
+            "codingAgents": [format!("{tag}-agent")],
+            "lastAgentMessageAt": format!("{tag}-at"),
+            "profileContentHash": format!("{tag}-hash"),
+        })
+    }
+
+    #[test]
+    fn the_loader_is_key_wise_and_marker_aware() {
+        let marker = serde_json::json!({"v": 1, "keys": STATE_KEYS});
+
+        // 1. State only.
+        let temp = loader_fixture(
+            None,
+            Some(serde_json::json!({"tooling": all_four("state")})),
+        );
+        assert_eq!(loaded_state_keys(temp.path()), expect_all_four("state"));
+
+        // 2. Decisions only, with a non-state key the loader must keep.
+        let mut decisions = all_four("tracked");
+        decisions["telegramBot"] = serde_json::json!("bot");
+        let temp = loader_fixture(Some(serde_json::json!({"tooling": decisions})), None);
+        assert_eq!(loaded_state_keys(temp.path()), expect_all_four("tracked"));
+        assert_eq!(
+            read_agent_local_config(temp.path())
+                .expect("config")
+                .tooling
+                .telegram_bot
+                .as_deref(),
+            Some("bot")
+        );
+
+        // 3. A state file with two of the four keys hides none of the others.
+        let temp = loader_fixture(
+            Some(serde_json::json!({"tooling": all_four("tracked")})),
+            Some(serde_json::json!({"tooling": {
+                "lastCodingAgent": "state-agent",
+                "profileContentHash": "state-hash",
+            }})),
+        );
+        assert_eq!(
+            loaded_state_keys(temp.path()),
+            serde_json::json!({
+                "lastCodingAgent": "state-agent",
+                "codingAgents": ["tracked-agent"],
+                "lastAgentMessageAt": "tracked-at",
+                "profileContentHash": "state-hash",
+            })
+        );
+
+        // 4. Both files, marker present: the tracked value wins.
+        let temp = loader_fixture(
+            Some(serde_json::json!({"tooling": all_four("tracked")})),
+            Some(serde_json::json!({"tooling": all_four("state"), "split": marker})),
+        );
+        assert_eq!(loaded_state_keys(temp.path()), expect_all_four("tracked"));
+
+        // 5. Both files, no marker: the state file wins.
+        let temp = loader_fixture(
+            Some(serde_json::json!({"tooling": all_four("tracked")})),
+            Some(serde_json::json!({"tooling": all_four("state")})),
+        );
+        assert_eq!(loaded_state_keys(temp.path()), expect_all_four("state"));
+
+        // 6. Marker shapes: only an integer `v` >= 1 is present.
+        let shapes = [
+            (serde_json::json!(null), "state"),
+            (serde_json::json!(3), "state"),
+            (serde_json::json!({"v": "1"}), "state"),
+            (serde_json::json!({}), "state"),
+            (serde_json::json!({"v": 2, "keys": []}), "tracked"),
+        ];
+        for (shape, winner) in shapes {
+            let temp = loader_fixture(
+                Some(serde_json::json!({"tooling": all_four("tracked")})),
+                Some(serde_json::json!({"tooling": all_four("state"), "split": shape.clone()})),
+            );
+            assert_eq!(
+                loaded_state_keys(temp.path()),
+                expect_all_four(winner),
+                "split = {shape}"
+            );
+        }
     }
 }
