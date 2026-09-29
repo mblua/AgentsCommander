@@ -4,6 +4,8 @@ import {
   compareWelcomeAgents,
   definitionToSeed,
   sortWelcomeAgents,
+  welcomeVendorOf,
+  WELCOME_PINNED_KEYS,
 } from "./agent-presets";
 import type { CodingAgentDefinition, CodingAgentWelcomeStatus } from "./types";
 
@@ -221,5 +223,42 @@ describe("Welcome order (#2736)", () => {
     // "ghost" is a status row with no catalog entry: ignored.
     const status = [row("low", false, "low"), row("ghost", true, "high")];
     expect(keysOf(sortWelcomeAgents(catalog, status))).toEqual(["low", "unknown"]);
+  });
+
+  it("welcomeVendorOf_2784_reads_the_text_after_the_last_by", () => {
+    expect(welcomeVendorOf("Coding Agent by Anthropic")).toBe("Anthropic");
+    expect(welcomeVendorOf("Coding Agent by OpenAI")).toBe("OpenAI");
+    expect(welcomeVendorOf("Coding Agent by Nous Research")).toBe("Nous Research");
+    expect(welcomeVendorOf("Coding Agent by Cursor")).toBe("Cursor");
+    expect(welcomeVendorOf("Coding Agent by Earendil Inc")).toBe("Earendil Inc");
+    expect(welcomeVendorOf("Open-source terminal coding agent by Anomaly")).toBe("Anomaly");
+    expect(welcomeVendorOf("Coding Agent by Google")).toBe("Google");
+    expect(welcomeVendorOf("Coding agent Grok Build")).toBeNull();
+    expect(welcomeVendorOf("Configure your own Coding Agent")).toBeNull();
+  });
+
+  it("sortWelcomeAgents_2784_puts_opencode_first_among_the_low_agents", () => {
+    const catalog = ["hermes", "cursor", "opencode", "grok"].map(welcomeDef);
+    const status = catalog.map((def) => row(def.key, false, "low"));
+    expect(keysOf(sortWelcomeAgents(catalog, status))).toEqual([
+      "opencode",
+      "hermes",
+      "cursor",
+      "grok",
+    ]);
+  });
+
+  it("sortWelcomeAgents_2784_never_lifts_opencode_above_a_better_tested_or_installed_agent", () => {
+    const catalog = ["opencode", "claude"].map(welcomeDef);
+    expect(
+      keysOf(sortWelcomeAgents(catalog, [row("claude", false, "high"), row("opencode", false, "low")])),
+    ).toEqual(["claude", "opencode"]);
+    expect(
+      keysOf(sortWelcomeAgents(catalog, [row("claude", true, "low"), row("opencode", false, "low")])),
+    ).toEqual(["claude", "opencode"]);
+  });
+
+  it("WELCOME_PINNED_KEYS_2784_is_exactly_opencode", () => {
+    expect(WELCOME_PINNED_KEYS).toEqual(["opencode"]);
   });
 });

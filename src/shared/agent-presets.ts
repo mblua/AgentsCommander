@@ -54,8 +54,23 @@ export function definitionToSeed(def: CodingAgentDefinition): Omit<AgentConfig, 
   return seed;
 }
 
+/** #2784 - Welcome cards show "by <Vendor>" instead of the catalog description.
+ *  The vendor is the text after the LAST "by " of the description; a description
+ *  with no "by " has no vendor and the caller renders it unchanged. */
+export function welcomeVendorOf(description: string): string | null {
+  const m = /^.*\bby\s+(\S.*)$/i.exec(description.trim());
+  return m ? m[1].trim() : null;
+}
+
 const TESTED_LEVEL_RANK: Record<CodingAgentTestedLevel, number> = { high: 0, medium: 1, low: 2 };
 const NO_LEVEL_RANK = 3;
+/** #2784 - keys pinned to the FRONT of their tested-level group, in this order.
+ *  Requirement: OpenCode is first among the Tested: Low agents. */
+export const WELCOME_PINNED_KEYS: readonly string[] = ["opencode"];
+const pinnedRank = (key: string): number => {
+  const index = WELCOME_PINNED_KEYS.indexOf(key);
+  return index < 0 ? WELCOME_PINNED_KEYS.length : index;
+};
 
 /** #2736 - Welcome order: installed first, then High > Medium > Low > no level,
  *  then catalog order. "Custom Agent" is NOT passed here; the caller appends it
@@ -74,6 +89,9 @@ export function compareWelcomeAgents(
   const levelA = rowA?.testedLevel ? TESTED_LEVEL_RANK[rowA.testedLevel] : NO_LEVEL_RANK;
   const levelB = rowB?.testedLevel ? TESTED_LEVEL_RANK[rowB.testedLevel] : NO_LEVEL_RANK;
   if (levelA !== levelB) return levelA - levelB;
+  const pinnedA = pinnedRank(a.key);
+  const pinnedB = pinnedRank(b.key);
+  if (pinnedA !== pinnedB) return pinnedA - pinnedB;
   return (catalogIndex.get(a.key) ?? 0) - (catalogIndex.get(b.key) ?? 0);
 }
 

@@ -11,7 +11,7 @@ import { CodingAgentsAPI, onCodingAgentInstallFinished, SettingsAPI } from "../.
 import type { UnlistenFn } from "../../shared/transport";
 import { settingsStore } from "../../shared/stores/settings";
 import { toastStore } from "../../shared/stores/toasts";
-import { newAgentId, definitionToSeed, sortWelcomeAgents } from "../../shared/agent-presets";
+import { newAgentId, definitionToSeed, sortWelcomeAgents, welcomeVendorOf } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 
 const CUSTOM_PRESET: CodingAgentDefinition = {
@@ -138,6 +138,17 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   };
   const testedLabel = (level: CodingAgentTestedLevel): string =>
     level === "high" ? "High" : level === "medium" ? "Medium" : "Low";
+  /** #2784 - per-level Tested tooltip, verbatim from issue #2784. */
+  const TESTED_TOOLTIP: Record<CodingAgentTestedLevel, string> = {
+    low: "This Coding Agent could not be tested much yet, help us do it. Please report to the project any issue you have while using it, blocking menus, etc. Thank you very much!",
+    medium: "This Coding Agent has been partially tested. Most things should work, but some rough edges may remain. Please report any issue you find to the project. Thank you!",
+    high: "This Coding Agent has been tested extensively with AgentsCommander. If you still run into any issue, please report it to the project. Thank you!",
+  };
+  /** #2784 - Welcome identity line: "by <Vendor>", else the raw description. */
+  const vendorLine = (preset: CodingAgentDefinition): string => {
+    const vendor = welcomeVendorOf(preset.description);
+    return vendor === null ? preset.description : `by ${vendor}`;
+  };
   const presetAriaLabel = (preset: CodingAgentDefinition): string => {
     if (!props.showInstallStatus) return `Select ${preset.label}`;
     const level = testedLevelOf(preset.key);
@@ -559,32 +570,43 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                       </div>
                       <div class="onboarding-card-info">
                         <div class="onboarding-card-name">{preset.label}</div>
-                        <Show when={props.showInstallStatus}>
-                          <div class="onboarding-card-chips">
-                            <span
-                              class="onboarding-chip onboarding-chip-status"
-                              data-ac-testid={`onboarding.agentPreset.${preset.key}.status`}
-                              data-ac-role="status"
-                              data-ac-state={statusState(preset.key)}
-                            >
-                              {statusLabel(preset.key)}
-                            </span>
-                            <Show when={testedLevelOf(preset.key)}>
-                              {(level) => (
-                                <span
-                                  class="onboarding-chip onboarding-chip-tested"
-                                  data-ac-testid={`onboarding.agentPreset.${preset.key}.tested`}
-                                  data-ac-role="status"
-                                  data-ac-state={level()}
-                                >
-                                  {`Tested: ${testedLabel(level())}`}
-                                </span>
-                              )}
-                            </Show>
+                        <Show
+                          when={props.showInstallStatus}
+                          fallback={<div class="onboarding-card-desc">{preset.description}</div>}
+                        >
+                          <div
+                            class="onboarding-card-vendor"
+                            data-ac-testid={`onboarding.agentVendor.${preset.key}`}
+                          >
+                            {vendorLine(preset)}
                           </div>
                         </Show>
-                        <div class="onboarding-card-desc">{preset.description}</div>
                       </div>
+                      <Show when={props.showInstallStatus}>
+                        <div class="onboarding-card-chips">
+                          <span
+                            class="onboarding-chip onboarding-chip-status"
+                            data-ac-testid={`onboarding.agentPreset.${preset.key}.status`}
+                            data-ac-role="status"
+                            data-ac-state={statusState(preset.key)}
+                          >
+                            {statusLabel(preset.key)}
+                          </span>
+                          <Show when={testedLevelOf(preset.key)}>
+                            {(level) => (
+                              <span
+                                class="onboarding-chip onboarding-chip-tested"
+                                data-ac-testid={`onboarding.agentPreset.${preset.key}.tested`}
+                                data-ac-role="status"
+                                data-ac-state={level()}
+                                title={TESTED_TOOLTIP[level()]}
+                              >
+                                {`Tested: ${testedLabel(level())}`}
+                              </span>
+                            )}
+                          </Show>
+                        </div>
+                      </Show>
                     </button>
                     <Show when={showInstallRow(preset.key)}>
                       <div class="onboarding-card-install">

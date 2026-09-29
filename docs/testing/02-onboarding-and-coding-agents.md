@@ -30,6 +30,7 @@ Known automation support:
 - First-run onboarding has semantic selectors for `onboarding.modal`, `onboarding.agentPreset.claude`, `onboarding.agentPreset.codex`, `onboarding.agentPreset.antigravity`, `onboarding.agentPreset.custom`, `onboarding.custom.label`, `onboarding.custom.command`, `onboarding.cancel`, `onboarding.confirm`, `onboarding.done`, and `onboarding.done.close`.
 - Settings has semantic selectors for `actionBar.settings`, `settings.modal`, `settings.tab.agents`, `settings.agentPreset.<presetKey>`, `settings.agent.addCustom`, `settings.agentRow.<index>.*`, `settings.save`, and `settings.cancel`.
 - Catalog status selectors on both registration surfaces: `settings.catalog.loading`, `settings.catalog.empty`, `settings.catalog.error`, `settings.catalog.warning.<index>`, `settings.catalog.reload`, `onboarding.catalog.loading`, `onboarding.catalog.empty`, `onboarding.catalog.error`, `onboarding.catalog.warning.<index>`, and `onboarding.catalog.reload`.
+- Welcome identity line (#2784, Welcome modal only): `onboarding.agentVendor.<presetKey>` reads `by <Vendor>`, derived from the text after the last `by ` of the catalog description, or the raw description when it has no `by `. It does not render on the flag-off surfaces (New Agent picker, Settings).
 
 Known automation gaps:
 
