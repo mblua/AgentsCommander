@@ -1,0 +1,575 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "file": "browser/styles/browser.css",
+      "line": 96,
+      "selector": ".browser-side-toggle",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "browser/styles/browser.css",
+      "line": 116,
+      "selector": ".browser-side-toggle:hover",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "main/styles/main.css",
+      "line": 194,
+      "selector": ".quit-confirm-btn-cancel",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "main/styles/main.css",
+      "line": 295,
+      "selector": ".home-status-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "main/styles/main.css",
+      "line": 391,
+      "selector": ".error-modal-title",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "main/styles/main.css",
+      "line": 397,
+      "selector": ".error-modal-counter",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "main/styles/main.css",
+      "line": 402,
+      "selector": ".error-modal-meta",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "main/styles/main.css",
+      "line": 452,
+      "selector": ".error-modal-btn-dismiss",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "resource-monitor/styles/resource-monitor.css",
+      "line": 508,
+      "selector": ".rm-group-verifying",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "resource-monitor/styles/resource-monitor.css",
+      "line": 592,
+      "selector": ".rm-process-error, .rm-warning-line",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "resource-monitor/styles/resource-monitor.css",
+      "line": 721,
+      "selector": ".rm-partial-pill",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "resource-monitor/styles/resource-monitor.css",
+      "line": 778,
+      "selector": ".rm-filter-pid-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "shared/styles/external-link-confirm.css",
+      "line": 105,
+      "selector": ".external-link-btn-open",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 202,
+      "selector": ".titlebar-btn-logs.copied",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 442,
+      "selector": ".webserver-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 458,
+      "selector": ".webserver-alert-title",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 517,
+      "selector": ".webserver-bind-value.invalid",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 621,
+      "selector": ".webserver-bind-note.good",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 622,
+      "selector": ".webserver-bind-note.bad",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 635,
+      "selector": ".webserver-validation",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 642,
+      "selector": ".webserver-validation.ok",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 990,
+      "selector": ".profile-badge--tier",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 1018,
+      "selector": ".profile-outdated-badge",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 1038,
+      "selector": ".orphan-notice",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 1251,
+      "selector": ".resource-monitor-btn.state-warn, .resource-monitor-btn.state-limit, .resource-monitor-btn.state-unknown",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 2330,
+      "selector": ".settings-codex-home-preview.warning",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 2447,
+      "selector": ".settings-profile-badge.fallback",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3125,
+      "selector": ".settings-auto-update-table td[data-ac-state=\"ask\"], .settings-auto-update-table td[data-ac-state=\"checking\"], .settings-auto-update-table td[data-ac-state=\"updating\"]",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3404,
+      "selector": ".session-item-mic.error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3416,
+      "selector": ".session-item-mic:hover",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3502,
+      "selector": ".session-item-voice-indicator .voice-countdown",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3526,
+      "selector": ".session-item-voice-indicator .voice-cancel-execute:hover",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3532,
+      "selector": ".session-item-mic-cancel",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3553,
+      "selector": ".session-item-voice-indicator.warning .voice-warning-text",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3565,
+      "selector": ".session-item-voice-indicator.error .voice-error-text",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3590,
+      "selector": ".session-item-explorer:hover",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3664,
+      "selector": ".session-item-telegram:hover",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3760,
+      "selector": ".session-context-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3881,
+      "selector": ".session-context-title-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 3984,
+      "selector": ".session-context-task-icon",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 4468,
+      "selector": ".workgroup-group-rail-button .workgroup-group-rail-raise-hand",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 4506,
+      "selector": ".workgroup-group-rail-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 4943,
+      "selector": ".agent-modal-item-badges [data-agent=\"Claude\"]",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 4944,
+      "selector": ".agent-modal-item-badges [data-agent=\"Codex\"]",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 4945,
+      "selector": ".agent-modal-item-badges [data-agent=\"OpenCode\"]",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 5190,
+      "selector": ".agent-profile-card-pill.fallback",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 5300,
+      "selector": ".agent-profile-warning-strip.visible",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 5305,
+      "selector": ".agent-profile-token.warn",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 6036,
+      "selector": ".agent-profile-step.yellow",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 6087,
+      "selector": ".agent-comparison-summary-value.fallback",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 6131,
+      "selector": ".agent-comparison-table-head",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 6208,
+      "selector": ".agent-comparison-status.fallback",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 6394,
+      "selector": ".workgroup-groups-nonstop-warning",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 6400,
+      "selector": ".workgroup-groups-nonstop-hint",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 6473,
+      "selector": ".workgroup-groups-errors",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 6526,
+      "selector": ".archived-projects-warning",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 6919,
+      "selector": ".project-filter-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 7188,
+      "selector": ".coord-communication-slot",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 7310,
+      "selector": ".ac-discovery-badge.coord",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 7320,
+      "selector": ".ac-discovery-badge.branch",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 7449,
+      "selector": ".ac-discovery-badge.coord-idle.green",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 7454,
+      "selector": ".ac-discovery-badge.coord-idle.yellow",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 7469,
+      "selector": ".ac-discovery-badge.coord-autoclosed",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 7553,
+      "selector": ".ac-discovery-badge.disabled",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 7574,
+      "selector": ".project-load-status[data-ac-state=\"error\"] .ac-empty-hint",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8144,
+      "selector": "[data-sidebar-style=\"deep-space\"] .project-title",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8186,
+      "selector": "[data-sidebar-style=\"deep-space\"] .ac-wg-name",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8206,
+      "selector": "[data-sidebar-style=\"deep-space\"] .replica-item",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8210,
+      "selector": "[data-sidebar-style=\"deep-space\"] .replica-item-name",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8223,
+      "selector": "[data-sidebar-style=\"deep-space\"] .ac-discovery-badge.coord",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8345,
+      "selector": "[data-sidebar-style=\"deep-space\"] .root-agent-avatar",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8351,
+      "selector": "[data-sidebar-style=\"deep-space\"] .root-agent-title",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8428,
+      "selector": "[data-sidebar-style=\"arctic-ops\"] .ac-wg-name",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8477,
+      "selector": "[data-sidebar-style=\"arctic-ops\"] .ac-discovery-badge.team",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8642,
+      "selector": "[data-sidebar-style=\"obsidian-mesh\"] .ac-wg-name",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8667,
+      "selector": "[data-sidebar-style=\"obsidian-mesh\"] .replica-item-name",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8673,
+      "selector": "[data-sidebar-style=\"obsidian-mesh\"] .ac-discovery-badge.coord",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8680,
+      "selector": "[data-sidebar-style=\"obsidian-mesh\"] .ac-discovery-badge.team",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8811,
+      "selector": "[data-sidebar-style=\"obsidian-mesh\"] .root-agent-avatar",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8923,
+      "selector": "[data-sidebar-style=\"neon-circuit\"] .ac-wg-name",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 8970,
+      "selector": "[data-sidebar-style=\"neon-circuit\"] .ac-discovery-badge.team",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 9169,
+      "selector": "[data-sidebar-style=\"neon-circuit\"] .root-agent-avatar",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 9175,
+      "selector": "[data-sidebar-style=\"neon-circuit\"] .root-agent-title",
+      "reason": "#2744 excluded: alternative sidebar skin. The skin repaints its own surface (see [data-sidebar-style=\"deep-space\"] .project-panel in sidebar.css), so the flat light base this check assumes is not its real background. Needs per-skin surface modelling; tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 9758,
+      "selector": ".onboarding-card-icon",
+      "reason": "#2744 excluded: sweep false positive. The background is set inline from the catalog entry's own color (CodingAgentQuickConfiguration.tsx), so it is identical in light and dark and no flat light color is correct for all catalog accents. Tracked separately."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 9830,
+      "selector": ".onboarding-done-icon",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "sidebar/styles/sidebar.css",
+      "line": 9976,
+      "selector": ".tpl-agency-install-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "terminal/styles/terminal.css",
+      "line": 316,
+      "selector": ".workgroup-task-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "terminal/styles/terminal.css",
+      "line": 390,
+      "selector": ".quit-confirm-btn-cancel",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "terminal/styles/terminal.css",
+      "line": 572,
+      "selector": ".status-bar-detached",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "terminal/styles/terminal.css",
+      "line": 616,
+      "selector": ".status-bar-error",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "terminal/styles/terminal.css",
+      "line": 689,
+      "selector": ".status-bar-btn-mic-cancel:hover",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "terminal/styles/terminal.css",
+      "line": 694,
+      "selector": ".status-bar-btn-clear:hover",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "watchers/styles/watchers.css",
+      "line": 164,
+      "selector": ".watchers-banner",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "watchers/styles/watchers.css",
+      "line": 187,
+      "selector": ".watchers-note-degraded",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    },
+    {
+      "file": "watchers/styles/watchers.css",
+      "line": 404,
+      "selector": ".watchers-degraded",
+      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
+    }
+  ]
+}

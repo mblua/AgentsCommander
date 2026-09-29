@@ -97,6 +97,116 @@ pub(crate) const BUILTIN_AGENT_SUPPORT: &[(&str, bool)] = &[
     ("muse", false),
 ];
 
+/// #2736 - how thoroughly AgentsCommander has tested each SUPPORTED built-in.
+/// CODE ONLY: never read from, and never patchable through, any catalog file.
+/// One row per ENABLED row of `BUILTIN_AGENT_SUPPORT`, in the same order (a test
+/// pins both). A key absent here (every user-authored key) has NO level.
+pub(crate) const BUILTIN_TESTED_LEVEL: &[(&str, TestedLevel)] = &[
+    ("claude", TestedLevel::High),
+    ("codex", TestedLevel::High),
+    ("hermes", TestedLevel::Low),
+    ("cursor", TestedLevel::Low),
+    ("pi", TestedLevel::High),
+    ("opencode", TestedLevel::Low),
+    ("antigravity", TestedLevel::Medium),
+    ("grok", TestedLevel::Low),
+];
+
+/// #2736 - wire strings are `"high" | "medium" | "low"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TestedLevel {
+    High,
+    Medium,
+    Low,
+}
+
+/// #2736 - the tested level of a built-in key; `None` for any other key.
+pub(crate) fn tested_level_for(key: &str) -> Option<TestedLevel> {
+    BUILTIN_TESTED_LEVEL
+        .iter()
+        .find(|(candidate, _)| *candidate == key)
+        .map(|(_, level)| *level)
+}
+
+/// #2736 - the install command for THIS host: the platform key when present,
+/// else `default`. `windows` for target_os = "windows", `macos` for "macos",
+/// `linux` for every other target.
+pub(crate) fn resolve_install_command(commands: &InstallCommands) -> &str {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    install_command_for_os(commands, os)
+}
+
+fn install_command_for_os<'a>(commands: &'a InstallCommands, os: &str) -> &'a str {
+    let platform = match os {
+        "windows" => commands.windows.as_deref(),
+        "macos" => commands.macos.as_deref(),
+        "linux" => commands.linux.as_deref(),
+        _ => None,
+    };
+    platform.unwrap_or(&commands.default)
+}
+
+/// #2736 - is this catalog entry's command present on this machine? PATH math
+/// only: `normalize_legacy_agent_command` reduces the catalog string to its
+/// program token, then `agent_command::resolve_program` resolves it (bare name
+/// through `effective_search_path` plus PATHEXT on Windows; explicit path by
+/// is_file()). NO process is executed and nothing is cached or persisted.
+pub(crate) fn command_is_present(command: &str) -> bool {
+    command_is_present_with(command, crate::config::agent_command::resolve_program)
+}
+
+/// Testable twin of [`command_is_present`] with the resolver injected
+/// (mirrors `resolve_command_install_probe_with`).
+fn command_is_present_with(command: &str, resolve: impl FnOnce(&str) -> Option<PathBuf>) -> bool {
+    match crate::config::agent_command::normalize_legacy_agent_command(command) {
+        Ok(normalized) if !normalized.shell.is_empty() => resolve(&normalized.shell).is_some(),
+        _ => false,
+    }
+}
+
+/// #2736 - one welcome-status row. A SEPARATE type from
+/// `CodingAgentDefinition`: that struct is persisted and hashed, and a catalog
+/// field would be patchable from disk.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingAgentWelcomeStatus {
+    pub key: String,
+    pub installed: bool,
+    pub tested_level: Option<TestedLevel>,
+    pub install_command: Option<String>,
+}
+
+/// One row per effective catalog entry, in catalog order.
+pub fn welcome_status_for(catalog: &[CodingAgentDefinition]) -> Vec<CodingAgentWelcomeStatus> {
+    welcome_status_for_with(catalog, command_is_present)
+}
+
+fn welcome_status_for_with(
+    catalog: &[CodingAgentDefinition],
+    is_present: impl Fn(&str) -> bool,
+) -> Vec<CodingAgentWelcomeStatus> {
+    catalog
+        .iter()
+        .map(|def| CodingAgentWelcomeStatus {
+            key: def.key.clone(),
+            installed: is_present(&def.command),
+            tested_level: tested_level_for(&def.key),
+            install_command: def
+                .install_commands
+                .as_ref()
+                .map(resolve_install_command)
+                .map(str::to_string),
+        })
+        .collect()
+}
+
 /// Unique-suffix counter for the seed temp file (mirrors the pattern in
 /// `seeded_context_templates::unique_state_temp_path`).
 static SEED_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -127,6 +237,21 @@ pub struct IdleBurstConfig {
     /// Silence age a chunk must find before it may open a burst candidate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prior_silence_secs: Option<f64>,
+}
+
+/// #2736 - optional per-OS install command for a coding agent. Every value is
+/// ONE complete shell command string, never argv tokens. `default` applies to
+/// any platform without its own key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallCommands {
+    pub default: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linux: Option<String>,
 }
 
 /// One catalog entry: a built-in (or user-added) coding agent the user can pick
@@ -179,12 +304,20 @@ pub struct CodingAgentDefinition {
     #[serde(default)]
     pub auto_update: bool,
     /// #2124 - optional idle-burst filter for this agent's sessions. Declared
-    /// LAST on purpose: field order is serialization order, and the managed
-    /// revision hash is taken over this serialization. NOT part of the
+    /// after the pre-#2124 fields on purpose: field order is serialization
+    /// order, and the managed revision hash is taken over this serialization.
+    /// `install_commands` (#2736) now follows it for the same reason, so a new
+    /// field never reorders the bytes of an existing one. NOT part of the
     /// `settings.agents[]` snapshot: it is resolved from the effective catalog
     /// at every spawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_burst: Option<IdleBurstConfig>,
+    /// #2736 - optional per-OS install command. One COMPLETE shell command string
+    /// per platform key; `default` is required when the object is present. Declared
+    /// LAST for the same reason as `idle_burst`: field order is serialization order
+    /// and the managed revision hash is taken over this serialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_commands: Option<InstallCommands>,
 }
 
 /// The manifest file shape: a schema version plus the ordered agent list.
@@ -260,6 +393,30 @@ fn validate_definition(def: &CodingAgentDefinition) -> Result<(), String> {
     }
     if let Some(burst) = def.idle_burst.as_ref() {
         validate_idle_burst_config(burst, &context)?;
+    }
+    if let Some(install) = def.install_commands.as_ref() {
+        validate_install_commands(install, &context)?;
+    }
+    Ok(())
+}
+
+/// #2736 - every present `installCommands` value obeys the per-string
+/// `updateCommands` rules (non-blank, no control character, U+2028 or U+2029).
+/// The field name goes in the context; the command text is never echoed.
+fn validate_install_commands(value: &InstallCommands, context: &str) -> Result<(), String> {
+    for (name, command) in [
+        ("default", Some(&value.default)),
+        ("windows", value.windows.as_ref()),
+        ("macos", value.macos.as_ref()),
+        ("linux", value.linux.as_ref()),
+    ] {
+        if let Some(command) = command {
+            validate_update_command_string(
+                command,
+                &format!("{context} installCommands.{name}"),
+                0,
+            )?;
+        }
     }
     Ok(())
 }
@@ -458,8 +615,10 @@ const KNOWN_DEFINITION_FIELDS: &[&str] = &[
     "updateCommands",
     "autoUpdate",
     "idleBurst",
+    "installCommands",
 ];
 const KNOWN_CONFIG_SEED_FIELDS: &[&str] = &["enabled", "dest"];
+const KNOWN_INSTALL_COMMANDS_FIELDS: &[&str] = &["default", "windows", "macos", "linux"];
 const KNOWN_ENV_FIELDS: &[&str] = &["key", "value", "source", "enabled"];
 const KNOWN_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents", "managed"];
 
@@ -959,6 +1118,18 @@ struct LocalFieldPatch {
     auto_update: Option<bool>,
     /// `None` = absent; `Some(None)` = explicit `null`; `Some(Some(_))` = object.
     idle_burst: Option<Option<IdleBurstConfig>>,
+    /// `None` = absent; `Some(None)` = explicit `null`; `Some(Some(_))` = object.
+    install_commands: Option<Option<InstallCommandsPatch>>,
+}
+
+/// #2736 - a local `installCommands` patch. For the three per-OS keys,
+/// `None` = absent (inherit), `Some(None)` = explicit `null` (clear).
+#[derive(Debug, Clone, Default)]
+struct InstallCommandsPatch {
+    default: Option<String>,
+    windows: Option<Option<String>>,
+    macos: Option<Option<String>>,
+    linux: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -995,10 +1166,12 @@ const LOCAL_ROW_FIELDS: &[&str] = &[
     "updateCommands",
     "autoUpdate",
     "idleBurst",
+    "installCommands",
 ];
 const LOCAL_ENV_FIELDS: &[&str] = &["key", "value", "source", "enabled"];
 const LOCAL_CONFIG_SEED_FIELDS: &[&str] = &["enabled", "dest"];
 const LOCAL_IDLE_BURST_FIELDS: &[&str] = &["maxBytes", "maxSecs", "priorSilenceSecs"];
+const LOCAL_INSTALL_COMMANDS_FIELDS: &[&str] = &["default", "windows", "macos", "linux"];
 
 fn validate_update_command_string(
     command: &str,
@@ -1135,6 +1308,43 @@ fn parse_idle_burst_patch(
     Ok(config)
 }
 
+/// #2736 - the strict local `installCommands` patch: an object whose only
+/// members are the four platform keys; `default` must be a string, each
+/// per-OS key a string or `null`. Values are checked after composition.
+fn parse_install_commands_patch(
+    value: &serde_json::Value,
+    context: &str,
+) -> Result<InstallCommandsPatch, String> {
+    let install_context = format!("{context} installCommands");
+    let object = expect_json_object(value, &install_context)?;
+    reject_unknown_json_fields(object, LOCAL_INSTALL_COMMANDS_FIELDS, &install_context)?;
+    let mut patch = InstallCommandsPatch::default();
+    if let Some(default) = object.get("default") {
+        let serde_json::Value::String(default) = default else {
+            return Err(format!("{install_context}: 'default' must be a string"));
+        };
+        patch.default = Some(default.clone());
+    }
+    for (name, slot) in [
+        ("windows", &mut patch.windows),
+        ("macos", &mut patch.macos),
+        ("linux", &mut patch.linux),
+    ] {
+        if let Some(value) = object.get(name) {
+            *slot = Some(match value {
+                serde_json::Value::Null => None,
+                serde_json::Value::String(value) => Some(value.clone()),
+                _ => {
+                    return Err(format!(
+                        "{install_context}: '{name}' must be a string or null"
+                    ))
+                }
+            });
+        }
+    }
+    Ok(patch)
+}
+
 /// One `idleBurst` seconds subfield, strictly: a JSON number, finite and >= 0.
 fn parse_idle_burst_secs(
     value: &serde_json::Value,
@@ -1224,6 +1434,17 @@ fn parse_local_fields(
             serde_json::Value::Null => None,
             serde_json::Value::Object(_) => Some(parse_idle_burst_patch(value, context)?),
             _ => return Err(format!("{context}: 'idleBurst' must be an object or null")),
+        });
+    }
+    if let Some(value) = object.get("installCommands") {
+        fields.install_commands = Some(match value {
+            serde_json::Value::Null => None,
+            serde_json::Value::Object(_) => Some(parse_install_commands_patch(value, context)?),
+            _ => {
+                return Err(format!(
+                    "{context}: 'installCommands' must be an object or null"
+                ))
+            }
         });
     }
     Ok(fields)
@@ -1349,6 +1570,34 @@ fn merge_idle_burst(current: Option<IdleBurstConfig>, patch: &IdleBurstConfig) -
     merged
 }
 
+/// #2736 - merge the local `installCommands` patch by presence onto the base
+/// object, or onto an empty `default` when there is none. A blank resulting
+/// `default` fails the composed re-validation.
+fn merge_install_commands(
+    base: Option<InstallCommands>,
+    patch: &InstallCommandsPatch,
+) -> InstallCommands {
+    let mut merged = base.unwrap_or(InstallCommands {
+        default: String::new(),
+        windows: None,
+        macos: None,
+        linux: None,
+    });
+    if let Some(default) = &patch.default {
+        merged.default = default.clone();
+    }
+    if let Some(value) = &patch.windows {
+        merged.windows = value.clone();
+    }
+    if let Some(value) = &patch.macos {
+        merged.macos = value.clone();
+    }
+    if let Some(value) = &patch.linux {
+        merged.linux = value.clone();
+    }
+    merged
+}
+
 fn apply_local_fields(
     mut definition: CodingAgentDefinition,
     fields: &LocalFieldPatch,
@@ -1395,11 +1644,21 @@ fn apply_local_fields(
             Some(patch) => Some(merge_idle_burst(definition.idle_burst.clone(), patch)),
         };
     }
+    if let Some(patch) = &fields.install_commands {
+        definition.install_commands = match patch {
+            None => None,
+            Some(patch) => Some(merge_install_commands(
+                definition.install_commands.clone(),
+                patch,
+            )),
+        };
+    }
     definition
 }
 
 /// A NEW key requires every authored field explicitly; `instructionsFilename`
-/// and `configSeed` stay optional (absent or `null`).
+/// `configSeed`, `idleBurst` and `installCommands` stay optional (absent or
+/// `null`).
 fn build_new_definition(
     key: &str,
     fields: &LocalFieldPatch,
@@ -1458,6 +1717,10 @@ fn build_new_definition(
         idle_burst: match &fields.idle_burst {
             None | Some(None) => None,
             Some(Some(config)) => Some(config.clone()),
+        },
+        install_commands: match &fields.install_commands {
+            None | Some(None) => None,
+            Some(Some(patch)) => Some(merge_install_commands(None, patch)),
         },
     })
 }
@@ -1533,6 +1796,14 @@ fn compose_local_layer(
                     )
                 },
             )?;
+        }
+        if let Some(install) = definition.install_commands.as_ref() {
+            validate_install_commands(install, "local composition").map_err(|reason| {
+                format!(
+                    "coding agent '{}' failed validation after composition: {reason}",
+                    definition.key
+                )
+            })?;
         }
     }
 
@@ -1711,7 +1982,9 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
             ));
             continue;
         };
-        if let Some(reason) = raw_update_commands_problem(raw) {
+        if let Some(reason) =
+            raw_update_commands_problem(raw).or_else(|| raw_install_commands_problem(raw))
+        {
             warnings.push(catalog_diagnostic(
                 REPORT_CODE_INVALID_DEFINITION,
                 base_path,
@@ -2122,6 +2395,40 @@ fn raw_update_commands_problem(raw: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// #2736 - the raw `installCommands` counterpart of
+/// `raw_update_commands_problem`: a sanitized reason for a present value that
+/// is not an object, lacks a string `default`, carries a non-string per-OS
+/// value, or a blank or control-character value. Text is never echoed.
+fn raw_install_commands_problem(raw: &serde_json::Value) -> Option<String> {
+    let value = raw.get("installCommands")?;
+    let serde_json::Value::Object(object) = value else {
+        return Some("its installCommands value must be an object".to_string());
+    };
+    if !matches!(object.get("default"), Some(serde_json::Value::String(_))) {
+        return Some("its installCommands.default must be a string".to_string());
+    }
+    for name in KNOWN_INSTALL_COMMANDS_FIELDS {
+        let Some(item) = object.get(*name) else {
+            continue;
+        };
+        let serde_json::Value::String(command) = item else {
+            return Some(format!("its installCommands.{name} is not a string"));
+        };
+        if command.trim().is_empty() {
+            return Some(format!("its installCommands.{name} is blank"));
+        }
+        if command
+            .chars()
+            .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+        {
+            return Some(format!(
+                "its installCommands.{name} contains a Unicode control character, U+2028 or U+2029"
+            ));
+        }
+    }
+    None
+}
+
 /// A sanitized reason for a definition the existing validator rejects. The
 /// validator's own message can embed the command text, which must never appear
 /// in a diagnostic; this classifier only names the failing field category.
@@ -2149,6 +2456,12 @@ fn definition_problem_reason(def: &CodingAgentDefinition) -> String {
     if let Some(burst) = def.idle_burst.as_ref() {
         if validate_idle_burst_config(burst, "Coding agent").is_err() {
             return "its idleBurst values are invalid (numbers must be finite and >= 0)"
+                .to_string();
+        }
+    }
+    if let Some(install) = def.install_commands.as_ref() {
+        if validate_install_commands(install, "Coding agent").is_err() {
+            return "its installCommands values are invalid (blank or control characters)"
                 .to_string();
         }
     }
@@ -2213,6 +2526,18 @@ fn push_unknown_field_warnings(
                 path,
                 format!(
                     "coding-agent '{key}' idleBurst carries unknown field(s) ({names}) that require managed-catalog migration"
+                ),
+            ));
+        }
+    }
+    if let Some(serde_json::Value::Object(install)) = raw.get("installCommands") {
+        if let Some(names) = unknown_field_names(install.keys(), KNOWN_INSTALL_COMMANDS_FIELDS) {
+            found = true;
+            warnings.push(catalog_diagnostic(
+                REPORT_CODE_MIGRATION_PENDING,
+                path,
+                format!(
+                    "coding-agent '{key}' installCommands carries unknown field(s) ({names}) that require managed-catalog migration"
                 ),
             ));
         }
@@ -2836,6 +3161,31 @@ struct LocalRowWire {
     auto_update: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     idle_burst: Option<Option<IdleBurstConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_commands: Option<Option<InstallCommandsWire>>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct InstallCommandsWire {
+    default: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    windows: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    macos: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linux: Option<String>,
+}
+
+impl From<&InstallCommands> for InstallCommandsWire {
+    fn from(value: &InstallCommands) -> Self {
+        Self {
+            default: value.default.clone(),
+            windows: value.windows.clone(),
+            macos: value.macos.clone(),
+            linux: value.linux.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -2921,6 +3271,12 @@ fn pin_explicit_legacy_fields(
         idle_burst: raw
             .contains_key("idleBurst")
             .then(|| definition.idle_burst.clone()),
+        install_commands: raw.contains_key("installCommands").then(|| {
+            definition
+                .install_commands
+                .as_ref()
+                .map(InstallCommandsWire::from)
+        }),
     }
 }
 
@@ -2957,6 +3313,12 @@ fn materialize_complete_legacy_fields(
         idle_burst: raw
             .contains_key("idleBurst")
             .then(|| definition.idle_burst.clone()),
+        install_commands: raw.contains_key("installCommands").then(|| {
+            definition
+                .install_commands
+                .as_ref()
+                .map(InstallCommandsWire::from)
+        }),
     }
 }
 
@@ -3006,7 +3368,9 @@ fn extract_legacy_local(
         let context = format!("legacy entry {index}");
         let object = expect_json_object(raw, &context)?;
         reject_unknown_json_fields(object, KNOWN_DEFINITION_FIELDS, &context)?;
-        if let Some(problem) = raw_update_commands_problem(raw) {
+        if let Some(problem) =
+            raw_update_commands_problem(raw).or_else(|| raw_install_commands_problem(raw))
+        {
             return Err(format!("{context} is ambiguous: {problem}"));
         }
         let definition: CodingAgentDefinition = serde_json::from_value(raw.clone())
@@ -4723,6 +5087,36 @@ mod tests {
         assert_eq!(last.command, "muse");
     }
 
+    /// #2736 P1 - the shipped `installCommands` pin, kept OUT of
+    /// `embedded_default_matches_current_presets_exactly` so that test stays
+    /// under the pinned cognitive complexity threshold of 25.
+    fn assert_shipped_install_commands_2736(key: &str, def: &CodingAgentDefinition) {
+        let expected_install = match key {
+            "claude" => Some("npm install -g @anthropic-ai/claude-code"),
+            "codex" => Some("npm install -g @openai/codex"),
+            "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
+            "opencode" => Some("npm install -g opencode-ai"),
+            _ => None,
+        };
+        match expected_install {
+            Some(expected) => {
+                let ic = def
+                    .install_commands
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{key} must ship installCommands"));
+                assert_eq!(ic.default, expected, "{key} installCommands.default");
+                assert!(
+                    ic.windows.is_none() && ic.macos.is_none() && ic.linux.is_none(),
+                    "{key} must ship no per-OS override"
+                );
+            }
+            None => assert!(
+                def.install_commands.is_none(),
+                "{key} must ship no installCommands"
+            ),
+        }
+    }
+
     #[test]
     fn embedded_default_matches_current_presets_exactly() {
         // Drift guard for every current preset field.
@@ -4768,6 +5162,7 @@ mod tests {
                 Some(60.0),
                 "{key} idleBurst priorSilenceSecs"
             );
+            assert_shipped_install_commands_2736(key, def);
         }
         let raw: serde_json::Value = serde_json::from_str(EMBEDDED_DEFAULT_CATALOG_JSON).unwrap();
         assert_eq!(raw["schemaVersion"], 1);
@@ -4914,6 +5309,515 @@ mod tests {
             local["agents"][0]["idleBurst"],
             serde_json::json!({"maxSecs": 2.0})
         );
+    }
+
+    /// #2736 - the shipped `installCommands` value for `key`, if any.
+    fn expected_install_2736(key: &str) -> Option<&'static str> {
+        match key {
+            "claude" => Some("npm install -g @anthropic-ai/claude-code"),
+            "codex" => Some("npm install -g @openai/codex"),
+            "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
+            "opencode" => Some("npm install -g opencode-ai"),
+            _ => None,
+        }
+    }
+
+    /// #2736 - a managed base of the shipped claude row, current revision.
+    fn managed_claude_base_2736(ac_dir: &Path) {
+        let revision = managed_content_sha256(&supported_shipped_definitions());
+        write_managed_base(ac_dir, &shipped_def_json(&["claude"]), &revision, true);
+    }
+
+    fn claude_of(report: &CatalogReport) -> &CodingAgentDefinition {
+        report
+            .catalog
+            .iter()
+            .find(|def| def.key == "claude")
+            .expect("claude entry")
+    }
+
+    #[test]
+    fn install_commands_2736_shipped_for_four_builtins_and_absent_for_the_rest() {
+        let catalog = embedded_default_catalog();
+        assert_eq!(catalog.agents.len(), 9);
+        for def in &catalog.agents {
+            let key = def.key.as_str();
+            match expected_install_2736(key) {
+                Some(expected) => {
+                    let ic = def
+                        .install_commands
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("{key} must ship installCommands"));
+                    assert_eq!(ic.default, expected, "{key} installCommands.default");
+                    assert!(
+                        ic.windows.is_none() && ic.macos.is_none() && ic.linux.is_none(),
+                        "{key} must ship no per-OS override"
+                    );
+                }
+                None => assert!(
+                    def.install_commands.is_none(),
+                    "{key} must ship no installCommands"
+                ),
+            }
+        }
+        assert_eq!(
+            catalog
+                .agents
+                .iter()
+                .filter(|def| def.install_commands.is_some())
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn install_commands_2736_optional_absent_deserializes_to_none() {
+        let mut plain = shipped_def_json(&["claude"]).remove(0);
+        plain.as_object_mut().unwrap().remove("installCommands");
+        let definition: CodingAgentDefinition = serde_json::from_value(plain).unwrap();
+        assert!(definition.install_commands.is_none());
+        assert!(validate_definition(&definition).is_ok());
+        assert!(!serde_json::to_string(&definition)
+            .unwrap()
+            .contains("installCommands"));
+    }
+
+    #[test]
+    fn install_commands_2736_rejects_a_blank_or_control_character_value() {
+        let base: CodingAgentDefinition =
+            serde_json::from_value(shipped_def_json(&["claude"]).remove(0)).unwrap();
+        let cases = [
+            (
+                InstallCommands {
+                    default: "   ".to_string(),
+                    windows: None,
+                    macos: None,
+                    linux: None,
+                },
+                "   ",
+            ),
+            (
+                InstallCommands {
+                    default: "npm i -g ok".to_string(),
+                    windows: Some("secretwin\u{7}cmd".to_string()),
+                    macos: None,
+                    linux: None,
+                },
+                "secretwin",
+            ),
+            (
+                InstallCommands {
+                    default: "npm i -g ok".to_string(),
+                    windows: None,
+                    macos: Some("secretmac\u{2028}cmd".to_string()),
+                    linux: None,
+                },
+                "secretmac",
+            ),
+        ];
+        for (install, secret) in cases {
+            let mut def = base.clone();
+            def.install_commands = Some(install);
+            let error = validate_definition(&def).expect_err("must be rejected");
+            assert!(error.contains("installCommands."), "{error}");
+            if !secret.trim().is_empty() {
+                assert!(!error.contains(secret), "error echoes the value: {error}");
+            }
+            let reason = definition_problem_reason(&def);
+            assert!(
+                !reason.contains(secret) || secret.trim().is_empty(),
+                "{reason}"
+            );
+            let raw = serde_json::to_value(&def).unwrap();
+            let problem = raw_install_commands_problem(&raw).expect("raw problem");
+            if !secret.trim().is_empty() {
+                assert!(!problem.contains(secret), "{problem}");
+            }
+        }
+    }
+
+    #[test]
+    fn install_commands_2736_requires_default_when_the_object_is_present() {
+        let error = serde_json::from_value::<InstallCommands>(serde_json::json!({"windows": "x"}))
+            .expect_err("default is required");
+        assert!(
+            error.to_string().contains("missing field `default`"),
+            "{error}"
+        );
+
+        let mut bad = shipped_def_json(&["claude"]).remove(0);
+        bad["installCommands"] = serde_json::json!({"windows": "x"});
+        let good = shipped_def_json(&["codex"]).remove(0);
+        let dir = seed_dir();
+        write_legacy_base(
+            dir.path(),
+            &manifest_json(&serde_json::to_string(&vec![bad, good]).unwrap()),
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none(), "{:?}", report.unavailable);
+        assert!(report.catalog.iter().all(|def| def.key != "claude"));
+        assert!(report.catalog.iter().any(|def| def.key == "codex"));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "invalidDefinition"),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn install_commands_2736_base_entry_with_a_non_object_value_is_omitted_with_a_warning() {
+        let mut raw = shipped_def_json(&["claude"]).remove(0);
+        raw["installCommands"] = serde_json::json!("npm install -g secret-pkg");
+        let problem = raw_install_commands_problem(&raw).expect("non-object is a problem");
+        assert!(!problem.contains("secret-pkg"), "{problem}");
+        for value in [
+            serde_json::json!({"default": 7}),
+            serde_json::json!({"default": "ok", "linux": 7}),
+            serde_json::json!({"default": "ok", "linux": "  "}),
+        ] {
+            raw["installCommands"] = value.clone();
+            assert!(raw_install_commands_problem(&raw).is_some(), "{value}");
+        }
+        raw["installCommands"] = serde_json::json!({"default": "ok"});
+        assert!(raw_install_commands_problem(&raw).is_none());
+
+        let mut bad = shipped_def_json(&["claude"]).remove(0);
+        bad["installCommands"] = serde_json::json!("npm install -g secret-pkg");
+        let good = shipped_def_json(&["codex"]).remove(0);
+        let dir = seed_dir();
+        write_legacy_base(
+            dir.path(),
+            &manifest_json(&serde_json::to_string(&vec![bad, good]).unwrap()),
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none(), "{:?}", report.unavailable);
+        assert_eq!(report.catalog.len(), 1);
+        assert_eq!(report.catalog[0].key, "codex");
+        let warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "invalidDefinition")
+            .expect("invalidDefinition");
+        assert!(
+            warning.reason.contains("installCommands"),
+            "{}",
+            warning.reason
+        );
+        assert!(!warning.reason.contains("secret-pkg"), "{}", warning.reason);
+    }
+
+    #[test]
+    fn install_commands_2736_local_layer_patches_windows_and_inherits_default() {
+        let dir = seed_dir();
+        managed_claude_base_2736(dir.path());
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","installCommands":{"windows":"winget install claude"}}]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        let ic = claude_of(&report)
+            .install_commands
+            .as_ref()
+            .expect("composed");
+        assert_eq!(ic.default, "npm install -g @anthropic-ai/claude-code");
+        assert_eq!(ic.windows.as_deref(), Some("winget install claude"));
+        assert!(ic.macos.is_none() && ic.linux.is_none());
+    }
+
+    #[test]
+    fn install_commands_2736_local_null_clears_the_object() {
+        let dir = seed_dir();
+        managed_claude_base_2736(dir.path());
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","installCommands":null}]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(claude_of(&report).install_commands.is_none());
+    }
+
+    #[test]
+    fn install_commands_2736_local_null_on_one_os_key_clears_only_that_key() {
+        let dir = seed_dir();
+        let mut claude = shipped_def_json(&["claude"]).remove(0);
+        claude["installCommands"] = serde_json::json!({
+            "default": "npm install -g @anthropic-ai/claude-code",
+            "windows": "win cmd",
+            "linux": "linux cmd"
+        });
+        write_managed_base(dir.path(), &[claude], "stale-revision", true);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","installCommands":{"windows":null}}]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(
+            report.warnings.iter().all(|w| w.code != "localInvalid"),
+            "{:?}",
+            report.warnings
+        );
+        let ic = claude_of(&report).install_commands.as_ref().expect("kept");
+        assert_eq!(ic.default, "npm install -g @anthropic-ai/claude-code");
+        assert!(ic.windows.is_none(), "windows cleared");
+        assert_eq!(ic.linux.as_deref(), Some("linux cmd"), "linux inherited");
+    }
+
+    #[test]
+    fn install_commands_2736_one_bad_local_value_discards_the_entire_local_layer() {
+        let dir = seed_dir();
+        let revision = managed_content_sha256(&supported_shipped_definitions());
+        write_managed_base(
+            dir.path(),
+            &shipped_def_json(&["claude", "codex"]),
+            &revision,
+            true,
+        );
+        for local in [
+            r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","installCommands":{"windows":"  "}}]}"##,
+            r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","installCommands":{"default":7}}]}"##,
+            r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","installCommands":"npm i"}]}"##,
+            r##"{"schemaVersion":1,"agents":[{"key":"codex","label":"MINE"},{"key":"claude","installCommands":{"default":""}}]}"##,
+        ] {
+            write_local(dir.path(), local);
+            let report = load_catalog_report(dir.path());
+            assert!(
+                report.warnings.iter().any(|w| w.code == "localInvalid"),
+                "{local}: {:?}",
+                report.warnings
+            );
+            let codex = report
+                .catalog
+                .iter()
+                .find(|def| def.key == "codex")
+                .unwrap();
+            assert_eq!(
+                codex.label, "Codex",
+                "{local}: the valid row is NOT applied"
+            );
+            assert_eq!(
+                claude_of(&report)
+                    .install_commands
+                    .as_ref()
+                    .unwrap()
+                    .default,
+                "npm install -g @anthropic-ai/claude-code",
+                "{local}: the base entry stays intact"
+            );
+        }
+    }
+
+    #[test]
+    fn install_commands_2736_new_local_key_without_install_commands_is_accepted() {
+        let fields = parse_local_fields(
+            serde_json::json!({
+                "key": "mine", "label": "Mine", "description": "d", "color": "#111",
+                "command": "mytool", "envs": [], "isolatedHome": false,
+                "removable": true, "updateCommands": [], "autoUpdate": false
+            })
+            .as_object()
+            .unwrap(),
+            "local agents[0]",
+        )
+        .expect("valid new row");
+        let definition = build_new_definition("mine", &fields).expect("not missing anything");
+        assert!(definition.install_commands.is_none());
+
+        let dir = seed_dir();
+        managed_claude_base_2736(dir.path());
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false}]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        let mine = report.catalog.iter().find(|def| def.key == "mine").unwrap();
+        assert!(mine.install_commands.is_none());
+    }
+
+    #[test]
+    fn install_commands_2736_unknown_nested_field_is_a_whole_layer_error() {
+        let dir = seed_dir();
+        managed_claude_base_2736(dir.path());
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"claude","label":"MINE","installCommands":{"default":"x","freebsd":"y"}}]}"##,
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(
+            report.warnings.iter().any(|w| w.code == "localInvalid"),
+            "{:?}",
+            report.warnings
+        );
+        assert_eq!(claude_of(&report).label, "Claude Code");
+    }
+
+    #[test]
+    fn install_commands_2736_managed_base_refreshes_from_the_previous_revision() {
+        let old: Vec<CodingAgentDefinition> = supported_shipped_definitions()
+            .into_iter()
+            .map(|mut def| {
+                def.install_commands = None;
+                def
+            })
+            .collect();
+        let old_revision = managed_content_sha256(&old);
+        let new_revision = managed_content_sha256(&supported_shipped_definitions());
+        assert_ne!(old_revision, new_revision);
+        let old_json: Vec<serde_json::Value> = old
+            .iter()
+            .map(|def| serde_json::to_value(def).unwrap())
+            .collect();
+        let dir = seed_dir();
+        write_managed_base(dir.path(), &old_json, &old_revision, true);
+
+        let report = load_catalog_report(dir.path());
+        assert!(
+            report.warnings.iter().any(|w| w.code == "refreshFailed"),
+            "stale revision is reported: {:?}",
+            report.warnings
+        );
+        assert!(
+            ensure_seeded(dir.path(), None).is_some(),
+            "stale base refreshes"
+        );
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            build_managed_base_bytes(&supported_shipped_definitions())
+        );
+        assert_eq!(base_json(dir.path())["managed"]["revision"], new_revision);
+        let report = load_catalog_report(dir.path());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert_eq!(
+            claude_of(&report)
+                .install_commands
+                .as_ref()
+                .unwrap()
+                .default,
+            "npm install -g @anthropic-ai/claude-code"
+        );
+    }
+
+    #[test]
+    fn install_commands_2736_edited_managed_base_is_not_refreshed() {
+        let old: Vec<CodingAgentDefinition> = supported_shipped_definitions()
+            .into_iter()
+            .map(|mut def| {
+                def.install_commands = None;
+                def
+            })
+            .collect();
+        let old_revision = managed_content_sha256(&old);
+        let mut edited = old.clone();
+        edited[0].color = "#d97707".to_string();
+        let root = serde_json::json!({
+            "schemaVersion": 1,
+            "agents": edited,
+            "managed": {
+                "owner": "agentscommander",
+                "version": 1,
+                "revision": old_revision,
+                "contentSha256": old_revision,
+            },
+        });
+        let mut bytes = serde_json::to_vec_pretty(&root).unwrap();
+        bytes.push(b'\n');
+        let dir = seed_dir();
+        let path = manifest_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+
+        let report = load_catalog_report(dir.path());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.code == "managedBaseEdited"),
+            "{:?}",
+            report.warnings
+        );
+        assert!(ensure_seeded(dir.path(), None).is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn install_commands_2736_unknown_field_on_an_older_build_reports_migration_pending() {
+        assert!(!KNOWN_DEFINITION_FIELDS.contains(&"futureField2736"));
+        let mut claude = shipped_def_json(&["claude"]).remove(0);
+        claude["futureField2736"] = serde_json::json!({"keep": "me"});
+        let dir = seed_dir();
+        write_legacy_base(
+            dir.path(),
+            &manifest_json(&serde_json::to_string(&vec![claude]).unwrap()),
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none(), "{:?}", report.unavailable);
+        assert_eq!(report.catalog.len(), 1, "the entry survives");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.code == "migrationPending" && w.reason.contains("futureField2736")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn install_commands_2736_pin_wire_keeps_presence_semantics() {
+        let definition: CodingAgentDefinition =
+            serde_json::from_value(shipped_def_json(&["claude"]).remove(0)).unwrap();
+        let mut with_key = serde_json::Map::new();
+        with_key.insert("key".to_string(), serde_json::json!("claude"));
+        with_key.insert(
+            "installCommands".to_string(),
+            serde_json::json!({"default": "npm install -g @anthropic-ai/claude-code"}),
+        );
+        let mut without_key = serde_json::Map::new();
+        without_key.insert("key".to_string(), serde_json::json!("claude"));
+
+        for wire in [
+            pin_explicit_legacy_fields(&definition, &with_key),
+            materialize_complete_legacy_fields(&definition, &with_key),
+        ] {
+            let value = serde_json::to_value(&wire).unwrap();
+            assert_eq!(
+                value["installCommands"],
+                serde_json::json!({"default": "npm install -g @anthropic-ai/claude-code"})
+            );
+        }
+        for wire in [
+            pin_explicit_legacy_fields(&definition, &without_key),
+            materialize_complete_legacy_fields(&definition, &without_key),
+        ] {
+            let value = serde_json::to_value(&wire).unwrap();
+            assert!(
+                value.get("installCommands").is_none(),
+                "absent legacy key is never pinned or forced: {value}"
+            );
+        }
+
+        let mut legacy_claude = shipped_def_json(&["claude"]).remove(0);
+        legacy_claude["installCommands"] = serde_json::json!({"default": "npm i -g mine"});
+        let legacy = serde_json::json!({"schemaVersion": 1, "agents": [legacy_claude]}).to_string();
+        let extracted = extract_legacy_local(legacy.as_bytes(), &supported_shipped_definitions())
+            .expect("legacy extraction with explicit installCommands");
+        let local: serde_json::Value = serde_json::from_slice(&extracted).unwrap();
+        assert_eq!(
+            local["agents"][0]["installCommands"],
+            serde_json::json!({"default": "npm i -g mine"})
+        );
+
+        let mut ambiguous = shipped_def_json(&["claude"]).remove(0);
+        ambiguous["installCommands"] = serde_json::json!({"default": " "});
+        let legacy = serde_json::json!({"schemaVersion": 1, "agents": [ambiguous]}).to_string();
+        let error = extract_legacy_local(legacy.as_bytes(), &supported_shipped_definitions())
+            .expect_err("ambiguous installCommands refuses the migration");
+        assert!(error.contains("installCommands"), "{error}");
     }
 
     #[test]
@@ -10647,5 +11551,192 @@ mod tests {
             command_account_key("\"C:/Program Files/a/claude.exe\" --x"),
             Some("C:/Program Files/a/claude.exe".to_string())
         );
+    }
+
+    fn welcome_def_2736(
+        key: &str,
+        command: &str,
+        install: Option<serde_json::Value>,
+    ) -> CodingAgentDefinition {
+        let mut raw = serde_json::json!({
+            "key": key,
+            "label": key,
+            "description": "d",
+            "color": "#000000",
+            "command": command,
+            "envs": [],
+            "isolatedHome": false,
+            "removable": true
+        });
+        if let Some(install) = install {
+            raw["installCommands"] = install;
+        }
+        serde_json::from_value(raw).expect("fixture definition")
+    }
+
+    #[test]
+    fn tested_level_2736_table_keys_equal_the_enabled_support_rows_in_order() {
+        let tested: Vec<&str> = BUILTIN_TESTED_LEVEL.iter().map(|(key, _)| *key).collect();
+        let enabled: Vec<&str> = BUILTIN_AGENT_SUPPORT
+            .iter()
+            .filter(|(_, enabled)| *enabled)
+            .map(|(key, _)| *key)
+            .collect();
+        assert_eq!(tested, enabled);
+    }
+
+    #[test]
+    fn tested_level_2736_assigns_high_medium_low_exactly_as_specified() {
+        for key in ["claude", "codex", "pi"] {
+            assert_eq!(tested_level_for(key), Some(TestedLevel::High), "{key}");
+        }
+        assert_eq!(tested_level_for("antigravity"), Some(TestedLevel::Medium));
+        for key in ["hermes", "cursor", "opencode", "grok"] {
+            assert_eq!(tested_level_for(key), Some(TestedLevel::Low), "{key}");
+        }
+        assert_eq!(tested_level_for("muse"), None);
+        assert_eq!(tested_level_for("my-agent"), None);
+    }
+
+    #[test]
+    fn tested_level_2736_serializes_to_lowercase_wire_strings() {
+        assert_eq!(
+            serde_json::to_value(TestedLevel::High).unwrap(),
+            serde_json::json!("high")
+        );
+        assert_eq!(
+            serde_json::to_value(TestedLevel::Medium).unwrap(),
+            serde_json::json!("medium")
+        );
+        assert_eq!(
+            serde_json::to_value(TestedLevel::Low).unwrap(),
+            serde_json::json!("low")
+        );
+    }
+
+    #[test]
+    fn install_command_2736_prefers_the_platform_key_over_default() {
+        let commands = InstallCommands {
+            default: "npm i -g x".to_string(),
+            windows: Some("winget install x".to_string()),
+            macos: None,
+            linux: None,
+        };
+        assert_eq!(
+            install_command_for_os(&commands, "windows"),
+            "winget install x"
+        );
+        assert_eq!(install_command_for_os(&commands, "macos"), "npm i -g x");
+        assert_eq!(install_command_for_os(&commands, "linux"), "npm i -g x");
+        let all = InstallCommands {
+            default: "d".to_string(),
+            windows: Some("w".to_string()),
+            macos: Some("m".to_string()),
+            linux: Some("l".to_string()),
+        };
+        assert_eq!(install_command_for_os(&all, "windows"), "w");
+        assert_eq!(install_command_for_os(&all, "macos"), "m");
+        assert_eq!(install_command_for_os(&all, "linux"), "l");
+    }
+
+    #[test]
+    fn install_command_2736_unknown_os_name_falls_back_to_default() {
+        let all = InstallCommands {
+            default: "d".to_string(),
+            windows: Some("w".to_string()),
+            macos: Some("m".to_string()),
+            linux: Some("l".to_string()),
+        };
+        assert_eq!(install_command_for_os(&all, "freebsd"), "d");
+        assert_eq!(install_command_for_os(&all, ""), "d");
+    }
+
+    #[test]
+    fn command_is_present_2736_true_for_a_resolvable_token_false_otherwise() {
+        let stub = |token: &str| (token == "claude").then(|| PathBuf::from("/bin/claude"));
+        assert!(command_is_present_with("claude", stub));
+        assert!(command_is_present_with("claude --flag", stub));
+        assert!(!command_is_present_with("codex", stub));
+        assert!(!command_is_present_with("", stub));
+        assert!(!command_is_present_with("   ", stub));
+    }
+
+    #[test]
+    fn command_is_present_2736_executes_no_process() {
+        // The injected closure is the ONLY resolution step: no version probe
+        // (which would spawn a process) sits on this path.
+        let mut calls = Vec::new();
+        let present = command_is_present_with("\"my tool\" --x", |token| {
+            calls.push(token.to_string());
+            None
+        });
+        assert!(!present);
+        assert_eq!(calls, vec!["my tool".to_string()]);
+        let mut empty_calls = 0;
+        assert!(!command_is_present_with("", |_| {
+            empty_calls += 1;
+            Some(PathBuf::from("x"))
+        }));
+        assert_eq!(empty_calls, 0);
+    }
+
+    #[test]
+    fn welcome_status_2736_row_per_entry_in_catalog_order_with_computed_fields() {
+        let catalog = vec![
+            welcome_def_2736(
+                "codex",
+                "codex",
+                Some(serde_json::json!({ "default": "npm i -g codex" })),
+            ),
+            welcome_def_2736("claude", "claude --x", None),
+            welcome_def_2736(
+                "my-agent",
+                "my-agent",
+                Some(
+                    serde_json::json!({ "default": "d", "windows": "d", "macos": "d", "linux": "d" }),
+                ),
+            ),
+        ];
+        let rows = welcome_status_for_with(&catalog, |command| command == "claude --x");
+        assert_eq!(
+            rows,
+            vec![
+                CodingAgentWelcomeStatus {
+                    key: "codex".to_string(),
+                    installed: false,
+                    tested_level: Some(TestedLevel::High),
+                    install_command: Some("npm i -g codex".to_string()),
+                },
+                CodingAgentWelcomeStatus {
+                    key: "claude".to_string(),
+                    installed: true,
+                    tested_level: Some(TestedLevel::High),
+                    install_command: None,
+                },
+                CodingAgentWelcomeStatus {
+                    key: "my-agent".to_string(),
+                    installed: false,
+                    tested_level: None,
+                    install_command: Some("d".to_string()),
+                },
+            ]
+        );
+        let wire = serde_json::to_value(&rows).unwrap();
+        assert_eq!(wire[0]["testedLevel"], serde_json::json!("high"));
+        assert_eq!(wire[1]["installCommand"], serde_json::Value::Null);
+        assert_eq!(wire[2]["testedLevel"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn welcome_status_2736_never_adds_a_field_to_the_persisted_definition() {
+        let def = welcome_def_2736(
+            "claude",
+            "claude",
+            Some(serde_json::json!({ "default": "d" })),
+        );
+        let value = serde_json::to_value(&def).unwrap();
+        let object = value.as_object().expect("definition object");
+        assert!(!object.contains_key("testedLevel"));
+        assert!(!object.contains_key("installed"));
     }
 }
