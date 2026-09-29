@@ -749,3 +749,15 @@ html.light-theme .last-prompt-panel {
   color: var(--statusbar-fg);
   font-size: var(--font-size-md);
 }
+
+/* #2744 - status-bar literals picked for the dark surface. */
+html.light-theme .status-bar-detached,
+html.light-theme .status-bar-error,
+html.light-theme .status-bar-btn-clear:hover {
+  color: #8a6400;
+}
+
+html.light-theme .workgroup-task-error,
+html.light-theme .status-bar-btn-mic-cancel:hover {
+  color: #b91c1c;
+}

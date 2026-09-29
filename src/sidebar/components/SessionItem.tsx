@@ -23,6 +23,7 @@ import DetachIcon from "./DetachIcon";
 import ReattachIcon from "./ReattachIcon";
 import { orphanNoticeKey, profileDisplayLabel, sessionOrphanNotice, sessionProfileBadge, sessionTierBadge } from "../../shared/profile-utils";
 import { sessionDotClass } from "./session-status";
+import { RowKeyProxy, onRowKey } from "./RowKeyProxy";
 
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
 
@@ -404,11 +405,15 @@ const SessionItem: Component<{
     <div
       class={`session-item session-item-enter ${props.isActive ? "active" : ""} ${isInactive() ? "inactive-member" : ""}`}
       onClick={isInactive() ? undefined : handleClick}
+      onKeyDown={onRowKey(() => { if (!isInactive()) void handleClick(); })}
       onContextMenu={isInactive() ? undefined : handleContextMenu}
       data-ac-testid={`session.${props.session.id}`}
       data-ac-role="button"
       data-ac-state={sessionRowState(props.isActive, isInactive)}
     >
+      <Show when={!isInactive()}>
+        <RowKeyProxy label={displayName()} />
+      </Show>
       <div
         class={`session-item-status ${sessionDotClass(props.session, { inactive: isInactive() })}${isComanaged() ? " comanaged" : ""}`}
         data-ac-comanaged={isComanaged() ? "true" : "false"}

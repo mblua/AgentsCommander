@@ -2490,7 +2490,19 @@ pub(crate) fn spawn_restore_startup(
                             }
                             if should_create {
                                 let mut rebuild_failed = false;
-                                let resolved_spawn = if let Some(aid) = ps.agent_id.as_deref() {
+                                let resolved_spawn = if ps.agent_id.is_some()
+                                    && settings_snapshot.agents_layer.unreadable_path().is_some()
+                                {
+                                    // #2716 (B3, 4.5b option S): skip, and push nothing to
+                                    // failed_recoverable, so the row keeps its wake inputs;
+                                    // save_sessions_to_dir suppresses the rewrite.
+                                    log::warn!(
+                                        "[root-agent] Skipping restore of '{}': the agents layer is unreadable",
+                                        ps.name
+                                    );
+                                    rebuild_failed = true;
+                                    None
+                                } else if let Some(aid) = ps.agent_id.as_deref() {
                                     match commands::session::build_configured_agent_spawn_for_cwd(
                                         &settings_snapshot,
                                         aid,
@@ -2811,7 +2823,16 @@ pub(crate) fn spawn_restore_startup(
 
                 // Wake: rebuild configured-agent sessions from the persisted recipe,
                 // while custom-shell records keep their materialized shell args.
-                let resolved_spawn = if let Some(aid) = ps.agent_id.as_deref() {
+                let resolved_spawn = if ps.agent_id.is_some()
+                    && settings_snapshot.agents_layer.unreadable_path().is_some()
+                {
+                    // #2716 (B3, 4.5b option S): skip without pushing to failed_recoverable.
+                    log::warn!(
+                        "Skipping restore of '{}': the agents layer is unreadable",
+                        ps.name
+                    );
+                    continue;
+                } else if let Some(aid) = ps.agent_id.as_deref() {
                     match commands::session::build_configured_agent_spawn_for_cwd(
                         &settings_snapshot,
                         aid,

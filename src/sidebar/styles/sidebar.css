@@ -9786,6 +9786,103 @@ html.light-theme .onboarding-card.selected {
   color: var(--sidebar-fg-dim);
 }
 
+/* #2736 - Welcome status chips. The row adds a margin, never card padding;
+   state colour is selected by data-ac-state, not by a class per state. */
+.onboarding-card-chips {
+  display: flex;
+  gap: var(--spacing-xs);
+  margin-top: 2px;
+}
+
+.onboarding-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 0 var(--spacing-xs);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--sidebar-fg-dim);
+}
+
+.onboarding-chip-status[data-ac-state="installed"] {
+  color: var(--status-running);
+  border-color: color-mix(in srgb, var(--status-running) 40%, transparent);
+}
+
+.onboarding-chip-tested {
+  color: var(--sidebar-fg);
+}
+
+.onboarding-chip-tested[data-ac-state="high"] {
+  border-color: color-mix(in srgb, var(--sidebar-accent) 50%, transparent);
+}
+
+/* #2736 - install row, a SIBLING of the card button inside an inert wrapper.
+   The wrapper is the .onboarding-cards flex item: no gap, padding or margin. */
+.onboarding-card-row {
+  display: flex;
+  flex-direction: column;
+}
+
+.onboarding-card-install {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+  margin-top: var(--spacing-xs);
+  min-width: 0;
+}
+
+.onboarding-install-command {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 2px var(--spacing-xs);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-terminal);
+  font-size: 10px;
+  color: var(--sidebar-fg);
+}
+
+.onboarding-install-copy,
+.onboarding-install-run {
+  flex-shrink: 0;
+  padding: 2px var(--spacing-sm);
+  background: transparent;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  color: var(--sidebar-fg);
+}
+
+.onboarding-install-copy:hover,
+.onboarding-install-run:hover {
+  background: var(--sidebar-hover);
+}
+
+.onboarding-install-copy {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--spacing-xs);
+}
+
+.onboarding-install-copy-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* Never :disabled - the running button stays focusable inside the modal trap. */
+.onboarding-install-run[aria-disabled="true"] {
+  color: var(--sidebar-fg-dim);
+  background: transparent;
+  cursor: default;
+}
+
 .onboarding-custom-fields {
   display: flex;
   flex-direction: column;
@@ -10420,4 +10517,70 @@ html.light-theme .project-filter-error,
 html.light-theme .project-load-status[data-ac-state="error"] .ac-empty-hint,
 html.light-theme .tpl-agency-install-error {
   color: #b91c1c;
+}
+
+/* #2744 - light-mode palette for the literals that were picked for the dark
+   surface. Families and values come from the issue-2744 plan: amber #8a6400,
+   green #0f7a4d, red #b91c1c, cyan #0e7490, blue #0b5ed7, violet #6d28d9,
+   slate #475569. Added as overrides, so the dark cascade is byte-identical. */
+html.light-theme .webserver-error,
+html.light-theme .webserver-alert-title,
+html.light-theme .webserver-bind-value.invalid,
+html.light-theme .webserver-bind-note.bad,
+html.light-theme .webserver-validation,
+html.light-theme .profile-badge--tier,
+html.light-theme .profile-outdated-badge,
+html.light-theme .orphan-notice,
+html.light-theme .settings-codex-home-preview.warning,
+html.light-theme .settings-profile-badge.fallback,
+html.light-theme .session-item-mic.error,
+html.light-theme .session-item-voice-indicator.warning .voice-warning-text,
+html.light-theme .session-item-voice-indicator.error .voice-error-text,
+html.light-theme .session-item-explorer:hover,
+html.light-theme .workgroup-group-rail-button .workgroup-group-rail-raise-hand,
+html.light-theme .agent-modal-item-badges [data-agent="Claude"],
+html.light-theme .agent-profile-card-pill.fallback,
+html.light-theme .coord-communication-slot,
+html.light-theme .ac-discovery-badge.coord,
+html.light-theme .ac-discovery-badge.coord-idle.yellow {
+  color: #8a6400;
+}
+
+html.light-theme .titlebar-btn-logs.copied,
+html.light-theme .webserver-bind-note.good,
+html.light-theme .webserver-validation.ok,
+html.light-theme .agent-modal-item-badges [data-agent="Codex"],
+html.light-theme .ac-discovery-badge.coord-idle.green,
+html.light-theme .onboarding-done-icon {
+  color: #0f7a4d;
+}
+
+html.light-theme .session-item-mic:hover,
+html.light-theme .session-item-mic-cancel,
+html.light-theme .session-item-voice-indicator .voice-cancel-execute:hover {
+  color: #b91c1c;
+}
+
+html.light-theme .session-item-voice-indicator .voice-countdown {
+  color: #0e7490;
+}
+
+html.light-theme .session-item-telegram:hover,
+html.light-theme .agent-modal-item-badges [data-agent="OpenCode"] {
+  color: #0b5ed7;
+}
+
+html.light-theme .ac-discovery-badge.branch {
+  color: #6d28d9;
+}
+
+html.light-theme .ac-discovery-badge.coord-autoclosed,
+html.light-theme .ac-discovery-badge.disabled {
+  color: #475569;
+}
+
+/* #2744 - the comparison table head hardcoded a near-black panel while its
+   text follows --sidebar-fg-dim, which flips: 1.70 in light mode. */
+html.light-theme .agent-comparison-table-head {
+  background: var(--sidebar-surface);
 }

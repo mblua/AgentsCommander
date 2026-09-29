@@ -499,6 +499,34 @@ export interface CodingAgentDefinition {
     maxSecs?: number;
     priorSilenceSecs?: number;
   } | null;
+  /** #2736 - optional per-OS install command; one COMPLETE shell command string
+   *  per platform key. Catalog-only, local-patchable, and never part of the
+   *  `settings.agents[]` snapshot. The Welcome screen reads the RESOLVED value
+   *  from `CodingAgentWelcomeStatus`, not this object. */
+  installCommands?: { default: string; windows?: string; macos?: string; linux?: string };
+}
+
+export type CodingAgentTestedLevel = "high" | "medium" | "low";
+
+/** #2736 - Welcome-screen only. Computed per effective catalog entry by the
+ *  backend: live PATH presence (never persisted, never cached), the static
+ *  tested-confidence level (code, never read from a catalog file) and the
+ *  install command already resolved for THIS OS. */
+export interface CodingAgentWelcomeStatus {
+  key: string;
+  installed: boolean;
+  testedLevel: CodingAgentTestedLevel | null;
+  installCommand: string | null;
+}
+
+/** #2736 - one silent install finished. `ok` reports the command exit status;
+ *  the authoritative "is it installed now" answer is a fresh
+ *  `get_coding_agent_welcome_status` read, which the Welcome screen performs on
+ *  this event. */
+export interface CodingAgentInstallFinished {
+  key: string;
+  command: string;
+  ok: boolean;
 }
 
 export type CatalogDiagnostic = { code: string; path: string; reason: string };
@@ -983,7 +1011,17 @@ export interface SettingsSnapshot extends AppSettings {
    *  owns top-level `agents`, so the backend refuses moves. Never part of
    *  AppSettings or a draft. */
   overlayOwnsAgents: boolean;
+  /** #2716 - read-only response metadata: true when the agents file could not
+   *  be read, so no agent session may start. Never part of AppSettings or a
+   *  draft. Optional so an older snapshot literal still type-checks. */
+  agentsLayerUnreadable?: boolean;
+  /** #2716 - the unreadable agents file's path, or null. */
+  agentsFilePath?: string | null;
 }
+
+/** #2716 - notice 2, shown where the agent list is. */
+export const agentsUnreadableNotice = (path: string | null | undefined): string =>
+  `Unavailable: AgentsCommander could not read ${path ?? "the agents file"}. Fix or delete that file and restart AgentsCommander. While this file is unreadable, changes to your sessions are not saved.`;
 
 export interface UpdateInfo {
   currentVersion: string;

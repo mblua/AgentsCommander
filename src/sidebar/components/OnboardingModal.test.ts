@@ -45,7 +45,12 @@ vi.mock("../../shared/ipc", () => ({
     // #769 Phase 2 — the store also fetches this; onboarding does not use it.
     listReseedableCommands: vi.fn(() => Promise.resolve([])),
     reseedDefault: vi.fn(() => Promise.resolve({ dest: "", backupPath: "" })),
+    // #2736 - OnboardingModal passes showInstallStatus; empty = no status.
+    welcomeStatus: vi.fn(() => Promise.resolve([])),
+    // #2736 P5 - Install button; the listener must resolve to a function.
+    install: vi.fn(() => Promise.resolve()),
   },
+  onCodingAgentInstallFinished: vi.fn(() => Promise.resolve(() => {})),
 }));
 
 vi.mock("../../shared/stores/settings", () => ({

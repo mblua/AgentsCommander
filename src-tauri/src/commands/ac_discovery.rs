@@ -1635,7 +1635,18 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     configured: &[String],
 ) -> Result<(), String> {
     let gitignore_path = ac_root.join(".gitignore");
-    const PROJECT_SETTINGS_GITIGNORE_PATTERN: &str = "/project-settings.json";
+    // #2717 - the project-settings rows have one home, shared with the
+    // migration's sweep.
+    let project_settings_rows = crate::config::naming_migration::project_settings_ignore_rows();
+    let [project_settings_row, project_settings_lock_row, set_aside_row] = project_settings_rows
+        .each_ref()
+        .map(|(pattern, comment)| (pattern.as_str(), *comment));
+    let project_settings_gitignore_pattern = project_settings_row.0;
+    // #2718 - the Loop state rows, shared with the Loop scope's sweep.
+    let loop_state_rows = crate::config::naming_migration::loop_state_ignore_rows();
+    let [loop_state_row, loop_state_tmp_row, loop_set_aside_row] = loop_state_rows
+        .each_ref()
+        .map(|(pattern, comment)| (pattern.as_str(), *comment));
     const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
     const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n/seed-manifest.toml\n";
     const SEED_MANIFEST_COORDINATION_PATTERNS: [&str; 2] =
@@ -1691,10 +1702,9 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             ".deleting-*/",
             "# AgentsCommander: exclude temporary room delete sentinels/orphans.",
         ),
-        (
-            "_loop_*/state.json",
-            "# AgentsCommander: exclude Loop scheduler runtime state.",
-        ),
+        loop_state_row,
+        loop_state_tmp_row,
+        loop_set_aside_row,
         (
             "_loop_*/audit.jsonl",
             "# AgentsCommander: exclude Loop runtime audit logs with prompt snapshots.",
@@ -1711,10 +1721,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             "**/__agent_*/AGENTS.md",
             "# AgentsCommander: exclude managed session context files inside replica agent folders.",
         ),
-        (
-            PROJECT_SETTINGS_GITIGNORE_PATTERN,
-            "# AgentsCommander: exclude generated project-local settings.",
-        ),
+        project_settings_row,
         (
             "/.team-config-write.lock",
             "# AgentsCommander: exclude team-config coordination files.",
@@ -1727,6 +1734,10 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             "/.project-settings.json.lock",
             "# AgentsCommander: exclude project-settings write-lock sidecars.",
         ),
+        // #2717 - the migrated project settings take their own sidecar, and the
+        // naming migration sets a displaced project file aside in `.ac/`.
+        project_settings_lock_row,
+        set_aside_row,
         (
             "_agent_*/rtk-matrix-history*.db",
             "# AgentsCommander: exclude RTK matrix-history databases.",
@@ -1820,14 +1831,19 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         // rows the naming migration renamed are retired here.
         let (content, retired) = crate::config::naming_migration::retire_ignore_pairs(
             &content,
-            &RETIRED_CATALOG_IGNORE_PAIRS,
+            &[
+                RETIRED_CATALOG_IGNORE_PAIRS.as_slice(),
+                &RETIRED_PROJECT_SETTINGS_IGNORE_PAIRS,
+                &RETIRED_LOOP_STATE_IGNORE_PAIRS,
+            ]
+            .concat(),
         );
         let migrated = migrated || retired;
 
         let mut additions = String::new();
         for (pattern, comment) in &required_entries {
             let is_present = content.lines().any(|line| {
-                if *pattern == PROJECT_SETTINGS_GITIGNORE_PATTERN {
+                if *pattern == project_settings_gitignore_pattern {
                     line == *pattern
                 } else {
                     line.trim() == *pattern
@@ -1891,6 +1907,19 @@ const RETIRED_CATALOG_IGNORE_PAIRS: [(&str, &str); 3] = [
         "/coding-agents/.agents.local.json.*.tmp",
     ),
 ];
+
+/// #2717 - the `.ac/.gitignore` pair whose value the project-settings rename
+/// changed. The lock row is not here: its leftover stays on disk and ignored.
+const RETIRED_PROJECT_SETTINGS_IGNORE_PAIRS: [(&str, &str); 1] = [(
+    "# AgentsCommander: exclude generated project-local settings.",
+    "/project-settings.json",
+)];
+
+/// #2718 - the `.ac/.gitignore` pair whose value the Loop state rename changed.
+const RETIRED_LOOP_STATE_IGNORE_PAIRS: [(&str, &str); 1] = [(
+    "# AgentsCommander: exclude Loop scheduler runtime state.",
+    "_loop_*/state.json",
+)];
 
 /// #2090 - migrate the retired `!/seed-manifest.toml` un-ignore pair written by
 /// older builds. Only the two AC-managed lines (the retired comment directly
@@ -4774,7 +4803,7 @@ mod tests {
         assert!(error.contains("retry the operation"));
         assert!(state.read().await.project_paths.is_empty());
         let disk: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
         assert!(disk.project_paths.is_empty());
         assert!(project
             .join(".ac")
@@ -4993,8 +5022,20 @@ mod tests {
         assert!(
             content
                 .lines()
-                .any(|line| line.trim() == "_loop_*/state.json"),
+                .any(|line| line.trim() == "_loop_*/loop.state.no-git.json"),
             "workspace .gitignore must ignore Loop state files"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_loop_*/loop.state.no-git.json.*.tmp"),
+            "workspace .gitignore must ignore Loop state write temporaries"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_loop_*/*.deprecated-*.no-git"),
+            "workspace .gitignore must ignore Loop files the naming migration set aside"
         );
         assert!(
             content
@@ -5077,7 +5118,7 @@ mod tests {
 
         let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read .gitignore");
         let block =
-            "# AgentsCommander: exclude generated project-local settings.\n/project-settings.json";
+            "# AgentsCommander: exclude generated project-local settings.\n/settings.50.personal.no-git.json";
         assert_eq!(
             content.matches(block).count(),
             1,
@@ -5086,15 +5127,16 @@ mod tests {
         assert_eq!(
             content
                 .lines()
-                .filter(|line| *line == "/project-settings.json")
+                .filter(|line| *line == "/settings.50.personal.no-git.json")
                 .count(),
             1,
             "workspace .gitignore must contain the anchored project-settings pattern once"
         );
         assert!(
-            !content
-                .lines()
-                .any(|line| matches!(line, "project-settings.json" | ".ac/project-settings.json")),
+            !content.lines().any(|line| matches!(
+                line,
+                "settings.50.personal.no-git.json" | ".ac/settings.50.personal.no-git.json"
+            )),
             "workspace .gitignore must not contain a broader or incorrectly based alternative"
         );
     }
@@ -5119,7 +5161,7 @@ mod tests {
         );
         let updated_text = std::str::from_utf8(&updated).expect("updated .gitignore is UTF-8");
         let block =
-            "# AgentsCommander: exclude generated project-local settings.\n/project-settings.json";
+            "# AgentsCommander: exclude generated project-local settings.\n/settings.50.personal.no-git.json";
         assert_eq!(
             updated_text.matches(block).count(),
             1,
@@ -5128,7 +5170,7 @@ mod tests {
         assert_eq!(
             updated_text
                 .lines()
-                .filter(|line| *line == "/project-settings.json")
+                .filter(|line| *line == "/settings.50.personal.no-git.json")
                 .count(),
             1,
             "workspace .gitignore must contain the anchored project-settings pattern once"
@@ -5162,10 +5204,15 @@ mod tests {
 
         let empty_excludes = project.join("empty-global-excludes");
         std::fs::write(&empty_excludes, []).expect("create empty global excludes file");
-        std::fs::write(ac_root.join("project-settings.json"), [])
+        std::fs::write(ac_root.join("settings.50.personal.no-git.json"), [])
             .expect("create root project settings");
-        std::fs::write(ac_root.join("nested").join("project-settings.json"), [])
-            .expect("create nested project settings");
+        std::fs::write(
+            ac_root
+                .join("nested")
+                .join("settings.50.personal.no-git.json"),
+            [],
+        )
+        .expect("create nested project settings");
 
         let excludes_override = format!(
             "core.excludesFile={}",
@@ -5179,7 +5226,7 @@ mod tests {
                 "-v",
                 "--no-index",
                 "--",
-                ".ac/project-settings.json",
+                ".ac/settings.50.personal.no-git.json",
             ])
             .current_dir(&project)
             .output()
@@ -5208,11 +5255,11 @@ mod tests {
             "match line number must be numeric"
         );
         assert_eq!(
-            pattern, "/project-settings.json",
+            pattern, "/settings.50.personal.no-git.json",
             "match pattern must be the anchored project-settings rule"
         );
         assert_eq!(
-            target, ".ac/project-settings.json",
+            target, ".ac/settings.50.personal.no-git.json",
             "match target must be the root project settings"
         );
 
@@ -5224,7 +5271,7 @@ mod tests {
                 "-v",
                 "--no-index",
                 "--",
-                ".ac/nested/project-settings.json",
+                ".ac/nested/settings.50.personal.no-git.json",
             ])
             .current_dir(&project)
             .output()
@@ -5247,7 +5294,7 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
         let gitignore_path = ac_root.join(".gitignore");
-        let original = b" /project-settings.json\r\n wg-*/\r\n".to_vec();
+        let original = b" /settings.50.personal.no-git.json\r\n wg-*/\r\n".to_vec();
         std::fs::write(&gitignore_path, &original).expect("write .gitignore");
 
         ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
@@ -5262,7 +5309,7 @@ mod tests {
         assert_eq!(
             updated_text
                 .lines()
-                .filter(|line| *line == "/project-settings.json")
+                .filter(|line| *line == "/settings.50.personal.no-git.json")
                 .count(),
             1,
             "a whitespace-prefixed decoy must not suppress the canonical rule"
@@ -5285,7 +5332,7 @@ mod tests {
         let ac_root = tmp.path().join(".ac");
         std::fs::create_dir(&ac_root).expect("create .ac");
         let gitignore_path = ac_root.join(".gitignore");
-        std::fs::write(&gitignore_path, b"/project-settings.json\r\n")
+        std::fs::write(&gitignore_path, b"/settings.50.personal.no-git.json\r\n")
             .expect("write exact project-settings rule");
 
         ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
@@ -5295,7 +5342,7 @@ mod tests {
         assert_eq!(
             content
                 .lines()
-                .filter(|line| *line == "/project-settings.json")
+                .filter(|line| *line == "/settings.50.personal.no-git.json")
                 .count(),
             1,
             "an exact CRLF-terminated rule must be considered present"
@@ -5882,6 +5929,23 @@ mod tests {
                 .count(),
             1,
             "workspace .gitignore must append the exact project-settings lock block once"
+        );
+        assert_eq!(
+            updated_text
+                .lines()
+                .filter(|line| *line == "/.settings.50.personal.no-git.json.lock")
+                .count(),
+            1,
+            "workspace .gitignore must contain the project settings lock line once"
+        );
+        assert_eq!(
+            updated_text
+                .matches(
+                    "# AgentsCommander: exclude the project settings write-lock sidecar.\n/.settings.50.personal.no-git.json.lock"
+                )
+                .count(),
+            1,
+            "workspace .gitignore must append the exact project settings lock block once"
         );
 
         let once_updated = updated;
@@ -7012,5 +7076,158 @@ mod tests {
             Some("local-codex")
         );
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// #2717 E10: the renamed project settings, both lock sidecars and a set-aside
+    /// file are each ignored by their own anchored rule; the retired row is gone,
+    /// and a user-authored bare pattern survives.
+    #[test]
+    fn ac_root_gitignore_covers_the_renamed_project_settings() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(&ac_root).expect("create .ac");
+        std::fs::write(
+            ac_root.join(".gitignore"),
+            "# User rules\nproject-settings.json\n\n# AgentsCommander: exclude generated project-local settings.\n/project-settings.json\n",
+        )
+        .expect("seed .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
+
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read");
+        assert!(
+            !content.lines().any(|line| line == "/project-settings.json"),
+            "the retired row is still there"
+        );
+        assert!(content
+            .lines()
+            .any(|line| line == "/.project-settings.json.lock"));
+        assert!(
+            content.lines().any(|line| line == "project-settings.json"),
+            "a user-authored bare pattern was eaten"
+        );
+
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .expect("git init must execute");
+        assert!(init.success());
+        let empty_excludes = project.join("empty-global-excludes");
+        std::fs::write(&empty_excludes, []).expect("empty excludes");
+        let excludes_override = format!(
+            "core.excludesFile={}",
+            empty_excludes.to_string_lossy().replace('\\', "/")
+        );
+        for (relative, rule) in [
+            (
+                ".ac/settings.50.personal.no-git.json",
+                "/settings.50.personal.no-git.json",
+            ),
+            (
+                ".ac/.project-settings.json.lock",
+                "/.project-settings.json.lock",
+            ),
+            (
+                ".ac/.settings.50.personal.no-git.json.lock",
+                "/.settings.50.personal.no-git.json.lock",
+            ),
+            (
+                ".ac/project-settings.json.deprecated-1.no-git",
+                "/*.deprecated-*.no-git",
+            ),
+        ] {
+            std::fs::write(project.join(relative), []).expect("fixture file");
+            let output = std::process::Command::new("git")
+                .arg("-c")
+                .arg(&excludes_override)
+                .args(["check-ignore", "-v", "--no-index", "--", relative])
+                .current_dir(&project)
+                .output()
+                .expect("git check-ignore must execute");
+            assert!(output.status.success(), "{relative} is not ignored");
+            let stdout = String::from_utf8(output.stdout).expect("UTF-8");
+            let (source_and_pattern, _) = stdout
+                .trim_end()
+                .split_once('\t')
+                .expect("verbose output has a tab");
+            let pattern = source_and_pattern.rsplit(':').next().expect("pattern");
+            assert_eq!(pattern, rule, "{relative} matched the wrong rule");
+            assert!(
+                source_and_pattern.starts_with(".ac/.gitignore:"),
+                "{relative}: {source_and_pattern}"
+            );
+        }
+    }
+
+    /// #2718 E14: the renamed Loop state, its write temporary and a set-aside
+    /// state file are each ignored by their own rule; the retired row is gone
+    /// and a user-authored bare pattern survives.
+    #[test]
+    fn ac_root_gitignore_covers_the_renamed_loop_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        std::fs::create_dir_all(ac_root.join("_loop_a")).expect("create loop dir");
+        std::fs::write(
+            ac_root.join(".gitignore"),
+            "# User rules\n_loop_*/state.json\n\n# AgentsCommander: exclude Loop scheduler runtime state.\n_loop_*/state.json\n",
+        )
+        .expect("seed .gitignore");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
+
+        let content = std::fs::read_to_string(ac_root.join(".gitignore")).expect("read");
+        assert!(
+            !content.contains(
+                "# AgentsCommander: exclude Loop scheduler runtime state.\n_loop_*/state.json"
+            ),
+            "the retired row is still there"
+        );
+        assert_eq!(
+            content
+                .lines()
+                .filter(|line| *line == "_loop_*/state.json")
+                .count(),
+            1,
+            "a user-authored bare pattern was eaten"
+        );
+
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .expect("git init must execute");
+        assert!(init.success());
+        for (relative, rule) in [
+            (
+                ".ac/_loop_a/loop.state.no-git.json",
+                "_loop_*/loop.state.no-git.json",
+            ),
+            (
+                ".ac/_loop_a/loop.state.no-git.json.1.tmp",
+                "_loop_*/loop.state.no-git.json.*.tmp",
+            ),
+            (
+                ".ac/_loop_a/state.json.deprecated-1.no-git",
+                "_loop_*/*.deprecated-*.no-git",
+            ),
+        ] {
+            std::fs::write(project.join(relative), []).expect("fixture file");
+            let output = std::process::Command::new("git")
+                .args(["check-ignore", "-v", "--no-index", "--", relative])
+                .current_dir(&project)
+                .output()
+                .expect("git check-ignore must execute");
+            assert!(output.status.success(), "{relative} is not ignored");
+            let stdout = String::from_utf8(output.stdout).expect("UTF-8");
+            let (source_and_pattern, _) = stdout
+                .trim_end()
+                .split_once('\t')
+                .expect("verbose output has a tab");
+            let pattern = source_and_pattern.rsplit(':').next().expect("pattern");
+            assert_eq!(pattern, rule, "{relative} matched the wrong rule");
+        }
     }
 }

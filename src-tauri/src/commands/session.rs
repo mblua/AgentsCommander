@@ -3378,6 +3378,13 @@ pub(crate) fn resolve_configured_agent_spawn_for_cwd(
     requested_profile: Option<&str>,
     requested_profile_authoritative: bool,
 ) -> Result<Option<AgentSpawnCommand>, String> {
+    // #2716 (B3, option C): the agents layer could not be read, so the list is not
+    // the user's; refuse rather than fall through to a plain terminal.
+    if let Some(path) = settings.agents_layer.unreadable_path() {
+        return Err(crate::config::settings::agents_unreadable_session_error(
+            path,
+        ));
+    }
     if !settings.agents.iter().any(|agent| agent.id == agent_id) {
         return Ok(None);
     }
@@ -3398,6 +3405,13 @@ pub(crate) fn build_configured_agent_spawn_for_cwd(
     cwd: &str,
     requested_profile: Option<&str>,
 ) -> Result<Option<AgentSpawnCommand>, String> {
+    // #2716 (B3, option C): the same refusal as the resolver above; each builder
+    // carries its own, so no entry point can reach a spawn past either one.
+    if let Some(path) = settings.agents_layer.unreadable_path() {
+        return Err(crate::config::settings::agents_unreadable_session_error(
+            path,
+        ));
+    }
     if !settings.agents.iter().any(|agent| agent.id == agent_id) {
         return Ok(None);
     }
@@ -5402,6 +5416,12 @@ pub(crate) fn resolve_root_agent_command(
         ));
     }
 
+    // #2716 (B3, option C): an unreadable agents layer is not "none configured".
+    if let Some(path) = settings.agents_layer.unreadable_path() {
+        return Err(crate::config::settings::agents_unreadable_session_error(
+            path,
+        ));
+    }
     Err("No resolvable coding agent is configured for the Root Agent. Configure a coding agent before launching the Root Agent.".to_string())
 }
 
@@ -15761,6 +15781,144 @@ exec claude \"$@\"
             assert_eq!(entry["app"], "Unknown", "{path:?}");
             assert_eq!(entry["acSessionId"], "sid", "{path:?}");
         }
+    }
+
+    /// #2716 (B3, option C) E33: a restart of a session whose stored agent id is
+    /// set refuses under the mark instead of coming back as a plain terminal.
+    #[tokio::test]
+    async fn a_restart_refuses_instead_of_becoming_a_plain_terminal() {
+        use tauri::Manager;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(
+            test_settings(),
+            Arc::clone(&session_mgr),
+            Arc::clone(&pty_mgr),
+        );
+        let cwd_text = cwd.path().to_string_lossy().to_string();
+        let spawn = super::build_configured_agent_spawn_for_cwd(
+            &test_settings(),
+            "claude",
+            &cwd_text,
+            None,
+        )
+        .unwrap()
+        .expect("claude is configured");
+        let old = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            cwd_text.clone(),
+            Some("agent fixture".to_string()),
+            Some("claude".to_string()),
+            Some(spawn.trusted_agent_label.clone()),
+            true,
+            Vec::new(),
+            true,
+            Some(spawn),
+            Some(super::ResolvedAgentHostShell {
+                program: "test-shell".to_string(),
+                args: Vec::new(),
+            }),
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .expect("create the agent session");
+        assert_eq!(
+            old.agent_id.as_deref(),
+            Some("claude"),
+            "fixture: no stored agent"
+        );
+        let old_id = Uuid::parse_str(&old.id).unwrap();
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+        let sidecar = cwd.path().join("agents.30.instance.no-git.json");
+        let settings = app.state::<crate::config::settings::SettingsState>();
+        settings.write().await.agents_layer =
+            crate::config::settings::AgentsLayerState::Unreadable {
+                path: sidecar.clone(),
+                reason: "test".to_string(),
+            };
+
+        let error = super::restart_session_inner_with_activation(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            settings.inner(),
+            old_id,
+            None,
+            None,
+            Some(true),
+            true,
+        )
+        .await
+        .expect_err("the restart must refuse under the mark");
+
+        assert!(
+            error.contains(&crate::config::settings::agents_unreadable_session_error(
+                &sidecar
+            )),
+            "{error}"
+        );
+        assert_eq!(
+            backend.spawn_count.load(Ordering::SeqCst),
+            1,
+            "a plain-terminal replacement was spawned"
+        );
+        close_test_coordinator(&app).await;
+    }
+
+    /// #2716 (B3, option C) E32: entry point 1. `create_session` reaches
+    /// `build_configured_agent_spawn_for_cwd(&cfg, aid, ..)?` before anything
+    /// else; with the mark set by the real loader it answers notice 3, naming
+    /// the agents file and without option S's fourth sentence.
+    #[test]
+    fn create_session_refuses_under_the_mark() {
+        use crate::config::instance_artifacts::{AGENTS_INSTANCE_FILE_NAME, SETTINGS_FILE_NAME};
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join(SETTINGS_FILE_NAME);
+        std::fs::write(
+            &settings_path,
+            r##"{
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "agents": [{"id":"claude","label":"Claude Code","command":"claude","color":"#d97706"}]
+            }"##,
+        )
+        .unwrap();
+        let sidecar = temp.path().join(AGENTS_INSTANCE_FILE_NAME);
+        std::fs::write(&sidecar, "{ not json").unwrap();
+        let cfg = crate::config::settings::load_settings_from_path(&settings_path);
+        assert_eq!(cfg.agents_layer.unreadable_path(), Some(sidecar.as_path()));
+        assert!(cfg.agents.iter().any(|agent| agent.id == "claude"));
+        let cwd = temp.path().to_string_lossy().into_owned();
+
+        let error = super::build_configured_agent_spawn_for_cwd(&cfg, "claude", &cwd, None)
+            .expect_err("entry point 1 must refuse under the mark");
+
+        assert_eq!(
+            error,
+            crate::config::settings::agents_unreadable_session_error(&sidecar)
+        );
+        assert!(error.contains(&sidecar.display().to_string()));
+        assert!(!error.contains("changes to your sessions are not saved"));
+
+        // Repaired: the same fixture builds the agent spawn.
+        std::fs::remove_file(&sidecar).unwrap();
+        let cfg = crate::config::settings::load_settings_from_path(&settings_path);
+        assert!(cfg.agents_layer.unreadable_path().is_none());
+        assert!(
+            super::build_configured_agent_spawn_for_cwd(&cfg, "claude", &cwd, None)
+                .unwrap()
+                .is_some()
+        );
     }
 }
 

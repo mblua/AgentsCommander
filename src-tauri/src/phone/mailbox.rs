@@ -2825,10 +2825,17 @@ fn session_has_current_pty_submission_provenance(
     let Some(agent_id) = session.agent_id.as_deref() else {
         return false;
     };
-    let Ok(Some(spawn)) = crate::commands::session::build_configured_agent_spawn_for_cwd(
+    // #2716 (B3, option C) row 12: a read-only comparison, not a spawn, so it is
+    // exempt from the builders' refusal. Membership is read from `settings.agents`
+    // directly, as `compute_profile_outdated` does.
+    if !settings.agents.iter().any(|agent| agent.id == agent_id) {
+        return false;
+    }
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(&session.working_directory);
+    let Ok(spawn) = crate::config::agent_command::build_agent_spawn_command(
         settings,
         agent_id,
-        &session.working_directory,
+        Some(std::path::Path::new(&cwd)),
         session.requested_profile.as_deref(),
     ) else {
         return false;
@@ -8495,8 +8502,14 @@ impl MailboxPoller {
     ) -> Result<Option<ResolvedWakeAgentCommand>, String> {
         let agents = {
             let settings = app.state::<SettingsState>();
-            let agents = settings.read().await.agents.clone();
-            agents
+            let settings = settings.read().await;
+            // #2716 (B3, option C): the same refusal as `resolve_agent_command`.
+            if let Some(path) = settings.agents_layer.unreadable_path() {
+                return Err(crate::config::settings::agents_unreadable_session_error(
+                    path,
+                ));
+            }
+            settings.agents.clone()
         };
         let replica_dir = target.replica_dir().to_path_buf();
         tokio::task::spawn_blocking(move || {
@@ -12682,6 +12695,13 @@ impl MailboxPoller {
         let agents = {
             let settings = app.state::<SettingsState>();
             let cfg = settings.read().await;
+            // #2716 (B3, option C) row 7: an unreadable agents layer is refused and
+            // reported, never resolved against a list that is not the user's.
+            if let Some(path) = cfg.agents_layer.unreadable_path() {
+                return Err(crate::config::settings::agents_unreadable_session_error(
+                    path,
+                ));
+            }
             cfg.agents.clone()
         };
 
@@ -29713,6 +29733,120 @@ mod tests {
         assert!(
             !replica_reason.contains("Co-managed origin"),
             "the rejection must be origin-scoped, got: {replica_reason}"
+        );
+    }
+
+    // #2716 (B3, option C) - rows E35, E36 and E38 of the phase plan.
+
+    fn b3_unreadable(path: &Path) -> crate::config::settings::AgentsLayerState {
+        crate::config::settings::AgentsLayerState::Unreadable {
+            path: path.to_path_buf(),
+            reason: "test".to_string(),
+        }
+    }
+
+    /// E35: a wake for a configured agent under the mark answers the refusal,
+    /// which is the value the reply is built from, instead of a bare debug log.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn a_telegram_wake_reports_the_refusal() {
+        let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let fixture = make_session_request_fixture();
+        let app = app_handle(&fixture.app);
+        let sidecar = fixture.cwd.join("agents.30.instance.no-git.json");
+        app.state::<SettingsState>().write().await.agents_layer = b3_unreadable(&sidecar);
+        let mut msg = root_outbox_message("wake".to_string(), None);
+        msg.sender_agent = Some(wake_agents()[0].id.clone());
+
+        let result = MailboxPoller::new().resolve_agent_command(&app, &msg).await;
+
+        assert_eq!(
+            result.err(),
+            Some(crate::config::settings::agents_unreadable_session_error(
+                &sidecar
+            ))
+        );
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .close_and_join()
+            .await;
+    }
+
+    /// E36: the daemon's response file carries the refusal, so the waiting CLI
+    /// verb prints it, and no session is created.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn the_daemon_response_file_carries_the_refusal() {
+        let _guard = crate::cli::create_agent::SESSION_REQUESTS_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        let fixture = make_session_request_fixture();
+        let app = app_handle(&fixture.app);
+        let sidecar = fixture.cwd.join("agents.30.instance.no-git.json");
+        app.state::<SettingsState>().write().await.agents_layer = b3_unreadable(&sidecar);
+        let request = write_session_request_for_test(&fixture.cwd, "codex");
+
+        MailboxPoller::new().poll_session_requests(&app).await;
+
+        let result = read_session_request_result_json(&request.id);
+        assert_eq!(result["status"], "rejected", "unexpected result: {result}");
+        let error = result["error"].as_str().expect("error text");
+        assert!(
+            error.contains(&crate::config::settings::agents_unreadable_session_error(
+                &sidecar
+            )),
+            "{error}"
+        );
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        assert!(session_mgr.read().await.list_sessions().await.is_empty());
+        assert!(fixture.backend.live.lock().unwrap().is_empty());
+        app.state::<crate::session::selection::SelectionCoordinator>()
+            .close_and_join()
+            .await;
+    }
+
+    /// E38: the provenance read is a comparison, not a spawn, so the mark does
+    /// not turn it into a failure.
+    #[test]
+    fn the_provenance_read_is_exempt_from_the_refusal() {
+        let cwd = tempfile::tempdir().unwrap();
+        let mut settings = AppSettings {
+            agents: vec![wake_agent(
+                "codex",
+                "Codex wrapper",
+                "codex-shell.exe --yolo",
+            )],
+            ..Default::default()
+        };
+        let spawn = crate::commands::session::build_configured_agent_spawn_for_cwd(
+            &settings,
+            "codex",
+            &cwd.path().to_string_lossy(),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let mut session = make_session_info(
+            "wrapper",
+            "member",
+            &cwd.path().to_string_lossy(),
+            SessionStatus::Idle,
+            true,
+        );
+        session.shell = spawn.shell.clone();
+        session.shell_args = spawn.shell_args.clone();
+        session.agent_id = Some(spawn.trusted_agent_id.clone());
+        session.agent_kind = Some(crate::session::profile::CodingAgentKind::Codex);
+        session.profile_content_hash = Some(spawn.profile_content_hash.clone());
+        session.trusted_configured_spawn = true;
+        settings.agents_layer = b3_unreadable(&cwd.path().join("agents.30.instance.no-git.json"));
+
+        assert!(
+            session_has_current_pty_submission_provenance(&session, &settings),
+            "the provenance read failed under the mark"
         );
     }
 }

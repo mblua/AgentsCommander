@@ -329,6 +329,11 @@ pub(crate) const LAYERED_NAME_PROBES: [(&str, &str); 7] = [
 pub(crate) const SETTINGS_TARGET_NAME: &str = layered_name!("settings", instance, no_git, "json");
 pub(crate) const SETTINGS_LOCAL_TARGET_NAME: &str =
     layered_name!("settings", personal, no_git, "json");
+/// #2717 (B4a) - a project's `.ac/project-settings.json`, layer 50. The same
+/// bytes as `SETTINGS_LOCAL_TARGET_NAME` on purpose: two artifacts, each named
+/// from the rule, in two directories.
+pub(crate) const PROJECT_SETTINGS_TARGET_NAME: &str =
+    layered_name!("settings", personal, no_git, "json");
 pub(crate) const SETTINGS_LOCK_TARGET_NAME: &str =
     concat!(layered_name!("settings", instance, no_git, "json"), ".lock");
 /// A prefix, not a name: the writer composes the slot index at runtime and
@@ -387,10 +392,22 @@ pub(crate) const CODING_AGENTS_RETIRED_LOCK_ARTIFACT: &str = "coding-agents/.age
 /// #2715 - every catalog file the naming migration demotes,
 /// `<old name>.deprecated-<n>.no-git`: one glob keeps each set-aside copy out of Git.
 pub(crate) const CODING_AGENTS_SET_ASIDE_ARTIFACT: &str = "coding-agents/*.deprecated-*.no-git";
-/// The file does not exist yet; Phase B creates it.
-#[allow(dead_code)] // switched on in Phase B
+/// #2716 (B3) - the instance file that holds `agents` and `codingAgentProfiles`,
+/// beside the settings file.
+/// #2718 (B4b) - a Loop's `_loop_*/state.json`: AC working memory with no
+/// competing layer.
+pub(crate) const LOOP_STATE_TARGET_NAME: &str = layered_name!("loop", state, no_git, "json");
+/// #2718 (B4b) - the Loop state write temporary, `<name>.<uuid>.tmp`, derived
+/// from the destination name.
+pub(crate) const LOOP_STATE_TMP_TARGET_GLOB: &str =
+    concat!(layered_name!("loop", state, no_git, "json"), ".*.tmp");
 pub(crate) const AGENTS_INSTANCE_TARGET_NAME: &str =
     layered_name!("agents", instance, no_git, "json");
+pub(crate) const AGENTS_INSTANCE_FILE_NAME: &str = AGENTS_INSTANCE_TARGET_NAME;
+/// #2716 (B3) - the agents-file writer's temporaries, `<name>.<pid>.<op>.tmp`,
+/// the same shape as `SETTINGS_TMP_GLOB`.
+pub(crate) const AGENTS_INSTANCE_TMP_GLOB: &str =
+    concat!(layered_name!("agents", instance, no_git, "json"), ".*.tmp");
 
 /// #2713 - the naming-migration journal, which is also its completion marker:
 /// one file, so there is one source of truth. `config::naming_migration` owns it.
@@ -517,6 +534,18 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: downloaded per-agent help content; replaced by the next accepted download",
+    },
+    InstanceArtifact {
+        name: AGENTS_INSTANCE_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: agents and coding-agent profiles moved out of the settings file",
+    },
+    InstanceArtifact {
+        name: AGENTS_INSTANCE_TMP_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: transient agents-file write temporaries ({name}.{pid}.{op}.tmp); survive only a crash mid-save",
     },
     InstanceArtifact {
         name: API_AUDIT_LOG_FILE_NAME,
@@ -1288,6 +1317,14 @@ mod tests {
     }
 
     #[test]
+    fn the_agents_instance_tmp_glob_derives_from_the_agents_instance_name() {
+        assert_eq!(
+            AGENTS_INSTANCE_TMP_GLOB,
+            format!("{AGENTS_INSTANCE_FILE_NAME}.*.tmp")
+        );
+    }
+
+    #[test]
     fn the_retired_lock_row_is_the_pre_migration_literal() {
         assert_eq!(SETTINGS_RETIRED_LOCK_NAME, "settings.json.lock");
         assert_ne!(SETTINGS_RETIRED_LOCK_NAME, SETTINGS_LOCK_FILE_NAME);
@@ -1336,5 +1373,26 @@ mod tests {
              rule is anchored to the instance root, and widening that to a second \
              pattern has to be argued rather than added"
         );
+    }
+
+    /// #2717 (B4a) - two artifacts with independent reasons to be layer 50 are
+    /// each named from the rule, so the collision is intended, not accidental.
+    #[test]
+    fn project_settings_and_settings_local_share_the_layer_50_name() {
+        assert_eq!(PROJECT_SETTINGS_TARGET_NAME, SETTINGS_LOCAL_TARGET_NAME);
+        assert_eq!(
+            PROJECT_SETTINGS_TARGET_NAME,
+            "settings.50.personal.no-git.json"
+        );
+    }
+
+    /// #2718 (B4b) E5: the Loop state write temporary derives from its name.
+    #[test]
+    fn loop_state_tmp_glob_derives_from_the_loop_state_name() {
+        assert_eq!(
+            LOOP_STATE_TMP_TARGET_GLOB,
+            format!("{LOOP_STATE_TARGET_NAME}.*.tmp")
+        );
+        assert_eq!(LOOP_STATE_TARGET_NAME, "loop.state.no-git.json");
     }
 }

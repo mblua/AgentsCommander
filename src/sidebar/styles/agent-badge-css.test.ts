@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { declProps, declValue } from "./css-test-helpers";
 
 // #1167 - acceptance criterion 4: the sidebar coding-agent badge has ONE constant
-// style, so no rule anywhere may colour .agent-badge by label. The four per-TOOL
+// style, so no rule anywhere may colour .agent-badge by label. The four per-TOOL base
 // rules that survive are the Open-Agent modal's repo chips, anchored on
 // .agent-modal-item-badges, and they are pinned here too so the anchor cannot be
 // widened back into the sidebar by accident. The emerald rule that all three sidebar
@@ -168,7 +168,7 @@ const DATA_AGENT_COMPOUNDS = ALL_COMPOUNDS.filter((compound) =>
 // reaches sidebar rows; `:not(.agent-modal-item-badges *) [data-agent="Claude"]`, which
 // is the violation stated as a selector; and
 // `.session-item:has(.agent-modal-item-badges .chip) [data-agent="Claude"]`. All three
-// are in-place rewrites of one of the four existing rules, so the count of 4 does not
+// are in-place rewrites of one of the seven existing rules, so the count of 7 does not
 // move and cannot catch them. In the mask the anchor inside those parentheses is simply
 // not there, so indexOf returns -1 and the compound is reported as escaped.
 //
@@ -176,7 +176,7 @@ const DATA_AGENT_COMPOUNDS = ALL_COMPOUNDS.filter((compound) =>
 // functional pseudo-class that is itself a descendant of the anchor - say
 // `.agent-modal-item-badges :is([data-agent="Claude"], .chip)` - is genuinely scoped and
 // is still rejected here, because the mask hides its needle too. No rule in the tree has
-// that shape, the failure is red rather than green, and adding a fifth [data-agent] rule
+// that shape, the failure is red rather than green, and adding an eighth [data-agent] rule
 // already needs a plan revision because of the count pin below.
 function isModalScoped(selector: string): boolean {
   const mask = maskNested(selector);
@@ -230,7 +230,7 @@ describe("coding-agent badge CSS (#1167)", () => {
   it("keeps every surviving data-agent rule scoped to the Open-Agent modal", () => {
     const escaped = DATA_AGENT_COMPOUNDS.filter((compound) => !isModalScoped(compound.selector));
     expect(report(escaped)).toEqual([]);
-    expect(report(DATA_AGENT_COMPOUNDS)).toHaveLength(4);
+    expect(report(DATA_AGENT_COMPOUNDS)).toHaveLength(7);
   });
 
   it("keeps the emerald rule every sidebar row now resolves through", () => {

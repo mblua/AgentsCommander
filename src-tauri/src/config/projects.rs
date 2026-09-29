@@ -2412,9 +2412,14 @@ mod tests {
             disk_settings.project_paths,
             vec![disk_only.clone(), result.path.clone()]
         );
-        let saved: AppSettings =
+        // #2716 (B3): the file no longer decodes as a whole `AppSettings` (its
+        // `agents` moved to the agents file), so the written key is read raw.
+        let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-        assert_eq!(saved.project_paths, vec![disk_only, result.path]);
+        assert_eq!(
+            saved["projectPaths"],
+            serde_json::json!([disk_only, result.path])
+        );
     }
 
     #[test]

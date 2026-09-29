@@ -10,6 +10,7 @@ import { stripFrontmatter } from "../../shared/markdown";
 import { homeStore } from "../../main/stores/home";
 import { toastStore } from "../../shared/stores/toasts";
 import { launchErrorMessage } from "../../shared/launch-errors";
+import { RowKeyProxy, onRowKey } from "./RowKeyProxy";
 
 interface PendingLaunch {
   path: string;
@@ -244,8 +245,10 @@ const AcDiscoveryPanel: Component = () => {
                     data-ac-testid={`acDiscovery.agent.${automationIdPart(agent.name)}`}
                     data-ac-role="button"
                     onClick={() => handleAgentClick(agent)}
+                    onKeyDown={onRowKey(() => handleAgentClick(agent))}
                     title={agent.path}
                   >
+                    <RowKeyProxy label={agent.name} />
                     <div class="replica-item-info">
                       <span class="replica-item-name">
                         <span class="ac-discovery-prefix">
@@ -303,9 +306,11 @@ const AcDiscoveryPanel: Component = () => {
                             data-ac-testid={`acDiscovery.replica.${automationIdPart(wg.name)}.${automationIdPart(replica.name)}`}
                             data-ac-role="button"
                             onClick={() => handleReplicaClick(replica, wg)}
+                            onKeyDown={onRowKey(() => handleReplicaClick(replica, wg))}
                             onContextMenu={(e) => handleReplicaContextMenu(e, replica)}
                             title={replica.path}
                           >
+                            <RowKeyProxy label={replica.name} />
                             <div class="replica-item-info">
                               <span class="replica-item-name">{replica.name}</span>
                               <div class="ac-discovery-badges">

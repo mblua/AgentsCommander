@@ -121,6 +121,10 @@ fn single_quote_arg_for_copy(arg: &str) -> String {
 }
 
 fn render_coding_agent_discovery(settings: &crate::config::settings::AppSettings) -> String {
+    // #2716 (B3, option C): an unreadable agents layer is not "none configured".
+    if let Some(path) = settings.agents_layer.unreadable_path() {
+        return crate::config::settings::agents_unreadable_cli_error(path);
+    }
     if settings.agents.is_empty() {
         return "No configured coding agents found.".to_string();
     }
@@ -596,5 +600,32 @@ mod tests {
         assert!(rendered.contains(
             "self-handoff-and-switch --coding-agent='codex main; Remove-Item *' --profile A"
         ));
+    }
+
+    /// #2716 (B3, option C) E37: an unreadable agents layer is reported as such,
+    /// naming the path; a genuinely empty list still reads "none configured".
+    #[test]
+    fn an_unreadable_layer_is_not_an_empty_list() {
+        let path = std::path::Path::new("C:/cfg/agents.30.instance.no-git.json");
+        let mut settings = crate::config::settings::AppSettings {
+            agents_layer: crate::config::settings::AgentsLayerState::Unreadable {
+                path: path.to_path_buf(),
+                reason: "test".to_string(),
+            },
+            ..Default::default()
+        };
+        settings.agents.clear();
+        let marked = render_coding_agent_discovery(&settings);
+        assert_eq!(
+            marked,
+            crate::config::settings::agents_unreadable_cli_error(path)
+        );
+        assert!(marked.contains(&path.display().to_string()));
+
+        settings.agents_layer = crate::config::settings::AgentsLayerState::Readable;
+        assert_eq!(
+            render_coding_agent_discovery(&settings),
+            "No configured coding agents found."
+        );
     }
 }

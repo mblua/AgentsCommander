@@ -21,6 +21,7 @@ import type {
   WatcherReachRow,
   QuotaSourceConfig,
 } from "../../shared/types";
+import { agentsUnreadableNotice } from "../../shared/types";
 import {
   SettingsAPI,
   TelegramAPI,
@@ -292,6 +293,8 @@ const appSettingsOnly = (snapshot: AppSettings | null): AppSettings | null => {
     projectPathResolution: _projectPathResolution,
     settingsFilePath: _settingsFilePath,
     overlayOwnsAgents: _overlayOwnsAgents,
+    agentsLayerUnreadable: _agentsLayerUnreadable,
+    agentsFilePath: _agentsFilePath,
     ...settingsOnly
   } = snapshot as SettingsSnapshot;
   return settingsOnly;
@@ -856,6 +859,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   // #2306 - snapshot metadata and modal-local move state. Moves are serialized
   // per modal and never touch the draft until the refetch installs the order.
   const [overlayOwnsAgents, setOverlayOwnsAgents] = createSignal(false);
+  // #2716 - null while the agents layer is readable, else notice 2.
+  const [agentsUnreadableReason, setAgentsUnreadableReason] = createSignal<string | null>(null);
   const [moveBusy, setMoveBusy] = createSignal(false);
   const [moveError, setMoveError] = createSignal("");
   const [moveAnnouncement, setMoveAnnouncement] = createSignal("");
@@ -1225,6 +1230,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const installSnapshotMetadata = (loaded: SettingsSnapshot) => {
     setSettingsFilePath(loaded.settingsFilePath ?? null);
     setOverlayOwnsAgents(loaded.overlayOwnsAgents === true);
+    setAgentsUnreadableReason(
+      loaded.agentsLayerUnreadable === true ? agentsUnreadableNotice(loaded.agentsFilePath) : null
+    );
     adoptBackendAgentOrder(loaded.agents);
   };
 
@@ -1320,7 +1328,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   /** #2544 - the one gate for every reorder gesture: busy, overlay-owned, or a
    *  draft whose id sequence the backend does not hold. */
   const settingsReorderDisabled = () =>
-    moveBusy() || overlayOwnsAgents() || reorderDraftStale();
+    moveBusy() || overlayOwnsAgents() || agentsUnreadableReason() !== null || reorderDraftStale();
   /** Position-bearing accessible name. A disabled handle carries its reason,
    *  the overlay one first because saving cannot clear it. */
   const reorderHandleLabel = (agent: AgentConfig, index: number) => {
@@ -5030,6 +5038,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
             <Show when={overlayOwnsAgents()}>
               <div data-ac-testid="settings.agents.overlayReason">{MOVE_OVERLAY_REASON}</div>
+            </Show>
+            <Show when={agentsUnreadableReason()}>
+              {(reason) => <div data-ac-testid="settings.agents.unreadableReason">{reason()}</div>}
             </Show>
             <Show when={reorderDraftStale()}>
               <div data-ac-testid="settings.agents.reorderDraftReason">{REORDER_DRAFT_REASON}</div>

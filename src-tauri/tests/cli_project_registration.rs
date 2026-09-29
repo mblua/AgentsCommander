@@ -938,9 +938,12 @@ fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
             "added-1967",
         ],
     );
-    let after: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read settings"))
-            .expect("settings json");
+    // #2716 (B3): the saved `agents` live in the agents file beside the settings file.
+    let after: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(config_dir.join("agents.30.instance.no-git.json"))
+            .expect("read agents file"),
+    )
+    .expect("agents json");
     let agents = after["agents"].as_array().expect("agents array");
     assert_eq!(agents.len(), 2, "exactly one agent was added: {after}");
     let existing = agents

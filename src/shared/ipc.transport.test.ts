@@ -83,6 +83,24 @@ describe("shared ipc transport seam", () => {
     }
   });
 
+  it("#2716: agentsLayerUnreadable and agentsFilePath survive the get_settings transport", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", {
+      ...settingsSnapshot(),
+      agentsLayerUnreadable: true,
+      agentsFilePath: "C:/cfg/agents.30.instance.no-git.json",
+    });
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      const result = await ipc.SettingsAPI.get();
+      expect(result.agentsLayerUnreadable).toBe(true);
+      expect(result.agentsFilePath).toBe("C:/cfg/agents.30.instance.no-git.json");
+    } finally {
+      restore();
+    }
+  });
+
   it("#2306: overlayOwnsAgents survives the get_settings transport", async () => {
     const ipc = await import("./ipc");
     const fake = new FakeTransport();

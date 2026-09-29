@@ -134,6 +134,8 @@ export function settingsSnapshot(
     projectPathResolution: projectPathResolution(resolutionOverrides),
     settingsFilePath: null,
     overlayOwnsAgents: false,
+    agentsLayerUnreadable: false,
+    agentsFilePath: null,
   };
 }
 
