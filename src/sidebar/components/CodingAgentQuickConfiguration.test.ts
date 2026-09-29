@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
-import CodingAgentQuickConfiguration from "./CodingAgentQuickConfiguration";
+import CodingAgentQuickConfiguration, { formatInstallOutput } from "./CodingAgentQuickConfiguration";
 import type {
   AppSettings,
   CatalogReport,
@@ -15,6 +15,8 @@ import { settingsStore } from "../../shared/stores/settings";
 import { codingAgentsStore } from "../stores/coding-agents";
 import { input as inputValue } from "../../shared/testing/ui-harness";
 import { onboardingPendingSettings } from "../../shared/testing/base-settings";
+import { declValue, scanRules, soleRuleBody } from "../styles/css-test-helpers";
+import { readFileSync } from "node:fs";
 
 // #1965 — the cards are driven by codingAgentsStore, which reads the catalog
 // report (never a bundled fallback). Resolve a report carrying Codex, the
@@ -1165,7 +1167,15 @@ describe("CodingAgentQuickConfiguration", () => {
 
       installButton("codex")!.click();
       await settle();
-      await emitFinished({ key: "codex", command: CODEX_CMD, ok: true });
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: true,
+        detail: "ok",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
 
       expect(CodingAgentsAPI.welcomeStatus).toHaveBeenCalledTimes(2);
       expect(byTestId("onboarding.agentPreset.codex.status")?.textContent).toBe("Installed");
@@ -1190,7 +1200,15 @@ describe("CodingAgentQuickConfiguration", () => {
 
       installButton("mine")!.click();
       await settle();
-      await emitFinished({ key: "mine", command: MINE_CMD, ok: true });
+      await emitFinished({
+        key: "mine",
+        command: MINE_CMD,
+        ok: true,
+        detail: "ok",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
 
       const after = cardKeys();
       expect(after).not.toEqual(before);
@@ -1205,10 +1223,19 @@ describe("CodingAgentQuickConfiguration", () => {
 
       installButton("codex")!.click();
       await settle();
-      await emitFinished({ key: "codex", command: CODEX_CMD, ok: false });
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: "",
+        stderr: "",
+      });
 
       expect(byTestId("onboarding.agentPreset.codex.status")?.textContent).toBe("Not installed");
-      expect(failedLine("codex")?.textContent).toBe("Install failed; see the app log.");
+      // P6 (#2745) supersedes the P5 text: an event-driven failure has output.
+      expect(failedLine("codex")?.textContent).toBe("Install failed.");
       const button = installButton("codex")!;
       expect(button.getAttribute("aria-disabled")).toBe("false");
       expect(button.getAttribute("data-ac-state")).toBe("idle");
@@ -1221,7 +1248,15 @@ describe("CodingAgentQuickConfiguration", () => {
 
       installButton("codex")!.click();
       await settle();
-      await emitFinished({ key: "mine", command: MINE_CMD, ok: false });
+      await emitFinished({
+        key: "mine",
+        command: MINE_CMD,
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: "",
+        stderr: "",
+      });
 
       expect(installButton("codex")?.getAttribute("data-ac-state")).toBe("installing");
       expect(installButton("codex")?.textContent).toBe("Installing...");
@@ -1235,7 +1270,15 @@ describe("CodingAgentQuickConfiguration", () => {
 
       installButton("codex")!.click();
       await settle();
-      await emitFinished({ key: "codex", command: CODEX_CMD, ok: false });
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: "",
+        stderr: "",
+      });
       expect(failedLine("codex")).not.toBeNull();
 
       installButton("codex")!.click();
@@ -1264,7 +1307,15 @@ describe("CodingAgentQuickConfiguration", () => {
 
       dispose();
       expect(unlisten).toHaveBeenCalledTimes(1);
-      await emitFinished({ key: "codex", command: CODEX_CMD, ok: true });
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: true,
+        detail: "ok",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
       expect(CodingAgentsAPI.welcomeStatus).toHaveBeenCalledTimes(calls);
 
       // Late resolution: unmount while the listen promise is still pending.
@@ -1417,7 +1468,15 @@ describe("CodingAgentQuickConfiguration", () => {
       installButton("codex")!.focus();
       installButton("codex")!.click();
       await settle();
-      await emitFinished({ key: "codex", command: CODEX_CMD, ok: true });
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: true,
+        detail: "ok",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
 
       expect(installRow("codex")).toBeNull();
       expect(document.activeElement).toBe(card("codex"));
@@ -1456,10 +1515,18 @@ describe("CodingAgentQuickConfiguration", () => {
       expect(CodingAgentsAPI.install).toHaveBeenCalledTimes(1);
 
       // A fast failure completion must settle the row.
-      await emitFinished({ key: "codex", command: CODEX_CMD, ok: false });
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: "",
+        stderr: "",
+      });
       expect(button().getAttribute("data-ac-state")).toBe("idle");
       expect(button().getAttribute("aria-disabled")).toBe("false");
-      expect(failedLine("codex")?.textContent).toBe("Install failed; see the app log.");
+      expect(failedLine("codex")?.textContent).toBe("Install failed.");
 
       dispose();
     });
@@ -1530,10 +1597,26 @@ describe("CodingAgentQuickConfiguration", () => {
       installButton("codex")!.focus();
 
       // Codex completes; its status read stays pending.
-      await emitFinished({ key: "codex", command: CODEX_CMD, ok: true });
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: true,
+        detail: "ok",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
       expect(document.activeElement).toBe(installButton("codex"));
       // Mine completes; its read removes BOTH install rows.
-      await emitFinished({ key: "mine", command: MINE_CMD, ok: true });
+      await emitFinished({
+        key: "mine",
+        command: MINE_CMD,
+        ok: true,
+        detail: "ok",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
 
       expect(installRow("codex")).toBeNull();
       expect(document.activeElement).toBe(card("codex"));
@@ -1572,8 +1655,24 @@ describe("CodingAgentQuickConfiguration", () => {
         installButton("codex")!.click();
         installButton("mine")!.click();
         await settle();
-        await emitFinished({ key: "codex", command: CODEX_CMD, ok: true }); // read A
-        await emitFinished({ key: "mine", command: MINE_CMD, ok: true }); // read B
+        await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: true,
+        detail: "ok",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      }); // read A
+        await emitFinished({
+        key: "mine",
+        command: MINE_CMD,
+        ok: true,
+        detail: "ok",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      }); // read B
 
         readB.resolve(bothInstalled());
         await settle();
@@ -1604,7 +1703,15 @@ describe("CodingAgentQuickConfiguration", () => {
       installButton("codex")!.click();
       await settle();
       // The current read fails: the empty status removes every install row.
-      await emitFinished({ key: "codex", command: CODEX_CMD, ok: false });
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: "",
+        stderr: "",
+      });
 
       expect(consoleError).toHaveBeenCalledTimes(1);
       expect(installRow("codex")).toBeNull();
@@ -1615,6 +1722,391 @@ describe("CodingAgentQuickConfiguration", () => {
       expect(onCancel).toHaveBeenCalledTimes(1);
 
       consoleError.mockRestore();
+      dispose();
+    });
+
+    // #2745 (P6) - install failure output disclosure. Continues the P5 numbering at 32.
+    const outputToggle = (key: string) =>
+      byTestId<HTMLButtonElement>(`onboarding.agentPreset.${key}.outputToggle`);
+    const outputBox = (key: string) => byTestId(`onboarding.agentPreset.${key}.output`);
+    const FAIL_STDOUT = "added 0 packages\n";
+    const FAIL_STDERR = "npm ERR! code E404\r\n";
+
+    async function failInstall(
+      key: string,
+      command: string,
+      extra: Partial<CodingAgentInstallFinished> = {},
+    ): Promise<void> {
+      installButton(key)!.click();
+      await settle();
+      await emitFinished({
+        key,
+        command,
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: FAIL_STDOUT,
+        stderr: FAIL_STDERR,
+        ...extra,
+      });
+    }
+
+    it("install_2736_format_install_output_is_byte_exact", () => {
+      const base: CodingAgentInstallFinished = {
+        key: "codex",
+        command: "npm i -g x",
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: "",
+        stderr: "",
+      };
+      const marker = "[... output truncated to the last 8192 bytes ...]\n";
+      const cases: Array<[Partial<CodingAgentInstallFinished>, string]> = [
+        [
+          { stdout: "out", stderr: "err", exitCode: 3, detail: "exit code 3" },
+          "$ npm i -g x\nout\nerr\nexit code: 3 (exit code 3)",
+        ],
+        [
+          { stderr: "err", exitCode: 2, detail: "exit code 2" },
+          "$ npm i -g x\nerr\nexit code: 2 (exit code 2)",
+        ],
+        [
+          { exitCode: null, detail: "timed out after 300s (killed)" },
+          "$ npm i -g x\nexit code: n/a (timed out after 300s (killed))",
+        ],
+        [
+          { stdout: "o", exitCode: null, detail: "spawn failed" },
+          "$ npm i -g x\no\nexit code: n/a (spawn failed)",
+        ],
+        [{ stdout: `${marker}  tail` }, `$ npm i -g x\n${marker}  tail\nexit code: 1 (exit code 1)`],
+        [{ stdout: "a\n", stderr: "b\r\n" }, "$ npm i -g x\na\nb\nexit code: 1 (exit code 1)"],
+        [{ stdout: "a\n\n" }, "$ npm i -g x\na\n\nexit code: 1 (exit code 1)"],
+      ];
+      for (const [fields, expected] of cases) {
+        const text = formatInstallOutput({ ...base, ...fields });
+        expect(text).toBe(expected);
+        expect(text).not.toContain("\r");
+      }
+    });
+
+    it("install_2736_ok_false_event_shows_a_collapsed_disclosure", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+
+      expect(failedLine("codex")?.textContent).toBe("Install failed.");
+      expect(outputToggle("codex")?.getAttribute("aria-expanded")).toBe("false");
+      expect(outputToggle("codex")?.textContent).toBe("Show output");
+      expect(outputToggle("codex")?.getAttribute("aria-label")).toBe(
+        "Show the install output for Codex",
+      );
+      expect(outputBox("codex")).toBeNull();
+
+      dispose();
+    });
+
+    it("install_2736_show_output_expands_and_hide_collapses", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+
+      const toggle = outputToggle("codex")!;
+      toggle.focus();
+      toggle.click();
+      await settle();
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(toggle.textContent).toBe("Hide output");
+      const box = outputBox("codex")!;
+      expect(box.tagName).toBe("PRE");
+      expect(box.textContent).toBe(
+        formatInstallOutput({
+          key: "codex",
+          command: CODEX_CMD,
+          ok: false,
+          detail: "exit code 1",
+          exitCode: 1,
+          stdout: FAIL_STDOUT,
+          stderr: FAIL_STDERR,
+        }),
+      );
+      expect(box.getAttribute("tabindex")).toBe("0");
+      // jsdom cannot measure the scroll; the declarations pin the row width.
+      // The variable base keeps the real file: URL (see sidebar-compact.test.ts).
+      const moduleUrl = import.meta.url;
+      const css = readFileSync(new URL("../styles/sidebar.css", moduleUrl), "utf8");
+      const body = soleRuleBody(
+        scanRules(css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\r\n]/g, " "))),
+        ".onboarding-install-output",
+      );
+      expect(declValue(body, "overflow")).toBe("auto");
+      expect(declValue(body, "white-space")).toBe("pre-wrap");
+
+      toggle.click();
+      await settle();
+      expect(outputBox("codex")).toBeNull();
+      expect(outputToggle("codex")).toBe(toggle);
+      expect(document.activeElement).toBe(toggle);
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+      dispose();
+    });
+
+    it("install_2736_a_refused_invoke_shows_no_output_toggle", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.mocked(CodingAgentsAPI.install).mockRejectedValue("already running");
+      const dispose = await mountReady();
+
+      installButton("codex")!.click();
+      await settle();
+
+      expect(failedLine("codex")?.textContent).toBe("Install failed; see the app log.");
+      expect(outputToggle("codex")).toBeNull();
+      expect(outputBox("codex")).toBeNull();
+
+      consoleError.mockRestore();
+      dispose();
+    });
+
+    it("install_2736_output_box_renders_process_text_as_text", async () => {
+      const stderr = '<img src=x onerror="alert(1)"> &amp; done';
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD, { stdout: "", stderr });
+
+      outputToggle("codex")!.click();
+      await settle();
+      const box = outputBox("codex")!;
+      expect(box.textContent).toBe(`$ ${CODEX_CMD}\n${stderr}\nexit code: 1 (exit code 1)`);
+      expect(box.querySelector("img")).toBeNull();
+      expect(box.children.length).toBe(0);
+
+      dispose();
+    });
+
+    it("install_2736_expanded_output_stays_inside_the_focus_trap", async () => {
+      const onCancel = vi.fn();
+      const dispose = await mountReady(onCancel);
+      await failInstall("codex", CODEX_CMD);
+
+      outputToggle("codex")!.click();
+      await settle();
+      const box = outputBox("codex")!;
+      box.focus();
+      expect(document.activeElement).toBe(box);
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expect(onCancel).toHaveBeenCalledTimes(1);
+      expect(focusables()).toContain(box);
+      expect(focusables()).toContain(outputToggle("codex"));
+
+      dispose();
+    });
+
+    it("install_2736_expanded_tab_order_is_card_copy_install_toggle_output", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+      outputToggle("codex")!.click();
+      await settle();
+
+      const order = focusables();
+      const cardIndex = order.indexOf(card("codex"));
+      expect(cardIndex).toBeGreaterThanOrEqual(0);
+      expect(order.slice(cardIndex, cardIndex + 5)).toEqual([
+        card("codex"),
+        copyButton("codex"),
+        installButton("codex"),
+        outputToggle("codex"),
+        outputBox("codex"),
+      ]);
+      const nextRow = card("codex").parentElement!.nextElementSibling;
+      const nextCard = nextRow?.querySelector('[data-ac-role="agent-preset"]');
+      expect(nextCard).toBeTruthy();
+      expect(order[cardIndex + 5]).toBe(nextCard);
+
+      dispose();
+    });
+
+    it("install_2736_retry_clears_the_stored_output_and_the_expanded_flag", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+      outputToggle("codex")!.click();
+      await settle();
+      expect(outputBox("codex")).not.toBeNull();
+
+      installButton("codex")!.click();
+      await settle();
+      expect(installButton("codex")?.getAttribute("data-ac-state")).toBe("installing");
+      expect(failedLine("codex")).toBeNull();
+      expect(outputToggle("codex")).toBeNull();
+      expect(outputBox("codex")).toBeNull();
+
+      // A repeat failure opens collapsed.
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: "",
+        stderr: "again",
+      });
+      expect(outputToggle("codex")?.getAttribute("aria-expanded")).toBe("false");
+      expect(outputBox("codex")).toBeNull();
+
+      dispose();
+    });
+
+    it("install_2736_ok_true_clears_a_previously_failed_rows_disclosure", async () => {
+      vi.mocked(CodingAgentsAPI.welcomeStatus)
+        .mockResolvedValueOnce(installRows())
+        .mockResolvedValueOnce(installRows())
+        .mockResolvedValueOnce(statusAfterCodexInstall());
+      const onCancel = vi.fn();
+      const dispose = await mountReady(onCancel);
+      await failInstall("codex", CODEX_CMD);
+      outputToggle("codex")!.click();
+      await settle();
+      outputBox("codex")!.focus();
+      expect(document.activeElement).toBe(outputBox("codex"));
+
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: true,
+        detail: "ok",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
+
+      expect(failedLine("codex")).toBeNull();
+      expect(outputToggle("codex")).toBeNull();
+      expect(installRow("codex")).toBeNull();
+      expect(outputBox("codex")).toBeNull();
+      expect(document.activeElement).toBe(card("codex"));
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+      expect(onCancel).toHaveBeenCalledTimes(1);
+
+      dispose();
+    });
+
+    it("install_2736_a_second_rows_failure_does_not_expand_this_one", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+      await failInstall("mine", MINE_CMD);
+
+      outputToggle("codex")!.click();
+      await settle();
+      expect(outputToggle("codex")?.getAttribute("aria-expanded")).toBe("true");
+      expect(outputToggle("mine")?.getAttribute("aria-expanded")).toBe("false");
+      expect(outputBox("mine")).toBeNull();
+
+      outputToggle("mine")!.click();
+      await settle();
+      expect(outputBox("codex")?.textContent?.startsWith(`$ ${CODEX_CMD}\n`)).toBe(true);
+      expect(outputBox("mine")?.textContent?.startsWith(`$ ${MINE_CMD}\n`)).toBe(true);
+
+      dispose();
+    });
+
+    // A catalog refresh that drops (false) or restores (true) codex.
+    async function refreshCatalog(withCodex: boolean): Promise<void> {
+      const catalog = installCatalog().filter((def) => withCodex || def.key !== "codex");
+      vi.mocked(CodingAgentsAPI.getCatalogReport).mockResolvedValue(report({ catalog }));
+      await codingAgentsStore.refresh();
+      await settle();
+      expect(card("codex") !== null).toBe(withCodex);
+    }
+
+    function expectCleanCodexRow(): void {
+      expect(installButton("codex")).not.toBeNull();
+      expect(failedLine("codex")).toBeNull();
+      expect(outputToggle("codex")).toBeNull();
+      expect(outputBox("codex")).toBeNull();
+      expect(installButton("codex")?.getAttribute("aria-disabled")).toBe("false");
+      expect(installButton("codex")?.getAttribute("data-ac-state")).toBe("idle");
+    }
+
+    it("install_2736_a_removed_and_restored_agent_shows_no_failure_state", async () => {
+      const dispose = await mountReady();
+      installButton("codex")!.click();
+      await settle();
+
+      await refreshCatalog(false);
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: FAIL_STDOUT,
+        stderr: FAIL_STDERR,
+      });
+      await refreshCatalog(true);
+
+      expectCleanCodexRow();
+
+      dispose();
+    });
+
+    it("install_2736_catalog_refresh_prunes_a_removed_keys_failure_state", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+      outputToggle("codex")!.click();
+      await settle();
+      expect(outputBox("codex")).not.toBeNull();
+
+      await refreshCatalog(false);
+      await refreshCatalog(true);
+
+      expectCleanCodexRow();
+
+      dispose();
+    });
+
+    it("install_2736_a_refresh_that_keeps_the_agent_keeps_its_failure", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+      outputToggle("codex")!.click();
+      await settle();
+      const text = outputBox("codex")!.textContent;
+
+      await refreshCatalog(true);
+
+      expect(failedLine("codex")?.textContent).toBe("Install failed.");
+      expect(outputToggle("codex")?.getAttribute("aria-expanded")).toBe("true");
+      expect(outputBox("codex")?.textContent).toBe(text);
+
+      dispose();
+    });
+
+    it("install_2736_the_mid_refresh_window_does_not_lose_the_state", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+      outputToggle("codex")!.click();
+      await settle();
+      const text = outputBox("codex")!.textContent;
+
+      let resolveReport!: (value: CatalogReport) => void;
+      const pendingReport = new Promise<CatalogReport>((resolve) => {
+        resolveReport = resolve;
+      });
+      vi.mocked(CodingAgentsAPI.getCatalogReport).mockReturnValueOnce(pendingReport);
+      const refreshing = codingAgentsStore.refresh();
+      await settle();
+
+      // The window was really entered: loading, and the row unmounted.
+      expect(byTestId("onboarding.catalog.loading")).not.toBeNull();
+      expect(card("codex")).toBeNull();
+
+      resolveReport(report({ catalog: installCatalog() }));
+      await refreshing;
+      await settle();
+
+      expect(card("codex")).not.toBeNull();
+      expect(failedLine("codex")?.textContent).toBe("Install failed.");
+      expect(outputToggle("codex")?.getAttribute("aria-expanded")).toBe("true");
+      expect(outputBox("codex")?.textContent).toBe(text);
+
       dispose();
     });
   });

@@ -527,6 +527,13 @@ export interface CodingAgentInstallFinished {
   key: string;
   command: string;
   ok: boolean;
+  /** P3: single-line outcome reason. `ok`, `exit code 3`, `timed out after 300s (killed)`, ... */
+  detail: string;
+  /** P3: the child exit code, or null when no status was observed (timeout, spawn failure, signal). */
+  exitCode: number | null;
+  /** P3 section 2c: `""` on success, else the last 8 KiB of the stream, plus one prefixed marker line when cut. */
+  stdout: string;
+  stderr: string;
 }
 
 export type CatalogDiagnostic = { code: string; path: string; reason: string };

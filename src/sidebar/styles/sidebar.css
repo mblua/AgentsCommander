@@ -9883,6 +9883,39 @@ html.light-theme .onboarding-card.selected {
   cursor: default;
 }
 
+/* #2736 P6 - failure line, output toggle and the output box stack in one column. */
+.onboarding-install-failure {
+  display: flex;
+  flex-direction: column;
+}
+
+.onboarding-install-output-toggle {
+  align-self: flex-start;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  color: var(--sidebar-fg-dim);
+  text-decoration: underline;
+}
+
+.onboarding-install-output-toggle:hover {
+  color: var(--sidebar-fg);
+}
+
+/* The only scroll container here; pre-wrap + anywhere stop one long line widening the row. */
+.onboarding-install-output {
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  margin: 0;
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+}
+
 .onboarding-custom-fields {
   display: flex;
   flex-direction: column;

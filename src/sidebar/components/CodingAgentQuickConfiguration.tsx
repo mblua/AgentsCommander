@@ -59,6 +59,17 @@ const DiagnosticDetails: Component<{
 const FOCUSABLE_SELECTOR =
   'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
+/** #2736 - the ONLY composer of the install output box text. One trailing line
+ *  break per stream is dropped, so real output leaves no blank line before the
+ *  exit-code line; everything else, the P3 truncation marker included, is kept. */
+export function formatInstallOutput(e: CodingAgentInstallFinished): string {
+  const lines = [`$ ${e.command}`];
+  if (e.stdout !== "") lines.push(e.stdout.replace(/\r?\n$/, ""));
+  if (e.stderr !== "") lines.push(e.stderr.replace(/\r?\n$/, ""));
+  lines.push(`exit code: ${e.exitCode ?? "n/a"} (${e.detail})`);
+  return lines.join("\n");
+}
+
 const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProps> = (props) => {
   const [selectedPreset, setSelectedPreset] = createSignal<string | null>(null);
   const [selectionGeneration, setSelectionGeneration] = createSignal<number | null>(null);
@@ -141,12 +152,25 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   const [installFailed, setInstallFailed] = createSignal<Set<string>>(new Set());
   const [installReady, setInstallReady] = createSignal(false);
   const [installBlocked, setInstallBlocked] = createSignal(false);
+  // Per-key failure output and its disclosure; each update publishes a NEW Set or Map.
+  const [expandedOutput, setExpandedOutput] = createSignal<Set<string>>(new Set());
+  const [installOutput, setInstallOutput] = createSignal<Map<string, string>>(new Map());
   const withKey = (set: Set<string>, key: string) => new Set(set).add(key);
   const withoutKey = (set: Set<string>, key: string) => {
     const next = new Set(set);
     next.delete(key);
     return next;
   };
+  const clearOutput = (key: string) => {
+    setInstallOutput((map) => {
+      const next = new Map(map);
+      next.delete(key);
+      return next;
+    });
+    setExpandedOutput((set) => withoutKey(set, key));
+  };
+  const toggleOutput = (key: string) =>
+    setExpandedOutput((set) => (set.has(key) ? withoutKey(set, key) : withKey(set, key)));
 
   const installCommandOf = (key: string): string | null =>
     statusRowOf(key)?.installCommand ?? null;
@@ -171,6 +195,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   const runInstall = async (key: string) => {
     if (!installReady() || installing().has(key)) return;
     setInstallFailed((set) => withoutKey(set, key));
+    clearOutput(key);
     setInstalling((set) => withKey(set, key));
     try {
       // Fire-and-forget: the install-finished event ends the run.
@@ -182,9 +207,29 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     }
   };
 
+  const inCatalog = (key: string) => codingAgentsStore.catalog().some((def) => def.key === key);
+
   const handleInstallFinished = (payload: CodingAgentInstallFinished) => {
     setInstalling((set) => withoutKey(set, payload.key));
-    if (!payload.ok) setInstallFailed((set) => withKey(set, payload.key));
+    // An event for an agent the catalog no longer holds stores nothing.
+    if (!inCatalog(payload.key)) return;
+    if (payload.ok) {
+      // The clears unmount the failure block at once; hand focus to the row's
+      // Install button first so the status publish still sees a focused row.
+      const install = modalRef?.querySelector<HTMLElement>(
+        `[data-ac-testid="onboarding.agentPreset.${payload.key}.install"]`
+      );
+      const block = document.activeElement?.closest(".onboarding-install-failure");
+      if (install && block && install.closest(".onboarding-card-install")?.contains(block)) {
+        install.focus();
+      }
+      setInstallFailed((set) => withoutKey(set, payload.key));
+      clearOutput(payload.key);
+    } else {
+      // The expanded flag is left alone: a repeat failure opens collapsed.
+      setInstallFailed((set) => withKey(set, payload.key));
+      setInstallOutput((map) => new Map(map).set(payload.key, formatInstallOutput(payload)));
+    }
     // Presence, not `ok`, turns the row Installed.
     void loadWelcomeStatus();
   };
@@ -203,6 +248,21 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     setSelectedPreset(null);
     setSelectionGeneration(null);
     if (props.showInstallStatus) void loadWelcomeStatus();
+  });
+
+  // Failure state exists only for keys the loaded catalog holds. Prunes only on
+  // the loaded false -> true edge: the store empties the catalog before it drops
+  // `loaded`, so a mid-refresh run must not prune. A refresh that keeps an agent
+  // keeps its failure. `installing` is the install gate and is left alone.
+  let observedLoaded = codingAgentsStore.loaded();
+  createEffect(() => {
+    const current = codingAgentsStore.loaded();
+    const settled = current && !observedLoaded;
+    observedLoaded = current;
+    if (!settled) return;
+    setInstallFailed((set) => new Set([...set].filter(inCatalog)));
+    setExpandedOutput((set) => new Set([...set].filter(inCatalog)));
+    setInstallOutput((map) => new Map([...map].filter(([key]) => inCatalog(key))));
   });
 
   const isCustom = () => selectedPreset() === "custom";
@@ -575,16 +635,54 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                         >
                           {installing().has(preset.key) ? "Installing..." : "Install"}
                         </button>
-                        <Show when={installFailed().has(preset.key) || installBlocked()}>
+                        <Show when={installBlocked()}>
                           <span
                             class="settings-hint settings-hint-warning"
                             data-ac-testid={`onboarding.agentPreset.${preset.key}.installFailed`}
                             data-ac-role="status"
                           >
-                            {installBlocked()
-                              ? "Install is unavailable; see the app log."
-                              : "Install failed; see the app log."}
+                            Install is unavailable; see the app log.
                           </span>
+                        </Show>
+                        {/* An event-driven failure has output to disclose; a refused
+                            invoke never ran a command, so it has none. */}
+                        <Show when={!installBlocked() && installFailed().has(preset.key)}>
+                          <div class="onboarding-install-failure">
+                            <span
+                              class="settings-hint settings-hint-warning"
+                              data-ac-testid={`onboarding.agentPreset.${preset.key}.installFailed`}
+                              data-ac-role="status"
+                            >
+                              {installOutput().has(preset.key)
+                                ? "Install failed."
+                                : "Install failed; see the app log."}
+                            </span>
+                            <Show when={installOutput().has(preset.key)}>
+                              <button
+                                class="onboarding-install-output-toggle"
+                                type="button"
+                                aria-expanded={expandedOutput().has(preset.key)}
+                                aria-label={`${expandedOutput().has(preset.key) ? "Hide" : "Show"} the install output for ${preset.label}`}
+                                data-ac-testid={`onboarding.agentPreset.${preset.key}.outputToggle`}
+                                data-ac-role="button"
+                                onClick={() => toggleOutput(preset.key)}
+                              >
+                                {expandedOutput().has(preset.key) ? "Hide output" : "Show output"}
+                              </button>
+                              <Show when={expandedOutput().has(preset.key)}>
+                                {/* Untrusted process output: a text child, never markup. */}
+                                <pre
+                                  class="onboarding-install-output"
+                                  tabIndex={0}
+                                  role="group"
+                                  aria-label={`Install output for ${preset.label}`}
+                                  data-ac-testid={`onboarding.agentPreset.${preset.key}.output`}
+                                >
+                                  {installOutput().get(preset.key)}
+                                </pre>
+                              </Show>
+                            </Show>
+                          </div>
                         </Show>
                       </div>
                     </Show>
