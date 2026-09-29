@@ -109,7 +109,7 @@ const REDUNDANT_REPLICA_ASSIGN_TOOLTIP =
 /** #2306 - the one reason both surfaces disable moves when the local overlay owns
  *  top-level `agents`. Kept identical here and in SettingsModal. */
 const MOVE_OVERLAY_REASON =
-  "Agent order is controlled by the local settings overlay (settings.local.json).";
+  "Agent order is controlled by the local settings overlay (settings.50.personal.no-git.json).";
 
 /** #2577 - why every grip is disabled while the agent filter hides cards. */
 const REORDER_FILTER_REASON = "Clear the filter to reorder.";

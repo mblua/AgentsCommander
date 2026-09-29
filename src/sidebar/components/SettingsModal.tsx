@@ -165,7 +165,7 @@ const errorMessage = (err: unknown): string =>
 /** #2306 - the one reason both surfaces disable moves when the local overlay owns
  *  top-level `agents`. Kept identical here and in AgentPickerModal. */
 const MOVE_OVERLAY_REASON =
-  "Agent order is controlled by the local settings overlay (settings.local.json).";
+  "Agent order is controlled by the local settings overlay (settings.50.personal.no-git.json).";
 
 /** #2544 - why every reorder handle is disabled while the draft's agent id
  *  sequence differs from the last backend-known one. */
@@ -340,7 +340,7 @@ function parseTypingHoldSeconds(raw: string): number | null {
 }
 
 /** #1347 - the notice shown under every settings input whose value is persisted
- *  unencrypted in the instance settings.json. `path` is the backend-resolved
+ *  unencrypted in the instance settings.30.instance.no-git.json. `path` is the backend-resolved
  *  absolute file path (SettingsSnapshot.settingsFilePath); a null path degrades
  *  to the same warning without the location, because the storage fact holds
  *  whether or not config_dir() resolved. `overflow-wrap` is inline so a long
@@ -352,7 +352,7 @@ const PlaintextSecretHint: Component<{ path: string | null; testId: string }> = 
     style={{ "overflow-wrap": "break-word" }}
     data-ac-testid={props.testId}
   >
-    Stored unencrypted in {props.path ?? "this instance's settings.json file"}.
+    Stored unencrypted in {props.path ?? "this instance's settings.30.instance.no-git.json file"}.
     Anyone who can read that file can read this value.
   </div>
 );
@@ -4367,7 +4367,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           data-ac-role="status"
         >
           <div class="settings-api-client-warning">
-            {`Not shown because this version could not read them: ${unreadableWatcherIds().join(", ")}. They are left exactly as written in settings.json.`}
+            {`Not shown because this version could not read them: ${unreadableWatcherIds().join(", ")}. They are left exactly as written in settings.30.instance.no-git.json.`}
           </div>
         </div>
       </Show>

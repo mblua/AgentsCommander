@@ -3613,7 +3613,7 @@ describe("SettingsModal automation hooks", () => {
 
       const disposeOverlay = await mountAgents(() => orderSnapshot(ORDER_AGENTS, true));
       expect(handle(1).getAttribute("aria-label")).toBe(
-        "Reorder Claude Code, position 2 of 3 — Agent order is controlled by the local settings overlay (settings.local.json).",
+        "Reorder Claude Code, position 2 of 3 — Agent order is controlled by the local settings overlay (settings.50.personal.no-git.json).",
       );
       disposeOverlay();
     });

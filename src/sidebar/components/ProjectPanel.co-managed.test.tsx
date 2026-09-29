@@ -552,7 +552,7 @@ describe("ProjectPanel Co-managed menu entry (#2232 phase 9, #2408)", () => {
   });
 
   const REASON_LINES: Array<{ name: string; reason: OffReason; line: string | null }> = [
-    { name: "GlobalSwitchOff", reason: "GlobalSwitchOff", line: 'Co-managed is off for the whole app while the feature is in development. Set "coManagedEnabled": true in settings.json and restart.' },
+    { name: "GlobalSwitchOff", reason: "GlobalSwitchOff", line: 'Co-managed is off for the whole app while the feature is in development. Set "coManagedEnabled": true in settings.30.instance.no-git.json and restart.' },
     { name: "NotAnOrchestrator", reason: "NotAnOrchestrator", line: "Only this room's orchestrator can be co-managed." },
     { name: "UnsupportedProvider", reason: { UnsupportedProvider: { agent: "antigravity" } }, line: "antigravity has no transcript reader, so nothing can be captured." },
     { name: "RoomFlagOff", reason: "RoomFlagOff", line: null },

@@ -122,9 +122,9 @@ describe("railCollapseStore (#965)", () => {
 
     it("does not throw when the settings write fails", async () => {
       // A header click CAN genuinely fail: the backend save is read+serialize+tmp+
-      // rename, so a transiently unreadable settings.json aborts it. Fire-and-forget
+      // rename, so a transiently unreadable settings.30.instance.no-git.json aborts it. Fire-and-forget
       // is the right call for cosmetic UI state, but it must not break the rail.
-      fake.reject("set_rail_collapse", "settings.json is locked");
+      fake.reject("set_rail_collapse", "settings.30.instance.no-git.json is locked");
 
       expect(() => railCollapseStore.toggleProjectCollapsed(projectA)).not.toThrow();
       // The in-memory signal is the source of truth and stays correct regardless.
