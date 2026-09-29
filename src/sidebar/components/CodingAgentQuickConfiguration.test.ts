@@ -443,7 +443,7 @@ describe("CodingAgentQuickConfiguration", () => {
         warnings: [
           {
             code: "local-overlay-invalid",
-            path: "C:/repo/app/.ac/coding-agents/agents.local.json",
+            path: "C:/repo/app/.ac/coding-agents/agents.50.personal.no-git.json",
             reason: "unknown field",
           },
         ],
@@ -453,7 +453,7 @@ describe("CodingAgentQuickConfiguration", () => {
     await settle();
 
     expect(byTestId("onboarding.catalog.warning.0.path")?.textContent).toContain(
-      "agents.local.json",
+      "agents.50.personal.no-git.json",
     );
     expect(byTestId("onboarding.catalog.warning.0.reason")?.textContent).toContain("unknown field");
     expect(byTestId("onboarding.agentPreset.codex")).toBeTruthy();

@@ -121,7 +121,7 @@ describe("codingAgentsStore (#1965 catalog report)", () => {
         warnings: [
           warning(
             "local-overlay-invalid",
-            "C:/repo/app/.ac/coding-agents/agents.local.json",
+            "C:/repo/app/.ac/coding-agents/agents.50.personal.no-git.json",
             "unknown field",
           ),
         ],
@@ -138,7 +138,7 @@ describe("codingAgentsStore (#1965 catalog report)", () => {
     expect(codingAgentsStore.warnings()).toEqual([
       warning(
         "local-overlay-invalid",
-        "C:/repo/app/.ac/coding-agents/agents.local.json",
+        "C:/repo/app/.ac/coding-agents/agents.50.personal.no-git.json",
         "unknown field",
       ),
     ]);

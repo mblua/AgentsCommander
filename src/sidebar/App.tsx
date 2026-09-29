@@ -915,7 +915,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     );
 
     // #592 - surface profile drift edited OUTSIDE the app (a hand edit to
-    // settings.json, or any path that does not emit coding_agent_profiles_updated)
+    // agents.30.instance.no-git.json, or any path that does not emit coding_agent_profiles_updated)
     // the moment the user returns to AC. The in-app edit events still refresh
     // immediately; this is the robust catch-all for everything else.
     window.addEventListener("focus", handleWindowFocusDriftRefresh);

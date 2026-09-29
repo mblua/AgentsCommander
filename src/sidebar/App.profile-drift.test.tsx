@@ -15,7 +15,7 @@ import { liveSelection, SESSION_A } from "../shared/testing/session-selection";
 
 // #592: the profile-drift badge must surface from the NORMAL list_sessions load
 // path, not only from a coding_agent_profiles_updated event. The canonical failure
-// the user hit: a profile cell edited OUTSIDE the app (a hand edit to settings.json)
+// the user hit: a profile cell edited OUTSIDE the app (a hand edit to agents.30.instance.no-git.json)
 // emits no event, so the surgical event refresh never runs and the badge stays dark.
 // This mounts the real SidebarApp and proves a window focus re-list lights the badge
 // with NO event emitted.
@@ -82,7 +82,7 @@ describe("SidebarApp profile-drift surfacing (#592)", () => {
       await waitFor(() => expect(rendered.root.textContent).toContain("General"));
       expect(rendered.root.querySelector(".profile-outdated-badge")).toBeNull();
 
-      // Backend now reports drift (e.g. settings.json hand-edited). NO
+      // Backend now reports drift (e.g. agents.30.instance.no-git.json hand-edited). NO
       // coding_agent_profiles_updated event is emitted; the only trigger is the
       // user returning to the window.
       outdated = true;

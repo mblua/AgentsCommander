@@ -156,7 +156,7 @@ function coManagedReasonTextOf(reason: OffReason): string | null {
   }
   switch (reason) {
     case "GlobalSwitchOff":
-      return 'Co-managed is off for the whole app while the feature is in development. Set "coManagedEnabled": true in settings.json and restart.';
+      return 'Co-managed is off for the whole app while the feature is in development. Set "coManagedEnabled": true in settings.30.instance.no-git.json and restart.';
     case "NotAnOrchestrator":
       return "Only this room's orchestrator can be co-managed.";
     case "RoomFlagOff":
@@ -180,7 +180,7 @@ function coManagedReasonFromState(state: CoManagedState | null | undefined): Off
 }
 
 /** Off by default: the feature is in development. Absent or `false` hides the
- *  item; only an explicit `true` in settings.json shows it. */
+ *  item; only an explicit `true` in settings.30.instance.no-git.json shows it. */
 const coManagedGloballyEnabled = () => settingsStore.current?.coManagedEnabled === true;
 
 function coManagedErrorText(err: unknown): string {

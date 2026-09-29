@@ -11,7 +11,7 @@ import {
 } from "../../shared/testing/ui-harness";
 
 // #1347 — the Gemini API Key and each Telegram Bot Token carry a red notice
-// saying the value is persisted unencrypted, naming the instance settings.json.
+// saying the value is persisted unencrypted, naming the instance settings.30.instance.no-git.json.
 // The notice is informational only: it never blocks saving.
 
 describe("SettingsModal plaintext-secret notices (#1347)", () => {
@@ -54,8 +54,8 @@ describe("SettingsModal plaintext-secret notices (#1347)", () => {
     );
   }
 
-  it("names the resolved settings.json under the Gemini key and every bot token", async () => {
-    const path = "D:\\ac\\.agentscommander_ac2\\settings.json";
+  it("names the resolved settings.30.instance.no-git.json under the Gemini key and every bot token", async () => {
+    const path = "D:\\ac\\.agentscommander_ac2\\settings.30.instance.no-git.json";
     const r = renderIntegrations(path);
     try {
       await waitFor(() =>
@@ -92,7 +92,7 @@ describe("SettingsModal plaintext-secret notices (#1347)", () => {
 
       const gemini = byTestId(r.root, "settings.integrations.geminiApiKey.plaintextWarning")!;
       expect(gemini.textContent).toContain("Stored unencrypted in");
-      expect(gemini.textContent).toContain("settings.json");
+      expect(gemini.textContent).toContain("settings.30.instance.no-git.json");
       expect(gemini.textContent).not.toContain("null");
 
       for (const i of [0, 1]) {

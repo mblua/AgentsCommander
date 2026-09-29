@@ -226,7 +226,7 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
         warnings: [
           warning(
             "local-overlay-invalid",
-            "C:/repo/app/.ac/coding-agents/agents.local.json",
+            "C:/repo/app/.ac/coding-agents/agents.50.personal.no-git.json",
             "unknown field",
           ),
         ],
@@ -240,7 +240,7 @@ describe("SettingsModal coding-agent quick-add row (#1965 catalog report)", () =
     try {
       await waitFor(() => expect(byTestId(rendered.root, "settings.catalog.warning.0")).toBeTruthy());
       expect(byTestId(rendered.root, "settings.catalog.warning.0.path")!.textContent).toContain(
-        "agents.local.json",
+        "agents.50.personal.no-git.json",
       );
       expect(byTestId(rendered.root, "settings.catalog.warning.0.reason")!.textContent).toContain(
         "unknown field",

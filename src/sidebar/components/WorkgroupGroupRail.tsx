@@ -147,7 +147,7 @@ function favoriteRailTestIds(folderName: string, groupId: string): RailButtonTes
 
 // (#1257) A DISJOINT prefix on purpose, not `favoriteRailTestIds(folderName, "nonstop")`.
 // That helper keys on the group id, and nothing reserves the string "nonstop":
-// `createGroupId` falls back to `group-N` (:373-382) and project-settings.json is
+// `createGroupId` falls back to `group-N` (:373-382) and settings.50.personal.no-git.json is
 // hand-editable. A real group with id "nonstop" would then emit a duplicate
 // data-ac-testid, which the automation bridge rejects as `duplicate_selector`.
 function nonStopFavoriteRailTestIds(folderName: string): RailButtonTestIds {
