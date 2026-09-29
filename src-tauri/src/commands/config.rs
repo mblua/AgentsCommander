@@ -599,9 +599,26 @@ pub async fn get_coding_agent_welcome_status(
 pub async fn coding_agent_welcome_status_inner(
     settings: &SettingsState,
 ) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentWelcomeStatus>, String> {
+    coding_agent_welcome_status_inner_with(settings, |snapshot| {
+        crate::config::coding_agents_catalog::load_catalog_for_settings(snapshot)
+            .map_err(|unavailable| unavailable.to_string())
+    })
+    .await
+}
+
+/// Testable twin: `load` carries ALL filesystem work, so a test can observe
+/// the settings lock state at that step.
+async fn coding_agent_welcome_status_inner_with(
+    settings: &SettingsState,
+    load: impl FnOnce(
+        &AppSettings,
+    ) -> Result<
+        Vec<crate::config::coding_agents_catalog::CodingAgentDefinition>,
+        String,
+    >,
+) -> Result<Vec<crate::config::coding_agents_catalog::CodingAgentWelcomeStatus>, String> {
     let snapshot = settings.read().await.clone();
-    let catalog = crate::config::coding_agents_catalog::load_catalog_for_settings(&snapshot)
-        .map_err(|unavailable| unavailable.to_string())?;
+    let catalog = load(&snapshot)?;
     Ok(crate::config::coding_agents_catalog::welcome_status_for(
         &catalog,
     ))
@@ -4798,16 +4815,22 @@ mod tests {
 
     #[tokio::test]
     async fn welcome_status_command_2736_releases_the_settings_lock_before_filesystem_work() {
-        let temp = tempfile::tempdir().unwrap();
-        let state = state_for(AppSettings {
-            project_paths: vec![temp.path().to_string_lossy().to_string()],
-            ..AppSettings::default()
-        });
-        // A concurrent reader must not block the call, and no guard outlives it.
-        let held = state.read().await;
-        let _ = super::coding_agent_welcome_status_inner(&state).await;
-        drop(held);
-        assert!(state.try_write().is_ok(), "settings lock still held");
+        let state = state_for(AppSettings::default());
+        let probe = state.clone();
+        let mut observed = None;
+        // The loader runs AT the filesystem step; `try_write` succeeds only if
+        // no settings read guard is alive at that moment.
+        let rows = super::coding_agent_welcome_status_inner_with(&state, |_| {
+            observed = Some(probe.try_write().is_ok());
+            Ok(Vec::new())
+        })
+        .await;
+        assert_eq!(
+            observed,
+            Some(true),
+            "settings lock held during filesystem work"
+        );
+        assert_eq!(rows, Ok(Vec::new()));
     }
 
     fn write_settings_file(dir: &Path, settings: &AppSettings) {
