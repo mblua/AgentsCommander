@@ -684,8 +684,11 @@ agentscommander_lib::config::placeholders -> agentscommander_lib::config::ac_roo
 agentscommander_lib::config::placeholders -> agentscommander_lib::config::entity_prefix
 agentscommander_lib::config::placeholders -> agentscommander_lib::config::root_agent
 agentscommander_lib::config::placeholders -> agentscommander_lib::path_utils
+agentscommander_lib::config::project_settings -> agentscommander_lib::config
 agentscommander_lib::config::project_settings -> agentscommander_lib::config::ac_root
+agentscommander_lib::config::project_settings -> agentscommander_lib::config::instance_artifacts
 agentscommander_lib::config::project_settings -> agentscommander_lib::config::local_config_io
+agentscommander_lib::config::project_settings -> agentscommander_lib::config::naming_migration
 agentscommander_lib::config::projects -> agentscommander_lib::commands::ac_discovery
 agentscommander_lib::config::projects -> agentscommander_lib::config::ac_root
 agentscommander_lib::config::projects -> agentscommander_lib::config::seed_manifest

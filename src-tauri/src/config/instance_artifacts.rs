@@ -329,6 +329,11 @@ pub(crate) const LAYERED_NAME_PROBES: [(&str, &str); 7] = [
 pub(crate) const SETTINGS_TARGET_NAME: &str = layered_name!("settings", instance, no_git, "json");
 pub(crate) const SETTINGS_LOCAL_TARGET_NAME: &str =
     layered_name!("settings", personal, no_git, "json");
+/// #2717 (B4a) - a project's `.ac/project-settings.json`, layer 50. The same
+/// bytes as `SETTINGS_LOCAL_TARGET_NAME` on purpose: two artifacts, each named
+/// from the rule, in two directories.
+pub(crate) const PROJECT_SETTINGS_TARGET_NAME: &str =
+    layered_name!("settings", personal, no_git, "json");
 pub(crate) const SETTINGS_LOCK_TARGET_NAME: &str =
     concat!(layered_name!("settings", instance, no_git, "json"), ".lock");
 /// A prefix, not a name: the writer composes the slot index at runtime and
@@ -1360,6 +1365,17 @@ mod tests {
             "depth independence is a policy decision, not a table tweak: every other \
              rule is anchored to the instance root, and widening that to a second \
              pattern has to be argued rather than added"
+        );
+    }
+
+    /// #2717 (B4a) - two artifacts with independent reasons to be layer 50 are
+    /// each named from the rule, so the collision is intended, not accidental.
+    #[test]
+    fn project_settings_and_settings_local_share_the_layer_50_name() {
+        assert_eq!(PROJECT_SETTINGS_TARGET_NAME, SETTINGS_LOCAL_TARGET_NAME);
+        assert_eq!(
+            PROJECT_SETTINGS_TARGET_NAME,
+            "settings.50.personal.no-git.json"
         );
     }
 }
