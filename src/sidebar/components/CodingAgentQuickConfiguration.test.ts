@@ -2007,5 +2007,60 @@ describe("CodingAgentQuickConfiguration", () => {
 
       dispose();
     });
+
+    // A catalog refresh that drops (false) or restores (true) codex.
+    async function refreshCatalog(withCodex: boolean): Promise<void> {
+      const catalog = installCatalog().filter((def) => withCodex || def.key !== "codex");
+      vi.mocked(CodingAgentsAPI.getCatalogReport).mockResolvedValue(report({ catalog }));
+      await codingAgentsStore.refresh();
+      await settle();
+      expect(card("codex") !== null).toBe(withCodex);
+    }
+
+    function expectCleanCodexRow(): void {
+      expect(installButton("codex")).not.toBeNull();
+      expect(failedLine("codex")).toBeNull();
+      expect(outputToggle("codex")).toBeNull();
+      expect(outputBox("codex")).toBeNull();
+      expect(installButton("codex")?.getAttribute("aria-disabled")).toBe("false");
+      expect(installButton("codex")?.getAttribute("data-ac-state")).toBe("idle");
+    }
+
+    it("install_2736_a_removed_and_restored_agent_shows_no_failure_state", async () => {
+      const dispose = await mountReady();
+      installButton("codex")!.click();
+      await settle();
+
+      await refreshCatalog(false);
+      await emitFinished({
+        key: "codex",
+        command: CODEX_CMD,
+        ok: false,
+        detail: "exit code 1",
+        exitCode: 1,
+        stdout: FAIL_STDOUT,
+        stderr: FAIL_STDERR,
+      });
+      await refreshCatalog(true);
+
+      expectCleanCodexRow();
+
+      dispose();
+    });
+
+    it("install_2736_catalog_refresh_prunes_a_removed_keys_failure_state", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+      outputToggle("codex")!.click();
+      await settle();
+      expect(outputBox("codex")).not.toBeNull();
+
+      await refreshCatalog(false);
+      await refreshCatalog(true);
+
+      expectCleanCodexRow();
+
+      dispose();
+    });
   });
 });

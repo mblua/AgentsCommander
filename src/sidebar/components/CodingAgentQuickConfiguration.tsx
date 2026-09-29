@@ -207,6 +207,16 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     }
   };
 
+  const inCatalog = (key: string) => codingAgentsStore.catalog().some((def) => def.key === key);
+  // Drops failure state for keys the catalog does not hold now. A refresh empties
+  // the catalog first, so every refresh clears it. `installing` is the install
+  // gate and is left alone: a real install may still be running.
+  const pruneInstallState = () => {
+    setInstallFailed((set) => new Set([...set].filter(inCatalog)));
+    setExpandedOutput((set) => new Set([...set].filter(inCatalog)));
+    setInstallOutput((map) => new Map([...map].filter(([key]) => inCatalog(key))));
+  };
+
   const handleInstallFinished = (payload: CodingAgentInstallFinished) => {
     setInstalling((set) => withoutKey(set, payload.key));
     if (payload.ok) {
@@ -243,6 +253,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     observedGeneration = current;
     setSelectedPreset(null);
     setSelectionGeneration(null);
+    pruneInstallState();
     if (props.showInstallStatus) void loadWelcomeStatus();
   });
 
