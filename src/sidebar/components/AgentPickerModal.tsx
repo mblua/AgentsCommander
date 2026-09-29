@@ -18,6 +18,7 @@ import type {
   SelectionState,
   SettingsSnapshot,
 } from "../../shared/types";
+import { agentsUnreadableNotice } from "../../shared/types";
 import {
   SettingsAPI,
   assertCodingAgentMoveOrder,
@@ -226,6 +227,8 @@ const AgentPickerModal: Component<{
   // reorder per gesture: one request in flight, every grip disabled until the
   // authoritative refetch lands.
   const [overlayOwnsAgents, setOverlayOwnsAgents] = createSignal(false);
+  // #2716 - null while the agents layer is readable, else notice 2.
+  const [agentsUnreadableReason, setAgentsUnreadableReason] = createSignal<string | null>(null);
   const [moveBusy, setMoveBusy] = createSignal(false);
   const [moveError, setMoveError] = createSignal("");
   const [moveAnnouncement, setMoveAnnouncement] = createSignal("");
@@ -549,6 +552,9 @@ const AgentPickerModal: Component<{
   const installLoadedSnapshot = (loaded: SettingsSnapshot, reconcileSelection: boolean) => {
     setSettings(loaded);
     setOverlayOwnsAgents(loaded.overlayOwnsAgents === true);
+    setAgentsUnreadableReason(
+      loaded.agentsLayerUnreadable === true ? agentsUnreadableNotice(loaded.agentsFilePath) : null
+    );
     const next = loaded.agents;
     if (!reconcileSelection) {
       setAgents(next);
@@ -594,7 +600,7 @@ const AgentPickerModal: Component<{
   };
 
   const reorderDisabled = () =>
-    moveBusy() || overlayOwnsAgents() || filterQuery() !== "";
+    moveBusy() || overlayOwnsAgents() || agentsUnreadableReason() !== null || filterQuery() !== "";
   const reorderHandleTestId = (agentId: string) => `agentPicker.provider.${agentId}.dragHandle`;
   /** #2577 - position-aware accessible name; the overlay reason wins over the
    *  filter reason because clearing the filter cannot fix it. */
@@ -1649,6 +1655,9 @@ const AgentPickerModal: Component<{
             </div>
             <Show when={overlayOwnsAgents()}>
               <div data-ac-testid="agentPicker.overlayReason">{MOVE_OVERLAY_REASON}</div>
+            </Show>
+            <Show when={agentsUnreadableReason()}>
+              {(reason) => <div data-ac-testid="agentPicker.unreadableReason">{reason()}</div>}
             </Show>
           </aside>
 

@@ -1001,7 +1001,17 @@ export interface SettingsSnapshot extends AppSettings {
    *  owns top-level `agents`, so the backend refuses moves. Never part of
    *  AppSettings or a draft. */
   overlayOwnsAgents: boolean;
+  /** #2716 - read-only response metadata: true when the agents file could not
+   *  be read, so no agent session may start. Never part of AppSettings or a
+   *  draft. Optional so an older snapshot literal still type-checks. */
+  agentsLayerUnreadable?: boolean;
+  /** #2716 - the unreadable agents file's path, or null. */
+  agentsFilePath?: string | null;
 }
+
+/** #2716 - notice 2, shown where the agent list is. */
+export const agentsUnreadableNotice = (path: string | null | undefined): string =>
+  `Unavailable: AgentsCommander could not read ${path ?? "the agents file"}. Fix or delete that file and restart AgentsCommander. While this file is unreadable, changes to your sessions are not saved.`;
 
 export interface UpdateInfo {
   currentVersion: string;

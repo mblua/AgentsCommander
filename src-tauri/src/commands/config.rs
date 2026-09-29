@@ -263,6 +263,12 @@ pub struct SettingsSnapshot {
     /// a move. Deliberately NOT a field of `AppSettings`: a client draft can
     /// never carry or forge overlay ownership.
     pub overlay_owns_agents: bool,
+    /// #2716 (B3, option C) - read-only disclosure that the agents file could
+    /// not be read, so no agent session may start. Same stance as
+    /// `overlay_owns_agents`: never a field a client draft can carry.
+    pub agents_layer_unreadable: bool,
+    /// #2716 (B3, option C) - the unreadable agents file's path, for the notice.
+    pub agents_file_path: Option<String>,
 }
 
 fn issue_source(source: ProjectSource) -> IssueSource {
@@ -472,6 +478,11 @@ pub(crate) fn settings_snapshot_from(
         overlay_owns_agents: settings
             .local_overlay_state
             .owns_top_level(OVERLAY_KEY_AGENTS),
+        agents_layer_unreadable: settings.agents_layer.unreadable_path().is_some(),
+        agents_file_path: settings
+            .agents_layer
+            .unreadable_path()
+            .map(|path| path.to_string_lossy().into_owned()),
     }
 }
 
@@ -6975,8 +6986,10 @@ mod tests {
     }
 
     fn disk_ids_and_orders(path: &Path) -> (Vec<String>, Vec<u64>) {
-        let raw = std::fs::read_to_string(path).expect("read settings.json");
-        let disk: Value = serde_json::from_str(&raw).expect("parse settings.json");
+        // #2716 (B3): `agents` lives in the agents file beside settings.json.
+        let raw = std::fs::read_to_string(path.with_file_name("agents.30.instance.no-git.json"))
+            .expect("read agents file");
+        let disk: Value = serde_json::from_str(&raw).expect("parse agents file");
         let agents = disk["agents"].as_array().expect("agents array");
         (
             agents
@@ -7608,7 +7621,7 @@ mod tests {
             );
         }
         let disk: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
         assert_eq!(
             disk.archived_project_paths,
             vec![archived_project.to_string()]
@@ -7661,7 +7674,7 @@ mod tests {
             );
         }
         let disk: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
         assert_eq!(
             disk.archived_project_paths,
             vec![archived_project.to_string()]
@@ -7696,7 +7709,7 @@ mod tests {
             assert_single_project(&live, &live_project);
         }
         let disk: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
         assert_single_project(&disk, &live_project);
     }
 
@@ -7729,7 +7742,7 @@ mod tests {
             assert_single_project(&live, &live_project);
         }
         let disk: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
         assert_single_project(&disk, &live_project);
     }
 
@@ -7777,7 +7790,7 @@ mod tests {
             assert_eq!(live.archived_project_paths, vec![disk_archived.to_string()]);
         }
         let disk: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
         assert_eq!(disk.archived_project_paths, vec![disk_archived.to_string()]);
     }
 
@@ -7835,7 +7848,7 @@ mod tests {
         let _snap = super::settings_snapshot_helper(&state, Some(settings_path.clone())).await;
 
         let disk: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
         assert_eq!(
             disk.project_paths,
             vec![a.clone(), b.clone()],
