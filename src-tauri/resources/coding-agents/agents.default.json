@@ -13,6 +13,7 @@
       "configSeed": { "enabled": true, "dest": ".claude" },
       "removable": true,
       "updateCommands": ["claude --update"],
+      "installCommands": { "default": "npm install -g @anthropic-ai/claude-code" },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -27,6 +28,7 @@
       "configSeed": { "enabled": true, "dest": ".codex" },
       "removable": true,
       "updateCommands": ["codex update"],
+      "installCommands": { "default": "npm install -g @openai/codex" },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -65,6 +67,7 @@
       "isolatedHome": false,
       "removable": true,
       "updateCommands": ["pi update"],
+      "installCommands": { "default": "npm install -g @mariozechner/pi-coding-agent" },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -79,6 +82,7 @@
       "configSeed": { "enabled": true, "dest": ".opencode" },
       "removable": true,
       "updateCommands": ["opencode upgrade"],
+      "installCommands": { "default": "npm install -g opencode-ai" },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {

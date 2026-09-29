@@ -29,6 +29,7 @@ function mount(props: {
   openErrors?: Record<string, string>;
   busyLoopId?: string | null;
   onOpenConfig?: (a: UnresolvedLoopTarget) => void;
+  onDisable?: (a: UnresolvedLoopTarget) => void;
   onDismiss?: () => void;
 }): () => void {
   const root = document.createElement("div");
@@ -40,6 +41,7 @@ function mount(props: {
         openErrors={props.openErrors ?? {}}
         busyLoopId={props.busyLoopId ?? null}
         onOpenConfig={props.onOpenConfig ?? (() => {})}
+        onDisable={props.onDisable ?? (() => {})}
         onDismiss={props.onDismiss ?? (() => {})}
       />
     ),
@@ -77,17 +79,6 @@ describe("LoopTargetMissingModal (#2171)", () => {
     expect(byTestId("loopTargetMissing.open.weekly-report")).toBeTruthy();
   });
 
-  it("calls onOpenConfig with that row's alert", async () => {
-    const onOpenConfig = vi.fn();
-    dispose = mount({ alerts: [alert()], onOpenConfig });
-
-    await waitFor(() => expect(byTestId("loopTargetMissing.open.daily-release")).toBeTruthy());
-    click(byTestId("loopTargetMissing.open.daily-release"));
-
-    expect(onOpenConfig).toHaveBeenCalledTimes(1);
-    expect(onOpenConfig.mock.calls[0][0]).toEqual(alert());
-  });
-
   it("renders a non-empty openErrors entry as an error line in that row", async () => {
     dispose = mount({
       alerts: [alert(), alert({ loopId: "other", loopName: "Other" })],
@@ -98,17 +89,6 @@ describe("LoopTargetMissingModal (#2171)", () => {
     const errors = document.querySelectorAll(".new-agent-error");
     expect(errors).toHaveLength(1);
     expect(errors[0].textContent).toContain("Open the project, then try again.");
-  });
-
-  it("disables only the busy row's button", async () => {
-    dispose = mount({
-      alerts: [alert(), alert({ loopId: "other", loopName: "Other" })],
-      busyLoopId: "daily-release",
-    });
-
-    await waitFor(() => expect(byTestId("loopTargetMissing.modal")).toBeTruthy());
-    expect(byTestId<HTMLButtonElement>("loopTargetMissing.open.daily-release").disabled).toBe(true);
-    expect(byTestId<HTMLButtonElement>("loopTargetMissing.open.other").disabled).toBe(false);
   });
 
   it("dismisses on the dismiss button, the overlay click and Escape", async () => {
@@ -146,5 +126,31 @@ describe("LoopTargetMissingModal (#2171)", () => {
       new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
     );
     expect(onDismiss).toHaveBeenCalledTimes(2);
+  });
+
+  // #2733 T-C3/T-C4 share the #2171 open-button cases: same row wiring.
+  it.each([
+    ["open", "onOpenConfig"],
+    ["disable", "onDisable"],
+  ] as const)("the %s button calls %s once with that row's alert", async (action, handler) => {
+    const callback = vi.fn();
+    dispose = mount({ alerts: [alert()], [handler]: callback });
+
+    await waitFor(() => expect(byTestId(`loopTargetMissing.${action}.daily-release`)).toBeTruthy());
+    click(byTestId(`loopTargetMissing.${action}.daily-release`));
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0][0]).toEqual(alert());
+  });
+
+  it.each(["open", "disable"])("disables only the busy row's %s button", async (action) => {
+    dispose = mount({
+      alerts: [alert(), alert({ loopId: "other", loopName: "Other" })],
+      busyLoopId: "daily-release",
+    });
+
+    await waitFor(() => expect(byTestId("loopTargetMissing.modal")).toBeTruthy());
+    expect(byTestId<HTMLButtonElement>(`loopTargetMissing.${action}.daily-release`).disabled).toBe(true);
+    expect(byTestId<HTMLButtonElement>(`loopTargetMissing.${action}.other`).disabled).toBe(false);
   });
 });

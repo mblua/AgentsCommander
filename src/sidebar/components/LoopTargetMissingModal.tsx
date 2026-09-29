@@ -5,14 +5,15 @@ import type { UnresolvedLoopTarget } from "../../shared/types";
 /**
  * #2171 - startup notice for Loops whose configured room cannot be resolved in
  * this project. Presentational only: it holds no state and performs no IPC; the
- * owner (ProjectPanel) loads the alerts, opens the Loop configuration and keeps
- * the per-row errors.
+ * owner (ProjectPanel) loads the alerts, opens the Loop configuration, disables
+ * the Loop (#2733) and keeps the per-row errors.
  */
 const LoopTargetMissingModal: Component<{
   alerts: UnresolvedLoopTarget[];
   openErrors: Record<string, string>;
   busyLoopId: string | null;
   onOpenConfig: (alert: UnresolvedLoopTarget) => void;
+  onDisable: (alert: UnresolvedLoopTarget) => void;
   onDismiss: () => void;
 }> = (props) => {
   // Escape dismisses from anywhere: the document listener covers the case where
@@ -81,6 +82,15 @@ const LoopTargetMissingModal: Component<{
                   {...automationAttrs(`loopTargetMissing.open.${alert.loopId}`, "button")}
                 >
                   Open Loop configuration
+                </button>
+                <button
+                  class="new-agent-create-btn"
+                  disabled={props.busyLoopId === alert.loopId}
+                  title="Sets enabled = false in the Loop's config.toml. The config is synced, so this disables it on every machine."
+                  onClick={() => props.onDisable(alert)}
+                  {...automationAttrs(`loopTargetMissing.disable.${alert.loopId}`, "button")}
+                >
+                  Disable loop (all machines)
                 </button>
                 <Show when={props.openErrors[alert.loopId]}>
                   {(message) => (
