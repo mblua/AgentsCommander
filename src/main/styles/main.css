@@ -485,3 +485,9 @@ html.light-theme .error-modal-counter,
 html.light-theme .error-modal-meta {
   color: #5a6172;
 }
+
+/* #2744 - error text literals picked for the dark surface. */
+html.light-theme .home-status-error,
+html.light-theme .error-modal-title {
+  color: #b91c1c;
+}
