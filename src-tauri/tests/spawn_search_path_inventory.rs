@@ -152,9 +152,9 @@ const INVENTORY: &[Row] = &[
     ("src-tauri/src/cli/mod.rs", 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/commands/ac_discovery.rs",
-        28,
+        30,
         1,
-        &[(TestOnly, 27)],
+        &[(TestOnly, 29)],
     ),
     (
         "src-tauri/src/commands/config.rs",
@@ -225,7 +225,7 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    ("src-tauri/src/config/loops.rs", 1, 0, &[(TestOnly, 1)]),
+    ("src-tauri/src/config/loops.rs", 3, 0, &[(TestOnly, 3)]),
     (
         "src-tauri/src/config/naming_migration.rs",
         1,

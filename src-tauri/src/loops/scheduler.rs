@@ -15,7 +15,7 @@ use crate::config::loops::{
     read_loop_config_if_present, read_loop_state_with_raw, resolve_loop_target,
     revalidate_loop_current, write_loop_state_atomic, write_loop_state_if_unchanged,
     LoopAuditEntry, LoopAuditKind, LoopConfigDetails, LoopConfigRevalidation, LoopConfigToml,
-    LoopLastResult, LoopState, LoopStateWrite, LOOP_DIR_PREFIX, LOOP_LOCK_TIMEOUT, LOOP_STATE_FILE,
+    LoopLastResult, LoopState, LoopStateWrite, LOOP_DIR_PREFIX, LOOP_LOCK_TIMEOUT,
 };
 use crate::config::projects::{enumerate_registered_project_candidates, ProjectResolution};
 use crate::config::sessions_persistence;
@@ -929,7 +929,7 @@ fn read_state_snapshot(dir: &Path) -> Result<(LoopState, Option<Vec<u8>>), Strin
 }
 
 fn read_raw_loop_state(dir: &Path) -> Result<Option<Vec<u8>>, String> {
-    let path = dir.join(LOOP_STATE_FILE);
+    let path = crate::config::loops::resolved_loop_state_path(dir);
     match std::fs::read(&path) {
         Ok(content) => Ok(Some(content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -1116,7 +1116,7 @@ mod tests {
     use super::*;
     use crate::config::loops::{
         write_loop_config, BusyCoordinatorPolicy, LoopDef, LoopPolicy, LoopPrompt, LoopTarget,
-        LoopTargetKind, LoopTrigger, LoopTriggerKind, LOOP_TIMEZONE_LOCAL,
+        LoopTargetKind, LoopTrigger, LoopTriggerKind, LOOP_STATE_FILE, LOOP_TIMEZONE_LOCAL,
     };
 
     fn sample_config() -> LoopConfigToml {
