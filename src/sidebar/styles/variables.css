@@ -79,6 +79,12 @@
 }
 
 html.light-theme {
+  /* #2744 - the rail is white for the dark surface; on the light selected row
+     (--sidebar-active #dcdce4) white reaches 1.36 and the bar disappears.
+     #1A1A2E is the accepted light "primary text" value and reaches 12.51.
+     This declaration only wins when applySelectedRowRail publishes nothing,
+     which is exactly the case where the stored colour is the factory default. */
+  --ac-selected-rail-color: #1A1A2E;
   --sidebar-bg: #f5f5f7;
   --sidebar-fg: #1a1a2e;
   --sidebar-fg-dim: #6b7280;

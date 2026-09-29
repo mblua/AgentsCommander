@@ -1611,6 +1611,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     testId: string;
     isValid: (value: string) => boolean;
     hint: string;
+    note?: string;
   }) => (
     <>
       <label class="settings-field" data-ac-setting={p.field}>
@@ -1630,6 +1631,11 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           data-ac-testid={p.testId}
         />
       </label>
+      <Show when={p.note}>
+        <div class="settings-hint" data-ac-testid={`${p.testId}.note`}>
+          {p.note}
+        </div>
+      </Show>
       <Show when={!p.isValid(settings.data?.[p.field] ?? "")}>
         <div class="settings-hint settings-hint-error" data-ac-testid={`${p.testId}.warning`}>
           {p.hint}
@@ -2852,7 +2858,8 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                 label: "Selected Row Bar Color",
                 testId: "settings.general.selectedRowRailColor",
                 isValid: isValidRailColor,
-                hint: "Not a valid colour. Enter a hash followed by six hex digits, for example #FFFFFF. While this is invalid the bar shows the default #FFFFFF.",
+                hint: "Not a valid colour. Enter a hash followed by six hex digits, for example #FFFFFF. While this is invalid the bar shows the theme default.",
+                note: "Default: the bar follows the theme, white in dark mode and #1A1A2E (near-black) in light mode. Any colour you enter here is used in both themes.",
               })}
               <label data-ac-setting="sidebarAlwaysOnTop" class="settings-checkbox-field">
                 <input
