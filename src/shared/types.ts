@@ -499,6 +499,24 @@ export interface CodingAgentDefinition {
     maxSecs?: number;
     priorSilenceSecs?: number;
   } | null;
+  /** #2736 - optional per-OS install command; one COMPLETE shell command string
+   *  per platform key. Catalog-only, local-patchable, and never part of the
+   *  `settings.agents[]` snapshot. The Welcome screen reads the RESOLVED value
+   *  from `CodingAgentWelcomeStatus`, not this object. */
+  installCommands?: { default: string; windows?: string; macos?: string; linux?: string };
+}
+
+export type CodingAgentTestedLevel = "high" | "medium" | "low";
+
+/** #2736 - Welcome-screen only. Computed per effective catalog entry by the
+ *  backend: live PATH presence (never persisted, never cached), the static
+ *  tested-confidence level (code, never read from a catalog file) and the
+ *  install command already resolved for THIS OS. */
+export interface CodingAgentWelcomeStatus {
+  key: string;
+  installed: boolean;
+  testedLevel: CodingAgentTestedLevel | null;
+  installCommand: string | null;
 }
 
 export type CatalogDiagnostic = { code: string; path: string; reason: string };

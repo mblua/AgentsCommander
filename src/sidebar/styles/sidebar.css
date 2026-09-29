@@ -9786,6 +9786,39 @@ html.light-theme .onboarding-card.selected {
   color: var(--sidebar-fg-dim);
 }
 
+/* #2736 - Welcome status chips. The row adds a margin, never card padding;
+   state colour is selected by data-ac-state, not by a class per state. */
+.onboarding-card-chips {
+  display: flex;
+  gap: var(--spacing-xs);
+  margin-top: 2px;
+}
+
+.onboarding-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 0 var(--spacing-xs);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--sidebar-fg-dim);
+}
+
+.onboarding-chip-status[data-ac-state="installed"] {
+  color: var(--status-running);
+  border-color: color-mix(in srgb, var(--status-running) 40%, transparent);
+}
+
+.onboarding-chip-tested {
+  color: var(--sidebar-fg);
+}
+
+.onboarding-chip-tested[data-ac-state="high"] {
+  border-color: color-mix(in srgb, var(--sidebar-accent) 50%, transparent);
+}
+
 .onboarding-custom-fields {
   display: flex;
   flex-direction: column;

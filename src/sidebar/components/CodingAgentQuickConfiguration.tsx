@@ -1,8 +1,14 @@
 import { Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
-import type { AgentConfig, AppSettings, CodingAgentDefinition } from "../../shared/types";
-import { SettingsAPI } from "../../shared/ipc";
+import type {
+  AgentConfig,
+  AppSettings,
+  CodingAgentDefinition,
+  CodingAgentTestedLevel,
+  CodingAgentWelcomeStatus,
+} from "../../shared/types";
+import { CodingAgentsAPI, SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
-import { newAgentId, definitionToSeed } from "../../shared/agent-presets";
+import { newAgentId, definitionToSeed, sortWelcomeAgents } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 
 const CUSTOM_PRESET: CodingAgentDefinition = {
@@ -25,6 +31,8 @@ export interface CodingAgentQuickConfigurationProps {
   onCancel?: () => void;
   onBeforeSave?: (settings: AppSettings) => AppSettings;
   ariaLabel?: string;
+  /** #2736 - Welcome screen only: status and tested chips plus Welcome order. */
+  showInstallStatus?: boolean;
 }
 
 /** #1965 — private detail renderer shared by the catalog error and warning
@@ -51,7 +59,50 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   const [done, setDone] = createSignal(false);
   const [addedLabel, setAddedLabel] = createSignal("");
 
-  const allPresets = () => [...codingAgentsStore.catalog(), CUSTOM_PRESET];
+  const [welcomeStatus, setWelcomeStatus] = createSignal<CodingAgentWelcomeStatus[]>([]);
+
+  const allPresets = () =>
+    props.showInstallStatus
+      ? [...sortWelcomeAgents(codingAgentsStore.catalog(), welcomeStatus()), CUSTOM_PRESET]
+      : [...codingAgentsStore.catalog(), CUSTOM_PRESET];
+
+  // #2736 - the status rows belong to the catalog generation they were asked
+  // in; a response for a superseded generation is discarded. A failure is not
+  // fatal: no chips beyond "Not installed" and catalog order.
+  const loadWelcomeStatus = async () => {
+    const generation = codingAgentsStore.generation();
+    try {
+      const rows = await CodingAgentsAPI.welcomeStatus();
+      if (generation !== codingAgentsStore.generation()) return;
+      setWelcomeStatus(rows);
+    } catch (e) {
+      if (generation !== codingAgentsStore.generation()) return;
+      console.error("Coding Agent welcome status failed:", e);
+      setWelcomeStatus([]);
+    }
+  };
+
+  const statusRowOf = (key: string) => welcomeStatus().find((row) => row.key === key);
+  const statusLabel = (key: string): string => {
+    if (key === CUSTOM_PRESET.key) return "Not needed";
+    return statusRowOf(key)?.installed ? "Installed" : "Not installed";
+  };
+  const statusState = (key: string): string => {
+    if (key === CUSTOM_PRESET.key) return "not-needed";
+    return statusRowOf(key)?.installed ? "installed" : "missing";
+  };
+  const testedLevelOf = (key: string): CodingAgentTestedLevel | null => {
+    if (key === CUSTOM_PRESET.key) return null;
+    return statusRowOf(key)?.testedLevel ?? null;
+  };
+  const testedLabel = (level: CodingAgentTestedLevel): string =>
+    level === "high" ? "High" : level === "medium" ? "Medium" : "Low";
+  const presetAriaLabel = (preset: CodingAgentDefinition): string => {
+    if (!props.showInstallStatus) return `Select ${preset.label}`;
+    const level = testedLevelOf(preset.key);
+    const tested = level ? `, Tested: ${testedLabel(level)}` : "";
+    return `Select ${preset.label}, ${statusLabel(preset.key)}${tested}`;
+  };
 
   const [customLabel, setCustomLabel] = createSignal("");
   const [customCommand, setCustomCommand] = createSignal("");
@@ -66,6 +117,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     observedGeneration = current;
     setSelectedPreset(null);
     setSelectionGeneration(null);
+    if (props.showInstallStatus) void loadWelcomeStatus();
   });
 
   const isCustom = () => selectedPreset() === "custom";
@@ -189,6 +241,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   onMount(() => {
     overlayRef.focus();
     void codingAgentsStore.ensureLoaded();
+    if (props.showInstallStatus) void loadWelcomeStatus();
   });
 
   return (
@@ -323,7 +376,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                     onClick={() => handleSelect(preset.key)}
                     style={{ "--card-accent": preset.color }}
                     aria-pressed={selectedPreset() === preset.key}
-                    aria-label={`Select ${preset.label}`}
+                    aria-label={presetAriaLabel(preset)}
                     data-ac-testid={`onboarding.agentPreset.${preset.key}`}
                     data-ac-role="agent-preset"
                     data-ac-state={selectedPreset() === preset.key ? "selected" : "idle"}
@@ -337,6 +390,30 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                     </div>
                     <div class="onboarding-card-info">
                       <div class="onboarding-card-name">{preset.label}</div>
+                      <Show when={props.showInstallStatus}>
+                        <div class="onboarding-card-chips">
+                          <span
+                            class="onboarding-chip onboarding-chip-status"
+                            data-ac-testid={`onboarding.agentPreset.${preset.key}.status`}
+                            data-ac-role="status"
+                            data-ac-state={statusState(preset.key)}
+                          >
+                            {statusLabel(preset.key)}
+                          </span>
+                          <Show when={testedLevelOf(preset.key)}>
+                            {(level) => (
+                              <span
+                                class="onboarding-chip onboarding-chip-tested"
+                                data-ac-testid={`onboarding.agentPreset.${preset.key}.tested`}
+                                data-ac-role="status"
+                                data-ac-state={level()}
+                              >
+                                {`Tested: ${testedLabel(level())}`}
+                              </span>
+                            )}
+                          </Show>
+                        </div>
+                      </Show>
                       <div class="onboarding-card-desc">{preset.description}</div>
                     </div>
                   </button>
