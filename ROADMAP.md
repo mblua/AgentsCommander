@@ -54,7 +54,7 @@ This file is a snapshot. The authoritative status for tracked work lives in its 
 
 - **Linux support expansion** - Linux x86_64/AMD64 is supported with medium test coverage. Broaden distribution and feature coverage, including gaps where capabilities remain Windows-only. Testers can use the [reproducible platform report](docs/install-with-agent.md#help-extend-linux-and-macos-support).
 - **macOS support and verification** - macOS is supported via npm only, with very low test coverage, and errors are expected. Grow the coverage and fix what reproducible reports surface. Testers and contributors are welcome through the [collaboration path](docs/install-with-agent.md#help-extend-linux-and-macos-support); artifact availability does not change the support tier.
-- **Web landing page** on `agentscommander.dev` or GitHub Pages from `/docs`. ([#321](https://github.com/mblua/AgentsCommander/issues/321))
+- **Web landing page** on `agentscommander.org` or GitHub Pages from `/docs`. ([#321](https://github.com/mblua/AgentsCommander/issues/321))
 
 ## Considering
 
