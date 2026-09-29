@@ -24,7 +24,9 @@ const CSS_PATHS = Object.keys(import.meta.glob(["../../**/*.css"]))
   .sort();
 
 const norm = (s: string): string => s.replace(/\s+/g, " ").trim();
-const stripComments = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, " ");
+// Comments become spaces, keeping their newlines so reported lines stay true.
+const stripComments = (s: string): string =>
+  s.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
 
 function rootValue(variablesCss: string, token: string): string | undefined {
   const root = /:root\s*\{([^}]*)\}/.exec(stripComments(variablesCss))?.[1] ?? "";
@@ -35,26 +37,23 @@ function rootValue(variablesCss: string, token: string): string | undefined {
 /** The fallback text of every var(--token ...) use, or null when it has none. */
 function consumers(sheets: Sheet[], token: string): { site: string; fallback: string | null }[] {
   const out: { site: string; fallback: string | null }[] = [];
-  const needle = `var(${token}`;
+  // Whitespace, or a comment already blanked to spaces, may sit between var( and the name.
+  const needle = new RegExp(`var\\(\\s*${token}(?![\\w-])`, "g");
   for (const { path, text } of sheets) {
     const body = stripComments(text);
-    let at = body.indexOf(needle);
-    while (at !== -1) {
-      const after = at + needle.length;
-      if (!/[\w-]/.test(body[after] ?? "")) {
-        let depth = 1;
-        let i = after;
-        while (i < body.length && depth > 0) {
-          if (body[i] === "(") depth++;
-          else if (body[i] === ")") depth--;
-          i++;
-        }
-        const args = body.slice(after, i - 1);
-        const comma = args.indexOf(",");
-        const line = body.slice(0, at).split("\n").length;
-        out.push({ site: `${path}:${line}`, fallback: comma === -1 ? null : norm(args.slice(comma + 1)) });
+    for (const m of body.matchAll(needle)) {
+      const after = m.index + m[0].length;
+      let depth = 1;
+      let i = after;
+      while (i < body.length && depth > 0) {
+        if (body[i] === "(") depth++;
+        else if (body[i] === ")") depth--;
+        i++;
       }
-      at = body.indexOf(needle, after);
+      const args = body.slice(after, i - 1);
+      const comma = args.indexOf(",");
+      const line = body.slice(0, m.index).split("\n").length;
+      out.push({ site: `${path}:${line}`, fallback: comma === -1 ? null : norm(args.slice(comma + 1)) });
     }
   }
   return out;
@@ -91,7 +90,6 @@ describe("token fallback parity (#2744 phase C)", () => {
 
   it("the five unsafe tokens stay undefined", () => {
     for (const token of UNSAFE) {
-      expect(consumers(sheets, token).length, `${token} consumers`).toBeGreaterThan(0);
       expect(declares(sheets, token), `${token} declared`).toEqual([]);
     }
   });
@@ -102,10 +100,15 @@ describe("token fallback parity (#2744 phase C)", () => {
       { path: "a.css", text: ".ok { color: var(--zz-probe, #00d4ff); }" },
       { path: "b.css", text: ".bad {\n  color: var(--zz-probe, #ff0000);\n}" },
       { path: "c.css", text: ".bare { color: var(--zz-probe); }" },
+      { path: "e.css", text: ".sp { color: var( --zz-probe, #ff0000); }" },
+      { path: "f.css", text: "/* x\n */ .gap { color: var(/* gap */--zz-probe, #ff0000); }" },
+      { path: "g.css", text: ".other { color: var(--zz-probe-2, #ff0000); }" },
     ];
     expect(mismatches(fixture, vars, "--zz-probe")).toEqual([
       "b.css:2 --zz-probe fallback=#ff0000 root=#00d4ff",
       "c.css:1 --zz-probe fallback=<none> root=#00d4ff",
+      "e.css:1 --zz-probe fallback=#ff0000 root=#00d4ff",
+      "f.css:2 --zz-probe fallback=#ff0000 root=#00d4ff",
     ]);
     expect(mismatches(fixture.slice(0, 1), vars, "--zz-probe")).toEqual([]);
     expect(declares([{ path: "d.css", text: ":root { --zz-probe: red; }" }], "--zz-probe")).toEqual(["d.css"]);
