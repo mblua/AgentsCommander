@@ -48,6 +48,7 @@ import type {
   CodingAgentEnv,
   CodingAgentDefinition,
   CodingAgentWelcomeStatus,
+  CodingAgentInstallFinished,
   CatalogReport,
   ReseedResult,
   CodingAgentProfilesConfig,
@@ -381,6 +382,9 @@ export const CodingAgentsAPI = {
 
   welcomeStatus: (): Promise<CodingAgentWelcomeStatus[]> =>
     transport.invoke<CodingAgentWelcomeStatus[]>("get_coding_agent_welcome_status"),
+
+  install: (key: string): Promise<void> =>
+    transport.invoke<void>("install_coding_agent", { key }),
 
   getCatalogReport: () =>
     transport.invoke<CatalogReport>("get_coding_agent_catalog_report"),
@@ -1504,6 +1508,16 @@ export function onAgentUpdatesFinished(
 ): Promise<UnlistenFn> {
   return transport.listen<{ results: AgentUpdateResult[] }>(
     "agent_updates_finished",
+    (payload) => callback(payload)
+  );
+}
+
+/** #2736 - one silent Coding Agent install finished (ok or failed). */
+export function onCodingAgentInstallFinished(
+  callback: (payload: CodingAgentInstallFinished) => void
+): Promise<UnlistenFn> {
+  return transport.listen<CodingAgentInstallFinished>(
+    "coding_agent_install_finished",
     (payload) => callback(payload)
   );
 }

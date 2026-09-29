@@ -1,13 +1,16 @@
-import { Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
+import { Component, createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type {
   AgentConfig,
   AppSettings,
   CodingAgentDefinition,
+  CodingAgentInstallFinished,
   CodingAgentTestedLevel,
   CodingAgentWelcomeStatus,
 } from "../../shared/types";
-import { CodingAgentsAPI, SettingsAPI } from "../../shared/ipc";
+import { CodingAgentsAPI, onCodingAgentInstallFinished, SettingsAPI } from "../../shared/ipc";
+import type { UnlistenFn } from "../../shared/transport";
 import { settingsStore } from "../../shared/stores/settings";
+import { toastStore } from "../../shared/stores/toasts";
 import { newAgentId, definitionToSeed, sortWelcomeAgents } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 
@@ -69,12 +72,16 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   // #2736 - the status rows belong to the catalog generation they were asked
   // in; a response for a superseded generation is discarded. A failure is not
   // fatal: no chips beyond "Not installed" and catalog order.
-  const loadWelcomeStatus = async () => {
+  const loadWelcomeStatus = async (
+    beforePublish?: (rows: CodingAgentWelcomeStatus[]) => (() => void) | void
+  ) => {
     const generation = codingAgentsStore.generation();
     try {
       const rows = await CodingAgentsAPI.welcomeStatus();
       if (generation !== codingAgentsStore.generation()) return;
+      const afterPublish = beforePublish?.(rows);
       setWelcomeStatus(rows);
+      afterPublish?.();
     } catch (e) {
       if (generation !== codingAgentsStore.generation()) return;
       console.error("Coding Agent welcome status failed:", e);
@@ -102,6 +109,70 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     const level = testedLevelOf(preset.key);
     const tested = level ? `, Tested: ${testedLabel(level)}` : "";
     return `Select ${preset.label}, ${statusLabel(preset.key)}${tested}`;
+  };
+
+  // #2736 - silent install. Each update publishes a NEW Set so Solid reacts.
+  // Install is gated on the install-finished listener being registered, so a
+  // fast completion event can never be lost and strand a row in Installing.
+  const [installing, setInstalling] = createSignal<Set<string>>(new Set());
+  const [installFailed, setInstallFailed] = createSignal<Set<string>>(new Set());
+  const [installReady, setInstallReady] = createSignal(false);
+  const [installBlocked, setInstallBlocked] = createSignal(false);
+  const withKey = (set: Set<string>, key: string) => new Set(set).add(key);
+  const withoutKey = (set: Set<string>, key: string) => {
+    const next = new Set(set);
+    next.delete(key);
+    return next;
+  };
+
+  const installCommandOf = (key: string): string | null =>
+    statusRowOf(key)?.installCommand ?? null;
+  const showInstallRow = (key: string): boolean =>
+    !!props.showInstallStatus &&
+    !statusRowOf(key)?.installed &&
+    installCommandOf(key) !== null &&
+    key !== CUSTOM_PRESET.key;
+
+  const copyInstallCommand = async (key: string) => {
+    const command = installCommandOf(key);
+    if (command === null) return;
+    try {
+      // The accessor itself throws in a non-secure context (#2135).
+      await navigator.clipboard.writeText(command);
+      toastStore.success("Command copied", { tag: "coding-agent-install-copy" });
+    } catch (e) {
+      console.error("Coding Agent install command copy failed:", e);
+    }
+  };
+
+  const runInstall = async (key: string) => {
+    if (!installReady() || installing().has(key)) return;
+    setInstallFailed((set) => withoutKey(set, key));
+    setInstalling((set) => withKey(set, key));
+    try {
+      // Fire-and-forget: the install-finished event ends the run.
+      await CodingAgentsAPI.install(key);
+    } catch (e) {
+      console.error("Coding Agent install failed to start:", e);
+      setInstallFailed((set) => withKey(set, key));
+      setInstalling((set) => withoutKey(set, key));
+    }
+  };
+
+  const handleInstallFinished = (payload: CodingAgentInstallFinished) => {
+    setInstalling((set) => withoutKey(set, payload.key));
+    if (!payload.ok) setInstallFailed((set) => withKey(set, payload.key));
+    // Presence, not `ok`, turns the row Installed. When the focused install row
+    // is about to unmount, refocus its card AFTER the publish: the re-sort moves
+    // the row node, and a move drops focus set before it.
+    void loadWelcomeStatus((rows) => {
+      if (!rows.find((row) => row.key === payload.key)?.installed) return;
+      const card = modalRef?.querySelector<HTMLElement>(
+        `[data-ac-testid="onboarding.agentPreset.${payload.key}"]`
+      );
+      const installRow = card?.parentElement?.querySelector(".onboarding-card-install");
+      if (card && installRow?.contains(document.activeElement)) return () => card.focus();
+    });
   };
 
   const [customLabel, setCustomLabel] = createSignal("");
@@ -244,6 +315,31 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     if (props.showInstallStatus) void loadWelcomeStatus();
   });
 
+  // #2736 - the listen promise may resolve after unmount; the disposed flag
+  // makes sure that late unlisten still runs.
+  let disposed = false;
+  let unlisten: UnlistenFn | null = null;
+  onMount(() => {
+    if (!props.showInstallStatus) return;
+    onCodingAgentInstallFinished(handleInstallFinished)
+      .then((fn) => {
+        unlisten = fn;
+        if (disposed) {
+          fn();
+          return;
+        }
+        setInstallReady(true);
+      })
+      .catch((e) => {
+        console.error("Coding Agent install listener registration failed:", e);
+        setInstallBlocked(true);
+      });
+  });
+  onCleanup(() => {
+    disposed = true;
+    unlisten?.();
+  });
+
   return (
     <div
       class="modal-overlay"
@@ -371,52 +467,116 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
             <div class="onboarding-cards">
               <For each={allPresets()}>
                 {(preset) => (
-                  <button
-                    class={`onboarding-card ${selectedPreset() === preset.key ? "selected" : ""}`}
-                    onClick={() => handleSelect(preset.key)}
-                    style={{ "--card-accent": preset.color }}
-                    aria-pressed={selectedPreset() === preset.key}
-                    aria-label={presetAriaLabel(preset)}
-                    data-ac-testid={`onboarding.agentPreset.${preset.key}`}
-                    data-ac-role="agent-preset"
-                    data-ac-state={selectedPreset() === preset.key ? "selected" : "idle"}
-                    data-ac-agent-key={preset.key}
-                  >
-                    <div
-                      class="onboarding-card-icon"
-                      style={{ background: preset.color }}
+                  <div class="onboarding-card-row">
+                    <button
+                      class={`onboarding-card ${selectedPreset() === preset.key ? "selected" : ""}`}
+                      onClick={() => handleSelect(preset.key)}
+                      style={{ "--card-accent": preset.color }}
+                      aria-pressed={selectedPreset() === preset.key}
+                      aria-label={presetAriaLabel(preset)}
+                      data-ac-testid={`onboarding.agentPreset.${preset.key}`}
+                      data-ac-role="agent-preset"
+                      data-ac-state={selectedPreset() === preset.key ? "selected" : "idle"}
+                      data-ac-agent-key={preset.key}
                     >
-                      {preset.label[0]}
-                    </div>
-                    <div class="onboarding-card-info">
-                      <div class="onboarding-card-name">{preset.label}</div>
-                      <Show when={props.showInstallStatus}>
-                        <div class="onboarding-card-chips">
-                          <span
-                            class="onboarding-chip onboarding-chip-status"
-                            data-ac-testid={`onboarding.agentPreset.${preset.key}.status`}
-                            data-ac-role="status"
-                            data-ac-state={statusState(preset.key)}
+                      <div
+                        class="onboarding-card-icon"
+                        style={{ background: preset.color }}
+                      >
+                        {preset.label[0]}
+                      </div>
+                      <div class="onboarding-card-info">
+                        <div class="onboarding-card-name">{preset.label}</div>
+                        <Show when={props.showInstallStatus}>
+                          <div class="onboarding-card-chips">
+                            <span
+                              class="onboarding-chip onboarding-chip-status"
+                              data-ac-testid={`onboarding.agentPreset.${preset.key}.status`}
+                              data-ac-role="status"
+                              data-ac-state={statusState(preset.key)}
+                            >
+                              {statusLabel(preset.key)}
+                            </span>
+                            <Show when={testedLevelOf(preset.key)}>
+                              {(level) => (
+                                <span
+                                  class="onboarding-chip onboarding-chip-tested"
+                                  data-ac-testid={`onboarding.agentPreset.${preset.key}.tested`}
+                                  data-ac-role="status"
+                                  data-ac-state={level()}
+                                >
+                                  {`Tested: ${testedLabel(level())}`}
+                                </span>
+                              )}
+                            </Show>
+                          </div>
+                        </Show>
+                        <div class="onboarding-card-desc">{preset.description}</div>
+                      </div>
+                    </button>
+                    <Show when={showInstallRow(preset.key)}>
+                      <div class="onboarding-card-install">
+                        <code
+                          class="onboarding-install-command"
+                          data-ac-testid={`onboarding.agentPreset.${preset.key}.installCommand`}
+                        >
+                          {installCommandOf(preset.key)}
+                        </code>
+                        <button
+                          class="onboarding-install-copy"
+                          type="button"
+                          title="Copy"
+                          aria-label={`Copy the install command for ${preset.label}`}
+                          data-ac-testid={`onboarding.agentPreset.${preset.key}.copy`}
+                          data-ac-role="button"
+                          onClick={() => void copyInstallCommand(preset.key)}
+                        >
+                          <svg
+                            class="onboarding-install-copy-icon"
+                            viewBox="0 0 16 16"
+                            aria-hidden="true"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.3"
                           >
-                            {statusLabel(preset.key)}
+                            <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+                            <path d="M10.5 3.5v-.5a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5" />
+                          </svg>
+                        </button>
+                        <button
+                          class="onboarding-install-run"
+                          type="button"
+                          aria-label={`Install ${preset.label}`}
+                          aria-disabled={installing().has(preset.key) || !installReady()}
+                          data-ac-testid={`onboarding.agentPreset.${preset.key}.install`}
+                          data-ac-role="button"
+                          data-ac-state={
+                            installing().has(preset.key)
+                              ? "installing"
+                              : installBlocked()
+                                ? "blocked"
+                                : installReady()
+                                  ? "idle"
+                                  : "pending"
+                          }
+                          onClick={() => void runInstall(preset.key)}
+                        >
+                          {installing().has(preset.key) ? "Installing..." : "Install"}
+                        </button>
+                        <Show when={installFailed().has(preset.key) || installBlocked()}>
+                          <span
+                            class="settings-hint settings-hint-warning"
+                            data-ac-testid={`onboarding.agentPreset.${preset.key}.installFailed`}
+                            data-ac-role="status"
+                          >
+                            {installBlocked()
+                              ? "Install is unavailable; see the app log."
+                              : "Install failed; see the app log."}
                           </span>
-                          <Show when={testedLevelOf(preset.key)}>
-                            {(level) => (
-                              <span
-                                class="onboarding-chip onboarding-chip-tested"
-                                data-ac-testid={`onboarding.agentPreset.${preset.key}.tested`}
-                                data-ac-role="status"
-                                data-ac-state={level()}
-                              >
-                                {`Tested: ${testedLabel(level())}`}
-                              </span>
-                            )}
-                          </Show>
-                        </div>
-                      </Show>
-                      <div class="onboarding-card-desc">{preset.description}</div>
-                    </div>
-                  </button>
+                        </Show>
+                      </div>
+                    </Show>
+                  </div>
                 )}
               </For>
             </div>

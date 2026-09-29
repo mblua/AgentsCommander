@@ -9819,6 +9819,70 @@ html.light-theme .onboarding-card.selected {
   border-color: color-mix(in srgb, var(--sidebar-accent) 50%, transparent);
 }
 
+/* #2736 - install row, a SIBLING of the card button inside an inert wrapper.
+   The wrapper is the .onboarding-cards flex item: no gap, padding or margin. */
+.onboarding-card-row {
+  display: flex;
+  flex-direction: column;
+}
+
+.onboarding-card-install {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+  margin-top: var(--spacing-xs);
+  min-width: 0;
+}
+
+.onboarding-install-command {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 2px var(--spacing-xs);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-terminal);
+  font-size: 10px;
+  color: var(--sidebar-fg);
+}
+
+.onboarding-install-copy,
+.onboarding-install-run {
+  flex-shrink: 0;
+  padding: 2px var(--spacing-sm);
+  background: transparent;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  color: var(--sidebar-fg);
+}
+
+.onboarding-install-copy:hover,
+.onboarding-install-run:hover {
+  background: var(--sidebar-hover);
+}
+
+.onboarding-install-copy {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--spacing-xs);
+}
+
+.onboarding-install-copy-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* Never :disabled - the running button stays focusable inside the modal trap. */
+.onboarding-install-run[aria-disabled="true"] {
+  color: var(--sidebar-fg-dim);
+  background: transparent;
+  cursor: default;
+}
+
 .onboarding-custom-fields {
   display: flex;
   flex-direction: column;

@@ -519,6 +519,16 @@ export interface CodingAgentWelcomeStatus {
   installCommand: string | null;
 }
 
+/** #2736 - one silent install finished. `ok` reports the command exit status;
+ *  the authoritative "is it installed now" answer is a fresh
+ *  `get_coding_agent_welcome_status` read, which the Welcome screen performs on
+ *  this event. */
+export interface CodingAgentInstallFinished {
+  key: string;
+  command: string;
+  ok: boolean;
+}
+
 export type CatalogDiagnostic = { code: string; path: string; reason: string };
 export type CatalogReport = {
   primaryProjectRoot: string | null;
