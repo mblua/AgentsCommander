@@ -38,7 +38,8 @@ function rootValue(variablesCss: string, token: string): string | undefined {
 function consumers(sheets: Sheet[], token: string): { site: string; fallback: string | null }[] {
   const out: { site: string; fallback: string | null }[] = [];
   // Whitespace, or a comment already blanked to spaces, may sit between var( and the name.
-  const needle = new RegExp(`var\\(\\s*${token}(?![\\w-])`, "g");
+  // CSS function names are ASCII case-insensitive; custom property names are not.
+  const needle = new RegExp(`[vV][aA][rR]\\(\\s*${token}(?![\\w-])`, "g");
   for (const { path, text } of sheets) {
     const body = stripComments(text);
     for (const m of body.matchAll(needle)) {
@@ -103,12 +104,17 @@ describe("token fallback parity (#2744 phase C)", () => {
       { path: "e.css", text: ".sp { color: var( --zz-probe, #ff0000); }" },
       { path: "f.css", text: "/* x\n */ .gap { color: var(/* gap */--zz-probe, #ff0000); }" },
       { path: "g.css", text: ".other { color: var(--zz-probe-2, #ff0000); }" },
+      { path: "h.css", text: ".up { color: VAR(--zz-probe, #ff0000); }" },
+      { path: "i.css", text: ".mixed { color: Var(--zz-probe, #ff0000); }" },
+      { path: "j.css", text: ".case { color: var(--ZZ-probe, #ff0000); }" },
     ];
     expect(mismatches(fixture, vars, "--zz-probe")).toEqual([
       "b.css:2 --zz-probe fallback=#ff0000 root=#00d4ff",
       "c.css:1 --zz-probe fallback=<none> root=#00d4ff",
       "e.css:1 --zz-probe fallback=#ff0000 root=#00d4ff",
       "f.css:2 --zz-probe fallback=#ff0000 root=#00d4ff",
+      "h.css:1 --zz-probe fallback=#ff0000 root=#00d4ff",
+      "i.css:1 --zz-probe fallback=#ff0000 root=#00d4ff",
     ]);
     expect(mismatches(fixture.slice(0, 1), vars, "--zz-probe")).toEqual([]);
     expect(declares([{ path: "d.css", text: ":root { --zz-probe: red; }" }], "--zz-probe")).toEqual(["d.css"]);
