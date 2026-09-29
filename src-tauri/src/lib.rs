@@ -5407,6 +5407,7 @@ pub fn run(
                 commands::config::get_agent_help,
                 commands::config::get_coding_agent_catalog,
                 commands::config::get_coding_agent_welcome_status,
+                commands::config::install_coding_agent,
                 commands::config::get_coding_agent_catalog_report,
                 commands::config::list_reseedable_agent_commands,
                 commands::config::reseed_coding_agent_default,

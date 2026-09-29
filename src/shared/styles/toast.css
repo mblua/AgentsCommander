@@ -88,3 +88,10 @@
 .toast-item__dismiss:hover {
   opacity: 1;
 }
+
+/* #2744 - the info toast hardcoded a dark panel while its text follows
+   --sidebar-fg, so light mode drew #1a1a2e on rgba(31,41,55,0.94): 1.38.
+   A light panel keeps the same text token and reaches 13.53. */
+html.light-theme .toast-item--info {
+  background: #e2e5ec;
+}

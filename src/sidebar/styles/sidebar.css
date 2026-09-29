@@ -10363,3 +10363,46 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup.working {
 .ac-escape-focus-host:focus {
   outline: none;
 }
+
+/* #2744 - light-mode palette for the legacy toast and for the selection-lock /
+   agent-scope / lock-conflict family. Amber #e3b341, #f2d98a and #c8ab6a and
+   green #35f2a6 were picked for the dark surface; on #f5f5f7 they fall to
+   1.18-2.03. #8a6400 and #0f7a4d clear 4.3 on every tint these rules use.
+   Added as overrides so the dark cascade is byte-identical. */
+html.light-theme .toast-info {
+  background: #e2e5ec;
+}
+
+html.light-theme .agent-scope-warnings,
+html.light-theme .selection-lock-chip,
+html.light-theme .selection-lock-bar[data-state="locked"] .selection-lock-icon,
+html.light-theme .selection-lock-state[data-state="locked"],
+html.light-theme .selection-lock-bar[data-state="locked"] .selection-lock-pair,
+html.light-theme .selection-lock-scope-opt.active .selection-lock-scope-count,
+html.light-theme .selection-lock-remove:hover:not(:disabled),
+html.light-theme .selection-lock-pill.locked,
+html.light-theme .agent-scope-lock-badge,
+html.light-theme .agent-scope-opt.locked-choice,
+html.light-theme .agent-scope-opt.locked-choice.active,
+html.light-theme .agent-scope-lock-assumption strong,
+html.light-theme .lock-conflict-title,
+html.light-theme .lock-conflict-arrow,
+html.light-theme .lock-conflict-next {
+  color: #8a6400;
+}
+
+html.light-theme .selection-lock-remove-done,
+html.light-theme .selection-lock-future .decision-tag {
+  color: #0f7a4d;
+}
+
+/* #2744 - the rest-state control drew a white 22% border and a white 4% wash,
+   both invisible on the light surface. Same weights, inverted. */
+html.light-theme .selection-lock-remove {
+  border-color: rgba(0, 0, 0, 0.22);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+html.light-theme .selection-lock-remove:hover:not(:disabled) {
+  border-color: rgba(138, 100, 0, 0.6);
+}

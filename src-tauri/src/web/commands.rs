@@ -211,6 +211,18 @@ async fn dispatch_agent_update_command(
                 Err(unavailable) => Err(unavailable),
             },
         ),
+        "install_coding_agent" => Some(match require_str(args, "key") {
+            // #2736 - returns once the install task is spawned; the outcome is
+            // the `coding_agent_install_finished` event.
+            Ok(key) => crate::commands::config::install_coding_agent_inner(
+                &state.app_handle,
+                &state.settings,
+                key,
+            )
+            .await
+            .map(|()| Value::Null),
+            Err(error) => Err(error),
+        }),
         "get_coding_agent_catalog_report" => {
             let report =
                 crate::commands::config::coding_agent_catalog_report_inner(&state.settings).await;
@@ -3097,6 +3109,32 @@ mod tests {
         assert_eq!(routed[0]["testedLevel"], json!("high"));
         assert_eq!(routed[0]["installCommand"], json!("npm i -g claude"));
         assert_eq!(routed[1]["testedLevel"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn install_coding_agent_route_matches_the_shared_inner_for_a_refusal() {
+        let (_dir, state) = welcome_status_state_2736();
+        let inner = crate::commands::config::install_coding_agent_inner(
+            &state.app_handle,
+            &state.settings,
+            "nope-2736".to_string(),
+        )
+        .await;
+        assert_eq!(inner, Err("unknown coding agent 'nope-2736'".to_string()));
+        let routed = dispatch_inner(
+            &state,
+            "install_coding_agent",
+            &json!({ "key": "nope-2736" }),
+        )
+        .await;
+        assert_eq!(routed, inner.map(|()| Value::Null));
+    }
+
+    #[tokio::test]
+    async fn install_coding_agent_route_rejects_missing_key() {
+        let (_dir, state) = welcome_status_state_2736();
+        let routed = dispatch_inner(&state, "install_coding_agent", &json!({})).await;
+        assert_eq!(routed, Err("Missing required field: key".to_string()));
     }
 
     #[tokio::test]

@@ -80,12 +80,6 @@
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     },
     {
-      "file": "shared/styles/toast.css",
-      "line": 39,
-      "selector": ".toast-item--info",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
       "file": "sidebar/styles/sidebar.css",
       "line": 202,
       "selector": ".titlebar-btn-logs.copied",
@@ -297,108 +291,6 @@
     },
     {
       "file": "sidebar/styles/sidebar.css",
-      "line": 5464,
-      "selector": ".agent-scope-warnings",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5529,
-      "selector": ".selection-lock-chip",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5576,
-      "selector": ".selection-lock-bar[data-state=\"locked\"] .selection-lock-icon",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5615,
-      "selector": ".selection-lock-state[data-state=\"locked\"]",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5637,
-      "selector": ".selection-lock-bar[data-state=\"locked\"] .selection-lock-pair",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5703,
-      "selector": ".selection-lock-scope-opt.active .selection-lock-scope-count",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5732,
-      "selector": ".selection-lock-remove:hover:not(:disabled)",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5743,
-      "selector": ".selection-lock-remove-done",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5799,
-      "selector": ".selection-lock-pill.locked",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5823,
-      "selector": ".selection-lock-future .decision-tag",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5851,
-      "selector": ".agent-scope-lock-badge",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5864,
-      "selector": ".agent-scope-opt.locked-choice",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5868,
-      "selector": ".agent-scope-opt.locked-choice.active",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5880,
-      "selector": ".agent-scope-lock-assumption strong",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5913,
-      "selector": ".lock-conflict-title",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5960,
-      "selector": ".lock-conflict-arrow",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5964,
-      "selector": ".lock-conflict-next",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
       "line": 6036,
       "selector": ".agent-profile-step.yellow",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
@@ -449,12 +341,6 @@
       "file": "sidebar/styles/sidebar.css",
       "line": 6919,
       "selector": ".project-filter-error",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 7040,
-      "selector": ".toast-info",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     },
     {
