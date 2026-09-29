@@ -4774,7 +4774,7 @@ mod tests {
         assert!(error.contains("retry the operation"));
         assert!(state.read().await.project_paths.is_empty());
         let disk: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
         assert!(disk.project_paths.is_empty());
         assert!(project
             .join(".ac")
