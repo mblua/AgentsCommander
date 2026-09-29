@@ -206,9 +206,14 @@ describe("#2277 root agent halo CSS bytes", () => {
 
   it("5. the halo reuses the selected-row rail tokens without redeclaring them", () => {
     for (const token of ["--ac-selected-rail-width", "--ac-selected-rail-color"]) {
-      expect(declaredLines(VARS, token), `${token} in variables.css`).toHaveLength(1);
       expect(declaredLines(CSS, token), `${token} in sidebar.css`).toHaveLength(0);
     }
+    expect(declaredLines(VARS, "--ac-selected-rail-width")).toHaveLength(1);
+    // #2751 - the colour token is declared twice on purpose: white in :root and
+    // #1A1A2E in html.light-theme, so the factory default follows the theme.
+    expect(declaredLines(VARS, "--ac-selected-rail-color")).toHaveLength(2);
+    expect(valueOf(one(VARS, ":root").body, "--ac-selected-rail-color")).toBe("#FFFFFF");
+    expect(valueOf(one(VARS, "html.light-theme").body, "--ac-selected-rail-color")).toBe("#1A1A2E");
     expect(valueOf(one(VARS, ":root").body, "--ac-rail-delta")).toBe(
       "calc(var(--ac-selected-rail-width) - 3px)"
     );
