@@ -2,24 +2,6 @@
   "version": 1,
   "entries": [
     {
-      "file": "browser/styles/browser.css",
-      "line": 96,
-      "selector": ".browser-side-toggle",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "browser/styles/browser.css",
-      "line": 116,
-      "selector": ".browser-side-toggle:hover",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "main/styles/main.css",
-      "line": 194,
-      "selector": ".quit-confirm-btn-cancel",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
       "file": "main/styles/main.css",
       "line": 295,
       "selector": ".home-status-error",
@@ -29,54 +11,6 @@
       "file": "main/styles/main.css",
       "line": 391,
       "selector": ".error-modal-title",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "main/styles/main.css",
-      "line": 397,
-      "selector": ".error-modal-counter",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "main/styles/main.css",
-      "line": 402,
-      "selector": ".error-modal-meta",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "main/styles/main.css",
-      "line": 452,
-      "selector": ".error-modal-btn-dismiss",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "resource-monitor/styles/resource-monitor.css",
-      "line": 508,
-      "selector": ".rm-group-verifying",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "resource-monitor/styles/resource-monitor.css",
-      "line": 592,
-      "selector": ".rm-process-error, .rm-warning-line",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "resource-monitor/styles/resource-monitor.css",
-      "line": 721,
-      "selector": ".rm-partial-pill",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "resource-monitor/styles/resource-monitor.css",
-      "line": 778,
-      "selector": ".rm-filter-pid-error",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "shared/styles/external-link-confirm.css",
-      "line": 105,
-      "selector": ".external-link-btn-open",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     },
     {
@@ -147,12 +81,6 @@
     },
     {
       "file": "sidebar/styles/sidebar.css",
-      "line": 1251,
-      "selector": ".resource-monitor-btn.state-warn, .resource-monitor-btn.state-limit, .resource-monitor-btn.state-unknown",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
       "line": 2330,
       "selector": ".settings-codex-home-preview.warning",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
@@ -161,12 +89,6 @@
       "file": "sidebar/styles/sidebar.css",
       "line": 2447,
       "selector": ".settings-profile-badge.fallback",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 3125,
-      "selector": ".settings-auto-update-table td[data-ac-state=\"ask\"], .settings-auto-update-table td[data-ac-state=\"checking\"], .settings-auto-update-table td[data-ac-state=\"updating\"]",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     },
     {
@@ -225,32 +147,8 @@
     },
     {
       "file": "sidebar/styles/sidebar.css",
-      "line": 3760,
-      "selector": ".session-context-error",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 3881,
-      "selector": ".session-context-title-error",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 3984,
-      "selector": ".session-context-task-icon",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
       "line": 4468,
       "selector": ".workgroup-group-rail-button .workgroup-group-rail-raise-hand",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 4506,
-      "selector": ".workgroup-group-rail-error",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     },
     {
@@ -279,68 +177,8 @@
     },
     {
       "file": "sidebar/styles/sidebar.css",
-      "line": 5300,
-      "selector": ".agent-profile-warning-strip.visible",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 5305,
-      "selector": ".agent-profile-token.warn",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 6036,
-      "selector": ".agent-profile-step.yellow",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 6087,
-      "selector": ".agent-comparison-summary-value.fallback",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
       "line": 6131,
       "selector": ".agent-comparison-table-head",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 6208,
-      "selector": ".agent-comparison-status.fallback",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 6394,
-      "selector": ".workgroup-groups-nonstop-warning",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 6400,
-      "selector": ".workgroup-groups-nonstop-hint",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 6473,
-      "selector": ".workgroup-groups-errors",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 6526,
-      "selector": ".archived-projects-warning",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 6919,
-      "selector": ".project-filter-error",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     },
     {
@@ -383,12 +221,6 @@
       "file": "sidebar/styles/sidebar.css",
       "line": 7553,
       "selector": ".ac-discovery-badge.disabled",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 7574,
-      "selector": ".project-load-status[data-ac-state=\"error\"] .ac-empty-hint",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     },
     {
@@ -512,21 +344,9 @@
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     },
     {
-      "file": "sidebar/styles/sidebar.css",
-      "line": 9976,
-      "selector": ".tpl-agency-install-error",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
       "file": "terminal/styles/terminal.css",
       "line": 316,
       "selector": ".workgroup-task-error",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "terminal/styles/terminal.css",
-      "line": 390,
-      "selector": ".quit-confirm-btn-cancel",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     },
     {
@@ -551,24 +371,6 @@
       "file": "terminal/styles/terminal.css",
       "line": 694,
       "selector": ".status-bar-btn-clear:hover",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "watchers/styles/watchers.css",
-      "line": 164,
-      "selector": ".watchers-banner",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "watchers/styles/watchers.css",
-      "line": 187,
-      "selector": ".watchers-note-degraded",
-      "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
-    },
-    {
-      "file": "watchers/styles/watchers.css",
-      "line": 404,
-      "selector": ".watchers-degraded",
       "reason": "#2744 pending: fixed in phase B, C or D of epic 2744."
     }
   ]
