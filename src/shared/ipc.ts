@@ -47,6 +47,7 @@ import type {
   AgentInstallStateChanged,
   CodingAgentEnv,
   CodingAgentDefinition,
+  CodingAgentWelcomeStatus,
   CatalogReport,
   ReseedResult,
   CodingAgentProfilesConfig,
@@ -377,6 +378,9 @@ export const PtyAPI = {
 export const CodingAgentsAPI = {
   getCatalog: () =>
     transport.invoke<CodingAgentDefinition[]>("get_coding_agent_catalog"),
+
+  welcomeStatus: (): Promise<CodingAgentWelcomeStatus[]> =>
+    transport.invoke<CodingAgentWelcomeStatus[]>("get_coding_agent_welcome_status"),
 
   getCatalogReport: () =>
     transport.invoke<CatalogReport>("get_coding_agent_catalog_report"),

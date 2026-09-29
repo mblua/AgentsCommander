@@ -1,4 +1,9 @@
-import type { AgentConfig, CodingAgentDefinition } from "./types";
+import type {
+  AgentConfig,
+  CodingAgentDefinition,
+  CodingAgentTestedLevel,
+  CodingAgentWelcomeStatus,
+} from "./types";
 
 // Mirror of the ENABLED rows of `BUILTIN_AGENT_SUPPORT`
 // (`src-tauri/src/config/coding_agents_catalog.rs`), in `agents.default.json`
@@ -47,6 +52,39 @@ export function definitionToSeed(def: CodingAgentDefinition): Omit<AgentConfig, 
     seed.configSeed = def.configSeed;
   }
   return seed;
+}
+
+const TESTED_LEVEL_RANK: Record<CodingAgentTestedLevel, number> = { high: 0, medium: 1, low: 2 };
+const NO_LEVEL_RANK = 3;
+
+/** #2736 - Welcome order: installed first, then High > Medium > Low > no level,
+ *  then catalog order. "Custom Agent" is NOT passed here; the caller appends it
+ *  last. A key with no status row is treated as not installed with no level. */
+export function compareWelcomeAgents(
+  a: CodingAgentDefinition,
+  b: CodingAgentDefinition,
+  status: Map<string, CodingAgentWelcomeStatus>,
+  catalogIndex: Map<string, number>,
+): number {
+  const rowA = status.get(a.key);
+  const rowB = status.get(b.key);
+  const installedA = rowA?.installed ? 0 : 1;
+  const installedB = rowB?.installed ? 0 : 1;
+  if (installedA !== installedB) return installedA - installedB;
+  const levelA = rowA?.testedLevel ? TESTED_LEVEL_RANK[rowA.testedLevel] : NO_LEVEL_RANK;
+  const levelB = rowB?.testedLevel ? TESTED_LEVEL_RANK[rowB.testedLevel] : NO_LEVEL_RANK;
+  if (levelA !== levelB) return levelA - levelB;
+  return (catalogIndex.get(a.key) ?? 0) - (catalogIndex.get(b.key) ?? 0);
+}
+
+/** #2736 - returns a NEW array in Welcome order; never mutates `catalog`. */
+export function sortWelcomeAgents(
+  catalog: CodingAgentDefinition[],
+  status: CodingAgentWelcomeStatus[],
+): CodingAgentDefinition[] {
+  const statusByKey = new Map(status.map((row) => [row.key, row]));
+  const catalogIndex = new Map(catalog.map((def, index) => [def.key, index]));
+  return [...catalog].sort((a, b) => compareWelcomeAgents(a, b, statusByKey, catalogIndex));
 }
 
 let idCounter = 0;

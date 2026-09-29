@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { FALLBACK_CODING_AGENTS, definitionToSeed } from "./agent-presets";
-import type { CodingAgentDefinition } from "./types";
+import {
+  FALLBACK_CODING_AGENTS,
+  compareWelcomeAgents,
+  definitionToSeed,
+  sortWelcomeAgents,
+} from "./agent-presets";
+import type { CodingAgentDefinition, CodingAgentWelcomeStatus } from "./types";
 
 // #769 — second copy of the backend's ENABLED built-ins
 // (`src-tauri/resources/coding-agents/agents.default.json`). This is the FE half
@@ -125,6 +130,9 @@ describe("definitionToSeed (#769)", () => {
     // persisted agent.
     expect("updateCommands" in seed).toBe(false);
     expect("autoUpdate" in seed).toBe(false);
+    // #2736: installCommands is catalog-only too.
+    const withInstall = definitionToSeed({ ...bare, installCommands: { default: "npm i -g bare" } });
+    expect("installCommands" in withInstall).toBe(false);
   });
 
   it("#1482: the antigravity row seeds the agy command with AGENTS.md", () => {
@@ -134,5 +142,84 @@ describe("definitionToSeed (#769)", () => {
       command: "agy",
       instructionsFilename: "AGENTS.md",
     });
+  });
+});
+
+function welcomeDef(key: string): CodingAgentDefinition {
+  return {
+    key,
+    label: key,
+    description: key,
+    color: "#000000",
+    command: key,
+    envs: [],
+    isolatedHome: false,
+    removable: true,
+    updateCommands: [],
+    autoUpdate: false,
+  };
+}
+
+function row(
+  key: string,
+  installed: boolean,
+  testedLevel: CodingAgentWelcomeStatus["testedLevel"],
+): CodingAgentWelcomeStatus {
+  return { key, installed, testedLevel, installCommand: null };
+}
+
+function keysOf(defs: CodingAgentDefinition[]): string[] {
+  return defs.map((def) => def.key);
+}
+
+describe("Welcome order (#2736)", () => {
+  it("compareWelcomeAgents_2736_puts_installed_first", () => {
+    const lowInstalled = welcomeDef("low-installed");
+    const highMissing = welcomeDef("high-missing");
+    const status = new Map([
+      ["low-installed", row("low-installed", true, "low")],
+      ["high-missing", row("high-missing", false, "high")],
+    ]);
+    const index = new Map([["high-missing", 0], ["low-installed", 1]]);
+    expect(compareWelcomeAgents(lowInstalled, highMissing, status, index)).toBeLessThan(0);
+    expect(compareWelcomeAgents(highMissing, lowInstalled, status, index)).toBeGreaterThan(0);
+  });
+
+  it("compareWelcomeAgents_2736_orders_high_medium_low_then_no_level", () => {
+    const catalog = ["none", "low", "medium", "high"].map(welcomeDef);
+    const status = [
+      row("none", false, null),
+      row("low", false, "low"),
+      row("medium", false, "medium"),
+      row("high", false, "high"),
+    ];
+    expect(keysOf(sortWelcomeAgents(catalog, status))).toEqual(["high", "medium", "low", "none"]);
+  });
+
+  it("compareWelcomeAgents_2736_uses_catalog_order_as_the_tie_break", () => {
+    const catalog = ["second", "first"].map(welcomeDef);
+    const status = [row("first", false, "high"), row("second", false, "high")];
+    expect(keysOf(sortWelcomeAgents(catalog, status))).toEqual(["second", "first"]);
+    const statusMap = new Map(status.map((r) => [r.key, r]));
+    const index = new Map([["second", 0], ["first", 1]]);
+    expect(compareWelcomeAgents(catalog[0], catalog[1], statusMap, index)).toBeLessThan(0);
+  });
+
+  it("sortWelcomeAgents_2736_does_not_mutate_its_input", () => {
+    const catalog = ["b", "a"].map(welcomeDef);
+    const snapshot = [...catalog];
+    const result = sortWelcomeAgents(catalog, [row("a", true, "high")]);
+    expect(keysOf(result)).toEqual(["a", "b"]);
+    expect(result).not.toBe(catalog);
+    expect(catalog).toEqual(snapshot);
+    expect(catalog[0]).toBe(snapshot[0]);
+    expect(catalog[1]).toBe(snapshot[1]);
+  });
+
+  it("sortWelcomeAgents_2736_keeps_a_key_with_no_status_row_after_low", () => {
+    const catalog = ["unknown", "low"].map(welcomeDef);
+    // "ghost" is a status row with no catalog entry: ignored.
+    const status = [row("low", false, "low"), row("ghost", true, "high")];
+    expect(keysOf(sortWelcomeAgents(catalog, status))).toEqual(["low", "unknown"]);
   });
 });

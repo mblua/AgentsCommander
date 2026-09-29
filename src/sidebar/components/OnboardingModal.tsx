@@ -35,6 +35,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
       title={WELCOME_TITLE}
       message={WELCOME_MESSAGE}
       ariaLabel="Set up your first Coding Agent"
+      showInstallStatus={true}
       onCancel={() => void dismissAndClose()}
       onBeforeSave={withDismissal}
       onClose={props.onClose}
