@@ -109,6 +109,8 @@ file; the wordmark is set in Geist Bold at runtime in marketing assets.
 | `src-tauri/icons/android/`, `src-tauri/icons/ios/` | Mobile bundles, generated. |
 | `src-tauri/icons/icon.svg` | **Stale.** This file is an old portal-arch design from the pre-rename era. Do **not** use it. PR tracking its removal: see issues. |
 
+Desktop wallpapers built from the mark live in `docs/assets/wallpapers/`.
+
 ### Do
 
 - Use `icon.png` (or one of the sized PNGs) for any new asset — README hero,
