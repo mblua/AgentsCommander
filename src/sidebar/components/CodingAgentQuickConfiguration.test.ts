@@ -2062,5 +2062,52 @@ describe("CodingAgentQuickConfiguration", () => {
 
       dispose();
     });
+
+    it("install_2736_a_refresh_that_keeps_the_agent_keeps_its_failure", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+      outputToggle("codex")!.click();
+      await settle();
+      const text = outputBox("codex")!.textContent;
+
+      await refreshCatalog(true);
+
+      expect(failedLine("codex")?.textContent).toBe("Install failed.");
+      expect(outputToggle("codex")?.getAttribute("aria-expanded")).toBe("true");
+      expect(outputBox("codex")?.textContent).toBe(text);
+
+      dispose();
+    });
+
+    it("install_2736_the_mid_refresh_window_does_not_lose_the_state", async () => {
+      const dispose = await mountReady();
+      await failInstall("codex", CODEX_CMD);
+      outputToggle("codex")!.click();
+      await settle();
+      const text = outputBox("codex")!.textContent;
+
+      let resolveReport!: (value: CatalogReport) => void;
+      const pendingReport = new Promise<CatalogReport>((resolve) => {
+        resolveReport = resolve;
+      });
+      vi.mocked(CodingAgentsAPI.getCatalogReport).mockReturnValueOnce(pendingReport);
+      const refreshing = codingAgentsStore.refresh();
+      await settle();
+
+      // The window was really entered: loading, and the row unmounted.
+      expect(byTestId("onboarding.catalog.loading")).not.toBeNull();
+      expect(card("codex")).toBeNull();
+
+      resolveReport(report({ catalog: installCatalog() }));
+      await refreshing;
+      await settle();
+
+      expect(card("codex")).not.toBeNull();
+      expect(failedLine("codex")?.textContent).toBe("Install failed.");
+      expect(outputToggle("codex")?.getAttribute("aria-expanded")).toBe("true");
+      expect(outputBox("codex")?.textContent).toBe(text);
+
+      dispose();
+    });
   });
 });

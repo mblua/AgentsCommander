@@ -208,17 +208,11 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   };
 
   const inCatalog = (key: string) => codingAgentsStore.catalog().some((def) => def.key === key);
-  // Drops failure state for keys the catalog does not hold now. A refresh empties
-  // the catalog first, so every refresh clears it. `installing` is the install
-  // gate and is left alone: a real install may still be running.
-  const pruneInstallState = () => {
-    setInstallFailed((set) => new Set([...set].filter(inCatalog)));
-    setExpandedOutput((set) => new Set([...set].filter(inCatalog)));
-    setInstallOutput((map) => new Map([...map].filter(([key]) => inCatalog(key))));
-  };
 
   const handleInstallFinished = (payload: CodingAgentInstallFinished) => {
     setInstalling((set) => withoutKey(set, payload.key));
+    // An event for an agent the catalog no longer holds stores nothing.
+    if (!inCatalog(payload.key)) return;
     if (payload.ok) {
       // The clears unmount the failure block at once; hand focus to the row's
       // Install button first so the status publish still sees a focused row.
@@ -253,8 +247,22 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     observedGeneration = current;
     setSelectedPreset(null);
     setSelectionGeneration(null);
-    pruneInstallState();
     if (props.showInstallStatus) void loadWelcomeStatus();
+  });
+
+  // Failure state exists only for keys the loaded catalog holds. Prunes only on
+  // the loaded false -> true edge: the store empties the catalog before it drops
+  // `loaded`, so a mid-refresh run must not prune. A refresh that keeps an agent
+  // keeps its failure. `installing` is the install gate and is left alone.
+  let observedLoaded = codingAgentsStore.loaded();
+  createEffect(() => {
+    const current = codingAgentsStore.loaded();
+    const settled = current && !observedLoaded;
+    observedLoaded = current;
+    if (!settled) return;
+    setInstallFailed((set) => new Set([...set].filter(inCatalog)));
+    setExpandedOutput((set) => new Set([...set].filter(inCatalog)));
+    setInstallOutput((map) => new Map([...map].filter(([key]) => inCatalog(key))));
   });
 
   const isCustom = () => selectedPreset() === "custom";

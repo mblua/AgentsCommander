@@ -9913,7 +9913,7 @@ html.light-theme .onboarding-card.selected {
   overflow-wrap: anywhere;
   min-width: 0;
   margin: 0;
-  font-family: var(--font-mono);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
 }
 
 .onboarding-custom-fields {
