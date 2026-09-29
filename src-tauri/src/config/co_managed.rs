@@ -198,6 +198,60 @@ pub fn globally_available(globally_enabled: bool, api_key: &str) -> bool {
     globally_enabled && !api_key.trim().is_empty()
 }
 
+/// #2756 U2a: whether Co-managed can run a reader globally. Only the switch;
+/// the key is a `Ready` input, not a capture input. `globally_available`
+/// keeps serving routing unchanged.
+pub fn globally_capturable(globally_enabled: bool) -> bool {
+    globally_enabled
+}
+
+/// #2756 U2a: whether this session may hold a reader and keep a candidate.
+/// Exactly the first four checks of `effective_state`, from the same source;
+/// it never reads the key or the catalog.
+pub fn capturable(
+    room_root: &Path,
+    globally_enabled: bool,
+    is_orchestrator: bool,
+    capture_supported: bool,
+) -> bool {
+    capture_prefix(
+        room_root,
+        globally_enabled,
+        is_orchestrator,
+        capture_supported,
+        "",
+    )
+    .is_ok()
+}
+
+/// The shared prefix of `capturable` and `effective_state`: switch,
+/// orchestrator, provider, room flag. On success it hands back the config it
+/// loaded so `effective_state` does not read it twice.
+fn capture_prefix(
+    room_root: &Path,
+    globally_enabled: bool,
+    is_orchestrator: bool,
+    capture_supported: bool,
+    agent_label: &str,
+) -> Result<CoManagedConfig, OffReason> {
+    if !globally_enabled {
+        return Err(OffReason::GlobalSwitchOff);
+    }
+    if !is_orchestrator {
+        return Err(OffReason::NotAnOrchestrator);
+    }
+    if !capture_supported {
+        return Err(OffReason::UnsupportedProvider {
+            agent: agent_label.to_string(),
+        });
+    }
+    let config = load_config(room_root);
+    if !config.enabled {
+        return Err(OffReason::RoomFlagOff);
+    }
+    Ok(config)
+}
+
 /// The single answer phase 2 exists to provide. Check order is fixed so the
 /// reason a user sees is stable:
 /// `GlobalSwitchOff` -> `NotAnOrchestrator` -> `UnsupportedProvider` -> `RoomFlagOff` -> `NoApiKey`
@@ -213,29 +267,16 @@ pub fn effective_state(
     capture_supported: bool,
     agent_label: &str,
 ) -> CoManagedState {
-    if !globally_enabled {
-        return CoManagedState::Off {
-            reason: OffReason::GlobalSwitchOff,
-        };
-    }
-    if !is_orchestrator {
-        return CoManagedState::Off {
-            reason: OffReason::NotAnOrchestrator,
-        };
-    }
-    if !capture_supported {
-        return CoManagedState::Off {
-            reason: OffReason::UnsupportedProvider {
-                agent: agent_label.to_string(),
-            },
-        };
-    }
-    let config = load_config(room_root);
-    if !config.enabled {
-        return CoManagedState::Off {
-            reason: OffReason::RoomFlagOff,
-        };
-    }
+    let config = match capture_prefix(
+        room_root,
+        globally_enabled,
+        is_orchestrator,
+        capture_supported,
+        agent_label,
+    ) {
+        Ok(config) => config,
+        Err(reason) => return CoManagedState::Off { reason },
+    };
     if api_key.trim().is_empty() {
         return CoManagedState::Off {
             reason: OffReason::NoApiKey,
