@@ -88,7 +88,7 @@ AC runs Claude Code as a session inside it. So the question is: should you launc
 
 ## Future positioning
 
-A web landing page on `agentscommander.dev` is tracked in [issue #321](https://github.com/mblua/AgentsCommander/issues/321) for after the initial public push.
+A web landing page on `agentscommander.org` is tracked in [issue #321](https://github.com/mblua/AgentsCommander/issues/321) for after the initial public push.
 
 ---
 
