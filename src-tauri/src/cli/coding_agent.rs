@@ -227,17 +227,28 @@ fn run(args: CodingAgentArgs, gui_running: bool) -> i32 {
 
 fn cmd_list() -> Result<(), String> {
     let settings = load_settings_for_cli_strict()?;
+    refuse_unreadable_agents_layer(&settings)?;
     print_json(&settings.agents)
 }
 
 fn cmd_show(a: ShowArgs) -> Result<(), String> {
     let settings = load_settings_for_cli_strict()?;
+    refuse_unreadable_agents_layer(&settings)?;
     let agent = settings
         .agents
         .iter()
         .find(|ag| ag.id == a.id)
         .ok_or_else(|| ops::unknown_agent_id_error(&a.id, &settings.agents))?;
     print_json(agent)
+}
+
+/// #2716 (B3, option C) - an unreadable agents layer is reported as such, never
+/// as an empty list or an unknown id.
+fn refuse_unreadable_agents_layer(settings: &AppSettings) -> Result<(), String> {
+    match settings.agents_layer.unreadable_path() {
+        Some(path) => Err(crate::config::settings::agents_unreadable_cli_error(path)),
+        None => Ok(()),
+    }
 }
 
 /// #1967 P4 - resolve the persisted catalog for a CLI verb. The shared logger
@@ -910,5 +921,33 @@ mod tests {
         use clap::CommandFactory;
         let help = crate::cli::Cli::command().render_help().to_string();
         assert!(help.contains("coding-agent"), "help missing verb: {help}");
+    }
+
+    /// #2716 (B3, option C) E37: `list` and `show` report an unreadable agents
+    /// layer, naming the path, instead of an empty list or an unknown id.
+    #[test]
+    fn an_unreadable_layer_is_not_an_empty_list() {
+        let path = std::path::Path::new("C:/cfg/agents.30.instance.no-git.json");
+        let mut settings = AppSettings {
+            agents_layer: crate::config::settings::AgentsLayerState::Unreadable {
+                path: path.to_path_buf(),
+                reason: "test".to_string(),
+            },
+            ..Default::default()
+        };
+        settings.agents.clear();
+        let refused = refuse_unreadable_agents_layer(&settings).unwrap_err();
+        assert_eq!(
+            refused,
+            crate::config::settings::agents_unreadable_cli_error(path)
+        );
+        assert!(refused.contains(&path.display().to_string()));
+
+        settings.agents_layer = crate::config::settings::AgentsLayerState::Readable;
+        assert!(refuse_unreadable_agents_layer(&settings).is_ok());
+        assert_eq!(
+            ops::unknown_agent_id_error("alpha", &settings.agents),
+            "agent id 'alpha' not found. Available ids: (none)"
+        );
     }
 }

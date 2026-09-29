@@ -8,11 +8,11 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 use crate::config::instance_artifacts::{
-    AGENT_HELP_LOCAL_FILE_NAME, AGENT_HELP_REMOTE_CHECK_FILE_NAME, AGENT_HELP_REMOTE_FILE_NAME,
-    AGENT_HELP_SHIPPED_FILE_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
+    AGENTS_INSTANCE_FILE_NAME, AGENT_HELP_LOCAL_FILE_NAME, AGENT_HELP_REMOTE_CHECK_FILE_NAME,
+    AGENT_HELP_REMOTE_FILE_NAME, AGENT_HELP_SHIPPED_FILE_NAME, BLOCKING_MENUS_LOCAL_FILE_NAME,
     BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
     BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX,
-    SETTINGS_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
+    SETTINGS_FILE_NAME, SETTINGS_LOCAL_OVERRIDE_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -641,6 +641,11 @@ pub struct AppSettings {
     /// writer must restore it from live memory first (plan D14).
     #[serde(skip, default)]
     pub(crate) local_overlay_state: Arc<LocalSettingsOverlay>,
+    /// #2716 (B3, option C) - whether `agents.30.instance.no-git.json` could be read.
+    /// Never serialized, for the same D14 reason as `local_overlay_state`: a client
+    /// draft can never carry or forge it. Set only through `set_agents_layer_state`.
+    #[serde(skip, default)]
+    pub(crate) agents_layer: AgentsLayerState,
     /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
@@ -1321,6 +1326,7 @@ impl Default for AppSettings {
             archived_project_paths: vec![],
             project_path_state: Arc::default(),
             local_overlay_state: Arc::default(),
+            agents_layer: AgentsLayerState::default(),
             sidebar_style: default_sidebar_style(),
             selected_row_rail_width: default_selected_row_rail_width(),
             selected_row_rail_color: default_selected_row_rail_color(),
@@ -2422,6 +2428,350 @@ pub(crate) fn export_blocking_menus_to_local_file(
     true
 }
 
+/// #2716 (B3) - the two top-level groups that live in `agents.30.instance.no-git.json`
+/// instead of the settings file. Serde names, so the file reuses the settings shape.
+const AGENTS_INSTANCE_KEYS: [&str; 2] = ["agents", "codingAgentProfiles"];
+
+/// #2716 (B3) - the agents file sits beside the settings file.
+fn agents_instance_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(AGENTS_INSTANCE_FILE_NAME)
+}
+
+/// #2716 (B3) - `Ok(None)` when the file is absent. A file that is unreadable, is not
+/// a JSON object, or holds a group that does not decode as its `AppSettings` field is
+/// an `Err`: callers keep what they have and never replace it.
+fn read_agents_instance_file(path: &Path) -> Result<Option<Map<String, Value>>, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+    };
+    let map = match serde_json::from_str::<Value>(&contents) {
+        Ok(Value::Object(map)) => map,
+        Ok(_) => return Err(format!("{} is not a JSON object", path.display())),
+        Err(e) => return Err(format!("{} is not valid JSON: {e}", path.display())),
+    };
+    if let Some(agents) = map.get(AGENTS_INSTANCE_KEYS[0]) {
+        serde_json::from_value::<Vec<AgentConfig>>(agents.clone())
+            .map_err(|e| format!("{} holds an undecodable agents array: {e}", path.display()))?;
+    }
+    if let Some(profiles) = map.get(AGENTS_INSTANCE_KEYS[1]) {
+        serde_json::from_value::<CodingAgentProfilesConfig>(profiles.clone()).map_err(|e| {
+            format!(
+                "{} holds an undecodable codingAgentProfiles object: {e}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(Some(map))
+}
+
+/// #2716 (B3) - the groups `object` actually holds, key by key.
+fn agents_instance_groups(object: &Map<String, Value>) -> Map<String, Value> {
+    AGENTS_INSTANCE_KEYS
+        .iter()
+        .filter_map(|key| object.get(*key).map(|v| ((*key).to_string(), v.clone())))
+        .collect()
+}
+
+/// #2716 (B3, option C) - whether the agents file could be read on this load.
+/// `Default` is "readable". Carried on `AppSettings` as a never-serialized field,
+/// like `local_overlay_state`, so no save can write it and no client can forge it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum AgentsLayerState {
+    #[default]
+    Readable,
+    Unreadable {
+        path: PathBuf,
+        reason: String,
+    },
+}
+
+impl AgentsLayerState {
+    /// The agents file's path while the layer is unreadable.
+    pub(crate) fn unreadable_path(&self) -> Option<&Path> {
+        match self {
+            Self::Readable => None,
+            Self::Unreadable { path, .. } => Some(path),
+        }
+    }
+}
+
+/// #2716 (B3, option C) - the CLI's answer: the list is unknown, not empty.
+pub(crate) fn agents_unreadable_cli_error(path: &Path) -> String {
+    format!(
+        "Coding agents are unavailable: AgentsCommander could not read {}. Fix or delete that file and restart.",
+        path.display()
+    )
+}
+
+/// #2716 (B3, option C) - notice 1: the startup dialog, raised by the error log.
+pub(crate) fn agents_unreadable_startup_notice(path: &Path) -> String {
+    format!(
+        "Coding agents are unavailable: AgentsCommander could not read {}. Agent sessions will not start until this file is fixed or deleted. Every other setting is unchanged. While this file is unreadable, changes to your sessions are not saved.",
+        path.display()
+    )
+}
+
+/// #2716 (B3, option C) - notice 3: the error every spawn entry point returns.
+pub(crate) fn agents_unreadable_session_error(path: &Path) -> String {
+    format!(
+        "Cannot start this coding agent: AgentsCommander could not read {}. Fix or delete that file and restart.",
+        path.display()
+    )
+}
+
+/// #2716 (B3, option C) - the directories whose agents file could not be read,
+/// keyed by the settings file's parent. `save_sessions_to_dir` reads it with the
+/// directory it already receives, so a test in its own tempdir is isolated.
+fn agents_unreadable_dirs() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
+    static DIRS: OnceLock<std::sync::Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    DIRS.get_or_init(Default::default)
+}
+
+/// #2716 (B3, option C) - true while the agents file beside `dir`'s settings file
+/// could not be read by the last full load of it.
+pub(crate) fn agents_layer_unreadable_for_dir(dir: &Path) -> bool {
+    agents_unreadable_dirs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(dir)
+}
+
+/// #2716 (B3, option C) - the one setter: the field and the registry change in
+/// the same statement, so they cannot diverge.
+fn set_agents_layer_state(
+    settings: &mut AppSettings,
+    settings_path: &Path,
+    state: AgentsLayerState,
+) {
+    if let Some(dir) = settings_path.parent() {
+        let mut dirs = agents_unreadable_dirs()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match state {
+            AgentsLayerState::Readable => dirs.remove(dir),
+            AgentsLayerState::Unreadable { .. } => dirs.insert(dir.to_path_buf()),
+        };
+    }
+    settings.agents_layer = state;
+}
+
+/// #2716 (B3, option C) - the agents layer's state from the file alone, for the
+/// defaults fallback, where no merge result survives.
+fn agents_layer_state_at(settings_path: &Path) -> AgentsLayerState {
+    let path = agents_instance_path(settings_path);
+    match read_agents_instance_file(&path) {
+        Ok(_) => AgentsLayerState::Readable,
+        Err(reason) => AgentsLayerState::Unreadable { path, reason },
+    }
+}
+
+/// #2716 (B3) - load merge, on the raw base object before the overlay merge: each
+/// group the agents file holds replaces the base object's key. When no source
+/// supplies `agents`, `[]` is inserted, so a deleted or corrupt agents file costs
+/// the agent list and never every other setting. A corrupt file is logged, keeps
+/// the values already in `base`, and returns the unreadable state (option C).
+fn merge_agents_instance_file(settings_path: &Path, base: &mut Value) -> AgentsLayerState {
+    let path = agents_instance_path(settings_path);
+    let state = match read_agents_instance_file(&path) {
+        Ok(None) => AgentsLayerState::Readable,
+        Ok(Some(sidecar)) => {
+            if let Some(object) = base.as_object_mut() {
+                object.extend(agents_instance_groups(&sidecar));
+            }
+            AgentsLayerState::Readable
+        }
+        Err(reason) => {
+            log::error!("{} ({reason})", agents_unreadable_startup_notice(&path));
+            AgentsLayerState::Unreadable { path, reason }
+        }
+    };
+    if let Some(object) = base.as_object_mut() {
+        object
+            .entry(AGENTS_INSTANCE_KEYS[0])
+            .or_insert_with(|| Value::Array(Vec::new()));
+    }
+    state
+}
+
+/// #2716 (B3) - writes the agents file through `<name>.<pid>.<op>.tmp`, synced, then
+/// replaced onto the destination. The temporary is removed on any failure.
+fn write_agents_instance_file(
+    groups: &Map<String, Value>,
+    path: &Path,
+) -> Result<(), SettingsSaveError> {
+    use std::io::Write as _;
+
+    let bytes = serde_json::to_vec_pretty(&Value::Object(groups.clone())).map_err(|source| {
+        SettingsSaveError::json(
+            SettingsSaveStage::Serialize,
+            path,
+            None,
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    })?;
+    let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = path.with_file_name(format!(
+        "{AGENTS_INSTANCE_FILE_NAME}.{}.{op_id}.tmp",
+        std::process::id()
+    ));
+    let io_error = |stage: SettingsSaveStage, source: std::io::Error| {
+        SettingsSaveError::io(
+            stage,
+            path,
+            Some(&tmp_path),
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    };
+    let result = (|| {
+        let mut temporary = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+            .map_err(|e| io_error(SettingsSaveStage::TempCreate, e))?;
+        temporary
+            .write_all(&bytes)
+            .map_err(|e| io_error(SettingsSaveStage::TempWrite, e))?;
+        temporary
+            .sync_all()
+            .map_err(|e| io_error(SettingsSaveStage::TempSync, e))?;
+        drop(temporary);
+        replace_settings_file_atomic(&tmp_path, path)
+            .map_err(|e| io_error(SettingsSaveStage::AtomicReplace, e))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
+}
+
+/// #2716 (B3) - one-shot export of the legacy `agents` and `codingAgentProfiles`
+/// keys still in the settings file. Writes the agents file before anything is
+/// stripped and moves the disk values verbatim; true means "save", and that save
+/// strips the keys. Never overwrites or merges an existing agents file.
+pub(crate) fn export_agents_to_instance_file(
+    settings: &mut AppSettings,
+    settings_path: &Path,
+) -> bool {
+    let legacy = match std::fs::read_to_string(settings_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+    {
+        Some(Value::Object(disk)) => agents_instance_groups(&disk),
+        _ => return false,
+    };
+    if legacy.is_empty() {
+        return false;
+    }
+    let path = agents_instance_path(settings_path);
+    if settings
+        .local_overlay_state
+        .owns_top_level(OVERLAY_KEY_AGENTS)
+    {
+        log::info!(
+            "[settings-migration] #2716 - the overlay {} owns agents; agents and codingAgentProfiles stay in {} and are not exported",
+            settings_path
+                .with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME)
+                .display(),
+            settings_path.display()
+        );
+        return false;
+    }
+    match read_agents_instance_file(&path) {
+        Err(e) => {
+            log::error!("[settings-migration] #2716 - {e}; nothing exported, nothing stripped");
+            false
+        }
+        Ok(Some(_)) => {
+            log::warn!(
+                "[settings-migration] #2716 - {} still carries agents or codingAgentProfiles while {} exists; the agents file wins and is not overwritten",
+                settings_path.display(),
+                path.display()
+            );
+            false
+        }
+        Ok(None) => match write_agents_instance_file(&legacy, &path) {
+            Ok(()) => {
+                log::info!(
+                    "[settings-migration] #2716 - exported agents and codingAgentProfiles to {}",
+                    path.display()
+                );
+                true
+            }
+            Err(e) => {
+                log::error!("[settings-migration] #2716 - {e}; nothing stripped");
+                false
+            }
+        },
+    }
+}
+
+/// #2716 (B3) - the agents-file half of a save, run under the settings lock before
+/// the settings file is written. Returns the groups the agents file now holds, which
+/// are exactly the keys the caller may strip from `out`. `Reconcile` never writes the
+/// caller's groups; `Preserve` writes them except a key the overlay owns.
+fn save_agents_instance_file(
+    settings: &AppSettings,
+    path: &Path,
+    mode: &ProjectWriteMode,
+    disk: Option<&Map<String, Value>>,
+    out: &Map<String, Value>,
+    disk_gate_stage: SettingsSaveStage,
+) -> Result<Map<String, Value>, SettingsSaveError> {
+    let sidecar_path = agents_instance_path(path);
+    let existing = read_agents_instance_file(&sidecar_path).map_err(|e| {
+        SettingsSaveError::io(
+            disk_gate_stage,
+            &sidecar_path,
+            None,
+            std::io::Error::other(e.clone()),
+            SettingsSaveLegacyOutward::DiskRead(format!(
+                "Refusing to overwrite {}: {e}",
+                sidecar_path.display()
+            )),
+        )
+    })?;
+    let existing_groups = existing.as_ref().map(agents_instance_groups);
+    let target = match mode {
+        ProjectWriteMode::Reconcile { .. } => match existing_groups {
+            Some(groups) => return Ok(groups),
+            None => disk.map(agents_instance_groups).unwrap_or_default(),
+        },
+        ProjectWriteMode::Preserve => {
+            let mut groups = existing_groups.clone().unwrap_or_default();
+            // `out` is read after `write_identity_rows` and `restore_base`, so
+            // the #2450 identity rows and the base values reach the agents file.
+            for key in AGENTS_INSTANCE_KEYS {
+                if settings.local_overlay_state.owns_top_level(key) {
+                    continue;
+                }
+                let value = match out.get(key) {
+                    Some(value) => value.clone(),
+                    None if key == AGENTS_INSTANCE_KEYS[0] => {
+                        serialize_settings_component(&settings.agents, &sidecar_path)?
+                    }
+                    None => serialize_settings_component(
+                        &settings.coding_agent_profiles,
+                        &sidecar_path,
+                    )?,
+                };
+                groups.insert(key.to_string(), value);
+            }
+            if existing_groups.as_ref() == Some(&groups) {
+                return Ok(groups);
+            }
+            groups
+        }
+    };
+    if !target.is_empty() {
+        write_agents_instance_file(&target, &sidecar_path)?;
+    }
+    Ok(target)
+}
+
 /// The tree's only executable-stem rule, and the byte-for-byte twin of
 /// `executableTokenBasename` in `src/shared/profile-utils.ts`. It deliberately does
 /// not use `std::path::Path`, which ignores `\` off Windows (#2430).
@@ -2522,6 +2872,11 @@ fn parse_settings_json(
     let mut value: Value = serde_json::from_str(contents)
         .map_err(|e| format!("Failed to parse settings file: {}", e))?;
     let legacy_profiles = value.as_object().is_some_and(legacy_profiles_shape_present);
+    // #2716 (B3): the agents file is layer 30, under the layer-50 overlay, so it is
+    // merged into the raw base object here: after the detection above, so
+    // `legacy_profiles` stays a property of the settings file, and before the
+    // `pre_merge` clone, so the undecodable fallback carries its groups.
+    let agents_layer = settings_path.map(|p| merge_agents_instance_file(p, &mut value));
     // #1737 (D21): the clone must be taken BEFORE the merge, because the merge is
     // in place and the overlay's presence is not known until it returns. Gated on
     // `settings_path.is_some()`, which is true on all three production loaders and
@@ -2548,8 +2903,17 @@ fn parse_settings_json(
     let base = production_instance_base();
     let state =
         apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
-    let decoded: Result<AppSettings, String> = serde_json::from_value(value)
-        .map_err(|e| format!("Failed to deserialize settings from {source}: {e}"));
+    // #2716 (B3, option C): with the agents file unreadable, the decode error also
+    // names it, so the dialog does not name only the intact settings file.
+    let unreadable_agents_file = agents_layer
+        .as_ref()
+        .and_then(AgentsLayerState::unreadable_path)
+        .map(|p| format!("; the agents file {} could not be read", p.display()))
+        .unwrap_or_default();
+    let decode_error = |e: serde_json::Error| {
+        format!("Failed to deserialize settings from {source}: {e}{unreadable_agents_file}")
+    };
+    let decoded: Result<AppSettings, String> = serde_json::from_value(value).map_err(decode_error);
     // #1737 (D21): a merged value that fails to decode falls back to the BASE
     // value, never to defaults. One wrong-typed leaf in settings.local.json must
     // not replace a valid base configuration.
@@ -2561,8 +2925,7 @@ fn parse_settings_json(
                 base.as_deref(),
                 &projects::FsCandidateResolver,
             );
-            let settings: AppSettings = serde_json::from_value(unmerged)
-                .map_err(|e| format!("Failed to deserialize settings from {source}: {e}"))?;
+            let settings: AppSettings = serde_json::from_value(unmerged).map_err(decode_error)?;
             overlay = overlay.into_undecodable(reason);
             (settings, base_state)
         }
@@ -2575,6 +2938,9 @@ fn parse_settings_json(
     finalize_agent_order(&mut settings.agents);
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
+    if let (Some(p), Some(state)) = (settings_path, agents_layer) {
+        set_agents_layer_state(&mut settings, p, state);
+    }
     Ok((settings, legacy_profiles))
 }
 
@@ -3511,7 +3877,14 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
                     }
                     Err(e) => {
                         log::error!("{}", e);
-                        default_settings_with_overlay(path, &path.to_string_lossy())
+                        // #2716 (B3, option C) - write site three: the decode failed,
+                        // so the mark the merge computed was lost with the value;
+                        // without this the defaults would read as a valid empty list.
+                        let mut defaults =
+                            default_settings_with_overlay(path, &path.to_string_lossy());
+                        let state = agents_layer_state_at(path);
+                        set_agents_layer_state(&mut defaults, path, state);
+                        defaults
                     }
                 }
             }
@@ -3578,6 +3951,9 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
     let mut needs_save = issue_248_migrated || legacy_profiles_detected;
     if export_blocking_menus_to_local_file(&mut settings, path) {
         log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
+        needs_save = true;
+    }
+    if export_agents_to_instance_file(&mut settings, path) {
         needs_save = true;
     }
     if adopt_orphaned_profiles(&mut settings) {
@@ -3786,34 +4162,38 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
 /// then; if you add a new in-memory migration to `load_settings`, mirror
 /// it here too.
 pub fn load_settings_for_cli() -> AppSettings {
-    let path = match settings_path() {
-        Some(p) => p,
+    match settings_path() {
+        Some(path) => load_settings_for_cli_from_path(&path),
         None => {
             log::warn!("[cli] Could not determine home directory, using defaults");
-            return AppSettings::default();
+            AppSettings::default()
         }
-    };
+    }
+}
 
+/// #2716 (B3) - `load_settings_for_cli` at an explicit path, so a test can drive
+/// the CLI loader over a tempdir.
+fn load_settings_for_cli_from_path(path: &Path) -> AppSettings {
     let mut settings = if !path.exists() {
         log::info!("[cli] No settings file found at {:?}, using defaults", path);
-        default_settings_with_overlay(&path, &path.to_string_lossy())
+        default_settings_with_overlay(path, &path.to_string_lossy())
     } else {
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(contents) => {
-                match parse_settings_json(&contents, &path.to_string_lossy(), Some(&path)) {
+                match parse_settings_json(&contents, &path.to_string_lossy(), Some(path)) {
                     Ok((s, _migrated)) => {
                         log::debug!("[cli] Loaded settings from {:?}", path);
                         s
                     }
                     Err(e) => {
                         log::error!("[cli] {}", e);
-                        default_settings_with_overlay(&path, &path.to_string_lossy())
+                        default_settings_with_overlay(path, &path.to_string_lossy())
                     }
                 }
             }
             Err(e) => {
                 log::error!("[cli] Failed to read settings file: {}", e);
-                default_settings_with_overlay(&path, &path.to_string_lossy())
+                default_settings_with_overlay(path, &path.to_string_lossy())
             }
         }
     };
@@ -3872,22 +4252,28 @@ pub fn load_settings_for_cli() -> AppSettings {
 /// Keep the in-memory migration tail in lockstep with `load_settings_for_cli`
 /// (see the note above that function).
 pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
-    let mut settings = match settings_path() {
+    load_settings_for_cli_strict_from_path(settings_path().as_deref())
+}
+
+/// #2716 (B3) - `load_settings_for_cli_strict` at an explicit path, so a test can
+/// drive the strict CLI loader over a tempdir.
+fn load_settings_for_cli_strict_from_path(path: Option<&Path>) -> Result<AppSettings, String> {
+    let mut settings = match path {
         // No home dir to locate settings.json: nothing to protect, and a later
         // save would fail to resolve the dir anyway. Start from default.
         None => AppSettings::default(),
         Some(path) if !path.exists() => {
-            default_settings_with_overlay(&path, &path.to_string_lossy())
+            default_settings_with_overlay(path, &path.to_string_lossy())
         }
         Some(path) => {
-            let contents = std::fs::read_to_string(&path).map_err(|e| {
+            let contents = std::fs::read_to_string(path).map_err(|e| {
                 format!(
                     "settings.json exists at {} but could not be read ({e}); refusing to modify it - fix or remove the file first",
                     path.display()
                 )
             })?;
             let (s, _migrated) =
-                parse_settings_json(&contents, &path.to_string_lossy(), Some(&path)).map_err(|e| {
+                parse_settings_json(&contents, &path.to_string_lossy(), Some(path)).map_err(|e| {
                     format!(
                         "settings.json exists but could not be parsed ({e}); refusing to modify it - fix or remove the file first"
                     )
@@ -5327,6 +5713,9 @@ fn validate_non_project_settings(disk: &Map<String, Value>) -> Result<(), String
         root.remove(FIELD_PROJECT_PATH_REL);
         root.remove(FIELD_PROJECT_PATHS_REL);
         root.remove(FIELD_ARCHIVED_REL);
+        // #2716 (B3) trap four: `agents` lives in the agents file once migrated.
+        root.entry(AGENTS_INSTANCE_KEYS[0])
+            .or_insert_with(|| Value::Array(Vec::new()));
     }
     serde_json::from_value::<AppSettings>(probe)
         .map(|_| ())
@@ -5862,6 +6251,14 @@ fn save_settings_value_locked(
     write_identity_rows(&mut out, &settings.local_overlay_state);
     settings.local_overlay_state.restore_base(&mut out);
 
+    // #2716 (B3): the agents file is written first; only the keys it now holds
+    // leave `out`, in both modes. A failure returns before the settings write.
+    let agents_groups =
+        save_agents_instance_file(settings, path, &mode, disk.as_ref(), &out, disk_gate_stage)?;
+    for key in agents_groups.keys() {
+        out.remove(key);
+    }
+
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
     // written verbatim from the live settings/disk, matching pre-#1077 behavior.
@@ -5874,6 +6271,15 @@ fn save_settings_value_locked(
     }
 
     let mut written_value = value;
+    // #2716 (B3): the re-decode sees what a load would, the agents file's groups
+    // in the base object, under the overlay reapplied below.
+    // Like the load merge, `[]` stands in when neither file holds `agents`.
+    if let Value::Object(object) = &mut written_value {
+        object.extend(agents_groups);
+        object
+            .entry(AGENTS_INSTANCE_KEYS[0])
+            .or_insert_with(|| Value::Array(Vec::new()));
+    }
     // #1737: disk holds the base, memory holds the effective value. Without this the
     // caller would adopt base values for every overlay-owned key on the first save.
     if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
@@ -6166,6 +6572,7 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
     let mut candidate = match disk {
         Some(object) => decode_disk_settings_for_terminal_snapshot_cas(
             object,
+            path,
             &current.local_overlay_state,
             &effective,
         )
@@ -6211,11 +6618,16 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
 
 fn decode_disk_settings_for_terminal_snapshot_cas(
     object: Map<String, Value>,
+    settings_path: &Path,
     overlay: &LocalSettingsOverlay,
     effective: &Map<String, Value>,
 ) -> Result<AppSettings, String> {
     let base = production_instance_base();
     let mut value = Value::Object(object);
+    // #2716 (B3) 4.2b: the same merge as `parse_settings_json`, in the same layer
+    // order, under the overlay reapplied below. The decoded value is adopted and
+    // written, so without it an empty `agents` would reach the agents file.
+    let agents_layer = merge_agents_instance_file(settings_path, &mut value);
     // #1737 (D17): re-apply the overlay to the disk-decoded object, so the
     // `disk_gate == enabled` early return does not hand the caller base values.
     // Pinned before the project decode, and therefore strictly before
@@ -6228,6 +6640,7 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     let mut settings: AppSettings =
         serde_json::from_value(value).map_err(|_| "settings_invalid".to_string())?;
     settings.project_path_state = Arc::new(state);
+    set_agents_layer_state(&mut settings, settings_path, agents_layer);
     // #2306 P1 - finalize before the caller's no-op return or direct write, so
     // both the returned and the written snapshot carry contiguous ordinals.
     // Overlay values stay in memory: `save_settings_value_locked` restores the
@@ -9193,7 +9606,7 @@ mod tests {
             LEGACY_PROFILES_SETTINGS_FIXTURE
         );
 
-        let saved_raw = std::fs::read_to_string(&path).unwrap();
+        let saved_raw = std::fs::read_to_string(super::agents_instance_path(&path)).unwrap();
         let saved: serde_json::Value = serde_json::from_str(&saved_raw).unwrap();
         assert_eq!(saved["codingAgentProfiles"]["schemaVersion"], 2);
         assert!(saved["codingAgentProfiles"].get("profileSlots").is_some());
@@ -9253,7 +9666,7 @@ mod tests {
 
         super::save_settings_with_project_paths_to_path(&settings, &path).unwrap();
 
-        let saved_raw = std::fs::read_to_string(&path).unwrap();
+        let saved_raw = std::fs::read_to_string(super::agents_instance_path(&path)).unwrap();
         let saved: serde_json::Value = serde_json::from_str(&saved_raw).unwrap();
         assert!(saved["codingAgentProfiles"].get("letters").is_some());
         assert!(!temp
@@ -9424,8 +9837,10 @@ mod tests {
             reloaded.coding_agent_profiles.profile_labels_by_agent["codex"]["B"],
             "Second"
         );
-        let raw: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(super::agents_instance_path(&path)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             raw["codingAgentProfiles"]["profileLabelsByAgent"]["codex"]["A"],
             "First"
@@ -10867,8 +11282,7 @@ mod tests {
         let written =
             super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let reloaded: AppSettings = serde_json::from_str(&contents).unwrap();
+        let reloaded: AppSettings = super::load_settings_from_path(&path);
         assert_eq!(reloaded.project_paths, vec![a.clone(), x.clone()]); // X preserved, not clobbered
         assert_eq!(reloaded.project_path.as_deref(), Some(a.as_str()));
         assert_eq!(reloaded.sidebar_style, "deep-space"); // unrelated field persisted
@@ -10930,7 +11344,7 @@ mod tests {
             super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
         let reloaded: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&path));
         assert_eq!(reloaded.archived_project_paths, vec![archived_a.clone()]);
         assert_eq!(written.archived_project_paths, vec![archived_a.clone()]);
     }
@@ -10952,7 +11366,7 @@ mod tests {
             super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
         let reloaded: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            crate::config::settings::load_settings_from_path(std::path::Path::new(&path));
         assert_eq!(written.project_paths, vec![a.clone()]);
         assert_eq!(written.project_path.as_deref(), Some(a.as_str()));
         // Disk had no archived key → materialize the caller's live archived list.
@@ -12544,18 +12958,22 @@ mod tests {
             let path = seed(temp.path(), Some(&base), None);
             // Normalize the file to today's full shape, then strip the new key.
             load_save(&path);
-            let mut old = disk_object(&path);
+            let mut old = disk_object(&crate::config::settings::agents_instance_path(&path));
             old["codingAgentProfiles"]
                 .as_object_mut()
                 .unwrap()
                 .remove("identityByAgent")
                 .expect("the save writes identityByAgent");
-            std::fs::write(&path, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+            std::fs::write(
+                crate::config::settings::agents_instance_path(&path),
+                serde_json::to_string_pretty(&old).unwrap(),
+            )
+            .unwrap();
 
             let settings = load_settings_from_path(&path);
             assert_eq!(a_command(&settings, "n").as_deref(), Some(""));
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
-            let mut written = disk_object(&path);
+            let mut written = disk_object(&crate::config::settings::agents_instance_path(&path));
             let rows = written["codingAgentProfiles"]
                 .as_object_mut()
                 .unwrap()
@@ -12601,7 +13019,7 @@ mod tests {
             .unwrap();
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
 
-            let object = disk_object(&path);
+            let object = disk_object(&crate::config::settings::agents_instance_path(&path));
             assert_eq!(object["agents"], json!([]));
             assert_eq!(
                 object["codingAgentProfiles"]["profilesByAgent"]["agent_1_aaaaaa"]["A"],
@@ -12621,7 +13039,7 @@ mod tests {
             );
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
 
-            let object = disk_object(&path);
+            let object = disk_object(&crate::config::settings::agents_instance_path(&path));
             let profiles = &object["codingAgentProfiles"];
             assert_eq!(
                 profiles["profilesByAgent"]["agent_2_bbbbbb"]["A"],
@@ -12716,7 +13134,8 @@ mod tests {
             });
             let path = seed(temp.path(), Some(&base), None);
             load_save(&path);
-            let profiles = &disk_object(&path)["codingAgentProfiles"];
+            let profiles = &disk_object(&crate::config::settings::agents_instance_path(&path))
+                ["codingAgentProfiles"];
             assert_eq!(
                 profiles["profilesByAgent"]["o"],
                 base["codingAgentProfiles"]["profilesByAgent"]["o"]
@@ -12772,7 +13191,9 @@ mod tests {
             let settings = load_settings_from_path(&path);
             assert_eq!(settings.agents[0].command, "codex");
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
-            let row = disk_object(&path)["codingAgentProfiles"]["identityByAgent"]["a"].clone();
+            let row = disk_object(&crate::config::settings::agents_instance_path(&path))
+                ["codingAgentProfiles"]["identityByAgent"]["a"]
+                .clone();
             assert_eq!(row, json!(identity_of("a", "Agent", "claude")));
             assert_ne!(row, json!(identity_of("a", "Agent", "codex")));
         }
@@ -12875,7 +13296,8 @@ mod tests {
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
             std::fs::remove_file(temp.path().join("settings.50.personal.no-git.json")).unwrap();
 
-            let profiles = &disk_object(&path)["codingAgentProfiles"];
+            let profiles = &disk_object(&crate::config::settings::agents_instance_path(&path))
+                ["codingAgentProfiles"];
             assert_eq!(
                 profiles["profilesByAgent"]["o"]["A"],
                 cell_value("--special")
@@ -12893,7 +13315,8 @@ mod tests {
             let path = seed(temp.path(), Some(&profile_only_overlay_base()), None);
             let settings = load_settings_from_path(&path);
             assert_eq!(a_command(&settings, "n").as_deref(), Some("--special"));
-            let profiles = &disk_object(&path)["codingAgentProfiles"];
+            let profiles = &disk_object(&crate::config::settings::agents_instance_path(&path))
+                ["codingAgentProfiles"];
             assert_eq!(
                 profiles["profilesByAgent"]["n"]["A"],
                 cell_value("--special")
@@ -13372,6 +13795,18 @@ mod tests {
             let raw = std::fs::read_to_string(&path).unwrap();
             let mut value: Value = serde_json::from_str(&raw).unwrap();
             let object = value.as_object_mut().unwrap();
+            // #2716 (B3) 6.1: the two groups live in the agents file; a missing or
+            // unparseable one panics, so the control never goes vacuous on them.
+            let sidecar_raw = std::fs::read_to_string(super::super::agents_instance_path(&path))
+                .expect("S6: the agents file is missing");
+            let sidecar: Map<String, Value> =
+                serde_json::from_str(&sidecar_raw).expect("S6: the agents file does not parse");
+            for key in super::super::AGENTS_INSTANCE_KEYS {
+                let group = sidecar
+                    .get(key)
+                    .unwrap_or_else(|| panic!("S6: the agents file does not hold {key}"));
+                object.insert(key.to_string(), group.clone());
+            }
             for key in [
                 FIELD_PROJECT_PATH,
                 FIELD_PROJECT_PATH_REL,
@@ -14727,7 +15162,7 @@ mod tests {
         }
 
         fn assert_no_blocking_menus_on_disk(path: &Path) {
-            let object = disk_object(path);
+            let object = disk_object(&crate::config::settings::agents_instance_path(path));
             let agents = object["agents"].as_array().expect("agents array");
             for agent in agents {
                 assert!(
@@ -14738,11 +15173,17 @@ mod tests {
         }
 
         fn assert_blocking_menus_on_disk_unchanged(path: &Path, seeded: &[Value]) {
-            let object = disk_object(path);
+            let object = disk_object(&crate::config::settings::agents_instance_path(path));
             let agents = object["agents"].as_array().expect("agents array");
             assert_eq!(agents.len(), seeded.len());
             for (agent, expected) in agents.iter().zip(seeded) {
-                assert_eq!(agent.get("blockingMenus"), expected.get("blockingMenus"));
+                // #2716 (B3) 6.1: the three legs of (b), not an exact equality.
+                super::b3_assert_blocking_menus_legs(
+                    expected.get("blockingMenus"),
+                    agent.get("blockingMenus"),
+                    expected["command"].as_str().unwrap_or_default(),
+                    &expected["id"].to_string(),
+                );
             }
         }
 
@@ -14887,12 +15328,14 @@ mod tests {
             ];
             let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
             std::fs::write(blocking_menus_local_path(&path), "{ not json").unwrap();
+            let seeded_bytes = std::fs::read(&path).unwrap();
 
             let settings = load_settings_from_path(&path);
 
             // Nothing moved, nothing was rewritten: the on-disk arrays are exactly
             // what was seeded (no 1757 entry is added on disk on an abort path).
             assert_blocking_menus_on_disk_unchanged(&path, &seeded);
+            super::b3_assert_split_matches_seed(&path, &seeded_bytes, &[]);
             assert_eq!(
                 std::fs::read(blocking_menus_local_path(&path)).unwrap(),
                 b"{ not json"
@@ -14926,7 +15369,7 @@ mod tests {
 
             // No agent had `Some`, so the export is a no-op: no save, no `.local`.
             assert!(!blocking_menus_local_path(&path).exists());
-            assert_eq!(std::fs::read(&path).unwrap(), seeded_bytes);
+            super::b3_assert_split_matches_seed(&path, &seeded_bytes, &[]);
 
             // The migrated steady state is served by the files.
             let store = BlockingMenusStore::load_from_settings_path(&path);
@@ -14959,7 +15402,7 @@ mod tests {
 
             let settings = load_settings_from_path(&path);
 
-            assert_eq!(std::fs::read(&path).unwrap(), seeded_bytes);
+            super::b3_assert_split_matches_seed(&path, &seeded_bytes, &[]);
             assert!(!blocking_menus_local_path(&path).exists());
             let store = BlockingMenusStore::load_from_settings_path(&path);
             assert_eq!(
@@ -15094,11 +15537,8 @@ mod tests {
 
                 let settings = load_settings_from_path(&path);
 
-                assert_eq!(
-                    std::fs::read(&path).unwrap(),
-                    seeded_bytes,
-                    "{text:?}: an abort must leave settings.json untouched"
-                );
+                // #2716 (B3) 6.1: an abort still strips nothing from the agents.
+                super::b3_assert_split_matches_seed(&path, &seeded_bytes, &[]);
                 assert_eq!(
                     std::fs::read(blocking_menus_local_path(&path)).unwrap(),
                     text.as_bytes(),
@@ -15128,8 +15568,10 @@ mod tests {
                 ),
             ];
             let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            let seeded_bytes = std::fs::read(&path).unwrap();
             let settings = load_settings_from_path(&path);
             assert_blocking_menus_on_disk_unchanged(&path, &seeded);
+            super::b3_assert_split_matches_seed(&path, &seeded_bytes, &[]);
             assert!(!blocking_menus_local_path(&path).exists());
             let store = BlockingMenusStore::load_from_settings_path(&path);
             assert_eq!(
@@ -15149,8 +15591,10 @@ mod tests {
                 agent_json("dup", "codex", Some(json!([ft(), hooks()]))),
             ];
             let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            let seeded_bytes = std::fs::read(&path).unwrap();
             let settings = load_settings_from_path(&path);
             assert_blocking_menus_on_disk_unchanged(&path, &seeded);
+            super::b3_assert_split_matches_seed(&path, &seeded_bytes, &[]);
             assert!(!blocking_menus_local_path(&path).exists());
             let store = BlockingMenusStore::load_from_settings_path(&path);
             assert_eq!(
@@ -15169,7 +15613,11 @@ mod tests {
                 agent_json("dup", "claude", Some(json!([custom_entry("^custom-1905")]))),
             ];
             let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
+            let seeded_bytes = std::fs::read(&path).unwrap();
             load_settings_from_path(&path);
+            // #2716 (B3) 6.1: this branch exports, so `blockingMenus` leaves the
+            // agents file; the line below asserts that, the split asserts the rest.
+            super::b3_assert_split_matches_seed(&path, &seeded_bytes, &["blockingMenus"]);
             assert_no_blocking_menus_on_disk(&path);
             let local = local_disk_object(&path);
             let by_agent = local["byAgent"].as_object().expect("byAgent object");
@@ -15938,17 +16386,37 @@ mod tests {
             settings.coding_agent_profiles.profile_labels_by_agent["a"]["A"],
             "Alpha"
         );
-        // Loading alone is not an authorized write: disk bytes and backups stay put.
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        // Loading writes nothing beyond the one-shot export of #2716 (B3) 4.3:
+        // both groups move, every other byte stays, and a second load writes none.
+        b3_assert_split_matches_seed(&path, &before, &["order"]);
+        let sidecar = b3_object(&super::agents_instance_path(&path));
+        assert_eq!(sidecar["agents"][0]["order"], 0);
+        assert_eq!(sidecar["agents"][1]["order"], 1);
+        let exported = std::fs::read(&path).unwrap();
+        let exported_sidecar = std::fs::read(super::agents_instance_path(&path)).unwrap();
+        let _ = super::load_settings_from_path(&path);
+        assert_eq!(std::fs::read(&path).unwrap(), exported);
+        assert_eq!(
+            std::fs::read(super::agents_instance_path(&path)).unwrap(),
+            exported_sidecar
+        );
+        // #2716 (B3) r12l: the one-shot export rotates exactly once, and slot 1
+        // keeps the legacy file byte for byte.
+        assert_eq!(
+            std::fs::read(super::settings_backup_path(&path, 1)).expect("slot 1"),
+            before,
+            "slot 1 must hold the seeded bytes"
+        );
         assert!(
-            !super::settings_backup_path(&path, 1).exists(),
-            "a legacy load must not rotate a settings backup"
+            !super::settings_backup_path(&path, 2).exists(),
+            "a second save rotated the settings backup again"
         );
 
         let written =
             super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
         let disk: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(super::agents_instance_path(&path)).unwrap())
+                .unwrap();
         assert_eq!(disk["agents"][0]["id"], "a");
         assert_eq!(disk["agents"][0]["order"], 0);
         assert_eq!(disk["agents"][1]["id"], "b");
@@ -16023,7 +16491,8 @@ mod tests {
         let disk: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(disk["terminalSnapshotsEnabled"], true);
-        let agents = disk["agents"].as_array().unwrap();
+        let sidecar = b3_object(&super::agents_instance_path(&path));
+        let agents = sidecar["agents"].as_array().unwrap();
         let ids: Vec<&str> = agents.iter().map(|a| a["id"].as_str().unwrap()).collect();
         let orders: Vec<u64> = agents
             .iter()
@@ -16907,6 +17376,1021 @@ mod tests {
                 super::command_token_basename(&once),
                 once,
                 "input {input:?}"
+            );
+        }
+    }
+
+    // #2716 (B3) - the agents file. Rows E4 to E20b of the phase plan.
+
+    fn b3_agent(id: &str, label: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "label": label,
+            "command": "claude",
+            "color": "#112233",
+        })
+    }
+
+    fn b3_profiles(marker: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": 2,
+            "profileLabelsByAgent": { "alpha": { "A": marker } },
+        })
+    }
+
+    /// The E4 fixture: a settings file still carrying both legacy groups.
+    fn b3_legacy_fixture(label: &str, marker: &str) -> serde_json::Value {
+        serde_json::json!({
+            "defaultShell": "test-shell",
+            "defaultShellArgs": [],
+            "rootToken": "base-token",
+            "agents": [b3_agent("alpha", label)],
+            "codingAgentProfiles": b3_profiles(marker),
+        })
+    }
+
+    /// A settings file that no longer carries either group.
+    fn b3_migrated_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "defaultShell": "test-shell",
+            "defaultShellArgs": [],
+            "rootToken": "base-token",
+        })
+    }
+
+    fn b3_write(path: &std::path::Path, value: &serde_json::Value) {
+        std::fs::write(path, serde_json::to_string_pretty(value).unwrap()).unwrap();
+    }
+
+    fn b3_settings_path(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join(super::SETTINGS_FILE_NAME)
+    }
+
+    fn b3_sidecar_path(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join(super::AGENTS_INSTANCE_FILE_NAME)
+    }
+
+    fn b3_overlay_path(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join(super::SETTINGS_LOCAL_OVERRIDE_FILE_NAME)
+    }
+
+    fn b3_object(path: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+        match serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap() {
+            serde_json::Value::Object(object) => object,
+            other => panic!("{} is not an object: {other}", path.display()),
+        }
+    }
+
+    fn b3_labels(settings: &super::AppSettings) -> Vec<String> {
+        settings.agents.iter().map(|a| a.label.clone()).collect()
+    }
+
+    fn b3_marker(settings: &super::AppSettings) -> Option<String> {
+        settings
+            .coding_agent_profiles
+            .profile_labels_by_agent
+            .get("alpha")
+            .and_then(|cells| cells.get("A"))
+            .cloned()
+    }
+
+    /// An agents file in the exact bytes the save writes for `label` and `marker`,
+    /// so a steady-state save that changes nothing leaves it byte-identical.
+    fn b3_seed_sidecar(dir: &std::path::Path, label: &str, marker: &str) -> Vec<u8> {
+        let source = tempfile::tempdir().unwrap();
+        let source_path = b3_settings_path(source.path());
+        b3_write(&source_path, &b3_legacy_fixture(label, marker));
+        let settings = super::load_settings_for_cli_from_path(&source_path);
+        let mut groups = serde_json::Map::new();
+        groups.insert(
+            "agents".to_string(),
+            serde_json::to_value(&settings.agents).unwrap(),
+        );
+        groups.insert(
+            "codingAgentProfiles".to_string(),
+            serde_json::to_value(&settings.coding_agent_profiles).unwrap(),
+        );
+        let bytes = serde_json::to_vec_pretty(&serde_json::Value::Object(groups)).unwrap();
+        std::fs::write(b3_sidecar_path(dir), &bytes).unwrap();
+        bytes
+    }
+
+    fn b3_all_loaders(path: &std::path::Path) -> Vec<(&'static str, super::AppSettings)> {
+        vec![
+            (
+                "load_settings_from_path",
+                super::load_settings_from_path(path),
+            ),
+            (
+                "load_settings_for_cli",
+                super::load_settings_for_cli_from_path(path),
+            ),
+            (
+                "load_settings_for_cli_strict",
+                super::load_settings_for_cli_strict_from_path(Some(path)).unwrap(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_export_moves_both_groups_and_leaves_memory_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(
+            &path,
+            &b3_legacy_fixture("Alpha Recognisable", "Recognisable P"),
+        );
+        let before = super::load_settings_for_cli_from_path(&path);
+        assert!(!b3_sidecar_path(temp.path()).exists());
+
+        let loaded = super::load_settings_from_path(&path);
+
+        let sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        assert_eq!(sidecar["agents"][0]["label"], "Alpha Recognisable");
+        assert_eq!(
+            sidecar["codingAgentProfiles"]["profileLabelsByAgent"]["alpha"]["A"],
+            "Recognisable P"
+        );
+        let disk = b3_object(&path);
+        assert!(!disk.contains_key("agents"), "{disk:?}");
+        assert!(!disk.contains_key("codingAgentProfiles"), "{disk:?}");
+        assert_eq!(
+            serde_json::to_value(&loaded.agents).unwrap(),
+            serde_json::to_value(&before.agents).unwrap()
+        );
+        // The export's save adds the #2450 identity rows, as any save does; every
+        // user-authored value is unchanged.
+        let mut loaded_profiles = loaded.coding_agent_profiles.clone();
+        loaded_profiles.identity_by_agent.clear();
+        assert_eq!(loaded_profiles, before.coding_agent_profiles);
+        assert_eq!(b3_labels(&loaded), vec!["Alpha Recognisable".to_string()]);
+        assert_eq!(b3_marker(&loaded).as_deref(), Some("Recognisable P"));
+    }
+
+    #[test]
+    fn all_three_loaders_see_the_sidecar() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(
+            &path,
+            &b3_legacy_fixture("Alpha Recognisable", "Recognisable P"),
+        );
+        super::load_settings_from_path(&path);
+        assert!(!b3_object(&path).contains_key("agents"));
+
+        for (loader, settings) in b3_all_loaders(&path) {
+            assert_eq!(
+                b3_labels(&settings),
+                vec!["Alpha Recognisable".to_string()],
+                "{loader} did not see the agents file"
+            );
+            assert_eq!(
+                b3_marker(&settings).as_deref(),
+                Some("Recognisable P"),
+                "{loader} did not see the agents file"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cli_strict_load_then_save_does_not_write_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(
+            &path,
+            &b3_legacy_fixture("Alpha Recognisable", "Recognisable P"),
+        );
+        super::load_settings_from_path(&path);
+
+        let settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+        let sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        assert_eq!(sidecar["agents"][0]["label"], "Alpha Recognisable");
+        assert_eq!(sidecar["agents"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            sidecar["codingAgentProfiles"]["profileLabelsByAgent"]["alpha"]["A"],
+            "Recognisable P"
+        );
+    }
+
+    #[test]
+    fn reconcile_mode_drops_the_legacy_keys_from_the_disk_object() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(
+            &path,
+            &b3_legacy_fixture("Alpha Recognisable", "Recognisable P"),
+        );
+        let settings = super::load_settings_for_cli_from_path(&path);
+
+        super::save_settings_with_project_paths_to_path(&settings, &path).unwrap();
+
+        let disk = b3_object(&path);
+        assert!(!disk.contains_key("agents"), "{disk:?}");
+        assert!(!disk.contains_key("codingAgentProfiles"), "{disk:?}");
+        let sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        assert_eq!(sidecar["agents"][0]["label"], "Alpha Recognisable");
+    }
+
+    #[test]
+    fn preserve_mode_drops_the_legacy_keys_from_the_typed_object() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(
+            &path,
+            &b3_legacy_fixture("Alpha Recognisable", "Recognisable P"),
+        );
+        let settings = super::load_settings_for_cli_from_path(&path);
+
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+        let disk = b3_object(&path);
+        assert!(!disk.contains_key("agents"), "{disk:?}");
+        assert!(!disk.contains_key("codingAgentProfiles"), "{disk:?}");
+        let sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        assert_eq!(sidecar["agents"][0]["label"], "Alpha Recognisable");
+    }
+
+    /// E9 and E10: a directory at the agents file's name.
+    fn b3_assert_a_failed_sidecar_write_strips_nothing(reconcile: bool) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(
+            &path,
+            &b3_legacy_fixture("Alpha Recognisable", "Recognisable P"),
+        );
+        std::fs::create_dir(b3_sidecar_path(temp.path())).unwrap();
+        let settings = super::load_settings_for_cli_from_path(&path);
+        let before = std::fs::read(&path).unwrap();
+
+        let result = if reconcile {
+            super::save_settings_with_project_paths_to_path(&settings, &path).map(|_| ())
+        } else {
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).map(|_| ())
+        };
+
+        assert!(result.is_err(), "the save must fail");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let disk = b3_object(&path);
+        assert!(disk.contains_key("agents") && disk.contains_key("codingAgentProfiles"));
+        assert!(b3_sidecar_path(temp.path()).is_dir());
+    }
+
+    #[test]
+    fn reconcile_mode_keeps_both_keys_when_the_sidecar_write_fails() {
+        b3_assert_a_failed_sidecar_write_strips_nothing(true);
+    }
+
+    #[test]
+    fn preserve_mode_keeps_both_keys_when_the_sidecar_write_fails() {
+        b3_assert_a_failed_sidecar_write_strips_nothing(false);
+    }
+
+    /// E10b. The overlay reuses the base agent's id, so the D13 derived-id closure
+    /// adds no `codingAgentProfiles` path and the overlay owns `agents` only.
+    #[test]
+    fn a_preserve_save_keeps_an_overlay_owned_key_when_no_sidecar_holds_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(&path, &b3_legacy_fixture("Base A", "Recognisable P"));
+        b3_write(
+            &b3_overlay_path(temp.path()),
+            &serde_json::json!({ "agents": [b3_agent("alpha", "Overlay B")] }),
+        );
+        let settings = super::load_settings_for_cli_from_path(&path);
+        assert!(settings
+            .local_overlay_state
+            .owns_top_level(super::OVERLAY_KEY_AGENTS));
+        assert!(!settings
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles"));
+
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+        let sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        assert!(!sidecar.contains_key("agents"), "{sidecar:?}");
+        assert!(sidecar.contains_key("codingAgentProfiles"), "{sidecar:?}");
+        let disk = b3_object(&path);
+        assert!(!disk.contains_key("codingAgentProfiles"), "{disk:?}");
+        assert_eq!(disk["agents"][0]["label"], "Base A", "{disk:?}");
+        std::fs::remove_file(b3_overlay_path(temp.path())).unwrap();
+        let reloaded = super::load_settings_for_cli_from_path(&path);
+        assert_eq!(b3_labels(&reloaded), vec!["Base A".to_string()]);
+    }
+
+    #[test]
+    fn the_export_aborts_without_stripping() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(
+            &path,
+            &b3_legacy_fixture("Alpha Recognisable", "Recognisable P"),
+        );
+        std::fs::create_dir(b3_sidecar_path(temp.path())).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut settings = super::load_settings_for_cli_from_path(&path);
+        let agents = serde_json::to_value(&settings.agents).unwrap();
+        let profiles = settings.coding_agent_profiles.clone();
+
+        assert!(!super::export_agents_to_instance_file(&mut settings, &path));
+        let loaded = super::load_settings_from_path(&path);
+
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(serde_json::to_value(&settings.agents).unwrap(), agents);
+        assert_eq!(settings.coding_agent_profiles, profiles);
+        assert_eq!(serde_json::to_value(&loaded.agents).unwrap(), agents);
+        assert!(b3_sidecar_path(temp.path()).is_dir());
+    }
+
+    #[test]
+    fn an_overlay_that_owns_agents_blocks_the_export() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(&path, &b3_legacy_fixture("Base A", "Recognisable P"));
+        b3_write(
+            &b3_overlay_path(temp.path()),
+            &serde_json::json!({ "agents": [b3_agent("alpha", "Overlay B")] }),
+        );
+        let mut settings = super::load_settings_for_cli_from_path(&path);
+        assert!(!super::export_agents_to_instance_file(&mut settings, &path));
+
+        let loaded = super::load_settings_from_path(&path);
+
+        assert!(
+            !b3_sidecar_path(temp.path()).exists()
+                || !b3_object(&b3_sidecar_path(temp.path())).contains_key("agents")
+        );
+        assert!(
+            b3_object(&path).contains_key("agents"),
+            "E12: the settings file keeps agents"
+        );
+        assert_eq!(b3_labels(&loaded), vec!["Overlay B".to_string()]);
+    }
+
+    #[test]
+    fn a_sidecar_that_disagrees_with_the_legacy_keys_is_not_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let sidecar_bytes = b3_seed_sidecar(temp.path(), "Sidecar", "Sidecar P");
+        b3_write(&path, &b3_legacy_fixture("Legacy", "Legacy P"));
+        let mut settings = super::load_settings_for_cli_from_path(&path);
+        assert!(!super::export_agents_to_instance_file(&mut settings, &path));
+
+        let loaded = super::load_settings_from_path(&path);
+
+        assert_eq!(b3_labels(&loaded), vec!["Sidecar".to_string()]);
+        assert_eq!(b3_marker(&loaded).as_deref(), Some("Sidecar P"));
+        assert_eq!(
+            std::fs::read(b3_sidecar_path(temp.path())).unwrap(),
+            sidecar_bytes
+        );
+        let disk = b3_object(&path);
+        assert!(disk.contains_key("agents") && disk.contains_key("codingAgentProfiles"));
+
+        super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+
+        let disk = b3_object(&path);
+        assert!(!disk.contains_key("agents") && !disk.contains_key("codingAgentProfiles"));
+        // The save may add the #2450 identity rows; the sidecar's values still win.
+        let sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        assert_eq!(sidecar["agents"][0]["label"], "Sidecar");
+        assert_eq!(
+            sidecar["codingAgentProfiles"]["profileLabelsByAgent"]["alpha"]["A"],
+            "Sidecar P"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_sidecar_empties_nothing_and_blocks_the_strip() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(&path, &b3_legacy_fixture("Legacy", "Legacy P"));
+        std::fs::write(b3_sidecar_path(temp.path()), b"{ not json").unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let loaded = super::load_settings_from_path(&path);
+
+        assert_eq!(b3_labels(&loaded), vec!["Legacy".to_string()]);
+        assert_eq!(b3_marker(&loaded).as_deref(), Some("Legacy P"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            std::fs::read(b3_sidecar_path(temp.path())).unwrap(),
+            b"{ not json"
+        );
+        assert!(super::save_settings_to_path_preserving_project_paths(&loaded, &path).is_err());
+        let disk = b3_object(&path);
+        assert!(disk.contains_key("agents") && disk.contains_key("codingAgentProfiles"));
+        assert_eq!(
+            std::fs::read(b3_sidecar_path(temp.path())).unwrap(),
+            b"{ not json"
+        );
+    }
+
+    #[test]
+    fn load_save_load_save_is_byte_stable() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(
+            &path,
+            &b3_legacy_fixture("Alpha Recognisable", "Recognisable P"),
+        );
+        let first = super::load_settings_from_path(&path);
+        super::save_settings_to_path_preserving_project_paths(&first, &path).unwrap();
+        let settings_bytes = std::fs::read(&path).unwrap();
+        let sidecar_bytes = std::fs::read(b3_sidecar_path(temp.path())).unwrap();
+
+        let mut second = super::load_settings_from_path(&path);
+        assert!(!super::export_agents_to_instance_file(&mut second, &path));
+        super::save_settings_to_path_preserving_project_paths(&second, &path).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), settings_bytes);
+        assert_eq!(
+            std::fs::read(b3_sidecar_path(temp.path())).unwrap(),
+            sidecar_bytes
+        );
+    }
+
+    /// E16 and E17: an agents file holding A under an overlay owning `agents` with B.
+    fn b3_seed_overlay_over_sidecar(dir: &std::path::Path) -> (std::path::PathBuf, Vec<u8>) {
+        let path = b3_settings_path(dir);
+        let sidecar_bytes = b3_seed_sidecar(dir, "Sidecar A", "Sidecar P");
+        b3_write(&path, &b3_migrated_fixture());
+        b3_write(
+            &b3_overlay_path(dir),
+            &serde_json::json!({ "agents": [b3_agent("alpha", "Overlay B")] }),
+        );
+        (path, sidecar_bytes)
+    }
+
+    #[test]
+    fn the_overlay_still_beats_the_sidecar() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, _) = b3_seed_overlay_over_sidecar(temp.path());
+
+        for (loader, settings) in b3_all_loaders(&path) {
+            assert_eq!(
+                b3_labels(&settings),
+                vec!["Overlay B".to_string()],
+                "{loader} let the agents file override the overlay"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preserve_save_does_not_freeze_the_overlay_into_the_sidecar() {
+        let temp = tempfile::tempdir().unwrap();
+        let (path, _) = b3_seed_overlay_over_sidecar(temp.path());
+        let settings = super::load_settings_for_cli_from_path(&path);
+        assert_eq!(b3_labels(&settings), vec!["Overlay B".to_string()]);
+
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+
+        let sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        assert_eq!(sidecar["agents"][0]["label"], "Sidecar A");
+        let reloaded = super::load_settings_for_cli_from_path(&path);
+        assert_eq!(b3_labels(&reloaded), vec!["Overlay B".to_string()]);
+    }
+
+    #[test]
+    fn reconcile_never_writes_the_callers_groups() {
+        // An existing agents file is left byte for byte.
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let sidecar_bytes = b3_seed_sidecar(temp.path(), "Sidecar A", "Sidecar P");
+        b3_write(&path, &b3_migrated_fixture());
+        let mut settings = super::load_settings_for_cli_from_path(&path);
+        settings.agents[0].label = "Stale B".to_string();
+        super::save_settings_with_project_paths_to_path(&settings, &path).unwrap();
+        assert_eq!(
+            std::fs::read(b3_sidecar_path(temp.path())).unwrap(),
+            sidecar_bytes
+        );
+
+        // No agents file: it is created from the disk object, not from the caller.
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(&path, &b3_legacy_fixture("Disk A", "Disk P"));
+        let mut settings = super::load_settings_for_cli_from_path(&path);
+        settings.agents[0].label = "Stale B".to_string();
+        super::save_settings_with_project_paths_to_path(&settings, &path).unwrap();
+        let sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        assert_eq!(sidecar["agents"][0]["label"], "Disk A");
+        assert_eq!(
+            sidecar["codingAgentProfiles"]["profileLabelsByAgent"]["alpha"]["A"],
+            "Disk P"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_sidecar_blocks_the_direct_save_in_both_modes() {
+        for reconcile in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            b3_write(&path, &b3_legacy_fixture("Legacy", "Legacy P"));
+            std::fs::write(b3_sidecar_path(temp.path()), b"[1, 2").unwrap();
+            let settings = super::load_settings_for_cli_from_path(&path);
+
+            let result = if reconcile {
+                super::save_settings_with_project_paths_to_path(&settings, &path).map(|_| ())
+            } else {
+                super::save_settings_to_path_preserving_project_paths(&settings, &path).map(|_| ())
+            };
+
+            assert!(result.is_err(), "reconcile={reconcile}");
+            assert_eq!(
+                std::fs::read(b3_sidecar_path(temp.path())).unwrap(),
+                b"[1, 2",
+                "reconcile={reconcile}"
+            );
+            let disk = b3_object(&path);
+            assert!(
+                disk.contains_key("agents") && disk.contains_key("codingAgentProfiles"),
+                "reconcile={reconcile}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sidecar_is_merged_into_the_base_before_the_overlay() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_seed_sidecar(temp.path(), "Sidecar A", "Sidecar P");
+        b3_write(&path, &b3_migrated_fixture());
+        for (loader, settings) in b3_all_loaders(&path) {
+            assert_eq!(
+                b3_labels(&settings),
+                vec!["Sidecar A".to_string()],
+                "{loader}"
+            );
+        }
+
+        b3_write(
+            &b3_overlay_path(temp.path()),
+            &serde_json::json!({ "logLevel": "debug" }),
+        );
+        for (loader, settings) in b3_all_loaders(&path) {
+            assert!(!settings.local_overlay_state.is_empty(), "{loader}");
+            assert_eq!(
+                b3_labels(&settings),
+                vec!["Sidecar A".to_string()],
+                "{loader}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_merge_point_is_between_the_detection_and_the_pre_merge_clone() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_seed_sidecar(temp.path(), "Sidecar A", "Sidecar P");
+        // A legacy-shape key inside the agents file must not flip the flag.
+        let mut sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        sidecar["codingAgentProfiles"]
+            .as_object_mut()
+            .unwrap()
+            .insert("letters".to_string(), serde_json::json!({}));
+        b3_write(
+            &b3_sidecar_path(temp.path()),
+            &serde_json::Value::Object(sidecar),
+        );
+        let mut base = b3_migrated_fixture();
+        base["agents"] = serde_json::json!("not an agents array");
+        b3_write(&path, &base);
+        // An overlay leaf that fails the decode, so the base fallback runs.
+        b3_write(
+            &b3_overlay_path(temp.path()),
+            &serde_json::json!({ "defaultShellArgs": "not an array" }),
+        );
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let (settings, legacy_profiles) =
+            super::parse_settings_json(&contents, "test", Some(&path))
+                .expect("the undecodable fallback must carry the agents file's agents");
+
+        assert!(!legacy_profiles);
+        assert_eq!(b3_labels(&settings), vec!["Sidecar A".to_string()]);
+        assert!(
+            matches!(
+                settings.local_overlay_state.rejection(),
+                Some(crate::config::local_overlay::OverlayRejection::MergedValueUndecodable(_))
+            ),
+            "the fallback did not run: {:?}",
+            settings.local_overlay_state.rejection()
+        );
+    }
+
+    /// #2716 (B3) 6.1 (b), `blockingMenus` alone: every seeded entry survives in
+    /// order and field for field; an extra entry is one of the command's shipped
+    /// defaults; an array that is not all defaults matches the seed exactly.
+    pub(super) fn b3_assert_blocking_menus_legs(
+        seeded: Option<&serde_json::Value>,
+        held: Option<&serde_json::Value>,
+        command: &str,
+        label: &str,
+    ) {
+        let Some(seeded) = seeded else {
+            assert!(
+                held.is_none(),
+                "{label}: an omitted blockingMenus was written"
+            );
+            return;
+        };
+        let seeded = seeded.as_array().expect("seeded blockingMenus array");
+        let held = held
+            .unwrap_or_else(|| panic!("{label}: blockingMenus dropped"))
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: blockingMenus is not an array"));
+        let defaults: Vec<serde_json::Value> = super::default_blocking_menus_for_command(command)
+            .iter()
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .collect();
+        if !seeded.iter().all(|entry| defaults.contains(entry)) {
+            assert_eq!(held, seeded, "{label}: a customized array changed");
+            return;
+        }
+        let mut next = 0;
+        for entry in held {
+            if next < seeded.len() && *entry == seeded[next] {
+                next += 1;
+            } else {
+                assert!(
+                    defaults.contains(entry),
+                    "{label}: {entry} is neither seeded nor a shipped default"
+                );
+            }
+        }
+        assert_eq!(
+            next,
+            seeded.len(),
+            "{label}: a seeded entry was dropped or edited"
+        );
+    }
+
+    /// #2716 (B3) 6.1 - the split form of a whole-file comparison. (a) Containment:
+    /// every seeded key but the two groups keeps its seeded value, and a key the
+    /// save adds equals a default `AppSettings`, save the seven environment keys the
+    /// S6 normalizer names. (b) The agents file holds every seeded field of both
+    /// groups; `blockingMenus` takes the three legs; `skip` names agent fields the
+    /// caller asserts separately.
+    fn b3_assert_split_matches_seed(path: &std::path::Path, seeded: &[u8], skip: &[&str]) {
+        let seed: serde_json::Value = serde_json::from_slice(seeded).unwrap();
+        let mut seed = seed.as_object().unwrap().clone();
+        let mut disk = b3_object(path);
+        let sidecar = b3_object(&super::agents_instance_path(path));
+        for key in super::AGENTS_INSTANCE_KEYS {
+            assert!(
+                !disk.contains_key(key),
+                "{key} is still in the settings file"
+            );
+            disk.remove(key);
+            let Some(seeded_group) = seed.remove(key) else {
+                continue;
+            };
+            let held = sidecar
+                .get(key)
+                .unwrap_or_else(|| panic!("the agents file does not hold {key}"));
+            match (&seeded_group, held) {
+                (serde_json::Value::Array(seeded_rows), serde_json::Value::Array(held_rows)) => {
+                    assert_eq!(seeded_rows.len(), held_rows.len(), "{key} length");
+                    for (seeded_row, held_row) in seeded_rows.iter().zip(held_rows) {
+                        if seeded_row.get("blockingMenus").is_none() {
+                            b3_assert_blocking_menus_legs(
+                                None,
+                                held_row.get("blockingMenus"),
+                                "",
+                                &format!("{key}.{}", seeded_row["id"]),
+                            );
+                        }
+                        for (field, value) in seeded_row.as_object().unwrap() {
+                            if skip.contains(&field.as_str()) {
+                                continue;
+                            }
+                            if field == "blockingMenus" {
+                                b3_assert_blocking_menus_legs(
+                                    Some(value),
+                                    held_row.get(field),
+                                    seeded_row["command"].as_str().unwrap_or_default(),
+                                    &format!("{key}.{}", seeded_row["id"]),
+                                );
+                                continue;
+                            }
+                            assert_eq!(held_row.get(field), Some(value), "{key}.{field}");
+                        }
+                    }
+                }
+                (serde_json::Value::Object(seeded_fields), serde_json::Value::Object(held)) => {
+                    for (field, value) in seeded_fields {
+                        assert_eq!(held.get(field), Some(value), "{key}.{field}");
+                    }
+                }
+                other => panic!("{key}: unexpected shapes {other:?}"),
+            }
+        }
+        let exempt = [
+            super::FIELD_PROJECT_PATH,
+            super::FIELD_PROJECT_PATH_REL,
+            super::FIELD_PROJECT_PATHS,
+            super::FIELD_PROJECT_PATHS_REL,
+            super::FIELD_ARCHIVED,
+            super::FIELD_ARCHIVED_REL,
+            "rootToken",
+        ];
+        // r12k: the reference is the seed decoded by the loader's typed path and
+        // serialized again, compared key by key, both directions.
+        let typed: super::AppSettings = serde_json::from_slice(seeded).unwrap();
+        let mut reference = match serde_json::to_value(&typed).unwrap() {
+            serde_json::Value::Object(object) => object,
+            other => panic!("AppSettings serialized to {other}"),
+        };
+        for key in super::AGENTS_INSTANCE_KEYS.iter().chain(exempt.iter()) {
+            reference.remove(*key);
+            disk.remove(*key);
+        }
+        let mut differing: Vec<&String> = reference
+            .keys()
+            .chain(disk.keys())
+            .filter(|key| reference.get(*key) != disk.get(*key))
+            .collect();
+        differing.sort();
+        differing.dedup();
+        assert!(
+            differing.is_empty(),
+            "keys differ from the typed seed: {differing:?}"
+        );
+    }
+
+    // #2716 (B3) - rows E25 to E31 and E40 of the phase plan.
+
+    fn b3_seed_corrupt_sidecar(dir: &std::path::Path) {
+        std::fs::write(b3_sidecar_path(dir), "{ this is not json").unwrap();
+    }
+
+    fn b3_marked(settings: &super::AppSettings) -> Option<std::path::PathBuf> {
+        settings
+            .agents_layer
+            .unreadable_path()
+            .map(|p| p.to_path_buf())
+    }
+
+    #[test]
+    fn the_terminal_snapshot_cas_reads_the_sidecar_and_never_writes_an_empty_agents_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(&path, &b3_migrated_fixture());
+        b3_seed_sidecar(temp.path(), "Sidecar A", "Sidecar P");
+        let current = super::load_settings_for_cli_from_path(&path);
+        let gate = current.terminal_snapshots_enabled;
+
+        let returned =
+            super::compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, gate, !gate)
+                .expect("the CAS write must succeed");
+
+        assert_eq!(
+            returned.terminal_snapshots_enabled, !gate,
+            "the CAS did not write"
+        );
+
+        assert_eq!(b3_labels(&returned), vec!["Sidecar A".to_string()]);
+        let sidecar = b3_object(&b3_sidecar_path(temp.path()));
+        assert_eq!(
+            sidecar["agents"][0]["label"], "Sidecar A",
+            "the CAS wrote {:?} into the agents file",
+            sidecar["agents"]
+        );
+        assert!(!b3_object(&path).contains_key("agents"));
+    }
+
+    #[test]
+    fn a_deleted_sidecar_loses_only_the_agents_and_keeps_every_other_setting() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(&path, &b3_migrated_fixture());
+        assert!(!b3_sidecar_path(temp.path()).exists());
+
+        let loaded = super::load_settings_from_path(&path);
+
+        assert_eq!(loaded.default_shell, "test-shell");
+        assert_eq!(loaded.root_token.as_deref(), Some("base-token"));
+        assert!(loaded.agents.is_empty());
+    }
+
+    #[test]
+    fn a_migrated_settings_file_passes_the_non_project_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let migrated = b3_migrated_fixture();
+        super::validate_non_project_settings(migrated.as_object().unwrap())
+            .expect("a settings file without agents must pass the gate");
+        b3_write(&path, &migrated);
+        b3_seed_sidecar(temp.path(), "Sidecar A", "Sidecar P");
+        let loaded = super::load_settings_for_cli_from_path(&path);
+
+        super::save_settings_to_path_preserving_project_paths(&loaded, &path)
+            .expect("a Preserve save over a migrated file must succeed");
+    }
+
+    #[test]
+    fn the_mark_is_set_only_by_an_unreadable_sidecar() {
+        crate::logging::test_install_logger();
+        // Corrupt: the mark is set, every other setting survives, notice 1 is raised.
+        {
+            let _drain_guard = crate::logging::ERROR_SINK_TEST_DRAIN_LOCK.blocking_lock();
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            b3_write(&path, &b3_migrated_fixture());
+            b3_seed_corrupt_sidecar(temp.path());
+            let _ = crate::logging::error_sink().drain();
+
+            let loaded = super::load_settings_from_path(&path);
+
+            let sidecar = b3_sidecar_path(temp.path());
+            assert_eq!(b3_marked(&loaded), Some(sidecar.clone()), "corrupt leg");
+            assert_eq!(loaded.default_shell, "test-shell");
+            assert_eq!(loaded.root_token.as_deref(), Some("base-token"));
+            assert!(loaded.agents.is_empty());
+            let notice = super::agents_unreadable_startup_notice(&sidecar);
+            assert!(notice.ends_with(
+                "While this file is unreadable, changes to your sessions are not saved."
+            ));
+            let captured = crate::logging::error_sink().drain();
+            assert!(
+                captured.iter().any(|e| e.message.contains(&notice)),
+                "notice 1 was not captured: {:?}",
+                captured.iter().map(|e| &e.message).collect::<Vec<_>>()
+            );
+        }
+        // Absent: clear.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            b3_write(&path, &b3_migrated_fixture());
+            let loaded = super::load_settings_from_path(&path);
+            assert_eq!(b3_marked(&loaded), None, "absent leg");
+        }
+        // Parseable: clear.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            b3_write(&path, &b3_migrated_fixture());
+            b3_seed_sidecar(temp.path(), "Sidecar A", "Sidecar P");
+            let loaded = super::load_settings_from_path(&path);
+            assert_eq!(b3_marked(&loaded), None, "parseable leg");
+        }
+    }
+
+    #[test]
+    fn the_mark_survives_the_defaults_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        b3_write(
+            &path,
+            &serde_json::json!({ "defaultShell": 42, "rootToken": "base-token" }),
+        );
+        b3_seed_corrupt_sidecar(temp.path());
+
+        let loaded = super::load_settings_from_path(&path);
+
+        assert_ne!(
+            loaded.root_token.as_deref(),
+            Some("base-token"),
+            "the settings file decoded, so the fallback did not run"
+        );
+        assert_eq!(
+            b3_marked(&loaded),
+            Some(b3_sidecar_path(temp.path())),
+            "the defaults fallback lost the mark"
+        );
+        assert!(super::agents_layer_unreadable_for_dir(temp.path()));
+    }
+
+    #[test]
+    fn the_mark_is_never_serialized_and_cannot_be_forged() {
+        // Outward: a save with the mark set writes the same bytes as one without it.
+        for reconcile in [false, true] {
+            let mut bytes = Vec::new();
+            for marked in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = b3_settings_path(temp.path());
+                b3_write(&path, &b3_migrated_fixture());
+                b3_seed_sidecar(temp.path(), "Sidecar A", "Sidecar P");
+                let mut settings = super::load_settings_for_cli_from_path(&path);
+                if marked {
+                    settings.agents_layer = super::AgentsLayerState::Unreadable {
+                        path: b3_sidecar_path(temp.path()),
+                        reason: "forged for the test".to_string(),
+                    };
+                }
+                if reconcile {
+                    super::save_settings_with_project_paths_to_path(&settings, &path).unwrap();
+                } else {
+                    super::save_settings_to_path_preserving_project_paths(&settings, &path)
+                        .unwrap();
+                }
+                let settings_bytes = std::fs::read(&path).unwrap();
+                let sidecar_bytes = std::fs::read(b3_sidecar_path(temp.path())).unwrap();
+                for raw in [&settings_bytes, &sidecar_bytes] {
+                    let text = String::from_utf8_lossy(raw);
+                    assert!(!text.contains("agentsLayer") && !text.contains("agents_layer"));
+                }
+                bytes.push((settings_bytes, sidecar_bytes));
+            }
+            assert_eq!(
+                bytes[0], bytes[1],
+                "reconcile={reconcile}: the mark changed the bytes"
+            );
+        }
+        // Inward: a renderer-shaped object carrying the key decodes with the mark clear.
+        let mut value = serde_json::to_value(super::AppSettings::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        let forged = serde_json::json!({ "Unreadable": { "path": "C:/x", "reason": "forged" } });
+        object.insert("agentsLayer".to_string(), forged.clone());
+        object.insert("agents_layer".to_string(), forged);
+        let decoded: super::AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.agents_layer, super::AgentsLayerState::Readable);
+    }
+
+    #[test]
+    fn both_spawn_builders_refuse_under_the_mark() {
+        let temp = tempfile::tempdir().unwrap();
+        let sidecar = b3_sidecar_path(temp.path());
+        let mut settings = super::AppSettings {
+            agents: vec![serde_json::from_value(b3_agent("alpha", "Alpha")).unwrap()],
+            agents_layer: super::AgentsLayerState::Unreadable {
+                path: sidecar.clone(),
+                reason: "test".to_string(),
+            },
+            ..Default::default()
+        };
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let expected = super::agents_unreadable_session_error(&sidecar);
+
+        // Leg one: build.
+        let built = crate::commands::session::build_configured_agent_spawn_for_cwd(
+            &settings, "alpha", &cwd, None,
+        );
+        assert_eq!(built.err().as_deref(), Some(expected.as_str()), "build leg");
+        // Leg two: resolve.
+        let resolved = crate::commands::session::resolve_configured_agent_spawn_for_cwd(
+            &settings, "alpha", &cwd, None, false,
+        );
+        assert_eq!(
+            resolved.err().as_deref(),
+            Some(expected.as_str()),
+            "resolve leg"
+        );
+
+        // Mark clear, unknown id: both answer Ok(None).
+        settings.agents_layer = super::AgentsLayerState::Readable;
+        assert!(matches!(
+            crate::commands::session::build_configured_agent_spawn_for_cwd(
+                &settings, "unknown", &cwd, None
+            ),
+            Ok(None)
+        ));
+        assert!(matches!(
+            crate::commands::session::resolve_configured_agent_spawn_for_cwd(
+                &settings, "unknown", &cwd, None, false
+            ),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn the_cli_loaders_also_set_the_mark() {
+        type Loader = fn(&std::path::Path) -> super::AppSettings;
+        let loaders: [(&str, Loader); 2] = [
+            ("load_settings_for_cli", |p| {
+                super::load_settings_for_cli_from_path(p)
+            }),
+            ("load_settings_for_cli_strict", |p| {
+                super::load_settings_for_cli_strict_from_path(Some(p)).unwrap()
+            }),
+        ];
+        for (name, load) in loaders {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            b3_write(&path, &b3_migrated_fixture());
+            b3_seed_corrupt_sidecar(temp.path());
+            let key = path.parent().unwrap().to_path_buf();
+
+            let loaded = load(&path);
+            assert_eq!(
+                b3_marked(&loaded),
+                Some(b3_sidecar_path(temp.path())),
+                "{name}"
+            );
+            assert!(
+                super::agents_layer_unreadable_for_dir(&key),
+                "{name}: key not inserted"
+            );
+
+            b3_seed_sidecar(temp.path(), "Sidecar A", "Sidecar P");
+            let loaded = load(&path);
+            assert_eq!(b3_marked(&loaded), None, "{name}");
+            assert!(
+                !super::agents_layer_unreadable_for_dir(&key),
+                "{name}: key not removed"
             );
         }
     }
