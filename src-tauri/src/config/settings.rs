@@ -2719,6 +2719,26 @@ pub(crate) fn export_agents_to_instance_file(
     }
 }
 
+/// #2716 (B3) - removes from the settings object exactly the keys the agents file
+/// now holds, key by key; a key it does not hold stays in the settings file.
+fn strip_agents_instance_keys(out: &mut Map<String, Value>, groups: &Map<String, Value>) {
+    for key in groups.keys() {
+        out.remove(key);
+    }
+}
+
+/// #2716 (B3) - puts the agents file's groups back into the just-written object
+/// for the save's re-decode. Like the load merge, `[]` stands in when neither file
+/// holds `agents`.
+fn restore_agents_groups_for_redecode(written: &mut Value, groups: Map<String, Value>) {
+    if let Value::Object(object) = written {
+        object.extend(groups);
+        object
+            .entry(AGENTS_INSTANCE_KEYS[0])
+            .or_insert_with(|| Value::Array(Vec::new()));
+    }
+}
+
 /// #2716 (B3) - the agents-file half of a save, run under the settings lock before
 /// the settings file is written. Returns the groups the agents file now holds, which
 /// are exactly the keys the caller may strip from `out`. `Reconcile` never writes the
@@ -6265,9 +6285,7 @@ fn save_settings_value_locked(
     // leave `out`, in both modes. A failure returns before the settings write.
     let agents_groups =
         save_agents_instance_file(settings, path, &mode, disk.as_ref(), &out, disk_gate_stage)?;
-    for key in agents_groups.keys() {
-        out.remove(key);
-    }
+    strip_agents_instance_keys(&mut out, &agents_groups);
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
@@ -6283,13 +6301,7 @@ fn save_settings_value_locked(
     let mut written_value = value;
     // #2716 (B3): the re-decode sees what a load would, the agents file's groups
     // in the base object, under the overlay reapplied below.
-    // Like the load merge, `[]` stands in when neither file holds `agents`.
-    if let Value::Object(object) = &mut written_value {
-        object.extend(agents_groups);
-        object
-            .entry(AGENTS_INSTANCE_KEYS[0])
-            .or_insert_with(|| Value::Array(Vec::new()));
-    }
+    restore_agents_groups_for_redecode(&mut written_value, agents_groups);
     // #1737: disk holds the base, memory holds the effective value. Without this the
     // caller would adopt base values for every overlay-owned key on the first save.
     if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
