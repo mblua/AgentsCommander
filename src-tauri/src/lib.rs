@@ -5985,19 +5985,30 @@ const CO_MANAGED_EXCERPT_BYTES: usize = 500;
 
 /// A supervisor input. (a) is the orchestrator's idle edge, emitted from the
 /// real `IdleDetector` callback; (b) is a slot transition, which the slot
-/// watcher forwards for every record, invalidation and clearing.
+/// watcher forwards for every record, invalidation and clearing. #2756 U2a
+/// `Recovery` re-offers a candidate that a not-ready trigger left pending, once
+/// the room is `Ready`; it takes the `SlotChanged` path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CoManagedTrigger {
     IdleEdge(uuid::Uuid),
     SlotChanged(uuid::Uuid),
+    Recovery(uuid::Uuid),
 }
 
 impl CoManagedTrigger {
     fn session_id(self) -> uuid::Uuid {
         match self {
-            Self::IdleEdge(id) | Self::SlotChanged(id) => id,
+            Self::IdleEdge(id) | Self::SlotChanged(id) | Self::Recovery(id) => id,
         }
     }
+}
+
+/// #2756 U2a: a candidate dropped because the room was not `Ready`. Both legs
+/// must match the slot for a recovery: `seq`, and the retained `Arc`, which
+/// keeps the allocation alive so `Arc::ptr_eq` cannot alias a new record.
+struct PendingRecovery {
+    seq: u64,
+    record: Arc<capture::record::CapturedRecord>,
 }
 
 #[derive(Default)]
@@ -6007,6 +6018,8 @@ struct CoManagedSupervisorState {
     contended: HashMap<String, u64>,
     /// Sessions whose slot already has a watcher task.
     watching: HashSet<String>,
+    /// #2756 U2a: candidates dropped while not `Ready`, awaiting recovery.
+    pending_recovery: HashMap<String, PendingRecovery>,
 }
 
 #[cfg(test)]
@@ -6095,6 +6108,12 @@ impl CoManagedSupervisorHandle {
             .is_ok()
     }
 
+    fn notify_recovery(&self, session_id: uuid::Uuid) -> bool {
+        self.triggers
+            .send(CoManagedTrigger::Recovery(session_id))
+            .is_ok()
+    }
+
     fn lock_state(&self) -> std::sync::MutexGuard<'_, CoManagedSupervisorState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -6108,7 +6127,20 @@ impl CoManagedSupervisorHandle {
     }
 
     fn mark_unwatched(&self, id: &str) {
-        self.lock_state().watching.remove(id);
+        let mut state = self.lock_state();
+        state.watching.remove(id);
+        state.pending_recovery.remove(id);
+    }
+
+    fn mark_pending_recovery(
+        &self,
+        id: &str,
+        seq: u64,
+        record: Arc<capture::record::CapturedRecord>,
+    ) {
+        self.lock_state()
+            .pending_recovery
+            .insert(id.to_string(), PendingRecovery { seq, record });
     }
 
     fn is_contended(&self, id: &str, seq: u64) -> bool {
@@ -7064,6 +7096,9 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
             room_root.display(),
             catalog_path
         );
+        // #2756 U2a: the slot keeps the candidate; remember it so the next
+        // reader-demand pass can re-offer it once the room is Ready.
+        handle.mark_pending_recovery(&id, state.seq, Arc::clone(&candidate));
         if was_armed {
             emit_co_managed_state(
                 app,
@@ -7113,6 +7148,7 @@ async fn handle_co_managed_trigger<R: tauri::Runtime>(
         match trigger {
             CoManagedTrigger::IdleEdge(_) => "IdleEdge",
             CoManagedTrigger::SlotChanged(_) => "SlotChanged",
+            CoManagedTrigger::Recovery(_) => "Recovery",
         },
         state.seq
     );
@@ -7158,7 +7194,10 @@ fn spawn_co_managed_supervisor<R: tauri::Runtime>(
                 biased;
                 _ = shutdown.cancelled() => break,
                 _ = discovery.tick() => watch_capture_slots(&app, &handle).await,
-                _ = reader_demand.tick() => reader_demand_pass(&app).await,
+                _ = reader_demand.tick() => {
+                    reader_demand_pass(&app).await;
+                    recovery_pass(&app, &handle).await;
+                }
                 trigger = triggers.recv() => {
                     let Some(trigger) = trigger else { break };
                     handle_co_managed_trigger(&app, &handle, trigger).await;
@@ -7212,7 +7251,8 @@ async fn reader_demand_pass<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 }
 
 /// #2525 release the Room demand of every live session when the global switch
-/// is off or the Jev API key is empty; `true` iff it swept. The release runs
+/// is off; `true` iff it swept. #2756 U2a: an empty Jev API key no longer
+/// sweeps, since the key is a `Ready` input, not a capture input. The release runs
 /// for sessions holding nothing too: it still bumps the Room `DemandEpoch`,
 /// which aborts a raise already in flight (D-e). Logs once per pass, and only
 /// when a session actually held a Room demand, so a steady Off is silent.
@@ -7222,11 +7262,8 @@ async fn release_room_reader_demands_when_globally_off<R: tauri::Runtime>(
     let Some(settings) = app.try_state::<SettingsState>() else {
         return false;
     };
-    let (enabled, api_key) = {
-        let guard = settings.read().await;
-        (guard.co_managed_enabled, guard.jev_api_key.clone())
-    };
-    if crate::config::co_managed::globally_available(enabled, &api_key) {
+    let enabled = settings.read().await.co_managed_enabled;
+    if crate::config::co_managed::globally_capturable(enabled) {
         return false;
     }
     let session_ids: Vec<uuid::Uuid> = {
@@ -7304,7 +7341,7 @@ async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::AppHandle<R
         }
         // D5-h: a disable landing while the raise resolved and installed has
         // already released, so undo the demand this iteration installed.
-        if !room_still_ready(app, session_id).await {
+        if !room_still_capturable(app, session_id).await {
             commands::session::release_room_reader_demand(app, session_id).await;
             continue;
         }
@@ -7312,8 +7349,9 @@ async fn reraise_room_reader_demands<R: tauri::Runtime>(app: &tauri::AppHandle<R
     }
 }
 
-/// #2456 D5-h re-resolve the session's room and effective state after a raise.
-async fn room_still_ready<R: tauri::Runtime>(
+/// #2456 D5-h re-resolve the session's room and capturability after a raise
+/// (#2756 U2a: the same predicate the raise used).
+async fn room_still_capturable<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: uuid::Uuid,
 ) -> bool {
@@ -7331,14 +7369,82 @@ async fn room_still_ready<R: tauri::Runtime>(
         return false;
     };
     matches!(
-        crate::commands::session::co_managed_effective_state_for_session(
+        crate::commands::session::co_managed_capturable_for_session(
             app,
             &room_root,
             &session_id.to_string()
         )
         .await,
-        Ok(crate::config::co_managed::CoManagedState::Ready)
+        Ok(true)
     )
+}
+
+/// #2756 U2a: re-offer every candidate a not-ready trigger left pending, once
+/// its room is `Ready`. Only marked sessions are visited. A mark whose slot is
+/// gone, or whose `seq` or record no longer match the slot, is dropped; a
+/// matching mark in a not-yet-Ready room waits for the next pass. The trigger
+/// goes through the channel so this tick arm never runs a cycle inline, and it
+/// is sent even to a busy session: the handler arms, and the next idle edge
+/// runs the cycle.
+async fn recovery_pass<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handle: &CoManagedSupervisorHandle,
+) {
+    let marked: Vec<String> = handle
+        .lock_state()
+        .pending_recovery
+        .keys()
+        .cloned()
+        .collect();
+    if marked.is_empty() {
+        return;
+    }
+    let registry = app.try_state::<Arc<capture::registry::CaptureRegistry>>();
+    for id in marked {
+        let Some(slot) = registry.as_ref().and_then(|registry| registry.slot(&id)) else {
+            handle.lock_state().pending_recovery.remove(&id);
+            continue;
+        };
+        let current = slot.snapshot();
+        let matches = {
+            let state = handle.lock_state();
+            let Some(mark) = state.pending_recovery.get(&id) else {
+                continue;
+            };
+            mark.seq == current.seq
+                && current
+                    .value
+                    .record()
+                    .is_some_and(|record| Arc::ptr_eq(record, &mark.record))
+        };
+        let session_id = match uuid::Uuid::parse_str(&id) {
+            Ok(session_id) if matches => session_id,
+            _ => {
+                handle.lock_state().pending_recovery.remove(&id);
+                continue;
+            }
+        };
+        let session = match app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() {
+            Some(manager) => manager.read().await.get_session(session_id).await,
+            None => None,
+        };
+        let Some(room_root) = session.and_then(|session| {
+            crate::config::co_managed::room_root_for_path(Path::new(&session.working_directory))
+        }) else {
+            continue;
+        };
+        let ready = matches!(
+            crate::commands::session::co_managed_effective_state_for_session(app, &room_root, &id)
+                .await,
+            Ok(crate::config::co_managed::CoManagedState::Ready)
+        );
+        if !ready {
+            continue;
+        }
+        handle.lock_state().pending_recovery.remove(&id);
+        log::info!("[co-managed] recovery emitted [{id}]: seq={}", current.seq);
+        let _ = handle.notify_recovery(session_id);
+    }
 }
 
 async fn watch_capture_slots<R: tauri::Runtime>(
@@ -11753,6 +11859,561 @@ mod tests {
         // Reaching this line proves the injected failure was handled as a warning
         // and startup continued with a usable normal window.
     }
+
+    /// #2756 U2a: capture without key or catalog, and recovery of the retained
+    /// candidate once the room is `Ready`.
+    ///
+    /// Controlled window (plan 9.1), declared once for every test that counts
+    /// cycles: no supervisor loop runs, no `IdleEdge` and no new offer happen
+    /// between the not-ready discard and the measured pass except the ones the
+    /// test itself makes, no trigger is processed between the mount and the
+    /// pass, and every pass or notification is closed by
+    /// `u2a_drain_and_handle` before cycles are counted. Test 10 is the single
+    /// declared exception: it calls `watch_capture_slots` and handles the
+    /// discovery `SlotChanged` itself, and it mounts no mark.
+    mod u2a_tests {
+        use super::*;
+        use crate::capture::sink::SlotState;
+        use crate::commands::session::co_managed_tests::{configure_room, room_fixture};
+        use crate::commands::session::reader_demand_tests::harness;
+        use crate::commands::telegram::holds_room_reader_demand;
+        use crate::config::settings::SettingsState;
+        use crate::telegram::manager::{
+            OutputSenderMap, ReaderConsumer, TelegramBridgeManager, TelegramBridgeState,
+        };
+        use tauri::Manager;
+
+        fn tee_len() -> usize {
+            crate::logging::test_tee_snapshot().len()
+        }
+
+        /// The single cycle measure (plan 3.5): `cycle start` lines naming
+        /// `session_id` added since `before`.
+        fn u2a_cycle_starts(before: usize, session_id: uuid::Uuid) -> Vec<String> {
+            let id = session_id.to_string();
+            crate::logging::test_tee_snapshot()
+                .into_iter()
+                .skip(before)
+                .filter(|line| line.contains("[co-managed] cycle start") && line.contains(&id))
+                .collect()
+        }
+
+        /// Plan 3.5: (i) drain the channel without processing, (ii) handle
+        /// the drained triggers in order. Triggers born during (ii) stay
+        /// queued for the next call.
+        async fn u2a_drain_and_handle<R: tauri::Runtime>(
+            app: &tauri::AppHandle<R>,
+            handle: &CoManagedSupervisorHandle,
+            rx: &mut tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>,
+        ) -> Vec<CoManagedTrigger> {
+            let mut drained = Vec::new();
+            while let Ok(trigger) = rx.try_recv() {
+                drained.push(trigger);
+            }
+            for trigger in drained.iter().copied() {
+                super::super::handle_co_managed_trigger(app, handle, trigger).await;
+            }
+            drained
+        }
+
+        fn recoveries(drained: &[CoManagedTrigger], session_id: uuid::Uuid) -> usize {
+            drained
+                .iter()
+                .filter(|t| **t == CoManagedTrigger::Recovery(session_id))
+                .count()
+        }
+
+        fn mark_of(
+            handle: &CoManagedSupervisorHandle,
+            id: uuid::Uuid,
+        ) -> Option<(u64, Arc<CapturedRecord>)> {
+            handle
+                .lock_state()
+                .pending_recovery
+                .get(&id.to_string())
+                .map(|mark| (mark.seq, Arc::clone(&mark.record)))
+        }
+
+        fn assert_mark(
+            handle: &CoManagedSupervisorHandle,
+            id: uuid::Uuid,
+            seq: u64,
+            record: &Arc<CapturedRecord>,
+        ) {
+            let (mark_seq, mark_record) = mark_of(handle, id).expect("the mount left a mark");
+            assert_eq!(mark_seq, seq, "the mark keeps the discarded seq");
+            assert!(
+                Arc::ptr_eq(&mark_record, record),
+                "the mark keeps the discarded record"
+            );
+        }
+
+        async fn set_key<R: tauri::Runtime>(app: &tauri::AppHandle<R>, key: &str) {
+            let settings = app.state::<SettingsState>();
+            settings.write().await.jev_api_key = key.to_string();
+        }
+
+        const U2A_SCORES: [(&str, f32); 4] = [
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ];
+
+        struct Mounted {
+            fixture: CoManagedFixture,
+            app: tauri::App<tauri::test::MockRuntime>,
+            manager: Arc<tokio::sync::RwLock<SessionManager>>,
+            registry: Arc<CaptureRegistry>,
+            handle: CoManagedSupervisorHandle,
+            rx: tokio::sync::mpsc::UnboundedReceiver<CoManagedTrigger>,
+            id: uuid::Uuid,
+            slot: CaptureSlot,
+            record: Arc<CapturedRecord>,
+            seq: u64,
+        }
+
+        /// A Co-managed room with the flag on and no key: one `SlotChanged`
+        /// is discarded as not ready, which leaves the mark. Nothing is
+        /// processed after this returns except what the test does.
+        async fn mount(status: SessionStatus) -> Mounted {
+            crate::logging::test_install_logger();
+            let fixture = make_co_managed_fixture();
+            let (endpoint, _hits) = spawn_jev_listener(U2A_SCORES.to_vec()).await;
+            let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+            let id = add_claude_session(
+                &manager,
+                &fixture.coordinator_cwd,
+                status,
+                &fixture.projects_dir,
+            )
+            .await;
+            let (slot, record) = install_candidate(&registry, id, "candidate text");
+            set_key(app.handle(), "").await;
+            let (handle, rx) = CoManagedSupervisorHandle::new();
+            super::super::handle_co_managed_trigger(
+                app.handle(),
+                &handle,
+                CoManagedTrigger::SlotChanged(id),
+            )
+            .await;
+            let seq = slot.snapshot().seq;
+            assert_mark(&handle, id, seq, &record);
+            Mounted {
+                fixture,
+                app,
+                manager,
+                registry,
+                handle,
+                rx,
+                id,
+                slot,
+                record,
+                seq,
+            }
+        }
+
+        async fn pass_and_drain(m: &mut Mounted) -> Vec<CoManagedTrigger> {
+            super::super::recovery_pass(m.app.handle(), &m.handle).await;
+            u2a_drain_and_handle(m.app.handle(), &m.handle, &mut m.rx).await
+        }
+
+        fn same_candidate(state: &SlotState, record: &Arc<CapturedRecord>) -> bool {
+            state
+                .value
+                .record()
+                .is_some_and(|held| Arc::ptr_eq(held, record))
+        }
+
+        enum Degrade {
+            NoKey,
+            NoCatalog,
+            UnreadableCatalog,
+        }
+
+        /// Tests 1 to 3: the session starts with no Room and no Bot demand.
+        async fn keeps_slot_and_candidate(degrade: Degrade) {
+            let fixture = room_fixture();
+            configure_room(fixture.room_path(), true);
+            let h = harness(&fixture);
+            let id = h.session_in(fixture.coordinator_path()).await;
+            let catalog = fixture.room_path().join("catalog.json");
+            match degrade {
+                Degrade::NoKey => h.set_global_co_managed(true, "   ").await,
+                Degrade::NoCatalog => std::fs::remove_file(&catalog).expect("remove catalog"),
+                Degrade::UnreadableCatalog => {
+                    std::fs::write(&catalog, "not json").expect("catalog")
+                }
+            }
+            assert!(!holds_room_reader_demand(h.app.handle(), id).await);
+            assert!(!h.captures.is_open(&id.to_string()));
+
+            crate::reader_demand_pass(h.app.handle()).await;
+            assert!(
+                holds_room_reader_demand(h.app.handle(), id).await,
+                "tick 1 installs the Room demand"
+            );
+            let slot = h
+                .captures
+                .slot(&id.to_string())
+                .expect("tick 1 opens the slot");
+            let record = co_managed_candidate(&id.to_string(), "candidate text");
+            slot.offer(Arc::clone(&record), 0);
+            let before = slot.snapshot();
+            assert!(same_candidate(&before, &record));
+
+            crate::reader_demand_pass(h.app.handle()).await;
+            assert!(
+                holds_room_reader_demand(h.app.handle(), id).await,
+                "tick 2 keeps the Room demand"
+            );
+            assert!(h.captures.is_open(&id.to_string()), "the slot survives");
+            let slot = h.captures.slot(&id.to_string()).expect("slot");
+            let after = slot.snapshot();
+            assert_eq!(after.seq, before.seq, "the candidate keeps its seq");
+            assert!(same_candidate(&after, &record), "the candidate survives");
+        }
+
+        /// Test 1.
+        #[tokio::test]
+        async fn u2a_capturable_room_without_key_keeps_slot_and_candidate() {
+            keeps_slot_and_candidate(Degrade::NoKey).await;
+        }
+
+        /// Test 2.
+        #[tokio::test]
+        async fn u2a_capturable_room_without_catalog_keeps_slot_and_candidate() {
+            keeps_slot_and_candidate(Degrade::NoCatalog).await;
+        }
+
+        /// Test 3.
+        #[tokio::test]
+        async fn u2a_capturable_room_with_unreadable_catalog_keeps_slot_and_candidate() {
+            keeps_slot_and_candidate(Degrade::UnreadableCatalog).await;
+        }
+
+        /// Test 4.
+        #[tokio::test]
+        async fn u2a_global_switch_off_releases_demand_and_closes_slot() {
+            let fixture = room_fixture();
+            configure_room(fixture.room_path(), true);
+            let h = harness(&fixture);
+            let id = h.session_in(fixture.coordinator_path()).await;
+            crate::reader_demand_pass(h.app.handle()).await;
+            assert!(holds_room_reader_demand(h.app.handle(), id).await);
+            assert!(h.captures.is_open(&id.to_string()));
+
+            h.set_global_co_managed(false, "test-key").await;
+            crate::reader_demand_pass(h.app.handle()).await;
+
+            assert!(!holds_room_reader_demand(h.app.handle(), id).await);
+            assert!(!h.captures.is_open(&id.to_string()), "the slot closes");
+        }
+
+        /// Test 5.
+        #[tokio::test]
+        async fn u2a_non_orchestrator_never_raises_demand() {
+            let fixture = room_fixture();
+            configure_room(fixture.room_path(), true);
+            let h = harness(&fixture);
+            let member = h.session_in(fixture.member_path()).await;
+            h.set_global_co_managed(true, "   ").await;
+            for _ in 0..3 {
+                crate::reader_demand_pass(h.app.handle()).await;
+            }
+            h.set_global_co_managed(true, "test-key").await;
+            for _ in 0..3 {
+                crate::reader_demand_pass(h.app.handle()).await;
+            }
+            assert!(!holds_room_reader_demand(h.app.handle(), member).await);
+            assert!(!h.captures.is_open(&member.to_string()));
+        }
+
+        /// Test 6, and the positive control of the cycle counter.
+        #[tokio::test]
+        async fn u2a_recovery_runs_one_cycle_when_the_key_appears() {
+            let mut m = mount(SessionStatus::Idle).await;
+            set_key(m.app.handle(), "test-key").await;
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 1, "{drained:?}");
+            let cycles = u2a_cycle_starts(before, m.id);
+            assert_eq!(cycles.len(), 1, "{cycles:?}");
+            assert!(cycles[0].contains("trigger=Recovery"), "{cycles:?}");
+            assert!(
+                mark_of(&m.handle, m.id).is_none(),
+                "emitting clears the mark"
+            );
+        }
+
+        /// Test 7.
+        #[tokio::test]
+        async fn u2a_recovery_without_key_runs_no_cycle() {
+            let mut m = mount(SessionStatus::Idle).await;
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 0, "{drained:?}");
+            assert!(u2a_cycle_starts(before, m.id).is_empty());
+            assert_mark(&m.handle, m.id, m.seq, &m.record);
+        }
+
+        /// Test 8.
+        #[tokio::test]
+        async fn u2a_recovery_without_candidate_runs_no_cycle() {
+            let mut m = mount(SessionStatus::Idle).await;
+            m.slot.clear();
+            set_key(m.app.handle(), "test-key").await;
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 0, "{drained:?}");
+            assert!(u2a_cycle_starts(before, m.id).is_empty());
+            assert!(mark_of(&m.handle, m.id).is_none());
+        }
+
+        /// Test 9.
+        #[tokio::test]
+        async fn u2a_recovery_twice_in_a_row_runs_one_cycle() {
+            let mut m = mount(SessionStatus::Idle).await;
+            set_key(m.app.handle(), "test-key").await;
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 1, "{drained:?}");
+            assert_eq!(u2a_cycle_starts(before, m.id).len(), 1);
+
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 0, "{drained:?}");
+            assert!(u2a_cycle_starts(before, m.id).is_empty());
+        }
+
+        /// Test 10: startup with the key, in the fixed order of plan 9.3.
+        #[tokio::test]
+        async fn u2a_startup_with_key_runs_no_recovery_cycle() {
+            crate::logging::test_install_logger();
+            let fixture = make_co_managed_fixture();
+            let (endpoint, _hits) = spawn_jev_listener(U2A_SCORES.to_vec()).await;
+            let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+            let id = add_claude_session(
+                &manager,
+                &fixture.coordinator_cwd,
+                SessionStatus::Idle,
+                &fixture.projects_dir,
+            )
+            .await;
+            install_candidate(&registry, id, "candidate text");
+            let (handle, mut rx) = CoManagedSupervisorHandle::new();
+
+            // (a)
+            super::super::watch_capture_slots(app.handle(), &handle).await;
+            // (b)
+            let trigger = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("the discovery trigger is already queued")
+                .expect("channel open");
+            assert_eq!(trigger, CoManagedTrigger::SlotChanged(id));
+            let before = tee_len();
+            super::super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+            // (c)
+            assert_eq!(u2a_cycle_starts(before, id).len(), 1);
+            // (d)
+            assert!(
+                mark_of(&handle, id).is_none(),
+                "a Ready room leaves no mark"
+            );
+            // (e)
+            let before = tee_len();
+            super::super::recovery_pass(app.handle(), &handle).await;
+            let drained = u2a_drain_and_handle(app.handle(), &handle, &mut rx).await;
+            // (f)
+            assert!(u2a_cycle_starts(before, id).is_empty());
+            assert_eq!(recoveries(&drained, id), 0, "{drained:?}");
+        }
+
+        /// Test 11: `PreconditionsRejected` is forced by a second live session
+        /// in the same directory (`unique_live_session_for_cwd == false`),
+        /// which is not retryable, unlike `LockBusy`.
+        #[tokio::test]
+        async fn u2a_rejected_recovery_retries_on_the_next_idle_edge() {
+            let mut m = mount(SessionStatus::Idle).await;
+            add_claude_session(
+                &m.manager,
+                &m.fixture.coordinator_cwd,
+                SessionStatus::Running,
+                &m.fixture.projects_dir,
+            )
+            .await;
+            set_key(m.app.handle(), "test-key").await;
+
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 1, "{drained:?}");
+            assert_eq!(u2a_cycle_starts(before, m.id).len(), 1);
+            let id = m.id.to_string();
+            let rejected = crate::logging::test_tee_snapshot()
+                .into_iter()
+                .skip(before)
+                .any(|line| {
+                    line.contains("cycle end")
+                        && line.contains(&id)
+                        && line.contains("PreconditionsRejected")
+                });
+            assert!(rejected, "the cycle ends Rejected(PreconditionsRejected)");
+
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 0, "{drained:?}");
+            assert!(u2a_cycle_starts(before, m.id).is_empty());
+
+            let before = tee_len();
+            emit_session_idle_edge(m.app.handle(), &m.handle.armed, Some(&m.handle), m.id);
+            let drained = u2a_drain_and_handle(m.app.handle(), &m.handle, &mut m.rx).await;
+            assert_eq!(drained, vec![CoManagedTrigger::IdleEdge(m.id)]);
+            assert_eq!(u2a_cycle_starts(before, m.id).len(), 1);
+        }
+
+        /// Test 12: no idle gate in the pass (R1).
+        #[tokio::test]
+        async fn u2a_recovery_on_a_busy_session_arms_and_defers() {
+            let mut m = mount(SessionStatus::Running).await;
+            set_key(m.app.handle(), "test-key").await;
+
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 1, "{drained:?}");
+            assert!(u2a_cycle_starts(before, m.id).is_empty());
+            assert!(m.handle.armed.is_armed(&m.id.to_string()), "Recovery arms");
+
+            let before = tee_len();
+            let comanaged =
+                emit_session_idle_edge(m.app.handle(), &m.handle.armed, Some(&m.handle), m.id);
+            assert!(comanaged, "session_idle.comanaged must be true");
+            let drained = u2a_drain_and_handle(m.app.handle(), &m.handle, &mut m.rx).await;
+            assert_eq!(drained, vec![CoManagedTrigger::IdleEdge(m.id)]);
+            assert_eq!(u2a_cycle_starts(before, m.id).len(), 1);
+        }
+
+        /// Test 13: the identity leg.
+        #[tokio::test]
+        async fn u2a_reopened_slot_with_the_same_seq_runs_no_cycle() {
+            let mut m = mount(SessionStatus::Idle).await;
+            let id = m.id.to_string();
+            m.registry.close(&id);
+            let (capture, _rx) = m.registry.open(&id);
+            let other = co_managed_candidate(&id, "another candidate");
+            capture.slot.offer(Arc::clone(&other), 0);
+            let state = capture.slot.snapshot();
+            assert_eq!(state.seq, m.seq, "the reopened slot repeats the seq");
+            assert!(same_candidate(&state, &other));
+            assert_mark(&m.handle, m.id, m.seq, &m.record);
+            set_key(m.app.handle(), "test-key").await;
+
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 0, "{drained:?}");
+            assert!(u2a_cycle_starts(before, m.id).is_empty());
+        }
+
+        /// Test 14: the `seq` leg. The record is `Live`, never `Preamble`, so
+        /// `offer` publishes it again instead of deduplicating it. A slot API
+        /// construction, not a production scenario.
+        #[tokio::test]
+        async fn u2a_same_record_at_a_newer_seq_runs_no_cycle() {
+            let mut m = mount(SessionStatus::Idle).await;
+            assert_ne!(m.record.origin, RecordOrigin::Preamble);
+            m.slot.offer(Arc::clone(&m.record), 0);
+            let state = m.slot.snapshot();
+            assert_eq!(state.seq, m.seq + 1, "the same Arc at a newer seq");
+            assert!(same_candidate(&state, &m.record));
+            assert_mark(&m.handle, m.id, m.seq, &m.record);
+            set_key(m.app.handle(), "test-key").await;
+
+            let before = tee_len();
+            let drained = pass_and_drain(&mut m).await;
+            assert_eq!(recoveries(&drained, m.id), 0, "{drained:?}");
+            assert!(u2a_cycle_starts(before, m.id).is_empty());
+        }
+
+        /// Test 15: a Bot demand keeps the slot while the room flag is off;
+        /// the candidate it kept is recovered once the flag is on.
+        #[tokio::test]
+        async fn u2a_bot_demand_keeps_the_slot_while_the_room_flag_is_off() {
+            crate::logging::test_install_logger();
+            let fixture = make_co_managed_fixture();
+            let (endpoint, _hits) = spawn_jev_listener(U2A_SCORES.to_vec()).await;
+            write_co_managed_room_config(&fixture.room_root, false, Some("catalog.json"));
+            write_co_managed_catalog(&fixture.room_root);
+            let settings = AppSettings {
+                project_paths: vec![fixture.project.to_string_lossy().to_string()],
+                jev_api_key: "test-key".to_string(),
+                jev_model: "jev-1.13.0".to_string(),
+                jev_endpoint: endpoint,
+                jev_timeout_secs: 5,
+                jev_threshold: 0.70,
+                jev_margin: 0.15,
+                co_managed_enabled: true,
+                ..AppSettings::default()
+            };
+            let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+            let registry = Arc::new(CaptureRegistry::new());
+            let senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
+            let bridge: TelegramBridgeState = Arc::new(tokio::sync::Mutex::new(
+                TelegramBridgeManager::with_captures(senders, Arc::clone(&registry)),
+            ));
+            let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+            let app = tauri::test::mock_builder()
+                .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+                .manage(manager.clone())
+                .manage(crate::network::OutboundNetwork::new().expect("shared outbound network"))
+                .manage(registry.clone())
+                .manage(bridge)
+                .manage(crate::pty::input_activity::new_state())
+                .manage(idle_detector)
+                .manage(Arc::new(crate::session::purge_guard::PurgeGuard::default()))
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .expect("build U2a Bot test app");
+            let id = add_claude_session(
+                &manager,
+                &fixture.coordinator_cwd,
+                SessionStatus::Idle,
+                &fixture.projects_dir,
+            )
+            .await;
+            assert!(
+                crate::commands::telegram::raise_reader_demand(
+                    app.handle(),
+                    id,
+                    ReaderConsumer::Bot,
+                    None,
+                )
+                .await,
+                "the Bot demand opens the slot"
+            );
+            let key = id.to_string();
+            let slot = registry.slot(&key).expect("slot");
+            let record = co_managed_candidate(&key, "candidate text");
+            slot.offer(Arc::clone(&record), 0);
+            let (handle, mut rx) = CoManagedSupervisorHandle::new();
+            super::super::handle_co_managed_trigger(
+                app.handle(),
+                &handle,
+                CoManagedTrigger::SlotChanged(id),
+            )
+            .await;
+            assert_mark(&handle, id, slot.snapshot().seq, &record);
+
+            crate::reader_demand_pass(app.handle()).await;
+            assert!(registry.is_open(&key), "the Bot demand keeps the slot");
+            assert!(!holds_room_reader_demand(app.handle(), id).await);
+            assert_mark(&handle, id, slot.snapshot().seq, &record);
+
+            write_co_managed_room_config(&fixture.room_root, true, Some("catalog.json"));
+            let before = tee_len();
+            super::super::recovery_pass(app.handle(), &handle).await;
+            let drained = u2a_drain_and_handle(app.handle(), &handle, &mut rx).await;
+            assert_eq!(recoveries(&drained, id), 1, "{drained:?}");
+            assert_eq!(u2a_cycle_starts(before, id).len(), 1);
+        }
+    }
 }
 
 /// #2296 quit-gate unit tests.
@@ -13215,11 +13876,11 @@ mod reader_reraise_tests {
             .await;
     }
 
-    /// #2525 T-r2 (reproduction, API key): a whitespace-only key counts as
-    /// cleared and releases a running Room demand within one pass. Mutation:
-    /// sweep on the switch only.
+    /// #2525 T-r2, inverted by #2756 U2a: a whitespace-only key is a `Ready`
+    /// input, not a capture input, so a running Room demand survives the pass
+    /// and the slot stays open. Mutation: sweep on the key again.
     #[tokio::test]
-    async fn p2525_cleared_api_key_releases_a_running_room_demand() {
+    async fn p2525_cleared_api_key_keeps_a_running_room_demand() {
         let fixture = room_fixture();
         configure_room(fixture.room_path(), true);
         let h = harness(&fixture);
@@ -13231,11 +13892,13 @@ mod reader_reraise_tests {
         super::reader_demand_pass(h.app.handle()).await;
 
         assert!(
-            !holds_room_reader_demand(h.app.handle(), id).await,
-            "a cleared API key must release the Room demand"
+            holds_room_reader_demand(h.app.handle(), id).await,
+            "a cleared API key must keep the Room demand"
         );
-        crate::commands::session::reader_demand_tests::assert_no_room_reader_state_for(&h, id)
-            .await;
+        assert!(
+            h.captures.is_open(&id.to_string()),
+            "a cleared API key must keep the capture slot"
+        );
     }
 
     /// #2525 T-r3 (guard): while available globally the pass keeps running the
@@ -13257,29 +13920,6 @@ mod reader_reraise_tests {
             );
             assert_eq!(tick_raise_calls(id), pass + 1, "pass {pass}");
         }
-    }
-
-    /// #2525 T-r4 (recovery): restoring the key lets the next pass re-raise.
-    /// Builds T-r2's state inline. Mutation: any sticky "swept" flag.
-    #[tokio::test]
-    async fn p2525_restoring_the_key_lets_the_next_pass_re_raise() {
-        let fixture = room_fixture();
-        configure_room(fixture.room_path(), true);
-        let h = harness(&fixture);
-        let id = h.session_in(fixture.coordinator_path()).await;
-        super::reader_demand_pass(h.app.handle()).await;
-        assert!(holds_room_reader_demand(h.app.handle(), id).await);
-        h.set_global_co_managed(true, "   ").await;
-        super::reader_demand_pass(h.app.handle()).await;
-        assert!(!holds_room_reader_demand(h.app.handle(), id).await);
-
-        h.set_global_co_managed(true, "test-key").await;
-        super::reader_demand_pass(h.app.handle()).await;
-
-        assert!(
-            holds_room_reader_demand(h.app.handle(), id).await,
-            "the next available pass re-raises"
-        );
     }
 
     /// #2525 T-r5 (the early return): a swept pass never resolves readiness.

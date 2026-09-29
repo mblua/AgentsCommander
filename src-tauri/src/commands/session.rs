@@ -79,6 +79,49 @@ pub(crate) async fn co_managed_effective_state_for_session<R: Runtime>(
     room_root: &std::path::Path,
     session_id: &str,
 ) -> Result<crate::config::co_managed::CoManagedState, String> {
+    let inputs = co_managed_inputs_for_session(app, room_root, session_id).await?;
+    Ok(crate::config::co_managed::effective_state(
+        room_root,
+        inputs.globally_enabled,
+        &inputs.api_key,
+        inputs.is_orchestrator,
+        inputs.capture_supported,
+        inputs.agent_label,
+    ))
+}
+
+/// #2756 U2a sibling of [`co_managed_effective_state_for_session`]: whether the
+/// session may hold a Room reader and keep its candidate. Same gathering, so
+/// the two predicates cannot read different inputs; never reads the key or
+/// the catalog.
+pub(crate) async fn co_managed_capturable_for_session<R: Runtime>(
+    app: &AppHandle<R>,
+    room_root: &std::path::Path,
+    session_id: &str,
+) -> Result<bool, String> {
+    let inputs = co_managed_inputs_for_session(app, room_root, session_id).await?;
+    Ok(crate::config::co_managed::capturable(
+        room_root,
+        inputs.globally_enabled,
+        inputs.is_orchestrator,
+        inputs.capture_supported,
+    ))
+}
+
+/// Every SCC-owned input of the Co-managed predicates, gathered once.
+struct CoManagedInputs {
+    is_orchestrator: bool,
+    capture_supported: bool,
+    api_key: String,
+    globally_enabled: bool,
+    agent_label: &'static str,
+}
+
+async fn co_managed_inputs_for_session<R: Runtime>(
+    app: &AppHandle<R>,
+    room_root: &std::path::Path,
+    session_id: &str,
+) -> Result<CoManagedInputs, String> {
     let session = {
         let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let id =
@@ -124,23 +167,23 @@ pub(crate) async fn co_managed_effective_state_for_session<R: Runtime>(
         (guard.jev_api_key.clone(), guard.co_managed_enabled)
     };
 
-    Ok(crate::config::co_managed::effective_state(
-        room_root,
-        globally_enabled,
-        &api_key,
+    Ok(CoManagedInputs {
         is_orchestrator,
         capture_supported,
-        co_managed_provider_label(session.agent_kind),
-    ))
+        api_key,
+        globally_enabled,
+        agent_label: co_managed_provider_label(session.agent_kind),
+    })
 }
 
 /// Raise the **Room** demand for `session_id`, in `room_root`, if and only if
-/// Co-managed is effective for it (#2232 phase 4 section 5.1).
+/// the session is capturable (#2232 phase 4 section 5.1, #2756 U2a).
 ///
-/// One call to the phase-2 gathering function decides: it already encodes
-/// orchestrator-only, flag-on, key-present, catalog-present and
-/// provider-supported. A room without the flag therefore raises nothing and
-/// behaves exactly as today. Returns `true` when a reader is running afterwards.
+/// One call to the shared gathering function decides: it encodes global
+/// switch, orchestrator-only, provider-supported and flag-on. The key and the
+/// catalog are `Ready` inputs, not capture inputs, so a room without them
+/// still keeps its reader and its candidate. A room without the flag raises
+/// nothing and behaves exactly as today. Returns `true` when a reader is running afterwards.
 ///
 /// Every caller reaches the supervisor through this SCC-member function, never
 /// through the Co-managed command module, which keeps **outgoing arcs only**.
@@ -156,8 +199,8 @@ pub(crate) async fn raise_room_reader_demand_in<R: Runtime>(
     let key = session_id.to_string();
     #[cfg(test)]
     room_raise_seam::hit_before_readiness(&key).await;
-    match co_managed_effective_state_for_session(app, room_root, &session_id.to_string()).await {
-        Ok(crate::config::co_managed::CoManagedState::Ready) => {
+    match co_managed_capturable_for_session(app, room_root, &session_id.to_string()).await {
+        Ok(true) => {
             #[cfg(test)]
             room_raise_seam::hit_before_add(&key).await;
             crate::commands::telegram::raise_reader_demand_guarded(
@@ -15943,7 +15986,7 @@ pub(crate) mod reader_demand_tests {
     pub(crate) struct Harness {
         pub(crate) app: tauri::App<tauri::test::MockRuntime>,
         manager: Arc<tokio::sync::RwLock<SessionManager>>,
-        captures: Arc<CaptureRegistry>,
+        pub(crate) captures: Arc<CaptureRegistry>,
         projects_dir: PathBuf,
     }
 
@@ -16037,13 +16080,13 @@ pub(crate) mod reader_demand_tests {
         }
     }
 
-    /// Test 15: **Room demand scope.** A session in a room whose
-    /// `effective_state` is `Off { RoomFlagOff }` raises **no** Room demand and
-    /// no reader is spawned for it; the orchestrator session of a room with the
-    /// flag on raises one. This protects "rooms without the flag behave as
+    /// Test 15: **Room demand scope.** A session in a room whose flag is off
+    /// is not capturable and raises **no** Room demand, and no reader is
+    /// spawned for it; the orchestrator session of a room with the flag on is
+    /// capturable and raises one (#2756 U2a). This protects "rooms without the flag behave as
     /// today".
     #[tokio::test]
-    async fn only_a_ready_session_raises_the_room_demand() {
+    async fn only_a_capturable_session_raises_the_room_demand() {
         let fixture = room_fixture();
         configure_room(fixture.room_path(), false);
         let h = harness(&fixture);
