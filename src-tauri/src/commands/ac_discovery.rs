@@ -1635,7 +1635,13 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     configured: &[String],
 ) -> Result<(), String> {
     let gitignore_path = ac_root.join(".gitignore");
-    const PROJECT_SETTINGS_GITIGNORE_PATTERN: &str = "/settings.50.personal.no-git.json";
+    // #2717 - the project-settings rows have one home, shared with the
+    // migration's sweep.
+    let project_settings_rows = crate::config::naming_migration::project_settings_ignore_rows();
+    let [project_settings_row, project_settings_lock_row, set_aside_row] = project_settings_rows
+        .each_ref()
+        .map(|(pattern, comment)| (pattern.as_str(), *comment));
+    let project_settings_gitignore_pattern = project_settings_row.0;
     const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
     const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n/seed-manifest.toml\n";
     const SEED_MANIFEST_COORDINATION_PATTERNS: [&str; 2] =
@@ -1711,10 +1717,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             "**/__agent_*/AGENTS.md",
             "# AgentsCommander: exclude managed session context files inside replica agent folders.",
         ),
-        (
-            PROJECT_SETTINGS_GITIGNORE_PATTERN,
-            "# AgentsCommander: exclude generated project-local settings.",
-        ),
+        project_settings_row,
         (
             "/.team-config-write.lock",
             "# AgentsCommander: exclude team-config coordination files.",
@@ -1729,14 +1732,8 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         ),
         // #2717 - the migrated project settings take their own sidecar, and the
         // naming migration sets a displaced project file aside in `.ac/`.
-        (
-            "/.settings.50.personal.no-git.json.lock",
-            "# AgentsCommander: exclude the project settings write-lock sidecar.",
-        ),
-        (
-            "/*.deprecated-*.no-git",
-            "# AgentsCommander: exclude project files the naming migration set aside.",
-        ),
+        project_settings_lock_row,
+        set_aside_row,
         (
             "_agent_*/rtk-matrix-history*.db",
             "# AgentsCommander: exclude RTK matrix-history databases.",
@@ -1841,7 +1838,7 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
         let mut additions = String::new();
         for (pattern, comment) in &required_entries {
             let is_present = content.lines().any(|line| {
-                if *pattern == PROJECT_SETTINGS_GITIGNORE_PATTERN {
+                if *pattern == project_settings_gitignore_pattern {
                     line == *pattern
                 } else {
                     line.trim() == *pattern

@@ -148,6 +148,53 @@ const LEGACY_PROJECT_SETTINGS_RENAME: naming_migration::Rename = naming_migratio
 /// whole scope, so a pre-migration binary is still excluded; never renamed.
 const LEGACY_PROJECT_SETTINGS_LOCK: &str = ".project-settings.json.lock";
 
+#[cfg(not(test))]
+#[inline(always)]
+fn sweep_pause_hook(_stage: &str, _dir: &Path) {}
+
+/// Test-only pause point between the sweep's read and its append. Inert unless
+/// a test arms it.
+#[cfg(test)]
+fn sweep_pause_hook(stage: &str, dir: &Path) {
+    naming_migration::pause::hook(stage, dir);
+}
+
+/// #2717 (B4a) 4.4 - appends to `<ac_root>/.gitignore` the project-settings
+/// rows it lacks. An appending write, never a rewrite, so no line another
+/// writer added can be lost; retirement of the old row stays with the writer
+/// at registration.
+fn ensure_project_settings_ignore_rows(ac_root: &Path) -> Result<(), naming_migration::Refusal> {
+    use std::io::Write as _;
+    let path = ac_root.join(".gitignore");
+    let io = |what: &str, e: std::io::Error| {
+        naming_migration::Refusal::Io(format!("failed to {what} {}: {e}", path.display()))
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(io("read", e)),
+    };
+    let blocks = naming_migration::missing_ignore_rows(
+        &content,
+        &naming_migration::project_settings_ignore_rows(),
+    );
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    sweep_pause_hook("before_gitignore_append", ac_root);
+    let separator = if content.is_empty() || content.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(format!("{separator}{blocks}").as_bytes()))
+        .map_err(|e| io("append to", e))
+}
+
 fn project_settings_scope_key(ac_root: &Path) -> String {
     format!("project-settings:{}", ac_root.display())
 }
@@ -186,6 +233,9 @@ fn migrate_project_settings_name(
         naming_migration::MIGRATION_LOCK_BUDGET,
     )
     .map_err(refused)?;
+    // #2717 4.4: the new names are ignored before anything takes them; a failed
+    // sweep refuses, so nothing is renamed into an unignored state.
+    ensure_project_settings_ignore_rows(ac_root).map_err(refused)?;
     if let naming_migration::Outcome::Refused(refusal) = naming_migration::rename_step(
         ac_root,
         &LEGACY_PROJECT_SETTINGS_RENAME,
@@ -1066,6 +1116,7 @@ mod tests {
         std::fs::write(settings_path(&f.project), B4A_WINNER_BYTES).unwrap();
         std::fs::write(ac.join(B4A_OLD_LOCK), b"").unwrap();
         std::fs::write(ac.join(B4A_NEW_LOCK), b"").unwrap();
+        std::fs::write(ac.join(".gitignore"), b"# user rules\n").unwrap();
         let before = b4a_entries(&ac);
 
         let loaded =
@@ -1108,19 +1159,17 @@ mod tests {
         // The set-aside file is ignored in the user's repository.
         crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&ac, &[])
             .expect("write .ac/.gitignore");
-        let init = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&f.project)
-            .status()
-            .expect("git init");
-        assert!(init.success());
-        let ignored = std::process::Command::new("git")
-            .args(["check-ignore", "--no-index", "-q", "--"])
-            .arg(format!(".ac/{B4A_SET_ASIDE}"))
-            .current_dir(&f.project)
-            .status()
-            .expect("git check-ignore");
-        assert!(ignored.success(), "the set-aside file is not ignored");
+        assert!(b4a_git(&f.project, &["init", "--quiet"]).status.success());
+        let set_aside = format!(".ac/{B4A_SET_ASIDE}");
+        assert!(
+            b4a_git(
+                &f.project,
+                &["check-ignore", "--no-index", "-q", "--", &set_aside]
+            )
+            .status
+            .success(),
+            "the set-aside file is not ignored"
+        );
     }
 
     #[test]
@@ -1567,5 +1616,209 @@ mod tests {
             journal.scope(&own_key).expect("own record").status,
             naming_migration::ScopeStatus::Complete
         );
+    }
+
+    /// The one `git` site of these tests (E7, E17).
+    fn b4a_git(cwd: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git must execute")
+    }
+
+    /// #2717 (B4a) 4.4 1b: each row pattern is composed from the registry, and
+    /// is pinned against the constants, never against a typed-out name.
+    #[test]
+    fn the_ignore_rows_are_composed_from_the_registry() {
+        use crate::config::instance_artifacts::{PROJECT_SETTINGS_TARGET_NAME, SET_ASIDE_GLOB};
+        let [settings, lock, set_aside] = naming_migration::project_settings_ignore_rows();
+        assert_eq!(settings.0, format!("/{PROJECT_SETTINGS_TARGET_NAME}"));
+        assert_eq!(lock.0, format!("/.{PROJECT_SETTINGS_TARGET_NAME}.lock"));
+        assert_eq!(set_aside.0, format!("/{SET_ASIDE_GLOB}"));
+    }
+
+    const B4A_ROWS: [(&str, &str); 3] = [
+        (
+            "/settings.50.personal.no-git.json",
+            "# AgentsCommander: exclude generated project-local settings.",
+        ),
+        (
+            "/.settings.50.personal.no-git.json.lock",
+            "# AgentsCommander: exclude the project settings write-lock sidecar.",
+        ),
+        (
+            "/*.deprecated-*.no-git",
+            "# AgentsCommander: exclude project files the naming migration set aside.",
+        ),
+    ];
+
+    fn b4a_gitignore(project: &Path) -> String {
+        std::fs::read_to_string(project.join(".ac").join(".gitignore")).expect("read .gitignore")
+    }
+
+    fn b4a_assert_rows_once(content: &str, label: &str) {
+        let lines: Vec<&str> = content.lines().collect();
+        for (pattern, comment) in B4A_ROWS {
+            let at: Vec<usize> = (0..lines.len()).filter(|&i| lines[i] == pattern).collect();
+            assert_eq!(at.len(), 1, "{label}: {pattern} is not there exactly once");
+            assert!(
+                at[0] > 0 && lines[at[0] - 1] == comment,
+                "{label}: {pattern} lacks its comment line directly above"
+            );
+        }
+    }
+
+    #[test]
+    fn the_scope_ignores_the_new_names_before_it_renames_anything() {
+        // The pre-upgrade shape, a project that is never registered.
+        let f = b4a_fixture();
+        let ac = f.project.join(".ac");
+        std::fs::write(
+            ac.join(".gitignore"),
+            "# AgentsCommander: exclude generated project-local settings.\n/project-settings.json\n",
+        )
+        .unwrap();
+        std::fs::write(legacy_settings_path(&f.project), B4A_LEGACY_BYTES).unwrap();
+        load_workgroup_groups_in(&f.project, Some(&f.cfg)).expect("load");
+        save_workgroup_groups_in(&f.project, b4a_saved(), Some(&f.cfg)).expect("save");
+        let content = b4a_gitignore(&f.project);
+        b4a_assert_rows_once(&content, "base");
+        assert!(
+            content.lines().any(|l| l == "/project-settings.json"),
+            "the sweep is append-only; the old row stays until the writer retires it"
+        );
+        assert!(b4a_git(&f.project, &["init", "--quiet"]).status.success());
+        std::fs::write(ac.join(B4A_SET_ASIDE), b"").unwrap();
+        for (relative, rule) in [
+            (".ac/settings.50.personal.no-git.json", B4A_ROWS[0].0),
+            (".ac/.settings.50.personal.no-git.json.lock", B4A_ROWS[1].0),
+            (
+                ".ac/project-settings.json.deprecated-1.no-git",
+                B4A_ROWS[2].0,
+            ),
+        ] {
+            let output = b4a_git(
+                &f.project,
+                &["check-ignore", "-v", "--no-index", "--", relative],
+            );
+            assert!(output.status.success(), "{relative} is not ignored");
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let (source, _) = stdout.trim_end().split_once('\t').expect("verbose output");
+            assert!(
+                source.ends_with(&format!(":{rule}")),
+                "{relative}: {source}"
+            );
+        }
+
+        // A failed sweep refuses and renames nothing.
+        let g = b4a_fixture();
+        std::fs::create_dir(g.project.join(".ac").join(".gitignore")).unwrap();
+        std::fs::write(legacy_settings_path(&g.project), B4A_LEGACY_BYTES).unwrap();
+        assert!(load_workgroup_groups_in(&g.project, Some(&g.cfg)).is_err());
+        assert_eq!(
+            std::fs::read(legacy_settings_path(&g.project)).unwrap(),
+            B4A_LEGACY_BYTES.as_bytes(),
+            "a failed sweep must leave the data at the old name"
+        );
+        assert!(!settings_path(&g.project).exists());
+
+        // The decoy: a leading-space line is not the rule.
+        let h = b4a_fixture();
+        std::fs::write(
+            h.project.join(".ac").join(".gitignore"),
+            " /settings.50.personal.no-git.json\n",
+        )
+        .unwrap();
+        std::fs::write(legacy_settings_path(&h.project), B4A_LEGACY_BYTES).unwrap();
+        load_workgroup_groups_in(&h.project, Some(&h.cfg)).expect("load");
+        b4a_assert_rows_once(&b4a_gitignore(&h.project), "decoy");
+
+        // Both orders of the sweep and the registration writer: every AC row
+        // once, and a user line seeded before either run survives.
+        for sweep_first in [true, false] {
+            let k = b4a_fixture();
+            let ac = k.project.join(".ac");
+            std::fs::write(ac.join(".gitignore"), "user-line-2717\n").unwrap();
+            std::fs::write(legacy_settings_path(&k.project), B4A_LEGACY_BYTES).unwrap();
+            let writer = || {
+                crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&ac, &[])
+                    .expect("writer")
+            };
+            if sweep_first {
+                load_workgroup_groups_in(&k.project, Some(&k.cfg)).expect("sweep");
+                writer();
+            } else {
+                writer();
+                load_workgroup_groups_in(&k.project, Some(&k.cfg)).expect("sweep");
+            }
+            let content = b4a_gitignore(&k.project);
+            let label = if sweep_first {
+                "sweep, writer"
+            } else {
+                "writer, sweep"
+            };
+            b4a_assert_rows_once(&content, label);
+            assert!(content.lines().any(|l| l == "user-line-2717"), "{label}");
+            let rules: Vec<&str> = content
+                .lines()
+                .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                .collect();
+            let unique: std::collections::BTreeSet<&str> = rules.iter().copied().collect();
+            assert_eq!(unique.len(), rules.len(), "{label}: a row appears twice");
+        }
+
+        // Interleaved: the registration writer and a user edit land between the
+        // sweep's read and its append. Nothing is lost; a 4.4 row may repeat
+        // once; no other rule repeats.
+        let expected_rules: Vec<String> = {
+            let fresh = b4a_fixture();
+            let fresh_ac = fresh.project.join(".ac");
+            crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&fresh_ac, &[])
+                .expect("writer");
+            b4a_gitignore(&fresh.project)
+                .lines()
+                .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                .map(str::to_string)
+                .collect()
+        };
+        let m = b4a_fixture();
+        let ac = m.project.join(".ac");
+        let ac_root = b4a_ac_root(&m.project);
+        std::fs::write(ac.join(".gitignore"), "user-line-2717\n").unwrap();
+        std::fs::write(legacy_settings_path(&m.project), B4A_LEGACY_BYTES).unwrap();
+        let armed = naming_migration::pause::arm("before_gitignore_append", &ac_root);
+        let (project, cfg) = (m.project.clone(), m.cfg.clone());
+        let sweep = std::thread::spawn(move || load_workgroup_groups_in(&project, Some(&cfg)));
+        armed
+            .reached
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the sweep reached its append");
+        crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&ac, &[])
+            .expect("writer in the window");
+        {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(ac.join(".gitignore"))
+                .unwrap();
+            file.write_all(b"user-line-late\n").unwrap();
+        }
+        armed.release.send(()).unwrap();
+        sweep.join().unwrap().expect("the sweep completes");
+        let content = b4a_gitignore(&m.project);
+        let count = |rule: &str| content.lines().filter(|l| *l == rule).count();
+        for user in ["user-line-2717", "user-line-late"] {
+            assert_eq!(count(user), 1, "interleaved: the user line {user} was lost");
+        }
+        for rule in &expected_rules {
+            let n = count(rule);
+            let is_4_4 = B4A_ROWS.iter().any(|(pattern, _)| pattern == rule);
+            assert!(n >= 1, "interleaved: the writer's rule {rule} was lost");
+            assert!(
+                n <= if is_4_4 { 2 } else { 1 },
+                "interleaved: {rule} appears {n} times"
+            );
+        }
     }
 }

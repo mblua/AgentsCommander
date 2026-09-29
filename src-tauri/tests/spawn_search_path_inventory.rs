@@ -232,13 +232,13 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 1)],
     ),
-    // #2717 (B4a): all three inside `#[cfg(test)]`: `git init` and `git
-    // check-ignore` of E7, and the `current_exe()` child of E7d and E13.
+    // #2717 (B4a): both inside `#[cfg(test)]`: the one `git` helper that E7 and
+    // E17 share, and the `current_exe()` child of E7d and E13.
     (
         "src-tauri/src/config/project_settings.rs",
-        3,
+        2,
         0,
-        &[(TestOnly, 3)],
+        &[(TestOnly, 2)],
     ),
     ("src-tauri/src/config/session_context.rs", 1, 1, &[]),
     ("src-tauri/src/config/teams.rs", 1, 0, &[(TestOnly, 1)]),

@@ -23,7 +23,10 @@ use std::time::{Duration, Instant};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::instance_artifacts::{NAMING_MIGRATION_LOCK_NAME, NAMING_MIGRATION_STATE_NAME};
+use super::instance_artifacts::{
+    NAMING_MIGRATION_LOCK_NAME, NAMING_MIGRATION_STATE_NAME, PROJECT_SETTINGS_TARGET_NAME,
+    SET_ASIDE_GLOB,
+};
 
 /// The only journal format this build reads or writes.
 const JOURNAL_VERSION: u32 = 1;
@@ -876,6 +879,42 @@ pub(crate) fn rename_prefix_family(
             (from, outcome)
         })
         .collect()
+}
+
+/// #2717 (B4a) - the three `.ac/.gitignore` rows the project-settings rename
+/// needs, as `(pattern, comment)`. The one home of this table: the writer at
+/// registration (`commands::ac_discovery`) and the migration's own sweep
+/// (`config::project_settings`) both read it here. Composed from the registry
+/// at runtime, so no second spelling of a name exists in production.
+pub(crate) fn project_settings_ignore_rows() -> [(String, &'static str); 3] {
+    [
+        (
+            format!("/{PROJECT_SETTINGS_TARGET_NAME}"),
+            "# AgentsCommander: exclude generated project-local settings.",
+        ),
+        (
+            format!("/.{PROJECT_SETTINGS_TARGET_NAME}.lock"),
+            "# AgentsCommander: exclude the project settings write-lock sidecar.",
+        ),
+        (
+            format!("/{SET_ASIDE_GLOB}"),
+            "# AgentsCommander: exclude project files the naming migration set aside.",
+        ),
+    ]
+}
+
+/// The managed blocks, `\n<comment>\n<pattern>\n`, of each `(pattern, comment)`
+/// pair of `rows` whose pattern line is absent from `content`; empty when there
+/// is nothing to add. Presence is exact line equality, so a line with a leading
+/// space, which Git does not read as the rule, does not count. Pure text.
+pub(crate) fn missing_ignore_rows(content: &str, rows: &[(String, &str)]) -> String {
+    let mut blocks = String::new();
+    for (pattern, comment) in rows {
+        if !content.lines().any(|line| line == pattern) {
+            blocks.push_str(&format!("\n{comment}\n{pattern}\n"));
+        }
+    }
+    blocks
 }
 
 /// Removes exactly the AC-written `comment` + `pattern` pairs named in `retired`
