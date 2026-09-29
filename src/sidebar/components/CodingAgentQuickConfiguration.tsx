@@ -90,7 +90,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     } catch (e) {
       if (isStale()) return;
       console.error("Coding Agent welcome status failed:", e);
-      setWelcomeStatus([]);
+      publishWelcomeStatus([]);
     }
   };
 

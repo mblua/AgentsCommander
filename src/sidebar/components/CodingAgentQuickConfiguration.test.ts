@@ -1591,5 +1591,31 @@ describe("CodingAgentQuickConfiguration", () => {
 
       consoleError.mockRestore();
     });
+
+    it("install_2736_a_failed_status_read_keeps_focus_in_the_modal", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.mocked(CodingAgentsAPI.welcomeStatus)
+        .mockResolvedValueOnce(installRows())
+        .mockRejectedValueOnce("status failure");
+      const onCancel = vi.fn();
+      const dispose = await mountReady(onCancel);
+
+      installButton("codex")!.focus();
+      installButton("codex")!.click();
+      await settle();
+      // The current read fails: the empty status removes every install row.
+      await emitFinished({ key: "codex", command: CODEX_CMD, ok: false });
+
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      expect(installRow("codex")).toBeNull();
+      expect(document.activeElement).toBe(card("codex"));
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+      expect(onCancel).toHaveBeenCalledTimes(1);
+
+      consoleError.mockRestore();
+      dispose();
+    });
   });
 });
