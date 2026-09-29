@@ -478,3 +478,10 @@ html.light-theme .error-modal-btn-copy:hover {
   background: rgba(0, 0, 0, 0.05);
   color: #1a1a1e;
 }
+
+/* #2744 - these two read --fg-secondary, undefined and left undefined because
+   its ten call sites pass four different alphas. Dark keeps each alpha. */
+html.light-theme .error-modal-counter,
+html.light-theme .error-modal-meta {
+  color: #5a6172;
+}
