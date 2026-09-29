@@ -6014,6 +6014,9 @@ struct CoManagedSupervisorState {
 struct CoManagedTestHooks {
     steps: std::sync::Mutex<Vec<&'static str>>,
     commit_calls: std::sync::atomic::AtomicUsize,
+    /// Runs once inside `commit_co_managed_with_retries`, after a successful commit and before the
+    /// caller consumes the slot. One-shot: the only way a test can offer a newer record in that window.
+    after_commit: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 #[cfg(test)]
@@ -6031,6 +6034,17 @@ impl CoManagedTestHooks {
 
     fn commit_calls(&self) -> usize {
         self.commit_calls.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn set_after_commit(&self, hook: Box<dyn FnOnce() + Send>) {
+        *self.after_commit.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    fn take_after_commit(&self) -> Option<Box<dyn FnOnce() + Send>> {
+        self.after_commit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 }
 
@@ -6123,6 +6137,16 @@ impl CoManagedSupervisorHandle {
             hooks
                 .commit_calls
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    /// Test-only seam: see `CoManagedTestHooks::after_commit`.
+    fn run_after_commit_hook(&self) {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            if let Some(hook) = hooks.take_after_commit() {
+                hook();
+            }
         }
     }
 }
@@ -6725,7 +6749,10 @@ async fn commit_co_managed_with_retries<R: tauri::Runtime>(
             ),
         }
         match result {
-            Ok(committed) => return CoManagedCommit::Committed(committed),
+            Ok(committed) => {
+                handle.run_after_commit_hook();
+                return CoManagedCommit::Committed(committed);
+            }
             Err(capture::state::AbstainReason::PreconditionsStale)
             | Err(capture::state::AbstainReason::LockBusy) => continue,
             Err(error) => return CoManagedCommit::Rejected(error),
@@ -6784,9 +6811,9 @@ async fn co_managed_cycle<R: tauri::Runtime>(
         .await
         {
             CoManagedCommit::Committed(_) => {
-                // The candidate is consumed: clearing the slot publishes the
-                // transition, and a later idle edge can never act on it again.
-                slot.clear();
+                // Consume this exact candidate; a newer offer stays in the
+                // slot and re-triggers its own cycle.
+                slot.try_consume(expected_seq, &expected_key, expected_key.epoch);
                 surface_co_managed_user_message(app, session_id, user_message).await;
                 CoManagedOutcome::Done(reason)
             }
@@ -6844,9 +6871,9 @@ async fn co_managed_cycle<R: tauri::Runtime>(
     .await
     {
         CoManagedCommit::Committed(committed) => {
-            // Consumed: the slot must not offer this candidate again on the
-            // next idle edge, and the transition clears the armed flag.
-            slot.clear();
+            // Consume this exact candidate; a newer offer stays in the slot
+            // and re-triggers its own cycle.
+            slot.try_consume(expected_seq, &expected_key, expected_key.epoch);
             // `routable` is false for a baseline consumed by an Automatic
             // request (the plan's section 8 demotion). A TextToUser commit is
             // equally not routable, but its effect is the user message below.
@@ -6882,7 +6909,9 @@ async fn co_managed_cycle<R: tauri::Runtime>(
                 .await
                 {
                     CoManagedCommit::Committed(_) => {
-                        slot.clear();
+                        // Consume this exact candidate; a newer offer stays
+                        // in the slot and re-triggers its own cycle.
+                        slot.try_consume(expected_seq, &expected_key, expected_key.epoch);
                         let message = co_managed_user_message(
                             &format!(
                                 "abstained: the automatic budget is exhausted ({} actions since the last recharge); the candidate was not routed",
@@ -10168,6 +10197,210 @@ mod tests {
             .expect("text to the user");
         let message = communication.message.expect("message text");
         assert!(message.to_lowercase().contains("budget"), "{message}");
+    }
+
+    /// Arms the post-commit race: the hook offers `next` into `slot` inside the window the
+    /// production sites consume in. Returns the offered record.
+    fn arm_post_commit_offer(
+        hooks: &Arc<CoManagedTestHooks>,
+        slot: &CaptureSlot,
+        next: Arc<CapturedRecord>,
+    ) -> Arc<CapturedRecord> {
+        let slot = slot.clone();
+        let offered = Arc::clone(&next);
+        hooks.set_after_commit(Box::new(move || {
+            assert_eq!(
+                slot.offer(next, 0),
+                crate::capture::sink::OfferOutcome::Published
+            );
+        }));
+        offered
+    }
+
+    /// Test 33a: a record offered between the secret-path commit and the
+    /// consume survives it and is processed by the next cycle.
+    #[tokio::test]
+    async fn a_newer_candidate_survives_the_secret_path_commit() {
+        let fixture = make_co_managed_fixture();
+        let (app, manager, registry) =
+            co_managed_app(&fixture, "http://127.0.0.1:9".to_string(), true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let (slot, _first) =
+            install_candidate(&registry, session_id, "leak AKIAIOSFODNN7EXAMPLE one");
+        let first_seq = slot.snapshot().seq;
+        let hooks = Arc::new(CoManagedTestHooks::default());
+        let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+        let next = co_managed_candidate(&session_id.to_string(), "leak AKIAIOSFODNN7EXAMPLE two");
+        let offered = arm_post_commit_offer(&hooks, &slot, next);
+
+        let trigger = CoManagedTrigger::IdleEdge(session_id);
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+
+        let state = slot.snapshot();
+        assert_eq!(
+            state.seq,
+            first_seq + 1,
+            "the cycle must not clear the newer offer"
+        );
+        let held = state.value.record().expect("the newer record survives");
+        assert!(Arc::ptr_eq(held, &offered));
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+        assert!(
+            slot.snapshot().value.record().is_none(),
+            "the next cycle consumed it"
+        );
+        assert!(messaging_files(&fixture.room_root).is_empty());
+        assert!(queue_files(&fixture.room_root).is_empty());
+    }
+
+    /// Test 33b: a record offered between the automatic-path commit and the
+    /// consume survives it and is routed by the next cycle.
+    #[tokio::test]
+    async fn a_newer_candidate_survives_the_automatic_path_commit() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let (slot, _first) = install_candidate(&registry, session_id, "candidate text alpha");
+        let first_seq = slot.snapshot().seq;
+        let hooks = Arc::new(CoManagedTestHooks::default());
+        let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+        let next = co_managed_candidate(&session_id.to_string(), "candidate text bravo");
+        let offered = arm_post_commit_offer(&hooks, &slot, next);
+
+        let trigger = CoManagedTrigger::IdleEdge(session_id);
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+        let queued_after_first = queue_files(&fixture.room_root).len();
+
+        let state = slot.snapshot();
+        assert_eq!(
+            state.seq,
+            first_seq + 1,
+            "the cycle must not clear the newer offer"
+        );
+        let held = state.value.record().expect("the newer record survives");
+        assert!(Arc::ptr_eq(held, &offered));
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+        assert!(
+            slot.snapshot().value.record().is_none(),
+            "the next cycle consumed it"
+        );
+        assert!(
+            queue_files(&fixture.room_root).len() > queued_after_first,
+            "the second cycle routed the newer record"
+        );
+    }
+
+    /// Test 33c: a record offered between the budget-fallback commit and the
+    /// consume survives it and is processed by the next cycle.
+    #[tokio::test]
+    async fn a_newer_candidate_survives_the_budget_fallback_commit() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let state_path =
+            crate::config::co_managed::co_managed_dir(&fixture.room_root).join("state.json");
+        std::fs::write(
+            &state_path,
+            r#"{"spends_since_recharge":3,"recharge_stamp":1}"#,
+        )
+        .unwrap();
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let (slot, _first) = install_candidate(&registry, session_id, "candidate text alpha");
+        let first_seq = slot.snapshot().seq;
+        let hooks = Arc::new(CoManagedTestHooks::default());
+        let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+        let next = co_managed_candidate(&session_id.to_string(), "candidate text bravo");
+        let offered = arm_post_commit_offer(&hooks, &slot, next);
+
+        let trigger = CoManagedTrigger::IdleEdge(session_id);
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+
+        let state = slot.snapshot();
+        assert_eq!(
+            state.seq,
+            first_seq + 1,
+            "the cycle must not clear the newer offer"
+        );
+        let held = state.value.record().expect("the newer record survives");
+        assert!(Arc::ptr_eq(held, &offered));
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+        assert!(
+            slot.snapshot().value.record().is_none(),
+            "the next cycle consumed it"
+        );
+        assert!(
+            queue_files(&fixture.room_root).is_empty(),
+            "nothing enqueued"
+        );
+        let communication = session_communication(&manager, session_id)
+            .await
+            .expect("text to the user");
+        let message = communication.message.expect("message text");
+        assert!(message.to_lowercase().contains("budget"), "{message}");
+    }
+
+    /// Test 33d: control. Without a race the automatic path still consumes
+    /// the candidate exactly once.
+    #[tokio::test]
+    async fn without_a_race_the_automatic_path_consumes_the_candidate() {
+        let fixture = make_co_managed_fixture();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let (slot, _first) = install_candidate(&registry, session_id, "candidate text alpha");
+        let first_seq = slot.snapshot().seq;
+        let hooks = Arc::new(CoManagedTestHooks::default());
+        let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+
+        let trigger = CoManagedTrigger::IdleEdge(session_id);
+        super::handle_co_managed_trigger(app.handle(), &handle, trigger).await;
+
+        let state = slot.snapshot();
+        assert_eq!(state.seq, first_seq + 1, "consumed exactly once");
+        assert!(state.value.record().is_none(), "the candidate was consumed");
     }
 
     /// Test 14: a `provider_final == false` candidate is rendered as the
