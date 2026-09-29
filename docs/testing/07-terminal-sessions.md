@@ -325,7 +325,7 @@ Steps:
 8. Assert color, width, wide-pair, cursor, sequence, parser error, wrap, and style values are structurally valid. Confirm blank cells are present instead of truncated.
 9. Assert the full `fidelity` object equals the documented version-1 constants, including `scope=currentBackendViewport`, `backendParser=vt100-0.15.2`, zero backend scrollback, `applicationFrameAtomic=false`, and the exact ordered `omitted` and `unsupported` arrays.
 10. Confirm the harmless marker is represented when it remains inside the current viewport. Do not fail a coherent capture merely because concurrent output moved the marker before the parser-lock boundary.
-11. Default-on absent key: with the app closed, remove the `terminalSnapshotsEnabled` key from `settings.json`, restart, and repeat steps 5 through 7. Assert exit 0 and a complete version-1 document, proving an absent key authorizes.
+11. Default-on absent key: with the app closed, remove the `terminalSnapshotsEnabled` key from `settings.30.instance.no-git.json`, restart, and repeat steps 5 through 7. Assert exit 0 and a complete version-1 document, proving an absent key authorizes.
 12. Explicit false denies: with the app closed, write `"terminalSnapshotsEnabled": false`, restart, and repeat step 5. Assert a `terminal_snapshots_disabled` denial, exit 1, and zero snapshot content bytes on stdout.
 13. Cross-room denial for an Orchestrator: with the gate on, use a verified Orchestrator of its own room as the requester and repeat step 5 against a verified member of a different room in the same project. Assert `not_authorized`, exit 1, zero content bytes, and no disclosure of target liveness. Do not run this step with a canonical host Root requester: Root is authorized for any verified room in an active project, so a Root request here is expected to succeed.
 
@@ -339,7 +339,7 @@ Evidence Required:
 - `TRM-008-snapshot-targets.stdout.json`, stderr, command, and exit record.
 - `TRM-008-terminal-snapshot.stdout.json`, raw-byte hash, stderr, command, and exit record.
 - `TRM-008-schema-validation.json` with each asserted count and constant.
-- `TRM-008-absent-key.stdout.json`, `TRM-008-explicit-false.stderr`, and `TRM-008-cross-room.stderr` with the exact `settings.json` gate bytes, command, and exit code for each of steps 11 through 13.
+- `TRM-008-absent-key.stdout.json`, `TRM-008-explicit-false.stderr`, and `TRM-008-cross-room.stderr` with the exact `settings.30.instance.no-git.json` gate bytes, command, and exit code for each of steps 11 through 13.
 - The exact app version, commit, platform, requester kind, target backend, and setting state.
 
 Pass/Fail Criteria:

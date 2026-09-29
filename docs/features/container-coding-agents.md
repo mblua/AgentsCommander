@@ -108,7 +108,7 @@ Host and containers share **one login**. The copy is a snapshot, not a live moun
 
 ## Turning it off
 
-**Settings → General → Container Coding Agents → "Reuse host login for container coding agents"**, or in `settings.json`:
+**Settings → General → Container Coding Agents → "Reuse host login for container coding agents"**, or in `settings.30.instance.no-git.json`:
 
 ```json
 {

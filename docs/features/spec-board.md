@@ -14,7 +14,7 @@ Because the board is a window rather than a panel, it survives independently of 
 
 ## Turning it on
 
-The Spec Board is **off by default**. Set `specBoardEnabled` to `true` in `settings.json` and the Spec Board button appears in the sidebar toolbar; that button is what opens the window.
+The Spec Board is **off by default**. Set `specBoardEnabled` to `true` in `settings.30.instance.no-git.json` and the Spec Board button appears in the sidebar toolbar; that button is what opens the window.
 
 `specBoardEnabled` is a manual-only field. Edit it while AC is closed, or reload settings before you use any Settings save path, otherwise the next in-memory save can clobber your change.
 

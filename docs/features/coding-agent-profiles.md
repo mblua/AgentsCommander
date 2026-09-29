@@ -75,12 +75,12 @@ AC picks the requested letter from the first source that has one, highest priori
 | 1. Instance override | The replica's `tooling.profile` in its own `config.json` | Assigned to the replica; persists across future launches |
 | 2. Explicit request | The letter you pick for this one launch | The launch picker, for this launch only |
 | 3. Origin default | The agent matrix's `tooling.defaultProfile` | Hand-edited in the matrix `config.json`, or inherited (no UI control) |
-| 4. Agent default | `codingAgentProfiles.defaultProfileByAgent[<agent>]` in `settings.json` | Rarely set by hand; see note below |
+| 4. Agent default | `codingAgentProfiles.defaultProfileByAgent[<agent>]` in `agents.30.instance.no-git.json` | Rarely set by hand; see note below |
 | Floor | `A` | Always available when nothing else resolves |
 
 Tier 1 outranks tier 2 on purpose: a profile you deliberately assigned to a replica should survive future launches, so it beats an ephemeral letter picked for a single launch. The one exception is the dispatch-time request (tier 0): a `send --profile` letter is the orchestrator's explicit per-wake choice and outranks the replica pin for that spawn only — it is never written back, so the pin survives for every other launch.
 
-> **No per-agent "default" button.** Neither the origin default (tier 3, the per-agent-matrix `tooling.defaultProfile`) nor tier 4 (`defaultProfileByAgent` in `settings.json`) has a UI control. Tier 3 is set only by hand-editing the matrix `config.json` or by inheritance; tier 4 only by an inherited config or by hand-editing `settings.json`. The closest thing to a default in the UI is an instance override (tier 1), assigned through the launch picker as described below.
+> **No per-agent "default" button.** Neither the origin default (tier 3, the per-agent-matrix `tooling.defaultProfile`) nor tier 4 (`defaultProfileByAgent` in `agents.30.instance.no-git.json`) has a UI control. Tier 3 is set only by hand-editing the matrix `config.json` or by inheritance; tier 4 only by an inherited config or by hand-editing `agents.30.instance.no-git.json`. The closest thing to a default in the UI is an instance override (tier 1), assigned through the launch picker as described below.
 
 ### Step 2: walk down to the nearest enabled cell
 
@@ -110,7 +110,7 @@ The command that actually starts is the agent's base command followed by the pro
 effective = "<agent base command> <profile cell params>"
 ```
 
-The base command (the binary, plus any fixed args) comes from the Coding Agent entry in `settings.json`. The cell holds only the extra params. An empty side contributes nothing, and if both are empty the launch fails with `agent command is empty`.
+The base command (the binary, plus any fixed args) comes from the Coding Agent entry in `agents.30.instance.no-git.json`. The cell holds only the extra params. An empty side contributes nothing, and if both are empty the launch fails with `agent command is empty`.
 
 **Example.** Base command `claude-amp`, profile `B` params `--effort max --model <model-id>`:
 
@@ -136,20 +136,20 @@ Drift is **manual**: AC never auto-reloads. The check covers an edit to the base
 
 ## Where profiles are stored
 
-Profiles live in two places: the global `settings.json` (the matrix and defaults) and per-agent `config.json` files (the per-agent and per-replica assignments).
+Profiles live in two places: the global `agents.30.instance.no-git.json` (the matrix and defaults) and per-agent `config.json` files (the per-agent and per-replica assignments).
 
 | Datum | Location | Key |
 |---|---|---|
-| Matrix cells (params, env, notes) | `settings.json` | `codingAgentProfiles.profilesByAgent[<coding-agent-id>][<letter>]` |
-| Profile letters and labels | `settings.json` | `codingAgentProfiles.profileSlots`, `codingAgentProfiles.profileLabelsByAgent` |
-| Agent default letter (tier 4) | `settings.json` | `codingAgentProfiles.defaultProfileByAgent[<agent>]` |
+| Matrix cells (params, env, notes) | `agents.30.instance.no-git.json` | `codingAgentProfiles.profilesByAgent[<coding-agent-id>][<letter>]` |
+| Profile letters and labels | `agents.30.instance.no-git.json` | `codingAgentProfiles.profileSlots`, `codingAgentProfiles.profileLabelsByAgent` |
+| Agent default letter (tier 4) | `agents.30.instance.no-git.json` | `codingAgentProfiles.defaultProfileByAgent[<agent>]` |
 | Origin default (tier 3) | agent matrix `_agent_<name>/config.json` | `tooling.defaultProfile` |
 | Instance override (tier 1) | replica `__agent_<name>/config.json` | `tooling.profile` (legacy `tooling.instanceProfileOverride`) |
 | Drift fingerprint | replica/matrix `config.json` | `tooling.profileContentHash` |
 
-The full `codingAgentProfiles` schema (including `schemaVersion`) is in the [settings reference](../reference/settings.md#coding-agent-profiles). The matrix uses schema version 2; older pre-v2 profile fields are no longer read: they are ignored. Before any save drops them, AC keeps the original once as `settings.pre-384-v1.json` and writes settings without them; the `open-project` and `new-project` CLI commands keep them and write no backup.
+The full `codingAgentProfiles` schema (including `schemaVersion`) is in the [settings reference](../reference/settings.md#coding-agent-profiles). The matrix uses schema version 2; older pre-v2 profile fields are no longer read: they are ignored. Before any save drops them, AC keeps the original once as `settings.30.instance.no-git.pre-384-v1.json` and writes settings without them; the `open-project` and `new-project` CLI commands keep them and write no backup.
 
-**Dispatch a profile per wake.** `send --mode wake --profile <A-Z>` applies the letter to the coding agent the wake spawns or respawns (see [cli.md](../reference/cli.md) `send`). The letter is a dispatch-time request: it wins over a pinned replica profile for that spawn, is never written to `tooling.profile`/`currentCodingAgent`/`lastCodingAgent`, and the receipt reports the effective letter and any cell fallback (`fallbackApplied`). There is still no `profile` subcommand; everything else about profiles is configured in Settings or by editing `settings.json` and the per-agent `config.json` files.
+**Dispatch a profile per wake.** `send --mode wake --profile <A-Z>` applies the letter to the coding agent the wake spawns or respawns (see [cli.md](../reference/cli.md) `send`). The letter is a dispatch-time request: it wins over a pinned replica profile for that spawn, is never written to `tooling.profile`/`currentCodingAgent`/`lastCodingAgent`, and the receipt reports the effective letter and any cell fallback (`fallbackApplied`). There is still no `profile` subcommand; everything else about profiles is configured in Settings or by editing `agents.30.instance.no-git.json` and the per-agent `config.json` files.
 
 ## Troubleshooting
 

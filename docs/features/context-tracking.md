@@ -65,7 +65,7 @@ The editor works one threshold at a time:
 - `Remove` deletes that row.
 - With none configured, the section reads `No context alerts configured.`
 
-**These thresholds are not a `settings.json` key.** They are stored in the team's own configuration, alongside the rest of what the team defines. There is no global context-alert setting, and nothing you can add to `settings.json` will turn alerts on for every team at once.
+**These thresholds are not a `settings.30.instance.no-git.json` key.** They are stored in the team's own configuration, alongside the rest of what the team defines. There is no global context-alert setting, and nothing you can add to `settings.30.instance.no-git.json` will turn alerts on for every team at once.
 
 ## The injected alert message
 

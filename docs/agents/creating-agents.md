@@ -44,7 +44,7 @@ Optional flags:
 | Flag | Meaning |
 |---|---|
 | `--role-template <id>` | Seed the role from a template, e.g. `agency:dev-rust` or `local:my-template`. |
-| `--launch claude` | Launch a coding agent in the new agent's directory immediately after creation. Matches an `id`, `label`, or command prefix in `settings.json → agents[]`. |
+| `--launch claude` | Launch a coding agent in the new agent's directory immediately after creation. Matches an `id`, `label`, or command prefix in `agents.30.instance.no-git.json → agents[]`. |
 | `--root <PATH>` | Accepted for parity with `create-agent-matrix`; ignored by the handler. |
 | `--token <TOKEN>` | Accepted for parity with `create-agent-matrix`; ignored by the handler. |
 

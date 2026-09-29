@@ -94,7 +94,7 @@ A [Co-managed](co-managed-rooms.md) orchestrator paints its status circle **red*
 
 Precedence: `exited` wins over Co-managed, so the two never paint the same circle at once even though they share red. Co-managed wins over `waiting` and `pending`, on purpose: the idle edge is exactly where those would otherwise light up.
 
-The orchestrator row also carries the room's **Co-managed** checkbox, tooltipped `Let Jev read this room's orchestrator activity and route it when the room is idle`, with the reason underneath when the room is not effective. The checkbox **is not drawn** while the global `coManagedEnabled` switch in `settings.json` is off, which is the default while the feature is in development.
+The orchestrator row also carries the room's **Co-managed** checkbox, tooltipped `Let Jev read this room's orchestrator activity and route it when the room is idle`, with the reason underneath when the room is not effective. The checkbox **is not drawn** while the global `coManagedEnabled` switch in `settings.30.instance.no-git.json` is off, which is the default while the feature is in development.
 
 A co-managed replica row is **findable by searching for `comanaged`**: the circle's class is the row's search text.
 

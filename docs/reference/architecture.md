@@ -693,7 +693,7 @@ The current `main` source selects the application config directory once at runti
 ```mermaid
 graph TD
     subgraph "Active selected application config dir"
-        SETTINGS["settings.json<br/>Shell, agents, bots,<br/>voice config, window prefs"]
+        SETTINGS["settings.30.instance.no-git.json<br/>Shell, bots,<br/>voice config, window prefs<br/>(coding agents: agents.30.instance.no-git.json)"]
         SESSIONS["sessions.json<br/>Session registry<br/>for restore on startup"]
         MASTER["master-token.txt<br/>host credential"]
         INJECTED["injected-messages.toml<br/>+ .default.toml"]

@@ -137,7 +137,7 @@ What AC does to contain it:
 - **AC refuses to write or delete through a symlink or junction**, on the destination directory and on the credential file. The bind mount is read-write, so a container can plant a link to redirect the token off-mount on the next write. AC skips the copy instead, and then stamps no first-run state: a container with no token must show its login wizard rather than pretend to be signed in.
 - **On Unix the copy is `0o600`.** A failure to set the mode is logged, not swallowed.
 
-Turn it off in **Settings → General → Container Coding Agents**, or set `containerCredentialsFromHost: false` in `settings.json`. Then AC copies nothing, injects no `CLAUDE_CONFIG_DIR`, stamps nothing, and you supply credentials yourself.
+Turn it off in **Settings → General → Container Coding Agents**, or set `containerCredentialsFromHost: false` in `settings.30.instance.no-git.json`. Then AC copies nothing, injects no `CLAUDE_CONFIG_DIR`, stamps nothing, and you supply credentials yourself.
 
 ## Code signing
 
@@ -158,7 +158,7 @@ Linux and macOS builds are not signed today, including the macOS `.app` bundle t
 - **Windows code signing** is pending SignPath setup and approval ([#717](https://github.com/mblua/AgentsCommander/issues/717)).
 - **`--root` is unverified** at the CLI boundary. A malicious local process with shell access can spoof its own root. Mitigated by the daemon-side per-session token check, but not eliminated.
 - **No sandbox between agents.** Two agents in the same room share filesystem access. If you need hard isolation, run each agent in its own VM or container.
-- **API keys live in plaintext** in `settings.json` under the version-selected configuration directory. Protect your user account and that exact path; if your account is compromised, the keys are.
+- **API keys live in plaintext** in `settings.30.instance.no-git.json` under the version-selected configuration directory. Protect your user account and that exact path; if your account is compromised, the keys are.
 - **Copied container credentials get no owner-only ACL on Windows** ([#933](https://github.com/mblua/AgentsCommander/issues/933)). The copy inherits the project tree's ACL, which for a user-chosen repo path can be broader than `~/.claude` (shared drives, `Everyone:R`). Unix gets `0o600`.
 - **An unclean host crash can leave a copied container credential on disk** ([#933](https://github.com/mblua/AgentsCommander/issues/933)). Teardown deletes it and the next same-agent launch overwrites it, but there is no boot-time sweep, so a replica you never relaunch keeps a live refresh token indefinitely.
 - **Snapshot transient cleanup is best-effort after crash and unregistration.** A compatible daemon normally removes dedicated protocol files after use or 60 seconds, but a crash followed by removal of the only active or archived project registration can leave an undiscoverable requester-side file. See [Output lifetime and cleanup](features/terminal-snapshots.md#output-lifetime-and-cleanup).

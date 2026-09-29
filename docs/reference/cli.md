@@ -24,7 +24,7 @@ agentscommander send --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_R
 
 If token validation keeps failing, restart or respawn the session — live token refresh is not supported.
 
-`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local `settings.json` or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-room` requires the caller to be the identity-verified room orchestrator, and the master/root token does NOT bypass that check (a root token has no room).
+`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local settings and agents files or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-room` requires the caller to be the identity-verified room orchestrator, and the master/root token does NOT bypass that check (a root token has no room).
 
 `terminal-snapshot` is a privileged exception. The host CLI requires a canonical UUID-v4 live-session token, rejects persisted Root or master credentials, and leaves final authorization to the daemon's live physical-identity checks. `list-peers-lean --snapshot-targets` remains shape-only, identity-only discovery and grants no snapshot authority.
 
@@ -198,7 +198,7 @@ agentscommander self-handoff-and-switch --list-coding-agents
 |---|---|---|
 | `--token` | Yes | Session token. Shape-validated. |
 | `--root` | Yes | Caller's agent root directory. |
-| `--coding-agent` | No | Configured coding-agent entry id from `settings.json → agents[]`, not a backend kind or AC peer name. Omit to keep the live session's agent. |
+| `--coding-agent` | No | Configured coding-agent entry id from `agents.30.instance.no-git.json → agents[]`, not a backend kind or AC peer name. Omit to keep the live session's agent. |
 | `--profile` | No | Profile slot letter A through Z. Omit to keep the live session's effective profile. |
 | `--list-coding-agents` | No | Print valid coding-agent ids and profile letters, then exit. Requires neither token nor root. |
 | `--timeout` | No | Seconds to wait for the daemon's queue acknowledgement. Default 15. |
@@ -227,7 +227,7 @@ Before invoking, write `SELF-HANDOFF.md` in your own root with the notes you nee
 
 Scope is every session that owns a token and runs a configured coding agent: Room replicas (`__agent_*`), origin Agent Matrix agents (`_agent_*`), and the Root Agent. A session with **no configured coding-agent identity** is rejected, because there is no recipe to respawn; run the command from a coding-agent session.
 
-The respawn is rebuilt from your current configuration for that coding agent and profile letter. It pins the **recipe**, not a frozen command line: if that coding agent's configured command is edited between launch and restart, the new process runs the edited command. If the pinned recipe no longer builds a launchable command (a profile letter that no longer resolves, or a base command that no longer tokenizes), the daemon rejects the request **synchronously**, naming the agent, the letter and the directory, so nothing is queued and nothing is archived. If the coding agent has simply been removed from `settings.json → agents[]`, the respawn falls back to the session's stored shell and args, exactly as the UI Restart button does.
+The respawn is rebuilt from your current configuration for that coding agent and profile letter. It pins the **recipe**, not a frozen command line: if that coding agent's configured command is edited between launch and restart, the new process runs the edited command. If the pinned recipe no longer builds a launchable command (a profile letter that no longer resolves, or a base command that no longer tokenizes), the daemon rejects the request **synchronously**, naming the agent, the letter and the directory, so nothing is queued and nothing is archived. If the coding agent has simply been removed from `agents.30.instance.no-git.json → agents[]`, the respawn falls back to the session's stored shell and args, exactly as the UI Restart button does.
 
 Like any restart, the respawn refreshes this agent root's `tooling.lastCodingAgent` and `tooling.codingAgents` bookkeeping; it does not touch your `currentCodingAgent` or `profile` selection.
 
@@ -642,7 +642,7 @@ agentscommander create-agent --project MyProject --name "Pi Reviewer" --descript
 | `--name` | Yes | Display/input name, sanitized into a lower-case `_agent_<id>` folder id (the same backend as the New Agent UI). |
 | `--description` | Yes | Written into the `Role.md` frontmatter and body. Trimmed; rejected when empty after trim. |
 | `--role-template` | No | Role template id from the New Agent picker source, e.g. `agency:dev-rust` or `local:my-template`. An invalid id fails before any directory is created. |
-| `--launch` | No | Coding agent to launch after creation. Matches an `id`, `label`, or command prefix in `settings.json → agents[]`. |
+| `--launch` | No | Coding agent to launch after creation. Matches an `id`, `label`, or command prefix in `agents.30.instance.no-git.json → agents[]`. |
 | `--root` | No | Accepted for parity with `create-agent-matrix`; ignored by the handler. |
 | `--token` | No | Accepted for parity with `create-agent-matrix`; ignored by the handler. |
 
@@ -674,7 +674,7 @@ agentscommander create-agent-matrix --project MyProject --name "dev-rust" --desc
 | `--name` | Yes | Display/input name, sanitized into a lower-case `_agent_<id>` folder id (the same backend as the New Agent UI). |
 | `--description` | Yes | Written into the `Role.md` frontmatter and body. Passed through as given (no trim, no empty check in the handler). |
 | `--role-template` | No | Role template id from the New Agent picker source, e.g. `agency:dev-rust` or `local:my-template`. An invalid id fails before any directory is created. |
-| `--launch` | No | Coding agent to launch after creation. Matches an `id`, `label`, or command prefix in `settings.json → agents[]`. |
+| `--launch` | No | Coding agent to launch after creation. Matches an `id`, `label`, or command prefix in `agents.30.instance.no-git.json → agents[]`. |
 | `--root` | No | Accepted for parity with `create-agent`; ignored by the handler. |
 | `--token` | No | Accepted for parity with `create-agent`; ignored by the handler. |
 
@@ -688,7 +688,7 @@ Output (stdout, JSON): `{ agentPath, agentName, rolePath, launched, launchStatus
 
 ## `coding-agent`
 
-Scriptable create/inspect/update/remove of Coding Agent configurations (`settings.agents[]`) without the GUI. Agents created here are consumed by [`create-agent`](#create-agent) / [`create-agent-matrix`](#create-agent-matrix) `--launch`. No `--token`: this mutates the user-local `settings.json`, which any local process can already write (same boundary as [`open-project`](#open-project)).
+Scriptable create/inspect/update/remove of Coding Agent configurations (`agents[]` in `agents.30.instance.no-git.json`) without the GUI. Agents created here are consumed by [`create-agent`](#create-agent) / [`create-agent-matrix`](#create-agent-matrix) `--launch`. No `--token`: this mutates the user-local `agents.30.instance.no-git.json`, which any local process can already write (same boundary as [`open-project`](#open-project)).
 
 ```bash
 agentscommander coding-agent list
@@ -738,7 +738,7 @@ Subcommands:
 
 `remove` leaves any `profilesByAgent[id]` / `profileLabelsByAgent[id]` entries in place (matching the GUI and settings repair), so a same-id re-add resurrects the old profile cells.
 
-**GUI-running routing.** While an AgentsCommander GUI for this binary identity is running (detected via the single-instance mutex), mutations are NOT written to `settings.json` directly. They are queued and applied by the running GUI against its authoritative in-memory state, then a result is returned to the CLI. While the GUI is closed, mutations load `settings.json` strictly (a present-but-unparseable file is refused, not silently defaulted) then apply and save. GUI detection is Windows-only; off-Windows a running GUI is not detected and the direct write path is always used.
+**GUI-running routing.** While an AgentsCommander GUI for this binary identity is running (detected via the single-instance mutex), mutations are NOT written to `agents.30.instance.no-git.json` directly. They are queued and applied by the running GUI against its authoritative in-memory state, then a result is returned to the CLI. While the GUI is closed, mutations load the settings and agents files strictly (a present-but-unparseable file is refused, not silently defaulted) then apply and save. GUI detection is Windows-only; off-Windows a running GUI is not detected and the direct write path is always used.
 
 **Known limitation (documented for scripts).** The CLI does not clobber the GUI, but the reverse remains possible: a Settings dialog that is already open with an unsaved draft can, on its next Save, revert a concurrent CLI mutation (it writes a full snapshot). Run `--launch` (or re-`show`) right after `add` so consumption happens before a Settings Save can revert.
 
@@ -930,9 +930,9 @@ If the folder does not contain `.ac/`, the CLI suggests `new-project` instead.
 
 **Persisted forms.** Relative `PATH` still resolves against your CWD, but the registration records a canonical absolute path and, when an instance base exists, a portable companion relative to that base. Adjacent selection uses the native executable's directory. Under the unpublished `main` resolver, an absolute public config override uses the override directory's parent; published `v0.30.3` has no public override. A home fallback or `main` relative override has no base. See [Portable instances](../features/portable-instances.md#portable-project-paths) and the [`projectPaths` schema](settings.md#projects). A project on a different drive or UNC share than the base records a `null` companion and remains absolute-only.
 
-**Strict settings write.** `open-project` loads `settings.json` strictly before writing: a present-but-unparseable file, or structurally malformed project metadata, is refused with an error and no changes, rather than being silently overwritten.
+**Strict settings write.** `open-project` loads `settings.30.instance.no-git.json` strictly before writing: a present-but-unparseable file, or structurally malformed project metadata, is refused with an error and no changes, rather than being silently overwritten.
 
-**No token required** — project registration mutates the local `settings.json`, which any shell-capable process can already write to.
+**No token required** — project registration mutates the local `settings.30.instance.no-git.json`, which any shell-capable process can already write to.
 
 **GUI concurrency caveat**: when AC is running, the in-memory settings are authoritative; a subsequent GUI `update_settings` built from a stale snapshot can clobber a CLI-registered entry. This last-writer race between separate CLI and GUI processes is unchanged; the dual-path work adds no interprocess lock. A watcher/reload story is a follow-up issue.
 

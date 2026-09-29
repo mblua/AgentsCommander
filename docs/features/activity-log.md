@@ -22,7 +22,7 @@ What the log does **not** contain: terminal output, prompts, command text, or an
 
 ## Turning it on
 
-Set `activityLogEnabled` to `true` in `settings.json`. It is `false` by default, and a missing, null or malformed value is read as `false`.
+Set `activityLogEnabled` to `true` in `settings.30.instance.no-git.json`. It is `false` by default, and a missing, null or malformed value is read as `false`.
 
 Writing is best-effort by design. If an append fails, AC logs a warning and keeps running rather than failing the operation that produced the event:
 
@@ -32,7 +32,7 @@ Writing is best-effort by design. If an append fails, AC logs a warning and keep
 
 ## Where the file lives
 
-The file is `activity.jsonl`, in the configuration directory selected by the exact binary version, alongside `settings.json` and `sessions.json`. Two copies keep separate logs only when they select different directories.
+The file is `activity.jsonl`, in the configuration directory selected by the exact binary version, alongside `settings.30.instance.no-git.json` and `sessions.json`. Two copies keep separate logs only when they select different directories.
 
 See [Directory layout](../reference/directory-layout.md) for the rule that picks that directory; this page does not restate it.
 

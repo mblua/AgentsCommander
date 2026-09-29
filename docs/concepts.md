@@ -41,7 +41,7 @@ You can detach a session into its own window, attach a Telegram bot to it, or ta
 
 ### Co-managed rooms
 
-A **Co-managed** room lets AC read its orchestrator's captured output and route it for you. It is **per room**, **off by default**, and applies **only to that room's orchestrator**. The whole feature is also **off by default for the entire app while it is in development**: it does nothing until you add `"coManagedEnabled": true` to `settings.json` and restart.
+A **Co-managed** room lets AC read its orchestrator's captured output and route it for you. It is **per room**, **off by default**, and applies **only to that room's orchestrator**. The whole feature is also **off by default for the entire app while it is in development**: it does nothing until you add `"coManagedEnabled": true` to `settings.30.instance.no-git.json` and restart.
 
 - It triggers **only at the orchestrator's idle edge**. Idle is the gate, not proof that the agent finished its turn.
 - It **never requires a Telegram bot**, and enabling or disabling Telegram does not change it.
@@ -76,7 +76,7 @@ A scheduled prompt. A Loop belongs to one project, targets one room, and carries
 
 ## Watcher
 
-A pattern AC matches against the terminal output of your agent sessions. Watchers live at the root of `settings.json`, keyed by watcher id, so one pattern can reach every configured agent, which the per-agent context pattern cannot. Matches land in the Watcher Activity window. See [Watchers](features/watchers.md).
+A pattern AC matches against the terminal output of your agent sessions. Watchers live at the root of `settings.30.instance.no-git.json`, keyed by watcher id, so one pattern can reach every configured agent, which the per-agent context pattern cannot. Matches land in the Watcher Activity window. See [Watchers](features/watchers.md).
 
 ## Spec Board
 

@@ -114,7 +114,7 @@ Change the shortcut from the Settings dialog. The dialog validates the field bef
 | `Screenshot hotkey is required` | The field is empty. |
 | `Screenshot hotkey must look like Ctrl+Q` | The value does not match the expected shape. |
 
-The same value lives in `settings.json`:
+The same value lives in `settings.30.instance.no-git.json`:
 
 ```json
 {

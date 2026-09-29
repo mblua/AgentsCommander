@@ -6,6 +6,10 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Changed
+
+- **Config files have new names, and you cannot downgrade past this version.** On the first start, AC renames its settings, blocking-menus and coding-agent catalog files to the layered names of the [file naming convention](docs/reference/file-naming.md), for example `settings.json` to `settings.30.instance.no-git.json`, and moves coding agents and their profiles into `agents.30.instance.no-git.json`. The migration runs once, records what it did in `naming-migration.state.no-git.json`, and never deletes or overwrites a file: when both names exist, the new file wins and the old one is kept as `<old name>.deprecated-<n>.no-git`. There is no compatibility shim. An older build started after the migration finds no settings file, starts from defaults, and leaves your real settings untouched under names it does not know. ([#2470](https://github.com/mblua/AgentsCommander/issues/2470))
+
 ## 0.40.0
 
 ### Added

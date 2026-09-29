@@ -25,7 +25,7 @@ The bridge is per session. You can attach different bots to different sessions, 
 
 - High-volume real-time PTY output. Telegram rate-limits and chunking add latency; bursty TUI output may be heavily filtered before it reaches the chat.
 - Sensitive content. Telegram is not end-to-end encrypted by default (only Secret Chats are). The bridge sends terminal output through Telegram's servers - see [`PRIVACY.md`](../../PRIVACY.md).
-- Untrusted networks. The bot token grants control of the bot's chats; if you commit `settings.json` by accident you must rotate.
+- Untrusted networks. The bot token grants control of the bot's chats; if you commit `settings.30.instance.no-git.json` by accident you must rotate.
 
 ## Coding-agent reader modes
 
@@ -81,7 +81,7 @@ Detach with **right-click → Detach Telegram bot**. Detaching stops all bridge 
 ## Privacy and code locations
 
 - All bridge code lives in `src-tauri/src/telegram/`.
-- Token, chat ID, and bot config are stored locally in `settings.json` (or the equivalent for your portable instance).
+- Token, chat ID, and bot config are stored locally in `settings.30.instance.no-git.json` (or the equivalent for your portable instance).
 - The bridge contacts only `api.telegram.org`. No AC servers, no telemetry.
 
 For the data-flow detail, see [`PRIVACY.md`](../../PRIVACY.md).

@@ -172,7 +172,7 @@ New-Item -ItemType Directory -Path $ConfigDir | Out-Null
   defaultShellArgs = @()
   agents = @()
   projectPaths = @($Root)
-} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ConfigDir "settings.json")
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ConfigDir "settings.30.instance.no-git.json")
 ```
 
 3. Create `ProjectAlpha`, `.ac`, `_agent_architect`, and a room with the CLI:
@@ -231,7 +231,7 @@ New-Item -ItemType Directory -Path $ConfigDir | Out-Null
   defaultShellArgs = @()
   agents = @()
   projectPaths = @($Root)
-} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ConfigDir "settings.json")
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ConfigDir "settings.30.instance.no-git.json")
 ```
 
 3. Set up a throwaway `ProjectAlpha` and create `wg-1-dev-team` with the CLI:

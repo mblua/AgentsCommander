@@ -26,7 +26,7 @@ The git repository that versions a project's **Project AC Root** (`.ac/`): the o
 
 ## Archived project
 
-A project AC still has registered but hides from the sidebar. Archiving moves the path between two lists in `settings.json` and touches no files. See [Project archiving](features/project-archiving.md).
+A project AC still has registered but hides from the sidebar. Archiving moves the path between two lists in `settings.30.instance.no-git.json` and touches no files. See [Project archiving](features/project-archiving.md).
 
 ## Brief
 
@@ -34,7 +34,7 @@ The plain-language description of a room's goal. Lives at `<room>/TASK.md` with 
 
 ## Co-managed
 
-A per-room, off-by-default flag, behind a global switch that is also off by default while the feature is in development (`coManagedEnabled` in `settings.json`), that lets AC read the room **orchestrator's** captured output at its idle edge, classify it with Jev, and route it to one of [four destinations](#co-managed-destinations). It applies only to that room's orchestrator, never requires a Telegram bot (enabling or disabling Telegram does not change it), and dies with the room: the flag lives in `<room-root>/.co-managed/config.json`, which is gitignored. **Idle is the gate, not proof that the agent finished its turn**, and **an automatic reply is never the user's approval**: the `default_reply` destination sends a fixed sentence the user wrote, and the catalog rejects one that reads like approval. A room whose orchestrator runs an agent with no transcript reader cannot be co-managed, and says so with a visible reason. See [Co-managed rooms](features/co-managed-rooms.md).
+A per-room, off-by-default flag, behind a global switch that is also off by default while the feature is in development (`coManagedEnabled` in `settings.30.instance.no-git.json`), that lets AC read the room **orchestrator's** captured output at its idle edge, classify it with Jev, and route it to one of [four destinations](#co-managed-destinations). It applies only to that room's orchestrator, never requires a Telegram bot (enabling or disabling Telegram does not change it), and dies with the room: the flag lives in `<room-root>/.co-managed/config.json`, which is gitignored. **Idle is the gate, not proof that the agent finished its turn**, and **an automatic reply is never the user's approval**: the `default_reply` destination sends a fixed sentence the user wrote, and the catalog rejects one that reads like approval. A room whose orchestrator runs an agent with no transcript reader cannot be co-managed, and says so with a visible reason. See [Co-managed rooms](features/co-managed-rooms.md).
 
 ## Co-managed category catalog
 
@@ -130,7 +130,7 @@ A lettered launch variant (`A`, `B`, `C`, ...) of a coding agent: extra command 
 
 ## Profile matrix
 
-The grid of profiles: one row per coding agent, one column per letter, each cell holding that variant's params, env, and notes. Stored in `settings.json` under `codingAgentProfiles`.
+The grid of profiles: one row per coding agent, one column per letter, each cell holding that variant's params, env, and notes. Stored in `agents.30.instance.no-git.json` under `codingAgentProfiles`.
 
 ## Project (AC project)
 
