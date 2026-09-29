@@ -55,6 +55,10 @@ const DiagnosticDetails: Component<{
   </>
 );
 
+/** The modal trap's focusable set (#2736 focus rescue reuses it). */
+const FOCUSABLE_SELECTOR =
+  'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
 const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProps> = (props) => {
   const [selectedPreset, setSelectedPreset] = createSignal<string | null>(null);
   const [selectionGeneration, setSelectionGeneration] = createSignal<number | null>(null);
@@ -71,22 +75,41 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
 
   // #2736 - the status rows belong to the catalog generation they were asked
   // in; a response for a superseded generation is discarded. A failure is not
-  // fatal: no chips beyond "Not installed" and catalog order.
-  const loadWelcomeStatus = async (
-    beforePublish?: (rows: CodingAgentWelcomeStatus[]) => (() => void) | void
-  ) => {
+  // fatal: no chips beyond "Not installed" and catalog order. Two reads can be
+  // in flight at once, so only the latest request may publish.
+  let statusRequest = 0;
+  const loadWelcomeStatus = async () => {
     const generation = codingAgentsStore.generation();
+    const request = ++statusRequest;
+    const isStale = () =>
+      generation !== codingAgentsStore.generation() || request !== statusRequest;
     try {
       const rows = await CodingAgentsAPI.welcomeStatus();
-      if (generation !== codingAgentsStore.generation()) return;
-      const afterPublish = beforePublish?.(rows);
-      setWelcomeStatus(rows);
-      afterPublish?.();
+      if (isStale()) return;
+      publishWelcomeStatus(rows);
     } catch (e) {
-      if (generation !== codingAgentsStore.generation()) return;
+      if (isStale()) return;
       console.error("Coding Agent welcome status failed:", e);
       setWelcomeStatus([]);
     }
+  };
+
+  // A publish can unmount (and the re-sort move) the install row holding focus,
+  // whichever event started it. Record the focused row's agent, publish, then
+  // bring focus back inside the modal: that agent's card, else the trap's first.
+  const publishWelcomeStatus = (rows: CodingAgentWelcomeStatus[]) => {
+    const focusedRow = document.activeElement?.closest(".onboarding-card-install")
+      ? document.activeElement.closest(".onboarding-card-row")
+      : null;
+    const focusedKey = focusedRow
+      ?.querySelector('[data-ac-role="agent-preset"]')
+      ?.getAttribute("data-ac-agent-key");
+    setWelcomeStatus(rows);
+    if (!focusedKey || !modalRef || modalRef.contains(document.activeElement)) return;
+    const card = modalRef.querySelector<HTMLElement>(
+      `[data-ac-role="agent-preset"][data-ac-agent-key="${focusedKey}"]`
+    );
+    (card ?? modalRef.querySelector<HTMLElement>(FOCUSABLE_SELECTOR))?.focus();
   };
 
   const statusRowOf = (key: string) => welcomeStatus().find((row) => row.key === key);
@@ -162,17 +185,8 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   const handleInstallFinished = (payload: CodingAgentInstallFinished) => {
     setInstalling((set) => withoutKey(set, payload.key));
     if (!payload.ok) setInstallFailed((set) => withKey(set, payload.key));
-    // Presence, not `ok`, turns the row Installed. When the focused install row
-    // is about to unmount, refocus its card AFTER the publish: the re-sort moves
-    // the row node, and a move drops focus set before it.
-    void loadWelcomeStatus((rows) => {
-      if (!rows.find((row) => row.key === payload.key)?.installed) return;
-      const card = modalRef?.querySelector<HTMLElement>(
-        `[data-ac-testid="onboarding.agentPreset.${payload.key}"]`
-      );
-      const installRow = card?.parentElement?.querySelector(".onboarding-card-install");
-      if (card && installRow?.contains(document.activeElement)) return () => card.focus();
-    });
+    // Presence, not `ok`, turns the row Installed.
+    void loadWelcomeStatus();
   };
 
   const [customLabel, setCustomLabel] = createSignal("");
@@ -291,9 +305,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
       return;
     }
     if (e.key === "Tab" && modalRef) {
-      const focusable = modalRef.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])'
-      );
+      const focusable = modalRef.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
       if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];

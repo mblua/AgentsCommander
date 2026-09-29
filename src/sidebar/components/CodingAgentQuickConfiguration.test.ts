@@ -1497,5 +1497,99 @@ describe("CodingAgentQuickConfiguration", () => {
       consoleError.mockRestore();
       dispose();
     });
+
+    function deferredStatus() {
+      let resolve!: (rows: CodingAgentWelcomeStatus[]) => void;
+      let reject!: (reason: unknown) => void;
+      const promise = new Promise<CodingAgentWelcomeStatus[]>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    const bothInstalled = (): CodingAgentWelcomeStatus[] => [
+      row("codex", true, CODEX_CMD, "high"),
+      row("claude", true, "npm install -g claude", "medium"),
+      row("pi", false, null, "low"),
+      row("mine", true, MINE_CMD),
+    ];
+
+    it("install_2736_another_rows_completion_keeps_focus_in_the_modal", async () => {
+      const readA = deferredStatus();
+      vi.mocked(CodingAgentsAPI.welcomeStatus)
+        .mockResolvedValueOnce(installRows())
+        .mockReturnValueOnce(readA.promise)
+        .mockResolvedValueOnce(bothInstalled());
+      const onCancel = vi.fn();
+      const dispose = await mountReady(onCancel);
+
+      installButton("codex")!.click();
+      installButton("mine")!.click();
+      await settle();
+      installButton("codex")!.focus();
+
+      // Codex completes; its status read stays pending.
+      await emitFinished({ key: "codex", command: CODEX_CMD, ok: true });
+      expect(document.activeElement).toBe(installButton("codex"));
+      // Mine completes; its read removes BOTH install rows.
+      await emitFinished({ key: "mine", command: MINE_CMD, ok: true });
+
+      expect(installRow("codex")).toBeNull();
+      expect(document.activeElement).toBe(card("codex"));
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+      expect(onCancel).toHaveBeenCalledTimes(1);
+
+      dispose();
+    });
+
+    it("install_2736_an_older_status_response_does_not_overwrite_a_newer_one", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const codexOnly = (): CodingAgentWelcomeStatus[] => [
+        row("codex", true, CODEX_CMD, "high"),
+        row("claude", true, "npm install -g claude", "medium"),
+        row("pi", false, null, "low"),
+        row("mine", false, MINE_CMD),
+      ];
+      const mineIsLatest = () => {
+        expect(byTestId("onboarding.agentPreset.mine.status")?.textContent).toBe("Installed");
+        expect(installRow("mine")).toBeNull();
+        const keys = cardKeys();
+        expect(keys.indexOf("mine")).toBeLessThan(keys.indexOf("pi"));
+      };
+
+      for (const lateA of ["resolve", "reject"] as const) {
+        const readA = deferredStatus();
+        const readB = deferredStatus();
+        vi.mocked(CodingAgentsAPI.welcomeStatus)
+          .mockResolvedValueOnce(installRows())
+          .mockReturnValueOnce(readA.promise)
+          .mockReturnValueOnce(readB.promise);
+        const dispose = await mountReady();
+
+        installButton("codex")!.click();
+        installButton("mine")!.click();
+        await settle();
+        await emitFinished({ key: "codex", command: CODEX_CMD, ok: true }); // read A
+        await emitFinished({ key: "mine", command: MINE_CMD, ok: true }); // read B
+
+        readB.resolve(bothInstalled());
+        await settle();
+        mineIsLatest();
+
+        if (lateA === "resolve") readA.resolve(codexOnly());
+        else readA.reject("late failure");
+        await settle();
+        mineIsLatest();
+        expect(consoleError).not.toHaveBeenCalled();
+
+        dispose();
+        document.body.innerHTML = "";
+      }
+
+      consoleError.mockRestore();
+    });
   });
 });
