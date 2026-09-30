@@ -946,6 +946,7 @@ describe("CodingAgentQuickConfiguration", () => {
             withDescription("claude", "Claude Code", "Coding Agent by Anthropic"),
             withDescription("opencode", "OpenCode", "Open-source terminal coding agent by Anomaly"),
             withDescription("grok", "Grok", "Coding agent Grok Build"),
+            withDescription("myagent", "My Agent", "A description with no vendor"),
           ],
         }),
       );
@@ -953,13 +954,15 @@ describe("CodingAgentQuickConfiguration", () => {
         statusRow("claude", false, "high"),
         statusRow("opencode", false, "low"),
         statusRow("grok", false, "low"),
+        statusRow("myagent", false, "low"),
       ]);
       let dispose = renderWelcome(true);
       await settle();
 
       expect(byTestId("onboarding.agentVendor.claude")?.textContent).toBe("by Anthropic");
       expect(byTestId("onboarding.agentVendor.opencode")?.textContent).toBe("by Anomaly");
-      expect(byTestId("onboarding.agentVendor.grok")?.textContent).toBe("Coding agent Grok Build");
+      expect(byTestId("onboarding.agentVendor.grok")?.textContent).toBe("by SpaceXAI");
+      expect(byTestId("onboarding.agentVendor.myagent")?.textContent).toBe("A description with no vendor");
       expect(document.querySelector(".onboarding-card-desc")).toBeNull();
       dispose();
       document.body.innerHTML = "";
@@ -969,6 +972,23 @@ describe("CodingAgentQuickConfiguration", () => {
       const desc = byTestId("onboarding.agentPreset.claude")!.querySelector(".onboarding-card-desc");
       expect(desc?.textContent).toBe("Coding Agent by Anthropic");
       expect(document.querySelector('[data-ac-testid^="onboarding.agentVendor."]')).toBeNull();
+
+      dispose();
+    });
+
+    it("vendor_2784_r3_grok_reads_by_spacexai_from_the_seeded_description", async () => {
+      const withDescription = (key: string, label: string, description: string) => ({
+        ...catalogDef(key, label, key),
+        description,
+      });
+      vi.mocked(CodingAgentsAPI.getCatalogReport).mockResolvedValue(
+        report({ catalog: [withDescription("grok", "Grok", "Coding agent Grok Build")] }),
+      );
+      vi.mocked(CodingAgentsAPI.welcomeStatus).mockResolvedValue([statusRow("grok", false, "low")]);
+      const dispose = renderWelcome(true);
+      await settle();
+
+      expect(byTestId("onboarding.agentVendor.grok")?.textContent).toBe("by SpaceXAI");
 
       dispose();
     });

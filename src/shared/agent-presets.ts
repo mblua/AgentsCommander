@@ -62,6 +62,20 @@ export function welcomeVendorOf(description: string): string | null {
   return m ? m[1].trim() : null;
 }
 
+/** #2784 R3 - CODE ONLY vendor overrides, keyed by catalog key. Never read from,
+ *  and never patchable through, any catalog file: `agents.json` is seeded once and
+ *  never rewritten (`coding_agents_catalog.rs:23-27`), so a catalog description edit
+ *  would reach new installs only. Same pattern as `BUILTIN_TESTED_LEVEL`.
+ *  One entry per key whose description carries no "by <Vendor>". */
+export const WELCOME_VENDOR_BY_KEY: Readonly<Record<string, string | undefined>> = { grok: "SpaceXAI" };
+
+/** #2784 R3 - vendor for a Welcome card: the override table first, then the
+ *  description derivation, then null (the caller renders the description). */
+export function welcomeVendorForKey(key: string, description: string): string | null {
+  const override = WELCOME_VENDOR_BY_KEY[key];
+  return typeof override === "string" ? override : welcomeVendorOf(description);
+}
+
 const TESTED_LEVEL_RANK: Record<CodingAgentTestedLevel, number> = { high: 0, medium: 1, low: 2 };
 const NO_LEVEL_RANK = 3;
 /** #2784 - keys pinned to the FRONT of their tested-level group, in this order.

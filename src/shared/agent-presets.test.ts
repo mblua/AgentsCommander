@@ -4,8 +4,10 @@ import {
   compareWelcomeAgents,
   definitionToSeed,
   sortWelcomeAgents,
+  welcomeVendorForKey,
   welcomeVendorOf,
   WELCOME_PINNED_KEYS,
+  WELCOME_VENDOR_BY_KEY,
 } from "./agent-presets";
 import type { CodingAgentDefinition, CodingAgentWelcomeStatus } from "./types";
 
@@ -260,5 +262,28 @@ describe("Welcome order (#2736)", () => {
 
   it("WELCOME_PINNED_KEYS_2784_is_exactly_opencode", () => {
     expect(WELCOME_PINNED_KEYS).toEqual(["opencode"]);
+  });
+
+  it("welcomeVendorForKey_2784_r3_overrides_grok_with_spacexai", () => {
+    expect(welcomeVendorForKey("grok", "Coding agent Grok Build")).toBe("SpaceXAI");
+    expect(welcomeVendorForKey("grok", "Coding agent by Nobody")).toBe("SpaceXAI");
+  });
+
+  it("welcomeVendorForKey_2784_r3_falls_through_for_every_other_key", () => {
+    expect(welcomeVendorForKey("claude", "Coding Agent by Anthropic")).toBe("Anthropic");
+    expect(welcomeVendorForKey("codex", "Coding Agent by OpenAI")).toBe("OpenAI");
+    expect(welcomeVendorForKey("hermes", "Coding Agent by Nous Research")).toBe("Nous Research");
+    expect(welcomeVendorForKey("cursor", "Coding Agent by Cursor")).toBe("Cursor");
+    expect(welcomeVendorForKey("pi", "Coding Agent by Earendil Inc")).toBe("Earendil Inc");
+    expect(welcomeVendorForKey("opencode", "Open-source terminal coding agent by Anomaly")).toBe("Anomaly");
+    expect(welcomeVendorForKey("antigravity", "Coding Agent by Google")).toBe("Google");
+    expect(welcomeVendorForKey("custom", "Configure your own Coding Agent")).toBeNull();
+    expect(welcomeVendorForKey("myagent", "Anything at all")).toBeNull();
+  });
+
+  it("WELCOME_VENDOR_BY_KEY_2784_r3_is_exactly_grok", () => {
+    expect(Object.keys(WELCOME_VENDOR_BY_KEY)).toEqual(["grok"]);
+    expect(WELCOME_VENDOR_BY_KEY).toEqual({ grok: "SpaceXAI" });
+    expect(welcomeVendorForKey("constructor", "plain text")).toBeNull();
   });
 });

@@ -11,7 +11,7 @@ import { CodingAgentsAPI, onCodingAgentInstallFinished, SettingsAPI } from "../.
 import type { UnlistenFn } from "../../shared/transport";
 import { settingsStore } from "../../shared/stores/settings";
 import { toastStore } from "../../shared/stores/toasts";
-import { newAgentId, definitionToSeed, sortWelcomeAgents, welcomeVendorOf } from "../../shared/agent-presets";
+import { newAgentId, definitionToSeed, sortWelcomeAgents, welcomeVendorForKey } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 
 const CUSTOM_PRESET: CodingAgentDefinition = {
@@ -144,9 +144,10 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     medium: "This Coding Agent has been partially tested. Most things should work, but some rough edges may remain. Please report any issue you find to the project. Thank you!",
     high: "This Coding Agent has been tested extensively with AgentsCommander. If you still run into any issue, please report it to the project. Thank you!",
   };
-  /** #2784 - Welcome identity line: "by <Vendor>", else the raw description. */
+  /** #2784 - Welcome identity line: "by <Vendor>", else the raw description.
+   *  R3: the key-aware lookup, so Grok reads "by SpaceXAI" on an already-seeded install. */
   const vendorLine = (preset: CodingAgentDefinition): string => {
-    const vendor = welcomeVendorOf(preset.description);
+    const vendor = welcomeVendorForKey(preset.key, preset.description);
     return vendor === null ? preset.description : `by ${vendor}`;
   };
   const presetAriaLabel = (preset: CodingAgentDefinition): string => {
