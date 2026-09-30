@@ -24,7 +24,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = ([
   ["opencode", "OpenCode", "Open-source terminal coding agent by Anomaly", "#64748b", "opencode", "AGENTS.md", ["opencode upgrade"]],
   // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
   ["antigravity", "Antigravity", "Coding Agent by Google", "#4285F4", "agy", "AGENTS.md", ["agy update"]],
-  ["grok", "Grok Build", "Coding agent Grok Build", "#64748b", "grok", "AGENTS.md", []],
+  ["grok", "Grok Build", "Coding Agent by SpaceXAI", "#64748b", "grok", "AGENTS.md", []],
 ] satisfies Array<[
   key: string, label: string, description: string, color: string,
   command: string, instructionsFilename: string, updateCommands: string[],
@@ -54,8 +54,37 @@ export function definitionToSeed(def: CodingAgentDefinition): Omit<AgentConfig, 
   return seed;
 }
 
+/** #2784 - Welcome cards show "by <Vendor>" instead of the catalog description.
+ *  The vendor is the text after the LAST "by " of the description; a description
+ *  with no "by " has no vendor and the caller renders it unchanged. */
+export function welcomeVendorOf(description: string): string | null {
+  const m = /^.*\bby\s+(\S.*)$/i.exec(description.trim());
+  return m ? m[1].trim() : null;
+}
+
+/** #2784 R3 - CODE ONLY vendor overrides, keyed by catalog key. Never read from,
+ *  and never patchable through, any catalog file: `agents.json` is seeded once and
+ *  never rewritten (`coding_agents_catalog.rs:23-27`), so a catalog description edit
+ *  would reach new installs only. Same pattern as `BUILTIN_TESTED_LEVEL`.
+ *  One entry per key whose description carries no "by <Vendor>". */
+export const WELCOME_VENDOR_BY_KEY: Readonly<Record<string, string | undefined>> = { grok: "SpaceXAI" };
+
+/** #2784 R3 - vendor for a Welcome card: the override table first, then the
+ *  description derivation, then null (the caller renders the description). */
+export function welcomeVendorForKey(key: string, description: string): string | null {
+  const override = WELCOME_VENDOR_BY_KEY[key];
+  return typeof override === "string" ? override : welcomeVendorOf(description);
+}
+
 const TESTED_LEVEL_RANK: Record<CodingAgentTestedLevel, number> = { high: 0, medium: 1, low: 2 };
 const NO_LEVEL_RANK = 3;
+/** #2784 - keys pinned to the FRONT of their tested-level group, in this order.
+ *  Requirement: OpenCode is first among the Tested: Low agents. */
+export const WELCOME_PINNED_KEYS: readonly string[] = ["opencode"];
+const pinnedRank = (key: string): number => {
+  const index = WELCOME_PINNED_KEYS.indexOf(key);
+  return index < 0 ? WELCOME_PINNED_KEYS.length : index;
+};
 
 /** #2736 - Welcome order: installed first, then High > Medium > Low > no level,
  *  then catalog order. "Custom Agent" is NOT passed here; the caller appends it
@@ -74,6 +103,9 @@ export function compareWelcomeAgents(
   const levelA = rowA?.testedLevel ? TESTED_LEVEL_RANK[rowA.testedLevel] : NO_LEVEL_RANK;
   const levelB = rowB?.testedLevel ? TESTED_LEVEL_RANK[rowB.testedLevel] : NO_LEVEL_RANK;
   if (levelA !== levelB) return levelA - levelB;
+  const pinnedA = pinnedRank(a.key);
+  const pinnedB = pinnedRank(b.key);
+  if (pinnedA !== pinnedB) return pinnedA - pinnedB;
   return (catalogIndex.get(a.key) ?? 0) - (catalogIndex.get(b.key) ?? 0);
 }
 
