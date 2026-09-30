@@ -15964,6 +15964,67 @@ exec claude \"$@\"
                 .is_some()
         );
     }
+    // ---------------------------------------------------------------- #2786 C1
+    // r28 E15 candidate instrumentation, option C. Same shape as the
+    // ac_discovery row: unarmed parent, armed dedicated child, REAL caller.
+    //
+    // MEASURED BASE FACT at fd32c052, and it corrected my prediction: this
+    // caller records exactly ONE load of its own directory, so the E15 count
+    // gate is GREEN here before any change. The load comes from
+    // `agent_command::StoredReference::from_config` (agent_command.rs:944).
+    // The caller ALSO reads `config.json` directly with
+    // `std::fs::read_to_string` (session.rs:4474), and that read never touches
+    // a wrapper, so the probe cannot see it.
+    //
+    // r28 correction, and the earlier comment here was wrong: that direct read
+    // is a BYPASS of the hooks, NOT an observable base defect. At base BOTH
+    // rows for this caller are GREEN: E15 reads n=1 and E14 resolves the
+    // `new` descriptor, because `currentCodingAgent` is not a state key and
+    // the descriptor already arrives through the merged snapshot. So E14 does
+    // NOT "carry" a base defect here, and no row is RED to be turned green.
+    // This row is therefore a REGRESSION row: it holds n=1 after the phase's
+    // change. Removing the direct read is checked by manual diff review of the
+    // authorized change, not by this row. Recorded, not hidden.
+    #[test]
+    fn matched_selection_loads_once_from_its_own_dir() {
+        let out = crate::config::agent_config::load_probe_harness::expect_child_pass(
+            "commands::session::tests::inner_matched_selection_loads_once",
+        );
+        assert!(
+            out.contains("MEASURED-LOADS n=1"),
+            "the count gate is green at base for this caller: {out}"
+        );
+    }
+
+    #[test]
+    #[ignore = "#2786 C1 r28: runs only in the dedicated armed process"]
+    fn inner_matched_selection_loads_once() {
+        let settings = crate::config::settings::AppSettings::default();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("config.json"),
+            serde_json::json!({"tooling": {"currentCodingAgent": "claude",
+                "codingAgents": {"claude": {"app": "Claude Code", "command": "old"}}}})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path()
+                .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+            serde_json::json!({"tooling": {"codingAgents": {"claude": {"app": "Claude Code", "command": "new"}}}})
+                .to_string(),
+        )
+        .unwrap();
+
+        let obs = crate::config::agent_config::load_probe::Observation::open();
+        let selection =
+            super::matched_selection(&settings, &tmp.path().to_string_lossy(), None, None, None);
+        println!("REACHED-CALLER selection={selection:?}");
+        let loads = obs.loads();
+        println!("MEASURED-LOADS n={} {:?}", loads.len(), loads);
+        let want = vec![tmp.path().to_path_buf()];
+        assert_eq!(loads, want, "recorded {loads:?}, expected exactly {want:?}");
+    }
 }
 
 /// #2232 phase 4: the reader supervisor, its demands and the production wiring.

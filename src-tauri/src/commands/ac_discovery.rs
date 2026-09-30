@@ -7229,4 +7229,62 @@ mod tests {
             assert_eq!(pattern, rule, "{relative} matched the wrong rule");
         }
     }
+    // ---------------------------------------------------------------- #2786 C1
+    // r28 E15 candidate instrumentation, option C. The parent row is ordinary
+    // and unarmed; the inner row runs alone, single-threaded, in a dedicated
+    // ARMED process, and calls the REAL caller.
+    //
+    // BASE FACT at fd32c052, recorded honestly: this caller loads TWICE, once
+    // at ac_discovery.rs:58 and once inside
+    // `agent_command::StoredReference::from_config` (agent_command.rs:944), so
+    // the gate is RED before the phase's single-snapshot change. The parent row
+    // therefore asserts the gate SEES that base defect. After the phase's
+    // change this row becomes `expect_child_pass`.
+    #[test]
+    fn read_preferred_agent_id_logged_loads_once_from_its_own_dir() {
+        let out = crate::config::agent_config::load_probe_harness::expect_child_fail(
+            "commands::ac_discovery::tests::inner_read_preferred_agent_id_logged_loads_once",
+            "recorded [",
+        );
+        assert!(
+            out.contains("TWO-LOADS-AT-BASE"),
+            "the base defect is two loads of the caller's own directory: {out}"
+        );
+    }
+
+    #[test]
+    #[ignore = "#2786 C1 r28: runs only in the dedicated armed process"]
+    fn inner_read_preferred_agent_id_logged_loads_once() {
+        let settings = AppSettings {
+            agents: vec![matcher_agent("local-claude", "Claude Code", "claude")],
+            ..AppSettings::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("config.json"),
+            json!({"tooling": {"lastCodingAgent": "claude",
+                "codingAgents": {"claude": {"app": "Claude Code", "command": "old"}}}})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path()
+                .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+            json!({"tooling": {"codingAgents": {"claude": {"app": "Claude Code", "command": "new"}}}})
+                .to_string(),
+        )
+        .unwrap();
+
+        let obs = crate::config::agent_config::load_probe::Observation::open();
+        let mut warnings = Vec::new();
+        let got = read_preferred_agent_id_logged(tmp.path(), &settings, &mut warnings);
+        println!("REACHED-CALLER got={got:?} warnings={warnings:?}");
+        let loads = obs.loads();
+        println!("MEASURED-LOADS n={} {:?}", loads.len(), loads);
+        let want = vec![tmp.path().to_path_buf()];
+        if loads == vec![tmp.path().to_path_buf(); 2] {
+            println!("TWO-LOADS-AT-BASE {loads:?}");
+        }
+        assert_eq!(loads, want, "recorded {loads:?}, expected exactly {want:?}");
+    }
 }
