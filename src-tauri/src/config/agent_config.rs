@@ -272,9 +272,18 @@ const STATE_KEYS: [&str; 4] = [
 
 /// #2786 (C1) - the one reader of an agent's local config: `config.json` in
 /// `dir`, with the state keys served key-wise from the state file beside it.
-/// `None` when neither file yields a config.
+/// `None` when neither file yields a config. Each file must also pass the
+/// typed parse on its own text, as the direct typed readers did before C1, so
+/// a duplicate known field is still a rejection and never collapses to the
+/// last value through `Value`. A state file that fails it is ignored.
 pub fn read_agent_local_config(dir: &Path) -> Option<AgentLocalConfig> {
-    let value = read_agent_local_config_json(dir).ok()??;
+    let typed_ok = |text: &String| serde_json::from_str::<AgentLocalConfig>(text).is_ok();
+    let decisions = read_config_text(&dir.join("config.json"));
+    if decisions.as_ref().is_some_and(|text| !typed_ok(text)) {
+        return None;
+    }
+    let state = read_config_text(&state_file_path(dir)).filter(typed_ok);
+    let value = merge_config_texts(decisions, state).ok()??;
     serde_json::from_value(value).ok()
 }
 
@@ -282,36 +291,55 @@ pub fn read_agent_local_config(dir: &Path) -> Option<AgentLocalConfig> {
 /// the state file's keys overlaid. `Ok(None)` when neither file exists; `Err`
 /// when `config.json` exists but is not JSON. A pure read: it writes nothing.
 pub fn read_agent_local_config_json(dir: &Path) -> Result<Option<serde_json::Value>, String> {
-    let path = dir.join("config.json");
-    let decisions = match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            Some(serde_json::from_str::<serde_json::Value>(&content).map_err(|e| e.to_string())?)
-        }
-        Err(_) => None,
+    merge_config_texts(
+        read_config_text(&dir.join("config.json")),
+        read_config_text(&state_file_path(dir)),
+    )
+}
+
+/// #2786 (C1) - overlay an already parsed state file on an already parsed
+/// `config.json`, for a caller that reads both through its own guarded path.
+/// A state value that is not an object is ignored.
+pub fn overlay_agent_local_state(
+    decisions: serde_json::Value,
+    state: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let state = match state {
+        Some(serde_json::Value::Object(map)) => Some(map),
+        _ => None,
     };
-    let state = read_state_file(dir);
+    overlay_state(decisions, state)
+}
+
+fn state_file_path(dir: &Path) -> std::path::PathBuf {
+    dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+}
+
+fn read_config_text(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+/// Merge the two texts. `config.json` that is not JSON is an error; a state
+/// file that is absent, not JSON or not an object is ignored, so a reader
+/// falls back to `config.json` rather than failing.
+fn merge_config_texts(
+    decisions: Option<String>,
+    state: Option<String>,
+) -> Result<Option<serde_json::Value>, String> {
+    let decisions = decisions
+        .map(|text| serde_json::from_str::<serde_json::Value>(&text).map_err(|e| e.to_string()))
+        .transpose()?;
+    let state = state
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| match value {
+            serde_json::Value::Object(map) => Some(map),
+            _ => None,
+        });
     if decisions.is_none() && state.is_none() {
         return Ok(None);
     }
     let decisions = decisions.unwrap_or_else(|| serde_json::json!({}));
     Ok(Some(overlay_state(decisions, state)))
-}
-
-/// #2786 (C1) - overlay the state file in `dir` on a `config.json` the caller
-/// has already read and parsed through its own guarded path.
-pub fn overlay_agent_local_state(dir: &Path, decisions: serde_json::Value) -> serde_json::Value {
-    overlay_state(decisions, read_state_file(dir))
-}
-
-/// The state file as an object, or `None` when it is absent or unusable: a
-/// reader falls back to `config.json` rather than failing.
-fn read_state_file(dir: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let path = dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
-    let content = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str::<serde_json::Value>(&content).ok()? {
-        serde_json::Value::Object(map) => Some(map),
-        _ => None,
-    }
 }
 
 /// D7, "present" is exact: an object whose `v` is an integer at or above
@@ -1021,5 +1049,37 @@ mod tests {
                 "split = {shape}"
             );
         }
+    }
+
+    /// #2786 (C1) - a duplicate known field is still a typed rejection, as it
+    /// was for the direct typed readers: parsing through `Value` must not
+    /// collapse it to the last value. A state file with one is ignored.
+    #[test]
+    fn the_typed_loader_rejects_duplicate_known_fields() {
+        let duplicate = r#"{"tooling":{"lastCodingAgent":"a","lastCodingAgent":"b"}}"#;
+        assert!(serde_json::from_str::<AgentLocalConfig>(duplicate).is_err());
+
+        let temp = loader_fixture(None, None);
+        std::fs::write(temp.path().join("config.json"), duplicate).expect("seed decisions");
+        assert!(read_agent_local_config(temp.path()).is_none());
+
+        let temp = loader_fixture(
+            Some(serde_json::json!({"tooling": {"lastCodingAgent": "tracked"}})),
+            None,
+        );
+        std::fs::write(
+            temp.path()
+                .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+            duplicate,
+        )
+        .expect("seed state");
+        assert_eq!(
+            read_agent_local_config(temp.path())
+                .expect("config")
+                .tooling
+                .last_coding_agent
+                .as_deref(),
+            Some("tracked")
+        );
     }
 }

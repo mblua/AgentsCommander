@@ -6660,10 +6660,12 @@ impl MailboxPoller {
         .map_err(|_| C::UnsafePath)?;
         let config_value = crate::path_identity::parse_json_no_duplicates(&config_bytes)
             .map_err(|_| C::UnsupportedProfile)?;
-        // #2786 (C1) - the guarded config.json read stays; the shared loader
-        // overlays the state file's keys on it.
+        // #2786 (C1) - the state file goes through the same guarded read as
+        // config.json (regular file, no-follow, size, duplicate keys); only a
+        // missing file is absence. The shared loader's policy overlays it.
+        let state_value = read_guarded_agent_state(&target_root)?;
         let config_value =
-            crate::config::agent_config::overlay_agent_local_state(&target_root, config_value);
+            crate::config::agent_config::overlay_agent_local_state(config_value, state_value);
         let local_config =
             serde_json::from_value::<crate::config::agent_config::AgentLocalConfig>(config_value)
                 .map_err(|_| C::UnsupportedProfile)?;
@@ -13214,6 +13216,28 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
     } else {
         String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {}", e))
     }
+}
+
+/// #2786 (C1) - the agent state file beside `config.json` in `target_root`,
+/// read through the same guard as the PTY-input `config.json` read: a regular
+/// non-symlink file, at most 1 MiB, no duplicate keys. Only a missing file is
+/// absence; every other failure is an error the caller propagates.
+fn read_guarded_agent_state(
+    target_root: &Path,
+) -> Result<Option<serde_json::Value>, crate::phone::types::PtyInputReasonCode> {
+    use crate::phone::types::PtyInputReasonCode as C;
+    let state_path = target_root.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+    if matches!(
+        std::fs::symlink_metadata(&state_path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    ) {
+        return Ok(None);
+    }
+    let (state_bytes, _) = crate::path_identity::read_bounded_regular(&state_path, 1024 * 1024)
+        .map_err(|_| C::UnsafePath)?;
+    crate::path_identity::parse_json_no_duplicates(&state_bytes)
+        .map(Some)
+        .map_err(|_| C::UnsupportedProfile)
 }
 
 #[cfg(test)]
@@ -29847,5 +29871,60 @@ mod tests {
             session_has_current_pty_submission_provenance(&session, &settings),
             "the provenance read failed under the mark"
         );
+    }
+
+    /// #2786 (C1) - the PTY-input state read keeps the config.json guard.
+    #[test]
+    fn guarded_agent_state_read_rejects_unsafe_input() {
+        use crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME;
+        use crate::phone::types::PtyInputReasonCode as C;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        assert_eq!(
+            read_guarded_agent_state(root),
+            Ok(None),
+            "absent is absence"
+        );
+
+        let state = root.join(CONFIG_STATE_TARGET_NAME);
+        std::fs::write(&state, r#"{"tooling":{"lastCodingAgent":"claude"}}"#).expect("seed");
+        assert_eq!(
+            read_guarded_agent_state(root),
+            Ok(Some(
+                serde_json::json!({"tooling":{"lastCodingAgent":"claude"}})
+            ))
+        );
+
+        std::fs::write(
+            &state,
+            r#"{"tooling":{"lastCodingAgent":"a","lastCodingAgent":"b"}}"#,
+        )
+        .expect("seed duplicate");
+        assert_eq!(read_guarded_agent_state(root), Err(C::UnsupportedProfile));
+
+        std::fs::write(&state, vec![b' '; 1024 * 1024 + 1]).expect("seed oversized");
+        assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
+
+        // A hard-linked state file is not a single-owner regular file.
+        let outside = root.join("outside.json");
+        std::fs::write(&outside, r#"{"tooling":{}}"#).expect("seed outside");
+        std::fs::remove_file(&state).expect("remove");
+        std::fs::hard_link(&outside, &state).expect("hard link");
+        assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
+
+        // A symlinked state file is refused (only where this host can make one).
+        std::fs::remove_file(&state).expect("remove");
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&outside, &state).is_ok();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, &state).is_ok();
+        if linked {
+            assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
+            std::fs::remove_file(&state).expect("remove link");
+        }
+
+        std::fs::create_dir(&state).expect("a directory is not a regular file");
+        assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
     }
 }

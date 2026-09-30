@@ -2112,9 +2112,14 @@ fn context_array_matches(arr: &[Value], expected: &[&str]) -> bool {
 }
 
 pub fn read_last_coding_agent(root_dir: &str) -> Option<String> {
-    crate::config::agent_config::read_agent_local_config(Path::new(root_dir))?
-        .tooling
-        .last_coding_agent
+    // #2786 (C1) - the raw loader with field-level extraction, as before C1:
+    // an unrelated malformed field must not hide `lastCodingAgent`.
+    crate::config::agent_config::read_agent_local_config_json(Path::new(root_dir))
+        .ok()??
+        .get("tooling")?
+        .get("lastCodingAgent")?
+        .as_str()
+        .map(ToString::to_string)
 }
 
 fn paths_equivalent(left: &Path, right: &Path) -> bool {
@@ -4197,5 +4202,21 @@ mod tests {
             "the user's bytes must survive"
         );
         assert!(stray_temp_files(&fixture.path).is_empty());
+    }
+
+    /// #2786 (C1) - no state file: an unrelated malformed field must not hide
+    /// `lastCodingAgent`, exactly as before the loader.
+    #[test]
+    fn read_last_coding_agent_ignores_an_unrelated_malformed_field() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("config.json"),
+            r#"{"tooling":{"lastCodingAgent":"claude","codingAgents":null}}"#,
+        )
+        .expect("seed config");
+        assert_eq!(
+            read_last_coding_agent(temp.path().to_str().expect("utf-8")).as_deref(),
+            Some("claude")
+        );
     }
 }

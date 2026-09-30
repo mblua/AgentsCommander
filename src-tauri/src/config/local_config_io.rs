@@ -2319,7 +2319,8 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
     /// must not leak into the rest of this suite.
     #[test]
     fn a_nested_config_writer_is_an_error_not_a_hang() {
-        let mut running = Vec::new();
+        // One child at a time: `wait_bounded` kills and reaps the child it
+        // waits on, so a timeout never leaves another child running.
         for action in ["nest_pair", "nest_json", "nest_atomic", "panic"] {
             let temp = tempfile::tempdir().expect("tempdir");
             let child = Command::new(std::env::current_exe().expect("current test exe"))
@@ -2335,12 +2336,15 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
                 .stderr(Stdio::piped())
                 .spawn()
                 .expect("spawn nested writer child");
-            running.push((action, temp, child));
-        }
-        for (action, _temp, child) in running {
             let label = format!("nested writer child {action}");
             let (status, stdout, stderr) = wait_bounded(child, Duration::from_secs(30), &label);
-            let report = format!("status={status:?}\nstdout:\n{stdout}\nstderr:\n{stderr}");
+            let report = format!(
+                "status={status:?}
+stdout:
+{stdout}
+stderr:
+{stderr}"
+            );
             assert!(status.success(), "{label} failed: {report}");
             assert!(
                 stdout.contains("test result: ok. 1 passed; 0 failed"),
