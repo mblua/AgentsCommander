@@ -12,7 +12,7 @@ The hooks, the module two of them share, and their registration are copied into 
 
 This directory mirrors `<workspace>/.ac/default.claude/`, the seed AC installs from. The operator keeps the mirror and seed in sync; their current contents can differ. The ignored-log name here is `rtk-ignored-tools-claude.md`. Preserve that spelling when copying these files into the seed, including when replacing an older underscore spelling. Maintain the installation seed and synchronize this mirror when it changes.
 
-The separate [Claude Code status line](../claude_statusline/README.md) documents quota output and installation. Its `statusLine` registration remains in this directory's `settings.local.json`.
+The separate [Claude Code status line](../../claude_statusline/README.md) documents quota output and installation. Its `statusLine` registration remains in this directory's `settings.local.json`.
 
 ## What the hooks are and where they land
 
