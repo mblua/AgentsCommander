@@ -17,7 +17,7 @@ Merge this entry into `<workspace>/.ac/default.claude/settings.local.json`, pres
 }
 ```
 
-This matches [the RTK settings mirror](../rtk_claude/settings.local.json). For an existing replica, copy the script into its `.claude/` folder and merge the entry into its `.claude/settings.local.json`, or respawn it to apply the selected template. Updating a staging copy alone does not update the workspace template or running replicas.
+This matches [the RTK settings mirror](../rtk/claude/settings.local.json). For an existing replica, copy the script into its `.claude/` folder and merge the entry into its `.claude/settings.local.json`, or respawn it to apply the selected template. Updating a staging copy alone does not update the workspace template or running replicas.
 
 ## Output and quota
 

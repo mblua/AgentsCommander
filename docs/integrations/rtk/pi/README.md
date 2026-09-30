@@ -26,14 +26,14 @@ Two files come out of that decision, both in the agent's **origin Agent Matrix**
 
 | File | Holds |
 |---|---|
-| `<workspace>/.ac/_agent_<name>/rtk-matrix-history-pi.db` | The RTK history database, tables `commands` and `parse_failures`, written by `rtk` itself. See [RTK usage and per-agent statistics](../rtk.md). Note the `-pi` suffix: Claude Code agents write `rtk-matrix-history.db`, pi agents write `rtk-matrix-history-pi.db`, so the two never collide in the same Matrix. |
+| `<workspace>/.ac/_agent_<name>/rtk-matrix-history-pi.db` | The RTK history database, tables `commands` and `parse_failures`, written by `rtk` itself. See [RTK usage and per-agent statistics](../README.md). Note the `-pi` suffix: Claude Code agents write `rtk-matrix-history.db`, pi agents write `rtk-matrix-history-pi.db`, so the two never collide in the same Matrix. |
 | `<workspace>/.ac/_agent_<name>/rtk-ignored-tools-pi.md` | One line per command a hook handed back untouched, plus one line per `write`/`edit` tool call, written by the extension. |
 
 The pair exists so you can tell "RTK covered this call" from "RTK never saw it". Neither file alone answers that, and a call missing from both is not proof it never happened: see [what they cover](#what-they-cover-the-four-pi-tools-and-nothing-else).
 
 ## This is not the extension `rtk init` installs
 
-RTK ships its own hook machinery, and [RTK usage and per-agent statistics](../rtk.md#the-hook-covers-the-filtered-set-and-nothing-else) documents it. The two are separate pieces of software that happen to do related work. Measured against `rtk` 0.42.4, there are two halves to RTK's own machinery:
+RTK ships its own hook machinery, and [RTK usage and per-agent statistics](../README.md#the-hook-covers-the-filtered-set-and-nothing-else) documents it. The two are separate pieces of software that happen to do related work. Measured against `rtk` 0.42.4, there are two halves to RTK's own machinery:
 
 - `rtk hook` subprocess processors, for `claude`, `cursor`, `gemini`, `copilot` and `droid`. There is no `hook` processor for pi, because pi's extension mechanism does not run subprocess hooks.
 - `rtk init --agent pi`, which **does** target pi: it creates `.pi/extensions/rtk.ts`, a delegating pi extension that rewrites `bash` commands through `rtk rewrite` and nothing else.
@@ -233,7 +233,7 @@ The extension appends to the file. One line per entry, no header:
 
 ### The timestamps do not line up with the database
 
-`rtk-ignored-tools-pi.md` stamps local time with no zone. The `timestamp` column of `commands` is RFC 3339 with an offset, as documented in [RTK usage and per-agent statistics](../rtk.md#the-commands-table). Measured at the same instant, two separate invocations: the passed-through `echo hi` wrote the log line `20260820_204317` (local time; the measuring machine is UTC-3), and the routed `ls -la .` landed in `commands` with `timestamp` `2026-08-20T23:43:17.828209500+00:00`. One invocation can never produce both: a command is either routed (database row) or handed back untouched (log line), never both. The two artifacts do not share a time format, so **you cannot correlate them by string comparison**. Convert one side before you line up a session across both files.
+`rtk-ignored-tools-pi.md` stamps local time with no zone. The `timestamp` column of `commands` is RFC 3339 with an offset, as documented in [RTK usage and per-agent statistics](../README.md#the-commands-table). Measured at the same instant, two separate invocations: the passed-through `echo hi` wrote the log line `20260820_204317` (local time; the measuring machine is UTC-3), and the routed `ls -la .` landed in `commands` with `timestamp` `2026-08-20T23:43:17.828209500+00:00`. One invocation can never produce both: a command is either routed (database row) or handed back untouched (log line), never both. The two artifacts do not share a time format, so **you cannot correlate them by string comparison**. Convert one side before you line up a session across both files.
 
 ### An entry does not prove the command ran
 
@@ -241,7 +241,7 @@ The extension appends to the file. One line per entry, no header:
 
 ## What reaches the database
 
-The extension never touches the database. It reads no `RTK_DB_PATH`, knows nothing about SQLite, and only rewrites commands, spawns `rtk read`, and appends log lines. The rows are written by `rtk` when the routed command runs, into the `RTK_DB_PATH` of that session. [RTK usage and per-agent statistics](../rtk.md) covers how to point that variable at the agent's Matrix and how to read the results.
+The extension never touches the database. It reads no `RTK_DB_PATH`, knows nothing about SQLite, and only rewrites commands, spawns `rtk read`, and appends log lines. The rows are written by `rtk` when the routed command runs, into the `RTK_DB_PATH` of that session. [RTK usage and per-agent statistics](../README.md) covers how to point that variable at the agent's Matrix and how to read the results.
 
 Which table a rewritten command lands in, measured against a scratch database with `rtk` 0.42.4:
 
@@ -280,7 +280,7 @@ The extension is loaded once per session. Editing `.pi/extensions/tool-hook.ts` 
 
 ### An invalid `RTK_DB_PATH` loses the record silently
 
-The extension ignores the variable entirely. The routed command runs, prints its normal output and exits 0, and what happens to the row is rtk's business: a nonexistent directory is created silently, database included, and the row is recorded (measured with `RTK_DB_PATH` pointing at a missing directory: `rtk ls -la .` exits 0 and the row lands in the freshly created database). The record is lost silently only when the path cannot be created: a plain file blocking the directory, or an existing non-SQLite file at the database path (both measured: exit 0, no row, no message). Nothing on this side reports either outcome. [RTK usage and per-agent statistics](../rtk.md#failure-modes) covers how that surfaces when you read the statistics.
+The extension ignores the variable entirely. The routed command runs, prints its normal output and exits 0, and what happens to the row is rtk's business: a nonexistent directory is created silently, database included, and the row is recorded (measured with `RTK_DB_PATH` pointing at a missing directory: `rtk ls -la .` exits 0 and the row lands in the freshly created database). The record is lost silently only when the path cannot be created: a plain file blocking the directory, or an existing non-SQLite file at the database path (both measured: exit 0, no row, no message). Nothing on this side reports either outcome. [RTK usage and per-agent statistics](../README.md#failure-modes) covers how that surfaces when you read the statistics.
 
 ### The extension never blocks a tool
 
@@ -288,9 +288,10 @@ Every path out of the handler is a mutation or a silent return. There is no deny
 
 ## See also
 
-- [RTK usage and per-agent statistics](../rtk.md) - configuring `RTK_DB_PATH` per agent type and reading the database this integration feeds
-- [Agent Matrix conventions](../../agent-matrix-conventions.md) - replica and Matrix layout, which is what the extension derives the log path from
-- [Coding agents](../coding-agents.md) - the coding-agent catalog and its ENVIRONMENT rows
-- [The AgentsCommander RTK hook for Claude Code](../rtk_claude/README.md) - the Claude Code counterpart; same design, different tool set, different artifacts
+- [RTK usage and per-agent statistics](../README.md) - configuring `RTK_DB_PATH` per agent type and reading the database this integration feeds
+- [Windows prerequisite: the Visual C++ runtime](../README.md#windows-prerequisite-the-visual-c-runtime) - the runtime the official Windows x64 RTK binary needs.
+- [Agent Matrix conventions](../../../agent-matrix-conventions.md) - replica and Matrix layout, which is what the extension derives the log path from
+- [Coding agents](../../coding-agents.md) - the coding-agent catalog and its ENVIRONMENT rows
+- [The AgentsCommander RTK hook for Claude Code](../claude/README.md) - the Claude Code counterpart; same design, different tool set, different artifacts
 - [pi extensions documentation](https://github.com/earendil-works/pi) - Extension Locations for project-local `.pi/extensions/*.ts` and the `tool_call` event with mutable `event.input` (in the installed package at `docs/extensions.md`)
 - [RTK upstream repository](https://github.com/rtk-ai/rtk)

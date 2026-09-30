@@ -2990,8 +2990,8 @@ P2-fixture	src-tauri/src/web/commands.rs	regex: "^wg-14$".to_string(),
 P2-fixture	src-tauri/src/web/commands.rs	// Real WG replica layout so enumeration + config write succeed under the
 P2-fixture	src-tauri/src/web/commands.rs	let replica = ac_root.join("wg-1-team").join("__agent_codex");
 P0-token	docs/features/context-tracking.md	[AC context alert] `%MEMBER%` in `%WORKGROUP%` reached threshold(s): %THRESHOLDS%. No action taken; you decide any follow-up.
-P1-comment	docs/integrations/rtk_claude/hooks/ac_rtk_shared.js	// survives across workgroups. Everything is derived, nothing hardcoded: a hook sits
-P1-comment	docs/integrations/rtk_pi/extensions/tool-hook.ts	// `.ac/wg-<N>-*/` maps to `.ac/_agent_<name>`), no hardcoded absolute path.
+P1-comment	docs/integrations/rtk/claude/hooks/ac_rtk_shared.js	// survives across workgroups. Everything is derived, nothing hardcoded: a hook sits
+P1-comment	docs/integrations/rtk/pi/extensions/tool-hook.ts	// `.ac/wg-<N>-*/` maps to `.ac/_agent_<name>`), no hardcoded absolute path.
 P0-identifier	docs/reference/architecture.md	MA --> WR["WorkgroupGroupRail.tsx<br/>Favorites, group rail, raise-hand"]
 P0-identifier	docs/reference/architecture.md	TA --> WT["WorkgroupTask.tsx<br/>TASK.md title/status"]
 P0-event	docs/reference/architecture.md	E13["workgroup_task_updated"]

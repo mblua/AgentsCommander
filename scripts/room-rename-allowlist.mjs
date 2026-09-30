@@ -240,8 +240,8 @@ const FRONTEND_MOVES = {
 // is a Rule P carrier. Hand-read, one row each (AC1 point 7).
 const DOCS_KEEP = {
   "docs/features/context-tracking.md": { 75: "P0-token" },
-  "docs/integrations/rtk_claude/hooks/ac_rtk_shared.js": { 50: "P1-comment" },
-  "docs/integrations/rtk_pi/extensions/tool-hook.ts": { 55: "P1-comment" },
+  "docs/integrations/rtk/claude/hooks/ac_rtk_shared.js": { 50: "P1-comment" },
+  "docs/integrations/rtk/pi/extensions/tool-hook.ts": { 55: "P1-comment" },
   "docs/reference/architecture.md": {
     216: "P0-identifier", 251: "P0-identifier", 346: "P0-event",
     843: "P0-identifier", 860: "P0-identifier", 870: "P0-identifier",
