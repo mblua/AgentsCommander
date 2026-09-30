@@ -985,12 +985,11 @@ pub(crate) mod load_probe_harness {
 pub fn read_agent_local_config(dir: &Path) -> Option<AgentLocalConfig> {
     #[cfg(test)]
     load_probe::record_load(dir);
-    let typed_ok = |text: &String| serde_json::from_str::<AgentLocalConfig>(text).is_ok();
     let decisions = read_config_text(&dir.join("config.json"));
     if decisions.as_ref().is_some_and(|text| !typed_ok(text)) {
         return None;
     }
-    let state = read_config_text(&state_file_path(dir)).filter(typed_ok);
+    let state = read_config_text(&state_file_path(dir)).filter(|text| typed_ok(text));
     let value = merge_config_texts(decisions, state).ok()??;
     serde_json::from_value(value).ok()
 }
@@ -998,12 +997,15 @@ pub fn read_agent_local_config(dir: &Path) -> Option<AgentLocalConfig> {
 /// #2786 (C1) - the raw JSON the loader serves: `config.json` in `dir` with
 /// the state file's keys overlaid. `Ok(None)` when neither file exists; `Err`
 /// when `config.json` exists but is not JSON. A pure read: it writes nothing.
+/// The state file must pass the typed parse, exactly as in the typed wrapper,
+/// so both wrappers admit the same state files; `config.json` keeps its base
+/// `Value` semantics and is not filtered.
 pub fn read_agent_local_config_json(dir: &Path) -> Result<Option<serde_json::Value>, String> {
     #[cfg(test)]
     load_probe::record_load(dir);
     merge_config_texts(
         read_config_text(&dir.join("config.json")),
-        read_config_text(&state_file_path(dir)),
+        read_config_text(&state_file_path(dir)).filter(|text| typed_ok(text)),
     )
 }
 
@@ -1032,6 +1034,11 @@ fn read_config_text(path: &Path) -> Option<String> {
 /// Merge the two texts. `config.json` that is not JSON is an error; a state
 /// file that is absent, not JSON or not an object is ignored, so a reader
 /// falls back to `config.json` rather than failing.
+/// #2786 (C1) - the typed parse both wrappers apply to a file's own text.
+fn typed_ok(text: &str) -> bool {
+    serde_json::from_str::<AgentLocalConfig>(text).is_ok()
+}
+
 fn merge_config_texts(
     decisions: Option<String>,
     state: Option<String>,
@@ -1791,6 +1798,63 @@ mod tests {
                 .as_deref(),
             Some("tracked")
         );
+    }
+
+    /// #2786 C1 E7e: the raw wrapper filters the STATE file through the typed
+    /// parse and leaves `config.json` on its base `Value` semantics.
+    #[test]
+    fn the_raw_loader_filters_the_state_file_but_not_the_tracked_file() {
+        let state_name = crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME;
+        let raw = |dir: &Path| {
+            read_agent_local_config_json(dir)
+                .expect("json")
+                .expect("some")
+        };
+
+        // (1) a tracked duplicate is last wins, with no state file.
+        let temp = loader_fixture(None, None);
+        std::fs::write(
+            temp.path().join("config.json"),
+            r#"{"tooling":{"lastCodingAgent":"a","lastCodingAgent":"b"}}"#,
+        )
+        .expect("seed decisions");
+        assert_eq!(raw(temp.path())["tooling"]["lastCodingAgent"], "b");
+
+        // (2) an unrelated malformed tracked field is tolerated.
+        let temp = loader_fixture(
+            Some(
+                serde_json::json!({"tooling": {"lastCodingAgent": "claude", "codingAgents": null}}),
+            ),
+            None,
+        );
+        assert_eq!(raw(temp.path())["tooling"]["lastCodingAgent"], "claude");
+
+        // (3) and (4): a state file that fails the typed parse is ignored and
+        // the tracked value serves the key.
+        let tracked = serde_json::json!({"tooling": {
+            "lastCodingAgent": "tracked",
+            "codingAgents": {"tracked": {"command": "tracked"}}}});
+        for (leg, state) in [
+            (
+                "3 codingAgents null",
+                r#"{"tooling":{"codingAgents":null}}"#,
+            ),
+            (
+                "4 duplicate known field",
+                r#"{"tooling":{"lastCodingAgent":"a","lastCodingAgent":"b"}}"#,
+            ),
+        ] {
+            let temp = loader_fixture(Some(tracked.clone()), None);
+            std::fs::write(temp.path().join(state_name), state).expect("seed state");
+            assert_eq!(raw(temp.path())["tooling"], tracked["tooling"], "leg {leg}");
+        }
+
+        // (5) control: a well-formed state file for the same key does overlay.
+        let temp = loader_fixture(
+            Some(tracked.clone()),
+            Some(serde_json::json!({"tooling": {"lastCodingAgent": "state"}})),
+        );
+        assert_eq!(raw(temp.path())["tooling"]["lastCodingAgent"], "state");
     }
 
     // ---- #2786 C1 r28: harness child-ownership rows ----

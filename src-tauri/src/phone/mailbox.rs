@@ -29926,5 +29926,53 @@ mod tests {
 
         std::fs::create_dir(&state).expect("a directory is not a regular file");
         assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
+
+        // Legs 4 and 5 run the launch path's own composition, step for step as
+        // in `spawn_pty_input_target`: guarded reads, then the shared overlay,
+        // then the typed parse. No test reaches that method itself.
+        let launch_config = |root: &Path| {
+            let (bytes, _) =
+                crate::path_identity::read_bounded_regular(&root.join("config.json"), 1024 * 1024)
+                    .map_err(|_| C::UnsafePath)?;
+            let config = crate::path_identity::parse_json_no_duplicates(&bytes)
+                .map_err(|_| C::UnsupportedProfile)?;
+            let state = read_guarded_agent_state(root)?;
+            serde_json::from_value::<crate::config::agent_config::AgentLocalConfig>(
+                crate::config::agent_config::overlay_agent_local_state(config, state),
+            )
+            .map_err(|_| C::UnsupportedProfile)
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        std::fs::write(
+            root.join("config.json"),
+            r#"{"tooling":{"lastCodingAgent":"tracked"}}"#,
+        )
+        .expect("seed config");
+        let state = root.join(CONFIG_STATE_TARGET_NAME);
+
+        // Leg 4, fail-closed on purpose (section 5): a regular, small,
+        // duplicate-free state object that fails the typed parse REFUSES the
+        // launch, while both wrappers ignore the same file.
+        std::fs::write(&state, r#"{"tooling":{"codingAgents":null}}"#).expect("seed null");
+        assert_eq!(launch_config(root).map(|_| ()), Err(C::UnsupportedProfile));
+        let wrapper = crate::config::agent_config::read_agent_local_config(root).expect("typed");
+        assert_eq!(
+            wrapper.tooling.last_coding_agent.as_deref(),
+            Some("tracked")
+        );
+        let raw = crate::config::agent_config::read_agent_local_config_json(root)
+            .expect("raw")
+            .expect("some");
+        assert_eq!(
+            raw["tooling"],
+            serde_json::json!({"lastCodingAgent": "tracked"})
+        );
+
+        // Leg 5, the control: a well-formed state file launches and its value
+        // reaches the decision.
+        std::fs::write(&state, r#"{"tooling":{"lastCodingAgent":"state"}}"#).expect("seed ok");
+        let launched = launch_config(root).expect("a well-formed state file launches");
+        assert_eq!(launched.tooling.last_coding_agent.as_deref(), Some("state"));
     }
 }
