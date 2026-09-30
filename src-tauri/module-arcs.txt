@@ -614,7 +614,6 @@ agentscommander_lib::config::activity_log -> agentscommander_lib::config::instan
 agentscommander_lib::config::activity_log -> agentscommander_lib::session::profile
 agentscommander_lib::config::activity_log -> agentscommander_lib::session::session
 agentscommander_lib::config::agent_command -> agentscommander_lib::config
-agentscommander_lib::config::agent_command -> agentscommander_lib::config::agent_config
 agentscommander_lib::config::agent_command -> agentscommander_lib::config::agent_path
 agentscommander_lib::config::agent_command -> agentscommander_lib::config::coding_agent_profiles
 agentscommander_lib::config::agent_command -> agentscommander_lib::config::coding_agents_catalog
