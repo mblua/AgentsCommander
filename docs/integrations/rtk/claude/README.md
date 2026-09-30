@@ -63,14 +63,14 @@ Two files come out of all this, both in the agent's **origin Agent Matrix**, not
 
 | File | Holds | Written by |
 |---|---|---|
-| `<workspace>/.ac/_agent_<name>/rtk-matrix-history.db` | The RTK history database, tables `commands` and `parse_failures`. See [RTK usage and per-agent statistics](../rtk.md). | Two writers. `rtk` itself writes a row when a rewritten shell command runs, and `ac_rtk_claude_Tools.js` writes its own row directly for each successful native-tool call. |
+| `<workspace>/.ac/_agent_<name>/rtk-matrix-history.db` | The RTK history database, tables `commands` and `parse_failures`. See [RTK usage and per-agent statistics](../README.md). | Two writers. `rtk` itself writes a row when a rewritten shell command runs, and `ac_rtk_claude_Tools.js` writes its own row directly for each successful native-tool call. |
 | `<workspace>/.ac/_agent_<name>/rtk-ignored-tools-claude.md` | One line per command a shell hook handed back untouched. | The two shell hooks, which append to this one file. The native-tools hook never writes here. |
 
 The pair exists so you can tell "RTK covered this command" from "RTK never saw it". Neither file alone answers that, and a command missing from both is not proof it never ran: see [what they cover](#what-they-cover-and-what-they-still-miss).
 
 ## These are not the hook `rtk init` installs
 
-RTK ships its own Claude Code hook, and [RTK usage and per-agent statistics](../rtk.md#the-hook-covers-the-filtered-set-and-nothing-else) documents it. The two are separate pieces of software that happen to do related work:
+RTK ships its own Claude Code hook, and [RTK usage and per-agent statistics](../README.md#the-hook-covers-the-filtered-set-and-nothing-else) documents it. The two are separate pieces of software that happen to do related work:
 
 | | AC hooks | RTK hook |
 |---|---|---|
@@ -335,7 +335,7 @@ Both shell hooks append to the same file. One line per entry, no header:
 
 ### The timestamps do not line up with the database
 
-`rtk-ignored-tools-claude.md` stamps local time with no zone. The `timestamp` column of `commands` is RFC 3339 with an offset, as documented in [RTK usage and per-agent statistics](../rtk.md#the-commands-table). The two artifacts do not share a time format, so **you cannot correlate them by string comparison**. Convert one side before you line up a session across both files.
+`rtk-ignored-tools-claude.md` stamps local time with no zone. The `timestamp` column of `commands` is RFC 3339 with an offset, as documented in [RTK usage and per-agent statistics](../README.md#the-commands-table). The two artifacts do not share a time format, so **you cannot correlate them by string comparison**. Convert one side before you line up a session across both files.
 
 ### An entry does not prove the command ran
 
@@ -345,7 +345,7 @@ These are `PreToolUse` hooks: the line is written before the shell starts, and n
 
 Two different writers fill the `commands` table, and they work in completely different ways.
 
-**The two shell hooks touch the database not at all.** They read no `RTK_DB_PATH`, know nothing about SQLite, and only rewrite the command and return `allow`. Their rows are written by `rtk` when the rewritten command runs, into the `RTK_DB_PATH` of that session. [RTK usage and per-agent statistics](../rtk.md) covers how to point that variable at the agent's Matrix and how to read the results.
+**The two shell hooks touch the database not at all.** They read no `RTK_DB_PATH`, know nothing about SQLite, and only rewrite the command and return `allow`. Their rows are written by `rtk` when the rewritten command runs, into the `RTK_DB_PATH` of that session. [RTK usage and per-agent statistics](../README.md) covers how to point that variable at the agent's Matrix and how to read the results.
 
 **`ac_rtk_claude_Tools.js` writes its own row**, directly, with `node:sqlite`, one per successful native-tool call. It only ever `INSERT`s into the `commands` table that is already there: it creates no database, no table and no column, because the schema belongs to `rtk`. When `RTK_DB_PATH` is unset or names a file that does not exist, it writes nothing and creates nothing.
 
@@ -446,7 +446,7 @@ What you keep in exchange: after a routed `PowerShell` command, both `$?` and `$
 
 ### An invalid `RTK_DB_PATH` loses the record silently
 
-The hooks ignore the variable entirely. The rewritten command runs, prints its normal output and exits 0, and the row is never written. Nothing on this side reports it. [RTK usage and per-agent statistics](../rtk.md#failure-modes) covers how that surfaces when you read the statistics.
+The hooks ignore the variable entirely. The rewritten command runs, prints its normal output and exits 0, and the row is never written. Nothing on this side reports it. [RTK usage and per-agent statistics](../README.md#failure-modes) covers how that surfaces when you read the statistics.
 
 ### The native-tools hook swallows every failure
 
@@ -476,7 +476,8 @@ Every path out of all three hooks, on both events, is a silent `exit(0)` or `per
 
 ## See also
 
-- [RTK usage and per-agent statistics](../rtk.md) - configuring `RTK_DB_PATH` per agent type and reading the database these hooks feed
-- [Agent Matrix conventions](../../agent-matrix-conventions.md) - replica and Matrix layout, which is what the hooks derive the log path from
-- [Coding agents](../coding-agents.md) - the coding-agent catalog and its ENVIRONMENT rows
+- [RTK usage and per-agent statistics](../README.md) - configuring `RTK_DB_PATH` per agent type and reading the database these hooks feed
+- [Windows prerequisite: the Visual C++ runtime](../README.md#windows-prerequisite-the-visual-c-runtime) - the runtime the official Windows x64 RTK binary needs.
+- [Agent Matrix conventions](../../../agent-matrix-conventions.md) - replica and Matrix layout, which is what the hooks derive the log path from
+- [Coding agents](../../coding-agents.md) - the coding-agent catalog and its ENVIRONMENT rows
 - [RTK upstream repository](https://github.com/rtk-ai/rtk)
