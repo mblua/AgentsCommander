@@ -16021,11 +16021,15 @@ exec claude \"$@\"
         };
 
         // E14's fixture: exactly one load, of this directory.
+
+        println!("LEG main");
         let tmp = tempfile::tempdir().expect("tempdir");
         h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new");
         call(tmp.path(), "via-new");
 
         // Unkeyed cache leg: two fresh directories with different values.
+
+        println!("LEG unkeyed");
         for command in ["new-a", "new-b"] {
             let tmp = tempfile::tempdir().expect("tempdir");
             h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", command);
@@ -16033,6 +16037,8 @@ exec claude \"$@\"
         }
 
         // Keyed cache leg: the SAME directory, state rewritten between calls.
+
+        println!("LEG keyed");
         let tmp = tempfile::tempdir().expect("tempdir");
         h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new-a");
         call(tmp.path(), "via-new-a");
