@@ -24,7 +24,7 @@ export const FALLBACK_CODING_AGENTS: CodingAgentDefinition[] = ([
   ["opencode", "OpenCode", "Open-source terminal coding agent by Anomaly", "#64748b", "opencode", "AGENTS.md", ["opencode upgrade"]],
   // #1482/#1546 - mirror of the embedded default: Antigravity ships the verified 'agy update' command (autoUpdate stays false).
   ["antigravity", "Antigravity", "Coding Agent by Google", "#4285F4", "agy", "AGENTS.md", ["agy update"]],
-  ["grok", "Grok Build", "Coding agent Grok Build", "#64748b", "grok", "AGENTS.md", []],
+  ["grok", "Grok Build", "Coding Agent by SpaceXAI", "#64748b", "grok", "AGENTS.md", []],
 ] satisfies Array<[
   key: string, label: string, description: string, color: string,
   command: string, instructionsFilename: string, updateCommands: string[],

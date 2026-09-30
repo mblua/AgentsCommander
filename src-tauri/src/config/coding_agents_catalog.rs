@@ -4997,7 +4997,7 @@ mod tests {
         (
             "grok",
             "Grok Build",
-            "Coding agent Grok Build",
+            "Coding Agent by SpaceXAI",
             "#64748b",
             "grok",
             Some("AGENTS.md"),

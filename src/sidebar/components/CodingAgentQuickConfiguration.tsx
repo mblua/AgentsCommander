@@ -136,13 +136,21 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     if (key === CUSTOM_PRESET.key) return null;
     return statusRowOf(key)?.testedLevel ?? null;
   };
-  const testedLabel = (level: CodingAgentTestedLevel): string =>
-    level === "high" ? "High" : level === "medium" ? "Medium" : "Low";
+  /** #2784 R10 - the chip scopes the level to AgentsCommander BEFORE the level
+   *  word, so no level word can read as a judgement of the coding agent itself. */
+  const SUPPORT_CHIP_PREFIX = "AC Support";
+  const SUPPORT_LABEL: Record<CodingAgentTestedLevel, string> = {
+    low: "Experimental",
+    medium: "Beta",
+    high: "Stable",
+  };
+  const supportChipText = (level: CodingAgentTestedLevel): string =>
+    SUPPORT_CHIP_PREFIX + ": " + SUPPORT_LABEL[level];
   /** #2784 - per-level Tested tooltip, verbatim from issue #2784. */
   const TESTED_TOOLTIP: Record<CodingAgentTestedLevel, string> = {
-    low: "This Coding Agent could not be tested much yet, help us do it. Please report to the project any issue you have while using it, blocking menus, etc. Thank you very much!",
-    medium: "This Coding Agent has been partially tested. Most things should work, but some rough edges may remain. Please report any issue you find to the project. Thank you!",
-    high: "This Coding Agent has been tested extensively with AgentsCommander. If you still run into any issue, please report it to the project. Thank you!",
+    low: "Support for this Coding Agent in AgentsCommander is still experimental. If something does not work well here (blocking menus, etc.), please report it to the AgentsCommander project. Thank you!",
+    medium: "Support for this Coding Agent in AgentsCommander is in beta. Most things should work; please report any issue you find to the AgentsCommander project. Thank you!",
+    high: "This Coding Agent is well supported in AgentsCommander. If you still run into an issue, please report it to the AgentsCommander project. Thank you!",
   };
   /** #2784 - Welcome identity line: "by <Vendor>", else the raw description.
    *  R3: the key-aware lookup, so Grok reads "by SpaceXAI" on an already-seeded install. */
@@ -153,7 +161,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   const presetAriaLabel = (preset: CodingAgentDefinition): string => {
     if (!props.showInstallStatus) return `Select ${preset.label}`;
     const level = testedLevelOf(preset.key);
-    const tested = level ? `, Tested: ${testedLabel(level)}` : "";
+    const tested = level ? ", " + supportChipText(level) : "";
     return `Select ${preset.label}, ${statusLabel(preset.key)}${tested}`;
   };
 
@@ -602,7 +610,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                                 data-ac-state={level()}
                                 title={TESTED_TOOLTIP[level()]}
                               >
-                                {`Tested: ${testedLabel(level())}`}
+                                {supportChipText(level())}
                               </span>
                             )}
                           </Show>

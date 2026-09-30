@@ -9815,19 +9815,27 @@ html.light-theme .onboarding-card.selected {
 }
 
 .onboarding-chip-tested[data-ac-state="low"] {
-  color: var(--status-exited);
+  color: #b5646f;
 }
 
 .onboarding-chip-tested[data-ac-state="medium"] {
-  color: var(--status-pending);
+  color: #8f7a50;
 }
 
 .onboarding-chip-tested[data-ac-state="high"] {
-  color: var(--status-waiting);
+  color: #528a68;
+}
+
+html.light-theme .onboarding-chip-tested[data-ac-state="low"] {
+  color: #a35560;
+}
+
+html.light-theme .onboarding-chip-tested[data-ac-state="medium"] {
+  color: #7d6944;
 }
 
 html.light-theme .onboarding-chip-tested[data-ac-state="high"] {
-  color: #15803d;
+  color: #4a7660;
 }
 
 /* #2736 - install row, a SIBLING of the card button inside an inert wrapper.

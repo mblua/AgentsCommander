@@ -647,9 +647,9 @@ describe("CodingAgentQuickConfiguration", () => {
 
       expect(chipText("claude", "status")).toBe("Installed");
       expect(chipText("codex", "status")).toBe("Not installed");
-      expect(chipText("codex", "tested")).toBe("Tested: High");
-      expect(chipText("claude", "tested")).toBe("Tested: Medium");
-      expect(chipText("pi", "tested")).toBe("Tested: Low");
+      expect(chipText("codex", "tested")).toBe("AC Support: Stable");
+      expect(chipText("claude", "tested")).toBe("AC Support: Beta");
+      expect(chipText("pi", "tested")).toBe("AC Support: Experimental");
       expect(byTestId("onboarding.agentPreset.claude.status")?.getAttribute("data-ac-state")).toBe(
         "installed",
       );
@@ -800,7 +800,7 @@ describe("CodingAgentQuickConfiguration", () => {
 
       expect(CodingAgentsAPI.welcomeStatus).toHaveBeenCalledTimes(2);
       expect(chipText("codex", "status")).toBe("Not installed");
-      expect(chipText("codex", "tested")).toBe("Tested: Low");
+      expect(chipText("codex", "tested")).toBe("AC Support: Experimental");
 
       dispose();
     });
@@ -828,7 +828,7 @@ describe("CodingAgentQuickConfiguration", () => {
 
       expect(CodingAgentsAPI.welcomeStatus).toHaveBeenCalledTimes(2);
       expect(chipText("codex", "status")).toBe("Installed");
-      expect(chipText("codex", "tested")).toBe("Tested: High");
+      expect(chipText("codex", "tested")).toBe("AC Support: Stable");
       expect(consoleError).not.toHaveBeenCalled();
 
       consoleError.mockRestore();
@@ -868,8 +868,8 @@ describe("CodingAgentQuickConfiguration", () => {
       const dispose = renderWelcome(true);
       await settle();
 
-      expect(cardLabel("codex")).toBe("Select Codex, Installed, Tested: High");
-      expect(cardLabel("claude")).toBe("Select Claude Code, Installed, Tested: Medium");
+      expect(cardLabel("codex")).toBe("Select Codex, Installed, AC Support: Stable");
+      expect(cardLabel("claude")).toBe("Select Claude Code, Installed, AC Support: Beta");
       expect(cardLabel("mine")).toBe("Select My Agent, Not installed");
       expect(cardLabel("custom")).toBe("Select Custom Agent, Not needed");
       // The name and the chip text must not drift apart.
@@ -1022,13 +1022,13 @@ describe("CodingAgentQuickConfiguration", () => {
       const title = (key: string) =>
         byTestId(`onboarding.agentPreset.${key}.tested`)?.getAttribute("title");
       expect(title("pi")).toBe(
-        "This Coding Agent could not be tested much yet, help us do it. Please report to the project any issue you have while using it, blocking menus, etc. Thank you very much!",
+        "Support for this Coding Agent in AgentsCommander is still experimental. If something does not work well here (blocking menus, etc.), please report it to the AgentsCommander project. Thank you!",
       );
       expect(title("claude")).toBe(
-        "This Coding Agent has been partially tested. Most things should work, but some rough edges may remain. Please report any issue you find to the project. Thank you!",
+        "Support for this Coding Agent in AgentsCommander is in beta. Most things should work; please report any issue you find to the AgentsCommander project. Thank you!",
       );
       expect(title("codex")).toBe(
-        "This Coding Agent has been tested extensively with AgentsCommander. If you still run into any issue, please report it to the project. Thank you!",
+        "This Coding Agent is well supported in AgentsCommander. If you still run into an issue, please report it to the AgentsCommander project. Thank you!",
       );
 
       dispose();
@@ -1050,18 +1050,64 @@ describe("CodingAgentQuickConfiguration", () => {
       dispose();
     });
 
-    it("tested_2784_each_level_gets_its_muted_color_and_a_neutral_border", () => {
-      const level = (l: string) => onlyRule(`.onboarding-chip-tested[data-ac-state="${l}"]`);
-      expect(declValue(level("low"), "color")).toBe("var(--status-exited)");
-      expect(declValue(level("medium"), "color")).toBe("var(--status-pending)");
-      expect(declValue(level("high"), "color")).toBe("var(--status-waiting)");
-      expect(
-        rulesFor('html.light-theme .onboarding-chip-tested[data-ac-state="high"]').length,
-      ).toBe(1);
+    it("support_2784_r10_the_chip_reads_ac_support_and_the_level_name", async () => {
+      useWelcomeCatalog();
+      const dispose = renderWelcome(true);
+      await settle();
+
+      expect(chipText("pi", "tested")).toBe("AC Support: Experimental");
+      expect(chipText("claude", "tested")).toBe("AC Support: Beta");
+      expect(chipText("codex", "tested")).toBe("AC Support: Stable");
+      const state = (key: string) =>
+        byTestId(`onboarding.agentPreset.${key}.tested`)?.getAttribute("data-ac-state");
+      expect(state("pi")).toBe("low");
+      expect(state("claude")).toBe("medium");
+      expect(state("codex")).toBe("high");
+
+      dispose();
+    });
+
+    it("support_2784_r10_the_accessible_name_carries_the_same_words_as_the_chip", async () => {
+      useWelcomeCatalog([
+        statusRow("codex", true, "high"),
+        statusRow("claude", true, "medium"),
+        statusRow("pi", false, "low"),
+        statusRow("mine", false, null),
+      ]);
+      const dispose = renderWelcome(true);
+      await settle();
+
+      for (const key of ["codex", "claude", "pi"]) {
+        expect(cardLabel(key)).toContain(chipText(key, "tested"));
+      }
+      expect(cardLabel("codex")).toBe("Select Codex, Installed, AC Support: Stable");
+
+      dispose();
+    });
+
+    it("support_2784_r10_each_level_gets_a_muted_hex_and_a_light_twin", () => {
+      const expected: Record<string, [string, string]> = {
+        low: ["#b5646f", "#a35560"],
+        medium: ["#8f7a50", "#7d6944"],
+        high: ["#528a68", "#4a7660"],
+      };
+      for (const [l, [dark, light]] of Object.entries(expected)) {
+        const darkColor = declValue(onlyRule(`.onboarding-chip-tested[data-ac-state="${l}"]`), "color");
+        const lightColor = declValue(
+          onlyRule(`html.light-theme .onboarding-chip-tested[data-ac-state="${l}"]`),
+          "color",
+        );
+        expect(darkColor).toBe(dark);
+        expect(lightColor).toBe(light);
+        for (const value of [darkColor, lightColor]) {
+          expect(value).not.toContain("var(");
+          expect(value).not.toContain("color-mix(");
+        }
+      }
       const levelRules = sheetRules().filter((r) =>
         r.selectors.some((s) => s.includes(".onboarding-chip-tested[")),
       );
-      expect(levelRules.length).toBe(4);
+      expect(levelRules.length).toBe(6);
       for (const r of levelRules) expect(hasDecl(r.body, "border-color")).toBe(false);
     });
 

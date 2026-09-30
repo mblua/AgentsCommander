@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import agentsDefault from "../../src-tauri/resources/coding-agents/agents.default.json";
 import {
   FALLBACK_CODING_AGENTS,
   compareWelcomeAgents,
@@ -32,7 +33,7 @@ const EXPECTED_BUILTINS: Array<
   { key: "pi", label: "Pi", description: "Coding Agent by Earendil Inc", color: "#ec4899", command: "pi", instructionsFilename: "AGENTS.md" },
   { key: "opencode", label: "OpenCode", description: "Open-source terminal coding agent by Anomaly", color: "#64748b", command: "opencode", instructionsFilename: "AGENTS.md" },
   { key: "antigravity", label: "Antigravity", description: "Coding Agent by Google", color: "#4285F4", command: "agy", instructionsFilename: "AGENTS.md" },
-  { key: "grok", label: "Grok Build", description: "Coding agent Grok Build", color: "#64748b", command: "grok", instructionsFilename: "AGENTS.md" },
+  { key: "grok", label: "Grok Build", description: "Coding Agent by SpaceXAI", color: "#64748b", command: "grok", instructionsFilename: "AGENTS.md" },
 ];
 
 describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
@@ -285,5 +286,13 @@ describe("Welcome order (#2736)", () => {
     expect(Object.keys(WELCOME_VENDOR_BY_KEY)).toEqual(["grok"]);
     expect(WELCOME_VENDOR_BY_KEY).toEqual({ grok: "SpaceXAI" });
     expect(welcomeVendorForKey("constructor", "plain text")).toBeNull();
+  });
+
+  it("catalog_2784_r10_the_grok_row_carries_the_vendor", () => {
+    const mirror = FALLBACK_CODING_AGENTS.find((a) => a.key === "grok")!.description;
+    expect(mirror).toBe("Coding Agent by SpaceXAI");
+    expect(welcomeVendorOf(mirror)).toBe("SpaceXAI");
+    const seed = agentsDefault.agents.find((a) => a.key === "grok")!.description;
+    expect(seed).toBe("Coding Agent by SpaceXAI");
   });
 });
