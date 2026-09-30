@@ -54,9 +54,9 @@ fn read_preferred_agent_id_logged(
     warnings: &mut Vec<String>,
 ) -> Option<String> {
     let config_path = dir.join("config.json");
-    let content = std::fs::read_to_string(&config_path).ok()?;
-    let v: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
+    // #2786 (C1) - through the shared loader: state file first, key-wise.
+    let v = match crate::config::agent_config::read_agent_local_config_json(dir) {
+        Ok(v) => v?,
         Err(e) => {
             warnings.push(format!(
                 "malformed '{}', no coding-agent reference: {}",
@@ -7229,5 +7229,77 @@ mod tests {
             let pattern = source_and_pattern.rsplit(':').next().expect("pattern");
             assert_eq!(pattern, rule, "{relative} matched the wrong rule");
         }
+    }
+    // ---------------------------------------------------------------- #2786 C1
+    // E14: the id and the descriptor come from one merged snapshot. The state
+    // file's descriptor (`new`) must win over the tracked one (`old`).
+    #[test]
+    fn the_id_and_the_descriptor_come_from_one_snapshot() {
+        use crate::config::agent_config::load_probe_harness as h;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new");
+        let mut warnings = Vec::new();
+        let got =
+            read_preferred_agent_id_logged(tmp.path(), &h::snapshot_settings(), &mut warnings);
+        assert_eq!(got.as_deref(), Some("via-new"), "{warnings:?}");
+    }
+
+    // E15: the parent row is ordinary and unarmed; the inner row runs alone,
+    // single-threaded, in a dedicated ARMED process and calls the REAL caller.
+    // Base at fd32c052 was RED, n=2 (a second load inside `from_config`); the
+    // single-snapshot change makes it one load of the caller's own directory.
+    #[test]
+    fn read_preferred_agent_id_logged_loads_once_from_its_own_dir() {
+        let out = crate::config::agent_config::load_probe_harness::expect_child_pass(
+            "commands::ac_discovery::tests::inner_read_preferred_agent_id_logged_loads_once",
+        );
+        assert!(out.contains("MEASURED-LOADS n=1"), "{out}");
+    }
+
+    #[test]
+    #[ignore = "#2786 C1: runs only in the dedicated armed process"]
+    fn inner_read_preferred_agent_id_logged_loads_once() {
+        use crate::config::agent_config::load_probe::Observation;
+        use crate::config::agent_config::load_probe_harness as h;
+        let settings = h::snapshot_settings();
+        let call = |dir: &std::path::Path, want: &str| {
+            let obs = Observation::open();
+            let mut warnings = Vec::new();
+            let got = read_preferred_agent_id_logged(dir, &settings, &mut warnings);
+            println!("REACHED-CALLER got={got:?} warnings={warnings:?}");
+            let loads = obs.loads();
+            println!("MEASURED-LOADS n={} {:?}", loads.len(), loads);
+            let expected = vec![dir.to_path_buf()];
+            assert_eq!(
+                loads, expected,
+                "recorded {loads:?}, expected exactly {expected:?}"
+            );
+            assert_eq!(got.as_deref(), Some(want), "{warnings:?}");
+        };
+
+        // E14's fixture: exactly one load, of this directory.
+
+        println!("LEG main");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new");
+        call(tmp.path(), "via-new");
+
+        // Unkeyed cache leg: two fresh directories with different values.
+
+        println!("LEG unkeyed");
+        for command in ["new-a", "new-b"] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", command);
+            call(tmp.path(), &format!("via-{command}"));
+        }
+
+        // Keyed cache leg: the SAME directory, state rewritten between calls.
+
+        println!("LEG keyed");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new-a");
+        call(tmp.path(), "via-new-a");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new-b");
+        call(tmp.path(), "via-new-b");
     }
 }

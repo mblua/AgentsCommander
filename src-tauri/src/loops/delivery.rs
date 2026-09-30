@@ -7,7 +7,6 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::config::agent_command::{build_agent_spawn_command, AgentSpawnCommand};
-use crate::config::agent_config::AgentLocalConfig;
 use crate::config::loops::{
     loop_dir, resolve_loop_target, revalidate_loop_current, BusyCoordinatorPolicy, LoopAuditKind,
     LoopConfigRevalidation, LoopConfigToml, LoopSessionStart,
@@ -832,10 +831,9 @@ fn command_for_agent(
 }
 
 fn read_last_coding_agent(replica_dir: &Path) -> Option<String> {
-    let config_path = replica_dir.join("config.json");
-    let content = std::fs::read_to_string(config_path).ok()?;
-    let config = serde_json::from_str::<AgentLocalConfig>(&content).ok()?;
-    config.tooling.last_coding_agent
+    crate::config::agent_config::read_agent_local_config(replica_dir)?
+        .tooling
+        .last_coding_agent
 }
 
 fn path_compare_key(path: &Path) -> String {

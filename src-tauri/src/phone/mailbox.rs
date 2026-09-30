@@ -9,7 +9,6 @@ use serde::Serialize;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
-use crate::config::agent_config::AgentLocalConfig;
 use crate::config::injected_messages::{
     render, BRANCH_STALE_MESSAGE_ID, CI_FINISHED_MESSAGE_ID, CI_STARTED_MESSAGE_ID,
     CONTEXT_ALERT_MESSAGE_ID, MAX_RENDERED_BYTES, NOTICE_BLIND_GAP_MESSAGE_ID, TOKEN_AT,
@@ -6661,8 +6660,15 @@ impl MailboxPoller {
         .map_err(|_| C::UnsafePath)?;
         let config_value = crate::path_identity::parse_json_no_duplicates(&config_bytes)
             .map_err(|_| C::UnsupportedProfile)?;
-        let local_config: AgentLocalConfig =
-            serde_json::from_value(config_value).map_err(|_| C::UnsupportedProfile)?;
+        // #2786 (C1) - the state file goes through the same guarded read as
+        // config.json (regular file, no-follow, size, duplicate keys); only a
+        // missing file is absence. The shared loader's policy overlays it.
+        let state_value = read_guarded_agent_state(&target_root)?;
+        let config_value =
+            crate::config::agent_config::overlay_agent_local_state(config_value, state_value);
+        let local_config =
+            serde_json::from_value::<crate::config::agent_config::AgentLocalConfig>(config_value)
+                .map_err(|_| C::UnsupportedProfile)?;
         let exited = select_persistent_exited_pty_candidate(matching, |session| {
             crate::config::teams::verify_pty_input_replica_cwd(Path::new(
                 &session.working_directory,
@@ -8516,12 +8522,9 @@ impl MailboxPoller {
             let current = crate::config::coding_agent_profiles::read_replica_current_coding_agent(
                 &replica_dir,
             );
-            let config_path = replica_dir
-                .join(crate::config::agent_local_dir_name())
-                .join("config.json");
-            let last = std::fs::read_to_string(&config_path)
-                .ok()
-                .and_then(|content| serde_json::from_str::<AgentLocalConfig>(&content).ok())
+            let config_dir = replica_dir.join(crate::config::agent_local_dir_name());
+            let config_path = config_dir.join("config.json");
+            let last = crate::config::agent_config::read_agent_local_config(&config_dir)
                 .and_then(|config| config.tooling.last_coding_agent);
             resolve_wake_agent_command_from_sources(
                 &agents,
@@ -12718,15 +12721,13 @@ impl MailboxPoller {
             destination_current_agent =
                 crate::config::coding_agent_profiles::read_replica_current_coding_agent(dest);
 
-            let config_path = dest
-                .join(crate::config::agent_local_dir_name())
-                .join("config.json");
-            destination_config_path = Some(config_path.clone());
+            let config_dir = dest.join(crate::config::agent_local_dir_name());
+            destination_config_path = Some(config_dir.join("config.json"));
 
-            if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&content) {
-                    destination_last_agent = local_config.tooling.last_coding_agent;
-                }
+            if let Some(local_config) =
+                crate::config::agent_config::read_agent_local_config(&config_dir)
+            {
+                destination_last_agent = local_config.tooling.last_coding_agent;
             }
         }
 
@@ -13215,6 +13216,28 @@ fn read_text_bom_tolerant(path: &Path) -> Result<String, String> {
     } else {
         String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {}", e))
     }
+}
+
+/// #2786 (C1) - the agent state file beside `config.json` in `target_root`,
+/// read through the same guard as the PTY-input `config.json` read: a regular
+/// non-symlink file, at most 1 MiB, no duplicate keys. Only a missing file is
+/// absence; every other failure is an error the caller propagates.
+fn read_guarded_agent_state(
+    target_root: &Path,
+) -> Result<Option<serde_json::Value>, crate::phone::types::PtyInputReasonCode> {
+    use crate::phone::types::PtyInputReasonCode as C;
+    let state_path = target_root.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+    if matches!(
+        std::fs::symlink_metadata(&state_path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    ) {
+        return Ok(None);
+    }
+    let (state_bytes, _) = crate::path_identity::read_bounded_regular(&state_path, 1024 * 1024)
+        .map_err(|_| C::UnsafePath)?;
+    crate::path_identity::parse_json_no_duplicates(&state_bytes)
+        .map(Some)
+        .map_err(|_| C::UnsupportedProfile)
 }
 
 #[cfg(test)]
@@ -29848,5 +29871,108 @@ mod tests {
             session_has_current_pty_submission_provenance(&session, &settings),
             "the provenance read failed under the mark"
         );
+    }
+
+    /// #2786 (C1) - the PTY-input state read keeps the config.json guard.
+    #[test]
+    fn guarded_agent_state_read_rejects_unsafe_input() {
+        use crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME;
+        use crate::phone::types::PtyInputReasonCode as C;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        assert_eq!(
+            read_guarded_agent_state(root),
+            Ok(None),
+            "absent is absence"
+        );
+
+        let state = root.join(CONFIG_STATE_TARGET_NAME);
+        std::fs::write(&state, r#"{"tooling":{"lastCodingAgent":"claude"}}"#).expect("seed");
+        assert_eq!(
+            read_guarded_agent_state(root),
+            Ok(Some(
+                serde_json::json!({"tooling":{"lastCodingAgent":"claude"}})
+            ))
+        );
+
+        std::fs::write(
+            &state,
+            r#"{"tooling":{"lastCodingAgent":"a","lastCodingAgent":"b"}}"#,
+        )
+        .expect("seed duplicate");
+        assert_eq!(read_guarded_agent_state(root), Err(C::UnsupportedProfile));
+
+        std::fs::write(&state, vec![b' '; 1024 * 1024 + 1]).expect("seed oversized");
+        assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
+
+        // A hard-linked state file is not a single-owner regular file.
+        let outside = root.join("outside.json");
+        std::fs::write(&outside, r#"{"tooling":{}}"#).expect("seed outside");
+        std::fs::remove_file(&state).expect("remove");
+        std::fs::hard_link(&outside, &state).expect("hard link");
+        assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
+
+        // A symlinked state file is refused (only where this host can make one).
+        std::fs::remove_file(&state).expect("remove");
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&outside, &state).is_ok();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, &state).is_ok();
+        if linked {
+            assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
+            std::fs::remove_file(&state).expect("remove link");
+        }
+
+        std::fs::create_dir(&state).expect("a directory is not a regular file");
+        assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
+
+        // Legs 4 and 5 run the launch path's own composition, step for step as
+        // in `spawn_pty_input_target`: guarded reads, then the shared overlay,
+        // then the typed parse. No test reaches that method itself.
+        let launch_config = |root: &Path| {
+            let (bytes, _) =
+                crate::path_identity::read_bounded_regular(&root.join("config.json"), 1024 * 1024)
+                    .map_err(|_| C::UnsafePath)?;
+            let config = crate::path_identity::parse_json_no_duplicates(&bytes)
+                .map_err(|_| C::UnsupportedProfile)?;
+            let state = read_guarded_agent_state(root)?;
+            serde_json::from_value::<crate::config::agent_config::AgentLocalConfig>(
+                crate::config::agent_config::overlay_agent_local_state(config, state),
+            )
+            .map_err(|_| C::UnsupportedProfile)
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        std::fs::write(
+            root.join("config.json"),
+            r#"{"tooling":{"lastCodingAgent":"tracked"}}"#,
+        )
+        .expect("seed config");
+        let state = root.join(CONFIG_STATE_TARGET_NAME);
+
+        // Leg 4, fail-closed on purpose (section 5): a regular, small,
+        // duplicate-free state object that fails the typed parse REFUSES the
+        // launch, while both wrappers ignore the same file.
+        std::fs::write(&state, r#"{"tooling":{"codingAgents":null}}"#).expect("seed null");
+        assert_eq!(launch_config(root).map(|_| ()), Err(C::UnsupportedProfile));
+        let wrapper = crate::config::agent_config::read_agent_local_config(root).expect("typed");
+        assert_eq!(
+            wrapper.tooling.last_coding_agent.as_deref(),
+            Some("tracked")
+        );
+        let raw = crate::config::agent_config::read_agent_local_config_json(root)
+            .expect("raw")
+            .expect("some");
+        assert_eq!(
+            raw["tooling"],
+            serde_json::json!({"lastCodingAgent": "tracked"})
+        );
+
+        // Leg 5, the control: a well-formed state file launches and its value
+        // reaches the decision.
+        std::fs::write(&state, r#"{"tooling":{"lastCodingAgent":"state"}}"#).expect("seed ok");
+        let launched = launch_config(root).expect("a well-formed state file launches");
+        assert_eq!(launched.tooling.last_coding_agent.as_deref(), Some("state"));
     }
 }

@@ -256,6 +256,46 @@
       "issue": 2281,
       "reason": "#2236 S6 fixture capture helper, not a behavior test. It only prints the normalized non-project settings JSON via println and asserts nothing, so as a standard debug-lane member it would have no pass criterion. The S6 behavior it supports is pinned by a_no_overlay_save_writes_the_control_captured_on_the_pinned_base.",
       "resolution": "Stays ignored by design as a print-only capture helper; it runs manually to re-capture the S6 control with cargo test --lib print_s6_normalized_non_project_settings -- --ignored --nocapture."
+    },
+    {
+      "id": "rust:src-tauri/src/commands/ac_discovery.rs::tests::inner_read_preferred_agent_id_logged_loads_once",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2786,
+      "reason": "#2786 C1 E15 inner row: runs only in the dedicated armed child process spawned by its parent row (load_probe_harness). Run unarmed in the ordinary suite, Observation::open aborts by design.",
+      "resolution": "Stays ignored by design; its parent row runs it with cargo test --lib <name> --exact --ignored --test-threads=1 in a child process armed with AC2786_LOAD_PROBE=1."
+    },
+    {
+      "id": "rust:src-tauri/src/commands/session.rs::tests::inner_matched_selection_loads_once",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2786,
+      "reason": "#2786 C1 E15 inner row: runs only in the dedicated armed child process spawned by its parent row (load_probe_harness). Run unarmed in the ordinary suite, Observation::open aborts by design.",
+      "resolution": "Stays ignored by design; its parent row runs it with cargo test --lib <name> --exact --ignored --test-threads=1 in a child process armed with AC2786_LOAD_PROBE=1."
+    },
+    {
+      "id": "rust:src-tauri/src/config/agent_config.rs::tests::inner_a_load_with_no_open_observation_fails_closed",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2786,
+      "reason": "#2786 C1 E15 inner row: runs only in the dedicated armed child process spawned by its parent row (load_probe_harness). Run unarmed in the ordinary suite, Observation::open aborts by design.",
+      "resolution": "Stays ignored by design; its parent row runs it with cargo test --lib <name> --exact --ignored --test-threads=1 in a child process armed with AC2786_LOAD_PROBE=1."
+    },
+    {
+      "id": "rust:src-tauri/src/config/agent_config.rs::tests::inner_the_load_probe_observes_every_thread",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2786,
+      "reason": "#2786 C1 E15 inner row: runs only in the dedicated armed child process spawned by its parent row (load_probe_harness). Run unarmed in the ordinary suite, Observation::open aborts by design.",
+      "resolution": "Stays ignored by design; its parent row runs it with cargo test --lib <name> --exact --ignored --test-threads=1 in a child process armed with AC2786_LOAD_PROBE=1."
+    },
+    {
+      "id": "rust:src-tauri/src/config/agent_config.rs::tests::inner_sleeps_until_killed",
+      "category": "ignored-rust-test",
+      "owner": "dev-rust",
+      "issue": 2786,
+      "reason": "#2786 C1 harness sleeper: blocks 120 s until killed, driven only by the child-ownership and cleanup-control rows (load_probe_harness), so those rows always act on a live child.",
+      "resolution": "Stays ignored by design; its parent row runs it with cargo test --lib <name> --exact --ignored --test-threads=1 in a child process armed with AC2786_LOAD_PROBE=1."
     }
   ]
 }
