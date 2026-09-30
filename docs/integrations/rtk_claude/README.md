@@ -2,26 +2,17 @@
 
 For operators who want to know what a Claude Code agent actually ran, not what it reported. AgentsCommander seeds three hooks into every room replica: a `PreToolUse` hook for the `Bash` tool, a `PreToolUse` hook for the `PowerShell` tool, and a third registered on both `PreToolUse` and `PostToolUse` for the six native file tools. After this page you can read the two files they produce and say which shell command landed in which one, from which shell and why, and which native-tool call is recorded in the database.
 
-The hooks, the module two of them share, their registration and the status line are copied into this directory so you can review them without opening a replica:
+The hooks, the module two of them share, and their registration are copied into this directory so you can review them without opening a replica:
 
 - [`hooks/ac_rtk_claude_Bash.js`](hooks/ac_rtk_claude_Bash.js), 83 lines
 - [`hooks/ac_rtk_claude_PowerShell.js`](hooks/ac_rtk_claude_PowerShell.js), 123 lines
 - [`hooks/ac_rtk_claude_Tools.js`](hooks/ac_rtk_claude_Tools.js), 181 lines, the native-tools hook, which shares no code with the other two
 - [`hooks/ac_rtk_shared.js`](hooks/ac_rtk_shared.js), 129 lines, the half that does not depend on a shell, required by the two shell hooks
 - [`settings.local.json`](settings.local.json), 55 lines
-- [`statusline.sh`](statusline.sh)
 
-All six are faithful copies of `<workspace>/.ac/default.claude/`, the seed AC installs from, with one deliberate exception: the ignored-log name in this directory is `rtk-ignored-tools-claude.md`, while the seed still carries the older underscore spelling. This directory is ahead on purpose. The operator copies it into the seed, and that copy is how the rename reaches the seed, so do not change the name back to match what the seed says today. Do not edit these files here either: this directory is a mirror, not the source.
+All five are faithful copies of `<workspace>/.ac/default.claude/`, the seed AC installs from, with one deliberate exception: the ignored-log name in this directory is `rtk-ignored-tools-claude.md`, while the seed still carries the older underscore spelling. This directory is ahead on purpose. The operator copies it into the seed, and that copy is how the rename reaches the seed, so do not change the name back to match what the seed says today. Do not edit these files here either: this directory is a mirror, not the source.
 
-## Claude Code status line
-
-The `statusline.sh` script requires Bash and Node, already used by the hooks; it does not require jq. Git is optional: a missing Git executable, non-repository workspace or detached HEAD omits the branch. Git lookup has a two-second timeout and uses the supplied workspace, never the invocation directory.
-
-The script reads JSON from stdin and shows the workspace directory name, branch, model, optional effort, context usage, and present five-hour and seven-day limits. It preserves ANSI colors, floors percentages without clamping, strips carriage returns and emits one newline. A trailing workspace slash deliberately gives an empty directory name. Empty-string and zero effort remain visible; absent, null or false effort and limit sections are omitted. Absent, null or false percentages display 0%.
-
-Incomplete objects such as `{}` now fall back to empty directory/model and `ctx 0%`. Limit sections containing `{}`, `0` or an empty string now display 0%; these are fallback behavior, whereas the old jq script failed. Malformed or empty JSON and incompatible field types produce empty stdout, one diagnostic line on stderr and a nonzero exit.
-
-The settings command in `settings.local.json` remains unchanged. To synchronize this reviewed mirror, copy `statusline.sh` byte-for-byte into the installation seed at `<workspace>/.ac/default.claude/statusline.sh` and compare the files. Updating a staging seed does not update the installation seed or existing replicas; operators must copy to those separately.
+The separate [Claude Code status line](../claude_statusline/README.md) documents quota output and installation. Its `statusLine` registration remains in this directory's `settings.local.json`.
 
 ## What the hooks are and where they land
 
