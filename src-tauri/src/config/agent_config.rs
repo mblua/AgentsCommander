@@ -929,18 +929,27 @@ pub(crate) mod load_probe_harness {
     /// holds the id under `id_key` plus a descriptor with `command: "old"`; the
     /// state file holds the descriptor for that id with `state_command` and no
     /// marker. Rewriting it on the same directory changes only the state side.
+    /// Written through `write_file_atomic`, the shared writer the #1938 scan
+    /// requires outside a `mod tests` block.
     pub(crate) fn write_snapshot_fixture(dir: &std::path::Path, id_key: &str, state_command: &str) {
         let tracked = serde_json::json!({"tooling": {
             id_key: SNAPSHOT_ID,
             "codingAgents": {SNAPSHOT_ID: {"command": "old"}}}});
-        std::fs::write(dir.join("config.json"), tracked.to_string()).unwrap();
         let state = serde_json::json!({"tooling": {
             "codingAgents": {SNAPSHOT_ID: {"command": state_command}}}});
-        std::fs::write(
-            dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
-            state.to_string(),
-        )
-        .unwrap();
+        for (name, value) in [
+            ("config.json", tracked),
+            (
+                crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME,
+                state,
+            ),
+        ] {
+            crate::config::local_config_io::write_file_atomic(
+                &dir.join(name),
+                value.to_string().as_bytes(),
+            )
+            .unwrap();
+        }
     }
 
     /// One local agent per descriptor command the fixtures use, named
