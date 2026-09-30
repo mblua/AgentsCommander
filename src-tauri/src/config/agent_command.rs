@@ -936,16 +936,11 @@ pub struct StoredReference {
 }
 
 impl StoredReference {
-    /// Build the reference for `id` from the agent config in `config_dir`,
-    /// read through the shared loader (#2786). A missing or non-object
-    /// descriptor yields no descriptor fields; empty strings read as absent (an
-    /// older build wrote them).
-    pub fn from_config(config_dir: &Path, id: &str) -> Self {
-        let config = crate::config::agent_config::read_agent_local_config_json(config_dir)
-            .ok()
-            .flatten();
+    /// Build the reference for `id` from a parsed agent `config.json`. A missing
+    /// or non-object descriptor yields no descriptor fields; empty strings read
+    /// as absent (an older build wrote them).
+    pub fn from_config(config: Option<&serde_json::Value>, id: &str) -> Self {
         let descriptor = config
-            .as_ref()
             .and_then(|value| value.get("tooling"))
             .and_then(|tooling| tooling.get("codingAgents"))
             .and_then(|agents| agents.get(id))

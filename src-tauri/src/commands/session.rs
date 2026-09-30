@@ -4470,20 +4470,19 @@ pub(crate) fn matched_selection(
     stored_agent_id: Option<&str>,
     source_letter: Option<&str>,
 ) -> MatchedSelection {
-    let config_path = std::path::Path::new(cwd).join("config.json");
-    let config = match std::fs::read_to_string(&config_path) {
-        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(value) => Some(value),
-            Err(e) => {
-                log::warn!(
-                    "[agent-match] malformed '{}', no descriptor: {}",
-                    config_path.display(),
-                    e
-                );
-                None
-            }
-        },
-        Err(_) => None,
+    let dir = std::path::Path::new(cwd);
+    // #2786 (C1) - ONE load through the shared loader serves both
+    // `currentCodingAgent` and the descriptor, so they share one snapshot.
+    let config = match crate::config::agent_config::read_agent_local_config_json(dir) {
+        Ok(value) => value,
+        Err(e) => {
+            log::warn!(
+                "[agent-match] malformed '{}', no descriptor: {}",
+                dir.join("config.json").display(),
+                e
+            );
+            None
+        }
     };
     let current = config
         .as_ref()
@@ -4504,7 +4503,7 @@ pub(crate) fn matched_selection(
         return MatchedSelection::NoAgent;
     };
     let mut reference =
-        crate::config::agent_command::StoredReference::from_config(std::path::Path::new(cwd), &id);
+        crate::config::agent_command::StoredReference::from_config(config.as_ref(), &id);
     reference.source_letter = source_letter.map(str::to_string);
     match crate::config::agent_command::resolve_portable_reference(settings, &reference) {
         crate::config::agent_command::MatchOutcome::Matched(found) => MatchedSelection::Agent {
@@ -15965,65 +15964,80 @@ exec claude \"$@\"
         );
     }
     // ---------------------------------------------------------------- #2786 C1
-    // r28 E15 candidate instrumentation, option C. Same shape as the
-    // ac_discovery row: unarmed parent, armed dedicated child, REAL caller.
-    //
-    // MEASURED BASE FACT at fd32c052, and it corrected my prediction: this
-    // caller records exactly ONE load of its own directory, so the E15 count
-    // gate is GREEN here before any change. The load comes from
-    // `agent_command::StoredReference::from_config` (agent_command.rs:944).
-    // The caller ALSO reads `config.json` directly with
-    // `std::fs::read_to_string` (session.rs:4474), and that read never touches
-    // a wrapper, so the probe cannot see it.
-    //
-    // r28 correction, and the earlier comment here was wrong: that direct read
-    // is a BYPASS of the hooks, NOT an observable base defect. At base BOTH
-    // rows for this caller are GREEN: E15 reads n=1 and E14 resolves the
-    // `new` descriptor, because `currentCodingAgent` is not a state key and
-    // the descriptor already arrives through the merged snapshot. So E14 does
-    // NOT "carry" a base defect here, and no row is RED to be turned green.
-    // This row is therefore a REGRESSION row: it holds n=1 after the phase's
-    // change. Removing the direct read is checked by manual diff review of the
-    // authorized change, not by this row. Recorded, not hidden.
+    // E14: `currentCodingAgent` and the descriptor come from one merged
+    // snapshot. The state file's descriptor (`new`) must win over `old`.
+    #[test]
+    fn matched_selection_takes_the_descriptor_from_the_state_file() {
+        use crate::config::agent_config::load_probe_harness as h;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new");
+        let selection = super::matched_selection(
+            &h::snapshot_settings(),
+            &tmp.path().to_string_lossy(),
+            None,
+            None,
+            None,
+        );
+        assert!(
+            matches!(&selection, super::MatchedSelection::Agent { agent_id, .. } if agent_id == "via-new"),
+            "{selection:?}"
+        );
+    }
+
+    // E15: unarmed parent, armed dedicated child, REAL caller. Base at fd32c052
+    // was already GREEN, n=1, so this is a regression row: it holds n=1 now
+    // that the caller's own direct `config.json` read is gone and one loader
+    // snapshot serves both the id and the descriptor.
     #[test]
     fn matched_selection_loads_once_from_its_own_dir() {
         let out = crate::config::agent_config::load_probe_harness::expect_child_pass(
             "commands::session::tests::inner_matched_selection_loads_once",
         );
-        assert!(
-            out.contains("MEASURED-LOADS n=1"),
-            "the count gate is green at base for this caller: {out}"
-        );
+        assert!(out.contains("MEASURED-LOADS n=1"), "{out}");
     }
 
     #[test]
-    #[ignore = "#2786 C1 r28: runs only in the dedicated armed process"]
+    #[ignore = "#2786 C1: runs only in the dedicated armed process"]
     fn inner_matched_selection_loads_once() {
-        let settings = crate::config::settings::AppSettings::default();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            tmp.path().join("config.json"),
-            serde_json::json!({"tooling": {"currentCodingAgent": "claude",
-                "codingAgents": {"claude": {"app": "Claude Code", "command": "old"}}}})
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            tmp.path()
-                .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
-            serde_json::json!({"tooling": {"codingAgents": {"claude": {"app": "Claude Code", "command": "new"}}}})
-                .to_string(),
-        )
-        .unwrap();
+        use crate::config::agent_config::load_probe::Observation;
+        use crate::config::agent_config::load_probe_harness as h;
+        let settings = h::snapshot_settings();
+        let call = |dir: &std::path::Path, want: &str| {
+            let obs = Observation::open();
+            let selection =
+                super::matched_selection(&settings, &dir.to_string_lossy(), None, None, None);
+            println!("REACHED-CALLER selection={selection:?}");
+            let loads = obs.loads();
+            println!("MEASURED-LOADS n={} {:?}", loads.len(), loads);
+            let expected = vec![dir.to_path_buf()];
+            assert_eq!(
+                loads, expected,
+                "recorded {loads:?}, expected exactly {expected:?}"
+            );
+            assert!(
+                matches!(&selection, super::MatchedSelection::Agent { agent_id, .. } if agent_id == want),
+                "want {want}: {selection:?}"
+            );
+        };
 
-        let obs = crate::config::agent_config::load_probe::Observation::open();
-        let selection =
-            super::matched_selection(&settings, &tmp.path().to_string_lossy(), None, None, None);
-        println!("REACHED-CALLER selection={selection:?}");
-        let loads = obs.loads();
-        println!("MEASURED-LOADS n={} {:?}", loads.len(), loads);
-        let want = vec![tmp.path().to_path_buf()];
-        assert_eq!(loads, want, "recorded {loads:?}, expected exactly {want:?}");
+        // E14's fixture: exactly one load, of this directory.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new");
+        call(tmp.path(), "via-new");
+
+        // Unkeyed cache leg: two fresh directories with different values.
+        for command in ["new-a", "new-b"] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", command);
+            call(tmp.path(), &format!("via-{command}"));
+        }
+
+        // Keyed cache leg: the SAME directory, state rewritten between calls.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new-a");
+        call(tmp.path(), "via-new-a");
+        h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new-b");
+        call(tmp.path(), "via-new-b");
     }
 }
 

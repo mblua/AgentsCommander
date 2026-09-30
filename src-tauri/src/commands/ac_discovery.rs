@@ -67,7 +67,8 @@ fn read_preferred_agent_id_logged(
         }
     };
     let foreign_id = v.get("tooling")?.get("lastCodingAgent")?.as_str()?;
-    let reference = crate::config::agent_command::StoredReference::from_config(dir, foreign_id);
+    let reference =
+        crate::config::agent_command::StoredReference::from_config(Some(&v), foreign_id);
     match crate::config::agent_command::resolve_portable_reference(settings, &reference) {
         crate::config::agent_command::MatchOutcome::Matched(found) => Some(found.agent_id),
         crate::config::agent_command::MatchOutcome::NoMatch { reference } => {
@@ -7230,61 +7231,69 @@ mod tests {
         }
     }
     // ---------------------------------------------------------------- #2786 C1
-    // r28 E15 candidate instrumentation, option C. The parent row is ordinary
-    // and unarmed; the inner row runs alone, single-threaded, in a dedicated
-    // ARMED process, and calls the REAL caller.
-    //
-    // BASE FACT at fd32c052, recorded honestly: this caller loads TWICE, once
-    // at ac_discovery.rs:58 and once inside
-    // `agent_command::StoredReference::from_config` (agent_command.rs:944), so
-    // the gate is RED before the phase's single-snapshot change. The parent row
-    // therefore asserts the gate SEES that base defect. After the phase's
-    // change this row becomes `expect_child_pass`.
+    // E14: the id and the descriptor come from one merged snapshot. The state
+    // file's descriptor (`new`) must win over the tracked one (`old`).
+    #[test]
+    fn the_id_and_the_descriptor_come_from_one_snapshot() {
+        use crate::config::agent_config::load_probe_harness as h;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new");
+        let mut warnings = Vec::new();
+        let got =
+            read_preferred_agent_id_logged(tmp.path(), &h::snapshot_settings(), &mut warnings);
+        assert_eq!(got.as_deref(), Some("via-new"), "{warnings:?}");
+    }
+
+    // E15: the parent row is ordinary and unarmed; the inner row runs alone,
+    // single-threaded, in a dedicated ARMED process and calls the REAL caller.
+    // Base at fd32c052 was RED, n=2 (a second load inside `from_config`); the
+    // single-snapshot change makes it one load of the caller's own directory.
     #[test]
     fn read_preferred_agent_id_logged_loads_once_from_its_own_dir() {
-        let out = crate::config::agent_config::load_probe_harness::expect_child_fail(
+        let out = crate::config::agent_config::load_probe_harness::expect_child_pass(
             "commands::ac_discovery::tests::inner_read_preferred_agent_id_logged_loads_once",
-            "recorded [",
         );
-        assert!(
-            out.contains("TWO-LOADS-AT-BASE"),
-            "the base defect is two loads of the caller's own directory: {out}"
-        );
+        assert!(out.contains("MEASURED-LOADS n=1"), "{out}");
     }
 
     #[test]
-    #[ignore = "#2786 C1 r28: runs only in the dedicated armed process"]
+    #[ignore = "#2786 C1: runs only in the dedicated armed process"]
     fn inner_read_preferred_agent_id_logged_loads_once() {
-        let settings = AppSettings {
-            agents: vec![matcher_agent("local-claude", "Claude Code", "claude")],
-            ..AppSettings::default()
+        use crate::config::agent_config::load_probe::Observation;
+        use crate::config::agent_config::load_probe_harness as h;
+        let settings = h::snapshot_settings();
+        let call = |dir: &std::path::Path, want: &str| {
+            let obs = Observation::open();
+            let mut warnings = Vec::new();
+            let got = read_preferred_agent_id_logged(dir, &settings, &mut warnings);
+            println!("REACHED-CALLER got={got:?} warnings={warnings:?}");
+            let loads = obs.loads();
+            println!("MEASURED-LOADS n={} {:?}", loads.len(), loads);
+            let expected = vec![dir.to_path_buf()];
+            assert_eq!(
+                loads, expected,
+                "recorded {loads:?}, expected exactly {expected:?}"
+            );
+            assert_eq!(got.as_deref(), Some(want), "{warnings:?}");
         };
-        let tmp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            tmp.path().join("config.json"),
-            json!({"tooling": {"lastCodingAgent": "claude",
-                "codingAgents": {"claude": {"app": "Claude Code", "command": "old"}}}})
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            tmp.path()
-                .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
-            json!({"tooling": {"codingAgents": {"claude": {"app": "Claude Code", "command": "new"}}}})
-                .to_string(),
-        )
-        .unwrap();
 
-        let obs = crate::config::agent_config::load_probe::Observation::open();
-        let mut warnings = Vec::new();
-        let got = read_preferred_agent_id_logged(tmp.path(), &settings, &mut warnings);
-        println!("REACHED-CALLER got={got:?} warnings={warnings:?}");
-        let loads = obs.loads();
-        println!("MEASURED-LOADS n={} {:?}", loads.len(), loads);
-        let want = vec![tmp.path().to_path_buf()];
-        if loads == vec![tmp.path().to_path_buf(); 2] {
-            println!("TWO-LOADS-AT-BASE {loads:?}");
+        // E14's fixture: exactly one load, of this directory.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new");
+        call(tmp.path(), "via-new");
+
+        // Unkeyed cache leg: two fresh directories with different values.
+        for command in ["new-a", "new-b"] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", command);
+            call(tmp.path(), &format!("via-{command}"));
         }
-        assert_eq!(loads, want, "recorded {loads:?}, expected exactly {want:?}");
+
+        // Keyed cache leg: the SAME directory, state rewritten between calls.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new-a");
+        call(tmp.path(), "via-new-a");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new-b");
+        call(tmp.path(), "via-new-b");
     }
 }

@@ -331,15 +331,11 @@ pub(crate) mod load_probe {
     //    held for its RAII effect only, it is never read in either form, and a
     //    named field is dropped at exactly the same point as a tuple field.
     //
-    //  - the FUNCTION allowance on `NoObservation::open` is still needed. With
-    //    it removed clippy fails with BOTH `associated function `open` is never
-    //    used` AND `struct `NoObservation` is never constructed`, because
-    //    `open` is the only constructor. Its own removal condition: delete this
-    //    attribute in the same commit that adds the fail-closed row
+    //  - the FUNCTION allowance on `NoObservation::open` is removed too, in the
+    //    commit that adds the fail-closed row
     //    (`a_load_with_no_open_observation_fails_closed`, E15's fourth
-    //    selector), which constructs a `NoObservation`; that row belongs to the
-    //    phase and is NOT in this candidate. Clippy then proves the attribute
-    //    unnecessary. Nothing else in the candidate depends on it.
+    //    selector), which constructs a `NoObservation`. That was its stated
+    //    removal condition, and clippy is clean without it.
     //
     // The load-probe prototype is the cross-check: it DOES carry that row, and
     // with `_slot` it needs zero `allow(dead_code)` attributes and clippy is
@@ -349,7 +345,6 @@ pub(crate) mod load_probe {
     }
 
     impl NoObservation {
-        #[allow(dead_code)]
         pub(crate) fn open() -> NoObservation {
             assert!(
                 armed(),
@@ -926,20 +921,49 @@ pub(crate) mod load_probe_harness {
         r.out
     }
 
-    pub(crate) fn expect_child_fail(name: &str, needle: &str) -> String {
-        let r = run_inner(name);
-        assert_one_test_ran(&r, name);
-        assert!(
-            !r.ok,
-            "mutant child {name} PASSED, the gate is blind: {}",
-            r.out
-        );
-        assert!(
-            r.out.contains(needle),
-            "child {name} failed for the wrong reason, no {needle:?} in: {}",
-            r.out
-        );
-        r.out
+    /// The foreign id both launch-path fixtures store; no local agent has it,
+    /// so it can only resolve through its descriptor.
+    pub(crate) const SNAPSHOT_ID: &str = "foreign-claude";
+
+    /// #2786 C1 E14/E15: the one fixture both callers' rows build. `config.json`
+    /// holds the id under `id_key` plus a descriptor with `command: "old"`; the
+    /// state file holds the descriptor for that id with `state_command` and no
+    /// marker. Rewriting it on the same directory changes only the state side.
+    pub(crate) fn write_snapshot_fixture(dir: &std::path::Path, id_key: &str, state_command: &str) {
+        let tracked = serde_json::json!({"tooling": {
+            id_key: SNAPSHOT_ID,
+            "codingAgents": {SNAPSHOT_ID: {"command": "old"}}}});
+        std::fs::write(dir.join("config.json"), tracked.to_string()).unwrap();
+        let state = serde_json::json!({"tooling": {
+            "codingAgents": {SNAPSHOT_ID: {"command": state_command}}}});
+        std::fs::write(
+            dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+            state.to_string(),
+        )
+        .unwrap();
+    }
+
+    /// One local agent per descriptor command the fixtures use, named
+    /// `via-<command>`, so the resolved agent id names the descriptor read.
+    pub(crate) fn snapshot_settings() -> crate::config::settings::AppSettings {
+        let agent = |command: &str| crate::config::settings::AgentConfig {
+            id: format!("via-{command}"),
+            label: format!("label-{command}"),
+            command: command.to_string(),
+            color: "#000000".to_string(),
+            order: None,
+            envs: Vec::new(),
+            isolated_home: false,
+            instructions_filename: None,
+            config_seed: None,
+            context_regex: None,
+            blocking_menus: None,
+            backend: Default::default(),
+        };
+        crate::config::settings::AppSettings {
+            agents: ["old", "new", "new-a", "new-b"].map(agent).to_vec(),
+            ..Default::default()
+        }
     }
 }
 
@@ -2105,6 +2129,57 @@ mod tests {
             done[0].kill_error.is_none(),
             "terminating the child on the unwind path reported an error: {}",
             done[0].describe()
+        );
+    }
+
+    // #2786 C1 E15, third selector: an off-thread load IS counted. One load on
+    // a spawned, joined thread and one on the test thread, two directories.
+    #[test]
+    fn the_load_probe_observes_every_thread() {
+        super::load_probe_harness::expect_child_pass(
+            "config::agent_config::tests::inner_the_load_probe_observes_every_thread",
+        );
+    }
+
+    #[test]
+    #[ignore = "#2786 C1: runs only in the dedicated armed process"]
+    fn inner_the_load_probe_observes_every_thread() {
+        let off = tempfile::tempdir().expect("tempdir");
+        let on = tempfile::tempdir().expect("tempdir");
+        let obs = super::load_probe::Observation::open();
+        let off_dir = off.path().to_path_buf();
+        std::thread::spawn(move || super::read_agent_local_config(&off_dir))
+            .join()
+            .expect("the off-thread load");
+        super::read_agent_local_config_json(on.path()).expect("the on-thread load");
+        println!("REACHED-CALLER");
+        let loads = obs.loads();
+        let want = vec![off.path().to_path_buf(), on.path().to_path_buf()];
+        assert_eq!(loads, want, "recorded {loads:?}, expected exactly {want:?}");
+    }
+
+    // #2786 C1 E15, fourth selector: inside the armed process a wrapper load
+    // with no open observation panics, naming the directory.
+    #[test]
+    fn a_load_with_no_open_observation_fails_closed() {
+        super::load_probe_harness::expect_child_pass(
+            "config::agent_config::tests::inner_a_load_with_no_open_observation_fails_closed",
+        );
+    }
+
+    #[test]
+    #[ignore = "#2786 C1: runs only in the dedicated armed process"]
+    fn inner_a_load_with_no_open_observation_fails_closed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _slot = super::load_probe::NoObservation::open();
+        println!("REACHED-CALLER");
+        let err = std::panic::catch_unwind(|| super::read_agent_local_config(tmp.path()))
+            .expect_err("a load with no open observation must panic");
+        let text = err.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(
+            text.contains("wrapper load with no open Observation")
+                && text.contains(&format!("{:?}", tmp.path())),
+            "the panic must name the directory: {text:?}"
         );
     }
 }
