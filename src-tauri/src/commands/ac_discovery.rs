@@ -2763,7 +2763,7 @@ pub async fn get_replica_context_files(path: String) -> Result<Vec<String>, Stri
 pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Result<(), String> {
     let config_path = Path::new(&path).join("config.json");
 
-    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+    crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         if files.is_empty() {
             obj.remove("context");
         } else {
