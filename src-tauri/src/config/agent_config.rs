@@ -3347,8 +3347,16 @@ mod tests {
 
         // Second leg, E2 crossed with E4: three kills, three runs. The second
         // state key, held only by the tracked file, makes the state side
-        // change, so every named stage is reachable.
+        // change, so every named stage is reachable. Both results of a kill
+        // are collected before the row fails, so a failing build still shows
+        // the read and the re-run.
+        let mut failures = Vec::new();
         for kill in [CLEANUP_STATE, CLEANUP_TRACKED, CALLER_STATE] {
+            // The third kill is control-only: a build that has already lost
+            // the value may never fire that stage, so it is not awaited.
+            if kill == CALLER_STATE && !failures.is_empty() {
+                break;
+            }
             let p = pair();
             p.seed_decisions(json!({ "tooling": {
                 "lastCodingAgent": "A",
@@ -3356,18 +3364,22 @@ mod tests {
             } }));
             p.seed_state(json!({ "tooling": { "lastCodingAgent": "B" } }));
             spawn_pair_child(&p, &[kill], &json!({}), None).kill_at(kill);
-            assert_eq!(
-                p.read("lastCodingAgent"),
-                json!("B"),
-                "killed at {kill}: a read must return B"
-            );
+            let read = p.read("lastCodingAgent");
+            if read != json!("B") {
+                failures.push(format!(
+                    "killed at {kill}: a read must return B, got {read}"
+                ));
+            }
             p.write(no_change).expect("re-run");
-            assert_eq!(
-                p.stored_state()["tooling"]["lastCodingAgent"],
-                json!("B"),
-                "killed at {kill}: the re-run must leave B in the state file"
-            );
+            let state = p.stored_state()["tooling"]["lastCodingAgent"].clone();
+            if state != json!("B") {
+                failures.push(format!(
+                    "killed at {kill}: the re-run must leave B in the state file, it holds {state}"
+                ));
+            }
+            println!("E2 killed at {kill}: read {read}, state after the re-run {state}");
         }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
 
         assert_eq!(
             marker_after_cleanup.into_inner(),
