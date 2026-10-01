@@ -3147,6 +3147,7 @@ mod tests {
 
     /// C4 (#2470): the seeded state file of every row that seeds one. All four
     /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
+    #[rustfmt::skip]
     const C4_SEEDED_STATE: &str =
         r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
 
@@ -3169,7 +3170,10 @@ mod tests {
     }
 
     fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_json::Value) {
-        assert!(t.and_then(|t| t.get(key)).is_none(), "{site} left {key}: {all}");
+        assert!(
+            t.and_then(|t| t.get(key)).is_none(),
+            "{site} left {key}: {all}"
+        );
     }
 
     /// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
@@ -3194,7 +3198,10 @@ mod tests {
     fn c4_no_state_file(state: &std::path::Path, site: &str) {
         match std::fs::symlink_metadata(state) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Ok(m) => panic!("{site} left a state entry, is_dir={}: {state:?}", m.is_dir()),
+            Ok(m) => panic!(
+                "{site} left a state entry, is_dir={}: {state:?}",
+                m.is_dir()
+            ),
             Err(e) => panic!("{site} could not observe {state:?}: {e}"),
         }
     }
@@ -3221,6 +3228,7 @@ mod tests {
         c4_rejects(&state, "control: a state directory");
     }
 
+    #[rustfmt::skip]
     const C4_STATE_AFTER_SITE_3A: &str =
         r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"c4hash"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
 
@@ -3240,17 +3248,26 @@ mod tests {
 
         let fx = selection_fixture();
         let tracked = seed(&fx.replica);
-        assert_eq!(set_replica_profile_content_hash(&fx.replica, "c4hash"), Ok(()));
+        assert_eq!(
+            set_replica_profile_content_hash(&fx.replica, "c4hash"),
+            Ok(())
+        );
         c4_tracked_is_clean(&tracked, "site 3a");
         c4_state_is(&c4_state_path(&tracked), C4_STATE_AFTER_SITE_3A, "site 3a");
         assert_eq!(tooling(&fx.replica), serde_json::json!({}));
 
         let fx = selection_fixture();
         let tracked = seed(&fx.matrix);
-        assert_eq!(set_agent_default_profile(&fx.settings, &fx.matrix, "b"), Ok(()));
+        assert_eq!(
+            set_agent_default_profile(&fx.settings, &fx.matrix, "b"),
+            Ok(())
+        );
         c4_tracked_is_clean(&tracked, "site 3b");
         c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 3b");
-        assert_eq!(tooling(&fx.matrix)["defaultProfile"], serde_json::json!("B"));
+        assert_eq!(
+            tooling(&fx.matrix)["defaultProfile"],
+            serde_json::json!("B")
+        );
 
         let fx = selection_fixture();
         let default = ReplicaSelectionDefault {
@@ -3292,9 +3309,15 @@ mod tests {
         );
         c4_tracked_is_clean(&tracked, "site 9");
         c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 9");
-        assert_eq!(tooling(&fx.replica)["currentCodingAgent"], serde_json::json!("codex"));
+        assert_eq!(
+            tooling(&fx.replica)["currentCodingAgent"],
+            serde_json::json!("codex")
+        );
         assert_eq!(tooling(&fx.replica)["profile"], serde_json::json!("B"));
-        assert_eq!(tooling(&fx.replica)["selectionLocked"], serde_json::json!(true));
+        assert_eq!(
+            tooling(&fx.replica)["selectionLocked"],
+            serde_json::json!(true)
+        );
 
         let expected = read_replica_selection_state(&fx.replica)
             .expectation()
@@ -3309,15 +3332,24 @@ mod tests {
         );
         c4_tracked_is_clean(&tracked, "site 10");
         c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 10");
-        assert_eq!(tooling(&fx.replica)["selectionLocked"], serde_json::json!(false));
+        assert_eq!(
+            tooling(&fx.replica)["selectionLocked"],
+            serde_json::json!(false)
+        );
 
         let fx = selection_fixture();
         let tracked = seed(&fx.replica);
-        assert_eq!(set_instance_profile_override(&fx.settings, &fx.replica, Some("c")), Ok(()));
+        assert_eq!(
+            set_instance_profile_override(&fx.settings, &fx.replica, Some("c")),
+            Ok(())
+        );
         c4_tracked_is_clean(&tracked, "site 11");
         c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 11");
         assert_eq!(tooling(&fx.replica)["profile"], serde_json::json!("C"));
-        assert_eq!(tooling(&fx.replica)["instanceProfileOverride"], serde_json::json!("C"));
+        assert_eq!(
+            tooling(&fx.replica)["instanceProfileOverride"],
+            serde_json::json!("C")
+        );
         assert_eq!(
             tooling(&fx.replica)["instanceProfileOverrideSource"],
             serde_json::json!("manual")

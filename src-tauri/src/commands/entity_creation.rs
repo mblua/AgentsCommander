@@ -8334,6 +8334,7 @@ mod tests {
 
     /// C4 (#2470): the seeded state file of every row that seeds one. All four
     /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
+    #[rustfmt::skip]
     const C4_SEEDED_STATE: &str =
         r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
 
@@ -8356,7 +8357,10 @@ mod tests {
     }
 
     fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_json::Value) {
-        assert!(t.and_then(|t| t.get(key)).is_none(), "{site} left {key}: {all}");
+        assert!(
+            t.and_then(|t| t.get(key)).is_none(),
+            "{site} left {key}: {all}"
+        );
     }
 
     /// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
@@ -8391,11 +8395,17 @@ mod tests {
         let tracked = tmp.path().join("config.json");
         std::fs::write(&tracked, r#"{"tooling": {}}"#).expect("seed tracked");
         std::fs::write(c4_state_path(&tracked), C4_SEEDED_STATE).expect("seed state");
-        assert_eq!(write_local_config_value(&tracked, default_agent_matrix_config()), Ok(()));
+        assert_eq!(
+            write_local_config_value(&tracked, default_agent_matrix_config()),
+            Ok(())
+        );
         c4_tracked_is_clean(&tracked, "site 5");
         c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 5");
         let written = replica_config(tmp.path());
-        assert_eq!(written["context"], serde_json::json!(["$AGENTSCOMMANDER_CONTEXT", "Role.md"]));
+        assert_eq!(
+            written["context"],
+            serde_json::json!(["$AGENTSCOMMANDER_CONTEXT", "Role.md"])
+        );
         assert_eq!(written["tooling"], serde_json::json!({}));
 
         let fixture = replica_creation_fixture();
@@ -8407,7 +8417,10 @@ mod tests {
         c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 6");
         let written = replica_config(&replica_dir);
         assert_eq!(written["repos"], serde_json::json!(["repo-a"]));
-        assert_eq!(written["context"][0], serde_json::json!("$AGENTSCOMMANDER_CONTEXT"));
+        assert_eq!(
+            written["context"][0],
+            serde_json::json!("$AGENTSCOMMANDER_CONTEXT")
+        );
 
         let fixture = replica_creation_fixture();
         let replica_dir = seeded_replica(&fixture);
@@ -8417,7 +8430,10 @@ mod tests {
         assert_eq!(identity.identity, "../../_agent_tech-lead");
         c4_tracked_is_clean(&tracked, "site 7");
         c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 7");
-        assert_eq!(replica_config(&replica_dir)["repos"], serde_json::json!(["repo-b"]));
+        assert_eq!(
+            replica_config(&replica_dir)["repos"],
+            serde_json::json!(["repo-b"])
+        );
     }
 }
 

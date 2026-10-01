@@ -4213,6 +4213,7 @@ mod tests {
 
     /// C4 (#2470): the seeded state file of every row that seeds one. All four
     /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
+    #[rustfmt::skip]
     const C4_SEEDED_STATE: &str =
         r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
 
@@ -4235,7 +4236,10 @@ mod tests {
     }
 
     fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_json::Value) {
-        assert!(t.and_then(|t| t.get(key)).is_none(), "{site} left {key}: {all}");
+        assert!(
+            t.and_then(|t| t.get(key)).is_none(),
+            "{site} left {key}: {all}"
+        );
     }
 
     /// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
@@ -4250,8 +4254,10 @@ mod tests {
         assert_eq!(got, want, "{site} state file");
     }
 
+    #[rustfmt::skip]
     const C4_STATE_AFTER_SITE_1: &str =
         r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-06-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+    #[rustfmt::skip]
     const C4_STATE_AFTER_SITE_2: &str =
         r#"{"tooling":{"lastCodingAgent":"claude","codingAgents":{"claude":{"app":"Claude Code","acSessionId":"sid","lastUsed":"2026-09-02T01:00:00+00:00","command":"claude","identity":{"A":"aa"}}},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
 
@@ -4280,7 +4286,12 @@ mod tests {
         let tracked = instance_config(&dir2);
         std::fs::write(c4_state_path(&tracked), C4_SEEDED_STATE).expect("seed state");
         assert_eq!(
-            upsert_config(&tracked, "claude", &fixed_entry("claude", &[("A", "aa")]), true),
+            upsert_config(
+                &tracked,
+                "claude",
+                &fixed_entry("claude", &[("A", "aa")]),
+                true
+            ),
             Ok(())
         );
         c4_tracked_is_clean(&tracked, "site 2");

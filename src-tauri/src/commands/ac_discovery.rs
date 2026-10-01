@@ -7422,6 +7422,7 @@ mod tests {
 
     /// C4 (#2470): the seeded state file of every row that seeds one. All four
     /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
+    #[rustfmt::skip]
     const C4_SEEDED_STATE: &str =
         r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
 
@@ -7444,7 +7445,10 @@ mod tests {
     }
 
     fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_json::Value) {
-        assert!(t.and_then(|t| t.get(key)).is_none(), "{site} left {key}: {all}");
+        assert!(
+            t.and_then(|t| t.get(key)).is_none(),
+            "{site} left {key}: {all}"
+        );
     }
 
     /// C4 (#2470): the state file EXISTS and is exactly `expected`, compared

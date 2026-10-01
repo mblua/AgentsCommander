@@ -34,8 +34,7 @@ const P10: &str = r"ToolingSide::(Decisions|State)";
 
 /// P5, the whole-file census. `WS` stands for the whitespace class and is
 /// substituted at each of its six occurrences.
-const P5_TEMPLATE: &str =
-    r"(:WS*AgentLocalConfig|from_str::WS*<WS*AgentLocalConfig|[.]WS*toolingWS*[.]WS*(?:last_coding_agent|coding_agents|last_agent_message_at))([^A-Za-z0-9_]|$)";
+const P5_TEMPLATE: &str = r"(:WS*AgentLocalConfig|from_str::WS*<WS*AgentLocalConfig|[.]WS*toolingWS*[.]WS*(?:last_coding_agent|coding_agents|last_agent_message_at))([^A-Za-z0-9_]|$)";
 const WS: &str = r"[ \t\n\x0b\x0c\r]";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -86,7 +85,10 @@ fn rust_sources() -> Vec<(String, String)> {
     }
 
     let mut files = Vec::new();
-    visit(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    visit(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
     files.sort();
     files
 }
@@ -186,7 +188,9 @@ fn per_file(hits: &[Hit]) -> BTreeMap<String, usize> {
 }
 
 fn hit_lines(hits: &[Hit]) -> BTreeSet<(String, usize)> {
-    hits.iter().map(|hit| (hit.path.clone(), hit.line)).collect()
+    hits.iter()
+        .map(|hit| (hit.path.clone(), hit.line))
+        .collect()
 }
 
 /// Total first, then distinct, then digest, then the per-file totals.
@@ -399,8 +403,7 @@ fn p5_covers_every_one_line_hit_of_p2_p3_p4() {
     );
 }
 
-const FENCE_SPLIT_ANNOTATION: &str =
-    r#"// PLANT 1: typed annotation split over three lines, `=` on its own line; the
+const FENCE_SPLIT_ANNOTATION: &str = r#"// PLANT 1: typed annotation split over three lines, `=` on its own line; the
 // field read is split too, so no line-based form can see either spelling.
 fn plant_one(dir: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(dir.join("config.json")).ok()?;
@@ -414,8 +417,7 @@ fn plant_one(dir: &std::path::Path) -> Option<String> {
 }
 "#;
 
-const FENCE_SPLIT_FIELD_CHAIN: &str =
-    r#"// PLANT 2: `.tooling.<field>` chain split over lines; the type is never spelled
+const FENCE_SPLIT_FIELD_CHAIN: &str = r#"// PLANT 2: `.tooling.<field>` chain split over lines; the type is never spelled
 // because a helper returns it and inference supplies it.
 fn plant_two(dir: &std::path::Path) -> Option<String> {
     let cfg = read_tracked_only(dir)?;
@@ -445,7 +447,13 @@ fn p5_sees_the_three_split_forms() {
     assert_eq!(p5_lines(FENCE_SPLIT_FIELD_CHAIN), [6], "fence 2");
     assert_eq!(p5_lines(FENCE_SPLIT_TURBOFISH), [4], "fence 3");
 
-    for (id, pattern) in [("P1", QUOTED_KEY), ("P2", P2), ("P3", P3), ("P4", P4), ("P6", P6)] {
+    for (id, pattern) in [
+        ("P1", QUOTED_KEY),
+        ("P2", P2),
+        ("P3", P3),
+        ("P4", P4),
+        ("P6", P6),
+    ] {
         let regex = Regex::new(pattern).expect("census pattern");
         for fence in [
             FENCE_SPLIT_ANNOTATION,
