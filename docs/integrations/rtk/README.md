@@ -8,6 +8,14 @@ AgentsCommander does not ship, install, update or require RTK, and no AC feature
 
 With `RTK_DB_PATH` unset, RTK writes every invocation on the machine into one database (`%LOCALAPPDATA%\rtk\history.db` on Windows). Its `commands` table has no agent identity column, so that shared database cannot answer "what does each agent type run?".
 
+## Windows prerequisite: the Visual C++ runtime
+
+The official Windows x64 RTK binary (the `rtk-x86_64-pc-windows-msvc.zip` release asset) links the Microsoft Visual C++ runtime dynamically: its executable imports `VCRUNTIME140.dll`. Install the Microsoft Visual C++ Redistributable x64 before you run it:
+
+https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+The import is confirmed in the official v0.20.0, v0.40.0 and v0.50.0 Windows x64 assets. The RTK project does not list this prerequisite. It applies only to that Windows MSVC build: Linux, macOS, GNU-target and self-built binaries are not covered here, and AgentsCommander itself does not need RTK.
+
 ## Recommended configuration
 
 Open **Settings → Coding Agents**, pick the coding agent your agents launch, and add this row under **ENVIRONMENT**:
@@ -88,7 +96,7 @@ The wrapped command's own exit code does not change any of this. A command that 
 
 ### The hook covers the filtered set, and nothing else
 
-This section is about RTK's own hook, the one `rtk init` installs. AgentsCommander seeds **different** hooks into every room replica: a `PreToolUse` hook for the `Bash` tool and one for the `PowerShell` tool, which also write a log of the commands they declined to rewrite, and a third registered on both `PreToolUse` and `PostToolUse` for the native file tools, which writes its own rows straight into the database. If you run agents in replicas, read [The AgentsCommander RTK hook for Claude Code](rtk_claude/README.md) before you conclude which hook produced what.
+This section is about RTK's own hook, the one `rtk init` installs. AgentsCommander seeds **different** hooks into every room replica: a `PreToolUse` hook for the `Bash` tool and one for the `PowerShell` tool, which also write a log of the commands they declined to rewrite, and a third registered on both `PreToolUse` and `PostToolUse` for the native file tools, which writes its own rows straight into the database. If you run agents in replicas, read [The AgentsCommander RTK hook for Claude Code](claude/README.md) before you conclude which hook produced what.
 
 `rtk init` installs both halves of the adoption problem: it writes RTK's instructions into the coding agent's context file, and it patches the agent's configuration with a `PreToolUse` hook that rewrites commands before they run. `--no-patch` skips the patching and prints manual instructions instead. This is the excerpt a patched Claude Code `settings.json` holds under `hooks.PreToolUse`, once per shell tool, not a complete settings file:
 
@@ -315,8 +323,8 @@ For those roots use `%AC_WORKSPACE_ROOT%\rtk-history.db` instead, which gives on
 
 ## See also
 
-- [Agent Matrix conventions §5](../agent-matrix-conventions.md#5-profile-path-placeholders) - the three path placeholders, where each one resolves, and the fail-closed rules
-- [The AgentsCommander RTK hook for Claude Code](rtk_claude/README.md) - the hook AC seeds into every replica, and the two files it produces
-- [Coding agents](coding-agents.md) - the coding-agent catalog and the ENVIRONMENT rows this page uses
-- [Settings reference - coding agents](../reference/settings.md#coding-agents) - the `agents[].envs` shape behind the ENVIRONMENT panel
+- [Agent Matrix conventions §5](../../agent-matrix-conventions.md#5-profile-path-placeholders) - the three path placeholders, where each one resolves, and the fail-closed rules
+- [The AgentsCommander RTK hook for Claude Code](claude/README.md) - the hook AC seeds into every replica, and the two files it produces
+- [Coding agents](../coding-agents.md) - the coding-agent catalog and the ENVIRONMENT rows this page uses
+- [Settings reference - coding agents](../../reference/settings.md#coding-agents) - the `agents[].envs` shape behind the ENVIRONMENT panel
 - [RTK upstream repository](https://github.com/rtk-ai/rtk)

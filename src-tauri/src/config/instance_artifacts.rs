@@ -350,6 +350,9 @@ pub(crate) const BLOCKING_MENUS_LOCAL_TARGET_NAME: &str =
     layered_name!("blocking-menus", personal, no_git, "json");
 pub(crate) const BLOCKING_MENUS_REMOTE_CHECK_TARGET_NAME: &str =
     layered_name!("blocking-menus", state, no_git, "json");
+/// #2786 (C1) - the agent state file beside the `config.json` it belongs to.
+/// It holds the runtime tooling keys; `config.json` keeps the decisions.
+pub(crate) const CONFIG_STATE_TARGET_NAME: &str = layered_name!("config", state, no_git, "json");
 /// #2714 - the settings writer's temporaries, `<name>.<pid>.<op>.tmp`: no
 /// leading dot, so the atomic-write glob cannot match them.
 pub(crate) const SETTINGS_TMP_GLOB: &str = concat!(
@@ -1333,6 +1336,14 @@ mod tests {
             .any(|row| row.name == SETTINGS_RETIRED_LOCK_NAME
                 && row.kind == ArtifactKind::File
                 && row.disposition == Disposition::Ignore));
+    }
+
+    #[test]
+    fn the_config_state_name_is_composed_from_the_rule() {
+        assert_eq!(
+            CONFIG_STATE_TARGET_NAME,
+            format!("config.{STATE_MARKER}.{NO_GIT_MARKER}.json")
+        );
     }
 
     #[test]

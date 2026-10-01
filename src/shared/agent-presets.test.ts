@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
+import agentsDefault from "../../src-tauri/resources/coding-agents/agents.default.json";
 import {
   FALLBACK_CODING_AGENTS,
   compareWelcomeAgents,
   definitionToSeed,
   sortWelcomeAgents,
+  welcomeVendorForKey,
+  welcomeVendorOf,
+  WELCOME_PINNED_KEYS,
+  WELCOME_VENDOR_BY_KEY,
 } from "./agent-presets";
 import type { CodingAgentDefinition, CodingAgentWelcomeStatus } from "./types";
 
@@ -28,7 +33,7 @@ const EXPECTED_BUILTINS: Array<
   { key: "pi", label: "Pi", description: "Coding Agent by Earendil Inc", color: "#ec4899", command: "pi", instructionsFilename: "AGENTS.md" },
   { key: "opencode", label: "OpenCode", description: "Open-source terminal coding agent by Anomaly", color: "#64748b", command: "opencode", instructionsFilename: "AGENTS.md" },
   { key: "antigravity", label: "Antigravity", description: "Coding Agent by Google", color: "#4285F4", command: "agy", instructionsFilename: "AGENTS.md" },
-  { key: "grok", label: "Grok Build", description: "Coding agent Grok Build", color: "#64748b", command: "grok", instructionsFilename: "AGENTS.md" },
+  { key: "grok", label: "Grok Build", description: "Coding Agent by SpaceXAI", color: "#64748b", command: "grok", instructionsFilename: "AGENTS.md" },
 ];
 
 describe("FALLBACK_CODING_AGENTS drift guard (#769)", () => {
@@ -221,5 +226,73 @@ describe("Welcome order (#2736)", () => {
     // "ghost" is a status row with no catalog entry: ignored.
     const status = [row("low", false, "low"), row("ghost", true, "high")];
     expect(keysOf(sortWelcomeAgents(catalog, status))).toEqual(["low", "unknown"]);
+  });
+
+  it("welcomeVendorOf_2784_reads_the_text_after_the_last_by", () => {
+    expect(welcomeVendorOf("Coding Agent by Anthropic")).toBe("Anthropic");
+    expect(welcomeVendorOf("Coding Agent by OpenAI")).toBe("OpenAI");
+    expect(welcomeVendorOf("Coding Agent by Nous Research")).toBe("Nous Research");
+    expect(welcomeVendorOf("Coding Agent by Cursor")).toBe("Cursor");
+    expect(welcomeVendorOf("Coding Agent by Earendil Inc")).toBe("Earendil Inc");
+    expect(welcomeVendorOf("Open-source terminal coding agent by Anomaly")).toBe("Anomaly");
+    expect(welcomeVendorOf("Coding Agent by Google")).toBe("Google");
+    expect(welcomeVendorOf("Coding agent Grok Build")).toBeNull();
+    expect(welcomeVendorOf("Configure your own Coding Agent")).toBeNull();
+  });
+
+  it("sortWelcomeAgents_2784_puts_opencode_first_among_the_low_agents", () => {
+    const catalog = ["hermes", "cursor", "opencode", "grok"].map(welcomeDef);
+    const status = catalog.map((def) => row(def.key, false, "low"));
+    expect(keysOf(sortWelcomeAgents(catalog, status))).toEqual([
+      "opencode",
+      "hermes",
+      "cursor",
+      "grok",
+    ]);
+  });
+
+  it("sortWelcomeAgents_2784_never_lifts_opencode_above_a_better_tested_or_installed_agent", () => {
+    const catalog = ["opencode", "claude"].map(welcomeDef);
+    expect(
+      keysOf(sortWelcomeAgents(catalog, [row("claude", false, "high"), row("opencode", false, "low")])),
+    ).toEqual(["claude", "opencode"]);
+    expect(
+      keysOf(sortWelcomeAgents(catalog, [row("claude", true, "low"), row("opencode", false, "low")])),
+    ).toEqual(["claude", "opencode"]);
+  });
+
+  it("WELCOME_PINNED_KEYS_2784_is_exactly_opencode", () => {
+    expect(WELCOME_PINNED_KEYS).toEqual(["opencode"]);
+  });
+
+  it("welcomeVendorForKey_2784_r3_overrides_grok_with_spacexai", () => {
+    expect(welcomeVendorForKey("grok", "Coding agent Grok Build")).toBe("SpaceXAI");
+    expect(welcomeVendorForKey("grok", "Coding agent by Nobody")).toBe("SpaceXAI");
+  });
+
+  it("welcomeVendorForKey_2784_r3_falls_through_for_every_other_key", () => {
+    expect(welcomeVendorForKey("claude", "Coding Agent by Anthropic")).toBe("Anthropic");
+    expect(welcomeVendorForKey("codex", "Coding Agent by OpenAI")).toBe("OpenAI");
+    expect(welcomeVendorForKey("hermes", "Coding Agent by Nous Research")).toBe("Nous Research");
+    expect(welcomeVendorForKey("cursor", "Coding Agent by Cursor")).toBe("Cursor");
+    expect(welcomeVendorForKey("pi", "Coding Agent by Earendil Inc")).toBe("Earendil Inc");
+    expect(welcomeVendorForKey("opencode", "Open-source terminal coding agent by Anomaly")).toBe("Anomaly");
+    expect(welcomeVendorForKey("antigravity", "Coding Agent by Google")).toBe("Google");
+    expect(welcomeVendorForKey("custom", "Configure your own Coding Agent")).toBeNull();
+    expect(welcomeVendorForKey("myagent", "Anything at all")).toBeNull();
+  });
+
+  it("WELCOME_VENDOR_BY_KEY_2784_r3_is_exactly_grok", () => {
+    expect(Object.keys(WELCOME_VENDOR_BY_KEY)).toEqual(["grok"]);
+    expect(WELCOME_VENDOR_BY_KEY).toEqual({ grok: "SpaceXAI" });
+    expect(welcomeVendorForKey("constructor", "plain text")).toBeNull();
+  });
+
+  it("catalog_2784_r10_the_grok_row_carries_the_vendor", () => {
+    const mirror = FALLBACK_CODING_AGENTS.find((a) => a.key === "grok")!.description;
+    expect(mirror).toBe("Coding Agent by SpaceXAI");
+    expect(welcomeVendorOf(mirror)).toBe("SpaceXAI");
+    const seed = agentsDefault.agents.find((a) => a.key === "grok")!.description;
+    expect(seed).toBe("Coding Agent by SpaceXAI");
   });
 });

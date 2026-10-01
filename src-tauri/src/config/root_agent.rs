@@ -77,6 +77,13 @@ const DEFAULT_ROOT_SKILLS: &[DefaultRootSkill] = &[
             AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION,
         ],
     },
+    #[cfg(windows)]
+    DefaultRootSkill {
+        dir_name: "rtk-install-windows",
+        file_name: SKILL_MD_FILENAME,
+        content: include_str!("root_agent_defaults/rtk-install-windows/SKILL.md"),
+        legacy_snapshots: &[],
+    },
 ];
 
 /// #1005 S5: `role-skill-boundary-audit/SKILL.md` exactly as it shipped from
@@ -2051,7 +2058,7 @@ fn normalize_role_text(text: &str) -> String {
 }
 
 pub(crate) fn merge_root_agent_config(config_path: &Path) -> Result<(), String> {
-    crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
+    crate::config::agent_config::update_agent_config(config_path, |obj, _state| {
         obj.entry("tooling".to_string())
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
@@ -2112,13 +2119,13 @@ fn context_array_matches(arr: &[Value], expected: &[&str]) -> bool {
 }
 
 pub fn read_last_coding_agent(root_dir: &str) -> Option<String> {
-    let config_path = Path::new(root_dir).join("config.json");
-    let contents = std::fs::read_to_string(config_path).ok()?;
-    let value: Value = serde_json::from_str(&contents).ok()?;
-    value
-        .get("tooling")
-        .and_then(|tooling| tooling.get("lastCodingAgent"))
-        .and_then(Value::as_str)
+    // #2786 (C1) - the raw loader with field-level extraction, as before C1:
+    // an unrelated malformed field must not hide `lastCodingAgent`.
+    crate::config::agent_config::read_agent_local_config_json(Path::new(root_dir))
+        .ok()??
+        .get("tooling")?
+        .get("lastCodingAgent")?
+        .as_str()
         .map(ToString::to_string)
 }
 
@@ -2832,6 +2839,86 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn rtk_install_windows_fresh_provisioning_is_byte_exact_and_idempotent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill = root.join("skills/rtk-install-windows/SKILL.md");
+        let expected = default_root_skill("rtk-install-windows").content.as_bytes();
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+        assert_eq!(std::fs::read(&skill).expect("read skill"), expected);
+        assert!(root
+            .join("skills/role-skill-boundary-audit/SKILL.md")
+            .is_file());
+        assert!(root.join("skills/agency-agents-roles/SKILL.md").is_file());
+        ensure_root_agent_dir_at(&root).expect("ensure root again");
+        assert_eq!(std::fs::read(&skill).expect("read skill again"), expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rtk_install_windows_direct_seeder_recreates_missing_entrypoint() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+        let skill = root.join("skills/rtk-install-windows/SKILL.md");
+        std::fs::remove_file(&skill).expect("remove skill");
+
+        ensure_default_root_agent_skills_at(&root).expect("seed missing skill");
+        assert_eq!(
+            std::fs::read(&skill).expect("read recreated skill"),
+            default_root_skill("rtk-install-windows").content.as_bytes()
+        );
+    }
+
+    #[test]
+    fn rtk_install_windows_preserves_custom_copied_profile_bytes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill = root.join("skills/rtk-install-windows/SKILL.md");
+        let custom = b"custom RTK skill\r\nkeep these bytes\r\n";
+        std::fs::create_dir_all(skill.parent().expect("skill parent")).expect("create skill dir");
+        std::fs::write(&skill, custom).expect("write custom skill");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+        assert_eq!(std::fs::read(&skill).expect("read custom skill"), custom);
+        ensure_default_root_agent_skills_at(&root).expect("seed skills");
+        assert_eq!(
+            std::fs::read(&skill).expect("read custom skill again"),
+            custom
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rtk_install_windows_is_not_seeded_on_non_windows() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+        assert!(!root.join("skills/rtk-install-windows").exists());
+        ensure_default_root_agent_skills_at(&root).expect("seed skills");
+        assert!(!root.join("skills/rtk-install-windows").exists());
+        assert!(root
+            .join("skills/role-skill-boundary-audit/SKILL.md")
+            .is_file());
+        assert!(root.join("skills/agency-agents-roles/SKILL.md").is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rtk_install_windows_embedded_bytes_match_supplied_sha256() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(default_root_skill("rtk-install-windows").content.as_bytes())
+            ),
+            "1f52562c2f8741ef02f7a7968b68d7675846439f2b5e84b174fa4d7b7c3e9927"
+        );
+    }
+
     #[test]
     fn ensure_root_agent_dir_at_preserves_existing_boundary_audit_skill() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -3204,6 +3291,14 @@ mod tests {
         assert!(!is_root_agent_target("agentscommander://ROOT-AGENT"));
     }
 
+    /// #2816 (C3) - raw JSON of the state file beside the tracked `config`.
+    fn state_beside(config: &Path) -> Value {
+        let path =
+            config.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read state file"))
+            .expect("parse state file")
+    }
+
     #[test]
     fn merge_root_agent_config_preserves_tooling_and_unknown_fields() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -3227,7 +3322,11 @@ mod tests {
         let config: Value =
             serde_json::from_str(&std::fs::read_to_string(&config_path).expect("read config"))
                 .expect("parse config");
-        assert_eq!(config["tooling"]["lastCodingAgent"], "codex");
+        let state = state_beside(&config_path);
+        assert_eq!(state["tooling"]["lastCodingAgent"], "codex");
+        assert_eq!(state["tooling"]["codingAgents"]["codex"]["app"], "Codex");
+        assert!(config["tooling"].get("lastCodingAgent").is_none());
+        assert!(config["tooling"].get("codingAgents").is_none());
         assert_eq!(config["tooling"]["telegramBot"], "ops");
         assert_eq!(config["unknown"]["keep"], true);
         assert_eq!(
@@ -3251,7 +3350,11 @@ mod tests {
         let config: Value =
             serde_json::from_str(&std::fs::read_to_string(&config_path).expect("read config"))
                 .expect("parse config");
-        assert_eq!(config["tooling"]["lastCodingAgent"], "codex");
+        assert_eq!(
+            state_beside(&config_path)["tooling"]["lastCodingAgent"],
+            "codex"
+        );
+        assert!(config["tooling"].get("lastCodingAgent").is_none());
         assert_eq!(
             config["context"],
             serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT)
@@ -3286,8 +3389,8 @@ mod tests {
         // #979 4.2.C. Every row: no exact token survives, other values and their order
         // survive, `tooling` and unknown fields survive, and a SECOND merge yields an
         // identical parsed value AND identical bytes (semantic + byte-stable
-        // idempotence; `update_config_json_object` always republishes, so mtime and
-        // inode are deliberately not asserted).
+        // idempotence; `update_agent_config` publishes only a changed side, and mtime
+        // and inode are still deliberately not asserted).
         let token = crate::config::session_context::CONTEXT_TOKEN_GLOBAL;
         let default_context = serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT);
         let cases: Vec<(&str, Value, Value)> = vec![
@@ -3397,7 +3500,13 @@ mod tests {
             }
             if let Some(last) = input.get("tooling").and_then(|t| t.get("lastCodingAgent")) {
                 assert_eq!(
-                    &first["tooling"]["lastCodingAgent"], last,
+                    &state_beside(&config_path)["tooling"]["lastCodingAgent"],
+                    last,
+                    "case: {}",
+                    label
+                );
+                assert!(
+                    first["tooling"].get("lastCodingAgent").is_none(),
                     "case: {}",
                     label
                 );
@@ -3453,7 +3562,11 @@ mod tests {
             &std::fs::read_to_string(root.join("config.json")).expect("read config"),
         )
         .expect("parse config");
-        assert_eq!(config["tooling"]["lastCodingAgent"], "codex");
+        assert_eq!(
+            state_beside(&root.join("config.json"))["tooling"]["lastCodingAgent"],
+            "codex"
+        );
+        assert!(config["tooling"].get("lastCodingAgent").is_none());
         assert_eq!(
             config["context"],
             serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT)
@@ -4202,5 +4315,21 @@ mod tests {
             "the user's bytes must survive"
         );
         assert!(stray_temp_files(&fixture.path).is_empty());
+    }
+
+    /// #2786 (C1) - no state file: an unrelated malformed field must not hide
+    /// `lastCodingAgent`, exactly as before the loader.
+    #[test]
+    fn read_last_coding_agent_ignores_an_unrelated_malformed_field() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("config.json"),
+            r#"{"tooling":{"lastCodingAgent":"claude","codingAgents":null}}"#,
+        )
+        .expect("seed config");
+        assert_eq!(
+            read_last_coding_agent(temp.path().to_str().expect("utf-8")).as_deref(),
+            Some("claude")
+        );
     }
 }

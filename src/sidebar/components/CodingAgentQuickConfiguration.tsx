@@ -11,7 +11,7 @@ import { CodingAgentsAPI, onCodingAgentInstallFinished, SettingsAPI } from "../.
 import type { UnlistenFn } from "../../shared/transport";
 import { settingsStore } from "../../shared/stores/settings";
 import { toastStore } from "../../shared/stores/toasts";
-import { newAgentId, definitionToSeed, sortWelcomeAgents } from "../../shared/agent-presets";
+import { newAgentId, definitionToSeed, sortWelcomeAgents, welcomeVendorForKey } from "../../shared/agent-presets";
 import { codingAgentsStore } from "../stores/coding-agents";
 
 const CUSTOM_PRESET: CodingAgentDefinition = {
@@ -136,12 +136,32 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
     if (key === CUSTOM_PRESET.key) return null;
     return statusRowOf(key)?.testedLevel ?? null;
   };
-  const testedLabel = (level: CodingAgentTestedLevel): string =>
-    level === "high" ? "High" : level === "medium" ? "Medium" : "Low";
+  /** #2784 R10 - the chip scopes the level to AgentsCommander BEFORE the level
+   *  word, so no level word can read as a judgement of the coding agent itself. */
+  const SUPPORT_CHIP_PREFIX = "AC Support";
+  const SUPPORT_LABEL: Record<CodingAgentTestedLevel, string> = {
+    low: "Experimental",
+    medium: "Beta",
+    high: "Stable",
+  };
+  const supportChipText = (level: CodingAgentTestedLevel): string =>
+    SUPPORT_CHIP_PREFIX + ": " + SUPPORT_LABEL[level];
+  /** #2784 - per-level Tested tooltip, verbatim from issue #2784. */
+  const TESTED_TOOLTIP: Record<CodingAgentTestedLevel, string> = {
+    low: "Support for this Coding Agent in AgentsCommander is still experimental. If something does not work well here (blocking menus, etc.), please report it to the AgentsCommander project. Thank you!",
+    medium: "Support for this Coding Agent in AgentsCommander is in beta. Most things should work; please report any issue you find to the AgentsCommander project. Thank you!",
+    high: "This Coding Agent is well supported in AgentsCommander. If you still run into an issue, please report it to the AgentsCommander project. Thank you!",
+  };
+  /** #2784 - Welcome identity line: "by <Vendor>", else the raw description.
+   *  R3: the key-aware lookup, so Grok reads "by SpaceXAI" on an already-seeded install. */
+  const vendorLine = (preset: CodingAgentDefinition): string => {
+    const vendor = welcomeVendorForKey(preset.key, preset.description);
+    return vendor === null ? preset.description : `by ${vendor}`;
+  };
   const presetAriaLabel = (preset: CodingAgentDefinition): string => {
     if (!props.showInstallStatus) return `Select ${preset.label}`;
     const level = testedLevelOf(preset.key);
-    const tested = level ? `, Tested: ${testedLabel(level)}` : "";
+    const tested = level ? ", " + supportChipText(level) : "";
     return `Select ${preset.label}, ${statusLabel(preset.key)}${tested}`;
   };
 
@@ -559,32 +579,43 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
                       </div>
                       <div class="onboarding-card-info">
                         <div class="onboarding-card-name">{preset.label}</div>
-                        <Show when={props.showInstallStatus}>
-                          <div class="onboarding-card-chips">
-                            <span
-                              class="onboarding-chip onboarding-chip-status"
-                              data-ac-testid={`onboarding.agentPreset.${preset.key}.status`}
-                              data-ac-role="status"
-                              data-ac-state={statusState(preset.key)}
-                            >
-                              {statusLabel(preset.key)}
-                            </span>
-                            <Show when={testedLevelOf(preset.key)}>
-                              {(level) => (
-                                <span
-                                  class="onboarding-chip onboarding-chip-tested"
-                                  data-ac-testid={`onboarding.agentPreset.${preset.key}.tested`}
-                                  data-ac-role="status"
-                                  data-ac-state={level()}
-                                >
-                                  {`Tested: ${testedLabel(level())}`}
-                                </span>
-                              )}
-                            </Show>
+                        <Show
+                          when={props.showInstallStatus}
+                          fallback={<div class="onboarding-card-desc">{preset.description}</div>}
+                        >
+                          <div
+                            class="onboarding-card-vendor"
+                            data-ac-testid={`onboarding.agentVendor.${preset.key}`}
+                          >
+                            {vendorLine(preset)}
                           </div>
                         </Show>
-                        <div class="onboarding-card-desc">{preset.description}</div>
                       </div>
+                      <Show when={props.showInstallStatus}>
+                        <div class="onboarding-card-chips">
+                          <span
+                            class="onboarding-chip onboarding-chip-status"
+                            data-ac-testid={`onboarding.agentPreset.${preset.key}.status`}
+                            data-ac-role="status"
+                            data-ac-state={statusState(preset.key)}
+                          >
+                            {statusLabel(preset.key)}
+                          </span>
+                          <Show when={testedLevelOf(preset.key)}>
+                            {(level) => (
+                              <span
+                                class="onboarding-chip onboarding-chip-tested"
+                                data-ac-testid={`onboarding.agentPreset.${preset.key}.tested`}
+                                data-ac-role="status"
+                                data-ac-state={level()}
+                                title={TESTED_TOOLTIP[level()]}
+                              >
+                                {supportChipText(level())}
+                              </span>
+                            )}
+                          </Show>
+                        </div>
+                      </Show>
                     </button>
                     <Show when={showInstallRow(preset.key)}>
                       <div class="onboarding-card-install">

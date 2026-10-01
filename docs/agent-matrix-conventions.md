@@ -390,7 +390,7 @@ CLAUDE_CONFIG_DIR   = %AC_REPLICA_ROOT%\.claude
 
 The backend is the single authority for real expansion and absolute-path validation at launch; the sidebar's profile preview only mirrors these tokens for display.
 
-For a worked end-to-end example that puts `%AC_MATRIX_ROOT%` in a coding agent's ENVIRONMENT row, see [RTK usage and per-agent statistics](integrations/rtk.md).
+For a worked end-to-end example that puts `%AC_MATRIX_ROOT%` in a coding agent's ENVIRONMENT row, see [RTK usage and per-agent statistics](integrations/rtk/README.md).
 
 ---
 

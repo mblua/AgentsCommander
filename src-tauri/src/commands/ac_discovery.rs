@@ -54,9 +54,9 @@ fn read_preferred_agent_id_logged(
     warnings: &mut Vec<String>,
 ) -> Option<String> {
     let config_path = dir.join("config.json");
-    let content = std::fs::read_to_string(&config_path).ok()?;
-    let v: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
+    // #2786 (C1) - through the shared loader: state file first, key-wise.
+    let v = match crate::config::agent_config::read_agent_local_config_json(dir) {
+        Ok(v) => v?,
         Err(e) => {
             warnings.push(format!(
                 "malformed '{}', no coding-agent reference: {}",
@@ -1647,6 +1647,11 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     let [loop_state_row, loop_state_tmp_row, loop_set_aside_row] = loop_state_rows
         .each_ref()
         .map(|(pattern, comment)| (pattern.as_str(), *comment));
+    // #2807 - the agent state rows, shared with the config pair's sweep.
+    let config_state_rows = crate::config::naming_migration::config_state_ignore_rows();
+    let [config_state_row, config_state_lock_row, config_state_tmp_row] = config_state_rows
+        .each_ref()
+        .map(|(pattern, comment)| (pattern.as_str(), *comment));
     const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
     const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n/seed-manifest.toml\n";
     const SEED_MANIFEST_COORDINATION_PATTERNS: [&str; 2] =
@@ -1815,6 +1820,11 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             catalog_set_aside.as_str(),
             "# AgentsCommander: exclude coding-agent catalog files the naming migration set aside.",
         ),
+        // #2807 - the agent state file beside each tracked `config.json`, its
+        // lock sidecar and its publish temporary.
+        config_state_row,
+        config_state_lock_row,
+        config_state_tmp_row,
     ];
     for pattern in &custom_patterns {
         required_entries.push((
@@ -2753,7 +2763,7 @@ pub async fn get_replica_context_files(path: String) -> Result<Vec<String>, Stri
 pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Result<(), String> {
     let config_path = Path::new(&path).join("config.json");
 
-    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+    crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         if files.is_empty() {
             obj.remove("context");
         } else {
@@ -5049,6 +5059,24 @@ mod tests {
                 .any(|line| line.trim() == "_loop_*/config.toml"),
             "workspace .gitignore must not ignore Loop config files"
         );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_agent_*/**/config.state.no-git.json"),
+            "workspace .gitignore must ignore agent state files"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "**/.config.state.no-git.json.lock"),
+            "workspace .gitignore must ignore the agent state write-lock sidecar"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_agent_*/**/.config.state.no-git.json.*.tmp"),
+            "workspace .gitignore must ignore agent state write temporaries"
+        );
         assert!(content.contains(concat!(
             "# AgentsCommander: exclude seed-manifest coordination files.\n",
             "/.seed-manifest.lock\n",
@@ -5057,6 +5085,95 @@ mod tests {
             "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n",
             "/seed-manifest.toml\n"
         )));
+    }
+
+    /// #2807 (C2) E6 - each state path is ignored by its own anchored rule,
+    /// and the decisions file stays tracked.
+    #[test]
+    fn ac_root_gitignore_covers_the_config_state_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        let instance = crate::config::agent_local_dir_name();
+        std::fs::create_dir_all(ac_root.join("_agent_a").join(instance.as_str()))
+            .expect("create .ac tree");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
+
+        let init_status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .expect("git init must execute");
+        assert!(init_status.success(), "git init must succeed");
+        let empty_excludes = project.join("empty-global-excludes");
+        std::fs::write(&empty_excludes, []).expect("create empty global excludes file");
+        let excludes_override = format!(
+            "core.excludesFile={}",
+            empty_excludes.to_string_lossy().replace('\\', "/")
+        );
+
+        let state_rule = "_agent_*/**/config.state.no-git.json";
+        let lock_rule = "**/.config.state.no-git.json.lock";
+        let tmp_rule = "_agent_*/**/.config.state.no-git.json.*.tmp";
+        let cases = [
+            (
+                ".ac/_agent_a/config.state.no-git.json".to_string(),
+                Some(state_rule),
+            ),
+            (
+                format!(".ac/_agent_a/{instance}/config.state.no-git.json"),
+                Some(state_rule),
+            ),
+            (
+                ".ac/_agent_a/.config.state.no-git.json.lock".to_string(),
+                Some(lock_rule),
+            ),
+            (
+                ".ac/_agent_a/.config.state.no-git.json.4242.tmp".to_string(),
+                Some(tmp_rule),
+            ),
+            (
+                format!(".ac/_agent_a/{instance}/.config.state.no-git.json.4242.tmp"),
+                Some(tmp_rule),
+            ),
+            (".ac/_agent_a/config.json".to_string(), None),
+        ];
+        for (target, rule) in &cases {
+            let output = std::process::Command::new("git")
+                .arg("-c")
+                .arg(&excludes_override)
+                .args(["check-ignore", "-v", "--no-index", "--", target])
+                .current_dir(&project)
+                .output()
+                .expect("git check-ignore must execute");
+            let stdout = String::from_utf8(output.stdout).expect("output is UTF-8");
+            let Some(rule) = rule else {
+                assert_eq!(
+                    output.status.code(),
+                    Some(1),
+                    "{target} must stay tracked: {stdout}"
+                );
+                assert!(stdout.is_empty(), "{target} must match no rule: {stdout}");
+                continue;
+            };
+            assert!(
+                output.status.success(),
+                "{target} must be ignored: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let line = stdout.trim_end_matches(&['\r', '\n'][..]);
+            let (source_and_pattern, matched_target) = line
+                .split_once('\t')
+                .expect("verbose git check-ignore output contains a tab");
+            let mut source_fields = source_and_pattern.rsplitn(3, ':');
+            let pattern = source_fields.next().expect("matched pattern");
+            let _line_number = source_fields.next().expect("matched line number");
+            let source = source_fields.next().expect("matched source");
+            assert_eq!(source, ".ac/.gitignore", "{target}: match source");
+            assert_eq!(pattern, *rule, "{target}: matched by its own rule");
+            assert_eq!(matched_target, target, "{target}: match target");
+        }
     }
 
     #[test]
@@ -7229,5 +7346,77 @@ mod tests {
             let pattern = source_and_pattern.rsplit(':').next().expect("pattern");
             assert_eq!(pattern, rule, "{relative} matched the wrong rule");
         }
+    }
+    // ---------------------------------------------------------------- #2786 C1
+    // E14: the id and the descriptor come from one merged snapshot. The state
+    // file's descriptor (`new`) must win over the tracked one (`old`).
+    #[test]
+    fn the_id_and_the_descriptor_come_from_one_snapshot() {
+        use crate::config::agent_config::load_probe_harness as h;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new");
+        let mut warnings = Vec::new();
+        let got =
+            read_preferred_agent_id_logged(tmp.path(), &h::snapshot_settings(), &mut warnings);
+        assert_eq!(got.as_deref(), Some("via-new"), "{warnings:?}");
+    }
+
+    // E15: the parent row is ordinary and unarmed; the inner row runs alone,
+    // single-threaded, in a dedicated ARMED process and calls the REAL caller.
+    // Base at fd32c052 was RED, n=2 (a second load inside `from_config`); the
+    // single-snapshot change makes it one load of the caller's own directory.
+    #[test]
+    fn read_preferred_agent_id_logged_loads_once_from_its_own_dir() {
+        let out = crate::config::agent_config::load_probe_harness::expect_child_pass(
+            "commands::ac_discovery::tests::inner_read_preferred_agent_id_logged_loads_once",
+        );
+        assert!(out.contains("MEASURED-LOADS n=1"), "{out}");
+    }
+
+    #[test]
+    #[ignore = "#2786 C1: runs only in the dedicated armed process"]
+    fn inner_read_preferred_agent_id_logged_loads_once() {
+        use crate::config::agent_config::load_probe::Observation;
+        use crate::config::agent_config::load_probe_harness as h;
+        let settings = h::snapshot_settings();
+        let call = |dir: &std::path::Path, want: &str| {
+            let obs = Observation::open();
+            let mut warnings = Vec::new();
+            let got = read_preferred_agent_id_logged(dir, &settings, &mut warnings);
+            println!("REACHED-CALLER got={got:?} warnings={warnings:?}");
+            let loads = obs.loads();
+            println!("MEASURED-LOADS n={} {:?}", loads.len(), loads);
+            let expected = vec![dir.to_path_buf()];
+            assert_eq!(
+                loads, expected,
+                "recorded {loads:?}, expected exactly {expected:?}"
+            );
+            assert_eq!(got.as_deref(), Some(want), "{warnings:?}");
+        };
+
+        // E14's fixture: exactly one load, of this directory.
+
+        println!("LEG main");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new");
+        call(tmp.path(), "via-new");
+
+        // Unkeyed cache leg: two fresh directories with different values.
+
+        println!("LEG unkeyed");
+        for command in ["new-a", "new-b"] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", command);
+            call(tmp.path(), &format!("via-{command}"));
+        }
+
+        // Keyed cache leg: the SAME directory, state rewritten between calls.
+
+        println!("LEG keyed");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new-a");
+        call(tmp.path(), "via-new-a");
+        h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new-b");
+        call(tmp.path(), "via-new-b");
     }
 }

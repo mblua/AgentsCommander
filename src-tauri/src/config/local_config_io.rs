@@ -1,12 +1,56 @@
 use serde_json::{Map, Value};
+use std::cell::Cell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 fn local_config_write_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// #2786 (C1) - take the process-wide write `Mutex`, recovering from poison.
+/// The `Mutex<()>` guards no in-memory invariant, it only serializes writers:
+/// the data lives on disk under the file sidecar and every reader re-reads it.
+/// So a panic inside one mutate closure must not block every later config
+/// write in the process until restart, which `map_err` on poison did.
+fn lock_local_config_writes() -> MutexGuard<'static, ()> {
+    local_config_write_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+thread_local! {
+    /// #2786 (C1) - "a config writer is active on this thread".
+    static CONFIG_WRITER_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// #2786 (C1) - the re-entrancy flag, held for a writer's whole call. The
+/// process `Mutex` is not reentrant, so a config writer called from inside a
+/// mutate closure or a stage hook on the same thread would deadlock silently;
+/// each entry point checks this flag BEFORE touching the `Mutex` and returns
+/// an error instead. `Drop` clears the flag, so an early `?` return and a panic
+/// both leave the thread usable. Same-thread recursion only: a callback that
+/// blocks on a writer running on another thread is not detected.
+struct ConfigWriterActive;
+
+impl ConfigWriterActive {
+    fn enter(entry_point: &str) -> Result<Self, String> {
+        if CONFIG_WRITER_ACTIVE.with(|active| active.replace(true)) {
+            return Err(format!(
+                "Nested config write: {} was called while a config writer is already active on this thread",
+                entry_point
+            ));
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for ConfigWriterActive {
+    fn drop(&mut self) {
+        CONFIG_WRITER_ACTIVE.with(|active| active.set(false));
+    }
 }
 
 /// #1938 - cooperative cross-process serialization for local config writes.
@@ -200,9 +244,8 @@ where
     F: FnOnce(&mut Map<String, Value>) -> Result<(), String>,
     P: FnOnce(&Path, &Path) -> Result<(), String>,
 {
-    let _guard = local_config_write_lock()
-        .lock()
-        .map_err(|_| "Local config write lock is poisoned".to_string())?;
+    let _writer = ConfigWriterActive::enter("update_config_json_object")?;
+    let _guard = lock_local_config_writes();
 
     // #1938 - the parent must exist before the sidecar can be resolved, and the
     // sidecar lock must be held before the existence check, the read, the
@@ -276,9 +319,8 @@ fn write_file_atomic_with_publish<P>(path: &Path, bytes: &[u8], publish: P) -> R
 where
     P: FnOnce(&Path, &Path) -> Result<(), String>,
 {
-    let _guard = local_config_write_lock()
-        .lock()
-        .map_err(|_| "Local config write lock is poisoned".to_string())?;
+    let _writer = ConfigWriterActive::enter("write_file_atomic")?;
+    let _guard = lock_local_config_writes();
 
     let parent = path
         .parent()
@@ -307,6 +349,155 @@ where
         return Err(e);
     }
 
+    Ok(())
+}
+
+/// #2786 (C1) - the caller-supplied cleanup sequence of `update_config_pair`:
+/// it edits the decisions map and the state map before `mutate` runs.
+#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
+pub(crate) type ConfigPairCleanup<'a> =
+    &'a dyn Fn(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>;
+
+/// #2786 (C1) - write the decisions file and the state file as one guarded
+/// pair. `state` is the state file's path, `state_keys` the keys that live in
+/// it, and `on_stage` a named pause point (a no-op in production); all three
+/// are parameters so this module names no other module.
+///
+/// One critical section covers both sequences: the process `Mutex`, then the
+/// decisions sidecar, then the state sidecar, each taken once for the whole
+/// call. Inside it the optional `cleanup` runs first, then `mutate`, on the
+/// same two maps read once. Each sequence publishes the state file before the
+/// decisions file, and a side whose map the sequence did not change is
+/// neither written nor created, so its stage does not fire. An absent state
+/// file is an empty map; an unparseable one blocks the call before any write.
+/// A `cleanup` error aborts before any write; a `mutate` error keeps whatever
+/// the cleanup already published. The primitive moves, removes and marks no
+/// key itself, deletes no file, and never rolls back or retries.
+///
+/// Neither closure may call a config writer: a nested call on the same thread
+/// returns an error, and one waited on from another thread would deadlock.
+#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
+pub(crate) fn update_config_pair<F>(
+    decisions: &Path,
+    state: &Path,
+    state_keys: &[&str],
+    cleanup: Option<ConfigPairCleanup<'_>>,
+    on_stage: &dyn Fn(&str),
+    mutate: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
+{
+    let _writer = ConfigWriterActive::enter("update_config_pair")?;
+    let _guard = lock_local_config_writes();
+    // C1 moves no key, so the list is carried for the cleanup policy of C2.
+    let _ = state_keys;
+
+    for path in [decisions, state] {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("Local config {} has no parent directory", path.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+    }
+    let _decisions_lock = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)?;
+    let _state_lock = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)?;
+
+    let both = || format!("{} and {}", decisions.display(), state.display());
+    let read = |path: &Path| {
+        read_pair_side(path).map_err(|e| format!("Config pair {} blocked: {}", both(), e))
+    };
+    let mut decisions_map = read(decisions)?;
+    let mut state_map = read(state)?;
+
+    if let Some(cleanup) = cleanup {
+        let decisions_before = decisions_map.clone();
+        let state_before = state_map.clone();
+        cleanup(&mut decisions_map, &mut state_map)
+            .map_err(|e| format!("Config pair {} cleanup failed: {}", both(), e))?;
+        publish_pair_sides(
+            (decisions, &decisions_before, &decisions_map),
+            (state, &state_before, &state_map),
+            on_stage,
+            ["after_cleanup_state_publish", "after_cleanup_tracked_write"],
+        )?;
+    }
+
+    let decisions_before = decisions_map.clone();
+    let state_before = state_map.clone();
+    mutate(&mut decisions_map, &mut state_map)?;
+    publish_pair_sides(
+        (decisions, &decisions_before, &decisions_map),
+        (state, &state_before, &state_map),
+        on_stage,
+        ["after_caller_state_publish", "after_caller_decisions_write"],
+    )
+}
+
+/// #2786 (C1) - one side of the pair as a map: absent is empty, anything that
+/// is not a readable JSON object is an error.
+#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
+fn read_pair_side(path: &Path) -> Result<Map<String, Value>, String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
+        Err(e) => return Err(format!("Failed to read {}: {}", path.display(), e)),
+    };
+    match serde_json::from_str::<Value>(&content) {
+        Ok(Value::Object(map)) => Ok(map),
+        Ok(_) => Err(format!(
+            "Local config {} must be a JSON object",
+            path.display()
+        )),
+        Err(e) => Err(format!("Failed to parse {}: {}", path.display(), e)),
+    }
+}
+
+/// #2786 (C1) - publish the changed sides of one sequence, state first, firing
+/// each side's stage only after its write.
+#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
+fn publish_pair_sides(
+    decisions: (&Path, &Map<String, Value>, &Map<String, Value>),
+    state: (&Path, &Map<String, Value>, &Map<String, Value>),
+    on_stage: &dyn Fn(&str),
+    [state_stage, decisions_stage]: [&str; 2],
+) -> Result<(), String> {
+    for ((path, before, after), stage) in [(state, state_stage), (decisions, decisions_stage)] {
+        if before != after {
+            publish_pair_side(path, after)?;
+            on_stage(stage);
+        }
+    }
+    Ok(())
+}
+
+/// #2786 (C1) - temp plus `publish_temp_config`, never `write_file_atomic`:
+/// the pair already holds the process `Mutex`, which is not reentrant.
+#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
+fn publish_pair_side(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
+    let mut json = serde_json::to_string_pretty(map)
+        .map_err(|e| format!("Failed to serialize {}: {}", path.display(), e))?;
+    json.push('\n');
+
+    let tmp_path = temp_config_path(path);
+    let write_result = (|| -> Result<(), String> {
+        let mut file = std::fs::File::create(&tmp_path)
+            .map_err(|e| format!("Failed to create temp config {}: {}", tmp_path.display(), e))?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| format!("Failed to write temp config {}: {}", tmp_path.display(), e))?;
+        file.flush()
+            .map_err(|e| format!("Failed to flush temp config {}: {}", tmp_path.display(), e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync temp config {}: {}", tmp_path.display(), e))
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    if let Err(e) = publish_temp_config(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -591,10 +782,11 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
 mod tests {
     use super::{
         acquire_config_file_write_lock, config_lock_path, format_publish_error,
-        is_transient_publish_error, update_config_json_object,
-        update_config_json_object_with_publish, write_file_atomic_with_publish,
-        CONFIG_LOCK_TIMEOUT,
+        is_transient_publish_error, temp_config_path, update_config_json_object,
+        update_config_json_object_with_publish, update_config_pair, write_file_atomic,
+        write_file_atomic_with_publish, CONFIG_LOCK_TIMEOUT,
     };
+    use serde_json::{json, Map, Value};
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
@@ -1671,5 +1863,497 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
         let err = std::io::Error::last_os_error();
         assert_eq!(ok, 0, "raw ReplaceFileW must fail over MAX_PATH");
         assert_eq!(err.raw_os_error(), Some(3), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // #2786 (C1) - the config pair primitive. The state path is a literal and
+    // the stage hook is test-local: this module must name no other module.
+    // -----------------------------------------------------------------------
+
+    const PAIR_STATE_NAME: &str = "config.state.no-git.json";
+    const PAIR_STATE_KEYS: [&str; 4] = [
+        "lastCodingAgent",
+        "codingAgents",
+        "lastAgentMessageAt",
+        "profileContentHash",
+    ];
+
+    fn pair_fixture(
+        decisions: Option<&str>,
+        state: Option<&str>,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let decisions_path = temp.path().join("config.json");
+        let state_path = temp.path().join(PAIR_STATE_NAME);
+        if let Some(body) = decisions {
+            std::fs::write(&decisions_path, body).expect("seed decisions");
+        }
+        if let Some(body) = state {
+            std::fs::write(&state_path, body).expect("seed state");
+        }
+        (temp, decisions_path, state_path)
+    }
+
+    fn no_stage(_stage: &str) {}
+
+    fn read_value(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read json"))
+            .expect("parse json")
+    }
+
+    fn split_marker() -> Value {
+        json!({"v": 1, "keys": PAIR_STATE_KEYS})
+    }
+
+    #[test]
+    fn the_state_file_is_written_before_the_decisions_file() {
+        let (_temp, decisions, state) = pair_fixture(Some(r#"{"a":1}"#), None);
+        // The decisions write fails: its temp path is occupied by a directory.
+        std::fs::create_dir(temp_config_path(&decisions)).expect("occupy decisions temp");
+
+        let err = update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            None,
+            &no_stage,
+            |d, s| {
+                d.insert("a".to_string(), json!(2));
+                s.insert("tooling".to_string(), json!({"lastCodingAgent": "claude"}));
+                Ok(())
+            },
+        )
+        .expect_err("the decisions write must fail");
+
+        assert!(err.contains("temp config"), "{err}");
+        assert!(
+            state.is_file(),
+            "the state file must already be written: {err}"
+        );
+        assert_eq!(read_value(&state)["tooling"]["lastCodingAgent"], "claude");
+        assert_eq!(std::fs::read_to_string(&decisions).unwrap(), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn an_absent_state_file_is_an_empty_tooling() {
+        let (_temp, decisions, state) = pair_fixture(Some(r#"{"a":1}"#), None);
+        let saw_empty = std::cell::Cell::new(false);
+
+        update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            None,
+            &no_stage,
+            |_d, s| {
+                saw_empty.set(s.is_empty());
+                Ok(())
+            },
+        )
+        .expect("an absent state file is a valid state");
+
+        assert!(saw_empty.get(), "the closure must see an empty state map");
+        assert!(
+            !state.exists(),
+            "an untouched absent state file stays absent"
+        );
+    }
+
+    #[test]
+    fn an_untouched_side_is_not_written() {
+        // Decisions only: no state file appears.
+        let (_temp, decisions, state) = pair_fixture(Some(r#"{"a":1}"#), None);
+        update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            None,
+            &no_stage,
+            |d, _s| {
+                d.insert("a".to_string(), json!(2));
+                Ok(())
+            },
+        )
+        .expect("decisions-only pair call");
+        assert_eq!(read_value(&decisions)["a"], 2);
+        assert!(
+            !state.exists(),
+            "a decisions-only call must not create a state file"
+        );
+
+        // State only: the decisions file stays byte-identical.
+        let original = "{\"a\":1,  \"b\" : [1,2]}";
+        let (_temp, decisions, state) = pair_fixture(Some(original), None);
+        update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            None,
+            &no_stage,
+            |_d, s| {
+                s.insert(
+                    "tooling".to_string(),
+                    json!({"lastAgentMessageAt": "2026-09-29T00:00:00Z"}),
+                );
+                Ok(())
+            },
+        )
+        .expect("state-only pair call");
+        assert_eq!(std::fs::read_to_string(&decisions).unwrap(), original);
+        assert_eq!(
+            read_value(&state)["tooling"]["lastAgentMessageAt"],
+            "2026-09-29T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_state_file_blocks_the_pair() {
+        let (_temp, decisions, state) = pair_fixture(Some(r#"{"a":1}"#), Some("{ not json"));
+        let ran = std::cell::Cell::new(false);
+
+        let err = update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            None,
+            &no_stage,
+            |d, s| {
+                ran.set(true);
+                d.insert("a".to_string(), json!(2));
+                s.insert("tooling".to_string(), json!({}));
+                Ok(())
+            },
+        )
+        .expect_err("an unparseable state file must block the pair");
+
+        assert!(err.contains(&decisions.display().to_string()), "{err}");
+        assert!(err.contains(&state.display().to_string()), "{err}");
+        assert!(!ran.get(), "mutate must not run");
+        assert_eq!(std::fs::read_to_string(&decisions).unwrap(), r#"{"a":1}"#);
+        assert_eq!(std::fs::read_to_string(&state).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn the_pair_preserves_unknown_keys_on_both_sides() {
+        let decisions_seed =
+            json!({"unknownDecision": {"x": [1, 2]}, "tooling": {"telegramBot": "b"}});
+        let state_seed = json!({"unknownState": "keep", "split": split_marker(), "tooling": {}});
+        let (_temp, decisions, state) = pair_fixture(
+            Some(&decisions_seed.to_string()),
+            Some(&state_seed.to_string()),
+        );
+
+        update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            None,
+            &no_stage,
+            |d, s| {
+                d.insert("context".to_string(), json!(["Role.md"]));
+                s.insert("tooling".to_string(), json!({"lastCodingAgent": "claude"}));
+                Ok(())
+            },
+        )
+        .expect("pair call");
+
+        let saved_decisions = read_value(&decisions);
+        let saved_state = read_value(&state);
+        assert_eq!(
+            saved_decisions["unknownDecision"],
+            decisions_seed["unknownDecision"]
+        );
+        assert_eq!(saved_decisions["tooling"], decisions_seed["tooling"]);
+        assert_eq!(saved_state["unknownState"], state_seed["unknownState"]);
+        assert_eq!(saved_state["split"], split_marker());
+        assert_eq!(saved_decisions["context"][0], "Role.md");
+        assert_eq!(saved_state["tooling"]["lastCodingAgent"], "claude");
+    }
+
+    #[test]
+    fn the_guard_is_not_released_between_the_two_sequences() {
+        let (_temp, decisions, state) = pair_fixture(
+            Some(r#"{"tooling":{"lastCodingAgent":"claude","telegramBot":"b"}}"#),
+            None,
+        );
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let worker = {
+            let decisions = decisions.clone();
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let on_stage = |stage: &str| {
+                    if stage == "after_cleanup_tracked_write" {
+                        paused_tx.send(()).expect("announce pause");
+                        release_rx
+                            .recv_timeout(Duration::from_secs(60))
+                            .expect("release the pause");
+                    }
+                };
+                let cleanup = |d: &mut Map<String, Value>, s: &mut Map<String, Value>| {
+                    let moved = d
+                        .get_mut("tooling")
+                        .and_then(Value::as_object_mut)
+                        .and_then(|tooling| tooling.remove("lastCodingAgent"))
+                        .ok_or_else(|| "no key to move".to_string())?;
+                    s.insert("tooling".to_string(), json!({"lastCodingAgent": moved}));
+                    s.insert("split".to_string(), split_marker());
+                    Ok(())
+                };
+                update_config_pair(
+                    &decisions,
+                    &state,
+                    &PAIR_STATE_KEYS,
+                    Some(&cleanup),
+                    &on_stage,
+                    |_d, _s| Ok(()),
+                )
+            })
+        };
+
+        paused_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the call must reach after_cleanup_tracked_write");
+        let blocked = acquire_config_file_write_lock(&decisions, Duration::from_millis(300));
+        let blocked_err = blocked
+            .as_ref()
+            .err()
+            .cloned()
+            .unwrap_or_else(|| "acquired".to_string());
+        drop(blocked);
+        release_tx.send(()).expect("release");
+        worker.join().expect("worker").expect("pair call");
+
+        assert!(
+            blocked_err.contains("configLockTimeout"),
+            "a second acquirer must fail while the pause holds, got: {blocked_err}"
+        );
+        drop(
+            acquire_config_file_write_lock(&decisions, Duration::from_millis(500))
+                .expect("the sidecar must be free once the call returns"),
+        );
+        let saved_state = read_value(&state);
+        assert_eq!(saved_state["tooling"]["lastCodingAgent"], "claude");
+        assert_eq!(saved_state["split"], split_marker());
+        let saved_decisions = read_value(&decisions);
+        assert!(saved_decisions["tooling"].get("lastCodingAgent").is_none());
+        assert_eq!(saved_decisions["tooling"]["telegramBot"], "b");
+    }
+
+    #[test]
+    fn the_cleanup_sequence_is_ordered_and_aborts_whole() {
+        let decisions_seed = r#"{"tooling":{"lastCodingAgent":"claude"}}"#;
+        let state_seed = r#"{"tooling":{"lastAgentMessageAt":"x"}}"#;
+
+        // Leg 1: a failing cleanup writes nothing and mutate never runs.
+        let (_temp, decisions, state) = pair_fixture(Some(decisions_seed), Some(state_seed));
+        let ran = std::cell::Cell::new(false);
+        let failing = |_d: &mut Map<String, Value>, _s: &mut Map<String, Value>| {
+            Err("policy refused".to_string())
+        };
+        let err = update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            Some(&failing),
+            &no_stage,
+            |d, s| {
+                ran.set(true);
+                d.insert("a".to_string(), json!(1));
+                s.insert("a".to_string(), json!(1));
+                Ok(())
+            },
+        )
+        .expect_err("a failing cleanup aborts the call");
+        assert!(!ran.get(), "mutate must never run after a failed cleanup");
+        assert!(err.contains("policy refused"), "{err}");
+        assert!(err.contains(&decisions.display().to_string()), "{err}");
+        assert!(err.contains(&state.display().to_string()), "{err}");
+        assert_eq!(std::fs::read_to_string(&decisions).unwrap(), decisions_seed);
+        assert_eq!(std::fs::read_to_string(&state).unwrap(), state_seed);
+
+        // Leg 2: a state-only cleanup, writing the marker, fires only its
+        // state stage and leaves the decisions file byte-identical.
+        let (_temp, decisions, state) = pair_fixture(Some(decisions_seed), None);
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let on_stage = |stage: &str| tx.send(stage.to_string()).expect("record stage");
+        let state_only = |_d: &mut Map<String, Value>, s: &mut Map<String, Value>| {
+            s.insert("split".to_string(), split_marker());
+            Ok(())
+        };
+        update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            Some(&state_only),
+            &on_stage,
+            |_d, _s| Ok(()),
+        )
+        .expect("state-only cleanup");
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(200)).as_deref(),
+            Ok("after_cleanup_state_publish")
+        );
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "after_cleanup_tracked_write must not fire for a state-only cleanup"
+        );
+        assert_eq!(std::fs::read_to_string(&decisions).unwrap(), decisions_seed);
+        assert_eq!(read_value(&state)["split"], split_marker());
+
+        // Leg 3: no cleanup behaves as a single-sequence call.
+        let (_temp, decisions, state) = pair_fixture(Some(decisions_seed), None);
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let on_stage = |stage: &str| tx.send(stage.to_string()).expect("record stage");
+        update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            None,
+            &on_stage,
+            |d, _s| {
+                d.insert("context".to_string(), json!([]));
+                Ok(())
+            },
+        )
+        .expect("single-sequence call");
+        drop(tx);
+        let stages: Vec<String> = rx.try_iter().collect();
+        assert_eq!(stages, vec!["after_caller_decisions_write".to_string()]);
+        assert!(
+            !state.exists(),
+            "a decisions-only mutate must not create a state file"
+        );
+    }
+
+    const NESTED_CHILD_ACTION_ENV: &str = "AC_2786_NESTED_WRITER_CHILD_ACTION";
+    const NESTED_CHILD_DIR_ENV: &str = "AC_2786_NESTED_WRITER_CHILD_DIR";
+    const NESTED_CHILD_TEST_FQN: &str =
+        "config::local_config_io::tests::a_nested_config_writer_child";
+
+    /// #2786 (C1) - the child half of E2c. A no-op without the child-only
+    /// environment, so a normal suite run passes it untouched.
+    #[test]
+    fn a_nested_config_writer_child() {
+        let Some(action) = std::env::var_os(NESTED_CHILD_ACTION_ENV) else {
+            return;
+        };
+        let action = action.to_string_lossy().into_owned();
+        let dir = PathBuf::from(std::env::var_os(NESTED_CHILD_DIR_ENV).expect("child dir env"));
+        let decisions = dir.join("config.json");
+        let state = dir.join(PAIR_STATE_NAME);
+        let other = dir.join("other.json");
+
+        if action == "panic" {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                update_config_pair(
+                    &decisions,
+                    &state,
+                    &PAIR_STATE_KEYS,
+                    None,
+                    &no_stage,
+                    |_d, _s| panic!("forced panic inside mutate"),
+                )
+            }));
+            assert!(
+                outcome.is_err(),
+                "the mutate panic must reach the test boundary"
+            );
+            update_config_json_object(&decisions, true, |obj| {
+                obj.insert("sameThread".to_string(), json!(true));
+                Ok(())
+            })
+            .expect("a normal write on the same thread must succeed after a panic");
+            let other_thread = other.clone();
+            std::thread::spawn(move || write_file_atomic(&other_thread, b"{}\n"))
+                .join()
+                .expect("writer thread")
+                .expect("a normal write on another thread must succeed after a panic");
+            println!("AC_2786_NESTED_WRITER_CHILD_OK action={action}");
+            return;
+        }
+
+        let entry = match action.as_str() {
+            "nest_pair" => "update_config_pair",
+            "nest_json" => "update_config_json_object",
+            "nest_atomic" => "write_file_atomic",
+            other => panic!("unknown child action {other}"),
+        };
+        let err = update_config_pair(
+            &decisions,
+            &state,
+            &PAIR_STATE_KEYS,
+            None,
+            &no_stage,
+            |_d, _s| match entry {
+                "update_config_pair" => update_config_pair(
+                    &other,
+                    &state,
+                    &PAIR_STATE_KEYS,
+                    None,
+                    &no_stage,
+                    |_d, _s| Ok(()),
+                ),
+                "update_config_json_object" => {
+                    update_config_json_object(&other, true, |_obj| Ok(())).map(|_| ())
+                }
+                _ => write_file_atomic(&other, b"{}\n"),
+            },
+        )
+        .expect_err("a nested config writer must return an error");
+        assert!(
+            err.contains(&format!("Nested config write: {entry}")),
+            "the error must name the nesting: {err}"
+        );
+        update_config_json_object(&decisions, true, |obj| {
+            obj.insert("afterNesting".to_string(), json!(true));
+            Ok(())
+        })
+        .expect("the thread must stay writable after the nested error");
+        println!("AC_2786_NESTED_WRITER_CHILD_OK action={action}");
+    }
+
+    /// #2786 (C1) E2c - every leg runs in a child process with a lifetime bound,
+    /// because a hang cannot be asserted in-process and a poisoned `Mutex`
+    /// must not leak into the rest of this suite.
+    #[test]
+    fn a_nested_config_writer_is_an_error_not_a_hang() {
+        // One child at a time: `wait_bounded` kills and reaps the child it
+        // waits on, so a timeout never leaves another child running.
+        for action in ["nest_pair", "nest_json", "nest_atomic", "panic"] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let child = Command::new(std::env::current_exe().expect("current test exe"))
+                .args([
+                    "--exact",
+                    NESTED_CHILD_TEST_FQN,
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(NESTED_CHILD_ACTION_ENV, action)
+                .env(NESTED_CHILD_DIR_ENV, temp.path())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn nested writer child");
+            let label = format!("nested writer child {action}");
+            let (status, stdout, stderr) = wait_bounded(child, Duration::from_secs(30), &label);
+            let report = format!(
+                "status={status:?}
+stdout:
+{stdout}
+stderr:
+{stderr}"
+            );
+            assert!(status.success(), "{label} failed: {report}");
+            assert!(
+                stdout.contains("test result: ok. 1 passed; 0 failed"),
+                "{label} did not run exactly one passing test: {report}"
+            );
+            assert!(
+                stdout.contains(&format!("AC_2786_NESTED_WRITER_CHILD_OK action={action}")),
+                "{label} is missing its marker: {report}"
+            );
+        }
     }
 }

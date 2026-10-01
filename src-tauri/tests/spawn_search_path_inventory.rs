@@ -152,9 +152,9 @@ const INVENTORY: &[Row] = &[
     ("src-tauri/src/cli/mod.rs", 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/commands/ac_discovery.rs",
-        30,
+        32,
         1,
-        &[(TestOnly, 29)],
+        &[(TestOnly, 31)],
     ),
     (
         "src-tauri/src/commands/config.rs",
@@ -181,6 +181,12 @@ const INVENTORY: &[Row] = &[
         2,
         0,
         &[(DesktopOpener, 2)],
+    ),
+    (
+        "src-tauri/src/config/agent_config.rs",
+        4,
+        0,
+        &[(TestOnly, 4)],
     ),
     (
         "src-tauri/src/config/agent_memory.rs",
@@ -221,9 +227,9 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/config/local_config_io.rs",
-        1,
+        2,
         0,
-        &[(TestOnly, 1)],
+        &[(TestOnly, 2)],
     ),
     ("src-tauri/src/config/loops.rs", 3, 0, &[(TestOnly, 3)]),
     (

@@ -726,7 +726,7 @@ fn new_project_seeds_catalog_into_ac() {
         &serde_json::json!({
             "key": "grok",
             "label": "Grok Build",
-            "description": "Coding agent Grok Build",
+            "description": "Coding Agent by SpaceXAI",
             "color": "#64748b",
             "command": "grok",
             "instructionsFilename": "AGENTS.md",

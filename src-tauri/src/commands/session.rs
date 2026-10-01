@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
 
 use crate::config::agent_command::AgentSpawnCommand;
-use crate::config::agent_config::{self, AgentLocalConfig};
+use crate::config::agent_config;
 use crate::config::coding_agents_catalog::{command_executable_basename, CodingAgentDefinition};
 use crate::config::coordinator_clocks::{ClearedCloseMarkers, CoordinatorClocksState};
 use crate::config::sessions_persistence::persist_current_state;
@@ -3747,15 +3747,16 @@ pub(crate) async fn attach_local_config_telegram_if_any<R: tauri::Runtime>(
     session_id: Uuid,
     cwd: &str,
 ) {
-    let config_path = std::path::Path::new(cwd)
-        .join(crate::config::agent_local_dir_name())
-        .join("config.json");
+    let config_dir = std::path::Path::new(cwd).join(crate::config::agent_local_dir_name());
 
-    let Some(bot_label) = tokio::fs::read_to_string(&config_path)
-        .await
-        .ok()
-        .and_then(|contents| serde_json::from_str::<AgentLocalConfig>(&contents).ok())
-        .and_then(|local_config| local_config.tooling.telegram_bot)
+    // #2786 (C1) - through the shared loader, off the async worker: the
+    // loader does blocking file reads.
+    let Some(bot_label) =
+        tokio::task::spawn_blocking(move || agent_config::read_agent_local_config(&config_dir))
+            .await
+            .ok()
+            .flatten()
+            .and_then(|local_config| local_config.tooling.telegram_bot)
     else {
         return;
     };
@@ -4469,20 +4470,19 @@ pub(crate) fn matched_selection(
     stored_agent_id: Option<&str>,
     source_letter: Option<&str>,
 ) -> MatchedSelection {
-    let config_path = std::path::Path::new(cwd).join("config.json");
-    let config = match std::fs::read_to_string(&config_path) {
-        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(value) => Some(value),
-            Err(e) => {
-                log::warn!(
-                    "[agent-match] malformed '{}', no descriptor: {}",
-                    config_path.display(),
-                    e
-                );
-                None
-            }
-        },
-        Err(_) => None,
+    let dir = std::path::Path::new(cwd);
+    // #2786 (C1) - ONE load through the shared loader serves both
+    // `currentCodingAgent` and the descriptor, so they share one snapshot.
+    let config = match crate::config::agent_config::read_agent_local_config_json(dir) {
+        Ok(value) => value,
+        Err(e) => {
+            log::warn!(
+                "[agent-match] malformed '{}', no descriptor: {}",
+                dir.join("config.json").display(),
+                e
+            );
+            None
+        }
     };
     let current = config
         .as_ref()
@@ -14287,15 +14287,33 @@ exec claude \"$@\"
         receiver
     }
 
-    /// #1682 - the per-instance config the stamp is written into.
+    /// #1682 - the per-instance file the stamp is written into: since #2816
+    /// (C3) the state file, never the tracked `config.json` beside it.
     fn stamp_config_path(cwd: &std::path::Path) -> PathBuf {
         cwd.join(crate::config::agent_local_dir_name())
-            .join("config.json")
+            .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+    }
+
+    /// #2816 (C3) - a suppressed write leaves neither the state file nor the
+    /// tracked `config.json` it used to create.
+    fn no_stamp_file(cwd: &std::path::Path) -> bool {
+        let state = stamp_config_path(cwd);
+        !state.exists() && !state.with_file_name("config.json").exists()
     }
 
     /// #1682 - `tooling.lastAgentMessageAt` read straight off the file, so the
     /// assertion does not go through the same reader the command uses.
     fn stored_stamp(cwd: &std::path::Path) -> Option<String> {
+        // #2816 (C3) - the stamp must never be in the tracked file.
+        let tracked = stamp_config_path(cwd).with_file_name("config.json");
+        if let Ok(raw) = std::fs::read_to_string(&tracked) {
+            let parsed: serde_json::Value = serde_json::from_str(&raw).expect("tracked json");
+            assert!(
+                parsed["tooling"].get("lastAgentMessageAt").is_none(),
+                "the stamp is still tracked in {}",
+                tracked.display()
+            );
+        }
         let raw = std::fs::read_to_string(stamp_config_path(cwd)).ok()?;
         let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
         parsed["tooling"]["lastAgentMessageAt"]
@@ -14472,7 +14490,7 @@ exec claude \"$@\"
         super::record_agent_turn_completed(app.handle(), &*session_mgr.read().await, unarmed, None)
             .await;
         assert!(
-            !stamp_config_path(unarmed_dir.path()).exists(),
+            no_stamp_file(unarmed_dir.path()),
             "an unarmed session must not create a config.json"
         );
         assert!(
@@ -14486,7 +14504,7 @@ exec claude \"$@\"
         super::record_agent_turn_completed(app.handle(), &*session_mgr.read().await, plain, None)
             .await;
         assert!(
-            !stamp_config_path(plain_dir.path()).exists(),
+            no_stamp_file(plain_dir.path()),
             "a session with no agent_id must not create a config.json"
         );
         assert!(
@@ -14516,7 +14534,7 @@ exec claude \"$@\"
         super::record_agent_turn_completed(app.handle(), &*session_mgr.read().await, id, None)
             .await;
         assert!(
-            !stamp_config_path(dir.path()).exists(),
+            no_stamp_file(dir.path()),
             "recent unsubmitted input must suppress the write"
         );
         assert!(
@@ -14594,7 +14612,7 @@ exec claude \"$@\"
         )
         .await;
         assert!(
-            !stamp_config_path(recent_dir.path()).exists(),
+            no_stamp_file(recent_dir.path()),
             "a control write inside the window must suppress the write"
         );
         assert!(
@@ -15746,6 +15764,16 @@ exec claude \"$@\"
         assert!(coding_agent_descriptor("gone", &settings).is_none());
     }
 
+    /// #2816 (C3) - the state file beside the tracked `path`, after asserting
+    /// that the tracked file keeps none of the descriptor's state keys.
+    fn read_state_beside(path: &std::path::Path) -> serde_json::Value {
+        let tracked = read_json(path);
+        for key in ["lastCodingAgent", "codingAgents"] {
+            assert!(tracked["tooling"].get(key).is_none(), "{key} in {path:?}");
+        }
+        read_json(&path.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME))
+    }
+
     fn read_json(path: &std::path::Path) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
@@ -15782,7 +15810,7 @@ exec claude \"$@\"
         save_last_coding_agent(&temp.path().to_string_lossy(), "sid", &write).unwrap();
 
         for path in &paths {
-            let value = read_json(path);
+            let value = read_state_beside(path);
             let agents = &value["tooling"]["codingAgents"];
             assert_eq!(value["tooling"]["lastCodingAgent"], "claude", "{path:?}");
             assert_eq!(agents["claude"]["app"], "claude", "{path:?}");
@@ -15813,7 +15841,7 @@ exec claude \"$@\"
         save_last_coding_agent(&temp.path().to_string_lossy(), "sid", &write).unwrap();
 
         for path in &paths {
-            let value = read_json(path);
+            let value = read_state_beside(path);
             let entry = &value["tooling"]["codingAgents"]["gone"];
             assert_eq!(entry["command"], "gone --x", "{path:?}");
             assert_eq!(
@@ -15962,6 +15990,88 @@ exec claude \"$@\"
                 .unwrap()
                 .is_some()
         );
+    }
+    // ---------------------------------------------------------------- #2786 C1
+    // E14: `currentCodingAgent` and the descriptor come from one merged
+    // snapshot. The state file's descriptor (`new`) must win over `old`.
+    #[test]
+    fn matched_selection_takes_the_descriptor_from_the_state_file() {
+        use crate::config::agent_config::load_probe_harness as h;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new");
+        let selection = super::matched_selection(
+            &h::snapshot_settings(),
+            &tmp.path().to_string_lossy(),
+            None,
+            None,
+            None,
+        );
+        assert!(
+            matches!(&selection, super::MatchedSelection::Agent { agent_id, .. } if agent_id == "via-new"),
+            "{selection:?}"
+        );
+    }
+
+    // E15: unarmed parent, armed dedicated child, REAL caller. Base at fd32c052
+    // was already GREEN, n=1, so this is a regression row: it holds n=1 now
+    // that the caller's own direct `config.json` read is gone and one loader
+    // snapshot serves both the id and the descriptor.
+    #[test]
+    fn matched_selection_loads_once_from_its_own_dir() {
+        let out = crate::config::agent_config::load_probe_harness::expect_child_pass(
+            "commands::session::tests::inner_matched_selection_loads_once",
+        );
+        assert!(out.contains("MEASURED-LOADS n=1"), "{out}");
+    }
+
+    #[test]
+    #[ignore = "#2786 C1: runs only in the dedicated armed process"]
+    fn inner_matched_selection_loads_once() {
+        use crate::config::agent_config::load_probe::Observation;
+        use crate::config::agent_config::load_probe_harness as h;
+        let settings = h::snapshot_settings();
+        let call = |dir: &std::path::Path, want: &str| {
+            let obs = Observation::open();
+            let selection =
+                super::matched_selection(&settings, &dir.to_string_lossy(), None, None, None);
+            println!("REACHED-CALLER selection={selection:?}");
+            let loads = obs.loads();
+            println!("MEASURED-LOADS n={} {:?}", loads.len(), loads);
+            let expected = vec![dir.to_path_buf()];
+            assert_eq!(
+                loads, expected,
+                "recorded {loads:?}, expected exactly {expected:?}"
+            );
+            assert!(
+                matches!(&selection, super::MatchedSelection::Agent { agent_id, .. } if agent_id == want),
+                "want {want}: {selection:?}"
+            );
+        };
+
+        // E14's fixture: exactly one load, of this directory.
+
+        println!("LEG main");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new");
+        call(tmp.path(), "via-new");
+
+        // Unkeyed cache leg: two fresh directories with different values.
+
+        println!("LEG unkeyed");
+        for command in ["new-a", "new-b"] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", command);
+            call(tmp.path(), &format!("via-{command}"));
+        }
+
+        // Keyed cache leg: the SAME directory, state rewritten between calls.
+
+        println!("LEG keyed");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new-a");
+        call(tmp.path(), "via-new-a");
+        h::write_snapshot_fixture(tmp.path(), "currentCodingAgent", "new-b");
+        call(tmp.path(), "via-new-b");
     }
 }
 
