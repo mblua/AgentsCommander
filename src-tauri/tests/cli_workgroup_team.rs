@@ -1329,6 +1329,28 @@ fn issue_1937_repeat_member_preserves_config() {
     let mut journals = Vec::new();
     journals_under(tmp.path(), &mut journals);
     assert_eq!(journals, vec![config_dir.join(JOURNAL_NAME)]);
+
+    // The file alone proves nothing: every CLI start journals the instance
+    // families there. The C3 record is this replica's own scope and its note.
+    let journal: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(config_dir.join(JOURNAL_NAME)).expect("read journal"),
+    )
+    .expect("parse journal");
+    let scope = format!(
+        "config-state:{}",
+        std::fs::canonicalize(&config_path)
+            .expect("canonical replica config")
+            .display()
+    );
+    let notes = journal["scopes"][&scope]["notes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no `{scope}` scope with notes in {journal}"));
+    assert!(
+        notes
+            .iter()
+            .any(|note| note == "moved to the state file: lastCodingAgent"),
+        "{notes:?}"
+    );
 }
 
 // #1088: a live session whose name+cwd match a WG peer surfaces its context-usage
