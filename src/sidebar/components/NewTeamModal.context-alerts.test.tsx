@@ -104,40 +104,59 @@ describe("NewTeamModal context alerts", () => {
   });
 
   it("submits the default empty policy, reloads, and closes in order", async () => {
-    const fake = new FakeTransport();
-    const order: string[] = [];
-    setupTransport(fake);
-    fake.onInvoke("create_team", () => {
-      order.push("create");
-    });
-    fake.onInvoke("discover_project", () => {
-      order.push("reload");
-      return discovery();
-    });
-    const onClose = vi.fn(() => order.push("close"));
-    rendered = renderWithFakeTransport(
-      () => <NewTeamModal projectPath={projectPath} onClose={onClose} />,
-      fake,
-    );
+    for (const method of ["No repos", "Add Repo", "Enter"]) {
+      const fake = new FakeTransport();
+      const order: string[] = [];
+      setupTransport(fake);
+      fake.onInvoke("create_team", () => {
+        order.push("create");
+      });
+      fake.onInvoke("discover_project", () => {
+        order.push("reload");
+        return discovery();
+      });
+      const onClose = vi.fn(() => order.push("close"));
+      rendered = renderWithFakeTransport(
+        () => <NewTeamModal projectPath={projectPath} onClose={onClose} />,
+        fake,
+      );
 
-    await advanceToStepThree();
-    click(button("Create"));
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      await advanceToStepThree();
+      if (method !== "No repos") {
+        const repositoryInput = field('input[placeholder="https://github.com/org/repo.git"]');
+        input(repositoryInput, repoUrl);
+        expect(button("Create").disabled).toBe(true);
+        if (method === "Enter") {
+          repositoryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        } else {
+          click(button("Add Repo"));
+        }
+        expect(repositoryInput.value).toBe("");
+        expect(document.body.querySelectorAll(".wizard-repo-card")).toHaveLength(1);
+        expect(button("Create").disabled).toBe(false);
+      }
+      click(button("Create"));
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
 
-    expect(fake.callsFor("create_team")).toEqual([
-      {
-        cmd: "create_team",
-        args: {
-          projectPath,
-          name: "dev-team",
-          agents: ["_agent_dev-webpage-ui"],
-          coordinator: "_agent_dev-webpage-ui",
-          repos: [],
-          contextAlertPercentages: [],
+      expect(fake.callsFor("create_team")).toEqual([
+        {
+          cmd: "create_team",
+          args: {
+            projectPath,
+            name: "dev-team",
+            agents: ["_agent_dev-webpage-ui"],
+            coordinator: "_agent_dev-webpage-ui",
+            repos: method === "No repos" ? [] : [{ url: repoUrl, agents: ["_agent_dev-webpage-ui"] }],
+            contextAlertPercentages: [],
+          },
         },
-      },
-    ]);
-    expect(order).toEqual(["create", "reload", "close"]);
+      ]);
+      expect(order).toEqual(["create", "reload", "close"]);
+      rendered.cleanup();
+      rendered = null;
+      document.body.replaceChildren();
+      resetUiStoresForTests();
+    }
   });
 
   it.each([
@@ -197,41 +216,6 @@ describe("NewTeamModal context alerts", () => {
       added ? [{ url: repoUrl, agents: ["_agent_dev-webpage-ui"] }] : [],
     );
     expect(fake.callsFor("discover_project")).toHaveLength(1);
-  });
-
-  it.each(["Add Repo", "Enter"])("adds the pending repository with %s before creating in order", async (method) => {
-    const fake = new FakeTransport();
-    const order: string[] = [];
-    setupTransport(fake);
-    fake.onInvoke("create_team", () => { order.push("create"); });
-    fake.onInvoke("discover_project", () => {
-      order.push("reload");
-      return discovery();
-    });
-    const onClose = vi.fn(() => order.push("close"));
-    rendered = renderWithFakeTransport(
-      () => <NewTeamModal projectPath={projectPath} onClose={onClose} />,
-      fake,
-    );
-    await advanceToStepThree();
-    const repositoryInput = field('input[placeholder="https://github.com/org/repo.git"]');
-    input(repositoryInput, repoUrl);
-    expect(button("Create").disabled).toBe(true);
-    if (method === "Enter") {
-      repositoryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    } else {
-      click(button("Add Repo"));
-    }
-    expect(repositoryInput.value).toBe("");
-    expect(document.body.querySelectorAll(".wizard-repo-card")).toHaveLength(1);
-    expect(button("Create").disabled).toBe(false);
-    click(button("Create"));
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(fake.callsFor("create_team")).toHaveLength(1);
-    expect(fake.lastCall("create_team")?.args.repos).toEqual([
-      { url: repoUrl, agents: ["_agent_dev-webpage-ui"] },
-    ]);
-    expect(order).toEqual(["create", "reload", "close"]);
   });
 
   it("submits one, two, and three rows canonically without reordering visible drafts", async () => {
