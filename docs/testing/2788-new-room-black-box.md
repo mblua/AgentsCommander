@@ -1,4 +1,4 @@
-# #2788 ? New Room black-box testing
+# #2788 — New Room black-box testing
 
 Approved R1 procedure. Execute only after the official rebuild receipt and tester authorization. jsdom checks do not establish black-box PASS.
 
@@ -117,4 +117,3 @@ El informe debe separar resultado de los cinco casos, cobertura automatizada y g
 | Ventana estrecha | Captura de New Room en tamaño estrecho mediante relanzamiento de la GUI testeable con colocación ya autorizada y --window-width <ancho-estrecho-autorizado> --window-height <alto-autorizado>, sin --window-maximized; window-info acredita HWND/rect/DPI, screenshot acredita texto/controles sin recorte. No decidir dimensiones nuevas en esta revisión. Conservar/resetear solo estado testeable. | PENDIENTE hasta captura válida si tamaño/colocación están autorizados; de otro modo NOT-RUN y pedir autorización para esa geometría. No mover app del usuario ni elegir monitor nuevo. |
 
 Estas capturas complementarias no son un sexto caso funcional ni cambian los cinco casos; se reportan como gates visuales originales. Tamaño lógico/efectivo se registra con window-info y DPI, sin confundir ancho físico y lógico. Si la autorización vigente prohíbe variar geometría o tema, no hacerlo ni sustituirlo por una captura del tamaño/tema inicial. Decisiones nuevas pendientes que deben elevarse: interacción nativa/IME Windows; permiso de variar tema/geometría si no está ya concedido al tester. Esta revisión no las resuelve ni elimina sus gates. UI Clean/TASK.md y USER: sí quedan dentro de los cinco casos; errores, reintento, B1/B2 y contratos IPC siguen con sus checks automatizados originales.
-
