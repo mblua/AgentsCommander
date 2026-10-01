@@ -7221,6 +7221,7 @@ mod tests {
         let _guard = round_test_lock().await;
         for empty in [false, true] {
             let (h, repo) = i2768_harness();
+            h.sweeper.settings.write().await.ci_sweep_min_interval_secs = 10;
             let mut now = Instant::now();
             let mut wall = Local::now();
             i2768_list(&h, vec![]);
