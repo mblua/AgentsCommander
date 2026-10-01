@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel from "./ProjectPanel";
 import type {
   AcLoopSummary,
@@ -29,6 +29,9 @@ import { replicaVolatileStore } from "../stores/replica-volatile";
 import { sessionsStore } from "../stores/sessions";
 import { automationIdPart } from "./replica-repo-badges";
 
+import { executeAutomationRequest, resetAutomationBridgeForTests } from "../../shared/automation-bridge";
+import type { UiAutomationAction } from "../../shared/types";
+
 // #710: modal-open state used to live on the per-project <For> row. A background
 // discovery refresh replaces each project object reference, so SolidJS disposes
 // and re-creates the row — tearing down any modal whose open-flag lived there.
@@ -36,6 +39,30 @@ import { automationIdPart } from "./replica-repo-badges";
 // reloadProject (and, for the workgroup modal, that its live data re-resolves by
 // stable identity). They mirror the restart-prompt (#537) / edit-team (#669)
 // survival tests, the precedents for the same bug class.
+
+
+// Geometry enables bridge dispatch in jsdom; it does not establish Windows
+// visibility, hit-testing, native select behavior or IME coverage.
+async function automate(action: UiAutomationAction, selector: string, value?: string) {
+  expect(document.querySelectorAll('[data-ac-testid="' + selector + '"]')).toHaveLength(1);
+  const response = await executeAutomationRequest("main", {
+    requestId: action + selector, token: "test", window: "main", action, selector, value,
+    expiresAtUnixMs: Date.now() + 5000,
+  });
+  if (!response.ok) throw new Error(response.error + ": " + response.message);
+  return response.target;
+}
+function stubAutomationGeometry() {
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    return { x: 100, y: 50, left: 100, top: 50, right: 200, bottom: 70,
+      width: this.isConnected ? 100 : 0, height: this.isConnected ? 20 : 0, toJSON: () => ({}) } as DOMRect;
+  });
+  vi.spyOn(Element.prototype, "getClientRects").mockImplementation(function (this: Element) {
+    const list = (this.isConnected ? [this.getBoundingClientRect()] : []) as unknown as DOMRectList;
+    Object.defineProperty(list, "item", { value: (index: number) => list[index] ?? null });
+    return list;
+  });
+}
 
 const projectPath = "C:\\Project";
 const teamName = "dev-team";
@@ -284,6 +311,8 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
+    stubAutomationGeometry();
+    resetAutomationBridgeForTests();
     resetUiStoresForTests();
   });
 
@@ -294,6 +323,7 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     cleanupDom = null;
     resetUiStoresForTests();
     document.body.replaceChildren();
+    vi.restoreAllMocks();
   });
 
   it("keeps the New Workgroup modal + unsaved task title open across a refresh, and re-resolves its live teams", async () => {
@@ -304,9 +334,10 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     await projectStore.createAndLoad(projectPath);
     await waitFor(() => expect(rendered!.root.querySelector(".project-header")).toBeTruthy());
 
-    contextMenu(rendered.root.querySelector(".project-header")!);
-    await waitFor(() => expect(findButtonByText("New Room")).toBeTruthy());
-    click(findButtonByText("New Room"));
+    await automate("contextClick", `project.header.${automationIdPart(projectPath)}`);
+    const action = `project.action.newRoom.${automationIdPart(projectPath)}.projectMenu`;
+    await waitFor(() => expect(q(action)).toBeTruthy());
+    await automate("click", action);
 
     await waitFor(() => expect(newWorkgroupModalOpen()).toBe(true));
     const titleInput = workgroupTaskTitleInput();
@@ -347,6 +378,29 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     expect(select.value).toBe("");
     expect(create.disabled).toBe(true);
 
+  });
+
+  it("projects Clean and explicit task titles with distinct semantic states", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    fake.resolve("list_unresolved_loop_targets", []);
+    const result = discoveryResult();
+    const original = result.workgroups[0];
+    result.workgroups = [
+      { ...original, taskTitle: "Clean" },
+      { ...original, name: "room-2-dev-team", path: projectPath + "\\.ac\\room-2-dev-team", taskTitle: "USER: Fixture title", agents: [] },
+    ];
+    fake.resolve("discover_project", result);
+    rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    await projectStore.createAndLoad(projectPath);
+    for (const [name, text, state] of [[workgroupName, "Clean", "clean"], ["room-2-dev-team", "USER: Fixture title", "task"]]) {
+      const selector = `workgroup.taskTitle.${automationIdPart(projectPath)}.workgroups.${automationIdPart(name)}`;
+      await waitFor(() => expect(q(selector)).toBeTruthy());
+      const target = await automate("query", selector);
+      expect(target.text).toBe(text);
+      expect(target.role).toBe("text");
+      expect(target.state).toBe(state);
+    }
   });
 
   it("keeps the live-replica Coding Agent picker open across a refresh", async () => {

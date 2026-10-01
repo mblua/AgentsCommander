@@ -83,6 +83,26 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 |---|---|---|
 | Inspect the active screenshot-capture shortcut status | `[data-ac-testid="screenshot-hotkey-status"]` | `query` only; passive status with no semantic action |
 
+## New Room (#2788)
+
+P = automationIdPart(project.path), C = automationIdPart(rowContext), W = automationIdPart(workgroup.name). Resolve the live project header before using P. See [the isolated fixture and five cases](2788-new-room-black-box.md).
+
+| Behavior | Selector | Action |
+|---|---|---|
+| Open project menu | `project.header.<P>` | `contextClick` |
+| Open New Room from project menu | `project.action.newRoom.<P>.projectMenu` | `click` |
+| Detect dialog | `newRoom.modal` | `query` |
+| Filter teams | `newRoom.teamSearch` | `setValue`, `typeText` |
+| Inspect/select native team list | `newRoom.team` | `query`, `setValue` with exact team name |
+| Set optional task title | `newRoom.taskTitle` | `setValue` |
+| Read title help | `newRoom.taskTitle.hint` | `query` |
+| Read conditional empty status | `newRoom.team.empty` | `query` |
+| Inspect/create room | `newRoom.create` | `query`, `click` |
+| Cancel dialog | `newRoom.cancel` | `click` |
+| Read room title and Clean recognition | `workgroup.taskTitle.<P>.<C>.<W>` | `query` |
+
+Input metadata.detail identifies placeholders; screenshots establish visible text/layout. The select projects only visible team names, selected name and size in JSON metadata.detail, subject to the existing 120-character limit. Truncated projections are insufficient evidence. Native options have no targets. Title spans expose text and state clean/task. Native keyboard/IME behavior needs separate authorized Windows evidence; semantic setValue does not establish it.
+
 ## Known Gaps For Follow-Up
 
 | Surface | Missing action/selector family |
@@ -92,7 +112,7 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Context menus | Use `contextClick` on the owning row/header selector, then `query`/`click` the mounted action selector. Project Loops selectors include `project.loops.header.<projectId>`, `loop.row.<projectId>.<loopId>`, `loop.action.new.<projectId>`, `loop.action.runNow.<projectId>.<loopId>`, `loop.action.edit.<projectId>.<loopId>`, `loop.action.toggle.<projectId>.<loopId>`, and `loop.action.delete.<projectId>.<loopId>`. Loop delete uses an in-app confirmation with `loop.delete.confirm.<projectId>.<loopId>` and `loop.delete.cancel.<projectId>.<loopId>`. Disabled Loop rows use `data-ac-state="loop-disabled"` so their context menus remain actionable; reserve `data-ac-state="disabled"` for controls that automation should reject for non-query actions. |
 | Agent/open/new-agent modals | Dialog roots, list rows, template picker rows, form fields, launch actions |
 | New Team modal | Dialog root, wizard step markers, team name input, agent filter, agent checkboxes, orchestrator radio buttons, repo input, create/back/next buttons |
-| New Room modal | Dialog root, team select, task-title input, create/cancel buttons, creation progress/error state |
+| New Room modal | Creation progress/error state |
 | Target-window evidence | HWND-surface screenshot support; for non-reserved monitors, foreground/unobscured assertion before screen-rectangle capture |
 | Terminal internals | xterm buffer inspection is out of DOM-selector scope for #497 |
 | Drag/hold gestures | Future pointer actions for splitters and hold-to-record. `hover` shipped in #944 and deliberately dispatches no `pointermove` |

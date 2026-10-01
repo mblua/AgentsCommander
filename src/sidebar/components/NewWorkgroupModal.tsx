@@ -72,7 +72,7 @@ const NewWorkgroupModal: Component<{
 
   return (
     <div class="modal-overlay" onKeyDown={handleKeyDown}>
-      <div class="agent-modal">
+      <div class="agent-modal" data-ac-testid="newRoom.modal" data-ac-role="dialog">
         <div class="agent-modal-header">
           <span class="agent-modal-title">New Room</span>
         </div>
@@ -83,6 +83,8 @@ const NewWorkgroupModal: Component<{
             <input
               ref={searchInput}
               id="new-room-team-search"
+              data-ac-testid="newRoom.teamSearch"
+              data-ac-detail="Type to filter teams..."
               type="text"
               class="entity-input"
               placeholder="Type to filter teams..."
@@ -98,6 +100,8 @@ const NewWorkgroupModal: Component<{
             <select
               ref={teamSelect}
               id="new-room-team"
+              data-ac-testid="newRoom.team"
+              data-ac-detail={JSON.stringify({ options: filteredTeams().map(team => team.name), selected: selectedTeam(), size: 6 })}
               class="entity-select"
               size={6}
               on:keydown={(e) => {
@@ -124,7 +128,7 @@ const NewWorkgroupModal: Component<{
               </For>
             </select>
             <Show when={filteredTeams().length === 0}>
-              <div role="status">{props.teams.length === 0 ? "No teams available." : "No teams match your search."}</div>
+              <div role="status" data-ac-testid="newRoom.team.empty">{props.teams.length === 0 ? "No teams available." : "No teams match your search."}</div>
             </Show>
           </div>
 
@@ -136,8 +140,10 @@ const NewWorkgroupModal: Component<{
               value={taskTitle()}
               onInput={(e) => setTaskTitle(e.currentTarget.value)}
               placeholder="Task title (optional)"
+              data-ac-testid="newRoom.taskTitle"
+              data-ac-detail="Task title (optional)"
             />
-            <div class="entity-textarea-hint">Leave empty to start with Clean.</div>
+            <div class="entity-textarea-hint" data-ac-testid="newRoom.taskTitle.hint" data-ac-role="text">Leave empty to start with Clean.</div>
             <div class="entity-textarea-meta">
               <span id="task-keyhint" class="entity-textarea-hint">Enter to create</span>
             </div>
@@ -153,9 +159,10 @@ const NewWorkgroupModal: Component<{
         </div>
 
         <div class="new-agent-footer">
-          <button type="button" class="new-agent-cancel-btn" onClick={() => props.onClose()} disabled={creating()}>Cancel</button>
+          <button data-ac-testid="newRoom.cancel" type="button" class="new-agent-cancel-btn" onClick={() => props.onClose()} disabled={creating()}>Cancel</button>
           <button
             class="new-agent-create-btn"
+            data-ac-testid="newRoom.create"
             disabled={!canCreate() || creating()}
             onClick={handleCreate}
           >
