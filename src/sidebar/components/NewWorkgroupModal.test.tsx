@@ -96,10 +96,14 @@ afterEach(() => {
 });
 
 describe("New Room focused button Enter (#2809)", () => {
-  it.each(["", "Draft"])("Cancel Enter with title %j closes without creating", async (draft) => {
-    const { fake, onClose } = mount(["Alpha"]);
+  it.each([
+    { names: ["Alpha"], draft: "", createEnabled: true },
+    { names: ["Alpha"], draft: "Draft", createEnabled: true },
+    { names: ["Alpha", "Beta"], draft: "", createEnabled: false },
+  ])("Cancel Enter with $names and title '$draft' closes without creating", async ({ names, draft, createEnabled }) => {
+    const { fake, onClose } = mount(names);
     input(title(), draft);
-    expect(create().disabled).toBe(false);
+    expect(create().disabled).toBe(!createEnabled);
     const cancel = document.querySelector<HTMLButtonElement>('[data-ac-testid="newRoom.cancel"]')!;
     cancel.focus();
     expect(document.activeElement).toBe(cancel);
@@ -126,22 +130,6 @@ describe("New Room focused button Enter (#2809)", () => {
       expect(fake.callsFor("create_workgroup")).toHaveLength(1);
       expect(onClose).toHaveBeenCalledTimes(1);
     });
-  });
-
-  it("Cancel Enter without a selected team closes without creating", async () => {
-    const { fake, onClose } = mount();
-    expect(create().disabled).toBe(true);
-    const cancel = document.querySelector<HTMLButtonElement>('[data-ac-testid="newRoom.cancel"]')!;
-    cancel.focus();
-    expect(document.activeElement).toBe(cancel);
-    expect(key(cancel, "Enter").defaultPrevented).toBe(false);
-    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
-    await Promise.resolve();
-    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
-    // Model the native keyboard click that jsdom does not synthesize.
-    click(cancel);
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
   });
 
   it("disabled Cancel stays inert during pending creation", async () => {
