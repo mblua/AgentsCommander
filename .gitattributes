@@ -9,3 +9,4 @@ src-tauri/module-arcs.txt text eol=lf
 src-tauri/.rust-cycles-baseline.json text eol=lf
 docs/integrations/rtk/claude/hooks/*.js text eol=lf
 docs/releases/** text eol=lf
+src-tauri/src/config/root_agent_defaults/rtk-install-windows/SKILL.md -text
