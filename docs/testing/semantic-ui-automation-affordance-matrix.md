@@ -83,6 +83,38 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 |---|---|---|
 | Inspect the active screenshot-capture shortcut status | `[data-ac-testid="screenshot-hotkey-status"]` | `query` only; passive status with no semantic action |
 
+## New Room (#2788)
+
+P = automationIdPart(project.path), C = automationIdPart(rowContext), W = automationIdPart(workgroup.name). Confirm P with a direct query of the unique project.header.<P>. See [the isolated R2 fixture, five cases and separate gates](2788-new-room-black-box.md).
+
+Approved source: option A in .ac/project-shared/i2788-visual-comparison/prototype-approved-option-B.html, SHA-256 fe72515f6145e6632d48fb05c5fbf2a9e01458b6b69d34e164740519477f2da5. User decision “D1-b y D2-b”: prototype-d1-d2-v1.html in the same directory, SHA-256 92708798c12d4527b2ed74cb7179260547f908859550bd9c37be89bae2056af9. D1-b keeps visible English confirmation “Selected team: <team>” / “No team selected.” D2-b preconfirms a sole team, suppresses opening only around synchronous initial mount focus, and first normal Enter creates once with taskTitle:"". Later focus, arrows, editing and Escape follow A; refresh never autoselects.
+
+| Behavior | Selector | Action |
+|---|---|---|
+| Inspect/open project menu | `project.header.<P>` | `query`, `contextClick` |
+| Open New Room from project menu | `project.action.newRoom.<P>.projectMenu` | `click` |
+| Detect dialog | `newRoom.modal` | `query` |
+| Inspect/filter combobox | `newRoom.teamSearch` | `query`, `click`, `setValue`, `typeText`, `key` (ArrowDown) |
+| Inspect results/active index | `newRoom.team.list` | `query` when open |
+| Inspect/confirm filtered row | `newRoom.team.option.<index>` | `query`, `click`; no `setValue` |
+| Read visible confirmation | `newRoom.team.confirmed` | `query` |
+| Set optional task title | `newRoom.taskTitle` | `setValue`, `query` |
+| Read title help | `newRoom.taskTitle.hint` | `query` |
+| Read conditional empty status | `newRoom.team.empty` | `query` |
+| Inspect/create room | `newRoom.create` | `query`, `click` |
+| Cancel dialog | `newRoom.cancel` | `click`, `query` |
+| Read room title/Clean recognition | `workgroup.taskTitle.<P>.<C>.<W>` | `query` |
+
+The native select and newRoom.team target are removed. Combobox role is combobox, detail “Search teams...”, state confirmed/unconfirmed, expanded from aria-expanded. Input set filters and invalidates confirmation even with the exact name; it never confirms. Without foreground Chromium may not dispatch focus: record input query and foreground/HWND before ui-key ArrowDown, then query expanded:true/list/options and active:0. This path does not establish focus-abre. Fixture remains three teams/five cases; sole-team mount/first Enter is a separate automated D2-b check, native Windows NOT-RUN.
+
+List role listbox, detail JSON {options:[filtered names in order],active:index}. Row role option plus data-ac-role=text, detail/text exact name, state active/inactive, aria-selected for active row, not confirmation. Indices change: query list/row immediately before click. Confirmation data-ac-role=text, state confirmed/unconfirmed, detail JSON {selected:name}; identity/JSON format do not change by language.
+
+Closed list/rows remain mounted under hidden: target_hidden expected. Empty results: {options:[],active:-1}, no rows (option.0 missing_selector expected), status “No teams match your search.” / “No teams available.” Closed modal: missing_selector. Inputs expose placeholder detail, not values. Title help is “Leave empty to start with Clean.” Title spans expose text/state clean/task.
+
+Keep sanitization/120-character limit; parse complete fixture JSON, truncation means insufficient evidence. No bridge expansion or paths/agents/commands/tokens/task drafts projected. Query establishes snapshots/boxes, not hit-testing. Successful row click proves bridge dispatch/hit-test for that row, not OS mouse behavior; dispatched mousedown/focus/key/composition jsdom tests establish handlers, not Windows Tab/IME/WebView.
+
+Separate R2 gates: new official binary receipt; five TASK cases (Clean 50/50 bytes, explicit 37 and UI state); deterministic D2-b; focus before ArrowDown; native Windows keyboard/mouse/Tab/IME NOT-RUN until authorized; new light/dark open/closed screenshots/bounds at normal/minimum geometry; isolation, unique receipts, manifest/cleanup. Normal placement x450/y250/1401x902; minimum 1200x900 physical at DPR1.5 requests 800 logical width, actual viewport may be 786. Record measured identity/DPR/viewport, no smaller geometry or OS fallback. Cropped captures cannot prove absent pixels/full comparison. Five PASS do not waive gates or inherit B acceptance.
+
 ## Known Gaps For Follow-Up
 
 | Surface | Missing action/selector family |
@@ -92,7 +124,7 @@ This matrix seeds issue #497 acceptance coverage. It tracks user-visible screen/
 | Context menus | Use `contextClick` on the owning row/header selector, then `query`/`click` the mounted action selector. Project Loops selectors include `project.loops.header.<projectId>`, `loop.row.<projectId>.<loopId>`, `loop.action.new.<projectId>`, `loop.action.runNow.<projectId>.<loopId>`, `loop.action.edit.<projectId>.<loopId>`, `loop.action.toggle.<projectId>.<loopId>`, and `loop.action.delete.<projectId>.<loopId>`. Loop delete uses an in-app confirmation with `loop.delete.confirm.<projectId>.<loopId>` and `loop.delete.cancel.<projectId>.<loopId>`. Disabled Loop rows use `data-ac-state="loop-disabled"` so their context menus remain actionable; reserve `data-ac-state="disabled"` for controls that automation should reject for non-query actions. |
 | Agent/open/new-agent modals | Dialog roots, list rows, template picker rows, form fields, launch actions |
 | New Team modal | Dialog root, wizard step markers, team name input, agent filter, agent checkboxes, orchestrator radio buttons, repo input, create/back/next buttons |
-| New Room modal | Dialog root, team select, task-title input, create/cancel buttons, creation progress/error state |
+| New Room modal | Creation progress/error state |
 | Target-window evidence | HWND-surface screenshot support; for non-reserved monitors, foreground/unobscured assertion before screen-rectangle capture |
 | Terminal internals | xterm buffer inspection is out of DOM-selector scope for #497 |
 | Drag/hold gestures | Future pointer actions for splitters and hold-to-record. `hover` shipped in #944 and deliberately dispatches no `pointermove` |

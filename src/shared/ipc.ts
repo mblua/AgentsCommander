@@ -1400,7 +1400,7 @@ export const EntityAPI = {
     transport.invoke<void>("create_workgroup", {
       projectPath,
       teamName,
-      taskTitle: taskTitle ?? null,
+      taskTitle: taskTitle ?? "",
     }),
 
   deleteWorkgroup: (projectPath: string, workgroupName: string, force?: boolean) =>
