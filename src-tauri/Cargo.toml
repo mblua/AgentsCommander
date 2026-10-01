@@ -6,7 +6,7 @@ authors = ["AgentsCommander Contributors"]
 description = "AgentsCommander: Run multiple teams of AI coding agents"
 
 [dependencies]
-tauri = { version = "2", features = ["image-png"] }
+tauri = { version = "2.12.1", features = ["image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -90,10 +90,18 @@ tauri-plugin-clipboard-manager = "2.3.2"
 xcap = "0.9.6"
 image = "0.25.10"
 
+# #2817 The reentrancy harness needs a real tao window on its own HWND. The
+# default-features and the feature set are the same as what
+# tauri-runtime-wry 2.12.1 requests (its Cargo.toml:78-81, which pins
+# "0.37.0"), so Cargo unifies on one tao and this dev-dependency adds no
+# feature to the normal build.
+[target.'cfg(windows)'.dev-dependencies]
+tao = { version = "0.37.1", default-features = false, features = ["rwh_06"] }
+
 [dev-dependencies]
 syn = { version = "=2.0.117", features = ["full", "visit"] }
 tempfile = "3"
-tauri = { version = "2", features = ["image-png", "test"] }
+tauri = { version = "2.12.1", features = ["image-png", "test"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
