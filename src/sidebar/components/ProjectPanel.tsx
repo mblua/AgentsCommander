@@ -3134,7 +3134,10 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <span class="ac-wg-name">{wg.name}</span>
                   <Show when={wg.taskTitle?.trim() || stripFrontmatter(wg.taskTitle ?? "").trim()}>
-                    {(text) => <span class="ac-wg-task">{text()}</span>}
+                    {(text) => <span class="ac-wg-task"
+                      data-ac-testid={`workgroup.taskTitle.${projectAutomationId()}.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}`}
+                      data-ac-role="text"
+                      data-ac-state={isTaskClean(wg.taskTitle) ? "clean" : "task"}>{text()}</span>}
                   </Show>
                 </div>
               </div>
@@ -3151,6 +3154,7 @@ const ProjectPanel: Component = () => {
           <div class="project-panel">
             <div
               class="project-header"
+              data-ac-testid={`project.header.${projectAutomationId()}`}
               classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
               title={proj.path}
               onContextMenu={handleProjectContextMenu}
@@ -3260,6 +3264,7 @@ const ProjectPanel: Component = () => {
                   </button>
                   <button
                     class="session-context-option"
+                    data-ac-testid={`project.action.newRoom.${projectAutomationId()}.projectMenu`}
                     classList={{ "context-option-disabled": !hasTeams() }}
                     disabled={!hasTeams()}
                     onClick={() => {
