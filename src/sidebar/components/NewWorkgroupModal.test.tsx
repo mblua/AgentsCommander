@@ -95,6 +95,72 @@ afterEach(() => {
   else delete (Element.prototype as Partial<Element>).scrollIntoView;
 });
 
+describe("New Room focused button Enter (#2809)", () => {
+  it.each(["", "Draft"])("Cancel Enter with title %j closes without creating", async (draft) => {
+    const { fake, onClose } = mount(["Alpha"]);
+    input(title(), draft);
+    expect(create().disabled).toBe(false);
+    const cancel = document.querySelector<HTMLButtonElement>('[data-ac-testid="newRoom.cancel"]')!;
+    cancel.focus();
+    expect(document.activeElement).toBe(cancel);
+    expect(key(cancel, "Enter").defaultPrevented).toBe(false);
+    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
+    await Promise.resolve();
+    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
+    // jsdom does not synthesize native keyboard clicks; model the default action explicitly.
+    click(cancel);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
+  });
+
+  it("Create Enter leaves native activation to create exactly once", async () => {
+    const { fake, onClose } = mount(["Alpha"]);
+    expect(create().disabled).toBe(false);
+    create().focus();
+    expect(document.activeElement).toBe(create());
+    expect(key(create(), "Enter").defaultPrevented).toBe(false);
+    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
+    // Model the native keyboard click that jsdom does not synthesize.
+    click(create());
+    await waitFor(() => {
+      expect(fake.callsFor("create_workgroup")).toHaveLength(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("Cancel Enter without a selected team closes without creating", async () => {
+    const { fake, onClose } = mount();
+    expect(create().disabled).toBe(true);
+    const cancel = document.querySelector<HTMLButtonElement>('[data-ac-testid="newRoom.cancel"]')!;
+    cancel.focus();
+    expect(document.activeElement).toBe(cancel);
+    expect(key(cancel, "Enter").defaultPrevented).toBe(false);
+    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
+    await Promise.resolve();
+    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
+    // Model the native keyboard click that jsdom does not synthesize.
+    click(cancel);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(fake.callsFor("create_workgroup")).toHaveLength(0);
+  });
+
+  it("disabled Cancel stays inert during pending creation", async () => {
+    const { fake, onClose } = mount(["Alpha"]);
+    let resolve!: () => void;
+    fake.onInvoke("create_workgroup", () => new Promise<void>((done) => { resolve = done; }));
+    click(create());
+    const cancel = document.querySelector<HTMLButtonElement>('[data-ac-testid="newRoom.cancel"]')!;
+    expect(cancel.disabled).toBe(true);
+    key(cancel, "Enter");
+    cancel.click();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(fake.callsFor("create_workgroup")).toHaveLength(1);
+    resolve();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(fake.callsFor("create_workgroup")).toHaveLength(1);
+  });
+});
+
 describe("New Room team search and optional title (#2788)", () => {
   it("multiple teams mount focused/open without active option; Enter consumes without creating", () => {
     const { fake, onClose } = mount();
