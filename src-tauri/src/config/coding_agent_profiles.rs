@@ -2823,8 +2823,10 @@ mod tests {
         let fixture = selection_fixture();
         write_config(&fixture.matrix, "{}");
 
-        set_replica_profile_content_hash(&fixture.matrix, "cafef00d").unwrap();
+        // The decision first: a later decision write would migrate a misplaced
+        // hash and hide it.
         set_agent_default_profile(&fixture.settings, &fixture.matrix, "b").unwrap();
+        set_replica_profile_content_hash(&fixture.matrix, "cafef00d").unwrap();
 
         let state = state_value(&fixture.matrix);
         let tracked = config_value(&fixture.matrix);
