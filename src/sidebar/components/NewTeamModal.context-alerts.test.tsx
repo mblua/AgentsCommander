@@ -140,6 +140,100 @@ describe("NewTeamModal context alerts", () => {
     expect(order).toEqual(["create", "reload", "close"]);
   });
 
+  it.each([
+    { pending: "https://github.com/acme/pending.git", added: false },
+    { pending: "   ", added: false },
+    { pending: "https://github.com/acme/pending.git", added: true },
+    { pending: "   ", added: true },
+  ])("blocks raw pending repository $pending with added=$added even when the control is bypassed", async ({ pending, added }) => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    const onClose = vi.fn();
+    rendered = renderWithFakeTransport(
+      () => <NewTeamModal projectPath={projectPath} onClose={onClose} />,
+      fake,
+    );
+    await advanceToStepThree();
+    const repositoryInput = field('input[placeholder="https://github.com/org/repo.git"]');
+    if (added) {
+      input(repositoryInput, repoUrl);
+      click(button("Add Repo"));
+    }
+    input(repositoryInput, pending);
+    const createButton = button("Create");
+    expect(createButton.disabled).toBe(true);
+    click(createButton);
+    createButton.disabled = false;
+    click(createButton);
+    createButton.disabled = true;
+    expect(createButton.disabled).toBe(true);
+    expect(repositoryInput.value).toBe(pending);
+    expect(document.body.querySelectorAll(".wizard-repo-card")).toHaveLength(added ? 1 : 0);
+    expect(document.body.querySelector('[role="alert"]')).toBeNull();
+    expect(document.body.querySelector(".entity-wizard-modal")?.getAttribute("aria-busy"))
+      .toBe("false");
+    expect(fake.callsFor("create_team")).toHaveLength(0);
+    expect(fake.callsFor("discover_project")).toHaveLength(0);
+    expect(onClose).not.toHaveBeenCalled();
+
+    if (pending === "   ") {
+      click(button("Add Repo"));
+      repositoryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      expect(repositoryInput.value).toBe(pending);
+      expect(document.body.querySelectorAll(".wizard-repo-card")).toHaveLength(added ? 1 : 0);
+      expect(createButton.disabled).toBe(true);
+    }
+    click(button("Back"));
+    click(button("Next"));
+    expect(field('input[placeholder="https://github.com/org/repo.git"]').value).toBe(pending);
+    expect(document.body.querySelectorAll(".wizard-repo-card")).toHaveLength(added ? 1 : 0);
+    expect(button("Create").disabled).toBe(true);
+    input(field('input[placeholder="https://github.com/org/repo.git"]'), "");
+    expect(button("Create").disabled).toBe(false);
+    click(button("Create"));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(fake.callsFor("create_team")).toHaveLength(1);
+    expect(fake.lastCall("create_team")?.args.repos).toEqual(
+      added ? [{ url: repoUrl, agents: ["_agent_dev-webpage-ui"] }] : [],
+    );
+    expect(fake.callsFor("discover_project")).toHaveLength(1);
+  });
+
+  it.each(["Add Repo", "Enter"])("adds the pending repository with %s before creating in order", async (method) => {
+    const fake = new FakeTransport();
+    const order: string[] = [];
+    setupTransport(fake);
+    fake.onInvoke("create_team", () => { order.push("create"); });
+    fake.onInvoke("discover_project", () => {
+      order.push("reload");
+      return discovery();
+    });
+    const onClose = vi.fn(() => order.push("close"));
+    rendered = renderWithFakeTransport(
+      () => <NewTeamModal projectPath={projectPath} onClose={onClose} />,
+      fake,
+    );
+    await advanceToStepThree();
+    const repositoryInput = field('input[placeholder="https://github.com/org/repo.git"]');
+    input(repositoryInput, repoUrl);
+    expect(button("Create").disabled).toBe(true);
+    if (method === "Enter") {
+      repositoryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    } else {
+      click(button("Add Repo"));
+    }
+    expect(repositoryInput.value).toBe("");
+    expect(document.body.querySelectorAll(".wizard-repo-card")).toHaveLength(1);
+    expect(button("Create").disabled).toBe(false);
+    click(button("Create"));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(fake.callsFor("create_team")).toHaveLength(1);
+    expect(fake.lastCall("create_team")?.args.repos).toEqual([
+      { url: repoUrl, agents: ["_agent_dev-webpage-ui"] },
+    ]);
+    expect(order).toEqual(["create", "reload", "close"]);
+  });
+
   it("submits one, two, and three rows canonically without reordering visible drafts", async () => {
     const thresholdCases = [
       { raw: ["50"], expected: [50] },
@@ -238,6 +332,12 @@ describe("NewTeamModal context alerts", () => {
     expect(document.body.querySelector('[role="alert"][aria-label="Repository error"]'))
       .toBeTruthy();
 
+    expect(repositoryInput.value).toBe(repoUrl);
+    expect(document.body.querySelectorAll(".wizard-repo-card")).toHaveLength(1);
+    expect(button("Create").disabled).toBe(true);
+    input(repositoryInput, "");
+    expect(document.body.querySelector('[role="alert"][aria-label="Repository error"]')).toBeNull();
+    expect(button("Create").disabled).toBe(false);
     click(button("Create"));
     await waitFor(() => expect(
       document.body.querySelector('[role="alert"][aria-label="Team creation error"]')?.textContent,
@@ -248,6 +348,16 @@ describe("NewTeamModal context alerts", () => {
     expect(fake.callsFor("discover_project")).toHaveLength(0);
     expect(onClose).not.toHaveBeenCalled();
 
+    expect(repositoryInput.value).toBe("");
+    expect(button("Create").disabled).toBe(false);
+    expect(fake.callsFor("create_team")).toHaveLength(1);
+    expect(fake.lastCall("create_team")?.args.repos).toEqual([
+      { url: repoUrl, agents: ["_agent_dev-webpage-ui"] },
+    ]);
+    input(repositoryInput, repoUrl);
+    click(button("Add Repo"));
+    expect(document.body.querySelectorAll(".wizard-repo-card")).toHaveLength(1);
+    expect(button("Create").disabled).toBe(true);
     input(thresholdInput, "81");
     expect(document.body.querySelector('[role="alert"][aria-label="Team creation error"]')?.textContent)
       .toContain("create rejected");

@@ -95,7 +95,7 @@ const NewTeamModal: Component<{
   const canNext2 = createMemo(() => selectedAgents().size > 0 && coordinator() !== "");
 
   const canCreate = createMemo(() =>
-    !creating() && canNext1() && canNext2() && contextAlertValidation().valid,
+    !creating() && canNext1() && canNext2() && contextAlertValidation().valid && repoInput() === "",
   );
 
   onMount(async () => {
@@ -190,6 +190,7 @@ const NewTeamModal: Component<{
       || !canNext1()
       || !canNext2()
       || !validation.valid
+      || repoInput() !== ""
     ) {
       return;
     }
