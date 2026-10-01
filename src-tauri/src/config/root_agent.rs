@@ -77,6 +77,13 @@ const DEFAULT_ROOT_SKILLS: &[DefaultRootSkill] = &[
             AGENCY_AGENTS_ROLES_BEFORE_TOKEN_MINIMIZATION,
         ],
     },
+    #[cfg(windows)]
+    DefaultRootSkill {
+        dir_name: "rtk-install-windows",
+        file_name: SKILL_MD_FILENAME,
+        content: include_str!("root_agent_defaults/rtk-install-windows/SKILL.md"),
+        legacy_snapshots: &[],
+    },
 ];
 
 /// #1005 S5: `role-skill-boundary-audit/SKILL.md` exactly as it shipped from
@@ -2829,6 +2836,86 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join("Role.md")).expect("read role"),
             "custom role"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rtk_install_windows_fresh_provisioning_is_byte_exact_and_idempotent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill = root.join("skills/rtk-install-windows/SKILL.md");
+        let expected = default_root_skill("rtk-install-windows").content.as_bytes();
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+        assert_eq!(std::fs::read(&skill).expect("read skill"), expected);
+        assert!(root
+            .join("skills/role-skill-boundary-audit/SKILL.md")
+            .is_file());
+        assert!(root.join("skills/agency-agents-roles/SKILL.md").is_file());
+        ensure_root_agent_dir_at(&root).expect("ensure root again");
+        assert_eq!(std::fs::read(&skill).expect("read skill again"), expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rtk_install_windows_direct_seeder_recreates_missing_entrypoint() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+        let skill = root.join("skills/rtk-install-windows/SKILL.md");
+        std::fs::remove_file(&skill).expect("remove skill");
+
+        ensure_default_root_agent_skills_at(&root).expect("seed missing skill");
+        assert_eq!(
+            std::fs::read(&skill).expect("read recreated skill"),
+            default_root_skill("rtk-install-windows").content.as_bytes()
+        );
+    }
+
+    #[test]
+    fn rtk_install_windows_preserves_custom_copied_profile_bytes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        let skill = root.join("skills/rtk-install-windows/SKILL.md");
+        let custom = b"custom RTK skill\r\nkeep these bytes\r\n";
+        std::fs::create_dir_all(skill.parent().expect("skill parent")).expect("create skill dir");
+        std::fs::write(&skill, custom).expect("write custom skill");
+
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+        assert_eq!(std::fs::read(&skill).expect("read custom skill"), custom);
+        ensure_default_root_agent_skills_at(&root).expect("seed skills");
+        assert_eq!(
+            std::fs::read(&skill).expect("read custom skill again"),
+            custom
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rtk_install_windows_is_not_seeded_on_non_windows() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        ensure_root_agent_dir_at(&root).expect("ensure root");
+        assert!(!root.join("skills/rtk-install-windows").exists());
+        ensure_default_root_agent_skills_at(&root).expect("seed skills");
+        assert!(!root.join("skills/rtk-install-windows").exists());
+        assert!(root
+            .join("skills/role-skill-boundary-audit/SKILL.md")
+            .is_file());
+        assert!(root.join("skills/agency-agents-roles/SKILL.md").is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rtk_install_windows_embedded_bytes_match_supplied_sha256() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(default_root_skill("rtk-install-windows").content.as_bytes())
+            ),
+            "1f52562c2f8741ef02f7a7968b68d7675846439f2b5e84b174fa4d7b7c3e9927"
         );
     }
 
