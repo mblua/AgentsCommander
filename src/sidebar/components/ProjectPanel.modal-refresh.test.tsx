@@ -42,7 +42,7 @@ import type { UiAutomationAction } from "../../shared/types";
 
 
 // Geometry enables bridge dispatch in jsdom; it does not establish Windows
-// visibility, hit-testing, native select behavior or IME coverage.
+// visibility, hit-testing, physical keyboard/focus behavior or real IME coverage.
 async function automate(action: UiAutomationAction, selector: string, value?: string) {
   expect(document.querySelectorAll('[data-ac-testid="' + selector + '"]')).toHaveLength(1);
   const response = await executeAutomationRequest("main", {
@@ -294,8 +294,8 @@ function workgroupTaskTitleInput(): HTMLInputElement | null {
 }
 
 function teamOptionValues(): string[] {
-  return Array.from(document.body.querySelectorAll<HTMLOptionElement>(".entity-select option")).map(
-    (o) => o.value,
+  return Array.from(document.body.querySelectorAll<HTMLElement>(".new-room-team-option")).map(
+    (row) => row.textContent ?? "",
   );
 }
 
@@ -308,12 +308,14 @@ async function expectSecondDiscover(fake: FakeTransport): Promise<void> {
 describe("ProjectPanel modal survival across project refresh (#710)", () => {
   let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
+  const originalScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     stubAutomationGeometry();
     resetAutomationBridgeForTests();
     resetUiStoresForTests();
+    Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, writable: true, value: vi.fn() });
   });
 
   afterEach(() => {
@@ -324,6 +326,8 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     resetUiStoresForTests();
     document.body.replaceChildren();
     vi.restoreAllMocks();
+    if (originalScrollIntoView) Object.defineProperty(Element.prototype, "scrollIntoView", originalScrollIntoView);
+    else delete (Element.prototype as Partial<Element>).scrollIntoView;
   });
 
   it("keeps the New Workgroup modal + unsaved task title open across a refresh, and re-resolves its live teams", async () => {
@@ -343,6 +347,10 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     const titleInput = workgroupTaskTitleInput();
     expect(titleInput).toBeTruthy();
     input(titleInput!, "Unsaved WG title");
+    const search = document.querySelector<HTMLInputElement>("#new-room-team-search")!;
+    // The initial unique team is confirmed and the input shows its exact name.
+    expect(search.value).toBe(teamName);
+    input(search, "");
     expect(teamOptionValues()).not.toContain("ops-team");
 
     // The next discovery reload returns an extra team — the modal must both
@@ -355,27 +363,27 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     expect(newWorkgroupModalOpen()).toBe(true);
     expect(workgroupTaskTitleInput()?.value).toBe("Unsaved WG title");
     expect(teamOptionValues()).toContain("ops-team");
-    const search = document.querySelector<HTMLInputElement>("#new-room-team-search")!;
-    const select = document.querySelector<HTMLSelectElement>("#new-room-team")!;
     input(search, "  DEV ");
-    select.value = teamName;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    expect((await automate("query", "newRoom.team.option.0")).text).toBe(teamName);
+    await automate("click", "newRoom.team.option.0");
+    expect(search.value).toBe(teamName);
     const create = document.querySelector<HTMLButtonElement>(".new-agent-create-btn")!;
     expect(create.disabled).toBe(false);
     fake.resolve("discover_project", discoveryResult(["dev-extra", "ops-other"]));
     await projectStore.reloadProject(projectPath);
-    expect(search.value).toBe("  DEV ");
+    expect(search.value).toBe(teamName);
     expect(workgroupTaskTitleInput()?.value).toBe("Unsaved WG title");
-    expect(teamOptionValues()).toEqual(["", teamName, "dev-extra"]);
-    expect(select.value).toBe(teamName);
+    expect(teamOptionValues()).toEqual([teamName]);
+    expect((await automate("query", "newRoom.team.confirmed")).text).toBe(`Selected team: ${teamName}`);
     const removed = discoveryResult(["dev-extra", "ops-other"]);
     removed.teams = removed.teams.filter(team => team.name !== teamName);
     fake.resolve("discover_project", removed);
     await projectStore.reloadProject(projectPath);
     expect(newWorkgroupModalOpen()).toBe(true);
-    expect(search.value).toBe("  DEV ");
+    expect(search.value).toBe("");
     expect(workgroupTaskTitleInput()?.value).toBe("Unsaved WG title");
-    expect(select.value).toBe("");
+    expect(teamOptionValues()).toEqual(["dev-extra", "ops-other"]);
+    expect((await automate("query", "newRoom.team.confirmed")).text).toBe("No team selected.");
     expect(create.disabled).toBe(true);
 
   });
@@ -401,6 +409,39 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
       expect(target.role).toBe("text");
       expect(target.state).toBe(state);
     }
+  });
+
+  it("keeps an unconfirmed team query, open list and title draft across a discovery refresh", async () => {
+    const fake = new FakeTransport();
+    setupTransport(fake);
+    fake.resolve("list_unresolved_loop_targets", []);
+    fake.resolve("discover_project", discoveryResult(["ops-team"]));
+    rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+    await projectStore.createAndLoad(projectPath);
+    await waitFor(() => expect(rendered!.root.querySelector(".project-header")).toBeTruthy());
+    await automate("contextClick", `project.header.${automationIdPart(projectPath)}`);
+    const action = `project.action.newRoom.${automationIdPart(projectPath)}.projectMenu`;
+    await waitFor(() => expect(q(action)).toBeTruthy());
+    await automate("click", action);
+    await waitFor(() => expect(newWorkgroupModalOpen()).toBe(true));
+    const search = document.querySelector<HTMLInputElement>("#new-room-team-search")!;
+    input(workgroupTaskTitleInput()!, "Free-query draft");
+    input(search, "  DEV ");
+    await automate("key", "newRoom.teamSearch", "ArrowDown");
+    fake.resolve("discover_project", discoveryResult(["dev-extra", "ops-other"]));
+    await projectStore.reloadProject(projectPath);
+    await expectSecondDiscover(fake);
+    expect(newWorkgroupModalOpen()).toBe(true);
+    expect(document.querySelector("#new-room-team-search")).toBe(search);
+    expect(search.value).toBe("  DEV ");
+    expect(search.getAttribute("aria-expanded")).toBe("true");
+    expect(search.hasAttribute("aria-activedescendant")).toBe(false);
+    expect(workgroupTaskTitleInput()?.value).toBe("Free-query draft");
+    expect(teamOptionValues()).toEqual([teamName, "dev-extra"]);
+    const projection = await automate("query", "newRoom.team.list");
+    expect(JSON.parse(projection.metadata.detail)).toEqual({ options: [teamName, "dev-extra"], active: -1 });
+    expect((await automate("query", "newRoom.team.confirmed")).state).toBe("unconfirmed");
+    expect((await automate("query", "newRoom.create")).disabled).toBe(true);
   });
 
   it("keeps the live-replica Coding Agent picker open across a refresh", async () => {
