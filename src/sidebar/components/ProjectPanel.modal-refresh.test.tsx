@@ -31,6 +31,7 @@ import { automationIdPart } from "./replica-repo-badges";
 
 import { executeAutomationRequest, resetAutomationBridgeForTests } from "../../shared/automation-bridge";
 import type { UiAutomationAction } from "../../shared/types";
+import { stubAutomationGeometry } from "../../shared/testing/automation-geometry";
 
 // #710: modal-open state used to live on the per-project <For> row. A background
 // discovery refresh replaces each project object reference, so SolidJS disposes
@@ -51,17 +52,6 @@ async function automate(action: UiAutomationAction, selector: string, value?: st
   });
   if (!response.ok) throw new Error(response.error + ": " + response.message);
   return response.target;
-}
-function stubAutomationGeometry() {
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-    return { x: 100, y: 50, left: 100, top: 50, right: 200, bottom: 70,
-      width: this.isConnected ? 100 : 0, height: this.isConnected ? 20 : 0, toJSON: () => ({}) } as DOMRect;
-  });
-  vi.spyOn(Element.prototype, "getClientRects").mockImplementation(function (this: Element) {
-    const list = (this.isConnected ? [this.getBoundingClientRect()] : []) as unknown as DOMRectList;
-    Object.defineProperty(list, "item", { value: (index: number) => list[index] ?? null });
-    return list;
-  });
 }
 
 const projectPath = "C:\\Project";
@@ -310,6 +300,18 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
   const originalScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
+  async function openNewRoom() {
+    await projectStore.createAndLoad(projectPath);
+    await waitFor(() => expect(rendered!.root.querySelector(".project-header")).toBeTruthy());
+
+    await automate("contextClick", `project.header.${automationIdPart(projectPath)}`);
+    const action = `project.action.newRoom.${automationIdPart(projectPath)}.projectMenu`;
+    await waitFor(() => expect(q(action)).toBeTruthy());
+    await automate("click", action);
+
+    await waitFor(() => expect(newWorkgroupModalOpen()).toBe(true));
+  }
+
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     stubAutomationGeometry();
@@ -335,15 +337,7 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     setupTransport(fake);
     rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
 
-    await projectStore.createAndLoad(projectPath);
-    await waitFor(() => expect(rendered!.root.querySelector(".project-header")).toBeTruthy());
-
-    await automate("contextClick", `project.header.${automationIdPart(projectPath)}`);
-    const action = `project.action.newRoom.${automationIdPart(projectPath)}.projectMenu`;
-    await waitFor(() => expect(q(action)).toBeTruthy());
-    await automate("click", action);
-
-    await waitFor(() => expect(newWorkgroupModalOpen()).toBe(true));
+    await openNewRoom();
     const titleInput = workgroupTaskTitleInput();
     expect(titleInput).toBeTruthy();
     input(titleInput!, "Unsaved WG title");
@@ -417,13 +411,7 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     fake.resolve("list_unresolved_loop_targets", []);
     fake.resolve("discover_project", discoveryResult(["ops-team"]));
     rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
-    await projectStore.createAndLoad(projectPath);
-    await waitFor(() => expect(rendered!.root.querySelector(".project-header")).toBeTruthy());
-    await automate("contextClick", `project.header.${automationIdPart(projectPath)}`);
-    const action = `project.action.newRoom.${automationIdPart(projectPath)}.projectMenu`;
-    await waitFor(() => expect(q(action)).toBeTruthy());
-    await automate("click", action);
-    await waitFor(() => expect(newWorkgroupModalOpen()).toBe(true));
+    await openNewRoom();
     const search = document.querySelector<HTMLInputElement>("#new-room-team-search")!;
     input(workgroupTaskTitleInput()!, "Free-query draft");
     input(search, "  DEV ");

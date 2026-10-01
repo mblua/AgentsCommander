@@ -8,6 +8,7 @@ import { click, discovery, input, renderWithFakeTransport, resetUiStoresForTests
 
 import { executeAutomationRequest, resetAutomationBridgeForTests } from "../../shared/automation-bridge";
 import type { UiAutomationAction } from "../../shared/types";
+import { stubAutomationGeometry } from "../../shared/testing/automation-geometry";
 
 // Geometry enables bridge dispatch in jsdom; it does not establish Windows
 // visibility, hit-testing, physical keyboard/focus behavior or real IME coverage.
@@ -23,16 +24,17 @@ async function automate(action: UiAutomationAction, selector: string, value?: st
   if (!response.ok) throw new Error(response.error + ": " + response.message);
   return response.target;
 }
-function stubAutomationGeometry() {
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-    return { x: 100, y: 50, left: 100, top: 50, right: 200, bottom: 70,
-      width: this.isConnected ? 100 : 0, height: this.isConnected ? 20 : 0, toJSON: () => ({}) } as DOMRect;
-  });
-  vi.spyOn(Element.prototype, "getClientRects").mockImplementation(function (this: Element) {
-    const list = (this.isConnected ? [this.getBoundingClientRect()] : []) as unknown as DOMRectList;
-    Object.defineProperty(list, "item", { value: (index: number) => list[index] ?? null });
-    return list;
-  });
+
+async function expectConfirmedListHidden() {
+  expect((await automate("query", "newRoom.create")).disabled).toBe(false);
+  expect(list().isConnected).toBe(true);
+  expect(rows()).toHaveLength(1);
+  for (const selector of ["newRoom.team.list", "newRoom.team.option.0"]) {
+    const hidden = await request("query", selector);
+    expect(hidden.ok).toBe(false);
+    if (hidden.ok) throw new Error("Expected hidden target rejection: " + selector);
+    expect(hidden.error).toBe("target_hidden");
+  }
 }
 
 const projectPath = "C:\Project";
@@ -353,15 +355,7 @@ describe("New Room team search and optional title (#2788)", () => {
     expect(confirmation.text).toBe("Selected team: dev-alpha");
     expect(confirmation.state).toBe("confirmed");
     expect(JSON.parse(confirmation.metadata.detail)).toEqual({ selected: "dev-alpha" });
-    expect((await automate("query", "newRoom.create")).disabled).toBe(false);
-    expect(list().isConnected).toBe(true);
-    expect(rows()).toHaveLength(1);
-    for (const selector of ["newRoom.team.list", "newRoom.team.option.0"]) {
-      const hidden = await request("query", selector);
-      expect(hidden.ok).toBe(false);
-      if (hidden.ok) throw new Error("Expected hidden target rejection: " + selector);
-      expect(hidden.error).toBe("target_hidden");
-    }
+    await expectConfirmedListHidden();
   });
 
   it("exposes all unique R2 targets and confirms/invalidates teams through the real bridge", async () => {
@@ -427,15 +421,7 @@ describe("New Room team search and optional title (#2788)", () => {
     expect(selected.expanded).toBe(false);
     expect(selected.state).toBe("confirmed");
     await confirmation("dev-alpha");
-    expect((await automate("query", "newRoom.create")).disabled).toBe(false);
-    expect(list().isConnected).toBe(true);
-    expect(rows()).toHaveLength(1);
-    for (const selector of ["newRoom.team.list", "newRoom.team.option.0"]) {
-      const hidden = await request("query", selector);
-      expect(hidden.ok).toBe(false);
-      if (hidden.ok) throw new Error("Expected hidden target rejection: " + selector);
-      expect(hidden.error).toBe("target_hidden");
-    }
+    await expectConfirmedListHidden();
     await automate("key", "newRoom.teamSearch", "ArrowDown");
     await projection(["dev-alpha"], 0);
     await confirmation("dev-alpha");
