@@ -6,6 +6,24 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- New Room has a searchable team picker and an optional task title. A blank title creates a Clean task; an explicit title keeps the USER prefix. (#2788)
+- Windows Root agents receive an RTK installation skill. (#2806)
+
+### Changed
+
+- Welcome agent cards group installation controls inside the card and show AC Support levels: Stable, Beta or Experimental. (#2784)
+- Agent runtime state moves to Git-ignored config.state.no-git.json on the first write. Decision settings remain in config.json; malformed configuration is rejected rather than silently reset. (#2786, #2807, #2816)
+
+### Fixed
+
+- Co-managed capture survives temporary Jev unavailability and offers retained candidates again when ready. (#2756)
+- Claude statusline no longer requires jq. (#2789)
+- New Team refuses creation with a pending repository URL. (#2814)
+- CI completion notifications corroborate previously observed runs before announcing completion. (#2768)
+- Maintenance: increased the held-delivery test budget, added desktop wallpapers, and reorganized RTK and Claude statusline documentation, including the Windows runtime prerequisite. (#2767, #2781, #2790, #2803)
+
 ## 0.41.0
 
 ### Added
