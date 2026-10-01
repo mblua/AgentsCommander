@@ -9251,6 +9251,19 @@ echo 'ac-2589-fake-agent 4.5.6'
             );
         }
         assert_eq!(run.ok, expected_exit == Some(0), "{key}: {}", run.detail);
+        if cfg!(windows) && marker_count == 0 && (status == 503 || body.is_empty()) {
+            let stderr = String::from_utf8_lossy(&run.stderr);
+            assert!(
+                !stderr.trim().is_empty(),
+                "{key}: missing fetch failure diagnostics"
+            );
+            let cause = if status == 503 {
+                "HTTP 503 fixture failure"
+            } else {
+                "Empty installer response"
+            };
+            assert!(stderr.contains(cause), "{key}: missing {cause:?}: {stderr}");
+        }
         assert_eq!(
             String::from_utf8_lossy(&run.stderr)
                 .lines()
@@ -9366,8 +9379,8 @@ echo 'ac-2589-fake-agent 4.5.6'
                 key,
                 503,
                 &shell(
-                    "[Console]::Error.WriteLine('RAN-2787'); exit 0",
-                    "echo RAN-2787 >&2; exit 0",
+                    "# HTTP 503 fixture failure\n[Console]::Error.WriteLine('RAN-2787'); exit 0",
+                    "# HTTP 503 fixture failure\necho RAN-2787 >&2; exit 0",
                 ),
                 None,
                 0,

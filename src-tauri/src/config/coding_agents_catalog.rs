@@ -6020,16 +6020,34 @@ mod tests {
         let mut snapshot = AppSettings::default();
         snapshot.agents = old_installers_2787()
             .iter()
-            .map(|definition| {
+            .enumerate()
+            .map(|(order, definition)| {
                 let mut row = serde_json::to_value(definition).unwrap();
                 row["id"] = format!("registered-{}", definition.key).into();
+                row["order"] = order.into();
                 serde_json::from_value(row).unwrap()
             })
             .collect();
-        let snapshot_bytes = serde_json::to_vec_pretty(&snapshot).unwrap();
+        // Seed the historical settings shape, then exercise the real loader's
+        // migration into the instance agents store before catalog initialization.
+        let settings_path = dir.path().join("settings.json");
+        std::fs::write(
+            &settings_path,
+            serde_json::to_vec_pretty(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let loaded = crate::config::settings::load_settings_from_path(&settings_path);
+        crate::config::settings::save_settings_to_path_preserving_project_paths(
+            &loaded,
+            &settings_path,
+        )
+        .unwrap();
+        let snapshot_path = dir.path().join("agents.30.instance.no-git.json");
+        let snapshot_bytes = std::fs::read(&snapshot_path).unwrap();
+        let settings_bytes = std::fs::read(&settings_path).unwrap();
+        let registered = serde_json::to_value(&loaded.agents).unwrap();
+        assert_eq!(registered, serde_json::to_value(&snapshot.agents).unwrap());
         assert!(!String::from_utf8_lossy(&snapshot_bytes).contains("installCommands"));
-        let snapshot_path = dir.path().join("registered-settings-snapshot.json");
-        std::fs::write(&snapshot_path, &snapshot_bytes).unwrap();
         if formatting {
             let root: serde_json::Value = serde_json::from_slice(&old).unwrap();
             let compact = serde_json::to_vec(&root).unwrap();
@@ -6049,7 +6067,7 @@ mod tests {
             before,
             "reload is read-only"
         );
-        assert!(ensure_seeded(dir.path(), None).is_some());
+        assert!(ensure_seeded_instance(dir.path()).is_some());
         assert_eq!(
             std::fs::read(manifest_path(dir.path())).unwrap(),
             build_managed_base_bytes(&supported_shipped_definitions())
@@ -6059,10 +6077,13 @@ mod tests {
             local.as_bytes()
         );
         assert_eq!(std::fs::read(&snapshot_path).unwrap(), snapshot_bytes);
-        assert_eq!(
-            serde_json::to_vec_pretty(&snapshot).unwrap(),
-            snapshot_bytes
-        );
+        let reloaded = crate::config::settings::load_settings_from_path(&settings_path);
+        assert_eq!(serde_json::to_value(&reloaded.agents).unwrap(), registered);
+        assert_eq!(std::fs::read(&snapshot_path).unwrap(), snapshot_bytes);
+        assert_eq!(std::fs::read(&settings_path).unwrap(), settings_bytes);
+        assert!(!serde_json::to_string(&reloaded.agents)
+            .unwrap()
+            .contains("installCommands"));
         let report = load_catalog_report(dir.path());
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
         let actual = claude_of(&report).install_commands.as_ref();
@@ -6127,12 +6148,19 @@ mod tests {
             write_local(dir.path(), r##"{"schemaVersion":1,"agents":[]}"##);
             let local = std::fs::read(local_catalog_path(dir.path())).unwrap();
             let report = load_catalog_report(dir.path());
-            if managed {
-                assert!(report
+            let expected_warnings = if managed {
+                vec!["managedBaseEdited"]
+            } else {
+                vec!["migrationPending"]
+            };
+            assert_eq!(
+                report
                     .warnings
                     .iter()
-                    .any(|warning| warning.code == "managedBaseEdited"));
-            }
+                    .map(|w| w.code.as_str())
+                    .collect::<Vec<_>>(),
+                expected_warnings
+            );
             assert_eq!(
                 claude_of(&report)
                     .install_commands
@@ -6143,6 +6171,19 @@ mod tests {
             );
             assert_eq!(std::fs::read(manifest_path(dir.path())).unwrap(), bytes);
             assert!(ensure_seeded(dir.path(), None).is_none());
+            let reloaded = load_catalog_report(dir.path());
+            assert_eq!(
+                reloaded
+                    .warnings
+                    .iter()
+                    .map(|w| w.code.as_str())
+                    .collect::<Vec<_>>(),
+                expected_warnings
+            );
+            assert_eq!(
+                claude_of(&reloaded).install_commands,
+                claude_of(&report).install_commands
+            );
             assert_eq!(std::fs::read(manifest_path(dir.path())).unwrap(), bytes);
             assert_eq!(
                 std::fs::read(local_catalog_path(dir.path())).unwrap(),
