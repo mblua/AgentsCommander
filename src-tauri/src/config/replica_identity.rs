@@ -434,21 +434,25 @@ pub fn read_and_repair_wg_replica_config(
 ) -> Result<(Value, WgReplicaIdentity), String> {
     let config_path = replica_dir.join("config.json");
     let mut repaired_identity: Option<WgReplicaIdentity> = None;
-    let config =
-        crate::config::local_config_io::update_config_json_object(&config_path, false, |obj| {
-            let mut value = Value::Object(std::mem::take(obj));
-            let identity =
-                repair_wg_replica_config_value(replica_dir, &mut value, required_context_prefix)?;
-            let final_obj = value.as_object_mut().ok_or_else(|| {
-                format!(
-                    "Room replica config {} must be a JSON object",
-                    config_path.display()
-                )
-            })?;
-            *obj = std::mem::take(final_obj);
-            repaired_identity = Some(identity);
-            Ok(())
+    // #2816 (C3) - the returned value is the decisions object as published,
+    // captured inside the guard: no re-read and no state overlay.
+    let mut published: Option<Value> = None;
+    crate::config::agent_config::update_existing_agent_config(&config_path, |obj, _state| {
+        let mut value = Value::Object(std::mem::take(obj));
+        let identity =
+            repair_wg_replica_config_value(replica_dir, &mut value, required_context_prefix)?;
+        let final_obj = value.as_object_mut().ok_or_else(|| {
+            format!(
+                "Room replica config {} must be a JSON object",
+                config_path.display()
+            )
         })?;
+        *obj = std::mem::take(final_obj);
+        repaired_identity = Some(identity);
+        published = Some(Value::Object(obj.clone()));
+        Ok(())
+    })?;
+    let config = published.ok_or_else(|| format!("Failed to repair {}", config_path.display()))?;
     let identity = repaired_identity
         .ok_or_else(|| format!("Failed to repair identity for {}", replica_dir.display()))?;
     Ok((config, identity))
@@ -816,5 +820,60 @@ mod tests {
         let count = strict_read_probe::unregister(temp.path());
         read.expect("valid replica reads");
         assert_eq!(count, 1);
+    }
+
+    /// #2816 (C3) E3b, site 12.
+    #[test]
+    fn an_absent_config_still_refuses_and_creates_nothing() {
+        let temp = setup_replica(".ac");
+        let replica = temp
+            .path()
+            .join("AgentsCommander_ac")
+            .join(".ac")
+            .join("wg-2-dev-team")
+            .join("__agent_tech-lead");
+        let config = replica.join("config.json");
+
+        let error = read_and_repair_wg_replica_config(&replica, &[]).expect_err("absent config");
+
+        assert_eq!(
+            error,
+            format!("Local config {} does not exist", config.display())
+        );
+        assert!(!config.exists(), "site 12 created config.json");
+        assert!(
+            !replica
+                .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+                .exists(),
+            "site 12 created a state file"
+        );
+    }
+
+    /// #2816 (C3) E3b, consequence 2 of 4.1: an orphan state file with a
+    /// malformed `tooling` is rejected by the cleanup before the refusal, and
+    /// still nothing is created.
+    #[test]
+    fn an_orphan_malformed_state_file_is_rejected_before_the_refusal() {
+        let temp = setup_replica(".ac");
+        let replica = temp
+            .path()
+            .join("AgentsCommander_ac")
+            .join(".ac")
+            .join("wg-2-dev-team")
+            .join("__agent_tech-lead");
+        let state = replica.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+        std::fs::write(&state, r#"{"tooling":5}"#).expect("seed state");
+
+        let error = read_and_repair_wg_replica_config(&replica, &[]).expect_err("orphan state");
+
+        assert!(
+            error.ends_with("cleanup failed: 'tooling' must be a JSON object in the state file"),
+            "{error}"
+        );
+        assert!(!replica.join("config.json").exists());
+        assert_eq!(
+            std::fs::read_to_string(&state).expect("read state"),
+            r#"{"tooling":5}"#
+        );
     }
 }

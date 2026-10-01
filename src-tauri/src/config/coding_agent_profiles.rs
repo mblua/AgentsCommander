@@ -62,7 +62,19 @@ fn read_tooling_string(agent_dir: &Path, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn write_tooling_string(agent_dir: &Path, key: &str, value: Option<&str>) -> Result<(), String> {
+/// #2816 (C3) - which file of the config pair a `tooling` string lives in.
+#[derive(Clone, Copy)]
+enum ToolingSide {
+    Decisions,
+    State,
+}
+
+fn write_tooling_string(
+    agent_dir: &Path,
+    side: ToolingSide,
+    key: &str,
+    value: Option<&str>,
+) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(agent_dir).map_err(|e| {
         format!(
             "Agent config dir '{}' is not readable: {}",
@@ -77,7 +89,11 @@ fn write_tooling_string(agent_dir: &Path, key: &str, value: Option<&str>) -> Res
         ));
     }
     let config_path = agent_dir.join("config.json");
-    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+    crate::config::agent_config::update_agent_config(&config_path, |decisions, state| {
+        let obj = match side {
+            ToolingSide::Decisions => decisions,
+            ToolingSide::State => state,
+        };
         let tooling_value = obj
             .entry("tooling".to_string())
             .or_insert_with(|| serde_json::json!({}));
@@ -403,10 +419,10 @@ pub fn set_replica_profile_content_hash(launch_path: &Path, hash: &str) -> Resul
     // coding agent and must support drift like any other; its dir name does not
     // match the `__agent_`/`_agent_` prefix, so accept it explicitly. Name-only
     // (vs path-validated `is_root_agent_path`) is sufficient here: the sole caller
-    // `create_session_inner` already writes this dir's `config.json`
+    // `create_session_inner` already writes this dir's `config.state.no-git.json`
     // unconditionally via `set_last_coding_agent` right before this call, so the
     // gate only governs whether the hash field is added, never whether a stray
-    // config.json is created. The read side is ungated, so it round-trips.
+    // state file is created. The read side is ungated, so it round-trips.
     let is_root_agent = launch_path
         .to_str()
         .map(crate::config::root_agent::is_root_agent_dir_name)
@@ -419,7 +435,12 @@ pub fn set_replica_profile_content_hash(launch_path: &Path, hash: &str) -> Resul
         hash,
         launch_path.display(),
     );
-    write_tooling_string(launch_path, "profileContentHash", Some(hash))
+    write_tooling_string(
+        launch_path,
+        ToolingSide::State,
+        "profileContentHash",
+        Some(hash),
+    )
 }
 
 pub fn set_agent_default_profile(
@@ -432,6 +453,7 @@ pub fn set_agent_default_profile(
     let validated = validate_profile_selection_agent_path(settings, launch_path)?;
     write_tooling_string(
         &validated.origin_matrix_dir,
+        ToolingSide::Decisions,
         "defaultProfile",
         Some(&profile),
     )
@@ -596,8 +618,9 @@ pub struct SelectionWriteOutcome {
 }
 
 impl SelectionWriteOutcome {
-    /// Nothing to change and nothing published (already-unlocked / skipped /
-    /// same locked pair).
+    /// Nothing to change and nothing of the caller's intent published
+    /// (already-unlocked / skipped / same locked pair); a pending state
+    /// migration may already have been.
     const UNCHANGED: Self = Self {
         changed: false,
         published: false,
@@ -830,7 +853,7 @@ pub fn write_replica_selection_default(
 ) -> Result<SelectionWriteOutcome, String> {
     let normalized = default.clone().normalized()?;
     let config_path = matrix_dir.join("config.json");
-    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+    crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         let current = read_replica_selection_default(matrix_dir)?;
         if current.as_ref() != expected_prior {
             return Err(format!(
@@ -1018,7 +1041,7 @@ pub fn write_replica_selection(
     let transition = std::cell::Cell::new(None::<SelectionLockTransition>);
 
     let written =
-        crate::config::local_config_io::update_config_json_object(&config_path, false, |obj| {
+        crate::config::agent_config::update_existing_agent_config(&config_path, |obj, _state| {
             let (current_pair, current_locked) =
                 validate_selection_write_state(&replica_dir, expected)?;
             if current_locked {
@@ -1100,8 +1123,9 @@ pub fn write_replica_selection(
 
 /// #1939 - guarded unlock. Only the flag is written (`false`); the pair and
 /// every other field stay untouched. An already-false/absent flag exits through
-/// the private callback marker before any object mutation, so nothing is
-/// serialized and nothing is published (see [`SelectionWriteOutcome`]). Every
+/// the private callback marker before any object mutation, so nothing of the
+/// caller's intent is serialized or published, though a pending state migration
+/// may already have been (see [`SelectionWriteOutcome`]). Every
 /// other error — malformed state, stale expected state, lock timeout, IO —
 /// propagates unchanged and can never be reported as success.
 pub fn clear_replica_selection_lock(
@@ -1114,7 +1138,7 @@ pub fn clear_replica_selection_lock(
     let marker = std::cell::Cell::new(None::<SelectionGuardMarker>);
 
     let written =
-        crate::config::local_config_io::update_config_json_object(&config_path, false, |obj| {
+        crate::config::agent_config::update_existing_agent_config(&config_path, |obj, _state| {
             let (_current_pair, current_locked) =
                 validate_selection_write_state(&replica_dir, expected)?;
             if !current_locked {
@@ -1185,7 +1209,7 @@ pub fn set_replica_coding_agent_selection(
 
 fn write_profile_to_launch_path(launch_path: &Path, profile: Option<&str>) -> Result<(), String> {
     let config_path = launch_path.join("config.json");
-    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+    crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         // #1939 - shape-based, like agent_config: absent tooling becomes an
         // object, a present non-object is an error, never silently reset.
         let tooling_value = obj
@@ -1648,7 +1672,11 @@ mod tests {
         assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
         assert_eq!(saved["tooling"]["profile"], "B");
         assert_eq!(saved["tooling"]["instanceProfileOverride"], "B");
-        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+        assert_eq!(
+            state_value(&replica)["tooling"]["lastCodingAgent"],
+            "claude"
+        );
+        assert_untracked(&replica, &["lastCodingAgent"]);
     }
 
     #[test]
@@ -1800,7 +1828,11 @@ mod tests {
                 .unwrap();
         assert_eq!(saved["tooling"]["profile"], "B");
         assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
-        assert_eq!(saved["tooling"]["profileContentHash"], "deadbeefdeadbeef");
+        assert_eq!(
+            state_value(&replica)["tooling"]["profileContentHash"],
+            "deadbeefdeadbeef"
+        );
+        assert_untracked(&replica, &["profileContentHash", "lastCodingAgent"]);
     }
 
     #[test]
@@ -1833,10 +1865,11 @@ mod tests {
             read_replica_profile_content_hash(&root_agent).as_deref(),
             Some("cafef00dcafef00d")
         );
-        let saved: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(root_agent.join("config.json")).unwrap())
-                .unwrap();
-        assert_eq!(saved["tooling"]["profileContentHash"], "cafef00dcafef00d");
+        assert_eq!(
+            state_value(&root_agent)["tooling"]["profileContentHash"],
+            "cafef00dcafef00d"
+        );
+        assert_untracked(&root_agent, &["profileContentHash"]);
     }
 
     // ------------------------------------------------------------------
@@ -1887,6 +1920,31 @@ mod tests {
 
     fn config_value(replica: &Path) -> Value {
         serde_json::from_str(&config_bytes(replica)).unwrap()
+    }
+
+    /// #2816 (C3) - the state file beside `dir`'s `config.json`.
+    fn state_path(dir: &Path) -> PathBuf {
+        dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+    }
+
+    fn state_value(dir: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(state_path(dir)).unwrap()).unwrap()
+    }
+
+    /// #2816 (C3) - none of `keys` may remain in `dir`'s tracked `config.json`;
+    /// an absent tracked file holds none.
+    fn assert_untracked(dir: &Path, keys: &[&str]) {
+        let Ok(raw) = std::fs::read_to_string(dir.join("config.json")) else {
+            return;
+        };
+        let tracked: Value = serde_json::from_str(&raw).unwrap();
+        for key in keys {
+            assert!(
+                tracked["tooling"].get(key).is_none(),
+                "{key} is still tracked in {}",
+                dir.display()
+            );
+        }
     }
 
     fn pair(coding_agent_id: &str, profile: &str) -> ReplicaSelectionPair {
@@ -1982,7 +2040,11 @@ mod tests {
         assert_eq!(saved["tooling"]["instanceProfileOverride"], "B");
         assert_eq!(saved["tooling"]["instanceProfileOverrideSource"], "manual");
         assert!(saved["tooling"].get("selectionLocked").is_none());
-        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+        assert_eq!(
+            state_value(&fixture.replica)["tooling"]["lastCodingAgent"],
+            "claude"
+        );
+        assert_untracked(&fixture.replica, &["lastCodingAgent"]);
     }
 
     #[test]
@@ -2047,11 +2109,16 @@ mod tests {
         let saved = config_value(&fixture.replica);
         assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
         assert_eq!(saved["tooling"]["profile"], "C");
-        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
-        assert_eq!(saved["tooling"]["profileContentHash"], "deadbeef");
+        let state = state_value(&fixture.replica);
+        assert_eq!(state["tooling"]["lastCodingAgent"], "claude");
+        assert_eq!(state["tooling"]["profileContentHash"], "deadbeef");
         assert_eq!(
-            saved["tooling"]["codingAgents"]["claude"]["app"],
+            state["tooling"]["codingAgents"]["claude"]["app"],
             "Claude Code"
+        );
+        assert_untracked(
+            &fixture.replica,
+            &["lastCodingAgent", "profileContentHash", "codingAgents"],
         );
         assert_eq!(saved["customTopLevel"]["keep"], true);
     }
@@ -2688,7 +2755,11 @@ mod tests {
         assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
         assert_eq!(saved["tooling"]["profile"], "B");
         assert!(saved["tooling"].get("selectionLocked").is_none());
-        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+        assert_eq!(
+            state_value(&fixture.replica)["tooling"]["lastCodingAgent"],
+            "claude"
+        );
+        assert_untracked(&fixture.replica, &["lastCodingAgent"]);
 
         // Locked: rejected, stored bytes untouched.
         write_config(
@@ -2715,7 +2786,10 @@ mod tests {
         );
         let before = config_bytes(&fixture.replica);
         let error = set_replica_profile_content_hash(&fixture.replica, "deadbeef").unwrap_err();
-        assert!(error.contains("tooling must be a JSON object"), "{error}");
+        assert!(
+            error.contains("'tooling' must be a JSON object in the tracked config file"),
+            "{error}"
+        );
         assert_eq!(config_bytes(&fixture.replica), before);
 
         // A malformed selectionLocked inside a valid tooling object stays exactly
@@ -2728,12 +2802,141 @@ mod tests {
         let saved = config_value(&fixture.replica);
         assert_eq!(saved["tooling"]["selectionLocked"], "yes");
         assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
-        assert_eq!(saved["tooling"]["profileContentHash"], "deadbeef");
+        assert_eq!(
+            state_value(&fixture.replica)["tooling"]["profileContentHash"],
+            "deadbeef"
+        );
+        assert_untracked(&fixture.replica, &["profileContentHash"]);
     }
 
     // ------------------------------------------------------------------
     // #2010 KEEP with the same locked pair (unchanged, no publish).
     // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // #2816 (C3) - the split writer and the require-existing sites.
+    // ------------------------------------------------------------------
+
+    /// E3.
+    #[test]
+    fn the_two_tooling_keys_go_to_opposite_files() {
+        let fixture = selection_fixture();
+        write_config(&fixture.matrix, "{}");
+
+        // The decision first: a later decision write would migrate a misplaced
+        // hash and hide it.
+        set_agent_default_profile(&fixture.settings, &fixture.matrix, "b").unwrap();
+        set_replica_profile_content_hash(&fixture.matrix, "cafef00d").unwrap();
+
+        let state = state_value(&fixture.matrix);
+        let tracked = config_value(&fixture.matrix);
+        assert_eq!(state["tooling"]["profileContentHash"], "cafef00d");
+        assert!(state["tooling"].get("defaultProfile").is_none(), "{state}");
+        assert_eq!(tracked["tooling"]["defaultProfile"], "B");
+        assert_untracked(&fixture.matrix, &["profileContentHash"]);
+    }
+
+    /// E3b (a): with both files absent, sites 9 and 10 reject earlier, on the
+    /// replica identity, and create nothing. The seeded second leg proves the
+    /// rows are sensitive to the missing identity and nothing more.
+    #[test]
+    fn an_absent_config_still_refuses_and_creates_nothing() {
+        const IDENTITY_TAIL: &str =
+            "__agent_dev-rust' has no config.json identity; expected '../../_agent_dev-rust'";
+        let is_identity_rejection = |result: &Result<SelectionWriteOutcome, String>| {
+            matches!(result, Err(error)
+                if error.starts_with("Room replica '") && error.ends_with(IDENTITY_TAIL))
+        };
+        let expected = ReplicaSelectionExpectation {
+            identity: REPLICA_IDENTITY.to_string(),
+            pair: None,
+            locked: false,
+        };
+
+        // Site 9.
+        let fixture = selection_fixture();
+        let write = || {
+            write_replica_selection(
+                &fixture.settings,
+                &fixture.replica,
+                &pair("codex", "B"),
+                SelectionWriteIntent::Individual,
+                &expected,
+            )
+        };
+        let result = write();
+        assert!(is_identity_rejection(&result), "site 9: {result:?}");
+        assert!(!fixture.replica.join("config.json").exists(), "site 9");
+        assert!(!state_path(&fixture.replica).exists(), "site 9");
+        write_config(&fixture.replica, &seed_selection_config("{}"));
+        let result = write();
+        assert!(!is_identity_rejection(&result), "site 9 seeded: {result:?}");
+
+        // Site 10.
+        let fixture = selection_fixture();
+        let clear = || clear_replica_selection_lock(&fixture.settings, &fixture.replica, &expected);
+        let result = clear();
+        assert!(is_identity_rejection(&result), "site 10: {result:?}");
+        assert!(!fixture.replica.join("config.json").exists(), "site 10");
+        assert!(!state_path(&fixture.replica).exists(), "site 10");
+        write_config(&fixture.replica, &seed_selection_config("{}"));
+        let result = clear();
+        assert!(
+            !is_identity_rejection(&result),
+            "site 10 seeded: {result:?}"
+        );
+    }
+
+    /// E3b, consequence 4: a new effect of C2's validation, not a preserved
+    /// contract.
+    #[test]
+    fn a_malformed_state_tooling_now_fails_the_selection_write() {
+        let fixture = selection_fixture();
+        write_config(&fixture.replica, &seed_selection_config("{}"));
+        std::fs::write(state_path(&fixture.replica), r#"{"tooling":5}"#).unwrap();
+        let before = config_bytes(&fixture.replica);
+        let expected = read_replica_selection_state(&fixture.replica)
+            .expectation()
+            .unwrap();
+
+        let error = write_replica_selection(
+            &fixture.settings,
+            &fixture.replica,
+            &pair("codex", "B"),
+            SelectionWriteIntent::Individual,
+            &expected,
+        )
+        .unwrap_err();
+
+        assert!(error.starts_with("Config pair "), "{error}");
+        assert!(
+            error.ends_with("cleanup failed: 'tooling' must be a JSON object in the state file"),
+            "{error}"
+        );
+        assert_eq!(config_bytes(&fixture.replica), before);
+        assert_eq!(
+            std::fs::read_to_string(state_path(&fixture.replica)).unwrap(),
+            r#"{"tooling":5}"#
+        );
+    }
+
+    /// E4, site 11, through its nearest reachable caller.
+    #[test]
+    fn the_profile_override_writes_the_decisions_file_and_no_state_file() {
+        let fixture = selection_fixture();
+        write_config(&fixture.replica, &seed_selection_config("{}"));
+
+        set_instance_profile_override(&fixture.settings, &fixture.replica, Some("c")).unwrap();
+
+        let tooling = config_value(&fixture.replica)["tooling"].clone();
+        assert_eq!(tooling["profile"], "C");
+        assert_eq!(tooling["instanceProfileOverride"], "C");
+        assert_eq!(tooling["instanceProfileOverrideSource"], "manual");
+        assert!(
+            !state_path(&fixture.replica).exists(),
+            "site 11 created a state file"
+        );
+    }
 
     #[test]
     fn issue_2010_locked_same_pair_individual_intents_are_unchanged() {
