@@ -11,6 +11,21 @@ describe("shared ipc transport seam", () => {
     vi.resetModules();
   });
 
+  it.each([undefined, "", "Explicit title"])("serializes optional room title %j as a string", async (taskTitle) => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    fake.resolve("create_workgroup", undefined);
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      await ipc.EntityAPI.createWorkgroup("C:/Project", "dev-team", taskTitle);
+      expect(fake.lastCall("create_workgroup")?.args).toEqual({
+        projectPath: "C:/Project", teamName: "dev-team", taskTitle: taskTitle ?? "",
+      });
+    } finally {
+      restore();
+    }
+  });
+
   it("does not construct WebSocket transport on jsdom import before fake install", async () => {
     vi.resetModules();
     const websocketCtor = vi.fn(() => {

@@ -9186,6 +9186,24 @@ html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access-group {
 
 /* ===== Entity Creation Modals ===== */
 
+.new-room-modal { font: 14px var(--font-ui); line-height: 1.55; }
+.new-room-modal .agent-modal-title { font-size: 14px; }
+.new-room-modal .new-room-team-list {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 6px;
+}
+.new-room-modal .new-room-team-option { padding: 8px 12px; cursor: pointer; }
+.new-room-modal .new-room-team-option:hover,
+.new-room-modal .new-room-team-option[aria-selected="true"] {
+  background: var(--sidebar-active);
+  color: var(--sidebar-accent);
+}
+.new-room-modal .new-room-hint { font-size: 12px; color: var(--sidebar-fg-dim); }
+.new-room-modal button:focus-visible { outline: 2px solid var(--sidebar-accent); outline-offset: 3px; }
+.new-room-modal .new-room-team-list[hidden] { display: none; }
+
 .entity-input {
   width: 100%;
   padding: var(--spacing-sm) var(--spacing-md);
