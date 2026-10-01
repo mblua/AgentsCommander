@@ -1,4 +1,4 @@
-import { Component, createSignal, createMemo, For, Show, onCleanup } from "solid-js";
+import { Component, createSignal, createMemo, createEffect, For, Show, onMount, onCleanup } from "solid-js";
 import type { AcTeam } from "../../shared/types";
 import { EntityAPI } from "../../shared/ipc";
 import { projectStore } from "../stores/project";
@@ -12,10 +12,27 @@ const NewWorkgroupModal: Component<{
     props.teams.length === 1 ? props.teams[0].name : ""
   );
   const [taskTitle, setTaskTitle] = createSignal("");
+  const [teamSearch, setTeamSearch] = createSignal("");
+  let searchInput!: HTMLInputElement;
+  let teamSelect!: HTMLSelectElement;
   const [error, setError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
 
-  const canCreate = createMemo(() => selectedTeam() !== "" && taskTitle().trim() !== "");
+  const filteredTeams = createMemo(() => {
+    const query = teamSearch().trim().toLowerCase();
+    return props.teams.filter((team) => team.name.toLowerCase().includes(query));
+  });
+  const canCreate = createMemo(() =>
+    selectedTeam() !== "" && filteredTeams().some((team) => team.name === selectedTeam())
+  );
+  createEffect(() => {
+    filteredTeams();
+    if (selectedTeam() && !canCreate()) setSelectedTeam("");
+    // Replacing option objects can reset the native value even when the
+    // selected team name is unchanged across discovery refreshes.
+    teamSelect.value = selectedTeam();
+  });
+  onMount(() => searchInput.focus());
 
   const handleCreate = async () => {
     if (!canCreate() || creating()) return;
@@ -39,6 +56,7 @@ const NewWorkgroupModal: Component<{
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.defaultPrevented) return;
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       handleCreate();
@@ -46,7 +64,7 @@ const NewWorkgroupModal: Component<{
   };
 
   const handleDocumentKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") props.onClose();
+    if (!e.defaultPrevented && !e.isComposing && e.key === "Escape") props.onClose();
   };
 
   document.addEventListener("keydown", handleDocumentKeyDown);
@@ -61,19 +79,53 @@ const NewWorkgroupModal: Component<{
 
         <div class="new-agent-form">
           <div class="new-agent-field">
-            <label class="new-agent-label">Team</label>
+            <label class="new-agent-label" for="new-room-team-search">Search teams</label>
+            <input
+              ref={searchInput}
+              id="new-room-team-search"
+              type="text"
+              class="entity-input"
+              placeholder="Type to filter teams..."
+              value={teamSearch()}
+              onInput={(e) => {
+                setSelectedTeam("");
+                setTeamSearch(e.currentTarget.value);
+              }}
+            />
+          </div>
+          <div class="new-agent-field">
+            <label class="new-agent-label" for="new-room-team">Team</label>
             <select
+              ref={teamSelect}
+              id="new-room-team"
               class="entity-select"
+              size={6}
+              on:keydown={(e) => {
+                if (e.isComposing) return;
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const value = e.currentTarget.value;
+                  if (filteredTeams().some((team) => team.name === value)) setSelectedTeam(value);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  searchInput.focus();
+                }
+              }}
               value={selectedTeam()}
               onChange={(e) => setSelectedTeam(e.currentTarget.value)}
             >
               <option value="" disabled>Select a team...</option>
-              <For each={props.teams}>
+              <For each={filteredTeams()}>
                 {(team) => (
                   <option value={team.name}>{team.name}</option>
                 )}
               </For>
             </select>
+            <Show when={filteredTeams().length === 0}>
+              <div role="status">{props.teams.length === 0 ? "No teams available." : "No teams match your search."}</div>
+            </Show>
           </div>
 
           <div class="new-agent-field">
@@ -83,11 +135,11 @@ const NewWorkgroupModal: Component<{
               class="entity-input"
               value={taskTitle()}
               onInput={(e) => setTaskTitle(e.currentTarget.value)}
-              placeholder="Task title (required)"
-              autofocus
+              placeholder="Task title (optional)"
             />
+            <div class="entity-textarea-hint">Leave empty to start with Clean.</div>
             <div class="entity-textarea-meta">
-              <span id="task-keyhint" class="entity-textarea-hint">Enter to create · Shift+Enter for newline</span>
+              <span id="task-keyhint" class="entity-textarea-hint">Enter to create</span>
             </div>
           </div>
 

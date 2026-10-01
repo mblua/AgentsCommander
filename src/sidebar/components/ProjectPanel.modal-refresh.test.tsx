@@ -262,7 +262,7 @@ function newWorkgroupModalOpen(): boolean {
 
 function workgroupTaskTitleInput(): HTMLInputElement | null {
   return document.body.querySelector<HTMLInputElement>(
-    'input[placeholder="Task title (required)"]',
+    'input[placeholder="Task title (optional)"]',
   );
 }
 
@@ -324,6 +324,29 @@ describe("ProjectPanel modal survival across project refresh (#710)", () => {
     expect(newWorkgroupModalOpen()).toBe(true);
     expect(workgroupTaskTitleInput()?.value).toBe("Unsaved WG title");
     expect(teamOptionValues()).toContain("ops-team");
+    const search = document.querySelector<HTMLInputElement>("#new-room-team-search")!;
+    const select = document.querySelector<HTMLSelectElement>("#new-room-team")!;
+    input(search, "  DEV ");
+    select.value = teamName;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    const create = document.querySelector<HTMLButtonElement>(".new-agent-create-btn")!;
+    expect(create.disabled).toBe(false);
+    fake.resolve("discover_project", discoveryResult(["dev-extra", "ops-other"]));
+    await projectStore.reloadProject(projectPath);
+    expect(search.value).toBe("  DEV ");
+    expect(workgroupTaskTitleInput()?.value).toBe("Unsaved WG title");
+    expect(teamOptionValues()).toEqual(["", teamName, "dev-extra"]);
+    expect(select.value).toBe(teamName);
+    const removed = discoveryResult(["dev-extra", "ops-other"]);
+    removed.teams = removed.teams.filter(team => team.name !== teamName);
+    fake.resolve("discover_project", removed);
+    await projectStore.reloadProject(projectPath);
+    expect(newWorkgroupModalOpen()).toBe(true);
+    expect(search.value).toBe("  DEV ");
+    expect(workgroupTaskTitleInput()?.value).toBe("Unsaved WG title");
+    expect(select.value).toBe("");
+    expect(create.disabled).toBe(true);
+
   });
 
   it("keeps the live-replica Coding Agent picker open across a refresh", async () => {
