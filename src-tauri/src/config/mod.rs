@@ -1133,6 +1133,40 @@ mod tests {
             .contains(&PathBuf::from("/home/u").display().to_string()));
     }
 
+    /// #2816 (C3) E9a - the three isolation mechanisms a test fixture relies
+    /// on, as resolver behaviour: public override, debug override, suffixed
+    /// executable, and the public override first.
+    #[test]
+    fn issue_2816_the_isolation_mechanisms_resolve_in_precedence_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let public = tmp.path().join("public");
+        let debug = tmp.path().join("debug");
+        let exe = tmp.path().join("bin").join("agentscommander_copy.exe");
+        let text = |path: &PathBuf| Some(path.to_string_lossy().to_string());
+        let resolve = |public_override, test_override| {
+            resolve_instance_location(
+                public_override,
+                test_override,
+                Ok(exe.clone()),
+                Some(PathBuf::from("/home/u")),
+                WriteProbeOutcome::Success,
+            )
+            .config_dir
+        };
+
+        assert_eq!(resolve(text(&public), None), Some(public.clone()));
+        assert_eq!(resolve(None, text(&debug)), Some(debug.clone()));
+        assert_eq!(
+            resolve(None, None),
+            Some(tmp.path().join("bin").join(".agentscommander_copy"))
+        );
+        assert_eq!(
+            resolve(text(&public), text(&debug)),
+            Some(public.clone()),
+            "the public override wins over the debug override"
+        );
+    }
+
     #[test]
     fn issue_1577_identical_inputs_produce_identical_complete_location() {
         let resolve = || {
