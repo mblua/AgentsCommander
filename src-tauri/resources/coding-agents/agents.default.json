@@ -13,7 +13,12 @@
       "configSeed": { "enabled": true, "dest": ".claude" },
       "removable": true,
       "updateCommands": ["claude --update"],
-      "installCommands": { "default": "npm install -g @anthropic-ai/claude-code" },
+      "installCommands": {
+        "default": "echo No verified installer for this platform 1>&2 && exit 1",
+        "windows": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwB0AG8AcAAnADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAwADsAIAB0AHIAeQAgAHsAIAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAA9AEkAbgB2AG8AawBlAC0AUgBlAHMAdABNAGUAdABoAG8AZAAgAC0AVQByAGkAIAAnAGgAdAB0AHAAcwA6AC8ALwBjAGwAYQB1AGQAZQAuAGEAaQAvAGkAbgBzAHQAYQBsAGwALgBwAHMAMQAnACAALQBUAGkAbQBlAG8AdQB0AFMAZQBjACAAMQAyADAAOwAgAGkAZgAgACgAWwBzAHQAcgBpAG4AZwBdADoAOgBJAHMATgB1AGwAbABPAHIAVwBoAGkAdABlAFMAcABhAGMAZQAoACQAYQBjAF8AaQBuAHMAdABhAGwAbABfAHMAYwByAGkAcAB0ACkAKQAgAHsAIAB0AGgAcgBvAHcAIAAnAEUAbQBwAHQAeQAgAGkAbgBzAHQAYQBsAGwAZQByACAAcgBlAHMAcABvAG4AcwBlACcAIAB9ADsAIAAmACAAKABbAHMAYwByAGkAcAB0AGIAbABvAGMAawBdADoAOgBDAHIAZQBhAHQAZQAoACQAYQBjAF8AaQBuAHMAdABhAGwAbABfAHMAYwByAGkAcAB0ACkAKQA7ACAAaQBmACAAKAAtAG4AbwB0ACAAJAA/ACkAIAB7ACAAZQB4AGkAdAAgADEAIAB9ADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGUAeABpAHQAIAAxACAAfQA=",
+        "macos": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://claude.ai/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash",
+        "linux": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://claude.ai/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash"
+      },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -28,7 +33,12 @@
       "configSeed": { "enabled": true, "dest": ".codex" },
       "removable": true,
       "updateCommands": ["codex update"],
-      "installCommands": { "default": "npm install -g @openai/codex" },
+      "installCommands": {
+        "default": "echo No verified installer for this platform 1>&2 && exit 1",
+        "windows": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwB0AG8AcAAnADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAwADsAIAB0AHIAeQAgAHsAIAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAA9AEkAbgB2AG8AawBlAC0AUgBlAHMAdABNAGUAdABoAG8AZAAgAC0AVQByAGkAIAAnAGgAdAB0AHAAcwA6AC8ALwBjAGgAYQB0AGcAcAB0AC4AYwBvAG0ALwBjAG8AZABlAHgALwBpAG4AcwB0AGEAbABsAC4AcABzADEAJwAgAC0AVABpAG0AZQBvAHUAdABTAGUAYwAgADEAMgAwADsAIABpAGYAIAAoAFsAcwB0AHIAaQBuAGcAXQA6ADoASQBzAE4AdQBsAGwATwByAFcAaABpAHQAZQBTAHAAYQBjAGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAIAB7ACAAdABoAHIAbwB3ACAAJwBFAG0AcAB0AHkAIABpAG4AcwB0AGEAbABsAGUAcgAgAHIAZQBzAHAAbwBuAHMAZQAnACAAfQA7ACAAJgAgACgAWwBzAGMAcgBpAHAAdABiAGwAbwBjAGsAXQA6ADoAQwByAGUAYQB0AGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAOwAgAGkAZgAgACgALQBuAG8AdAAgACQAPwApACAAewAgAGUAeABpAHQAIAAxACAAfQA7ACAAZQB4AGkAdAAgACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIABlAHgAaQB0ACAAMQAgAH0A",
+        "macos": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://chatgpt.com/codex/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | sh",
+        "linux": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://chatgpt.com/codex/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | sh"
+      },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -42,6 +52,12 @@
       "isolatedHome": false,
       "removable": true,
       "updateCommands": ["hermes update --yes"],
+      "installCommands": {
+        "default": "echo No verified installer for this platform 1>&2 && exit 1",
+        "windows": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwB0AG8AcAAnADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAwADsAIAB0AHIAeQAgAHsAIAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAA9AEkAbgB2AG8AawBlAC0AUgBlAHMAdABNAGUAdABoAG8AZAAgAC0AVQByAGkAIAAnAGgAdAB0AHAAcwA6AC8ALwBoAGUAcgBtAGUAcwAtAGEAZwBlAG4AdAAuAG4AbwB1AHMAcgBlAHMAZQBhAHIAYwBoAC4AYwBvAG0ALwBpAG4AcwB0AGEAbABsAC4AcABzADEAJwAgAC0AVABpAG0AZQBvAHUAdABTAGUAYwAgADEAMgAwADsAIABpAGYAIAAoAFsAcwB0AHIAaQBuAGcAXQA6ADoASQBzAE4AdQBsAGwATwByAFcAaABpAHQAZQBTAHAAYQBjAGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAIAB7ACAAdABoAHIAbwB3ACAAJwBFAG0AcAB0AHkAIABpAG4AcwB0AGEAbABsAGUAcgAgAHIAZQBzAHAAbwBuAHMAZQAnACAAfQA7ACAAJgAgACgAWwBzAGMAcgBpAHAAdABiAGwAbwBjAGsAXQA6ADoAQwByAGUAYQB0AGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQA7ACAAaQBmACAAKAAtAG4AbwB0ACAAJAA/ACkAIAB7ACAAZQB4AGkAdAAgADEAIAB9ADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGUAeABpAHQAIAAxACAAfQA=",
+        "macos": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://hermes-agent.nousresearch.com/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash -s -- --non-interactive",
+        "linux": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://hermes-agent.nousresearch.com/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash -s -- --non-interactive"
+      },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -54,6 +70,12 @@
       "envs": [],
       "isolatedHome": false,
       "removable": true,
+      "installCommands": {
+        "default": "echo No verified installer for this platform 1>&2 && exit 1",
+        "windows": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwB0AG8AcAAnADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAwADsAIAB0AHIAeQAgAHsAIAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAA9AEkAbgB2AG8AawBlAC0AUgBlAHMAdABNAGUAdABoAG8AZAAgAC0AVQByAGkAIAAnAGgAdAB0AHAAcwA6AC8ALwBjAHUAcgBzAG8AcgAuAGMAbwBtAC8AaQBuAHMAdABhAGwAbAA/AHcAaQBuADMAMgA9AHQAcgB1AGUAJwAgAC0AVABpAG0AZQBvAHUAdABTAGUAYwAgADEAMgAwADsAIABpAGYAIAAoAFsAcwB0AHIAaQBuAGcAXQA6ADoASQBzAE4AdQBsAGwATwByAFcAaABpAHQAZQBTAHAAYQBjAGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAIAB7ACAAdABoAHIAbwB3ACAAJwBFAG0AcAB0AHkAIABpAG4AcwB0AGEAbABsAGUAcgAgAHIAZQBzAHAAbwBuAHMAZQAnACAAfQA7ACAAJgAgACgAWwBzAGMAcgBpAHAAdABiAGwAbwBjAGsAXQA6ADoAQwByAGUAYQB0AGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAOwAgAGkAZgAgACgALQBuAG8AdAAgACQAPwApACAAewAgAGUAeABpAHQAIAAxACAAfQA7ACAAZQB4AGkAdAAgACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIABlAHgAaQB0ACAAMQAgAH0A",
+        "macos": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://cursor.com/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash",
+        "linux": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://cursor.com/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash"
+      },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -67,7 +89,12 @@
       "isolatedHome": false,
       "removable": true,
       "updateCommands": ["pi update"],
-      "installCommands": { "default": "npm install -g @mariozechner/pi-coding-agent" },
+      "installCommands": {
+        "default": "echo No verified installer for this platform 1>&2 && exit 1",
+        "windows": "npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent",
+        "macos": "npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent",
+        "linux": "npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent"
+      },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -82,7 +109,12 @@
       "configSeed": { "enabled": true, "dest": ".opencode" },
       "removable": true,
       "updateCommands": ["opencode upgrade"],
-      "installCommands": { "default": "npm install -g opencode-ai" },
+      "installCommands": {
+        "default": "echo No verified installer for this platform 1>&2 && exit 1",
+        "windows": "npm install -g --ignore-scripts=false --include=optional --allow-scripts=opencode-ai opencode-ai",
+        "macos": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://opencode.ai/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash",
+        "linux": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://opencode.ai/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash"
+      },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -96,6 +128,12 @@
       "isolatedHome": false,
       "removable": true,
       "updateCommands": ["agy update"],
+      "installCommands": {
+        "default": "echo No verified installer for this platform 1>&2 && exit 1",
+        "windows": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwB0AG8AcAAnADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAwADsAIAB0AHIAeQAgAHsAIAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAA9AEkAbgB2AG8AawBlAC0AUgBlAHMAdABNAGUAdABoAG8AZAAgAC0AVQByAGkAIAAnAGgAdAB0AHAAcwA6AC8ALwBhAG4AdABpAGcAcgBhAHYAaQB0AHkALgBnAG8AbwBnAGwAZQAvAGMAbABpAC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACYAIAAoAFsAcwBjAHIAaQBwAHQAYgBsAG8AYwBrAF0AOgA6AEMAcgBlAGEAdABlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApADsAIABpAGYAIAAoAC0AbgBvAHQAIAAkAD8AKQAgAHsAIABlAHgAaQB0ACAAMQAgAH0AOwAgAGUAeABpAHQAIAAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAZQB4AGkAdAAgADEAIAB9AA==",
+        "macos": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://antigravity.google/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash",
+        "linux": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://antigravity.google/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash"
+      },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {
@@ -108,6 +146,12 @@
       "envs": [],
       "isolatedHome": false,
       "removable": true,
+      "installCommands": {
+        "default": "echo No verified installer for this platform 1>&2 && exit 1",
+        "windows": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwB0AG8AcAAnADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAwADsAIAB0AHIAeQAgAHsAIAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAA9AEkAbgB2AG8AawBlAC0AUgBlAHMAdABNAGUAdABoAG8AZAAgAC0AVQByAGkAIAAnAGgAdAB0AHAAcwA6AC8ALwB4AC4AYQBpAC8AYwBsAGkALwBpAG4AcwB0AGEAbABsAC4AcABzADEAJwAgAC0AVABpAG0AZQBvAHUAdABTAGUAYwAgADEAMgAwADsAIABpAGYAIAAoAFsAcwB0AHIAaQBuAGcAXQA6ADoASQBzAE4AdQBsAGwATwByAFcAaABpAHQAZQBTAHAAYQBjAGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAIAB7ACAAdABoAHIAbwB3ACAAJwBFAG0AcAB0AHkAIABpAG4AcwB0AGEAbABsAGUAcgAgAHIAZQBzAHAAbwBuAHMAZQAnACAAfQA7ACAAJgAgACgAWwBzAGMAcgBpAHAAdABiAGwAbwBjAGsAXQA6ADoAQwByAGUAYQB0AGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAOwAgAGkAZgAgACgALQBuAG8AdAAgACQAPwApACAAewAgAGUAeABpAHQAIAAxACAAfQA7ACAAZQB4AGkAdAAgACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIABlAHgAaQB0ACAAMQAgAH0A",
+        "macos": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://x.ai/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash",
+        "linux": "ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://x.ai/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash"
+      },
       "idleBurst": { "maxBytes": 1024, "maxSecs": 3.0, "priorSilenceSecs": 60.0 }
     },
     {

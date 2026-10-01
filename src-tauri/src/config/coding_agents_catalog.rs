@@ -131,14 +131,17 @@ pub(crate) fn tested_level_for(key: &str) -> Option<TestedLevel> {
 
 /// #2736 - the install command for THIS host: the platform key when present,
 /// else `default`. `windows` for target_os = "windows", `macos` for "macos",
-/// `linux` for every other target.
+/// `linux` for Linux; every other target uses `default`. Shipped defaults
+/// reject unverified platforms without downloading an installer.
 pub(crate) fn resolve_install_command(commands: &InstallCommands) -> &str {
     let os = if cfg!(target_os = "windows") {
         "windows"
     } else if cfg!(target_os = "macos") {
         "macos"
-    } else {
+    } else if cfg!(target_os = "linux") {
         "linux"
+    } else {
+        "unknown"
     };
     install_command_for_os(commands, os)
 }
@@ -5091,29 +5094,19 @@ mod tests {
     /// `embedded_default_matches_current_presets_exactly` so that test stays
     /// under the pinned cognitive complexity threshold of 25.
     fn assert_shipped_install_commands_2736(key: &str, def: &CodingAgentDefinition) {
-        let expected_install = match key {
-            "claude" => Some("npm install -g @anthropic-ai/claude-code"),
-            "codex" => Some("npm install -g @openai/codex"),
-            "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
-            "opencode" => Some("npm install -g opencode-ai"),
-            _ => None,
-        };
-        match expected_install {
-            Some(expected) => {
-                let ic = def
-                    .install_commands
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("{key} must ship installCommands"));
-                assert_eq!(ic.default, expected, "{key} installCommands.default");
-                assert!(
-                    ic.windows.is_none() && ic.macos.is_none() && ic.linux.is_none(),
-                    "{key} must ship no per-OS override"
+        assert_eq!(
+            def.install_commands,
+            expected_install_2736(key),
+            "{key} full installer object"
+        );
+        if let Some(expected) = expected_install_2736(key) {
+            for os in ["windows", "macos", "linux"] {
+                assert_eq!(
+                    install_command_for_os(def.install_commands.as_ref().unwrap(), os),
+                    install_command_for_os(&expected, os),
+                    "{key}/{os}"
                 );
             }
-            None => assert!(
-                def.install_commands.is_none(),
-                "{key} must ship no installCommands"
-            ),
         }
     }
 
@@ -5311,15 +5304,76 @@ mod tests {
         );
     }
 
-    /// #2736 - the shipped `installCommands` value for `key`, if any.
-    fn expected_install_2736(key: &str) -> Option<&'static str> {
-        match key {
-            "claude" => Some("npm install -g @anthropic-ai/claude-code"),
-            "codex" => Some("npm install -g @openai/codex"),
-            "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
-            "opencode" => Some("npm install -g opencode-ai"),
-            _ => None,
-        }
+    const INSTALL_DEFAULT_2787: &str =
+        "echo No verified installer for this platform 1>&2 && exit 1";
+
+    fn expected_install_2736(key: &str) -> Option<InstallCommands> {
+        use base64::Engine;
+        let (unix_url, windows_url, interpreter, argument) = match key {
+            "claude" => (
+                "https://claude.ai/install.sh",
+                "https://claude.ai/install.ps1",
+                "bash",
+                "",
+            ),
+            "codex" => (
+                "https://chatgpt.com/codex/install.sh",
+                "https://chatgpt.com/codex/install.ps1",
+                "sh",
+                "",
+            ),
+            "hermes" => (
+                "https://hermes-agent.nousresearch.com/install.sh",
+                "https://hermes-agent.nousresearch.com/install.ps1",
+                "bash -s -- --non-interactive",
+                " -NonInteractive",
+            ),
+            "cursor" => (
+                "https://cursor.com/install",
+                "https://cursor.com/install?win32=true",
+                "bash",
+                "",
+            ),
+            "opencode" => ("https://opencode.ai/install", "", "bash", ""),
+            "antigravity" => (
+                "https://antigravity.google/cli/install.sh",
+                "https://antigravity.google/cli/install.ps1",
+                "bash",
+                "",
+            ),
+            "grok" => (
+                "https://x.ai/cli/install.sh",
+                "https://x.ai/cli/install.ps1",
+                "bash",
+                "",
+            ),
+            "pi" => {
+                let command = "npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent".to_string();
+                return Some(InstallCommands {
+                    default: INSTALL_DEFAULT_2787.to_string(),
+                    windows: Some(command.clone()),
+                    macos: Some(command.clone()),
+                    linux: Some(command),
+                });
+            }
+            _ => return None,
+        };
+        let unix = format!(
+            r#"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 '{unix_url}') && [ -n "$ac_install_script" ] && printf '%s\n' "$ac_install_script" | {interpreter}"#
+        );
+        let windows = if key == "opencode" {
+            "npm install -g --ignore-scripts=false --include=optional --allow-scripts=opencode-ai opencode-ai".to_string()
+        } else {
+            let body = format!("$ErrorActionPreference='Stop'; $global:LASTEXITCODE=0; try {{ $ac_install_script=Invoke-RestMethod -Uri '{windows_url}' -TimeoutSec 120; if ([string]::IsNullOrWhiteSpace($ac_install_script)) {{ throw 'Empty installer response' }}; & ([scriptblock]::Create($ac_install_script)){argument}; if (-not $?) {{ exit 1 }}; exit $LASTEXITCODE }} catch {{ [Console]::Error.WriteLine($_); exit 1 }}");
+            let bytes: Vec<u8> = body.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            format!("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {}", base64::engine::general_purpose::STANDARD.encode(bytes))
+        };
+        Some(InstallCommands {
+            default: INSTALL_DEFAULT_2787.to_string(),
+            windows: Some(windows),
+            macos: Some(unix.clone()),
+            linux: Some(unix),
+        })
     }
 
     /// #2736 - a managed base of the shipped claude row, current revision.
@@ -5337,28 +5391,11 @@ mod tests {
     }
 
     #[test]
-    fn install_commands_2736_shipped_for_four_builtins_and_absent_for_the_rest() {
+    fn install_commands_2736_shipped_for_eight_builtins_and_absent_for_muse() {
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.agents.len(), 9);
         for def in &catalog.agents {
-            let key = def.key.as_str();
-            match expected_install_2736(key) {
-                Some(expected) => {
-                    let ic = def
-                        .install_commands
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("{key} must ship installCommands"));
-                    assert_eq!(ic.default, expected, "{key} installCommands.default");
-                    assert!(
-                        ic.windows.is_none() && ic.macos.is_none() && ic.linux.is_none(),
-                        "{key} must ship no per-OS override"
-                    );
-                }
-                None => assert!(
-                    def.install_commands.is_none(),
-                    "{key} must ship no installCommands"
-                ),
-            }
+            assert_shipped_install_commands_2736(&def.key, def);
         }
         assert_eq!(
             catalog
@@ -5366,7 +5403,7 @@ mod tests {
                 .iter()
                 .filter(|def| def.install_commands.is_some())
                 .count(),
-            4
+            8
         );
     }
 
@@ -5523,9 +5560,11 @@ mod tests {
             .install_commands
             .as_ref()
             .expect("composed");
-        assert_eq!(ic.default, "npm install -g @anthropic-ai/claude-code");
+        assert_eq!(ic.default, INSTALL_DEFAULT_2787);
         assert_eq!(ic.windows.as_deref(), Some("winget install claude"));
-        assert!(ic.macos.is_none() && ic.linux.is_none());
+        let expected = expected_install_2736("claude").unwrap();
+        assert_eq!(ic.macos, expected.macos);
+        assert_eq!(ic.linux, expected.linux);
     }
 
     #[test]
@@ -5605,7 +5644,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .default,
-                "npm install -g @anthropic-ai/claude-code",
+                INSTALL_DEFAULT_2787,
                 "{local}: the base entry stays intact"
             );
         }
@@ -5698,7 +5737,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .default,
-            "npm install -g @anthropic-ai/claude-code"
+            INSTALL_DEFAULT_2787
         );
     }
 
@@ -5787,7 +5826,8 @@ mod tests {
             let value = serde_json::to_value(&wire).unwrap();
             assert_eq!(
                 value["installCommands"],
-                serde_json::json!({"default": "npm install -g @anthropic-ai/claude-code"})
+                serde_json::to_value(expected_install_2736("claude").unwrap()).unwrap(),
+                "presence pins the definition's current object, not the legacy field value"
             );
         }
         for wire in [
@@ -5818,6 +5858,297 @@ mod tests {
         let error = extract_legacy_local(legacy.as_bytes(), &supported_shipped_definitions())
             .expect_err("ambiguous installCommands refuses the migration");
         assert!(error.contains("installCommands"), "{error}");
+    }
+
+    /// #2787: independently pin the previous four npm objects; all other
+    /// definitions retain the unchanged planning-base metadata (including #2784).
+    fn old_installers_2787() -> Vec<CodingAgentDefinition> {
+        supported_shipped_definitions()
+            .into_iter()
+            .map(|mut def| {
+                let command = match def.key.as_str() {
+                    "claude" => Some("npm install -g @anthropic-ai/claude-code"),
+                    "codex" => Some("npm install -g @openai/codex"),
+                    "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
+                    "opencode" => Some("npm install -g opencode-ai"),
+                    _ => None,
+                };
+                def.install_commands = command.map(|command| InstallCommands {
+                    default: command.to_string(),
+                    windows: None,
+                    macos: None,
+                    linux: None,
+                });
+                def
+            })
+            .collect()
+    }
+
+    fn old_managed_2787(ac_dir: &Path) -> Vec<u8> {
+        let old = old_installers_2787();
+        assert_eq!(
+            old.iter()
+                .filter(|def| def.install_commands.is_some())
+                .count(),
+            4
+        );
+        assert!(old
+            .iter()
+            .find(|def| def.key == "grok")
+            .unwrap()
+            .description
+            .contains("SpaceXAI"));
+        let revision = managed_content_sha256(&old);
+        let rows: Vec<_> = old
+            .iter()
+            .map(|def| serde_json::to_value(def).unwrap())
+            .collect();
+        write_managed_base(ac_dir, &rows, &revision, true)
+    }
+
+    #[test]
+    fn agent_install_2787_catalog_matrix_dispatch() {
+        let definitions = supported_shipped_definitions();
+        assert_eq!(definitions.len(), 8);
+        for def in &definitions {
+            assert_shipped_install_commands_2736(&def.key, def);
+            let commands = def.install_commands.as_ref().unwrap();
+            let host = if cfg!(target_os = "windows") {
+                "windows"
+            } else if cfg!(target_os = "macos") {
+                "macos"
+            } else if cfg!(target_os = "linux") {
+                "linux"
+            } else {
+                "unknown"
+            };
+            assert_eq!(
+                resolve_install_command(commands),
+                install_command_for_os(commands, host)
+            );
+            for unknown in ["freebsd", "android", "unknown", ""] {
+                assert_eq!(
+                    install_command_for_os(commands, unknown),
+                    INSTALL_DEFAULT_2787
+                );
+            }
+        }
+        // Exercise production persisted read/seed gates, including local resurrection.
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        write_local(
+            dir.path(),
+            r##"{"schemaVersion":1,"agents":[{"key":"muse","label":"Muse","description":"d","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false,"installCommands":{"default":"echo resurrected"}}]}"##,
+        );
+        assert_no_key(&load_catalog(dir.path()).unwrap(), "muse");
+        assert_no_key(&load_catalog_report(dir.path()).catalog, "muse");
+        assert!(!base_json(dir.path())["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["key"] == "muse"));
+        assert!(embedded_default_catalog()
+            .agents
+            .iter()
+            .find(|def| def.key == "muse")
+            .unwrap()
+            .install_commands
+            .is_none());
+    }
+
+    #[test]
+    fn agent_install_2787_catalog_object_null() {
+        for key in [
+            "claude",
+            "codex",
+            "hermes",
+            "cursor",
+            "pi",
+            "opencode",
+            "antigravity",
+            "grok",
+        ] {
+            let dir = seed_dir();
+            ensure_seeded(dir.path(), None);
+            write_local(dir.path(), &serde_json::json!({"schemaVersion":1,"agents":[{"key":key,"installCommands":null}]}).to_string());
+            let report = load_catalog_report(dir.path());
+            assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+            for def in &report.catalog {
+                if def.key == key {
+                    assert!(def.install_commands.is_none());
+                } else {
+                    assert_shipped_install_commands_2736(&def.key, def);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn agent_install_2787_catalog_os_null_default() {
+        for os in ["windows", "macos", "linux"] {
+            for local_default in [None, Some("echo local verbatim && exit 23")] {
+                let dir = seed_dir();
+                ensure_seeded(dir.path(), None);
+                let mut patch = serde_json::json!({os: null});
+                if let Some(default) = local_default {
+                    patch["default"] = default.into();
+                }
+                write_local(dir.path(), &serde_json::json!({"schemaVersion":1,"agents":[{"key":"claude","installCommands":patch}]}).to_string());
+                let report = load_catalog_report(dir.path());
+                assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+                let commands = claude_of(&report).install_commands.as_ref().unwrap();
+                assert_eq!(
+                    install_command_for_os(commands, os),
+                    local_default.unwrap_or(INSTALL_DEFAULT_2787)
+                );
+                for other in ["windows", "macos", "linux"]
+                    .into_iter()
+                    .filter(|other| *other != os)
+                {
+                    assert_eq!(
+                        install_command_for_os(commands, other),
+                        install_command_for_os(&expected_install_2736("claude").unwrap(), other)
+                    );
+                }
+            }
+        }
+    }
+
+    fn refresh_case_2787(patch: serde_json::Value, formatting: bool) {
+        let dir = seed_dir();
+        let old = old_managed_2787(dir.path());
+        let mut snapshot = AppSettings::default();
+        snapshot.agents = old_installers_2787()
+            .iter()
+            .map(|definition| {
+                let mut row = serde_json::to_value(definition).unwrap();
+                row["id"] = format!("registered-{}", definition.key).into();
+                serde_json::from_value(row).unwrap()
+            })
+            .collect();
+        let snapshot_bytes = serde_json::to_vec_pretty(&snapshot).unwrap();
+        assert!(!String::from_utf8_lossy(&snapshot_bytes).contains("installCommands"));
+        let snapshot_path = dir.path().join("registered-settings-snapshot.json");
+        std::fs::write(&snapshot_path, &snapshot_bytes).unwrap();
+        if formatting {
+            let root: serde_json::Value = serde_json::from_slice(&old).unwrap();
+            let compact = serde_json::to_vec(&root).unwrap();
+            assert_ne!(compact, old);
+            std::fs::write(manifest_path(dir.path()), compact).unwrap();
+        }
+        let local = serde_json::json!({"schemaVersion":1,"agents":[{"key":"claude","installCommands":patch}]}).to_string();
+        write_local(dir.path(), &local);
+        let before = std::fs::read(manifest_path(dir.path())).unwrap();
+        let reload = load_catalog_report(dir.path());
+        assert!(reload
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "refreshFailed"));
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            before,
+            "reload is read-only"
+        );
+        assert!(ensure_seeded(dir.path(), None).is_some());
+        assert_eq!(
+            std::fs::read(manifest_path(dir.path())).unwrap(),
+            build_managed_base_bytes(&supported_shipped_definitions())
+        );
+        assert_eq!(
+            std::fs::read(local_catalog_path(dir.path())).unwrap(),
+            local.as_bytes()
+        );
+        assert_eq!(std::fs::read(&snapshot_path).unwrap(), snapshot_bytes);
+        assert_eq!(
+            serde_json::to_vec_pretty(&snapshot).unwrap(),
+            snapshot_bytes
+        );
+        let report = load_catalog_report(dir.path());
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        let actual = claude_of(&report).install_commands.as_ref();
+        if patch.is_null() {
+            assert!(actual.is_none());
+        } else {
+            let mut expected = expected_install_2736("claude").unwrap();
+            if let Some(default) = patch.get("default") {
+                expected.default = default.as_str().unwrap().to_string();
+            }
+            for (os, value) in [
+                ("windows", &mut expected.windows),
+                ("macos", &mut expected.macos),
+                ("linux", &mut expected.linux),
+            ] {
+                if let Some(local) = patch.get(os) {
+                    *value = local.as_str().map(str::to_string);
+                }
+            }
+            assert_eq!(actual, Some(&expected));
+        }
+        for def in report.catalog.iter().filter(|def| def.key != "claude") {
+            assert_shipped_install_commands_2736(&def.key, def);
+        }
+    }
+
+    #[test]
+    fn agent_install_2787_catalog_refresh_overrides() {
+        for patch in [
+            serde_json::json!({}),
+            serde_json::json!({"default":"echo local default"}),
+            serde_json::json!({"windows":"echo local windows", "linux":"echo local linux"}),
+            serde_json::json!({"windows":null}),
+            serde_json::json!({"default":"echo local fallback","macos":null}),
+            serde_json::Value::Null,
+        ] {
+            refresh_case_2787(patch, false);
+        }
+    }
+
+    #[test]
+    fn agent_install_2787_catalog_formatting_refresh() {
+        refresh_case_2787(
+            serde_json::json!({"default":"echo retained", "windows":null}),
+            true,
+        );
+    }
+
+    #[test]
+    fn agent_install_2787_catalog_edited_unmanaged_reload() {
+        for managed in [true, false] {
+            let dir = seed_dir();
+            old_managed_2787(dir.path());
+            let mut root = base_json(dir.path());
+            if managed {
+                root["agents"][0]["color"] = "#123456".into();
+            } else {
+                root.as_object_mut().unwrap().remove("managed");
+            }
+            let bytes = serde_json::to_vec_pretty(&root).unwrap();
+            std::fs::write(manifest_path(dir.path()), &bytes).unwrap();
+            write_local(dir.path(), r##"{"schemaVersion":1,"agents":[]}"##);
+            let local = std::fs::read(local_catalog_path(dir.path())).unwrap();
+            let report = load_catalog_report(dir.path());
+            if managed {
+                assert!(report
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.code == "managedBaseEdited"));
+            }
+            assert_eq!(
+                claude_of(&report)
+                    .install_commands
+                    .as_ref()
+                    .unwrap()
+                    .default,
+                "npm install -g @anthropic-ai/claude-code"
+            );
+            assert_eq!(std::fs::read(manifest_path(dir.path())).unwrap(), bytes);
+            assert!(ensure_seeded(dir.path(), None).is_none());
+            assert_eq!(std::fs::read(manifest_path(dir.path())).unwrap(), bytes);
+            assert_eq!(
+                std::fs::read(local_catalog_path(dir.path())).unwrap(),
+                local
+            );
+        }
     }
 
     #[test]

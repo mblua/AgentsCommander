@@ -9071,6 +9071,404 @@ echo 'ac-2589-fake-agent 4.5.6'
     const TRUNCATION_MARKER: &str =
         "[... truncated; showing the last 8192 bytes. The full output is in the app log.]\n";
 
+    const WRAPPER_CAP_2787: Duration = Duration::from_secs(10);
+    const ENCODED_PREFIX_2787: &str =
+        "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ";
+
+    fn native_keys_2787() -> &'static [&'static str] {
+        if cfg!(windows) {
+            &["claude", "codex", "hermes", "cursor", "antigravity", "grok"]
+        } else {
+            &[
+                "claude",
+                "codex",
+                "hermes",
+                "cursor",
+                "opencode",
+                "antigravity",
+                "grok",
+            ]
+        }
+    }
+
+    fn installer_url_2787(key: &str) -> &'static str {
+        match (key, cfg!(windows)) {
+            ("claude", true) => "https://claude.ai/install.ps1",
+            ("codex", true) => "https://chatgpt.com/codex/install.ps1",
+            ("hermes", true) => "https://hermes-agent.nousresearch.com/install.ps1",
+            ("cursor", true) => "https://cursor.com/install?win32=true",
+            ("antigravity", true) => "https://antigravity.google/cli/install.ps1",
+            ("grok", true) => "https://x.ai/cli/install.ps1",
+            ("claude", false) => "https://claude.ai/install.sh",
+            ("codex", false) => "https://chatgpt.com/codex/install.sh",
+            ("hermes", false) => "https://hermes-agent.nousresearch.com/install.sh",
+            ("cursor", false) => "https://cursor.com/install",
+            ("opencode", false) => "https://opencode.ai/install",
+            ("antigravity", false) => "https://antigravity.google/cli/install.sh",
+            ("grok", false) => "https://x.ai/cli/install.sh",
+            _ => panic!("not a native wrapper: {key}"),
+        }
+    }
+
+    fn encode_wrapper_2787(body: &str) -> String {
+        use base64::Engine;
+        let bytes: Vec<u8> = body.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        format!(
+            "{ENCODED_PREFIX_2787}{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    }
+
+    fn loopback_wrapper_2787(key: &str, url: &str) -> String {
+        let catalog: serde_json::Value = serde_json::from_str(include_str!(
+            "../resources/coding-agents/agents.default.json"
+        ))
+        .unwrap();
+        let row = catalog["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["key"] == key)
+            .unwrap();
+        let os = if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        let shipped = row["installCommands"][os].as_str().unwrap();
+        let original_url = installer_url_2787(key);
+        if cfg!(windows) {
+            use base64::Engine;
+            let encoded = shipped
+                .strip_prefix(ENCODED_PREFIX_2787)
+                .expect("encoded shipped wrapper");
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap();
+            assert_eq!(bytes.len() % 2, 0);
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            let body = String::from_utf16(&units).unwrap();
+            let argument = if key == "hermes" {
+                " -NonInteractive"
+            } else {
+                ""
+            };
+            assert_eq!(body, format!("$ErrorActionPreference='Stop'; $global:LASTEXITCODE=0; try {{ $ac_install_script=Invoke-RestMethod -Uri '{original_url}' -TimeoutSec 120; if ([string]::IsNullOrWhiteSpace($ac_install_script)) {{ throw 'Empty installer response' }}; & ([scriptblock]::Create($ac_install_script)){argument}; if (-not $?) {{ exit 1 }}; exit $LASTEXITCODE }} catch {{ [Console]::Error.WriteLine($_); exit 1 }}"));
+            assert_eq!(
+                encode_wrapper_2787(&body),
+                shipped,
+                "UTF16LE/Base64 roundtrip"
+            );
+            assert_eq!(body.matches(original_url).count(), 1);
+            encode_wrapper_2787(&body.replacen(original_url, url, 1))
+        } else {
+            assert_eq!(shipped.matches(original_url).count(), 1);
+            shipped.replacen(original_url, url, 1)
+        }
+    }
+
+    /// Bounded loopback-only fixture, one request per actual install invocation.
+    async fn http_fixture_2787(
+        status: u16,
+        body: &str,
+        requests: usize,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fixture bind");
+        let url = format!("http://{}/installer-2787", listener.local_addr().unwrap());
+        let body = body.to_string();
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(WRAPPER_CAP_2787, async move {
+                for _ in 0..requests {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                        let mut buffer = [0u8; 1024];
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        assert!(count > 0 && request.len() < 8192, "bounded HTTP headers");
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    let response = format!("HTTP/1.1 {status} Fixture\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.shutdown().await.unwrap();
+                }
+            }).await.expect("fixture requests within 10 seconds");
+        });
+        (url, task)
+    }
+
+    async fn wrapper_case_2787(
+        key: &str,
+        status: u16,
+        body: &str,
+        expected_exit: Option<i32>,
+        marker_count: usize,
+    ) {
+        let (app, mut rx) = app_with_broadcaster();
+        let dir = tempfile::Builder::new()
+            .prefix("install fixture 2787 ")
+            .tempdir()
+            .unwrap();
+        assert!(dir.path().to_string_lossy().contains(' '));
+        // HTTP error diagnostics can echo source. Receipts distinguish script
+        // execution from that text while preserving raw stderr/CLIXML.
+        let body = if cfg!(windows) {
+            body.replace(
+                "[Console]::Error.WriteLine('RAN-2787');",
+                "[Console]::Error.WriteLine('RAN-2787'); Add-Content -LiteralPath 'ran-2787.marker' -Value 'RAN-2787';",
+            )
+        } else {
+            body.replace(
+                "echo RAN-2787 >&2;",
+                "echo RAN-2787 >&2; printf 'RAN-2787\\n' >> ran-2787.marker;",
+            )
+        };
+        let receipt = dir.path().join("ran-2787.marker");
+        let (url, server) = http_fixture_2787(status, &body, 2).await;
+        let command = loopback_wrapper_2787(key, &url);
+        let run =
+            run_agent_install(app.handle(), key, &command, dir.path(), WRAPPER_CAP_2787).await;
+        if let Some(code) = expected_exit {
+            assert_eq!(
+                run.exit_code,
+                Some(code),
+                "{key}: {} stderr={}",
+                run.detail,
+                String::from_utf8_lossy(&run.stderr)
+            );
+        } else {
+            assert!(
+                run.exit_code.is_some_and(|code| code != 0),
+                "{key}: {}",
+                run.detail
+            );
+        }
+        assert_eq!(run.ok, expected_exit == Some(0), "{key}: {}", run.detail);
+        assert_eq!(
+            String::from_utf8_lossy(&run.stderr)
+                .lines()
+                .filter(|line| line.trim() == "RAN-2787")
+                .count(),
+            marker_count,
+            "{key} stderr={}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(
+            !run.detail.contains("cleanup") && !run.detail.contains("timed out"),
+            "{key}: {}",
+            run.detail
+        );
+        assert!(
+            drain_frames(&mut rx).is_empty(),
+            "awaitable run does not emit events"
+        );
+        let count_receipts = || {
+            std::fs::read_to_string(&receipt)
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| *line == "RAN-2787")
+                .count()
+        };
+        assert_eq!(count_receipts(), marker_count, "one execution receipt");
+        start_agent_install_with_timeout(
+            app.handle(),
+            key.to_string(),
+            command.clone(),
+            dir.path().to_path_buf(),
+            WRAPPER_CAP_2787,
+        )
+        .unwrap();
+        let mut seen = Vec::new();
+        let frame = tokio::time::timeout(WRAPPER_CAP_2787, next_install_frame(&mut rx, &mut seen))
+            .await
+            .unwrap();
+        assert_eq!(frame["payload"]["ok"], json!(run.ok));
+        if !run.ok {
+            assert_eq!(frame["payload"]["exitCode"], json!(run.exit_code));
+            assert_eq!(
+                frame["payload"]["stderr"].as_str().unwrap(),
+                event_output(&run.stderr),
+                "raw diagnostics retained, including an empty Unix guard failure"
+            );
+        }
+        tokio::time::sleep(QUIET_WINDOW).await;
+        seen.extend(drain_frames(&mut rx));
+        assert_eq!(
+            seen.len(),
+            1,
+            "one finished frame, no update events: {seen:?}"
+        );
+        assert!(!install_in_flight(&command), "settlement releases command");
+        assert_eq!(
+            count_receipts(),
+            2 * marker_count,
+            "each invocation executes once; failed fetches execute no script"
+        );
+        tokio::time::timeout(WRAPPER_CAP_2787, server)
+            .await
+            .unwrap()
+            .unwrap();
+        eprintln!("CASE-2787 {key} HTTP{status} expected={expected_exit:?} marker={marker_count}");
+    }
+
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_success() {
+        for key in native_keys_2787() {
+            wrapper_case_2787(
+                key,
+                200,
+                &shell(
+                    "[Console]::Error.WriteLine('RAN-2787'); exit 0",
+                    "echo RAN-2787 >&2; exit 0",
+                ),
+                Some(0),
+                1,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_exit7() {
+        for key in native_keys_2787() {
+            wrapper_case_2787(
+                key,
+                200,
+                &shell(
+                    "[Console]::Error.WriteLine('RAN-2787'); exit 7",
+                    "echo RAN-2787 >&2; exit 7",
+                ),
+                Some(7),
+                1,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_empty_fetch() {
+        for key in native_keys_2787() {
+            wrapper_case_2787(key, 200, "", None, 0).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_http_failure() {
+        for key in native_keys_2787() {
+            wrapper_case_2787(
+                key,
+                503,
+                &shell(
+                    "[Console]::Error.WriteLine('RAN-2787'); exit 0",
+                    "echo RAN-2787 >&2; exit 0",
+                ),
+                None,
+                0,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_native_nonzero() {
+        for key in native_keys_2787() {
+            wrapper_case_2787(
+                key,
+                200,
+                &shell(
+                    "[Console]::Error.WriteLine('RAN-2787'); & $env:ComSpec /C 'exit 7'",
+                    "echo RAN-2787 >&2; sh -c 'exit 7'",
+                ),
+                Some(7),
+                1,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_hermes_flags() {
+        wrapper_case_2787("hermes", 200, &shell("param([switch]$NonInteractive); if (-not $NonInteractive) { throw 'missing flag' }; [Console]::Error.WriteLine('RAN-2787'); exit 0", "[ \"$1\" = '--non-interactive' ] || exit 9; echo RAN-2787 >&2; exit 0"), Some(0), 1).await;
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_powershell_errors() {
+        for key in native_keys_2787() {
+            for body in [
+                "[Console]::Error.WriteLine('RAN-2787'); throw 'terminating-2787'",
+                "[Console]::Error.WriteLine('RAN-2787'); Write-Error 'nonterminating-2787'",
+            ] {
+                wrapper_case_2787(key, 200, body, Some(1), 1).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_negative_controls() {
+        let (app, _rx) = app_with_broadcaster();
+        let dir = tempfile::Builder::new()
+            .prefix("negative fixture 2787 ")
+            .tempdir()
+            .unwrap();
+        for key in native_keys_2787() {
+            // PowerShell already rejects an HTTP error without this guard;
+            // its unguarded empty download is the false-success control.
+            // Unix pipelines instead mask curl's HTTP failure with shell exit0.
+            let status = if cfg!(windows) { 200 } else { 503 };
+            let (url, server) = http_fixture_2787(status, "", 1).await;
+            let command = if cfg!(windows) {
+                encode_wrapper_2787(&format!(
+                    "Invoke-RestMethod -Uri '{url}' | powershell.exe -NoProfile -NonInteractive -Command -"
+                ))
+            } else {
+                format!(
+                    "curl -fsSL '{url}' | {}",
+                    if *key == "codex" { "sh" } else { "bash" }
+                )
+            };
+            let run =
+                run_agent_install(app.handle(), key, &command, dir.path(), WRAPPER_CAP_2787).await;
+            assert_eq!(
+                run.exit_code,
+                Some(0),
+                "unguarded fetch exposes false success: {}",
+                run.detail
+            );
+            assert!(run.ok);
+            if !cfg!(windows) {
+                assert!(!run.stderr.is_empty(), "failed fetch diagnostics retained");
+            }
+            server.await.unwrap();
+            #[cfg(windows)]
+            {
+                let command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"[Console]::Error.WriteLine('RAN-2787'); exit 7\"";
+                let run =
+                    run_agent_install(app.handle(), key, command, dir.path(), WRAPPER_CAP_2787)
+                        .await;
+                assert!(
+                    run.ok,
+                    "previous quoted -Command demonstrates false success: {}",
+                    run.detail
+                );
+                assert_eq!(run.exit_code, Some(0));
+                assert!(!String::from_utf8_lossy(&run.stderr).contains("RAN-2787"));
+                assert!(
+                    String::from_utf8_lossy(&run.stdout).contains("RAN-2787"),
+                    "script printed, not executed"
+                );
+            }
+            eprintln!("CASE-2787 negative-control {key}");
+        }
+    }
+
     #[tokio::test]
     async fn agent_install_2736_success_logs_full_output_and_emits_ok_true() {
         let (app, mut rx) = app_with_broadcaster();
