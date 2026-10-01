@@ -666,21 +666,30 @@ fn merge_ci_observations(
     from_list: bool,
 ) -> Result<(), FailureKind> {
     let mut active_seen = false;
+    let mut error = state.overflow.then_some(FailureKind::Incomplete);
     for run in observations {
         let mut observation = run.clone();
         if let Some(old) = state.known.get(&run.id) {
-            if old.workflow_id != run.workflow_id
+            let rejected = if old.workflow_id != run.workflow_id
                 || old.head_sha != run.head_sha
                 || old.head_branch != run.head_branch
             {
+                Some(FailureKind::Other)
+            } else if run.run_attempt < old.run_attempt {
+                Some(FailureKind::Incomplete)
+            } else {
+                None
+            };
+            if let Some(kind) = rejected {
                 state.proofs.remove(&run.id);
                 state.closing_ready = false;
-                return Err(FailureKind::Other);
-            }
-            if run.run_attempt < old.run_attempt {
-                state.proofs.remove(&run.id);
-                state.closing_ready = false;
-                return Err(FailureKind::Incomplete);
+                // Identity contradictions dominate stale attempts regardless of
+                // row order. Absorb compatible rows even when this round fails.
+                error = Some(match (error, kind) {
+                    (Some(FailureKind::Other), _) | (_, FailureKind::Other) => FailureKind::Other,
+                    _ => FailureKind::Incomplete,
+                });
+                continue;
             }
             // Detail endpoints corroborate completion; the last list supplies
             // the PR projection for a remembered run omitted by a later list.
@@ -697,7 +706,8 @@ fn merge_ci_observations(
             state.cancel_candidate();
             if state.known.len() >= MAX_CI_KNOWN_RUNS {
                 state.overflow = true;
-                return Err(FailureKind::Incomplete);
+                error.get_or_insert(FailureKind::Incomplete);
+                continue;
             }
         }
         state.known.insert(run.id, observation.clone());
@@ -714,10 +724,7 @@ fn merge_ci_observations(
             state.cancel_candidate();
         }
     }
-    if state.overflow {
-        return Err(FailureKind::Incomplete);
-    }
-    Ok(())
+    error.map_or(Ok(()), Err)
 }
 
 fn parse_ci_jobs_response(body: &str, run: &CiRunObservation) -> Result<bool, FailureKind> {
@@ -2372,133 +2379,133 @@ async fn query_key(
         );
     }
 
-    if plan.ci {
-        let ci = match build_gh_command_spec(
-            gh,
-            GhQuery::Ci {
-                nwo: &key.nwo,
-                sha40: &key.sha40,
-            },
-        ) {
-            Ok(spec) => {
-                let branch = key.branch.clone();
-                run_query(spawner, spec, |body| {
-                    parse_ci_response(body, &branch, &key.sha40)
-                })
-                .await
-            }
-            Err(_) => Err(FailureKind::Other),
-        };
-        let closing_ready = completion.closing_ready;
-        let merge_error = ci.as_ref().ok().and_then(|answer| {
-            merge_ci_observations(&mut completion, &answer.observations, true).err()
-        });
-        let scripted_staleness = outcome.staleness;
-        let on_default_branch = default_branch == Some(key.branch.as_str());
-        if on_default_branch {
-            outcome.ci_suppressed = true;
-        }
-        let mut ci_result = match ci {
-            // A resolved default branch is suppressed after the branch-filtered
-            // query and without any identity question: `Ok` publishes `Idle`,
-            // while an `Err` falls through to the failure arm below so the round
-            // still backs off, warns and can arm its gate.
-            Ok(_) if on_default_branch => Ok(CiState::Idle),
-            // Only a non-default branch that HAS runs needs the identity
-            // question; a branch with no runs answers `Idle` without it.
-            Ok(answer)
-                if answer.branch_has_runs
-                    && default_branch.is_some_and(|default| key.branch != default) =>
-            {
-                let compare = match scripted_staleness {
-                    Some(result) => result,
-                    None => {
-                        // The ONLY place an extra `gh` call is issued for the
-                        // identity question, and so the only place the round's
-                        // reservation for it is consumed.
-                        outcome.ci_identity_call = true;
-                        match build_gh_command_spec(
-                            gh,
-                            GhQuery::Compare {
-                                nwo: &key.nwo,
-                                sha40: &key.sha40,
-                            },
-                        ) {
-                            Ok(spec) => run_query(spawner, spec, parse_compare_response).await,
-                            Err(_) => Err(FailureKind::Other),
-                        }
-                    }
-                };
-                match compare {
-                    Ok((_, _, _, true)) => {
-                        outcome.ci_suppressed = true;
-                        Ok(CiState::Idle)
-                    }
-                    Ok((_, _, _, false)) => {
-                        outcome.ci_runs = (answer.run_ids, answer.pull_requests);
-                        Ok(answer.state)
-                    }
-                    Err(kind) => Err(kind),
-                }
-            }
-            Ok(answer) => {
-                outcome.ci_runs = (answer.run_ids, answer.pull_requests);
-                Ok(answer.state)
-            }
-            Err(kind) => Err(kind),
-        };
-        if !outcome.ci_suppressed {
-            if ci_result.is_ok() {
-                if let Some(kind) = merge_error {
-                    ci_result = Err(kind);
-                }
-            }
-            if confirmed == Some(CiState::Running) && ci_result == Ok(CiState::Idle) {
-                if let Some(Err(kind)) = outcome.staleness {
-                    ci_result = Err(kind);
-                }
-            }
-            if ci_result == Ok(CiState::Idle) && confirmed == Some(CiState::Running) {
-                outcome.ci_decision = Some(CiCompletionDecision::Pending);
-                if closing_ready && completion.closing_ready && completion.all_proven() {
-                    outcome.ci_decision = Some(CiCompletionDecision::Accepted);
-                } else {
-                    let unproven = completion
-                        .known
-                        .values()
-                        .find(|run| completion.proofs.get(&run.id) != Some(&run.proof()))
-                        .map(|run| run.id);
-                    if reserved {
-                        if let Some(id) = unproven {
-                            ci_result = corroborate_ci_run(
-                                spawner,
-                                gh,
-                                key,
-                                id,
-                                &mut completion,
-                                &mut outcome.ci_corroboration_calls,
-                            )
-                            .await;
-                            if ci_result == Ok(CiState::Running) {
-                                outcome.ci_decision = Some(CiCompletionDecision::Accepted);
-                            }
-                        }
-                    }
-                    completion.closing_ready = completion.all_proven();
-                }
-            } else if ci_result.is_ok() {
-                outcome.ci_decision = Some(CiCompletionDecision::Accepted);
-            }
-            if ci_result.is_err() || outcome.staleness.is_some_and(|result| result.is_err()) {
-                completion.closing_ready = false;
-            }
-            if ci_result == Ok(CiState::Running) {
-                outcome.ci_runs = (completion.active_ids.clone(), completion.active_prs.clone());
-            }
-            outcome.ci_completion = Some(completion);
-        }
-        outcome.ci = Some(ci_result);
+    if !plan.ci {
+        return outcome;
     }
+
+    let ci = match build_gh_command_spec(
+        gh,
+        GhQuery::Ci {
+            nwo: &key.nwo,
+            sha40: &key.sha40,
+        },
+    ) {
+        Ok(spec) => {
+            let branch = key.branch.clone();
+            run_query(spawner, spec, |body| {
+                parse_ci_response(body, &branch, &key.sha40)
+            })
+            .await
+        }
+        Err(_) => Err(FailureKind::Other),
+    };
+    let closing_ready = completion.closing_ready;
+    let merge_error = ci.as_ref().ok().and_then(|answer| {
+        merge_ci_observations(&mut completion, &answer.observations, true).err()
+    });
+    let scripted_staleness = outcome.staleness;
+    let on_default_branch = default_branch == Some(key.branch.as_str());
+    outcome.ci_suppressed = on_default_branch;
+    let mut ci_result = match ci {
+        // A resolved default branch is suppressed after the branch-filtered
+        // query and without any identity question: `Ok` publishes `Idle`,
+        // while an `Err` falls through to the failure arm below so the round
+        // still backs off, warns and can arm its gate.
+        Ok(_) if on_default_branch => Ok(CiState::Idle),
+        // Only a non-default branch that HAS runs needs the identity
+        // question; a branch with no runs answers `Idle` without it.
+        Ok(answer)
+            if answer.branch_has_runs
+                && default_branch.is_some_and(|default| key.branch != default) =>
+        {
+            let compare = match scripted_staleness {
+                Some(result) => result,
+                None => {
+                    // The ONLY place an extra `gh` call is issued for the
+                    // identity question, and so the only place the round's
+                    // reservation for it is consumed.
+                    outcome.ci_identity_call = true;
+                    match build_gh_command_spec(
+                        gh,
+                        GhQuery::Compare {
+                            nwo: &key.nwo,
+                            sha40: &key.sha40,
+                        },
+                    ) {
+                        Ok(spec) => run_query(spawner, spec, parse_compare_response).await,
+                        Err(_) => Err(FailureKind::Other),
+                    }
+                }
+            };
+            match compare {
+                Ok((_, _, _, true)) => {
+                    outcome.ci_suppressed = true;
+                    Ok(CiState::Idle)
+                }
+                Ok((_, _, _, false)) => {
+                    outcome.ci_runs = (answer.run_ids, answer.pull_requests);
+                    Ok(answer.state)
+                }
+                Err(kind) => Err(kind),
+            }
+        }
+        Ok(answer) => {
+            outcome.ci_runs = (answer.run_ids, answer.pull_requests);
+            Ok(answer.state)
+        }
+        Err(kind) => Err(kind),
+    };
+    if outcome.ci_suppressed {
+        outcome.ci = Some(ci_result);
+        return outcome;
+    }
+    if let Some(kind) = merge_error.filter(|_| ci_result.is_ok()) {
+        ci_result = Err(kind);
+    }
+    if let Some(Err(kind)) = outcome
+        .staleness
+        .filter(|_| confirmed == Some(CiState::Running) && ci_result == Ok(CiState::Idle))
+    {
+        ci_result = Err(kind);
+    }
+    if ci_result == Ok(CiState::Idle) && confirmed == Some(CiState::Running) {
+        outcome.ci_decision = Some(CiCompletionDecision::Pending);
+        if closing_ready && completion.closing_ready && completion.all_proven() {
+            outcome.ci_decision = Some(CiCompletionDecision::Accepted);
+        } else {
+            let unproven = completion
+                .known
+                .values()
+                .find(|run| completion.proofs.get(&run.id) != Some(&run.proof()))
+                .map(|run| run.id);
+            if let Some(id) = unproven.filter(|_| reserved) {
+                ci_result = corroborate_ci_run(
+                    spawner,
+                    gh,
+                    key,
+                    id,
+                    &mut completion,
+                    &mut outcome.ci_corroboration_calls,
+                )
+                .await;
+                if ci_result == Ok(CiState::Running) {
+                    outcome.ci_decision = Some(CiCompletionDecision::Accepted);
+                }
+            }
+            completion.closing_ready = completion.all_proven();
+        }
+    } else if ci_result.is_ok() {
+        outcome.ci_decision = Some(CiCompletionDecision::Accepted);
+    }
+    if ci_result.is_err() || outcome.staleness.is_some_and(|result| result.is_err()) {
+        completion.closing_ready = false;
+    }
+    if ci_result == Ok(CiState::Running) {
+        outcome.ci_runs = (completion.active_ids.clone(), completion.active_prs.clone());
+    }
+    outcome.ci_completion = Some(completion);
+
+    outcome.ci = Some(ci_result);
 
     outcome
 }
@@ -3537,12 +3544,28 @@ mod tests {
         );
         let mut now = Instant::now();
         let mut wall = Local::now();
-        for _ in 0..4 {
+        let mut transitions = Vec::new();
+        for round in 1..=4 {
             harness.round(now, wall).await;
+            let edges = harness.drain_transitions();
+            match round {
+                2 | 4 => {
+                    assert_eq!(edges.len(), 1, "round {round}");
+                    assert_eq!(
+                        edges[0].kind,
+                        if round == 2 {
+                            TransitionKind::CiStarted
+                        } else {
+                            TransitionKind::CiFinished
+                        }
+                    );
+                    assert_eq!(edges[0].observed_at, wall);
+                }
+                _ => assert!(edges.is_empty(), "round {round} must have no edge"),
+            }
+            transitions.extend(edges);
             tick(&mut now, &mut wall, 60);
         }
-
-        let transitions = harness.drain_transitions();
         assert_eq!(transitions.len(), 2);
         assert_eq!(transitions[0].kind, TransitionKind::CiStarted);
         assert_eq!(transitions[0].repo_path, feature_repo);
@@ -3658,12 +3681,28 @@ mod tests {
         );
         let mut now = Instant::now();
         let mut wall = Local::now();
-        for _ in 0..4 {
+        let mut transitions = Vec::new();
+        for round in 1..=4 {
             harness.round(now, wall).await;
+            let edges = harness.drain_transitions();
+            match round {
+                2 | 4 => {
+                    assert_eq!(edges.len(), 1, "round {round}");
+                    assert_eq!(
+                        edges[0].kind,
+                        if round == 2 {
+                            TransitionKind::CiStarted
+                        } else {
+                            TransitionKind::CiFinished
+                        }
+                    );
+                    assert_eq!(edges[0].observed_at, wall);
+                }
+                _ => assert!(edges.is_empty(), "round {round} must have no edge"),
+            }
+            transitions.extend(edges);
             tick(&mut now, &mut wall, 60);
         }
-
-        let transitions = harness.drain_transitions();
         assert_eq!(
             transitions.len(),
             2,
@@ -5004,7 +5043,31 @@ mod tests {
             tick(&mut now, &mut wall, 30);
             // Both nwo are resolved, staleness is not due: one token, one CI query.
             harness.set_budget(budget);
+            let z_before = {
+                let state = harness.sweeper.lock_state();
+                let ci = &state.keys[&QueryKey {
+                    nwo: "mblua/repo-z".to_string(),
+                    sha40: sha_of('a'),
+                    branch: "main".to_string(),
+                }]
+                    .ci;
+                (ci.failure, ci.next_due)
+            };
             harness.round(now, wall).await;
+            if budget == 1.0 {
+                let state = harness.sweeper.lock_state();
+                let ci = &state.keys[&QueryKey {
+                    nwo: "mblua/repo-z".to_string(),
+                    sha40: sha_of('a'),
+                    branch: "main".to_string(),
+                }]
+                    .ci;
+                assert_eq!(
+                    (ci.failure, ci.next_due),
+                    z_before,
+                    "unadmitted z preserves failure and due time"
+                );
+            }
 
             assert_eq!(
                 ci_count_for(&harness, "repo-z"),
@@ -5715,12 +5778,28 @@ mod tests {
         );
         let mut now = Instant::now();
         let mut wall = Local::now();
-        for _ in 0..4 {
+        let mut transitions = Vec::new();
+        for round in 1..=4 {
             harness.round(now, wall).await;
+            let edges = harness.drain_transitions();
+            match round {
+                2 | 4 => {
+                    assert_eq!(edges.len(), 1, "round {round}");
+                    assert_eq!(
+                        edges[0].kind,
+                        if round == 2 {
+                            TransitionKind::CiStarted
+                        } else {
+                            TransitionKind::CiFinished
+                        }
+                    );
+                    assert_eq!(edges[0].observed_at, wall);
+                }
+                _ => assert!(edges.is_empty(), "round {round} must have no edge"),
+            }
+            transitions.extend(edges);
             tick(&mut now, &mut wall, 60);
         }
-
-        let transitions = harness.drain_transitions();
         assert_eq!(transitions.len(), 2);
         assert_eq!(transitions[0].kind, TransitionKind::CiStarted);
         assert_eq!(transitions[1].kind, TransitionKind::CiFinished);
@@ -8547,6 +8626,16 @@ mod tests {
                 queue_completion(&h, &format!("mblua/{name}"), i2768_row(1, "completed"));
             }
             tick(&mut now, &mut wall, 10);
+            let eligible: Vec<_> = {
+                let state = h.sweeper.lock_state();
+                state
+                    .keys
+                    .iter()
+                    .filter(|(_, entry)| entry.ci.next_due.is_none_or(|due| due <= now))
+                    .map(|(key, _)| key.nwo.clone())
+                    .collect()
+            };
+            let calls_before = h.gh_call_count();
             h.round(now, wall).await;
             assert!(h.sweeper.lock_state().budget_tokens >= 0.0);
             let state = h.sweeper.lock_state();
@@ -8554,11 +8643,17 @@ mod tests {
                 "contention fixture calls={} tokens={} deferred={:?}",
                 h.gh_call_count(),
                 state.budget_tokens,
-                state
-                    .keys
-                    .iter()
-                    .filter(|(_, v)| v.ci.chip == CiState::Running)
-                    .map(|(k, _)| k.nwo.clone())
+                eligible
+                    .into_iter()
+                    .filter(|nwo| {
+                        let endpoint = format!(
+                            "repos/{nwo}/actions/runs?head_sha={}&per_page=100",
+                            sha_of('a')
+                        );
+                        !h.gh.lock().unwrap_or_else(|e| e.into_inner()).calls[calls_before..]
+                            .iter()
+                            .any(|call| call.get(1) == Some(&endpoint))
+                    })
                     .collect::<Vec<_>>()
             );
         }
@@ -8708,5 +8803,275 @@ mod tests {
         scripts.route(&spec.args[1], Ok(ok_output("{}")));
         scripts.next(&spec).unwrap();
         scripts.next(&spec).unwrap();
+    }
+    #[tokio::test]
+    async fn i2768_merge_keeps_active_rows_after_stale_attempt() {
+        let _guard = round_test_lock().await;
+        for bad_first in [true, false] {
+            let (h, repo) = i2768_harness();
+            h.sweeper.settings.write().await.ci_sweep_min_interval_secs = 10;
+            let mut now = Instant::now();
+            let mut wall = Local::now();
+            i2768_list(&h, vec![]);
+            h.round(now, wall).await;
+            let mut active2 = i2768_row(5, "in_progress");
+            active2["run_attempt"] = serde_json::json!(2);
+            i2768_list(&h, vec![active2]);
+            tick(&mut now, &mut wall, 10);
+            h.round(now, wall).await;
+            let stale = i2768_row(5, "completed");
+            let fresh = i2768_row(50, "in_progress");
+            i2768_list(
+                &h,
+                if bad_first {
+                    vec![stale, fresh]
+                } else {
+                    vec![fresh, stale]
+                },
+            );
+            tick(&mut now, &mut wall, 10);
+            h.round(now, wall).await;
+            i2768_assert_edges(&h, 1, 0);
+            assert_eq!(h.snapshot()[&repo].ci, CiState::Unknown);
+            {
+                let state = h.sweeper.lock_state();
+                let ci = &state.keys[&i2768_key()].ci;
+                assert_eq!(ci.failure, Some(FailureKind::Incomplete));
+                assert_eq!(ci.completion.known[&5].run_attempt, 2);
+                assert!(ci.completion.known.contains_key(&50));
+                assert!(ci.completion.proofs.is_empty());
+                assert!(!ci.completion.closing_ready);
+                assert_eq!(ci.completion.active_ids, vec![50]);
+                assert_eq!(ci.completion.active_prs, vec![150]);
+            }
+            let mut done2 = i2768_row(5, "completed");
+            done2["run_attempt"] = serde_json::json!(2);
+            i2768_list(&h, vec![done2.clone()]);
+            queue_completion(&h, &i2768_key().nwo, done2.clone());
+            tick(&mut now, &mut wall, 20);
+            h.round(now, wall).await;
+            i2768_assert_edges(&h, 0, 0);
+            i2768_assert_running(&h, &repo);
+            i2768_list(&h, vec![done2.clone()]);
+            queue_endpoint(
+                &h,
+                "repos/mblua/AgentsCommander/actions/runs/50",
+                Ok(ok_output(&i2768_row(50, "in_progress").to_string())),
+            );
+            tick(&mut now, &mut wall, 10);
+            h.round(now, wall).await;
+            i2768_assert_edges(&h, 0, 0);
+            i2768_assert_running(&h, &repo);
+            {
+                let state = h.sweeper.lock_state();
+                let ci = &state.keys[&i2768_key()].ci;
+                assert_eq!(ci.run_ids, vec![50]);
+                assert_eq!(ci.pull_requests, vec![150]);
+                assert!(ci.completion.proofs.is_empty());
+                assert!(!ci.completion.closing_ready);
+            }
+            assert_eq!(
+                i2768_details(&h),
+                vec![
+                    "repos/mblua/AgentsCommander/actions/runs/5",
+                    "repos/mblua/AgentsCommander/actions/runs/5/attempts/2/jobs?per_page=100",
+                    "repos/mblua/AgentsCommander/actions/runs/5",
+                    "repos/mblua/AgentsCommander/actions/runs/50",
+                ]
+            );
+            for row in [done2.clone(), i2768_row(50, "completed")] {
+                i2768_list(&h, vec![done2.clone()]);
+                queue_completion(&h, &i2768_key().nwo, row);
+                tick(&mut now, &mut wall, 10);
+                h.round(now, wall).await;
+                i2768_assert_edges(&h, 0, 0);
+                i2768_assert_running(&h, &repo);
+            }
+            i2768_list(&h, vec![done2.clone()]);
+            tick(&mut now, &mut wall, 10);
+            h.round(now, wall).await;
+            i2768_assert_edges(&h, 0, 1);
+            assert_eq!(h.snapshot()[&repo].ci, CiState::Idle);
+            i2768_list(&h, vec![done2]);
+            tick(&mut now, &mut wall, 10);
+            h.round(now, wall).await;
+            i2768_assert_edges(&h, 0, 0);
+            i2768_assert_consumed(&h);
+        }
+    }
+
+    #[test]
+    fn i2768_merge_errors_and_overflow_absorb_compatible_rows() {
+        let parse =
+            |row: serde_json::Value| parse_ci_run_response(&row.to_string(), &i2768_key()).unwrap();
+        for reversed in [false, true] {
+            let mut state = CiCompletionState::default();
+            let mut initial = i2768_row(5, "completed");
+            initial["run_attempt"] = serde_json::json!(2);
+            let initial = parse(initial);
+            let other = parse(i2768_row(60, "completed"));
+            merge_ci_observations(&mut state, &[initial.clone(), other.clone()], true).unwrap();
+            state.proofs.insert(5, initial.proof());
+            state.proofs.insert(60, other.proof());
+            state.closing_ready = true;
+            let mut wrong = i2768_row(60, "completed");
+            wrong["workflow_id"] = serde_json::json!(999);
+            let mut rows = vec![
+                parse(i2768_row(5, "completed")),
+                parse(wrong),
+                parse(i2768_row(50, "in_progress")),
+            ];
+            if reversed {
+                rows.reverse();
+            }
+            assert_eq!(
+                merge_ci_observations(&mut state, &rows, true),
+                Err(FailureKind::Other)
+            );
+            assert_eq!(state.known[&5], initial);
+            assert_eq!(state.known[&60], other);
+            assert!(state.known.contains_key(&50));
+            assert!(state.proofs.is_empty());
+            assert!(!state.closing_ready);
+            assert_eq!(state.active_ids, vec![50]);
+        }
+        let mut state = CiCompletionState::default();
+        let initial: Vec<_> = (1..=100)
+            .map(|id| parse(i2768_row(id, "completed")))
+            .collect();
+        merge_ci_observations(&mut state, &initial, true).unwrap();
+        for run in &initial {
+            state.proofs.insert(run.id, run.proof());
+        }
+        state.closing_ready = true;
+        let mut higher = i2768_row(100, "in_progress");
+        higher["run_attempt"] = serde_json::json!(2);
+        assert_eq!(
+            merge_ci_observations(
+                &mut state,
+                &[parse(i2768_row(101, "completed")), parse(higher)],
+                true
+            ),
+            Err(FailureKind::Incomplete)
+        );
+        assert!(state.overflow);
+        assert_eq!(state.known.len(), 100);
+        assert!(!state.known.contains_key(&101));
+        assert_eq!(state.known[&100].run_attempt, 2);
+        assert_eq!(state.active_ids, vec![100]);
+        assert!(state.proofs.is_empty());
+        assert!(!state.closing_ready);
+        assert_eq!(
+            merge_ci_observations(&mut state, &[], true),
+            Err(FailureKind::Incomplete)
+        );
+    }
+
+    #[tokio::test]
+    async fn i2768_corroboration_limits_arm_the_global_gate() {
+        let _guard = round_test_lock().await;
+        for point in ["A", "B", "C"] {
+            for (kind, delay) in [
+                (FailureKind::RateLimited, 900),
+                (FailureKind::SecondaryRateLimited, 60),
+            ] {
+                let (h, repo) = i2768_harness();
+                h.set_jitter(0.0);
+                let mut now = Instant::now();
+                let mut wall = Local::now();
+                i2768_list(&h, vec![i2768_row(1, "in_progress")]);
+                h.round(now, wall).await;
+                i2768_list(&h, vec![]);
+                let detail = "repos/mblua/AgentsCommander/actions/runs/1";
+                let jobs =
+                    "repos/mblua/AgentsCommander/actions/runs/1/attempts/1/jobs?per_page=100";
+                if point != "A" {
+                    queue_endpoint(
+                        &h,
+                        detail,
+                        Ok(ok_output(&i2768_row(1, "completed").to_string())),
+                    );
+                }
+                if point == "C" {
+                    queue_endpoint(
+                        &h,
+                        jobs,
+                        Ok(ok_output(&ci_jobs_body(
+                            1,
+                            &sha_of('a'),
+                            "main",
+                            1,
+                            &["completed"],
+                        ))),
+                    );
+                }
+                queue_endpoint(
+                    &h,
+                    if point == "B" { jobs } else { detail },
+                    Ok(if kind == FailureKind::RateLimited {
+                        primary_limit_output()
+                    } else {
+                        secondary_limit_output()
+                    }),
+                );
+                tick(&mut now, &mut wall, 10);
+                h.set_budget(4.0);
+                h.round(now, wall).await;
+                i2768_assert_edges(&h, 0, 0);
+                assert_eq!(throttled_until(&h), Some(now + Duration::from_secs(delay)));
+                assert_eq!(h.snapshot()[&repo].ci, CiState::Unknown);
+                let used = match point {
+                    "A" => 1,
+                    "B" => 2,
+                    _ => 3,
+                };
+                assert_eq!(h.sweeper.lock_state().budget_tokens, f64::from(3 - used));
+                {
+                    let state = h.sweeper.lock_state();
+                    let ci = &state.keys[&i2768_key()].ci;
+                    assert_eq!(ci.failure, Some(kind));
+                    assert!(ci.completion.known.contains_key(&1));
+                    assert!(ci.completion.proofs.is_empty());
+                    assert!(!ci.completion.closing_ready);
+                }
+                // A separate eligible key proves this is an account gate, not
+                // merely the failed key's own retry interval.
+                let healthy = h.repo("healthy");
+                h.git
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_origin(&healthy, "git@github.com:mblua/healthy.git");
+                h.set_work(&[repo.clone(), healthy.clone()]);
+                let before = h.gh_call_count();
+                tick(&mut now, &mut wall, delay - 1);
+                h.set_budget(30.0);
+                h.round(now, wall).await;
+                assert_eq!(
+                    h.gh_call_count(),
+                    before,
+                    "eligible healthy key is globally gated"
+                );
+                assert_eq!(throttled_until(&h), Some(now + Duration::from_secs(1)));
+                queue_endpoint(&h, "repos/mblua/healthy", Err(FailureKind::Other));
+                queue_endpoint(
+                    &h,
+                    &format!(
+                        "repos/mblua/healthy/actions/runs?head_sha={}&per_page=100",
+                        sha_of('a')
+                    ),
+                    Ok(ok_output(&runs_body(vec![]))),
+                );
+                i2768_list(&h, vec![]);
+                queue_completion(&h, &i2768_key().nwo, i2768_row(1, "completed"));
+                tick(&mut now, &mut wall, 1);
+                h.round(now, wall).await;
+                i2768_assert_edges(&h, 0, 0);
+                assert_eq!(throttled_until(&h), None);
+                assert_eq!(h.snapshot()[&healthy].ci, CiState::Idle);
+                i2768_assert_running(&h, &repo);
+                assert_eq!(h.gh_call_count(), before + 6);
+                i2768_assert_consumed(&h);
+            }
+        }
     }
 }
