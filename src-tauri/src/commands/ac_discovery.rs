@@ -1647,6 +1647,11 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
     let [loop_state_row, loop_state_tmp_row, loop_set_aside_row] = loop_state_rows
         .each_ref()
         .map(|(pattern, comment)| (pattern.as_str(), *comment));
+    // #2807 - the agent state rows, shared with the config pair's sweep.
+    let config_state_rows = crate::config::naming_migration::config_state_ignore_rows();
+    let [config_state_row, config_state_lock_row, config_state_tmp_row] = config_state_rows
+        .each_ref()
+        .map(|(pattern, comment)| (pattern.as_str(), *comment));
     const SEED_MANIFEST_COORDINATION_BLOCK: &str = "# AgentsCommander: exclude seed-manifest coordination files.\n/.seed-manifest.lock\n/.seed-manifest.*.tmp\n";
     const SEED_MANIFEST_MANIFEST_BLOCK: &str = "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n/seed-manifest.toml\n";
     const SEED_MANIFEST_COORDINATION_PATTERNS: [&str; 2] =
@@ -1815,6 +1820,11 @@ pub(crate) fn ensure_ac_root_gitignore_with_names(
             catalog_set_aside.as_str(),
             "# AgentsCommander: exclude coding-agent catalog files the naming migration set aside.",
         ),
+        // #2807 - the agent state file beside each tracked `config.json`, its
+        // lock sidecar and its publish temporary.
+        config_state_row,
+        config_state_lock_row,
+        config_state_tmp_row,
     ];
     for pattern in &custom_patterns {
         required_entries.push((
@@ -5049,6 +5059,24 @@ mod tests {
                 .any(|line| line.trim() == "_loop_*/config.toml"),
             "workspace .gitignore must not ignore Loop config files"
         );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_agent_*/**/config.state.no-git.json"),
+            "workspace .gitignore must ignore agent state files"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "**/.config.state.no-git.json.lock"),
+            "workspace .gitignore must ignore the agent state write-lock sidecar"
+        );
+        assert!(
+            content
+                .lines()
+                .any(|line| line.trim() == "_agent_*/**/.config.state.no-git.json.*.tmp"),
+            "workspace .gitignore must ignore agent state write temporaries"
+        );
         assert!(content.contains(concat!(
             "# AgentsCommander: exclude seed-manifest coordination files.\n",
             "/.seed-manifest.lock\n",
@@ -5057,6 +5085,95 @@ mod tests {
             "# AgentsCommander: exclude the seed publication manifest from Git tracking.\n",
             "/seed-manifest.toml\n"
         )));
+    }
+
+    /// #2807 (C2) E6 - each state path is ignored by its own anchored rule,
+    /// and the decisions file stays tracked.
+    #[test]
+    fn ac_root_gitignore_covers_the_config_state_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        let instance = crate::config::agent_local_dir_name();
+        std::fs::create_dir_all(ac_root.join("_agent_a").join(instance.as_str()))
+            .expect("create .ac tree");
+        ensure_ac_root_gitignore_with_names(&ac_root, &floor_names())
+            .expect("ensure workspace .gitignore");
+
+        let init_status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .expect("git init must execute");
+        assert!(init_status.success(), "git init must succeed");
+        let empty_excludes = project.join("empty-global-excludes");
+        std::fs::write(&empty_excludes, []).expect("create empty global excludes file");
+        let excludes_override = format!(
+            "core.excludesFile={}",
+            empty_excludes.to_string_lossy().replace('\\', "/")
+        );
+
+        let state_rule = "_agent_*/**/config.state.no-git.json";
+        let lock_rule = "**/.config.state.no-git.json.lock";
+        let tmp_rule = "_agent_*/**/.config.state.no-git.json.*.tmp";
+        let cases = [
+            (
+                ".ac/_agent_a/config.state.no-git.json".to_string(),
+                Some(state_rule),
+            ),
+            (
+                format!(".ac/_agent_a/{instance}/config.state.no-git.json"),
+                Some(state_rule),
+            ),
+            (
+                ".ac/_agent_a/.config.state.no-git.json.lock".to_string(),
+                Some(lock_rule),
+            ),
+            (
+                ".ac/_agent_a/.config.state.no-git.json.4242.tmp".to_string(),
+                Some(tmp_rule),
+            ),
+            (
+                format!(".ac/_agent_a/{instance}/.config.state.no-git.json.4242.tmp"),
+                Some(tmp_rule),
+            ),
+            (".ac/_agent_a/config.json".to_string(), None),
+        ];
+        for (target, rule) in &cases {
+            let output = std::process::Command::new("git")
+                .arg("-c")
+                .arg(&excludes_override)
+                .args(["check-ignore", "-v", "--no-index", "--", target])
+                .current_dir(&project)
+                .output()
+                .expect("git check-ignore must execute");
+            let stdout = String::from_utf8(output.stdout).expect("output is UTF-8");
+            let Some(rule) = rule else {
+                assert_eq!(
+                    output.status.code(),
+                    Some(1),
+                    "{target} must stay tracked: {stdout}"
+                );
+                assert!(stdout.is_empty(), "{target} must match no rule: {stdout}");
+                continue;
+            };
+            assert!(
+                output.status.success(),
+                "{target} must be ignored: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let line = stdout.trim_end_matches(&['\r', '\n'][..]);
+            let (source_and_pattern, matched_target) = line
+                .split_once('\t')
+                .expect("verbose git check-ignore output contains a tab");
+            let mut source_fields = source_and_pattern.rsplitn(3, ':');
+            let pattern = source_fields.next().expect("matched pattern");
+            let _line_number = source_fields.next().expect("matched line number");
+            let source = source_fields.next().expect("matched source");
+            assert_eq!(source, ".ac/.gitignore", "{target}: match source");
+            assert_eq!(pattern, *rule, "{target}: matched by its own rule");
+            assert_eq!(matched_target, target, "{target}: match target");
+        }
     }
 
     #[test]
