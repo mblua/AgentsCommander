@@ -220,8 +220,8 @@ pub fn set_last_agent_message_at(repo_path: &str, at_rfc3339: &str) -> Result<bo
     let path = instance_dir.join("config.json");
 
     let inserted = std::cell::Cell::new(false);
-    crate::config::local_config_io::update_config_json_object(&path, true, |obj| {
-        let tooling = ensure_object(obj, "tooling", &path);
+    update_agent_config(&path, |_decisions, state| {
+        let tooling = ensure_object(state, "tooling", &path);
         let stored_is_not_older = tooling
             .get("lastAgentMessageAt")
             .and_then(|v| v.as_str())
@@ -1116,7 +1116,74 @@ pub fn update_agent_config<F>(decisions: &Path, mutate: F) -> Result<(), String>
 where
     F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
 {
-    update_agent_config_in(decisions, crate::config::config_dir().as_deref(), mutate)
+    update_agent_config_in(decisions, production_journal_dir().as_deref(), mutate)
+}
+
+/// The exact refusal of the pre-C3 `update_config_json_object(path, false, ..)`
+/// callers: an absent decisions file is an error and nothing is created. As in
+/// the old helper the decision is taken UNDER the file locks, so a concurrent
+/// creator mid-publish is waited for, not refused.
+pub fn update_existing_agent_config<F>(decisions: &Path, mutate: F) -> Result<(), String>
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
+    update_agent_config(decisions, |d, s| {
+        if !decisions.exists() {
+            return Err(format!(
+                "Local config {} does not exist",
+                decisions.display()
+            ));
+        }
+        mutate(d, s)
+    })
+}
+
+/// The journal directory of a production call. Under `cfg(test)` the live
+/// instance journal is unreachable: the default is `None`, and a test that
+/// wants a note opts in to its own temporary directory. One body, one call
+/// site, no second production code path.
+fn production_journal_dir() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    {
+        journal_redirect::current()
+    }
+    #[cfg(not(test))]
+    {
+        crate::config::config_dir()
+    }
+}
+
+/// #2816 (C3) - the only route from a lib test to a journal: a thread-local
+/// directory, so parallel tests never see each other's.
+#[cfg(test)]
+pub(crate) mod journal_redirect {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    thread_local! {
+        static DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn current() -> Option<PathBuf> {
+        DIR.with(|dir| dir.borrow().clone())
+    }
+
+    /// Restores the previous directory on drop.
+    #[must_use]
+    pub(crate) struct Guard {
+        previous: Option<PathBuf>,
+    }
+
+    pub(crate) fn set(dir: &Path) -> Guard {
+        let previous = DIR.with(|cell| cell.replace(Some(dir.to_path_buf())));
+        Guard { previous }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            DIR.with(|cell| *cell.borrow_mut() = self.previous.take());
+        }
+    }
 }
 
 fn update_agent_config_in<F>(
@@ -1341,7 +1408,7 @@ fn upsert_config(
     entry: &CodingAgentEntry,
     write_descriptor: bool,
 ) -> Result<(), String> {
-    crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
+    update_agent_config(config_path, |_decisions, state| {
         // #1939 - the discriminator is the JSON shape, not the path: for both
         // `root/config.json` and `root/<agent_local_dir>/config.json`, an absent
         // top-level tooling is created, an object is preserved and updated, and
@@ -1349,7 +1416,7 @@ fn upsert_config(
         // mutation/publication. The historical repair-by-reset is deliberately
         // gone: a malformed tooling is never silently replaced. Nested
         // `codingAgents` repair stays.
-        let tooling_value = obj
+        let tooling_value = state
             .entry("tooling".to_string())
             .or_insert_with(|| serde_json::json!({}));
         let tooling = tooling_value.as_object_mut().ok_or_else(|| {
@@ -1423,10 +1490,28 @@ mod tests {
         serde_json::from_str(&raw).expect("stored config is JSON")
     }
 
-    /// Raw JSON currently stored in `dir`'s root config.
-    fn stored_root(dir: &Path) -> serde_json::Value {
-        let raw = std::fs::read_to_string(dir.join("config.json")).expect("read root config");
-        serde_json::from_str(&raw).expect("root config is JSON")
+    /// #2816 (C3) - raw JSON of the state file beside the tracked `config`.
+    fn state_beside(config: &Path) -> serde_json::Value {
+        let path = state_file_path(config.parent().expect("config dir"));
+        let raw = std::fs::read_to_string(path).expect("read state file");
+        serde_json::from_str(&raw).expect("state file is JSON")
+    }
+
+    /// #2816 (C3) - no state key may remain in the tracked `config`; an absent
+    /// tracked file holds none.
+    fn assert_no_state_key_tracked(config: &Path) {
+        let Ok(raw) = std::fs::read_to_string(config) else {
+            return;
+        };
+        let tracked: serde_json::Value =
+            serde_json::from_str(&raw).expect("tracked config is JSON");
+        for key in STATE_KEYS {
+            assert!(
+                tracked["tooling"].get(key).is_none(),
+                "{key} is still tracked in {}",
+                config.display()
+            );
+        }
     }
 
     fn set(dir: &Path, at: &str) -> Result<bool, String> {
@@ -1445,9 +1530,10 @@ mod tests {
         assert_eq!(set(dir, T2), Ok(true));
 
         assert_eq!(
-            stored(dir)["tooling"]["lastAgentMessageAt"],
+            state_beside(&instance_config(dir))["tooling"]["lastAgentMessageAt"],
             serde_json::json!(T2)
         );
+        assert_no_state_key_tracked(&instance_config(dir));
         // D2: the root copy is deliberately not a write target for this stamp.
         assert!(
             !dir.join("config.json").exists(),
@@ -1474,7 +1560,8 @@ mod tests {
 
         assert_eq!(set(dir, T2), Ok(true));
 
-        let after = stored(dir);
+        let after = state_beside(&instance_config(dir));
+        assert_no_state_key_tracked(&instance_config(dir));
         assert_eq!(
             after["tooling"]["lastCodingAgent"],
             serde_json::json!("claude")
@@ -1483,7 +1570,10 @@ mod tests {
             after["tooling"]["codingAgents"]["claude"],
             serde_json::json!({ "app": "Claude Code", "lastUsed": T1 })
         );
-        assert_eq!(after["repos"], serde_json::json!(["repo-AgentsCommander"]));
+        assert_eq!(
+            stored(dir)["repos"],
+            serde_json::json!(["repo-AgentsCommander"])
+        );
         assert_eq!(
             after["tooling"]["lastAgentMessageAt"],
             serde_json::json!(T2)
@@ -1526,9 +1616,10 @@ mod tests {
 
         assert_eq!(read(dir), Some(T2.to_string()));
         assert_eq!(
-            stored(dir)["tooling"]["lastCodingAgent"],
+            state_beside(&instance_config(dir))["tooling"]["lastCodingAgent"],
             serde_json::json!("claude")
         );
+        assert_no_state_key_tracked(&instance_config(dir));
     }
 
     #[test]
@@ -1560,7 +1651,29 @@ mod tests {
         seed_instance_config(dir, &serde_json::json!({ "tooling": 5 }));
         assert_eq!(read(dir), None);
 
+        // #2816 (C3) consequence 5: the write on that seed is rejected by the
+        // pair's cleanup and the tracked file is left byte for byte.
+        let tracked = instance_config(dir);
+        assert!(
+            !state_file_path(tracked.parent().expect("instance dir")).exists(),
+            "no state file, so the tracked check is the one measured"
+        );
+        let before = std::fs::read(&tracked).expect("tracked bytes before");
+        let error = set(dir, T2).expect_err("a malformed tracked tooling is rejected");
+        assert!(
+            error.contains(
+                "cleanup failed: 'tooling' must be a JSON object in the tracked config file"
+            ),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(&tracked).expect("tracked bytes after"),
+            before
+        );
+        assert_eq!(stored(dir)["tooling"], serde_json::json!(5));
+
         // Control: a well-formed value is read back.
+        seed_instance_config(dir, &serde_json::json!({}));
         assert_eq!(set(dir, T2), Ok(true));
         assert_eq!(read(dir), Some(T2.to_string()));
     }
@@ -1603,17 +1716,17 @@ mod tests {
             // Missing file: the write creates the tooling object.
             upsert_config(&path, "codex", &codex_entry(), true)
                 .expect("missing config must succeed");
-            let saved: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            let saved = state_beside(&path);
             assert_eq!(saved["tooling"]["lastCodingAgent"], "codex");
+            assert_no_state_key_tracked(&path);
 
             // Present object: preserved and updated.
             upsert_config(&path, "claude", &codex_entry(), true)
                 .expect("object tooling must succeed");
-            let saved: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            let saved = state_beside(&path);
             assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
             assert_eq!(saved["tooling"]["codingAgents"]["claude"]["app"], "Codex");
+            assert_no_state_key_tracked(&path);
         }
     }
 
@@ -1654,10 +1767,12 @@ mod tests {
             .expect("seed");
             upsert_config(&path, "codex", &codex_entry(), true)
                 .expect("nested repair must succeed");
+            let state = state_beside(&path);
+            assert_eq!(state["tooling"]["codingAgents"]["codex"]["app"], "Codex");
+            assert_eq!(state["tooling"]["lastCodingAgent"], "codex");
+            assert_no_state_key_tracked(&path);
             let saved: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
-            assert_eq!(saved["tooling"]["codingAgents"]["codex"]["app"], "Codex");
-            assert_eq!(saved["tooling"]["lastCodingAgent"], "codex");
             assert_eq!(saved["repos"][0], "repo-a");
         }
     }
@@ -1678,7 +1793,8 @@ mod tests {
             let saved: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
             assert_eq!(saved["tooling"]["selectionLocked"], "yes");
-            assert_eq!(saved["tooling"]["lastCodingAgent"], "codex");
+            assert_eq!(state_beside(&path)["tooling"]["lastCodingAgent"], "codex");
+            assert_no_state_key_tracked(&path);
             assert_eq!(saved["repos"][0], "repo-a");
         }
     }
@@ -1700,7 +1816,8 @@ mod tests {
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
             assert_eq!(saved["identity"], "../../_agent_dev-rust");
             assert_eq!(saved["repos"][0], "repo-a");
-            assert_eq!(saved["tooling"]["lastCodingAgent"], "codex");
+            assert_eq!(state_beside(&path)["tooling"]["lastCodingAgent"], "codex");
+            assert_no_state_key_tracked(&path);
         }
     }
 
@@ -1754,7 +1871,8 @@ mod tests {
         entry.ac_session_id = None;
         upsert_config(&instance_config(dir), "claude", &entry, true).expect("upsert");
 
-        let written = &stored(dir)["tooling"]["codingAgents"]["claude"];
+        let written = &state_beside(&instance_config(dir))["tooling"]["codingAgents"]["claude"];
+        assert_no_state_key_tracked(&instance_config(dir));
         assert_eq!(written["futureKey"], serde_json::json!({"x": 1}));
         assert_eq!(written["command"], serde_json::json!("claude"));
         assert_eq!(written["identity"], serde_json::json!({"A": "aa"}));
@@ -1776,7 +1894,9 @@ mod tests {
             Some(("claude", &BTreeMap::new())),
         )
         .expect("write");
-        for value in [stored(dir), stored_root(dir)] {
+        for config in [instance_config(dir), root_config(dir)] {
+            assert_no_state_key_tracked(&config);
+            let value = state_beside(&config);
             let entry = &value["tooling"]["codingAgents"]["claude"];
             assert_eq!(
                 entry.get("identity"),
@@ -1794,10 +1914,12 @@ mod tests {
         let path = instance_config(dir);
         std::fs::create_dir_all(path.parent().expect("instance dir")).expect("mkdir");
         let entry = fixed_entry("claude --x", &[("A", "aa"), ("C", "cc")]);
+        let state = state_file_path(path.parent().expect("instance dir"));
         upsert_config(&path, "claude", &entry, true).expect("first");
-        let first = std::fs::read(&path).expect("read first");
+        let first = std::fs::read(&state).expect("read first");
         upsert_config(&path, "claude", &entry, true).expect("second");
-        assert_eq!(std::fs::read(&path).expect("read second"), first);
+        assert_eq!(std::fs::read(&state).expect("read second"), first);
+        assert_no_state_key_tracked(&path);
     }
 
     #[test]
@@ -1809,7 +1931,9 @@ mod tests {
         set_last_coding_agent(repo, "gone", "Gone", None, Some(("gone --x", &identity)))
             .expect("first write");
         set_last_coding_agent(repo, "gone", "Gone", Some("sid2"), None).expect("second write");
-        for value in [stored(dir), stored_root(dir)] {
+        for config in [instance_config(dir), root_config(dir)] {
+            assert_no_state_key_tracked(&config);
+            let value = state_beside(&config);
             let entry = &value["tooling"]["codingAgents"]["gone"];
             assert_eq!(entry["command"], serde_json::json!("gone --x"), "{entry}");
             assert_eq!(entry["identity"], serde_json::json!({"A": "aa"}), "{entry}");
@@ -1823,7 +1947,8 @@ mod tests {
         let dir = tmp.path();
         let repo = dir.to_str().expect("utf-8 temp path");
         set_last_coding_agent(repo, "gone", "Gone", None, None).expect("write");
-        let value = stored(dir);
+        let value = state_beside(&instance_config(dir));
+        assert_no_state_key_tracked(&instance_config(dir));
         let entry = &value["tooling"]["codingAgents"]["gone"];
         assert!(entry.get("command").is_none(), "{entry}");
         assert!(entry.get("identity").is_none(), "{entry}");
@@ -3750,5 +3875,339 @@ mod tests {
             );
         }
         assert_eq!(nearest_ac_root(Path::new("agent/config.json")), None);
+    }
+
+    // -- #2816 (C3): the writers reach the pair -------------------------------
+
+    /// E1.
+    #[test]
+    fn the_stamp_lands_in_the_state_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        seed_instance_config(dir, &json!({ "repos": ["repo-a"] }));
+        let config = instance_config(dir);
+
+        assert_eq!(set(dir, T2), Ok(true));
+        assert_eq!(
+            state_beside(&config)["tooling"]["lastAgentMessageAt"],
+            json!(T2)
+        );
+        assert_eq!(
+            stored(dir),
+            json!({ "repos": ["repo-a"] }),
+            "the decisions file holds no stamp"
+        );
+
+        // A stored newer value is still kept.
+        assert_eq!(set(dir, T1), Ok(false));
+        assert_eq!(
+            state_beside(&config)["tooling"]["lastAgentMessageAt"],
+            json!(T2)
+        );
+        assert_no_state_key_tracked(&config);
+    }
+
+    /// E2.
+    #[test]
+    fn the_last_agent_and_its_map_land_in_the_state_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        seed_instance_config(
+            dir,
+            &json!({
+                "repos": ["repo-a"],
+                "tooling": { "codingAgents": { "claude": {
+                    "app": "Old", "futureKey": { "x": 1 }
+                } } }
+            }),
+        );
+        let config = instance_config(dir);
+        upsert_config(
+            &config,
+            "claude",
+            &fixed_entry("claude", &[("A", "aa")]),
+            true,
+        )
+        .expect("upsert");
+
+        let state = state_beside(&config);
+        assert_eq!(state["tooling"]["lastCodingAgent"], json!("claude"));
+        let entry = &state["tooling"]["codingAgents"]["claude"];
+        assert_eq!(entry["app"], json!("Claude Code"));
+        assert_eq!(
+            entry["futureKey"],
+            json!({ "x": 1 }),
+            "#2433: an unknown key inside the entry survives"
+        );
+        assert_no_state_key_tracked(&config);
+        assert_eq!(stored(dir)["repos"], json!(["repo-a"]));
+    }
+
+    /// E2b.
+    #[test]
+    fn upsert_config_migrates_and_keeps_its_new_value() {
+        let p = pair();
+        p.seed_decisions(json!({ "tooling": { "lastCodingAgent": "v_old", "profile": "B" } }));
+        assert!(bytes_of(&p.state()).is_none(), "no state file yet");
+
+        upsert_config(&p.decisions(), "v_new", &codex_entry(), true).expect("upsert");
+
+        let state = p.stored_state();
+        assert_eq!(state["tooling"]["lastCodingAgent"], json!("v_new"));
+        assert_eq!(state["split"], split_marker());
+        assert!(
+            state_keys_in(&p.tracked()).is_empty(),
+            "no state key stays tracked"
+        );
+        assert_eq!(p.tracked()["tooling"]["profile"], json!("B"));
+    }
+
+    /// E2c.
+    #[test]
+    fn a_state_only_write_creates_no_tracked_file_and_still_reads_back() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        upsert_config(&dir.join("config.json"), "codex", &codex_entry(), true).expect("upsert");
+
+        let state_name = crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME;
+        let names: Vec<String> = dir_bytes(dir)
+            .into_iter()
+            .map(|(name, _)| name.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ".config.json.lock".to_string(),
+                format!(".{state_name}.lock"),
+                state_name.to_string(),
+            ],
+            "only the state file and the two lock sidecars exist"
+        );
+        assert!(!dir.join("config.json").exists());
+
+        let read = read_agent_local_config_json(dir)
+            .expect("parseable")
+            .expect("the state file alone answers");
+        assert_eq!(read["tooling"]["lastCodingAgent"], json!("codex"));
+    }
+
+    /// E3c.
+    #[test]
+    fn an_absent_file_waits_for_a_concurrent_creator() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("__agent_a");
+        std::fs::create_dir_all(&dir).expect("replica dir");
+        let config = dir.join("config.json");
+
+        // The creator's position: the decisions sidecar is held and
+        // `config.json` is still absent.
+        let lock_path = std::fs::canonicalize(&dir)
+            .expect("canonical dir")
+            .join(".config.json.lock");
+        let held = crate::config::local_config_io::acquire_sidecar_write_lock(
+            &lock_path,
+            Duration::from_secs(5),
+            "configLockTimeout",
+            "local config write lock",
+        )
+        .expect("hold the decisions sidecar");
+
+        let (about_to_call, started) = channel();
+        let (finished, done) = channel();
+        let worker_config = config.clone();
+        let worker = std::thread::spawn(move || {
+            about_to_call.send(()).expect("signal the start");
+            let result = update_existing_agent_config(&worker_config, |decisions, _| {
+                decisions.insert("seen".to_string(), json!(true));
+                Ok(())
+            });
+            let _ = finished.send(());
+            result
+        });
+        started
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the worker starts");
+
+        // The bounded wait: the worker must still be blocked on the lock.
+        if done.recv_timeout(Duration::from_millis(750)).is_ok() {
+            let result = worker.join().expect("the worker thread panicked");
+            panic!("the worker completed while the creator still held the lock: {result:?}");
+        }
+
+        put_json(&config, &json!({ "identity": "created" }));
+        drop(held);
+
+        worker
+            .join()
+            .expect("the worker thread panicked")
+            .expect("a creator mid-publish is waited for, not refused");
+        assert_eq!(
+            get_json(&config),
+            json!({ "identity": "created", "seen": true })
+        );
+    }
+
+    /// E4: sites 8, 13, 9 and 10. Sites 5 and 11 are driven in their own
+    /// modules.
+    #[test]
+    fn the_unchanged_writers_still_write_the_decisions_file() {
+        use crate::config::coding_agent_profiles as profiles;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_dev-rust");
+        let replica = ac_root.join("wg-7-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix).expect("matrix dir");
+        std::fs::create_dir_all(&replica).expect("replica dir");
+        std::fs::write(matrix.join("Role.md"), "# Role\n").expect("role");
+        let no_state_file = |dir: &Path, site: &str| {
+            assert!(
+                !state_file_path(dir).exists(),
+                "{site} created a state file"
+            );
+        };
+
+        // Site 8.
+        let default = profiles::ReplicaSelectionDefault {
+            coding_agent_id: "codex".to_string(),
+            requested_profile: "B".to_string(),
+            selection_locked: false,
+        };
+        profiles::write_replica_selection_default(&matrix, &default, None).expect("site 8");
+        assert_eq!(
+            get_json(&matrix.join("config.json"))["tooling"]["replicaSelectionDefault"],
+            json!({ "codingAgentId": "codex", "requestedProfile": "B", "selectionLocked": false })
+        );
+        no_state_file(&matrix, "site 8");
+
+        // Site 13.
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(&root).expect("root dir");
+        crate::config::root_agent::merge_root_agent_config(&root.join("config.json"))
+            .expect("site 13");
+        let merged = get_json(&root.join("config.json"));
+        assert_eq!(merged["tooling"], json!({}));
+        assert!(merged["context"].is_array(), "{merged}");
+        no_state_file(&root, "site 13");
+
+        // Sites 9 and 10, on an existing file.
+        let replica_config = replica.join("config.json");
+        put_json(
+            &replica_config,
+            &json!({ "identity": "../../_agent_dev-rust", "tooling": {} }),
+        );
+        let settings = crate::config::settings::AppSettings {
+            project_paths: vec![project.to_string_lossy().to_string()],
+            ..Default::default()
+        };
+        let expected = profiles::read_replica_selection_state(&replica)
+            .expectation()
+            .expect("a valid unlocked replica");
+        let selection = profiles::ReplicaSelectionPair {
+            coding_agent_id: "codex".to_string(),
+            requested_profile: "B".to_string(),
+        };
+        profiles::write_replica_selection(
+            &settings,
+            &replica,
+            &selection,
+            profiles::SelectionWriteIntent::IndividualAssignLock,
+            &expected,
+        )
+        .expect("site 9");
+        let tooling = get_json(&replica_config)["tooling"].clone();
+        assert_eq!(tooling["currentCodingAgent"], json!("codex"));
+        assert_eq!(tooling["profile"], json!("B"));
+        assert_eq!(tooling["selectionLocked"], json!(true));
+        no_state_file(&replica, "site 9");
+
+        let expected = profiles::read_replica_selection_state(&replica)
+            .expectation()
+            .expect("a valid locked replica");
+        profiles::clear_replica_selection_lock(&settings, &replica, &expected).expect("site 10");
+        assert_eq!(
+            get_json(&replica_config)["tooling"]["selectionLocked"],
+            json!(false)
+        );
+        no_state_file(&replica, "site 10");
+    }
+
+    /// E4b.
+    #[test]
+    fn a_decision_only_write_migrates_the_state_keys() {
+        let p = pair();
+        p.seed_decisions(json!({ "tooling": all_four("t"), "context": [] }));
+        let _journal = journal_redirect::set(&p.journal);
+
+        crate::config::root_agent::merge_root_agent_config(&p.decisions()).expect("merge");
+
+        assert!(
+            state_keys_in(&p.tracked()).is_empty(),
+            "the four keys left the tracked file"
+        );
+        let state = p.stored_state();
+        assert_eq!(state["tooling"], all_four("t"));
+        assert_eq!(state["split"], split_marker());
+        let journal = p
+            .journal_bytes()
+            .expect("the note is recorded in the directory the guard names");
+        assert!(
+            String::from_utf8_lossy(&journal).contains("moved to the state file"),
+            "the journal carries the move note"
+        );
+    }
+
+    /// E4c.
+    #[test]
+    fn a_test_without_the_guard_writes_no_journal() {
+        let p = pair();
+        p.seed_decisions(json!({ "tooling": { "lastCodingAgent": "v_old" } }));
+
+        update_agent_config(&p.decisions(), no_change).expect("a production-form call");
+
+        assert_eq!(
+            p.stored_state()["tooling"]["lastCodingAgent"],
+            json!("v_old"),
+            "the call migrated the key"
+        );
+        let journal_name = crate::config::instance_artifacts::NAMING_MIGRATION_STATE_NAME;
+        let journals: Vec<_> = tree_of(p.tmp.path())
+            .into_keys()
+            .filter(|path| path.file_name().is_some_and(|name| name == journal_name))
+            .collect();
+        assert!(journals.is_empty(), "a journal was written: {journals:?}");
+        assert_eq!(
+            production_journal_dir(),
+            None,
+            "a lib test without the guard has no journal directory"
+        );
+    }
+
+    /// E3b (b): the one body all four require-existing sites call.
+    #[test]
+    fn the_require_existing_wrapper_refuses_an_absent_file_and_creates_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("__agent_a");
+        std::fs::create_dir_all(&dir).expect("replica dir");
+        let config = dir.join("config.json");
+
+        let result = update_existing_agent_config(&config, |decisions, _| {
+            decisions.insert("seen".to_string(), json!(true));
+            Ok(())
+        });
+
+        assert!(!config.exists(), "the wrapper created config.json");
+        assert!(
+            !state_file_path(&dir).exists(),
+            "the wrapper created a state file"
+        );
+        assert_eq!(
+            result,
+            Err(format!("Local config {} does not exist", config.display()))
+        );
     }
 }

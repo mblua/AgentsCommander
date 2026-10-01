@@ -557,7 +557,7 @@ fn default_agent_matrix_config() -> serde_json::Value {
 }
 
 fn write_local_config_value(config_path: &Path, value: serde_json::Value) -> Result<(), String> {
-    crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
+    crate::config::agent_config::update_agent_config(config_path, |obj, _state| {
         let map = value
             .as_object()
             .ok_or_else(|| "Local config value must be a JSON object".to_string())?;
@@ -1260,7 +1260,7 @@ fn initialize_replica_config_on_disk(
     assigned_repos: &[String],
 ) -> Result<(), String> {
     let config_path = replica_dir.join("config.json");
-    crate::config::local_config_io::update_config_json_object(&config_path, true, |obj| {
+    crate::config::agent_config::update_agent_config(&config_path, |obj, _state| {
         let had_config = config_path.try_exists().map_err(|error| {
             format!(
                 "Failed to inspect replica config {}: {}",
@@ -3516,6 +3516,58 @@ fn build_session_repo(replica_dir: &Path, rel: &str) -> Option<SessionRepo> {
 /// After successful per-replica writes, pushes the new `git_repos` to any matching live session
 /// via `refresh_git_repos_for_sessions` + watcher cache invalidation + `session_git_repos` emit.
 /// Async so it can await the RwLock on `SessionManager`.
+/// #2816 (C3) - site 7 lifted out of `sync_workgroup_repos_inner`, body
+/// verbatim, so its refusal of an absent `config.json` and its no-file
+/// guarantee are provable by a unit test.
+fn apply_wg_replica_repos(
+    replica_dir: &Path,
+    assigned_repos: &[String],
+) -> Result<crate::config::replica_identity::WgReplicaIdentity, String> {
+    // Read existing config, preserving identity/tooling/other runtime fields
+    let config_path = replica_dir.join("config.json");
+    let mut repaired_identity = None;
+    crate::config::agent_config::update_existing_agent_config(&config_path, |obj, _state| {
+        let mut config = serde_json::Value::Object(std::mem::take(obj));
+        let identity =
+            repair_wg_replica_config_value(replica_dir, &mut config, WG_REPLICA_REQUIRED_CONTEXT)?;
+
+        // Update repos
+        config["repos"] = serde_json::json!(assigned_repos);
+
+        // Context merge: prepend required tokens to maintain consistent ordering
+        // with create_workgroup() (which writes [$AC_CONTEXT, $REPOS_INFO] first).
+        // Preserve custom non-Role entries while replacing identity-derived Role.md
+        // entries with the repaired same-workspace identity.
+        let existing_context: Vec<String> = config
+            .get("context")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
+            &existing_context,
+            &["$AGENTSCOMMANDER_CONTEXT"],
+            &identity.identity,
+            identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
+        ));
+
+        let final_obj = config.as_object_mut().ok_or_else(|| {
+            format!(
+                "Replica config {} must be a JSON object",
+                config_path.display()
+            )
+        })?;
+        *obj = std::mem::take(final_obj);
+        repaired_identity = Some(identity);
+        Ok(())
+    })?;
+    Ok(repaired_identity.expect("identity repaired before successful write"))
+}
+
 async fn sync_workgroup_repos_inner(
     base: &Path,
     team_name: &str,
@@ -3604,58 +3656,8 @@ async fn sync_workgroup_repos_inner(
                 })
                 .collect();
 
-            // Read existing config, preserving identity/tooling/other runtime fields
-            let config_path = replica_dir.join("config.json");
-            let mut repaired_identity = None;
-            let write_result = crate::config::local_config_io::update_config_json_object(
-                &config_path,
-                false,
-                |obj| {
-                    let mut config = serde_json::Value::Object(std::mem::take(obj));
-                    let identity = repair_wg_replica_config_value(
-                        replica_dir,
-                        &mut config,
-                        WG_REPLICA_REQUIRED_CONTEXT,
-                    )?;
-
-                    // Update repos
-                    config["repos"] = serde_json::json!(assigned_repos);
-
-                    // Context merge: prepend required tokens to maintain consistent ordering
-                    // with create_workgroup() (which writes [$AC_CONTEXT, $REPOS_INFO] first).
-                    // Preserve custom non-Role entries while replacing identity-derived Role.md
-                    // entries with the repaired same-workspace identity.
-                    let existing_context: Vec<String> = config
-                        .get("context")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    config["context"] = serde_json::json!(normalize_wg_replica_context_entries(
-                        &existing_context,
-                        &["$AGENTSCOMMANDER_CONTEXT"],
-                        &identity.identity,
-                        identity.matrix_dir.join(ROLE_MD_FILENAME).exists(),
-                    ));
-
-                    let final_obj = config.as_object_mut().ok_or_else(|| {
-                        format!(
-                            "Replica config {} must be a JSON object",
-                            config_path.display()
-                        )
-                    })?;
-                    *obj = std::mem::take(final_obj);
-                    repaired_identity = Some(identity);
-                    Ok(())
-                },
-            );
-
-            let _identity = match write_result {
-                Ok(_) => repaired_identity.expect("identity repaired before successful write"),
+            let _identity = match apply_wg_replica_repos(replica_dir, &assigned_repos) {
+                Ok(identity) => identity,
                 Err(e) => {
                     result.errors.push(SyncError {
                         replica: dir_name.to_string(),
@@ -5158,6 +5160,17 @@ mod tests {
         .expect("parse config")
     }
 
+    /// #2816 (C3) - the state file beside the replica's `config.json`.
+    fn replica_state(replica_dir: &Path) -> serde_json::Value {
+        serde_json::from_str(
+            &std::fs::read_to_string(
+                replica_dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+            )
+            .expect("read state file"),
+        )
+        .expect("parse state file")
+    }
+
     #[test]
     fn issue_1937_creation_materializes_matrix_default_on_first_creation() {
         let fixture = replica_creation_fixture();
@@ -5245,9 +5258,68 @@ mod tests {
         assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
         assert_eq!(saved["tooling"]["profile"], "B");
         assert_eq!(saved["tooling"]["selectionLocked"], true);
-        assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+        assert_eq!(
+            replica_state(&replica_dir)["tooling"]["lastCodingAgent"],
+            "claude"
+        );
+        assert!(saved["tooling"].get("lastCodingAgent").is_none());
         assert_eq!(saved["customTopLevel"]["keep"], true);
         assert_eq!(saved["identity"], "../../_agent_tech-lead");
+    }
+
+    /// #2816 (C3) E3b, site 7.
+    #[test]
+    fn an_absent_config_still_refuses_and_creates_nothing() {
+        let fixture = replica_creation_fixture();
+        let replica_dir = fixture.wg_dir.join("__agent_tech-lead");
+        std::fs::create_dir_all(&replica_dir).expect("create replica dir");
+        let config = replica_dir.join("config.json");
+
+        let error = apply_wg_replica_repos(&replica_dir, &[]).expect_err("absent config");
+
+        assert_eq!(
+            error,
+            format!("Local config {} does not exist", config.display())
+        );
+        assert!(!config.exists(), "site 7 created config.json");
+        assert!(
+            !replica_dir
+                .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+                .exists(),
+            "site 7 created a state file"
+        );
+    }
+
+    /// #2816 (C3) E4, site 5, through its nearest reachable caller.
+    #[test]
+    fn matrix_creation_writes_the_decisions_file_and_no_state_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("ProjectAlpha");
+        std::fs::create_dir_all(project.join(".ac")).expect("create .ac");
+        let settings = AppSettings::default();
+        let project_s = project.to_string_lossy().to_string();
+
+        let created = create_agent_matrix_on_disk(CreateAgentMatrixDiskArgs {
+            project_path: &project_s,
+            name: "Architect",
+            description: "Build plans",
+            role_template_id: None,
+            settings: &settings,
+            config_dir: None,
+        })
+        .expect("create matrix");
+
+        assert_eq!(
+            replica_config(&created.agent_dir),
+            default_agent_matrix_config()
+        );
+        assert!(
+            !created
+                .agent_dir
+                .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+                .exists(),
+            "site 5 created a state file"
+        );
     }
 
     #[test]
@@ -5303,7 +5375,11 @@ mod tests {
         let saved = replica_config(&replica_dir);
         assert_eq!(saved["tooling"]["currentCodingAgent"], "codex");
         assert_eq!(saved["tooling"]["profile"], "B");
-        assert_eq!(saved["tooling"]["profileContentHash"], "deadbeef");
+        assert_eq!(
+            replica_state(&replica_dir)["tooling"]["profileContentHash"],
+            "deadbeef"
+        );
+        assert!(saved["tooling"].get("profileContentHash").is_none());
         assert_eq!(saved["unknownKey"]["nested"][2], 3);
         let context: Vec<&str> = saved["context"]
             .as_array()

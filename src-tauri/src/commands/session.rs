@@ -14287,15 +14287,33 @@ exec claude \"$@\"
         receiver
     }
 
-    /// #1682 - the per-instance config the stamp is written into.
+    /// #1682 - the per-instance file the stamp is written into: since #2816
+    /// (C3) the state file, never the tracked `config.json` beside it.
     fn stamp_config_path(cwd: &std::path::Path) -> PathBuf {
         cwd.join(crate::config::agent_local_dir_name())
-            .join("config.json")
+            .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+    }
+
+    /// #2816 (C3) - a suppressed write leaves neither the state file nor the
+    /// tracked `config.json` it used to create.
+    fn no_stamp_file(cwd: &std::path::Path) -> bool {
+        let state = stamp_config_path(cwd);
+        !state.exists() && !state.with_file_name("config.json").exists()
     }
 
     /// #1682 - `tooling.lastAgentMessageAt` read straight off the file, so the
     /// assertion does not go through the same reader the command uses.
     fn stored_stamp(cwd: &std::path::Path) -> Option<String> {
+        // #2816 (C3) - the stamp must never be in the tracked file.
+        let tracked = stamp_config_path(cwd).with_file_name("config.json");
+        if let Ok(raw) = std::fs::read_to_string(&tracked) {
+            let parsed: serde_json::Value = serde_json::from_str(&raw).expect("tracked json");
+            assert!(
+                parsed["tooling"].get("lastAgentMessageAt").is_none(),
+                "the stamp is still tracked in {}",
+                tracked.display()
+            );
+        }
         let raw = std::fs::read_to_string(stamp_config_path(cwd)).ok()?;
         let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
         parsed["tooling"]["lastAgentMessageAt"]
@@ -14472,7 +14490,7 @@ exec claude \"$@\"
         super::record_agent_turn_completed(app.handle(), &*session_mgr.read().await, unarmed, None)
             .await;
         assert!(
-            !stamp_config_path(unarmed_dir.path()).exists(),
+            no_stamp_file(unarmed_dir.path()),
             "an unarmed session must not create a config.json"
         );
         assert!(
@@ -14486,7 +14504,7 @@ exec claude \"$@\"
         super::record_agent_turn_completed(app.handle(), &*session_mgr.read().await, plain, None)
             .await;
         assert!(
-            !stamp_config_path(plain_dir.path()).exists(),
+            no_stamp_file(plain_dir.path()),
             "a session with no agent_id must not create a config.json"
         );
         assert!(
@@ -14516,7 +14534,7 @@ exec claude \"$@\"
         super::record_agent_turn_completed(app.handle(), &*session_mgr.read().await, id, None)
             .await;
         assert!(
-            !stamp_config_path(dir.path()).exists(),
+            no_stamp_file(dir.path()),
             "recent unsubmitted input must suppress the write"
         );
         assert!(
@@ -14594,7 +14612,7 @@ exec claude \"$@\"
         )
         .await;
         assert!(
-            !stamp_config_path(recent_dir.path()).exists(),
+            no_stamp_file(recent_dir.path()),
             "a control write inside the window must suppress the write"
         );
         assert!(
@@ -15746,6 +15764,16 @@ exec claude \"$@\"
         assert!(coding_agent_descriptor("gone", &settings).is_none());
     }
 
+    /// #2816 (C3) - the state file beside the tracked `path`, after asserting
+    /// that the tracked file keeps none of the descriptor's state keys.
+    fn read_state_beside(path: &std::path::Path) -> serde_json::Value {
+        let tracked = read_json(path);
+        for key in ["lastCodingAgent", "codingAgents"] {
+            assert!(tracked["tooling"].get(key).is_none(), "{key} in {path:?}");
+        }
+        read_json(&path.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME))
+    }
+
     fn read_json(path: &std::path::Path) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
@@ -15782,7 +15810,7 @@ exec claude \"$@\"
         save_last_coding_agent(&temp.path().to_string_lossy(), "sid", &write).unwrap();
 
         for path in &paths {
-            let value = read_json(path);
+            let value = read_state_beside(path);
             let agents = &value["tooling"]["codingAgents"];
             assert_eq!(value["tooling"]["lastCodingAgent"], "claude", "{path:?}");
             assert_eq!(agents["claude"]["app"], "claude", "{path:?}");
@@ -15813,7 +15841,7 @@ exec claude \"$@\"
         save_last_coding_agent(&temp.path().to_string_lossy(), "sid", &write).unwrap();
 
         for path in &paths {
-            let value = read_json(path);
+            let value = read_state_beside(path);
             let entry = &value["tooling"]["codingAgents"]["gone"];
             assert_eq!(entry["command"], "gone --x", "{path:?}");
             assert_eq!(

@@ -1290,7 +1290,14 @@ fn issue_1937_repeat_member_preserves_config() {
     assert_eq!(saved["tooling"]["profile"], "B");
     assert_eq!(saved["tooling"]["instanceProfileOverride"], "B");
     assert_eq!(saved["tooling"]["selectionLocked"], true);
-    assert_eq!(saved["tooling"]["lastCodingAgent"], "claude");
+    // #2816 (C3) - the repeat add-member migrates the state key through site 6.
+    let state: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(replica_dir.join("config.state.no-git.json"))
+            .expect("read replica state file"),
+    )
+    .expect("parse replica state file");
+    assert_eq!(state["tooling"]["lastCodingAgent"], "claude");
+    assert!(saved["tooling"].get("lastCodingAgent").is_none());
     assert_eq!(saved["customToolingKey"], "keep-me");
     assert_eq!(saved["concurrentGuardMarker"], 4);
     let context: Vec<&str> = saved["context"]
@@ -1304,6 +1311,24 @@ fn issue_1937_repeat_member_preserves_config() {
         context.iter().any(|entry| entry.ends_with("/Role.md")),
         "{context:?}"
     );
+
+    // #2816 (C3) E9c - the migration's journal note is under the directory this
+    // fixture's own `AGENTSCOMMANDER_CONFIG_DIR` names, and nowhere else in the
+    // fixture's tree.
+    const JOURNAL_NAME: &str = "naming-migration.state.no-git.json";
+    fn journals_under(dir: &Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read fixture dir") {
+            let path = entry.expect("fixture entry").path();
+            if path.is_dir() {
+                journals_under(&path, found);
+            } else if path.file_name().is_some_and(|name| name == JOURNAL_NAME) {
+                found.push(path);
+            }
+        }
+    }
+    let mut journals = Vec::new();
+    journals_under(tmp.path(), &mut journals);
+    assert_eq!(journals, vec![config_dir.join(JOURNAL_NAME)]);
 }
 
 // #1088: a live session whose name+cwd match a WG peer surfaces its context-usage

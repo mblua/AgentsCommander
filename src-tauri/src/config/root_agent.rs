@@ -2051,7 +2051,7 @@ fn normalize_role_text(text: &str) -> String {
 }
 
 pub(crate) fn merge_root_agent_config(config_path: &Path) -> Result<(), String> {
-    crate::config::local_config_io::update_config_json_object(config_path, true, |obj| {
+    crate::config::agent_config::update_agent_config(config_path, |obj, _state| {
         obj.entry("tooling".to_string())
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
@@ -3204,6 +3204,14 @@ mod tests {
         assert!(!is_root_agent_target("agentscommander://ROOT-AGENT"));
     }
 
+    /// #2816 (C3) - raw JSON of the state file beside the tracked `config`.
+    fn state_beside(config: &Path) -> Value {
+        let path =
+            config.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read state file"))
+            .expect("parse state file")
+    }
+
     #[test]
     fn merge_root_agent_config_preserves_tooling_and_unknown_fields() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -3227,7 +3235,11 @@ mod tests {
         let config: Value =
             serde_json::from_str(&std::fs::read_to_string(&config_path).expect("read config"))
                 .expect("parse config");
-        assert_eq!(config["tooling"]["lastCodingAgent"], "codex");
+        let state = state_beside(&config_path);
+        assert_eq!(state["tooling"]["lastCodingAgent"], "codex");
+        assert_eq!(state["tooling"]["codingAgents"]["codex"]["app"], "Codex");
+        assert!(config["tooling"].get("lastCodingAgent").is_none());
+        assert!(config["tooling"].get("codingAgents").is_none());
         assert_eq!(config["tooling"]["telegramBot"], "ops");
         assert_eq!(config["unknown"]["keep"], true);
         assert_eq!(
@@ -3251,7 +3263,11 @@ mod tests {
         let config: Value =
             serde_json::from_str(&std::fs::read_to_string(&config_path).expect("read config"))
                 .expect("parse config");
-        assert_eq!(config["tooling"]["lastCodingAgent"], "codex");
+        assert_eq!(
+            state_beside(&config_path)["tooling"]["lastCodingAgent"],
+            "codex"
+        );
+        assert!(config["tooling"].get("lastCodingAgent").is_none());
         assert_eq!(
             config["context"],
             serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT)
@@ -3286,8 +3302,8 @@ mod tests {
         // #979 4.2.C. Every row: no exact token survives, other values and their order
         // survive, `tooling` and unknown fields survive, and a SECOND merge yields an
         // identical parsed value AND identical bytes (semantic + byte-stable
-        // idempotence; `update_config_json_object` always republishes, so mtime and
-        // inode are deliberately not asserted).
+        // idempotence; `update_agent_config` publishes only a changed side, and mtime
+        // and inode are still deliberately not asserted).
         let token = crate::config::session_context::CONTEXT_TOKEN_GLOBAL;
         let default_context = serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT);
         let cases: Vec<(&str, Value, Value)> = vec![
@@ -3397,7 +3413,13 @@ mod tests {
             }
             if let Some(last) = input.get("tooling").and_then(|t| t.get("lastCodingAgent")) {
                 assert_eq!(
-                    &first["tooling"]["lastCodingAgent"], last,
+                    &state_beside(&config_path)["tooling"]["lastCodingAgent"],
+                    last,
+                    "case: {}",
+                    label
+                );
+                assert!(
+                    first["tooling"].get("lastCodingAgent").is_none(),
                     "case: {}",
                     label
                 );
@@ -3453,7 +3475,11 @@ mod tests {
             &std::fs::read_to_string(root.join("config.json")).expect("read config"),
         )
         .expect("parse config");
-        assert_eq!(config["tooling"]["lastCodingAgent"], "codex");
+        assert_eq!(
+            state_beside(&root.join("config.json"))["tooling"]["lastCodingAgent"],
+            "codex"
+        );
+        assert!(config["tooling"].get("lastCodingAgent").is_none());
         assert_eq!(
             config["context"],
             serde_json::json!(ROOT_AGENT_DEFAULT_CONTEXT)
