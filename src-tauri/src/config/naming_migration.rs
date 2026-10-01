@@ -24,8 +24,9 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::instance_artifacts::{
-    LOOP_STATE_TARGET_NAME, LOOP_STATE_TMP_TARGET_GLOB, NAMING_MIGRATION_LOCK_NAME,
-    NAMING_MIGRATION_STATE_NAME, PROJECT_SETTINGS_TARGET_NAME, SET_ASIDE_GLOB,
+    CONFIG_STATE_TARGET_NAME, LOOP_STATE_TARGET_NAME, LOOP_STATE_TMP_TARGET_GLOB,
+    NAMING_MIGRATION_LOCK_NAME, NAMING_MIGRATION_STATE_NAME, PROJECT_SETTINGS_TARGET_NAME,
+    SET_ASIDE_GLOB,
 };
 
 /// The only journal format this build reads or writes.
@@ -919,6 +920,26 @@ pub(crate) fn loop_state_ignore_rows() -> [(String, &'static str); 3] {
         (
             format!("_loop_*/{SET_ASIDE_GLOB}"),
             "# AgentsCommander: exclude Loop files the naming migration set aside.",
+        ),
+    ]
+}
+
+/// #2807 (C2) - the three `.ac/.gitignore` rows the agent state file needs, as
+/// `(pattern, comment)`, read by the writer at registration and by the config
+/// pair's own sweep. Composed from the registry at runtime.
+pub(crate) fn config_state_ignore_rows() -> [(String, &'static str); 3] {
+    [
+        (
+            format!("_agent_*/**/{CONFIG_STATE_TARGET_NAME}"),
+            "# AgentsCommander: exclude agent runtime state.",
+        ),
+        (
+            format!("**/.{CONFIG_STATE_TARGET_NAME}.lock"),
+            "# AgentsCommander: exclude the agent state write-lock sidecar.",
+        ),
+        (
+            format!("_agent_*/**/.{CONFIG_STATE_TARGET_NAME}.*.tmp"),
+            "# AgentsCommander: exclude agent state write temporaries.",
         ),
     ]
 }
