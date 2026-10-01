@@ -7419,4 +7419,76 @@ mod tests {
         h::write_snapshot_fixture(tmp.path(), "lastCodingAgent", "new-b");
         call(tmp.path(), "via-new-b");
     }
+
+    /// C4 (#2470): the seeded state file of every row that seeds one. All four
+    /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
+    const C4_SEEDED_STATE: &str =
+        r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+
+    /// C4 (#2470): the state file beside a tracked `config.json`.
+    fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
+        tracked.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+    }
+
+    /// C4 (#2470): after one writer, the tracked file carries none of the four
+    /// state keys. This says nothing at all about the state file: `c4_state_is`
+    /// is the only helper that reads it, and the row calls them in that order.
+    fn c4_tracked_is_clean(tracked: &std::path::Path, site: &str) {
+        let text = std::fs::read_to_string(tracked).expect("tracked file");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("tracked json");
+        let tooling = value.get("tooling");
+        c4_absent(tooling, "lastCodingAgent", site, &value);
+        c4_absent(tooling, "codingAgents", site, &value);
+        c4_absent(tooling, "lastAgentMessageAt", site, &value);
+        c4_absent(tooling, "profileContentHash", site, &value);
+    }
+
+    fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_json::Value) {
+        assert!(t.and_then(|t| t.get(key)).is_none(), "{site} left {key}: {all}");
+    }
+
+    /// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
+    /// as parsed JSON so the pretty-printing of `publish_pair_side` is never
+    /// the subject. `expected` is always a literal written in the row. Absence
+    /// is NOT admitted here and no longer reads as JSON `null`:
+    /// `c4_no_state_file` is the only helper that may conclude absence.
+    fn c4_state_is(state: &std::path::Path, expected: &str, site: &str) {
+        let want: serde_json::Value = serde_json::from_str(expected).expect("expected json");
+        let raw = std::fs::read_to_string(state).expect("state file");
+        let got: serde_json::Value = serde_json::from_str(&raw).expect("state json");
+        assert_eq!(got, want, "{site} state file");
+    }
+
+    /// C4 (#2470) E2, site 4: the `context` write and its removal leave the
+    /// tracked file without a state key and the state file untouched.
+    #[tokio::test]
+    async fn c4_site_4_writes_context_and_leaves_no_state_key() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let journal = tempfile::tempdir().expect("journal dir");
+        let _journal = crate::config::agent_config::journal_redirect::set(journal.path());
+        let dir = tmp.path();
+        let tracked = dir.join("config.json");
+        std::fs::write(&tracked, r#"{"tooling": {}}"#).expect("seed tracked");
+        std::fs::write(c4_state_path(&tracked), C4_SEEDED_STATE).expect("seed state");
+        let read = |path: &Path| -> Value {
+            let raw = std::fs::read_to_string(path).expect("read config");
+            serde_json::from_str(&raw).expect("parse config")
+        };
+
+        let result = set_replica_context_files(
+            dir.to_string_lossy().to_string(),
+            vec!["Role.md".to_string()],
+        )
+        .await;
+        assert_eq!(result, Ok(()));
+        c4_tracked_is_clean(&tracked, "site 4 insert");
+        c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 4 insert");
+        assert_eq!(read(&tracked)["context"], json!(["Role.md"]));
+
+        let result = set_replica_context_files(dir.to_string_lossy().to_string(), Vec::new()).await;
+        assert_eq!(result, Ok(()));
+        c4_tracked_is_clean(&tracked, "site 4 remove");
+        c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 4 remove");
+        assert!(read(&tracked).get("context").is_none());
+    }
 }
