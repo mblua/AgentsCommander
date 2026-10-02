@@ -1,0 +1,236 @@
+name: G-FE certification
+on:
+  push:
+    branches: ['fix/2817-tauri-keyboard-deadlock']
+permissions:
+  contents: read
+concurrency:
+  group: g-fe-certification-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  g-fe:
+    name: g-fe
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      EV_SUBDIR: g-fe-evidence
+    steps:
+      - uses: actions/checkout@v5
+      - name: Identity and pre-state, asserted
+        run: |
+          EV="$RUNNER_TEMP/$EV_SUBDIR"; mkdir -p "$EV"
+          {
+            echo "githubSha=$GITHUB_SHA"
+            echo "headSha=$(git rev-parse HEAD)"
+            echo "treeId=$(git rev-parse 'HEAD^{tree}')"
+            echo "branch=$(git rev-parse --abbrev-ref HEAD)"
+            echo "runId=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT"
+          } | tee "$EV/0-identity.log"
+          sha256sum .github/workflows/g-fe-certification.yml | tee -a "$EV/0-identity.log"
+          git status --porcelain | tee "$EV/0-porcelain-before.log"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test ! -s "$EV/0-porcelain-before.log"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.13.0
+      - name: Pin npm and record the toolchain, asserted
+        timeout-minutes: 5
+        run: |
+          EV="$RUNNER_TEMP/$EV_SUBDIR"
+          npm install -g npm@11.6.2 --ignore-scripts
+          { node --version; npm --version; } | tee "$EV/0-toolchain.log"
+          test "$(node --version)" = "v24.13.0"
+          test "$(npm --version)" = "11.6.2"
+      - name: 1 npm ci
+        timeout-minutes: 10
+        run: |
+          EV="$RUNNER_TEMP/$EV_SUBDIR"; L="$EV/1-npm-ci.log"; set +e
+          npm ci --ignore-scripts 2>&1 | tee "$L"
+          st=("${PIPESTATUS[@]}")
+          if [ -s "$L" ]; then
+            last="$(tail -c 1 "$L")"; tl=$?
+            if [ "$tl" -ne 0 ]; then
+              echo "reportingFailure cmd=1 tailExit=$tl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+              exit 1
+            fi
+            if [ -n "$last" ]; then
+              printf '\n' >> "$L"; nl=$?
+              if [ "$nl" -ne 0 ]; then
+                echo "reportingFailure cmd=1 newlineExit=$nl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+                exit 1
+              fi
+            fi
+          fi
+          printf 'status cmd=1 commandExit=%s loggerExit=%s run=%s attempt=%s sha=%s\n' \
+            "${st[0]}" "${st[1]}" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" >> "$L"
+          ap=$?
+          if [ "$ap" -ne 0 ]; then
+            echo "reportingFailure cmd=1 appendExit=$ap commandExit=${st[0]} loggerExit=${st[1]}" >&2
+            exit 1
+          fi
+          [ "${st[0]}" -eq 0 ] && [ "${st[1]}" -eq 0 ]
+      - name: 2 typecheck
+        timeout-minutes: 5
+        run: |
+          EV="$RUNNER_TEMP/$EV_SUBDIR"; L="$EV/2-typecheck.log"; set +e
+          npm run typecheck 2>&1 | tee "$L"
+          st=("${PIPESTATUS[@]}")
+          if [ -s "$L" ]; then
+            last="$(tail -c 1 "$L")"; tl=$?
+            if [ "$tl" -ne 0 ]; then
+              echo "reportingFailure cmd=2 tailExit=$tl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+              exit 1
+            fi
+            if [ -n "$last" ]; then
+              printf '\n' >> "$L"; nl=$?
+              if [ "$nl" -ne 0 ]; then
+                echo "reportingFailure cmd=2 newlineExit=$nl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+                exit 1
+              fi
+            fi
+          fi
+          printf 'status cmd=2 commandExit=%s loggerExit=%s run=%s attempt=%s sha=%s\n' \
+            "${st[0]}" "${st[1]}" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" >> "$L"
+          ap=$?
+          if [ "$ap" -ne 0 ]; then
+            echo "reportingFailure cmd=2 appendExit=$ap commandExit=${st[0]} loggerExit=${st[1]}" >&2
+            exit 1
+          fi
+          [ "${st[0]}" -eq 0 ] && [ "${st[1]}" -eq 0 ]
+      - name: 3 npm test, strict and serial
+        timeout-minutes: 20
+        run: |
+          EV="$RUNNER_TEMP/$EV_SUBDIR"; L="$EV/3-npm-test.log"; set +e
+          npm test -- --maxWorkers=1 2>&1 | tee "$L"
+          st=("${PIPESTATUS[@]}")
+          if [ -s "$L" ]; then
+            last="$(tail -c 1 "$L")"; tl=$?
+            if [ "$tl" -ne 0 ]; then
+              echo "reportingFailure cmd=3 tailExit=$tl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+              exit 1
+            fi
+            if [ -n "$last" ]; then
+              printf '\n' >> "$L"; nl=$?
+              if [ "$nl" -ne 0 ]; then
+                echo "reportingFailure cmd=3 newlineExit=$nl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+                exit 1
+              fi
+            fi
+          fi
+          printf 'status cmd=3 commandExit=%s loggerExit=%s run=%s attempt=%s sha=%s\n' \
+            "${st[0]}" "${st[1]}" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" >> "$L"
+          ap=$?
+          if [ "$ap" -ne 0 ]; then
+            echo "reportingFailure cmd=3 appendExit=$ap commandExit=${st[0]} loggerExit=${st[1]}" >&2
+            exit 1
+          fi
+          [ "${st[0]}" -eq 0 ] && [ "${st[1]}" -eq 0 ]
+      - name: 4 check frontend dependencies
+        timeout-minutes: 5
+        run: |
+          EV="$RUNNER_TEMP/$EV_SUBDIR"; L="$EV/4-fe-deps.log"; set +e
+          npm run check:frontend-dependencies 2>&1 | tee "$L"
+          st=("${PIPESTATUS[@]}")
+          if [ -s "$L" ]; then
+            last="$(tail -c 1 "$L")"; tl=$?
+            if [ "$tl" -ne 0 ]; then
+              echo "reportingFailure cmd=4 tailExit=$tl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+              exit 1
+            fi
+            if [ -n "$last" ]; then
+              printf '\n' >> "$L"; nl=$?
+              if [ "$nl" -ne 0 ]; then
+                echo "reportingFailure cmd=4 newlineExit=$nl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+                exit 1
+              fi
+            fi
+          fi
+          printf 'status cmd=4 commandExit=%s loggerExit=%s run=%s attempt=%s sha=%s\n' \
+            "${st[0]}" "${st[1]}" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" >> "$L"
+          ap=$?
+          if [ "$ap" -ne 0 ]; then
+            echo "reportingFailure cmd=4 appendExit=$ap commandExit=${st[0]} loggerExit=${st[1]}" >&2
+            exit 1
+          fi
+          [ "${st[0]}" -eq 0 ] && [ "${st[1]}" -eq 0 ]
+      - name: 5 installed API version, recorded and asserted
+        timeout-minutes: 2
+        run: |
+          EV="$RUNNER_TEMP/$EV_SUBDIR"; L="$EV/5-api-version.log"; set +e
+          node -p "require('@tauri-apps/api/package.json').version" 2>&1 | tee "$L"
+          st=("${PIPESTATUS[@]}")
+          v="$(node -p "require('@tauri-apps/api/package.json').version" 2>>"$L")"; vr=$?
+          if [ -s "$L" ]; then
+            last="$(tail -c 1 "$L")"; tl=$?
+            if [ "$tl" -ne 0 ]; then
+              echo "reportingFailure cmd=5 tailExit=$tl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+              exit 1
+            fi
+            if [ -n "$last" ]; then
+              printf '\n' >> "$L"; nl=$?
+              if [ "$nl" -ne 0 ]; then
+                echo "reportingFailure cmd=5 newlineExit=$nl commandExit=${st[0]} loggerExit=${st[1]}" >&2
+                exit 1
+              fi
+            fi
+          fi
+          printf 'status cmd=5 commandExit=%s loggerExit=%s consumedExit=%s stdoutVersion=%s run=%s attempt=%s sha=%s\n' \
+            "${st[0]}" "${st[1]}" "$vr" "$v" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" >> "$L"
+          ap=$?
+          if [ "$ap" -ne 0 ]; then
+            echo "reportingFailure cmd=5 appendExit=$ap commandExit=${st[0]} loggerExit=${st[1]}" >&2
+            exit 1
+          fi
+          [ "${st[0]}" -eq 0 ] && [ "${st[1]}" -eq 0 ] && [ "$vr" -eq 0 ] && [ "$v" = "2.12.1" ]
+      - name: Post-state, asserted
+        timeout-minutes: 2
+        run: |
+          EV="$RUNNER_TEMP/$EV_SUBDIR"
+          git status --porcelain | tee "$EV/6-porcelain-after.log"
+          test ! -s "$EV/6-porcelain-after.log"
+      - name: Completion record, every write propagates its failure
+        if: always()
+        run: |
+          EV="$RUNNER_TEMP/$EV_SUBDIR"; I="$EV/0-identity.log"; set +e
+          mkdir -p "$EV"; mk=$?
+          if [ "$mk" -ne 0 ]; then echo "reportingFailure step=completion mkdirExit=$mk" >&2; exit 1; fi
+          rc=0
+          emit() { printf '%s\n' "$1" >> "$I" || rc=1; }
+          names=(1-npm-ci 2-typecheck 3-npm-test 4-fe-deps 5-api-version)
+          emit "completion run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT sha=$GITHUB_SHA"
+          for i in 1 2 3 4 5; do
+            f="$EV/${names[$((i-1))]}.log"
+            if [ ! -f "$f" ]; then
+              emit "cmd=$i evidence=absent history=unknown"
+              continue
+            fi
+            grep -q "^status cmd=$i " "$f"; g=$?
+            if [ "$g" -eq 0 ]; then
+              emit "cmd=$i evidence=present status=recorded"
+            elif [ "$g" -eq 1 ]; then
+              emit "cmd=$i evidence=present status=absent history=unknown"
+            else
+              emit "cmd=$i evidence=present readError=true grepExit=$g history=unknown"
+              rc=1
+            fi
+          done
+          if [ -f "$EV/6-porcelain-after.log" ]; then
+            emit "postState=evidencePresent"
+          else
+            emit "postState=evidenceAbsent history=unknown"
+          fi
+          if [ "$rc" -ne 0 ]; then echo "reportingFailure step=completion rc=$rc" >&2; exit 1; fi
+      - name: Digests of the owned evidence set
+        if: always()
+        run: |
+          cd "$RUNNER_TEMP/$EV_SUBDIR" && sha256sum ./*.log | tee ./digests.txt
+      - name: Upload the owned evidence set
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: g-fe-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/g-fe-evidence/
+          if-no-files-found: error
