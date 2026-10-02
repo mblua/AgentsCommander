@@ -822,6 +822,7 @@ fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Diagnostic codes this phase adds.
+const REPORT_CODE_PROJECT_INVALID: &str = "projectInvalid";
 const REPORT_CODE_LOCAL_INVALID: &str = "localInvalid";
 const REPORT_CODE_REFRESH_FAILED: &str = "refreshFailed";
 const REPORT_CODE_MIGRATION_CONFLICT: &str = "migrationConflict";
@@ -856,6 +857,37 @@ const CATALOG_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn local_catalog_path(ac_dir: &Path) -> PathBuf {
     catalog_dir(ac_dir).join(LOCAL_CATALOG_FILENAME)
+}
+
+fn project_catalog_path(ac_dir: &Path) -> PathBuf {
+    catalog_dir(ac_dir).join(crate::config::instance_artifacts::CODING_AGENTS_PROJECT_TARGET_NAME)
+}
+
+#[derive(Clone, Copy)]
+enum LayerDescription {
+    Project,
+    Local,
+}
+
+impl LayerDescription {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Local => "local",
+        }
+    }
+    fn invalid_code(self) -> &'static str {
+        match self {
+            Self::Project => REPORT_CODE_PROJECT_INVALID,
+            Self::Local => REPORT_CODE_LOCAL_INVALID,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CatalogReadScope {
+    Project,
+    Instance,
 }
 
 fn migration_journal_path(ac_dir: &Path) -> PathBuf {
@@ -1453,11 +1485,16 @@ fn parse_local_fields(
 /// Parse the local layer STRICTLY: unknown fields, duplicate JSON members,
 /// duplicate local identities, duplicate order keys and unsupported schemas are
 /// all whole-layer errors, so a partially applied layer is impossible.
-fn parse_local_layer(bytes: &[u8]) -> Result<LocalLayer, String> {
+fn parse_local_layer(bytes: &[u8], description: LayerDescription) -> Result<LocalLayer, String> {
+    let layer = description.name();
     let value = parse_strict_json(bytes)
-        .map_err(|reason| format!("the local catalog is not valid JSON ({reason})"))?;
-    let root = expect_json_object(&value, "the local catalog root")?;
-    reject_unknown_json_fields(root, LOCAL_ROOT_FIELDS, "the local catalog root")?;
+        .map_err(|reason| format!("the {layer} catalog is not valid JSON ({reason})"))?;
+    let root = expect_json_object(&value, &format!("the {layer} catalog root"))?;
+    reject_unknown_json_fields(
+        root,
+        LOCAL_ROOT_FIELDS,
+        &format!("the {layer} catalog root"),
+    )?;
     match root.get("schemaVersion") {
         Some(serde_json::Value::Number(version))
             if version.as_u64() == Some(CATALOG_SCHEMA_VERSION as u64) => {}
@@ -1466,12 +1503,24 @@ fn parse_local_layer(bytes: &[u8]) -> Result<LocalLayer, String> {
                 "unsupported schemaVersion {version}; only schemaVersion 1 is recognized"
             ))
         }
-        None => return Err("the local catalog root must declare schemaVersion 1".to_string()),
+        None => {
+            return Err(format!(
+                "the {layer} catalog root must declare schemaVersion 1"
+            ))
+        }
     }
     let agents = match root.get("agents") {
         Some(serde_json::Value::Array(agents)) => agents,
-        Some(_) => return Err("the local catalog 'agents' value must be a JSON array".to_string()),
-        None => return Err("the local catalog root must declare an 'agents' array".to_string()),
+        Some(_) => {
+            return Err(format!(
+                "the {layer} catalog 'agents' value must be a JSON array"
+            ))
+        }
+        None => {
+            return Err(format!(
+                "the {layer} catalog root must declare an 'agents' array"
+            ))
+        }
     };
     let order = match root.get("order") {
         None => None,
@@ -1480,32 +1529,36 @@ fn parse_local_layer(bytes: &[u8]) -> Result<LocalLayer, String> {
             let mut keys = Vec::with_capacity(items.len());
             for (index, item) in items.iter().enumerate() {
                 let serde_json::Value::String(key) = item else {
-                    return Err(format!("local order item {index} must be a string"));
+                    return Err(format!("{layer} order item {index} must be a string"));
                 };
                 if validate_catalog_key(key).is_err() {
                     return Err(format!(
-                        "local order item {index} is not a valid catalog key"
+                        "{layer} order item {index} is not a valid catalog key"
                     ));
                 }
                 if !seen.insert(key.clone()) {
-                    return Err(format!("duplicate local order key '{key}'"));
+                    return Err(format!("duplicate {layer} order key '{key}'"));
                 }
                 keys.push(key.clone());
             }
             Some(keys)
         }
-        Some(_) => return Err("the local catalog 'order' value must be a JSON array".to_string()),
+        Some(_) => {
+            return Err(format!(
+                "the {layer} catalog 'order' value must be a JSON array"
+            ))
+        }
     };
 
     let mut seen_keys = HashSet::new();
     let mut rows = Vec::with_capacity(agents.len());
     for (index, raw) in agents.iter().enumerate() {
-        let context = format!("local agents[{index}]");
+        let context = format!("{layer} agents[{index}]");
         let object = expect_json_object(raw, &context)?;
         let key = expect_json_string(object, "key", &context)?.to_string();
         validate_catalog_key(&key).map_err(|reason| format!("{context}: {reason}"))?;
         if !seen_keys.insert(key.clone()) {
-            return Err(format!("duplicate local coding-agent key '{key}'"));
+            return Err(format!("duplicate {layer} coding-agent key '{key}'"));
         }
         let remove = match object.get("remove") {
             None => false,
@@ -1662,6 +1715,7 @@ fn apply_local_fields(
 fn build_new_definition(
     key: &str,
     fields: &LocalFieldPatch,
+    description: LayerDescription,
 ) -> Result<CodingAgentDefinition, String> {
     let mut missing = Vec::new();
     if fields.label.is_none() {
@@ -1693,7 +1747,8 @@ fn build_new_definition(
     }
     if !missing.is_empty() {
         return Err(format!(
-            "new local coding-agent '{key}' is missing required field(s): {}",
+            "new {} coding-agent '{key}' is missing required field(s): {}",
+            description.name(),
             missing.join(", ")
         ));
     }
@@ -1735,7 +1790,10 @@ fn build_new_definition(
 fn compose_local_layer(
     base: &[CodingAgentDefinition],
     local: &LocalLayer,
+    description: LayerDescription,
 ) -> Result<Vec<CodingAgentDefinition>, String> {
+    let layer = description.name();
+    let composition = format!("{layer} composition");
     let mut working: Vec<CodingAgentDefinition> = base.to_vec();
     let mut index: HashMap<String, usize> = HashMap::with_capacity(working.len());
     for (position, definition) in working.iter().enumerate() {
@@ -1750,7 +1808,7 @@ fn compose_local_layer(
                 if row.remove {
                     if !working[position].removable {
                         return Err(format!(
-                            "local remove row targets nonremovable coding agent '{}'",
+                            "{layer} remove row targets nonremovable coding agent '{}'",
                             row.key
                         ));
                     }
@@ -1765,7 +1823,7 @@ fn compose_local_layer(
                 if row.remove {
                     continue;
                 }
-                local_added.push(build_new_definition(&row.key, &row.fields)?);
+                local_added.push(build_new_definition(&row.key, &row.fields, description)?);
             }
         }
     }
@@ -1788,17 +1846,15 @@ fn compose_local_layer(
             ));
         }
         for (index, command) in definition.update_commands.iter().enumerate() {
-            validate_update_command_string(command, "local composition", index).map_err(
-                |reason| {
-                    format!(
-                        "coding agent '{}' failed validation after composition: {reason}",
-                        definition.key
-                    )
-                },
-            )?;
+            validate_update_command_string(command, &composition, index).map_err(|reason| {
+                format!(
+                    "coding agent '{}' failed validation after composition: {reason}",
+                    definition.key
+                )
+            })?;
         }
         if let Some(install) = definition.install_commands.as_ref() {
-            validate_install_commands(install, "local composition").map_err(|reason| {
+            validate_install_commands(install, &composition).map_err(|reason| {
                 format!(
                     "coding agent '{}' failed validation after composition: {reason}",
                     definition.key
@@ -2074,50 +2130,56 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
 // Read snapshots and resolution.
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, PartialEq, Eq)]
 struct CatalogSnapshot {
-    /// `Err` carries a present-but-unreadable entry (link, reparse point or
-    /// nonregular path); the resolver degrades that artifact instead of failing
-    /// the whole read.
     base: Result<Option<Vec<u8>>, String>,
+    // None is explicit exclusion: Instance/Direct never observe the project path.
+    project: Option<Result<Option<Vec<u8>>, String>>,
     local: Result<Option<Vec<u8>>, String>,
     journal: Result<Option<Vec<u8>>, String>,
 }
 
-/// Snapshot the source, local layer and journal. The three files move together
-/// only while a migration publishes, so a snapshot whose reads straddle a
-/// publication is retried; two consecutive equal snapshots prove a boundary
-/// view. After three attempts the read reports unavailability with retry
-/// guidance instead of composing a torn state.
-fn read_catalog_snapshot(ac_dir: &Path) -> Result<CatalogSnapshot, String> {
-    let base_path = manifest_path(ac_dir);
-    let local_path = local_catalog_path(ac_dir);
-    let journal_path = migration_journal_path(ac_dir);
-    type Fingerprint = (
-        Result<Option<Vec<u8>>, String>,
-        Result<Option<Vec<u8>>, String>,
-        Result<Option<Vec<u8>>, String>,
-    );
-    let mut previous: Option<Fingerprint> = None;
+/// Bounded consecutive observations, not atomic publication by external editors.
+fn read_catalog_snapshot(
+    ac_dir: &Path,
+    scope: CatalogReadScope,
+) -> Result<CatalogSnapshot, String> {
+    read_catalog_snapshot_with(ac_dir, scope, read_optional_regular_file)
+}
+
+fn read_catalog_snapshot_with(
+    ac_dir: &Path,
+    scope: CatalogReadScope,
+    mut read: impl FnMut(&Path, &str) -> Result<Option<Vec<u8>>, String>,
+) -> Result<CatalogSnapshot, String> {
+    let mut previous = None;
     for _attempt in 0..3 {
         let snapshot = CatalogSnapshot {
-            base: read_optional_regular_file(&base_path, "persisted catalog"),
-            local: read_optional_regular_file(&local_path, "local coding-agent catalog"),
-            journal: read_optional_regular_file(&journal_path, "coding-agent migration journal"),
+            base: read(&manifest_path(ac_dir), "persisted catalog"),
+            project: if scope == CatalogReadScope::Project {
+                Some(read(
+                    &project_catalog_path(ac_dir),
+                    "project coding-agent catalog",
+                ))
+            } else {
+                None
+            },
+            local: read(&local_catalog_path(ac_dir), "local coding-agent catalog"),
+            journal: read(
+                &migration_journal_path(ac_dir),
+                "coding-agent migration journal",
+            ),
         };
-        let fingerprint = (
-            snapshot.base.clone(),
-            snapshot.local.clone(),
-            snapshot.journal.clone(),
-        );
-        if previous.as_ref() == Some(&fingerprint) {
+        if previous.as_ref() == Some(&snapshot) {
             return Ok(snapshot);
         }
-        previous = Some(fingerprint);
+        previous = Some(snapshot);
     }
-    Err(
+    Err(if scope == CatalogReadScope::Project {
+        "the catalog source, project overrides, local overrides and migration journal kept changing while reading; retry the read"
+    } else {
         "the catalog source, local overrides and migration journal kept changing while reading; retry the read"
-            .to_string(),
-    )
+    }.to_string())
 }
 
 struct ResolvedCatalog {
@@ -2133,20 +2195,22 @@ fn describe_local_presence(
     local: &Result<Option<Vec<u8>>, String>,
     local_path: &Path,
     warnings: &mut Vec<CatalogDiagnostic>,
+    description: LayerDescription,
 ) {
+    let layer = description.name();
     match local {
         Ok(None) => return,
         Ok(Some(local_bytes)) => {
-            if let Err(reason) = parse_local_layer(local_bytes) {
+            if let Err(reason) = parse_local_layer(local_bytes, description) {
                 warnings.push(catalog_diagnostic(
-                    REPORT_CODE_LOCAL_INVALID,
+                    description.invalid_code(),
                     local_path,
                     reason,
                 ));
             }
         }
         Err(reason) => warnings.push(catalog_diagnostic(
-            REPORT_CODE_LOCAL_INVALID,
+            description.invalid_code(),
             local_path,
             reason.clone(),
         )),
@@ -2154,7 +2218,7 @@ fn describe_local_presence(
     warnings.push(catalog_diagnostic(
         REPORT_CODE_MIGRATION_PENDING,
         local_path,
-        "a local overrides file exists while the base is not AC-managed; ownership transfer is blocked until the managed migration completes and the local layer is not applied on top of a non-managed base",
+        format!("a {layer} overrides file exists while the base is not AC-managed; ownership transfer is blocked until the managed migration completes and the {layer} layer is not applied on top of a non-managed base"),
     ));
 }
 
@@ -2271,6 +2335,13 @@ fn resolve_catalog_snapshot(
                 }
             }
         }
+        if let Some(project) = &snapshot.project {
+            match project {
+                Ok(None) => {},
+                Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(REPORT_CODE_MIGRATION_PENDING, &project_catalog_path(ac_dir), "a project overrides file exists but no managed base has been published yet; the managed base is created on the next initialization")),
+                Err(reason) => resolved.warnings.push(catalog_diagnostic(REPORT_CODE_PROJECT_INVALID, &project_catalog_path(ac_dir), reason.clone())),
+            }
+        }
         match &snapshot.local {
             Ok(None) => {}
             Ok(Some(_)) => resolved.warnings.push(catalog_diagnostic(
@@ -2320,28 +2391,37 @@ fn resolve_catalog_snapshot(
     match analysis.kind {
         CatalogBaseKind::Managed => {
             let mut effective = analysis.entries;
-            match &snapshot.local {
-                Ok(Some(local_bytes)) => match parse_local_layer(local_bytes) {
-                    Ok(layer) => match compose_local_layer(&effective, &layer) {
-                        Ok(composed) => effective = composed,
-                        Err(reason) => resolved.warnings.push(catalog_diagnostic(
-                            REPORT_CODE_LOCAL_INVALID,
-                            &local_path,
-                            reason,
-                        )),
-                    },
+            for (observation, path, description) in snapshot
+                .project
+                .as_ref()
+                .map(|value| {
+                    (
+                        value,
+                        project_catalog_path(ac_dir),
+                        LayerDescription::Project,
+                    )
+                })
+                .into_iter()
+                .chain(std::iter::once((
+                    &snapshot.local,
+                    local_path.clone(),
+                    LayerDescription::Local,
+                )))
+            {
+                let result = match observation {
+                    Ok(Some(bytes)) => parse_local_layer(bytes, description)
+                        .and_then(|layer| compose_local_layer(&effective, &layer, description)),
+                    Ok(None) => continue,
+                    Err(reason) => Err(reason.clone()),
+                };
+                match result {
+                    Ok(candidate) => effective = candidate,
                     Err(reason) => resolved.warnings.push(catalog_diagnostic(
-                        REPORT_CODE_LOCAL_INVALID,
-                        &local_path,
+                        description.invalid_code(),
+                        &path,
                         reason,
                     )),
-                },
-                Ok(None) => {}
-                Err(reason) => resolved.warnings.push(catalog_diagnostic(
-                    REPORT_CODE_LOCAL_INVALID,
-                    &local_path,
-                    reason.clone(),
-                )),
+                }
             }
             resolved.catalog = apply_support_gate(effective, &base_path, &mut resolved.warnings);
         }
@@ -2351,12 +2431,38 @@ fn resolve_catalog_snapshot(
                 &base_path,
                 "the persisted catalog carries an unrecognized managed ownership marker; this build neither refreshes nor migrates it",
             ));
-            describe_local_presence(&snapshot.local, &local_path, &mut resolved.warnings);
+            if let Some(project) = &snapshot.project {
+                describe_local_presence(
+                    project,
+                    &project_catalog_path(ac_dir),
+                    &mut resolved.warnings,
+                    LayerDescription::Project,
+                );
+            }
+            describe_local_presence(
+                &snapshot.local,
+                &local_path,
+                &mut resolved.warnings,
+                LayerDescription::Local,
+            );
             resolved.catalog =
                 apply_support_gate(analysis.entries, &base_path, &mut resolved.warnings);
         }
         CatalogBaseKind::Legacy => {
-            describe_local_presence(&snapshot.local, &local_path, &mut resolved.warnings);
+            if let Some(project) = &snapshot.project {
+                describe_local_presence(
+                    project,
+                    &project_catalog_path(ac_dir),
+                    &mut resolved.warnings,
+                    LayerDescription::Project,
+                );
+            }
+            describe_local_presence(
+                &snapshot.local,
+                &local_path,
+                &mut resolved.warnings,
+                LayerDescription::Local,
+            );
             resolved.catalog =
                 apply_support_gate(analysis.entries, &base_path, &mut resolved.warnings);
         }
@@ -2599,6 +2705,8 @@ impl CatalogSourceContext {
 /// This public entry point speaks for DIRECT callers (the array adapter and
 /// context-free CLI/IPC reads), so it always uses the neutral wording; the
 /// settings wrapper threads its own project/instance context privately.
+/// Direct reads resolve 10/50 only; callers needing the primary project layer
+/// use [`load_catalog_report_for_settings`].
 /// READ-ONLY: never seeds, creates directories, refreshes, locks or writes.
 /// `unavailable` is set (with an empty catalog) for a missing/unreadable/
 /// nonregular/link source, invalid JSON, an unsupported explicit schemaVersion
@@ -2607,12 +2715,18 @@ impl CatalogSourceContext {
 /// readable and reports the pending migration. Definitions keep persisted order
 /// after filtering; no embedded donor is ever consulted.
 pub fn load_catalog_report(ac_dir: &Path) -> CatalogReport {
-    load_catalog_report_with_context(ac_dir, CatalogSourceContext::Direct).0
+    load_catalog_report_with_context(
+        ac_dir,
+        CatalogSourceContext::Direct,
+        CatalogReadScope::Instance,
+    )
+    .0
 }
 
 fn load_catalog_report_with_context(
     ac_dir: &Path,
     context: CatalogSourceContext,
+    scope: CatalogReadScope,
 ) -> (CatalogReport, bool) {
     let path = manifest_path(ac_dir);
     let mut report = CatalogReport {
@@ -2622,7 +2736,7 @@ fn load_catalog_report_with_context(
         warnings: Vec::new(),
         unavailable: None,
     };
-    let snapshot = match read_catalog_snapshot(ac_dir) {
+    let snapshot = match read_catalog_snapshot(ac_dir, scope) {
         Ok(snapshot) => snapshot,
         Err(reason) => {
             report.unavailable = Some(catalog_diagnostic(
@@ -2664,8 +2778,11 @@ fn load_catalog_report_for_settings_with_config_dir(
     match primary_project_root(settings) {
         Some(root) => {
             let ac_dir = root.join(crate::config::ac_root::CANONICAL_AC_ROOT_DIR);
-            let (mut report, verified_managed_base) =
-                load_catalog_report_with_context(&ac_dir, CatalogSourceContext::Project);
+            let (mut report, verified_managed_base) = load_catalog_report_with_context(
+                &ac_dir,
+                CatalogSourceContext::Project,
+                CatalogReadScope::Project,
+            );
             report.primary_project_root = Some(root.to_string_lossy().to_string());
             if verified_managed_base {
                 let untracked = match has_catalog_publication(&root) {
@@ -2695,7 +2812,14 @@ fn load_catalog_report_for_settings_with_config_dir(
             // Direct wrapper: reads never seed or migrate the instance (the
             // no-project boot path initializes it), so its restart guidance
             // must say so.
-            Some(dir) => load_catalog_report_with_context(&dir, CatalogSourceContext::Instance).0,
+            Some(dir) => {
+                load_catalog_report_with_context(
+                    &dir,
+                    CatalogSourceContext::Instance,
+                    CatalogReadScope::Instance,
+                )
+                .0
+            }
             None => report_without_source(),
         },
     }
@@ -3460,8 +3584,8 @@ fn migrate_legacy(
     let managed_bytes = build_managed_base_bytes(&shipped);
     let local_bytes = extract_legacy_local(source_bytes, &shipped)?;
     // All extraction is computed and strictly validated before ANY write.
-    let layer = parse_local_layer(&local_bytes)?;
-    compose_local_layer(&shipped, &layer)?;
+    let layer = parse_local_layer(&local_bytes, LayerDescription::Local)?;
+    compose_local_layer(&shipped, &layer, LayerDescription::Local)?;
     let managed_base_value: serde_json::Value = serde_json::from_slice(&managed_bytes)
         .map_err(|e| format!("the intended managed base did not serialize to JSON ({e})"))?;
     let revision = managed_content_sha256(&shipped);
@@ -3699,8 +3823,8 @@ fn resume_backup_only_migration(
     };
     let managed_bytes = build_managed_base_bytes(&shipped);
     let local_bytes = extract_legacy_local(&backup, &shipped)?;
-    let layer = parse_local_layer(&local_bytes)?;
-    compose_local_layer(&shipped, &layer)?;
+    let layer = parse_local_layer(&local_bytes, LayerDescription::Local)?;
+    compose_local_layer(&shipped, &layer, LayerDescription::Local)?;
     publish_exclusive(&paths.local, &local_bytes)?;
     let published_at = Utc::now();
     if source_kind == MIGRATION_SOURCE_PROJECT {
@@ -4925,6 +5049,511 @@ fn rename_into_place(staging: &Path, dest: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn write_project_patch(ac_dir: &Path, value: serde_json::Value) {
+        let path = project_catalog_path(ac_dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    fn project_report(ac_dir: &Path) -> CatalogReport {
+        load_catalog_report_with_context(
+            ac_dir,
+            CatalogSourceContext::Project,
+            CatalogReadScope::Project,
+        )
+        .0
+    }
+
+    fn patch_rows(rows: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"schemaVersion":1,"agents":rows})
+    }
+
+    fn extra_row(key: &str) -> serde_json::Value {
+        let mut row = shipped_def_json(&["claude"]).remove(0);
+        row["key"] = serde_json::json!(key);
+        row["removable"] = serde_json::json!(true);
+        row
+    }
+
+    #[test]
+    fn project_absence_preserves_direct_report_and_catalog() {
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        write_local(
+            dir.path(),
+            r#"{"schemaVersion":1,"agents":[{"key":"claude","label":"Personal"}]}"#,
+        );
+        assert_eq!(
+            report_json(&project_report(dir.path())),
+            report_json(&load_catalog_report(dir.path()))
+        );
+        assert!(!project_catalog_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn project_then_personal_merges_fields_nulls_and_exact_order() {
+        let dir = seed_dir();
+        write_managed_base(
+            dir.path(),
+            &shipped_def_json(&["claude", "codex", "pi"]),
+            "stale",
+            true,
+        );
+        let mut project = patch_rows(serde_json::json!([
+            {"key":"claude","label":"Project","instructionsFilename":null,"idleBurst":{"maxBytes":10,"maxSecs":2},"installCommands":{"default":"install","windows":"win"}}, extra_row("team")
+        ]));
+        project["order"] = serde_json::json!(["team", "pi", "unknown"]);
+        write_project_patch(dir.path(), project);
+        let mut personal = patch_rows(serde_json::json!([
+            {"key":"claude","label":"Personal","idleBurst":{"maxSecs":3},"installCommands":{"windows":null}}, extra_row("mine")
+        ]));
+        personal["order"] = serde_json::json!(["mine", "claude"]);
+        write_local(dir.path(), &personal.to_string());
+        let report = project_report(dir.path());
+        assert_eq!(
+            keys_of(&report.catalog),
+            ["mine", "claude", "team", "pi", "codex"]
+        );
+        let claude = &report.catalog[1];
+        assert_eq!(claude.label, "Personal");
+        assert_eq!(claude.instructions_filename, None);
+        assert_eq!(claude.idle_burst.as_ref().unwrap().max_bytes, Some(10));
+        assert_eq!(claude.idle_burst.as_ref().unwrap().max_secs, Some(3.0));
+        assert_eq!(claude.install_commands.as_ref().unwrap().default, "install");
+        assert_eq!(claude.install_commands.as_ref().unwrap().windows, None);
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|w| w.code == "projectInvalid" || w.code == "localInvalid"));
+    }
+
+    #[test]
+    fn project_invalid_schema_preserves_base_and_independent_personal() {
+        let cases = [
+            "<<<<<<< conflict",
+            "{",
+            r#"{"schemaVersion":2,"agents":[]}"#,
+            r#"{"schemaVersion":1,"agents":[],"unexpected":true}"#,
+            r#"{"schemaVersion":1,"schemaVersion":1,"agents":[]}"#,
+            r#"{"schemaVersion":1,"agents":[{"key":"claude"},{"key":"claude"}]}"#,
+            r#"{"schemaVersion":1,"agents":[],"order":["claude","claude"]}"#,
+            r#"{"schemaVersion":1,"agents":[{"key":"claude","label":"partial"},{"key":"new","label":"incomplete"}]}"#,
+        ];
+        for bytes in cases {
+            let dir = seed_dir();
+            ensure_seeded(dir.path(), None);
+            std::fs::write(project_catalog_path(dir.path()), bytes).unwrap();
+            write_local(
+                dir.path(),
+                r#"{"schemaVersion":1,"agents":[{"key":"claude","label":"Personal"}]}"#,
+            );
+            let report = project_report(dir.path());
+            assert_eq!(report.catalog[0].label, "Personal", "{bytes}");
+            let warning = report
+                .warnings
+                .iter()
+                .find(|w| w.code == "projectInvalid")
+                .unwrap();
+            assert_eq!(
+                warning.path,
+                project_catalog_path(dir.path()).display().to_string()
+            );
+            assert!(!warning.reason.contains("local"), "{}", warning.reason);
+            assert_eq!(
+                std::fs::read(project_catalog_path(dir.path())).unwrap(),
+                bytes.as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn project_rejection_has_no_donor_and_personal_rejection_keeps_project() {
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        write_project_patch(
+            dir.path(),
+            patch_rows(serde_json::json!([extra_row("team"), {"key":"claude","command":""}])),
+        );
+        write_local(
+            dir.path(),
+            &patch_rows(serde_json::json!([{"key":"team","label":"partial"}])).to_string(),
+        );
+        let report = project_report(dir.path());
+        assert!(!report.catalog.iter().any(|d| d.key == "team"));
+        assert_eq!(
+            report
+                .warnings
+                .iter()
+                .filter(|w| w.code == "projectInvalid" || w.code == "localInvalid")
+                .count(),
+            2
+        );
+        write_local(
+            dir.path(),
+            &patch_rows(serde_json::json!([extra_row("team")])).to_string(),
+        );
+        assert!(project_report(dir.path())
+            .catalog
+            .iter()
+            .any(|d| d.key == "team"));
+        write_project_patch(
+            dir.path(),
+            patch_rows(serde_json::json!([{"key":"claude","label":"Team"}])),
+        );
+        write_local(dir.path(), "invalid");
+        assert_eq!(project_report(dir.path()).catalog[0].label, "Team");
+    }
+    #[test]
+    fn project_removability_and_resurrection_use_accepted_lower_vector() {
+        let dir = seed_dir();
+        let mut row = extra_row("team");
+        row["removable"] = serde_json::json!(false);
+        write_managed_base(dir.path(), &[row], "stale", true);
+        write_project_patch(
+            dir.path(),
+            patch_rows(serde_json::json!([{"key":"team","remove":true}])),
+        );
+        assert!(project_report(dir.path())
+            .warnings
+            .iter()
+            .any(|w| w.code == "projectInvalid"));
+        write_project_patch(
+            dir.path(),
+            patch_rows(serde_json::json!([{"key":"team","removable":true}])),
+        );
+        write_local(
+            dir.path(),
+            &patch_rows(serde_json::json!([{"key":"team","remove":true}])).to_string(),
+        );
+        assert!(project_report(dir.path()).catalog.is_empty());
+        write_managed_base(dir.path(), &[extra_row("team")], "stale", true);
+        write_project_patch(
+            dir.path(),
+            patch_rows(serde_json::json!([{"key":"team","remove":true}])),
+        );
+        write_local(
+            dir.path(),
+            &patch_rows(serde_json::json!([{"key":"team","label":"partial"}])).to_string(),
+        );
+        let report = project_report(dir.path());
+        assert!(report.catalog.is_empty());
+        assert!(report.warnings.iter().any(|w| w.code == "localInvalid"));
+        write_local(
+            dir.path(),
+            &patch_rows(serde_json::json!([extra_row("team")])).to_string(),
+        );
+        assert_eq!(keys_of(&project_report(dir.path()).catalog), ["team"]);
+    }
+
+    #[test]
+    fn project_snapshot_observes_churn_absence_errors_and_excludes_instance() {
+        let dir = seed_dir();
+        for scope in [CatalogReadScope::Project, CatalogReadScope::Instance] {
+            let mut calls = 0;
+            let snapshot = read_catalog_snapshot_with(dir.path(), scope, |path, _| {
+                if path == project_catalog_path(dir.path()) {
+                    calls += 1;
+                }
+                Ok(None)
+            })
+            .unwrap();
+            assert_eq!(
+                calls,
+                if scope == CatalogReadScope::Project {
+                    2
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                snapshot.project.is_some(),
+                scope == CatalogReadScope::Project
+            );
+        }
+        for change in 0..3 {
+            let mut calls = 0;
+            let result =
+                read_catalog_snapshot_with(dir.path(), CatalogReadScope::Project, |path, _| {
+                    if path == project_catalog_path(dir.path()) {
+                        calls += 1;
+                        return match change {
+                            0 => Ok(Some(vec![calls])),
+                            1 => {
+                                if calls % 2 == 0 {
+                                    Ok(None)
+                                } else {
+                                    Ok(Some(vec![]))
+                                }
+                            }
+                            _ => Err(format!("read error {calls}")),
+                        };
+                    }
+                    Ok(None)
+                });
+            assert_eq!(calls, 3);
+            assert!(result.err().unwrap().contains("project overrides"));
+        }
+    }
+
+    #[test]
+    fn project_settings_primary_only_and_direct_instance_matrix() {
+        let primary = tempfile::tempdir().unwrap();
+        let secondary = tempfile::tempdir().unwrap();
+        let instance = tempfile::tempdir().unwrap();
+        for root in [
+            primary.path().join(".ac"),
+            secondary.path().join(".ac"),
+            instance.path().to_path_buf(),
+        ] {
+            ensure_seeded(&root, None);
+            write_project_patch(
+                &root,
+                patch_rows(serde_json::json!([{"key":"claude","label":"Project"}])),
+            );
+            write_local(
+                &root,
+                r#"{"schemaVersion":1,"agents":[{"key":"codex","label":"Personal"}]}"#,
+            );
+            let direct = load_catalog_report(&root);
+            assert_eq!(direct.catalog[0].label, "Claude Code");
+            assert_eq!(direct.catalog[1].label, "Personal");
+            assert_eq!(
+                keys_of(&load_catalog(&root).unwrap()),
+                keys_of(&direct.catalog)
+            );
+        }
+        let mut settings = AppSettings {
+            project_paths: vec![
+                " ".into(),
+                primary.path().display().to_string(),
+                secondary.path().display().to_string(),
+            ],
+            project_path: Some(secondary.path().display().to_string()),
+            ..Default::default()
+        };
+        let report = load_catalog_report_for_settings_with_config_dir(
+            &settings,
+            Some(instance.path().to_path_buf()),
+        );
+        assert_eq!(report.catalog[0].label, "Project");
+        assert_eq!(
+            report.primary_project_root,
+            Some(primary.path().display().to_string())
+        );
+        std::fs::write(manifest_path(&primary.path().join(".ac")), "bad").unwrap();
+        assert!(load_catalog_report_for_settings_with_config_dir(
+            &settings,
+            Some(instance.path().to_path_buf())
+        )
+        .unavailable
+        .is_some());
+        settings.project_paths.clear();
+        settings.project_path = None;
+        assert_eq!(
+            load_catalog_report_for_settings_with_config_dir(
+                &settings,
+                Some(instance.path().to_path_buf())
+            )
+            .catalog[0]
+                .label,
+            "Claude Code"
+        );
+    }
+
+    #[test]
+    fn project_nonregular_and_read_errors_degrade_only_project() {
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        std::fs::create_dir(project_catalog_path(dir.path())).unwrap();
+        let report = project_report(dir.path());
+        assert_eq!(report.catalog.len(), 8);
+        assert!(report.warnings.iter().any(|w| w.code == "projectInvalid"));
+        let snapshot = read_catalog_snapshot_with(
+            dir.path(),
+            CatalogReadScope::Project,
+            |path, description| {
+                if path == project_catalog_path(dir.path()) {
+                    Err("project read denied".into())
+                } else {
+                    read_optional_regular_file(path, description)
+                }
+            },
+        )
+        .unwrap();
+        let resolved =
+            resolve_catalog_snapshot(dir.path(), snapshot, CatalogSourceContext::Project);
+        assert_eq!(resolved.catalog.len(), 8);
+        assert!(resolved
+            .warnings
+            .iter()
+            .any(|w| w.code == "projectInvalid" && w.reason == "project read denied"));
+    }
+    #[test]
+    fn project_symlink_and_dangling_link_remain_invalid_and_preserved() {
+        for present in [true, false] {
+            let dir = seed_dir();
+            ensure_seeded(dir.path(), None);
+            let target = dir.path().join("project-target.json");
+            if present {
+                std::fs::write(&target, LOCAL_STUB_BYTES).unwrap();
+            }
+            let path = project_catalog_path(dir.path());
+            create_manifest_symlink(&target, &path).expect("real project symlink fixture");
+            let report = project_report(dir.path());
+            assert_eq!(report.catalog.len(), 8);
+            assert!(report
+                .warnings
+                .iter()
+                .any(|w| w.code == "projectInvalid" && w.path == path.display().to_string()));
+            ensure_seeded(dir.path(), None);
+            assert_eq!(std::fs::read_link(path).unwrap(), target);
+            if present {
+                assert_eq!(std::fs::read(target).unwrap(), LOCAL_STUB_BYTES);
+            } else {
+                assert!(!target.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn project_ownership_support_and_unavailable_base_contract() {
+        let dir = seed_dir();
+        for owner in ["legacy", "foreign"] {
+            write_legacy_base(
+                dir.path(),
+                &manifest_json(&serde_json::json!([extra_row("team")]).to_string()),
+            );
+            if owner == "foreign" {
+                write_managed_base(dir.path(), &[extra_row("team")], "stale", true);
+                let mut base = base_json(dir.path());
+                base["managed"]["owner"] = serde_json::json!("other");
+                std::fs::write(manifest_path(dir.path()), base.to_string()).unwrap();
+            }
+            write_project_patch(
+                dir.path(),
+                patch_rows(serde_json::json!([{"key":"team","label":"ignored"}])),
+            );
+            let report = project_report(dir.path());
+            assert_ne!(report.catalog[0].label, "ignored");
+            assert!(report.warnings.iter().any(|w| w.code == "migrationPending"
+                && w.path == project_catalog_path(dir.path()).display().to_string()));
+            std::fs::write(project_catalog_path(dir.path()), "bad").unwrap();
+            assert!(project_report(dir.path())
+                .warnings
+                .iter()
+                .any(|w| w.code == "projectInvalid"));
+        }
+        std::fs::remove_file(manifest_path(dir.path())).unwrap();
+        let report = project_report(dir.path());
+        assert!(report.unavailable.is_some());
+        assert!(report.catalog.is_empty());
+        std::fs::write(manifest_path(dir.path()), "invalid").unwrap();
+        let report = project_report(dir.path());
+        assert!(report.unavailable.is_some());
+        assert!(report.warnings.is_empty());
+        with_builtin_agent_support_for_test(TABLE_MUSE_OFF, || {
+            write_managed_base(dir.path(), &[extra_row("team")], "stale", false);
+            write_project_patch(
+                dir.path(),
+                patch_rows(serde_json::json!([extra_row("muse")])),
+            );
+            write_local(
+                dir.path(),
+                &patch_rows(serde_json::json!([{"key":"muse","label":"personal"}])).to_string(),
+            );
+            let report = project_report(dir.path());
+            assert!(!report.catalog.iter().any(|d| d.key == "muse"));
+            assert!(!report
+                .warnings
+                .iter()
+                .any(|w| w.code == "localInvalid" || w.code == "projectInvalid"));
+            assert!(report
+                .warnings
+                .iter()
+                .any(|w| w.code == "managedBaseEdited"));
+        });
+    }
+
+    #[test]
+    fn project_interrupted_instance_journal_fallback_consumes_neither_patch() {
+        let dir = seed_dir();
+        let legacy = legacy_dir();
+        std::fs::write(
+            legacy.path().join("agents.json"),
+            manifest_json(&serde_json::json!([extra_row("mine")]).to_string()),
+        )
+        .unwrap();
+        std::fs::create_dir_all(catalog_dir(dir.path())).unwrap();
+        write_project_patch(
+            dir.path(),
+            patch_rows(serde_json::json!([{"key":"mine","label":"Project"}])),
+        );
+        with_failure_at("after_journal", || {
+            ensure_seeded(dir.path(), Some(legacy.path()))
+        });
+        assert!(!manifest_path(dir.path()).exists());
+        // The early legacy-source return ignores even malformed patches.
+        write_local(dir.path(), "invalid personal");
+        let report = project_report(dir.path());
+        assert_eq!(keys_of(&report.catalog), ["mine"]);
+        assert_ne!(report.catalog[0].label, "Project");
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|w| w.code == "projectInvalid" || w.code == "localInvalid"));
+    }
+
+    #[test]
+    fn project_bytes_and_registered_snapshot_survive_initialization_refresh_recovery() {
+        for contents in [LOCAL_STUB_BYTES, b"<<<<<<< malformed project".as_slice()] {
+            let dir = seed_dir();
+            std::fs::create_dir_all(catalog_dir(dir.path())).unwrap();
+            std::fs::write(project_catalog_path(dir.path()), contents).unwrap();
+            let registered = dir.path().join("agents.30.instance.no-git.json");
+            let registered_bytes = b"{\"agents\":[{\"id\":\"registered-snapshot\"}]}";
+            std::fs::write(&registered, registered_bytes).unwrap();
+            ensure_seeded(dir.path(), None);
+            reseed_master_for_command(dir.path(), "claude").unwrap();
+            assert_eq!(
+                std::fs::read(local_catalog_path(dir.path())).unwrap(),
+                LOCAL_STUB_BYTES
+            );
+            assert_eq!(
+                std::fs::read(manifest_path(dir.path())).unwrap(),
+                build_managed_base_bytes(&supported_shipped_definitions())
+            );
+            write_managed_base(dir.path(), &shipped_def_json(&["claude"]), "stale", true);
+            ensure_seeded(dir.path(), None);
+            assert_eq!(
+                std::fs::read(project_catalog_path(dir.path())).unwrap(),
+                contents
+            );
+            std::fs::remove_file(local_catalog_path(dir.path())).unwrap();
+            // Recovery returns the saved legacy vector before either layer.
+            write_legacy_base(
+                dir.path(),
+                &manifest_json(&serde_json::json!([extra_row("mine")]).to_string()),
+            );
+            with_failure_at("after_journal", || ensure_seeded(dir.path(), None));
+            assert_eq!(keys_of(&project_report(dir.path()).catalog), ["mine"]);
+            ensure_seeded(dir.path(), None);
+            assert_eq!(
+                std::fs::read(project_catalog_path(dir.path())).unwrap(),
+                contents
+            );
+            std::fs::write(manifest_path(dir.path()), "invalid base").unwrap();
+            ensure_seeded(dir.path(), None);
+            project_report(dir.path());
+            assert_eq!(
+                std::fs::read(project_catalog_path(dir.path())).unwrap(),
+                contents
+            );
+            assert_eq!(std::fs::read(&registered).unwrap(), registered_bytes);
+        }
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        assert!(!project_catalog_path(dir.path()).exists());
+    }
 
     /// (key, label, description, color, command, instructionsFilename, seed dest)
     /// for the nine current presets. The embedded default must match these
@@ -5624,7 +6253,8 @@ mod tests {
             "local agents[0]",
         )
         .expect("valid new row");
-        let definition = build_new_definition("mine", &fields).expect("not missing anything");
+        let definition = build_new_definition("mine", &fields, LayerDescription::Local)
+            .expect("not missing anything");
         assert!(definition.install_commands.is_none());
 
         let dir = seed_dir();
@@ -10630,6 +11260,51 @@ mod tests {
             "a second run is a no-op"
         );
         assert!(deprecated_entries(&catalog).is_empty());
+    }
+
+    #[test]
+    fn generated_project_policy_tracks_project_catalog_and_ignores_personal() {
+        let temp = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(temp.path())
+                .output()
+                .expect("git runs")
+        };
+        let init = git(&["init", "--quiet"]);
+        assert!(
+            init.status.success(),
+            "{}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        let ac = temp.path().join(".ac");
+        std::fs::create_dir_all(ac.join("coding-agents")).unwrap();
+        crate::commands::ac_discovery::ensure_ac_root_gitignore_with_names(&ac, &[]).unwrap();
+        for (name, expected) in [
+            (
+                crate::config::instance_artifacts::CODING_AGENTS_PROJECT_TARGET_NAME,
+                1,
+            ),
+            (LOCAL_CATALOG_FILENAME, 0),
+        ] {
+            let relative = format!(".ac/coding-agents/{name}");
+            std::fs::write(temp.path().join(&relative), b"user owned").unwrap();
+            let result = git(&["check-ignore", "-q", &relative]);
+            assert_eq!(
+                result.status.code(),
+                Some(expected),
+                "{relative}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        let result = git(&["check-ignore", "-q", ".ac/.gitignore"]);
+        assert_eq!(
+            result.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
     }
 
     #[test]
