@@ -9158,7 +9158,7 @@ echo 'ac-2589-fake-agent 4.5.6'
             } else {
                 ""
             };
-            assert_eq!(body, format!("$ErrorActionPreference='Stop'; $global:LASTEXITCODE=0; try {{ $ac_install_script=Invoke-RestMethod -Uri '{original_url}' -TimeoutSec 120; if ([string]::IsNullOrWhiteSpace($ac_install_script)) {{ throw 'Empty installer response' }}; & ([scriptblock]::Create($ac_install_script)){argument}; if (-not $?) {{ exit 1 }}; exit $LASTEXITCODE }} catch {{ [Console]::Error.WriteLine($_); exit 1 }}"));
+            assert_eq!(body, format!("$ac_path=$null; $ac_created=$false; $ac_exit=1; try {{ $ac_install_script=Invoke-RestMethod -Uri '{original_url}' -TimeoutSec 120 -ErrorAction Stop; if ([string]::IsNullOrWhiteSpace($ac_install_script)) {{ throw 'Empty installer response' }}; $ac_path=Join-Path ([IO.Path]::GetTempPath()) ('ac-install-2787-'+[Guid]::NewGuid().ToString('N')+'.ps1'); $ac_file=[IO.File]::Open($ac_path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); $ac_created=$true; try {{ [byte[]]$ac_bytes=[Text.Encoding]::UTF8.GetPreamble()+[Text.Encoding]::UTF8.GetBytes($ac_install_script); $ac_file.Write($ac_bytes,0,$ac_bytes.Length) }} finally {{ $ac_file.Dispose() }}; $global:LASTEXITCODE=$null; & (Join-Path $PSHOME 'powershell.exe') -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ac_path{argument}; $ac_exit=$LASTEXITCODE; if ($null -eq $ac_exit) {{ $ac_exit=1 }} }} catch {{ [Console]::Error.WriteLine($_); $ac_exit=1 }} finally {{ if ($ac_created) {{ try {{ Remove-Item -LiteralPath $ac_path -Force -ErrorAction Stop }} catch {{ [Console]::Error.WriteLine($_); if ($ac_exit -eq 0) {{ $ac_exit=1 }} }} }} }}; exit $ac_exit"));
             assert_eq!(
                 encode_wrapper_2787(&body),
                 shipped,
@@ -9172,7 +9172,354 @@ echo 'ac-2589-fake-agent 4.5.6'
         }
     }
 
-    /// Bounded loopback-only fixture, one request per actual install invocation.
+    // One process-wide admission/deadline, shared across libtest Tokio runtimes.
+    struct FixtureController2787 {
+        phase: Arc<tokio::sync::Mutex<()>>,
+        permits: Arc<tokio::sync::Semaphore>,
+        started: Instant,
+        blocked: std::sync::atomic::AtomicBool,
+        group_expired: std::sync::atomic::AtomicBool,
+        admitted: AtomicUsize,
+        completed: AtomicUsize,
+        cases: std::sync::Mutex<std::collections::BTreeMap<String, Value>>,
+        root: std::path::PathBuf,
+    }
+
+    fn fixture_planned_2787() -> std::collections::BTreeMap<String, Value> {
+        let mut cases = std::collections::BTreeMap::new();
+        let shapes: &[&str] = if cfg!(windows) {
+            &[
+                "S1",
+                "S2",
+                "E4",
+                "supplemental-native7-exit7",
+                "F2-empty",
+                "F2-whitespace",
+                "F1",
+                "S3",
+                "E1",
+                "E2",
+                "F3",
+                "S4",
+                "S5",
+                "E3",
+                "E5",
+                "E6",
+                "E7",
+                "G1",
+                "G3",
+                "G4",
+                "G5",
+                "control-http",
+                "control-empty",
+                "quoted",
+            ]
+        } else {
+            &[
+                "S1",
+                "S2",
+                "F2-empty",
+                "F1",
+                "S3",
+                "control-http",
+                "control-empty",
+            ]
+        };
+        for shape in shapes {
+            for key in native_keys_2787() {
+                for spaced in [false, true] {
+                    cases.insert(
+                        format!(
+                            "{shape}-{key}-{}",
+                            if spaced { "spaced" } else { "ordinary" }
+                        ),
+                        json!({"state":"not-started","kind":"base"}),
+                    );
+                }
+            }
+        }
+        for spaced in [false, true] {
+            cases.insert(
+                format!("H1-hermes-{}", if spaced { "spaced" } else { "ordinary" }),
+                json!({"state":"not-started","kind":"base"}),
+            );
+        }
+        if cfg!(windows) {
+            let mut add =
+                |role: &str, key: &str, spaced: bool, exit: i32, fault: bool, restricted: bool| {
+                    cases.insert(
+                        format!("wf-{role}-{key}-{spaced}-{exit}-{fault}-{restricted}"),
+                        json!({"state":"not-started","kind":"worker"}),
+                    );
+                };
+            for key in native_keys_2787() {
+                for spaced in [false, true] {
+                    for role in [
+                        "create", "success", "http", "empty", "syntax", "deadline", "cancel",
+                        "force",
+                    ] {
+                        add(role, key, spaced, 0, role == "create", false);
+                    }
+                    for role in ["cleanup", "unlocked"] {
+                        for exit in [0, 7] {
+                            add(role, key, spaced, exit, false, false);
+                        }
+                    }
+                }
+            }
+            for spaced in [false, true] {
+                for fault in [false, true] {
+                    add("startup", "claude", spaced, 0, fault, false);
+                }
+                for role in ["missing-ready", "hang", "panic"] {
+                    add(role, "claude", spaced, 0, false, false);
+                }
+            }
+            for restricted in [false, true] {
+                add("launch", "claude", false, 0, false, restricted);
+            }
+        }
+        cases
+    }
+
+    fn fixtures_2787() -> &'static FixtureController2787 {
+        static CONTROLLER: std::sync::OnceLock<FixtureController2787> = std::sync::OnceLock::new();
+        CONTROLLER.get_or_init(|| {
+            let root = std::env::var_os("WF_ROOT_2787")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .unwrap()
+                        .join("target/issue-2787/wf")
+                        .join(uuid::Uuid::new_v4().to_string())
+                });
+            std::fs::create_dir_all(&root).expect("owned ignored fixture root");
+            FixtureController2787 {
+                phase: Arc::new(tokio::sync::Mutex::new(())),
+                permits: Arc::new(tokio::sync::Semaphore::new(16)),
+                started: Instant::now(),
+                blocked: std::sync::atomic::AtomicBool::new(false),
+                group_expired: std::sync::atomic::AtomicBool::new(false),
+                admitted: AtomicUsize::new(0),
+                completed: AtomicUsize::new(0),
+                cases: std::sync::Mutex::new(fixture_planned_2787()),
+                root,
+            }
+        })
+    }
+
+    fn fixture_case_state_2787(id: &str, fields: Value) {
+        let mut cases = fixtures_2787()
+            .cases
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let state = cases
+            .entry(id.to_string())
+            .or_insert_with(|| json!({"state":"not-started"}));
+        for (key, value) in fields.as_object().unwrap() {
+            state[key] = value.clone();
+        }
+    }
+
+    fn fixture_record_2787(value: Value) {
+        use std::io::Write;
+        let control = fixtures_2787();
+        let result = (|| -> std::io::Result<()> {
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(control.root.join("manifest.jsonl"))?;
+            writeln!(log, "{value}")?;
+            log.sync_data()
+        })();
+        if let Err(error) = result {
+            // A diagnostic I/O failure must not unwind any live owner's borrowed future.
+            control.blocked.store(true, Ordering::SeqCst);
+            let _ = writeln!(
+                std::io::stderr(),
+                "BLOCKED manifest I/O: {error}; receipt={value}; retained cleanup continues"
+            );
+        }
+    }
+
+    fn fixture_budget_failure_2787(kind: &str, id: &str) {
+        let control = fixtures_2787();
+        control.blocked.store(true, Ordering::SeqCst);
+        if kind == "GROUP_BUDGET_EXCEEDED" && control.group_expired.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let cases = control
+            .cases
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        let not_started: Vec<_> = cases
+            .iter()
+            .filter(|(_, v)| v["state"] == "not-started")
+            .map(|(id, _)| id.clone())
+            .collect();
+        let pending: Vec<_> = cases
+            .iter()
+            .filter(|(_, v)| {
+                v["state"] != "not-started" && v["state"] != "complete" && v["state"] != "rejected"
+            })
+            .map(|(id, state)| json!({"id":id,"owned":state}))
+            .collect();
+        fixture_record_2787(
+            json!({"status":"BLOCKED","kind":kind,"id":id,"elapsedMs":control.started.elapsed().as_millis(),
+            "started":control.admitted.load(Ordering::SeqCst),"completed":control.completed.load(Ordering::SeqCst),
+            "notStartedIds":not_started,"pendingOwnedCases":pending,"caseCensus":cases}),
+        );
+    }
+
+    async fn fixture_phase_2787() -> tokio::sync::OwnedMutexGuard<()> {
+        let control = fixtures_2787();
+        let deadline = tokio::time::Instant::from_std(control.started + Duration::from_secs(1200));
+        let guard = match tokio::time::timeout_at(deadline, Arc::clone(&control.phase).lock_owned())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                fixture_budget_failure_2787("GROUP_BUDGET_EXCEEDED", "phase-admission");
+                panic!("group admission expired; no fixture spawned");
+            }
+        };
+        assert!(
+            !control.blocked.load(Ordering::SeqCst),
+            "group permanently failed; admission closed"
+        );
+        guard
+    }
+
+    async fn fixture_try_permit_2787(
+        id: &str,
+        envelope: Duration,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, &'static str> {
+        let control = fixtures_2787();
+        if control.blocked.load(Ordering::SeqCst) {
+            fixture_case_state_2787(id, json!({"state":"rejected","cause":"admission-closed"}));
+            return Err("admission closed");
+        }
+        let deadline = control.started + Duration::from_secs(1200);
+        if Instant::now() + envelope >= deadline {
+            fixture_budget_failure_2787(
+                if Instant::now() >= deadline {
+                    "GROUP_BUDGET_EXCEEDED"
+                } else {
+                    "INSUFFICIENT_GROUP_ENVELOPE"
+                },
+                id,
+            );
+            fixture_case_state_2787(
+                id,
+                json!({"state":"rejected","cause":"insufficient-envelope"}),
+            );
+            return Err("insufficient envelope");
+        }
+        match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            Arc::clone(&control.permits).acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => {
+                if control.blocked.load(Ordering::SeqCst) {
+                    fixture_case_state_2787(
+                        id,
+                        json!({"state":"rejected","cause":"admission-closed"}),
+                    );
+                    return Err("admission closed while waiting");
+                }
+                control.admitted.fetch_add(1, Ordering::SeqCst);
+                fixture_case_state_2787(id, json!({"state":"admitted"}));
+                fixture_record_2787(
+                    json!({"status":"ADMITTED","id":id,"envelopeMs":envelope.as_millis()}),
+                );
+                Ok(permit)
+            }
+            _ => {
+                fixture_budget_failure_2787("GROUP_BUDGET_EXCEEDED", id);
+                fixture_case_state_2787(id, json!({"state":"rejected","cause":"permit-expired"}));
+                Err("permit admission failed")
+            }
+        }
+    }
+
+    async fn fixture_permit_2787(
+        id: &str,
+        envelope: Duration,
+    ) -> tokio::sync::OwnedSemaphorePermit {
+        fixture_try_permit_2787(id, envelope)
+            .await
+            .expect("recorded admission rejection; no process spawned")
+    }
+
+    /// Borrow the pinned future; a group failure never drops its owner/readers.
+    async fn fixture_observe_group_2787<F: Future>(id: &str, future: F) -> F::Output {
+        tokio::pin!(future);
+        let group = fixtures_2787().started + Duration::from_secs(1200);
+        match tokio::time::timeout_at(tokio::time::Instant::from_std(group), &mut future).await {
+            Ok(value) => value,
+            Err(_) => {
+                fixture_budget_failure_2787("GROUP_BUDGET_EXCEEDED", id);
+                future.await
+            }
+        }
+    }
+
+    async fn fixture_observe_budget_2787<F: Future>(
+        id: &str,
+        budget: Duration,
+        kind: &str,
+        future: F,
+    ) -> F::Output {
+        tokio::pin!(future);
+        let group = fixtures_2787().started + Duration::from_secs(1200);
+        let deadline = (Instant::now() + budget).min(group);
+        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), &mut future).await {
+            Ok(value) => value,
+            Err(_) => {
+                fixture_budget_failure_2787(
+                    if Instant::now() >= group {
+                        "GROUP_BUDGET_EXCEEDED"
+                    } else {
+                        kind
+                    },
+                    id,
+                );
+                let recovery = Instant::now();
+                let value = fixture_observe_group_2787(id, &mut future).await;
+                fixture_record_2787(
+                    json!({"id":id,"recoveryMs":recovery.elapsed().as_millis(),"retainedFutureCompleted":true}),
+                );
+                value
+            }
+        }
+    }
+
+    async fn fixture_observe_2787<F: Future>(id: &str, budget: Duration, future: F) -> F::Output {
+        fixture_observe_budget_2787(id, budget, "CALL_BUDGET_EXCEEDED", future).await
+    }
+
+    async fn fixture_finished_2787(
+        rx: &mut tokio::sync::mpsc::Receiver<WsOutMsg>,
+        seen: &mut Vec<Value>,
+    ) -> Value {
+        loop {
+            if let Some(frame) = rx.recv().await {
+                let value = decode_frame(frame);
+                seen.push(value.clone());
+                if value["event"] == "coding_agent_install_finished" {
+                    return value;
+                }
+            } else {
+                panic!("detached diagnostic channel closed without terminal receipt");
+            }
+        }
+    }
+
+    /// Each actual call owns one request. Only loopback, no upstream execution.
     async fn http_fixture_2787(
         status: u16,
         body: &str,
@@ -9182,304 +9529,2128 @@ echo 'ac-2589-fake-agent 4.5.6'
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("fixture bind");
-        let url = format!("http://{}/installer-2787", listener.local_addr().unwrap());
+        let token = uuid::Uuid::new_v4().to_string();
+        let url = format!("http://{}/{token}", listener.local_addr().unwrap());
         let body = body.to_string();
         let task = tokio::spawn(async move {
-            tokio::time::timeout(WRAPPER_CAP_2787, async move {
-                for _ in 0..requests {
+            for _ in 0..requests {
+                tokio::time::timeout(WRAPPER_CAP_2787, async {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let mut request = Vec::new();
-                    while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    while !request.windows(4).any(|p| p == b"\r\n\r\n") {
                         let mut buffer = [0u8; 1024];
-                        let count = stream.read(&mut buffer).await.unwrap();
-                        assert!(count > 0 && request.len() < 8192, "bounded HTTP headers");
-                        request.extend_from_slice(&buffer[..count]);
+                        let n = stream.read(&mut buffer).await.unwrap();
+                        assert!(n > 0 && request.len() < 8192);
+                        request.extend_from_slice(&buffer[..n]);
                     }
+                    assert!(String::from_utf8_lossy(&request).starts_with(&format!("GET /{token} ")));
                     let response = format!("HTTP/1.1 {status} Fixture\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                     stream.write_all(response.as_bytes()).await.unwrap();
                     stream.shutdown().await.unwrap();
-                }
-            }).await.expect("fixture requests within 10 seconds");
+                }).await.expect("one request within call budget");
+            }
         });
         (url, task)
     }
 
-    async fn wrapper_case_2787(
-        key: &str,
+    #[derive(Clone, Copy)]
+    struct WrapperShape2787 {
+        name: &'static str,
         status: u16,
-        body: &str,
-        expected_exit: Option<i32>,
-        marker_count: usize,
-    ) {
+        windows: &'static str,
+        unix: &'static str,
+        exit: Option<i32>,
+        markers: usize,
+    }
+
+    fn shape_2787(
+        name: &'static str,
+        windows: &'static str,
+        unix: &'static str,
+        exit: Option<i32>,
+        markers: usize,
+    ) -> WrapperShape2787 {
+        WrapperShape2787 {
+            name,
+            status: 200,
+            windows,
+            unix,
+            exit,
+            markers,
+        }
+    }
+
+    async fn wrapper_case_2787(key: &str, spaced: bool, shape: WrapperShape2787, control: bool) {
+        let id = format!(
+            "{}-{key}-{}",
+            shape.name,
+            if spaced { "spaced" } else { "ordinary" }
+        );
+        let _permit = fixture_permit_2787(&id, Duration::from_secs(20)).await;
+        let root = fixtures_2787()
+            .root
+            .join(format!("{id}-{}", uuid::Uuid::new_v4()));
+        let cwd = root.join(if spaced { "space cwd" } else { "ordinary" });
+        std::fs::create_dir_all(&cwd).unwrap();
         let (app, mut rx) = app_with_broadcaster();
-        let dir = tempfile::Builder::new()
-            .prefix("install fixture 2787 ")
-            .tempdir()
-            .unwrap();
-        assert!(dir.path().to_string_lossy().contains(' '));
-        // HTTP error diagnostics can echo source. Receipts distinguish script
-        // execution from that text while preserving raw stderr/CLIXML.
-        let body = if cfg!(windows) {
-            body.replace(
-                "[Console]::Error.WriteLine('RAN-2787');",
-                "[Console]::Error.WriteLine('RAN-2787'); Add-Content -LiteralPath 'ran-2787.marker' -Value 'RAN-2787';",
-            )
+        let body = shell(shape.windows, shape.unix).replace("MARKER;", &shell(
+            "[Console]::Error.WriteLine('RAN-2787'); Add-Content -LiteralPath 'ran-2787.marker' -Value 'RAN-2787';",
+            "echo RAN-2787 >&2; printf 'RAN-2787\\n' >> ran-2787.marker;"));
+        use sha2::Digest;
+        let hash = format!("{:x}", sha2::Sha256::digest(body.as_bytes()));
+        let (url, server) = http_fixture_2787(
+            shape.status,
+            &body,
+            if shape.name == "quoted" { 0 } else { 2 },
+        )
+        .await;
+        let command = if !control {
+            loopback_wrapper_2787(key, &url)
+        } else if shape.name == "quoted" {
+            format!("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$null='case-{}'; [Console]::Error.WriteLine('RAN-2787'); exit 7\"", uuid::Uuid::new_v4().simple())
+        } else if cfg!(windows) {
+            encode_wrapper_2787(&format!("Invoke-RestMethod -Uri '{url}' | powershell.exe -NoProfile -NonInteractive -Command -"))
         } else {
-            body.replace(
-                "echo RAN-2787 >&2;",
-                "echo RAN-2787 >&2; printf 'RAN-2787\\n' >> ran-2787.marker;",
+            format!(
+                "curl -fsSL '{url}' | {}",
+                if key == "codex" { "sh" } else { "bash" }
             )
         };
-        let receipt = dir.path().join("ran-2787.marker");
-        let (url, server) = http_fixture_2787(status, &body, 2).await;
-        let command = loopback_wrapper_2787(key, &url);
-        let run =
-            run_agent_install(app.handle(), key, &command, dir.path(), WRAPPER_CAP_2787).await;
-        if let Some(code) = expected_exit {
-            assert_eq!(
-                run.exit_code,
-                Some(code),
-                "{key}: {} stderr={}",
-                run.detail,
-                String::from_utf8_lossy(&run.stderr)
-            );
-        } else {
-            assert!(
-                run.exit_code.is_some_and(|code| code != 0),
-                "{key}: {}",
-                run.detail
-            );
-        }
-        assert_eq!(run.ok, expected_exit == Some(0), "{key}: {}", run.detail);
-        if cfg!(windows) && marker_count == 0 && (status == 503 || body.is_empty()) {
-            let stderr = String::from_utf8_lossy(&run.stderr);
-            assert!(
-                !stderr.trim().is_empty(),
-                "{key}: missing fetch failure diagnostics"
-            );
-            let cause = if status == 503 {
-                "HTTP 503 fixture failure"
-            } else {
-                "Empty installer response"
-            };
-            assert!(stderr.contains(cause), "{key}: missing {cause:?}: {stderr}");
-        }
-        assert_eq!(
-            String::from_utf8_lossy(&run.stderr)
-                .lines()
-                .filter(|line| line.trim() == "RAN-2787")
-                .count(),
-            marker_count,
-            "{key} stderr={}",
-            String::from_utf8_lossy(&run.stderr)
+        fixture_record_2787(
+            json!({"status":"CALL_STARTED","id":id,"key":key,"cwd":cwd,"shape":shape.name,"fixtureSha256":hash,"seam":"direct","control":control}),
         );
-        assert!(
-            !run.detail.contains("cleanup") && !run.detail.contains("timed out"),
-            "{key}: {}",
-            run.detail
+        fixture_case_state_2787(
+            &id,
+            json!({"state":"direct-pending","apiOwner":"run_agent_install retained future","pid":"internal API identity not exposed","readers":"API stdout/stderr retained","scratch":root}),
         );
-        assert!(
-            drain_frames(&mut rx).is_empty(),
-            "awaitable run does not emit events"
+        let direct = fixture_observe_2787(
+            &id,
+            WRAPPER_CAP_2787,
+            run_agent_install(app.handle(), key, &command, &cwd, WRAPPER_CAP_2787),
+        )
+        .await;
+        std::fs::write(root.join("direct.stdout"), &direct.stdout).unwrap();
+        std::fs::write(root.join("direct.stderr"), &direct.stderr).unwrap();
+        let direct_frames = drain_frames(&mut rx);
+        fixture_record_2787(
+            json!({"status":"CALL_STARTED","id":id,"key":key,"cwd":cwd,"shape":shape.name,"fixtureSha256":hash,"seam":"detached","control":control}),
         );
-        let count_receipts = || {
-            std::fs::read_to_string(&receipt)
-                .unwrap_or_default()
-                .lines()
-                .filter(|line| *line == "RAN-2787")
-                .count()
-        };
-        assert_eq!(count_receipts(), marker_count, "one execution receipt");
+        fixture_case_state_2787(
+            &id,
+            json!({"state":"detached-pending","apiOwner":"start_agent_install retained task","readers":"app/broadcaster/receiver retained"}),
+        );
         start_agent_install_with_timeout(
             app.handle(),
             key.to_string(),
             command.clone(),
-            dir.path().to_path_buf(),
+            cwd.clone(),
             WRAPPER_CAP_2787,
         )
-        .unwrap();
+        .expect("detached start");
         let mut seen = Vec::new();
-        let frame = tokio::time::timeout(WRAPPER_CAP_2787, next_install_frame(&mut rx, &mut seen))
-            .await
-            .unwrap();
-        assert_eq!(frame["payload"]["ok"], json!(run.ok));
-        if !run.ok {
-            assert_eq!(frame["payload"]["exitCode"], json!(run.exit_code));
-            assert_eq!(
-                frame["payload"]["stderr"].as_str().unwrap(),
-                event_output(&run.stderr),
-                "raw diagnostics retained, including an empty Unix guard failure"
-            );
-        }
+        let detached = fixture_observe_2787(
+            &id,
+            WRAPPER_CAP_2787,
+            fixture_finished_2787(&mut rx, &mut seen),
+        )
+        .await;
         tokio::time::sleep(QUIET_WINDOW).await;
         seen.extend(drain_frames(&mut rx));
-        assert_eq!(
-            seen.len(),
-            1,
-            "one finished frame, no update events: {seen:?}"
+        let server_result = server.await;
+        fixture_case_state_2787(
+            &id,
+            json!({"state":"complete","apiOwners":"direct returned; detached terminal event","readers":"drained through real APIs"}),
         );
-        assert!(!install_in_flight(&command), "settlement releases command");
-        assert_eq!(
-            count_receipts(),
-            2 * marker_count,
-            "each invocation executes once; failed fetches execute no script"
+        fixtures_2787().completed.fetch_add(1, Ordering::SeqCst);
+        fixture_record_2787(
+            json!({"id":id,"key":key,"cwd":cwd,"shape":shape.name,"fixtureSha256":hash,
+            "control":control,"wrapperCalls":2,"direct":{"ok":direct.ok,"exit":direct.exit_code,"detail":direct.detail},
+            "detached":detached,"events":seen,"inFlight":install_in_flight(&command),"scratchRetained":root}),
         );
-        tokio::time::timeout(WRAPPER_CAP_2787, server)
-            .await
-            .unwrap()
+        // Assertions follow both completed calls: a failed expectation cannot abandon detached ownership.
+        server_result.unwrap();
+        assert!(direct_frames.is_empty());
+        assert!(!install_in_flight(&command));
+        assert_eq!(seen.len(), 1, "{id}: no update/duplicate event");
+        assert_eq!(seen[0]["event"], "coding_agent_install_finished");
+        if let Some(exit) = shape.exit {
+            assert_eq!(
+                direct.exit_code,
+                Some(exit),
+                "{id}: {:?}",
+                String::from_utf8_lossy(&direct.stderr)
+            );
+        } else {
+            assert!(
+                direct.exit_code.is_some_and(|n| n != 0),
+                "{id}: {}",
+                direct.detail
+            );
+        }
+        assert_eq!(direct.ok, shape.exit == Some(0), "{id}");
+        assert_eq!(detached["payload"]["ok"], direct.ok);
+        assert_eq!(detached["payload"]["exitCode"], json!(direct.exit_code));
+        if !direct.ok {
+            std::fs::write(
+                root.join("detached.stderr"),
+                detached["payload"]["stderr"].as_str().unwrap().as_bytes(),
+            )
             .unwrap();
-        eprintln!("CASE-2787 {key} HTTP{status} expected={expected_exit:?} marker={marker_count}");
+            assert_eq!(
+                wrapper_diagnostic_2787(detached["payload"]["stderr"].as_str().unwrap()),
+                wrapper_diagnostic_2787(&event_output(&direct.stderr))
+            );
+        }
+        let markers = std::fs::read_to_string(cwd.join("ran-2787.marker"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| *l == "RAN-2787")
+            .count();
+        assert_eq!(markers, 2 * shape.markers, "{id}");
+        if shape.name == "quoted" {
+            assert!(String::from_utf8_lossy(&direct.stdout).contains("RAN-2787"));
+        }
+        if matches!(shape.name, "S4" | "S5" | "E3") {
+            assert!(
+                String::from_utf8_lossy(&direct.stdout)
+                    .contains(&format!("REPAIRED-{}", shape.name)),
+                "fixture recovery receipt"
+            );
+        }
+        if shape.status == 503 {
+            assert!(!direct.stderr.is_empty(), "HTTP diagnostic retained");
+        }
+        assert!(
+            !fixtures_2787().blocked.load(Ordering::SeqCst),
+            "irreversible budget failure"
+        );
+    }
+
+    async fn wrapper_batch_2787(shapes: &[WrapperShape2787], keys: &[&str], control: bool) {
+        let _phase = fixture_phase_2787().await;
+        let mut cases = Vec::new();
+        for shape in shapes {
+            for key in keys {
+                for spaced in [false, true] {
+                    cases.push((*key, spaced, *shape));
+                }
+            }
+        }
+        // Catch case assertion failures after settlement so all already admitted cases remain awaited.
+        for batch in cases.chunks(16) {
+            use futures_util::FutureExt;
+            let results =
+                futures_util::future::join_all(batch.iter().map(|(key, spaced, shape)| {
+                    std::panic::AssertUnwindSafe(wrapper_case_2787(key, *spaced, *shape, control))
+                        .catch_unwind()
+                }))
+                .await;
+            assert!(
+                results.iter().all(Result::is_ok),
+                "fixture phase failed; all admitted cases awaited"
+            );
+        }
+    }
+
+    fn wrapper_diagnostic_2787(raw: &str) -> String {
+        // Preserve raw files/event bytes; compare only own per-call GUID invariant.
+        if cfg!(windows) {
+            // PowerShell may soft-wrap anywhere inside this own basename. Only
+            // an entire verified basename is replaced; other whitespace stays.
+            let wrap = r"(?:\r?\n[ \t]*)?";
+            let literal = |text: &str| {
+                text.chars()
+                    .map(|ch| regex::escape(&ch.to_string()))
+                    .collect::<Vec<_>>()
+                    .join(wrap)
+            };
+            let pattern = format!(
+                "{}{wrap}(?:[0-9a-fA-F]{wrap}){{32}}{}",
+                literal("ac-install-2787-"),
+                literal(".ps1")
+            );
+            regex::Regex::new(&pattern)
+                .unwrap()
+                .replace_all(raw, "ac-install-2787-OWN-GUID.ps1")
+                .into_owned()
+        } else {
+            raw.to_string()
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wrapper_diagnostic_2787_retained_wrapped_pair_detects_real_difference() {
+        // Exact v2 failed raw pair, including CRLF, location and CLIXML.
+        let direct: String = serde_json::from_str(r###""#< CLIXML\r\nRAN-2787\r\nterminating-2787\r\nAt D:\\0_repos\\AgentsCommander_iac\\.ac\\room-01-ac-dev-team-v4\\repo-AgentsCommander\\target\\issue-2787\\setup\\temp\\ac-insta\r\nll-2787-237ff448bc654a1facc7420c181adbdd.ps1:1 char:109\r\n+ ... 787.marker' -Value 'RAN-2787'; try { throw 'terminating-2787' } final ...\r\n+                                          ~~~~~~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : OperationStopped: (terminating-2787:String) [], RuntimeException\r\n    + FullyQualifiedErrorId : terminating-2787\r\n \r\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><Obj S=\"progress\" RefId=\"0\"><TN RefId=\"0\"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T></TN><MS><I64 N=\"SourceId\">1</I64><PR N=\"Record\"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj><Obj S=\"progress\" RefId=\"1\"><TNRef RefId=\"0\" /><MS><I64 N=\"SourceId\">1</I64><PR N=\"Record\"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj></Objs>""###).unwrap();
+        let detached: String = serde_json::from_str(r###""#< CLIXML\r\nRAN-2787\r\nterminating-2787\r\nAt D:\\0_repos\\AgentsCommander_iac\\.ac\\room-01-ac-dev-team-v4\\repo-AgentsCommander\\target\\issue-2787\\setup\\temp\\ac-insta\r\nll-2787-cfbda58fe7274c92bc7749b94f27c35c.ps1:1 char:109\r\n+ ... 787.marker' -Value 'RAN-2787'; try { throw 'terminating-2787' } final ...\r\n+                                          ~~~~~~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : OperationStopped: (terminating-2787:String) [], RuntimeException\r\n    + FullyQualifiedErrorId : terminating-2787\r\n \r\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><Obj S=\"progress\" RefId=\"0\"><TN RefId=\"0\"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T></TN><MS><I64 N=\"SourceId\">1</I64><PR N=\"Record\"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj><Obj S=\"progress\" RefId=\"1\"><TNRef RefId=\"0\" /><MS><I64 N=\"SourceId\">1</I64><PR N=\"Record\"><AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj></Objs>""###).unwrap();
+        assert!(direct.contains("ac-insta\r\nll-2787-"));
+        assert_ne!(direct, detached);
+        assert_eq!(
+            wrapper_diagnostic_2787(&direct),
+            wrapper_diagnostic_2787(&detached)
+        );
+        let changed = detached.replace("terminating-2787", "different-real-error");
+        assert_ne!(changed, detached);
+        assert_ne!(
+            wrapper_diagnostic_2787(&direct),
+            wrapper_diagnostic_2787(&changed)
+        );
+        let unrelated = "unrelated GUID 0123456789abcdef0123456789abcdef\r\nlocation unchanged";
+        assert_eq!(wrapper_diagnostic_2787(unrelated), unrelated);
     }
 
     #[tokio::test]
     async fn agent_install_2787_wrapper_success() {
-        for key in native_keys_2787() {
-            wrapper_case_2787(
-                key,
-                200,
-                &shell(
-                    "[Console]::Error.WriteLine('RAN-2787'); exit 0",
-                    "echo RAN-2787 >&2; exit 0",
-                ),
+        wrapper_batch_2787(
+            &[shape_2787(
+                "S1",
+                "MARKER; exit 0",
+                "MARKER; exit 0",
                 Some(0),
                 1,
-            )
-            .await;
-        }
+            )],
+            native_keys_2787(),
+            false,
+        )
+        .await;
     }
-
     #[tokio::test]
     async fn agent_install_2787_wrapper_exit7() {
-        for key in native_keys_2787() {
-            wrapper_case_2787(
-                key,
-                200,
-                &shell(
-                    "[Console]::Error.WriteLine('RAN-2787'); exit 7",
-                    "echo RAN-2787 >&2; exit 7",
-                ),
+        let shapes = [
+            shape_2787("S2", "MARKER; exit 7", "MARKER; exit 7", Some(7), 1),
+            shape_2787(
+                "E4",
+                "MARKER; try { exit 7 } finally { Write-Output 'finally success' }",
+                "MARKER; exit 7",
                 Some(7),
                 1,
-            )
-            .await;
-        }
+            ),
+            shape_2787(
+                "supplemental-native7-exit7",
+                "MARKER; & $env:ComSpec /C 'exit 7'; exit 7",
+                "MARKER; sh -c 'exit 7'; exit 7",
+                Some(7),
+                1,
+            ),
+        ];
+        wrapper_batch_2787(
+            if cfg!(windows) { &shapes } else { &shapes[..1] },
+            native_keys_2787(),
+            false,
+        )
+        .await;
     }
-
     #[tokio::test]
     async fn agent_install_2787_wrapper_empty_fetch() {
-        for key in native_keys_2787() {
-            wrapper_case_2787(key, 200, "", None, 0).await;
-        }
+        let shapes = [
+            shape_2787("F2-empty", "", "", Some(1), 0),
+            shape_2787("F2-whitespace", "   \t\r\n", "", Some(1), 0),
+        ];
+        wrapper_batch_2787(
+            if cfg!(windows) { &shapes } else { &shapes[..1] },
+            native_keys_2787(),
+            false,
+        )
+        .await;
     }
-
     #[tokio::test]
     async fn agent_install_2787_wrapper_http_failure() {
-        for key in native_keys_2787() {
-            wrapper_case_2787(
-                key,
-                503,
-                &shell(
-                    "# HTTP 503 fixture failure\n[Console]::Error.WriteLine('RAN-2787'); exit 0",
-                    "# HTTP 503 fixture failure\necho RAN-2787 >&2; exit 0",
-                ),
-                None,
-                0,
-            )
-            .await;
+        let mut shape = shape_2787(
+            "F1",
+            "# HTTP 503 fixture failure\nMARKER; exit 0",
+            "# HTTP 503 fixture failure\nMARKER; exit 0",
+            Some(1),
+            0,
+        );
+        shape.status = 503;
+        if !cfg!(windows) {
+            shape.exit = None;
         }
+        wrapper_batch_2787(&[shape], native_keys_2787(), false).await;
     }
-
     #[tokio::test]
     async fn agent_install_2787_wrapper_native_nonzero() {
-        for key in native_keys_2787() {
-            wrapper_case_2787(
-                key,
-                200,
-                &shell(
-                    "[Console]::Error.WriteLine('RAN-2787'); & $env:ComSpec /C 'exit 7'",
-                    "echo RAN-2787 >&2; sh -c 'exit 7'",
-                ),
-                Some(7),
+        wrapper_batch_2787(
+            &[shape_2787(
+                "S3",
+                "MARKER; & $env:ComSpec /C 'exit 7'",
+                "MARKER; sh -c 'exit 7'",
+                Some(if cfg!(windows) { 0 } else { 7 }),
                 1,
-            )
-            .await;
+            )],
+            native_keys_2787(),
+            false,
+        )
+        .await;
+    }
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_hermes_flags() {
+        wrapper_batch_2787(&[shape_2787("H1","param([switch]$NonInteractive); if (-not $NonInteractive) { throw 'missing flag' }; MARKER; exit 0","[ \"$1\" = '--non-interactive' ] || exit 9; MARKER; exit 0",Some(0),1)],&["hermes"],false).await;
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_powershell_errors() {
+        wrapper_batch_2787(&[shape_2787("E1","MARKER; try { throw 'terminating-2787' } finally { Write-Output 'finally success' }","",Some(1),1),
+            shape_2787("E2","MARKER; Write-Error 'continue-2787'","",Some(0),1),
+            shape_2787("F3","function broken {","",None,0)],native_keys_2787(),false).await;
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_windows_process_boundary() {
+        wrapper_batch_2787(&[
+            shape_2787("S4","MARKER; & $env:ComSpec /C 'exit 3'; & $env:ComSpec /C 'exit 0'; if ($LASTEXITCODE -ne 0) { exit 9 }; Write-Output 'REPAIRED-S4'","",Some(0),1),
+            shape_2787("S5","MARKER; & $env:ComSpec /C 'exit 3'; if ($LASTEXITCODE -ne 0) { & $env:ComSpec /C 'exit 0' }; if ($LASTEXITCODE -ne 0) { exit 9 }; Write-Output 'REPAIRED-S5'","",Some(0),1),
+            shape_2787("E3","MARKER; Write-Error 'continue'; $Error.Clear(); Write-Output 'REPAIRED-E3'","",Some(0),1),
+            shape_2787("E5","MARKER; try { throw 'failure' } catch { exit 1 }","",Some(1),1),
+            shape_2787("E6","MARKER; Write-Error 'continue'; Write-Output 'after error'","",Some(0),1),
+            shape_2787("E7","MARKER; [Console]::Error.WriteLine('warning-2787'); exit 0","",Some(0),1),
+            shape_2787("G1","MARKER; & $env:ComSpec /C 'exit 3'; Write-Output 'no recovery'","",Some(0),1),
+            shape_2787("G3","MARKER; function Failed { & $env:ComSpec /C 'exit 7' }; Failed","",Some(0),1),
+            shape_2787("G4","MARKER; Write-Error 'continue'; return","",Some(0),1),
+            shape_2787("G5","MARKER; function Failed { Write-Error 'continue' }; Failed","",Some(0),1)],native_keys_2787(),false).await;
+    }
+    #[tokio::test]
+    async fn agent_install_2787_wrapper_negative_controls() {
+        let mut failed = shape_2787(
+            "control-http",
+            "",
+            "",
+            if cfg!(windows) { None } else { Some(0) },
+            0,
+        );
+        failed.status = 503;
+        let shapes = [
+            failed,
+            shape_2787("control-empty", "", "", Some(0), 0),
+            shape_2787("quoted", "", "", Some(0), 0),
+        ];
+        wrapper_batch_2787(
+            if cfg!(windows) { &shapes } else { &shapes[..2] },
+            native_keys_2787(),
+            true,
+        )
+        .await;
+    }
+
+    #[cfg(windows)]
+    struct WfHandle2787(windows_sys::Win32::Foundation::HANDLE);
+    #[cfg(windows)]
+    impl Drop for WfHandle2787 {
+        fn drop(&mut self) {
+            // SAFETY: one checked, uniquely owned handle, closed exactly once.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.0);
+            }
         }
     }
 
-    #[tokio::test]
-    async fn agent_install_2787_wrapper_hermes_flags() {
-        wrapper_case_2787("hermes", 200, &shell("param([switch]$NonInteractive); if (-not $NonInteractive) { throw 'missing flag' }; [Console]::Error.WriteLine('RAN-2787'); exit 0", "[ \"$1\" = '--non-interactive' ] || exit 9; echo RAN-2787 >&2; exit 0"), Some(0), 1).await;
+    #[cfg(windows)]
+    fn wf_process_2787(pid: u32) -> std::io::Result<WfHandle2787> {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        };
+        // SAFETY: read-only identity/termination observation of an owned PID.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if handle.is_null() {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(WfHandle2787(handle))
+        }
+    }
+
+    #[cfg(windows)]
+    fn wf_dead_2787(handle: &WfHandle2787) -> bool {
+        // SAFETY: retained process handle preserves identity despite PID reuse.
+        unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(handle.0, 0)
+                == windows_sys::Win32::Foundation::WAIT_OBJECT_0
+        }
+    }
+
+    #[cfg(windows)]
+    fn wf_quota_2787(pid: u32) -> std::io::Result<WfHandle2787> {
+        use windows_sys::Win32::System::{JobObjects::*, Threading::*};
+        // SAFETY: exact initialized API layouts; each returned handle is checked/owned.
+        unsafe {
+            let raw = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if raw.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let job = WfHandle2787(raw);
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of_val(&info) as u32,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let process = WfHandle2787(process);
+            if AssignProcessToJobObject(job.0, process.0) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(job)
+        }
+    }
+
+    #[cfg(windows)]
+    fn wf_members_2787(job: &WfHandle2787) -> std::io::Result<(u32, u32, Vec<u32>)> {
+        use windows_sys::Win32::System::JobObjects::*;
+        // SAFETY: accounting and bounded aligned variable-length PID list buffers.
+        unsafe {
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
+            if QueryInformationJobObject(
+                job.0,
+                JobObjectBasicAccountingInformation,
+                &mut accounting as *mut _ as *mut _,
+                std::mem::size_of_val(&accounting) as u32,
+                std::ptr::null_mut(),
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut buffer = [0usize; 130];
+            if QueryInformationJobObject(
+                job.0,
+                JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr() as *mut _,
+                std::mem::size_of_val(&buffer) as u32,
+                std::ptr::null_mut(),
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let list = &*(buffer.as_ptr() as *const JOBOBJECT_BASIC_PROCESS_ID_LIST);
+            if list.NumberOfAssignedProcesses != list.NumberOfProcessIdsInList
+                || list.NumberOfProcessIdsInList > 128
+            {
+                return Err(std::io::Error::other("incomplete Job membership"));
+            }
+            let ids = std::slice::from_raw_parts(
+                buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(std::mem::offset_of!(
+                        JOBOBJECT_BASIC_PROCESS_ID_LIST,
+                        ProcessIdList
+                    ))
+                    .cast::<usize>(),
+                list.NumberOfProcessIdsInList as usize,
+            )
+            .iter()
+            .map(|p| *p as u32)
+            .collect();
+            Ok((accounting.ActiveProcesses, accounting.TotalProcesses, ids))
+        }
+    }
+
+    #[cfg(windows)]
+    fn wf_limit_2787(job: &WfHandle2787, limit: u32) -> std::io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::*;
+        // SAFETY: preserve and read back all existing flags, including kill-on-close.
+        unsafe {
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            if QueryInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                &mut info as *mut _ as *mut _,
+                std::mem::size_of_val(&info) as u32,
+                std::ptr::null_mut(),
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+            info.BasicLimitInformation.ActiveProcessLimit = limit;
+            if SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of_val(&info) as u32,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut read: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            if QueryInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                &mut read as *mut _ as *mut _,
+                std::mem::size_of_val(&read) as u32,
+                std::ptr::null_mut(),
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            if read.BasicLimitInformation.ActiveProcessLimit != limit
+                || read.BasicLimitInformation.LimitFlags != info.BasicLimitInformation.LimitFlags
+            {
+                return Err(std::io::Error::other("quota readback mismatch"));
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(windows)]
+    async fn wf_wait_file_2787(path: &Path, cap: Duration) -> std::io::Result<Vec<u8>> {
+        let start = Instant::now();
+        loop {
+            if let Ok(bytes) = std::fs::read(path) {
+                if !bytes.is_empty() {
+                    return Ok(bytes);
+                }
+            }
+            if start.elapsed() >= cap {
+                return Err(std::io::Error::other(format!(
+                    "SETUP_BLOCKED missing {}",
+                    path.display()
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(windows)]
+    fn wf_write_2787(root: &Path, name: &str, value: &Value) {
+        use std::io::Write;
+        let path = root.join(name);
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(value.to_string().as_bytes()).unwrap();
+        file.sync_all().unwrap();
+    }
+
+    #[cfg(windows)]
+    fn wf_script_2787(role: &str, key: &str, exit: i32) -> String {
+        let param = if key == "hermes" {
+            "param([switch]$NonInteractive); if (-not $NonInteractive) { exit 9 }; "
+        } else {
+            ""
+        };
+        let ready="$source=$PSCommandPath; $hash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash; ";
+        match role {
+            "cleanup"|"missing-ready" => {
+                let locker = if role=="cleanup" {
+                    "$f=[IO.File]::Open($env:WF_SOURCE_2787,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read); try { [IO.File]::WriteAllText((Join-Path $env:WF_CWD_2787 'locker-ready.json'), ('{\"pid\":'+$PID+',\"source\":'+(ConvertTo-Json $env:WF_SOURCE_2787 -Compress)+'}')); Start-Sleep -Seconds 300 } finally { $f.Dispose() }"
+                } else {"Start-Sleep -Seconds 300"};
+                let encoded=encode_wrapper_2787(locker).strip_prefix(ENCODED_PREFIX_2787).unwrap().to_string();
+                format!("{param}{ready}$env:WF_SOURCE_2787=$source; $env:WF_CWD_2787=(Get-Location).Path; $p=Start-Process (Join-Path $PSHOME 'powershell.exe') -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'; [IO.File]::WriteAllText('source-ready.json', (ConvertTo-Json @{{pid=$PID; descendant=$p.Id; source=$source; hash=$hash}} -Compress)); $timer=[Diagnostics.Stopwatch]::StartNew(); while (-not (Test-Path -LiteralPath 'locker-ready.json')) {{ if ($timer.Elapsed.TotalSeconds -ge 5) {{ throw 'LOCK_READY missing' }}; Start-Sleep -Milliseconds 10 }}; [Console]::Error.WriteLine('LOCK_READY'); exit {exit}")
+            }
+            "deadline"|"cancel"|"force"|"hang"|"panic" => {
+                let encoded=encode_wrapper_2787("Start-Sleep -Seconds 300").strip_prefix(ENCODED_PREFIX_2787).unwrap().to_string();
+                format!("{param}{ready}$p=Start-Process (Join-Path $PSHOME 'powershell.exe') -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'; [IO.File]::WriteAllText('source-ready.json', (ConvertTo-Json @{{pid=$PID; descendant=$p.Id; source=$source; hash=$hash}} -Compress)); [Console]::Error.WriteLine('STARTED-2787'); Start-Sleep -Seconds 300")
+            }
+            "syntax" => "function broken {".to_string(),
+            "empty" => String::new(),
+            "http" => "# HTTP503 nonempty harmless source".to_string(),
+            _ => format!("{param}[IO.File]::WriteAllText('child-started', [string]$PID); [Console]::Error.WriteLine('RAN-2787'); exit {exit}"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn wf_source_receipt_2787(cwd: &Path) -> std::io::Result<Value> {
+        let bytes = std::fs::read(cwd.join("source-ready.json"))?;
+        // Windows PowerShell .NET WriteAllText is UTF8 without a BOM.
+        serde_json::from_slice(&bytes).map_err(std::io::Error::other)
+    }
+
+    #[cfg(windows)]
+    fn wf_recover_source_2787(root: &Path, body: &str) -> std::io::Result<Value> {
+        use sha2::Digest;
+        let expected = [&[0xef, 0xbb, 0xbf][..], body.as_bytes()].concat();
+        let mut retained = Vec::new();
+        let mut recovered = Vec::new();
+        for entry in std::fs::read_dir(root.join("temp"))? {
+            let path = entry?.path();
+            if !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("ac-install-2787-")
+            {
+                continue;
+            }
+            let bytes = std::fs::read(&path)?;
+            if bytes != expected {
+                retained.push(path);
+                continue;
+            }
+            let hash = format!("{:x}", sha2::Sha256::digest(&bytes));
+            // No tree recursion; delete only our literal source after real settlement.
+            std::fs::remove_file(&path)?;
+            recovered.push(json!({"path":path,"sha256":hash}));
+        }
+        Ok(json!({"recovered":recovered,"foreignOrChangedRetained":retained}))
+    }
+
+    #[cfg(windows)]
+    async fn wf_settle_retained_2787(
+        owner: &mut TargetProcessOwner,
+        waited: &TargetWait,
+        id: &str,
+    ) -> TargetSettlement {
+        use futures_util::FutureExt;
+        fixture_observe_budget_2787(
+            id,
+            WRAPPER_CAP_2787,
+            "WORKER_RECOVERY_BUDGET_EXCEEDED",
+            async {
+                loop {
+                    // Catch while the owner stays outside this borrowed future; retry the same owner.
+                    match std::panic::AssertUnwindSafe(owner.settle(waited))
+                        .catch_unwind()
+                        .await
+                    {
+                        Ok(value) => return value,
+                        Err(_) => {
+                            fixture_budget_failure_2787("OWNED_SETTLEMENT_PANIC", id);
+                            owner
+                                .defects
+                                .push("owned settlement panic; retained owner retried".to_string());
+                        }
+                    }
+                }
+            },
+        )
+        .await
+    }
+
+    #[cfg(windows)]
+    fn wf_retained_residue_2787(root: &Path) -> std::io::Result<Value> {
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(root.join("temp"))? {
+            let path = entry?.path();
+            if path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("ac-install-2787-")
+            {
+                paths.push(path);
+            }
+        }
+        Ok(json!({"settlementProven":false,"recovered":[],"retainedSourcePaths":paths}))
+    }
+
+    #[cfg(windows)]
+    fn wf_tick_2787() -> u64 {
+        // Same monotonic boot clock in parent and worker; no Instant serialization.
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetTickCount64() -> u64;
+        }
+        // SAFETY: Windows kernel clock takes no pointer and is process independent.
+        unsafe { GetTickCount64() }
+    }
+
+    #[cfg(windows)]
+    struct WfProcessIdentity2787 {
+        pid: u32,
+        handle: WfHandle2787,
+    }
+    #[cfg(windows)]
+    // SAFETY: uniquely owned OpenProcess handle permits cross-thread wait/close.
+    // No borrowed pointer, duplication, PID reopen or concurrent handle access.
+    unsafe impl Send for WfProcessIdentity2787 {}
+
+    #[cfg(windows)]
+    fn wf_native_sample_2787(handle: &WfHandle2787, timeout_ms: u32) -> (u32, Option<i32>) {
+        // SAFETY: retained process identity remains open throughout the native wait.
+        let raw = unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(handle.0, timeout_ms)
+        };
+        let error = if raw == windows_sys::Win32::Foundation::WAIT_FAILED {
+            Some(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
+        } else {
+            None
+        };
+        (raw, error)
+    }
+
+    #[cfg(windows)]
+    fn wf_native_result_2787(raw: u32, error: Option<i32>) -> Value {
+        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        json!({"raw":raw,"kind":match raw {
+            WAIT_OBJECT_0=>"SIGNALLED",WAIT_TIMEOUT=>"NOT_SIGNALLED_IN_BOUND",WAIT_FAILED=>"WAIT_FAILED",_=>"UNRECOGNIZED_INVALID_PROOF"
+        },"lastError":if raw==WAIT_FAILED {error} else {None},"signalled":raw==WAIT_OBJECT_0})
+    }
+
+    #[cfg(windows)]
+    struct WfNativeObservation2787 {
+        started: u64,
+        finished: u64,
+        allowance: u32,
+        raw: Option<u32>,
+        error: Option<i32>,
+        native_elapsed: Duration,
+        panic: bool,
+    }
+
+    #[cfg(windows)]
+    fn wf_blocking_observe_2787(
+        identity: WfProcessIdentity2787,
+        deadline: u64,
+    ) -> (WfProcessIdentity2787, WfNativeObservation2787) {
+        let started = wf_tick_2787();
+        let allowance = deadline.saturating_sub(started).min(1000) as u32;
+        let timer = Instant::now();
+        // Identity lives outside the borrowed caught operation and is returned even on panic.
+        let sampled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if allowance == 0 {
+                None
+            } else {
+                Some(wf_native_sample_2787(&identity.handle, allowance))
+            }
+        }));
+        let (raw, error, panic) = match sampled {
+            Ok(Some((raw, error))) => (Some(raw), error, false),
+            Ok(None) => (None, None, false),
+            Err(_) => (None, None, true),
+        };
+        let result = WfNativeObservation2787 {
+            started,
+            finished: wf_tick_2787(),
+            allowance,
+            raw,
+            error,
+            native_elapsed: timer.elapsed(),
+            panic,
+        };
+        (identity, result)
+    }
+
+    #[cfg(windows)]
+    struct WfCheckpoint2787 {
+        handles: std::collections::BTreeMap<u32, WfHandle2787>,
+        records: Vec<Value>,
+        all_signalled: bool,
+    }
+
+    #[cfg(windows)]
+    async fn wf_checkpoint_2787(
+        handles: std::collections::BTreeMap<u32, WfHandle2787>,
+        call_started: Instant,
+        receipt_tick: u64,
+        id: &str,
+        settlement_clean: bool,
+    ) -> WfCheckpoint2787 {
+        let checkpoint_started = Instant::now();
+        let tick = wf_tick_2787();
+        let read_deadline = |name| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
+        let worker = read_deadline("WF_WORKER_DEADLINE_TICK_2787");
+        let group = read_deadline("WF_GROUP_DEADLINE_TICK_2787");
+        let call_deadline = call_started + WRAPPER_CAP_2787;
+        let call_remaining = call_deadline.saturating_duration_since(Instant::now());
+        let deadline = tick
+            .saturating_add(1000)
+            .min(tick.saturating_add(call_remaining.as_millis().min(u64::MAX as u128) as u64))
+            .min(worker.unwrap_or(tick))
+            .min(group.unwrap_or(tick));
+        let common_instant =
+            checkpoint_started + Duration::from_millis(deadline.saturating_sub(tick));
+        // Preserve BOTH immediate zero-ms samples before scheduling either bounded wait.
+        let immediate: Vec<_> = handles
+            .into_iter()
+            .map(|(pid, handle)| {
+                let sample_tick = wf_tick_2787();
+                let sample = wf_native_sample_2787(&handle, 0);
+                (WfProcessIdentity2787 { pid, handle }, sample, sample_tick)
+            })
+            .collect();
+        let mut retained = std::collections::BTreeMap::new();
+        let mut records = Vec::new();
+        let mut all_signalled = immediate.len() == 2;
+        for (identity, (initial_raw, initial_error), initial_tick) in immediate {
+            let pid = identity.pid;
+            let submitted = Instant::now();
+            let join =
+                tokio::task::spawn_blocking(move || wf_blocking_observe_2787(identity, deadline));
+            // Await the actual join, including scheduling; no timeout abort/drop or PID reopen.
+            let joined = fixture_observe_group_2787(id, join).await;
+            let observed_at = wf_tick_2787();
+            let record = match joined {
+                Ok((identity, observation)) => {
+                    let observed = observation.raw
+                        == Some(windows_sys::Win32::Foundation::WAIT_OBJECT_0)
+                        && matches!(
+                            initial_raw,
+                            windows_sys::Win32::Foundation::WAIT_OBJECT_0
+                                | windows_sys::Win32::Foundation::WAIT_TIMEOUT
+                        )
+                        && !observation.panic
+                        && observation.allowance > 0
+                        && worker.is_some()
+                        && group.is_some()
+                        && observation.finished <= deadline
+                        && observed_at <= deadline
+                        && Instant::now() <= common_instant
+                        && Instant::now() <= call_deadline;
+                    all_signalled &= observed;
+                    retained.insert(pid, identity.handle);
+                    json!({"pid":pid,"retainedSameIdentity":true,"ownership":"unique handle moved to awaited blocking task and returned",
+                        "apiOrEventReceiptTick":receipt_tick,"receiptObservation":"API future returned / detached event received; not emission timestamp",
+                        "immediateTick":initial_tick,"immediate":wf_native_result_2787(initial_raw,initial_error),
+                        "bounded":observation.raw.map(|raw|wf_native_result_2787(raw,observation.error)),"notObservedWithinBudget":observation.raw.is_none(),
+                        "deadlineTick":deadline,"workerDeadlineTick":worker,"groupDeadlineTick":group,"callAllowanceMs":call_remaining.as_millis(),
+                        "sharedCheckpointMaximumMs":1000,"nativeAllowanceMs":observation.allowance,"nativeStartedTick":observation.started,
+                        "nativeFinishedTick":observation.finished,"nativeElapsedMicros":observation.native_elapsed.as_micros(),
+                        "joinAndSchedulingMicros":submitted.elapsed().as_micros(),"checkpointElapsedMicros":checkpoint_started.elapsed().as_micros(),
+                        "signalObservationIntervalMs":if observation.raw==Some(windows_sys::Win32::Foundation::WAIT_OBJECT_0) {Some(observation.finished.saturating_sub(initial_tick))} else {None},
+                        "observedInBound":observed,"nativePanic":observation.panic,
+                        "settlementAccounting":"source-qualified-only; no raw final sample or parent Job substitution","settlementCleanSourceQualified":settlement_clean,
+                        "classification":if observation.panic
+                            || !matches!(initial_raw,windows_sys::Win32::Foundation::WAIT_OBJECT_0|windows_sys::Win32::Foundation::WAIT_TIMEOUT)
+                            || observation.raw.is_some_and(|raw|!matches!(raw,windows_sys::Win32::Foundation::WAIT_OBJECT_0|windows_sys::Win32::Foundation::WAIT_TIMEOUT)) {"INVALID_PROOF"}
+                            else if observation.raw.is_none()||observation.allowance==0 {"NOT_OBSERVED_WITHIN_BUDGET"}
+                            else if observed&&!settlement_clean {"SIGNALLED_SETTLEMENT_UNQUALIFIED"}
+                            else if observed&&initial_raw==windows_sys::Win32::Foundation::WAIT_TIMEOUT {"OBSERVED_SIGNAL_LAG"}
+                            else if observed&&initial_raw==windows_sys::Win32::Foundation::WAIT_OBJECT_0 {"ALREADY_SIGNALLED"} else {"STILL_UNDETERMINED"},
+                        "resourceOrderingProof":false,"escapeProven":false})
+                }
+                Err(error) => {
+                    all_signalled = false;
+                    json!({"pid":pid,"retainedSameIdentity":false,"immediateTick":initial_tick,"immediate":wf_native_result_2787(initial_raw,initial_error),
+                        "joinError":error.to_string(),"observedInBound":false,"classification":"INVALID_PROOF","escapeProven":false,
+                        "recovery":"parent owner retained; no identity reopen or source recovery"})
+                }
+            };
+            records.push(record);
+        }
+        WfCheckpoint2787 {
+            handles: retained,
+            records,
+            all_signalled,
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn checkpoint_native_result_mapping_2787() {
+        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        assert_eq!(
+            wf_native_result_2787(WAIT_OBJECT_0, Some(42))["lastError"],
+            Value::Null
+        );
+        assert_eq!(
+            wf_native_result_2787(WAIT_OBJECT_0, None)["signalled"],
+            true
+        );
+        assert_eq!(
+            wf_native_result_2787(WAIT_TIMEOUT, None)["kind"],
+            "NOT_SIGNALLED_IN_BOUND"
+        );
+        assert_eq!(wf_native_result_2787(WAIT_FAILED, Some(5))["lastError"], 5);
+        assert_eq!(
+            wf_native_result_2787(128, Some(5))["kind"],
+            "UNRECOGNIZED_INVALID_PROOF"
+        );
+        assert_eq!(
+            wf_native_result_2787(128, Some(5))["lastError"],
+            Value::Null
+        );
+    }
+
+    #[cfg(windows)]
+    async fn wf_watch_call_2787<F: Future<Output = AgentInstallRun>>(
+        root: &Path,
+        cwd: &Path,
+        call: usize,
+        call_started: Instant,
+        future: F,
+    ) -> AgentInstallRun {
+        tokio::pin!(future);
+        let mut handles = std::collections::BTreeMap::new();
+        let mut open_errors = Vec::new();
+        let mut source_receipt = Value::Null;
+        let run = loop {
+            tokio::select! {
+                run=&mut future => break run,
+                _=tokio::time::sleep(Duration::from_millis(10)) => {
+                    if source_receipt.is_null() {
+                        if let Ok(receipt)=wf_source_receipt_2787(cwd) {
+                            for name in ["pid","descendant"] {
+                                if let Some(pid)=receipt[name].as_u64() {
+                                    match wf_process_2787(pid as u32) {
+                                        Ok(handle)=>{handles.insert(pid as u32,handle);}
+                                        Err(error)=>open_errors.push(format!("{name}/{pid}: {error}")),
+                                    }
+                                }
+                            }
+                            source_receipt=receipt;
+                        }
+                    }
+                }
+            }
+        };
+        let receipt_tick = wf_tick_2787();
+        let clean = !run.detail.contains("cleanup") && !run.detail.contains("containment");
+        let checkpoint = wf_checkpoint_2787(
+            handles,
+            call_started,
+            receipt_tick,
+            "wf-call-checkpoint",
+            clean,
+        )
+        .await;
+        let dead: Vec<Value> = checkpoint
+            .records
+            .iter()
+            .map(|record| json!({"pid":record["pid"],"dead":record["observedInBound"]}))
+            .collect();
+        wf_write_2787(
+            root,
+            &format!("call{call}-handles.json"),
+            &json!({"evidenceMode":"shipped-wrapper URL-only; retained native checkpoint",
+                "sourceReceipt":source_receipt,"knownHandles":dead,"checkpoint":checkpoint.records,"openErrors":open_errors,
+                "allKnownDead":checkpoint.handles.len()==2&&checkpoint.all_signalled&&open_errors.is_empty(),
+                "apiOrEventReceiptTick":receipt_tick,"finalInnerAccounting":"source-qualified-only; no raw final sample",
+                "readers":"source-qualified real API settlement","settlementCleanSourceQualified":clean,"eventResourceOrderingProof":false}),
+        );
+        run
+    }
+
+    #[cfg(windows)]
+    fn wf_setup_2787(
+        root: &Path,
+        cwd: &Path,
+        role: &str,
+        key: &str,
+        call: usize,
+    ) -> std::io::Result<Value> {
+        let temp = std::path::PathBuf::from(
+            std::env::var_os("TEMP").ok_or_else(|| std::io::Error::other("missing child TEMP"))?,
+        );
+        let metadata = std::fs::metadata(&temp);
+        let temp_directory = metadata.as_ref().is_ok_and(|value| value.is_dir());
+        let temp_file = metadata.as_ref().is_ok_and(|value| value.is_file());
+        let faulty = temp == root.join("fault-temp");
+        let expected_source = temp.join("ac-install-2787-00000000000000000000000000000000.ps1");
+        let source_units = expected_source
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .count();
+        let cwd_paths = [
+            root.join("ordinary/source-ready.json"),
+            root.join("space cwd/source-ready.json"),
+        ];
+        let cwd_units: Vec<_> = cwd_paths
+            .iter()
+            .map(|p| p.as_os_str().to_string_lossy().encode_utf16().count())
+            .collect();
+        let value = json!({"role":role,"key":key,"call":call,"cwd":cwd,"cwdDirectory":cwd.is_dir(),
+            "temp":temp,"expectedTemp":root.join(if faulty {"fault-temp"} else {"temp"}),
+            "tempDirectory":temp_directory,"tempRegularFile":temp_file,"tempMetadataError":metadata.as_ref().err().map(ToString::to_string),"faulty":faulty,
+            "expectedSource":expected_source,"sourceUtf16Units":source_units,"bothCwdReceiptUtf16Units":cwd_units,
+            "compactFixtureCeiling":240,"pathHypothesis":"unproven until existing Open returns"});
+        wf_write_2787(root, &format!("call{call}-setup.json"), &value);
+        if !cwd.is_dir()
+            || temp != root.join(if faulty { "fault-temp" } else { "temp" })
+            || (faulty && !temp_file)
+            || (!faulty && !temp_directory)
+            || source_units > 240
+            || cwd_units.iter().any(|length| *length > 240)
+        {
+            return Err(std::io::Error::other(
+                "SETUP_BLOCKED compact path/type prerequisite",
+            ));
+        }
+        Ok(value)
+    }
+
+    #[cfg(windows)]
+    fn wf_returned_2787(root: &Path, call: usize, run: &AgentInstallRun) -> std::io::Result<()> {
+        std::fs::write(root.join(format!("call{call}.stdout")), &run.stdout)?;
+        std::fs::write(root.join(format!("call{call}.stderr")), &run.stderr)?;
+        wf_write_2787(
+            root,
+            &format!("call{call}-returned.json"),
+            &json!({"call":call,"ok":run.ok,"exit":run.exit_code,
+                "detail":run.detail,"evidenceMode":"shipped-wrapper URL-only; no diagnostic telemetry",
+                "rawStdout":format!("call{call}.stdout"),"rawStderr":format!("call{call}.stderr"),
+                "finalInnerAccounting":"source-qualified-only; no raw final sample","attributionNotYetEvaluated":true}),
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    async fn wf_worker_body_2787(
+        root: &Path,
+        role: &str,
+        key: &str,
+        exit: i32,
+    ) -> std::io::Result<()> {
+        let cwd = root.join(if std::env::var("WF_SPACED_2787").as_deref() == Ok("1") {
+            "space cwd"
+        } else {
+            "ordinary"
+        });
+        let (app, mut rx) = app_with_broadcaster();
+        wf_write_2787(
+            root,
+            "worker-ready",
+            &json!({"pid":std::process::id(),"appStartup":true,"role":role}),
+        );
+        wf_wait_file_2787(&root.join("parent-start"), Duration::from_secs(10)).await?;
+        if role == "startup" {
+            let script = "[Console]::WriteLine([IO.Path]::GetTempPath()); exit 0";
+            let command = encode_wrapper_2787(script);
+            let mut cmd = build_update_step_command(&command, &cwd, &effective_search_path());
+            let mut owner = TargetProcessOwner::spawn(&mut cmd)
+                .await
+                .map_err(|e| std::io::Error::other(install_run_from_spawn_failure(e).detail))?;
+            let (_tx, mut cancel) = tokio::sync::watch::channel(false);
+            let waited = owner.wait(WRAPPER_CAP_2787, &mut cancel).await;
+            let settled = wf_settle_retained_2787(&mut owner, &waited, "native-startup").await;
+            let run = install_run_from_settlement(waited, settled, WRAPPER_CAP_2787);
+            wf_write_2787(
+                root,
+                "startup-result.json",
+                &json!({"ok":run.ok,"exit":run.exit_code,"stdout":String::from_utf8_lossy(&run.stdout),"stderr":String::from_utf8_lossy(&run.stderr),"nativeCalls":1,"wrapperCalls":0}),
+            );
+            if !run.ok {
+                return Err(std::io::Error::other("SETUP_BLOCKED PowerShell startup"));
+            }
+            let expected = std::env::var("TEMP").unwrap();
+            if !String::from_utf8_lossy(&run.stdout)
+                .replace('\\', "/")
+                .starts_with(&expected.replace('\\', "/"))
+            {
+                return Err(std::io::Error::other("SETUP_BLOCKED .NET fallback temp"));
+            }
+            return Ok(());
+        }
+        let body = wf_script_2787(role, key, exit);
+        let count = if matches!(
+            role,
+            "cancel" | "force" | "hang" | "panic" | "missing-ready"
+        ) {
+            1
+        } else {
+            2
+        };
+        let mut successes = true;
+        for call in 0..count {
+            let _setup = wf_setup_2787(root, &cwd, role, key, call)?;
+            for name in ["source-ready.json", "locker-ready.json", "child-started"] {
+                let path = cwd.join(name);
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                }
+            }
+            let status = if role == "http" { 503 } else { 200 };
+            let (url, server) = if role == "launch" {
+                wf_launch_http_2787(root, &body, call).await?
+            } else {
+                http_fixture_2787(status, &body, 1).await
+            };
+            let command = loopback_wrapper_2787(key, &url);
+            let timeout = if role == "deadline" {
+                Duration::from_secs(5)
+            } else {
+                WRAPPER_CAP_2787
+            };
+            let started = Instant::now();
+            let mut seen = Vec::new();
+            use sha2::Digest;
+            wf_write_2787(
+                root,
+                &format!("call{call}-started.json"),
+                &json!({"role":role,"key":key,"cwd":cwd,"call":call,
+                "fixtureSha256":format!("{:x}",sha2::Sha256::digest(body.as_bytes())),
+                "kind":if matches!(role,"cancel"|"force") {"owner"} else {"wrapper"},
+                "seam":if call==0 {"direct"} else {"detached"},"timeoutMs":timeout.as_millis()}),
+            );
+            let run = if matches!(role, "cancel" | "force") {
+                let mut cmd = build_update_step_command(&command, &cwd, &effective_search_path());
+                let mut owner = TargetProcessOwner::spawn(&mut cmd)
+                    .await
+                    .map_err(|e| std::io::Error::other(install_run_from_spawn_failure(e).detail))?;
+                let (tx, mut cancel) = tokio::sync::watch::channel(false);
+                let mut descendant = None;
+                let mut inner = None;
+                let mut receipt = Value::Null;
+                use futures_util::FutureExt;
+                let observation = std::panic::AssertUnwindSafe(async {
+                    wf_wait_file_2787(&cwd.join("source-ready.json"), Duration::from_secs(5))
+                        .await?;
+                    receipt = wf_source_receipt_2787(&cwd)?;
+                    descendant = Some(wf_process_2787(
+                        receipt["descendant"]
+                            .as_u64()
+                            .ok_or_else(|| std::io::Error::other("missing descendant PID"))?
+                            as u32,
+                    )?);
+                    inner = Some(wf_process_2787(
+                        receipt["pid"]
+                            .as_u64()
+                            .ok_or_else(|| std::io::Error::other("missing inner PID"))?
+                            as u32,
+                    )?);
+                    if role == "cancel" {
+                        tx.send(true).map_err(std::io::Error::other)?;
+                    } else {
+                        owner
+                            .job
+                            .as_ref()
+                            .ok_or_else(|| std::io::Error::other("missing owned Job"))?
+                            .terminate_checked()?;
+                    }
+                    Ok::<(), std::io::Error>(())
+                })
+                .catch_unwind()
+                .await;
+                let observation_error = match observation {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error.to_string()),
+                    Err(_) => Some("owned call observation panic".to_string()),
+                };
+                let waited = if observation_error.is_some() {
+                    TargetWait::TimedOut
+                } else {
+                    match std::panic::AssertUnwindSafe(owner.wait(timeout, &mut cancel))
+                        .catch_unwind()
+                        .await
+                    {
+                        Ok(waited) => waited,
+                        Err(_) => {
+                            fixture_budget_failure_2787("OWNED_WAIT_PANIC", role);
+                            TargetWait::TimedOut
+                        }
+                    }
+                };
+                // Every post-spawn error still settles this same retained owner first.
+                let pre_settle_accounting = owner.job.as_ref().map(|job| match job.active_processes() {
+                    Ok(active)=>json!({"active":active,"kind":"actual pre-settlement inner Job sample"}),
+                    Err(error)=>json!({"error":error.to_string(),"kind":"pre-settlement inner Job query failed"}),
+                });
+                let settled = wf_settle_retained_2787(&mut owner, &waited, role).await;
+                let clean = settled.defects.is_empty();
+                let run = install_run_from_settlement(waited, settled, timeout);
+                let receipt_tick = wf_tick_2787();
+                let mut identities = std::collections::BTreeMap::new();
+                if let (Some(handle), Some(pid)) =
+                    (descendant.take(), receipt["descendant"].as_u64())
+                {
+                    identities.insert(pid as u32, handle);
+                }
+                if let (Some(handle), Some(pid)) = (inner.take(), receipt["pid"].as_u64()) {
+                    identities.insert(pid as u32, handle);
+                }
+                let checkpoint =
+                    wf_checkpoint_2787(identities, started, receipt_tick, role, clean).await;
+                let known_dead = checkpoint.handles.len() == 2 && checkpoint.all_signalled;
+                successes &= known_dead && clean && !run.ok;
+                wf_write_2787(
+                    root,
+                    "owner-result.json",
+                    &json!({"role":role,"receipt":receipt,"knownHandlesDead":known_dead,"settlementClean":clean,
+                        "rawStatus":run.exit_code,"detail":run.detail,"ownerCalls":1,"eventProof":false,"observationError":observation_error,
+                        "checkpoint":checkpoint.records,"preSettlementInnerAccounting":pre_settle_accounting,
+                        "finalInnerAccounting":"source-qualified-only; actual settle queries own Job zero after readers, raw final sample unavailable",
+                        "readers":"source-qualified actual owner settlement","parentJobEquivalent":false,"eventResourceOrderingProof":false}),
+                );
+                if let Some(error) = observation_error {
+                    wf_returned_2787(root, call, &run)?;
+                    return Err(std::io::Error::other(error));
+                }
+                run
+            } else if matches!(role, "hang" | "panic") {
+                let future = run_agent_install(app.handle(), key, &command, &cwd, timeout);
+                tokio::pin!(future);
+                let ready_path = cwd.join("source-ready.json");
+                let ready = wf_wait_file_2787(&ready_path, Duration::from_secs(5));
+                tokio::pin!(ready);
+                tokio::select! {
+                    result=&mut future => {wf_write_2787(root,"premature-result",&json!({"detail":result.detail}));return Err(std::io::Error::other("safety fixture completed before ready"));}
+                    result=&mut ready => { result?; }
+                }
+                wf_write_2787(root, "safety-ready", &wf_source_receipt_2787(&cwd)?);
+                wf_wait_file_2787(&root.join("safety-owned"), Duration::from_secs(5)).await?;
+                if role == "panic" {
+                    panic!("owned worker safety panic after positive startup");
+                }
+                fixture_observe_2787("safety-hang", WRAPPER_CAP_2787, async {
+                    std::future::pending::<()>().await
+                })
+                .await;
+                unreachable!()
+            } else if call == 0 {
+                fixture_observe_2787(
+                    role,
+                    WRAPPER_CAP_2787,
+                    wf_watch_call_2787(
+                        root,
+                        &cwd,
+                        call,
+                        started,
+                        run_agent_install(app.handle(), key, &command, &cwd, timeout),
+                    ),
+                )
+                .await
+            } else {
+                start_agent_install_with_timeout(
+                    app.handle(),
+                    key.to_string(),
+                    command.clone(),
+                    cwd.clone(),
+                    timeout,
+                )
+                .map_err(std::io::Error::other)?;
+                fixture_observe_2787(
+                    role,
+                    WRAPPER_CAP_2787,
+                    wf_watch_call_2787(root, &cwd, call, started, async {
+                        let frame = fixture_finished_2787(&mut rx, &mut seen).await;
+                        let payload = &frame["payload"];
+                        AgentInstallRun {
+                            ok: payload["ok"].as_bool().unwrap(),
+                            exit_code: payload["exitCode"].as_i64().map(|n| n as i32),
+                            detail: payload["detail"].as_str().unwrap().to_string(),
+                            stdout: payload["stdout"].as_str().unwrap().as_bytes().to_vec(),
+                            stderr: payload["stderr"].as_str().unwrap().as_bytes().to_vec(),
+                        }
+                    }),
+                )
+                .await
+            };
+            // Both real APIs have returned only after their own Job/pipes settled.
+            let server_result = server.await;
+            wf_returned_2787(root, call, &run)?;
+            tokio::time::sleep(QUIET_WINDOW).await;
+            seen.extend(drain_frames(&mut rx));
+            let stderr = String::from_utf8_lossy(&run.stderr);
+            let mut attributed = true;
+            let mut receipt = Value::Null;
+            if role == "create" {
+                let fault = root.join("fault-temp").to_string_lossy().replace('\\', "/");
+                attributed = !run.ok
+                    && run.exit_code == Some(1)
+                    && stderr.contains("Open")
+                    && stderr.contains("ac-install-2787-")
+                    && stderr.replace('\\', "/").contains(&fault)
+                    && !cwd.join("child-started").exists();
+            } else if role == "cleanup" || role == "deadline" || role == "missing-ready" {
+                receipt = wf_source_receipt_2787(&cwd)?;
+                let source = std::path::PathBuf::from(receipt["source"].as_str().unwrap());
+                let handles: Value = serde_json::from_slice(&std::fs::read(
+                    root.join(format!("call{call}-handles.json")),
+                )?)
+                .map_err(std::io::Error::other)?;
+                let dead = handles["allKnownDead"] == true;
+                attributed = if role == "cleanup" {
+                    run.exit_code == Some(if exit == 0 { 1 } else { 7 })
+                        && !run.ok
+                        && stderr.contains("LOCK_READY")
+                        && stderr.contains("ac-install-2787-")
+                        && source.exists()
+                        && cwd.join("locker-ready.json").exists()
+                } else if role == "deadline" {
+                    !run.ok
+                        && run.detail.contains("timed out")
+                        && cwd.join("source-ready.json").exists()
+                } else {
+                    !run.ok && stderr.contains("LOCK_READY missing")
+                };
+                attributed &= dead;
+                receipt["retainedHandles"] = handles;
+            } else if role == "launch" {
+                attributed = if std::env::var("WF_RESTRICTED_2787").as_deref() == Ok("1") {
+                    !run.ok && !cwd.join("child-started").exists()
+                } else {
+                    run.ok && cwd.join("child-started").exists()
+                };
+            } else if matches!(role, "http" | "empty" | "syntax") {
+                attributed = !run.ok && run.exit_code.is_some_and(|n| n != 0);
+            } else if !matches!(role, "cancel" | "force") {
+                attributed = run.ok == (exit == 0)
+                    && run.exit_code == Some(exit)
+                    && cwd.join("child-started").exists();
+            }
+            successes &= attributed;
+            if call == 0 {
+                successes &= seen.is_empty();
+            } else {
+                successes &= seen.len() == 1
+                    && seen[0]["event"] == "coding_agent_install_finished"
+                    && !install_in_flight(&command);
+            }
+            let handles_proven = if matches!(role, "cleanup" | "deadline" | "missing-ready") {
+                let handles: Value = serde_json::from_slice(&std::fs::read(
+                    root.join(format!("call{call}-handles.json")),
+                )?)
+                .map_err(std::io::Error::other)?;
+                handles["allKnownDead"] == true
+            } else if matches!(role, "cancel" | "force") {
+                let proof: Value =
+                    serde_json::from_slice(&std::fs::read(root.join("owner-result.json"))?)
+                        .map_err(std::io::Error::other)?;
+                proof["knownHandlesDead"] == true && proof["settlementClean"] == true
+            } else {
+                true
+            };
+            let settlement_proven = handles_proven
+                && !run.detail.contains("cleanup")
+                && !run.detail.contains("containment")
+                && (run.exit_code.is_some() || matches!(role, "deadline" | "cancel"));
+            let recovery = if settlement_proven {
+                wf_recover_source_2787(root, &body)?
+            } else {
+                wf_retained_residue_2787(root)?
+            };
+            successes &= settlement_proven
+                && recovery
+                    .get("foreignOrChangedRetained")
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty);
+            wf_write_2787(
+                root,
+                &format!("call{call}.json"),
+                &json!({"role":role,"key":key,"call":call,"seam":if call==0 {"direct"} else {"detached"},"elapsedMs":started.elapsed().as_millis(),"ok":run.ok,"exit":run.exit_code,"detail":run.detail,"attributed":attributed,"sourceReceipt":receipt,"events":seen,"settlementProven":settlement_proven,"recovery":recovery}),
+            );
+            server_result.map_err(|e| std::io::Error::other(e.to_string()))?;
+            if role == "launch" {
+                wf_write_2787(
+                    root,
+                    &format!("call{call}-done"),
+                    &json!({"completed":true}),
+                );
+                wf_wait_file_2787(
+                    &root.join(format!("call{call}-retired")),
+                    Duration::from_secs(5),
+                )
+                .await?;
+            }
+        }
+        if !successes || fixtures_2787().blocked.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "WF failed attribution/event/budget assertion after settlement",
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn agent_install_2787_wrapper_powershell_errors() {
+    async fn agent_install_2787_wf_worker_entry() {
+        let Ok(role) = std::env::var("WF_ROLE_2787") else {
+            return;
+        };
+        assert!(
+            matches!(
+                role.as_str(),
+                "startup"
+                    | "create"
+                    | "success"
+                    | "http"
+                    | "empty"
+                    | "syntax"
+                    | "cleanup"
+                    | "unlocked"
+                    | "missing-ready"
+                    | "deadline"
+                    | "cancel"
+                    | "force"
+                    | "hang"
+                    | "panic"
+                    | "launch"
+            ),
+            "unknown worker role"
+        );
+        let root = std::path::PathBuf::from(
+            std::env::var_os("WF_ROOT_2787").expect("explicit owned root"),
+        );
+        let key = std::env::var("WF_KEY_2787").unwrap();
+        let exit = std::env::var("WF_EXIT_2787").unwrap().parse().unwrap();
+        let result = wf_worker_body_2787(&root, &role, &key, exit).await;
+        wf_write_2787(
+            &root,
+            "worker-result.json",
+            &json!({"role":role,"ok":result.is_ok(),"error":result.as_ref().err().map(ToString::to_string)}),
+        );
+        result.expect("worker bounded real gate");
+    }
+
+    #[cfg(windows)]
+    async fn wf_worker_2787(
+        role: &str,
+        key: &str,
+        spaced: bool,
+        exit: i32,
+        fault: bool,
+        restricted: bool,
+    ) -> bool {
+        use futures_util::FutureExt;
+        let id = format!("wf-{role}-{key}-{spaced}-{exit}-{fault}-{restricted}");
+        let Ok(_permit) = fixture_try_permit_2787(&id, Duration::from_secs(40)).await else {
+            return false;
+        };
+        let root = fixtures_2787().root.join(format!(
+            "w{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..16]
+        ));
+        let setup = (|| -> std::io::Result<tokio::process::Command> {
+            std::fs::create_dir(&root)?;
+            std::fs::create_dir_all(root.join("temp"))?;
+            std::fs::create_dir_all(root.join(if spaced { "space cwd" } else { "ordinary" }))?;
+            std::fs::write(
+                root.join("fault-temp"),
+                b"owned faulty TMP/TEMP regular file",
+            )?;
+            let temp = root.join(if fault { "fault-temp" } else { "temp" });
+            let mut command = tokio::process::Command::new(std::env::current_exe()?);
+            command
+                .args([
+                    "--exact",
+                    "agent_update::tests::agent_install_2787_wf_worker_entry",
+                    "--nocapture",
+                ])
+                .current_dir(&root)
+                .env("WF_ROOT_2787", &root)
+                .env("WF_ROLE_2787", role)
+                .env("WF_KEY_2787", key)
+                .env("WF_SPACED_2787", if spaced { "1" } else { "0" })
+                .env("WF_EXIT_2787", exit.to_string())
+                .env("WF_RESTRICTED_2787", if restricted { "1" } else { "0" })
+                .env("TEMP", &temp)
+                .env("TMP", &temp)
+                .env("TMPDIR", &temp)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+            Ok(command)
+        })();
+        let mut command = match setup {
+            Ok(command) => command,
+            Err(error) => {
+                fixture_case_state_2787(
+                    &id,
+                    json!({"state":"rejected","setupError":error.to_string(),"spawned":false}),
+                );
+                fixture_record_2787(
+                    json!({"id":id,"status":"SETUP_BLOCKED","setupError":error.to_string()}),
+                );
+                return false;
+            }
+        };
+        let started = Instant::now();
+        let parent_tick = wf_tick_2787();
+        let group_remaining = (fixtures_2787().started + Duration::from_secs(1200))
+            .saturating_duration_since(Instant::now());
+        command
+            .env(
+                "WF_WORKER_DEADLINE_TICK_2787",
+                parent_tick.saturating_add(30_000).to_string(),
+            )
+            .env(
+                "WF_GROUP_DEADLINE_TICK_2787",
+                parent_tick
+                    .saturating_add(group_remaining.as_millis().min(u64::MAX as u128) as u64)
+                    .to_string(),
+            );
+        let mut owner = match TargetProcessOwner::spawn(&mut command).await {
+            Ok(owner) => owner,
+            Err(error) => {
+                fixture_case_state_2787(&id, json!({"state":"rejected","spawned":false}));
+                fixture_record_2787(
+                    json!({"id":id,"status":"SETUP_BLOCKED","spawn":install_run_from_spawn_failure(error).detail}),
+                );
+                return false;
+            }
+        };
+        // Owner/quota/identity handles stay outside every fallible or caught borrowed future.
+        let pid = owner.child.as_ref().and_then(|child| child.id());
+        let worker_handle = pid.and_then(|pid| wf_process_2787(pid).ok());
+        fixture_case_state_2787(
+            &id,
+            json!({"state":"spawned","workerPid":pid,"normalJob":"retained TargetProcessOwner",
+            "stdoutReader":owner.stdout.is_some(),"stderrReader":owner.stderr.is_some(),"workerIdentityHandle":worker_handle.is_some(),"scratch":root}),
+        );
+        let mut quota = None;
+        let mut observed = Vec::new();
+        let mut safety_handle = None;
+        let (_tx, mut cancel) = tokio::sync::watch::channel(false);
+        let observation=fixture_observe_group_2787(&id,std::panic::AssertUnwindSafe(async {
+            let pid=pid.ok_or_else(||std::io::Error::other("SETUP_BLOCKED missing owned worker PID"))?;
+            wf_wait_file_2787(&root.join("worker-ready"),Duration::from_secs(10)).await?;
+            if role=="launch" {quota=Some(wf_quota_2787(pid)?);fixture_case_state_2787(&id,json!({"quotaJob":"retained","quotaMembers":[pid]}));}
+            wf_write_2787(&root,"parent-start",&json!({"start":true}));
+            if matches!(role,"hang"|"panic") {
+                let bytes=wf_wait_file_2787(&root.join("safety-ready"),Duration::from_secs(10)).await?;
+                let receipt:Value=serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+                let descendant=receipt["descendant"].as_u64().ok_or_else(||std::io::Error::other("missing safety descendant PID"))? as u32;
+                safety_handle=Some(wf_process_2787(descendant)?);
+                fixture_case_state_2787(&id,json!({"knownDescendantPid":descendant,"descendantIdentityHandle":"retained"}));
+                wf_write_2787(&root,"safety-owned",&json!({"handleRetained":true}));
+            }
+            if role=="launch" {wf_parent_launch_2787(&root,quota.as_ref().unwrap(),restricted,&mut observed,&id).await?;}
+            Ok::<(),std::io::Error>(())
+        }).catch_unwind()).await;
+        let setup_error = match observation {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error.to_string()),
+            Err(_) => Some(
+                "SETUP_BLOCKED parent observation panic; retained settlement follows".to_string(),
+            ),
+        };
+        let remaining = Duration::from_secs(30).saturating_sub(started.elapsed());
+        let waited = if setup_error.is_some() {
+            TargetWait::TimedOut
+        } else {
+            match fixture_observe_group_2787(
+                &id,
+                std::panic::AssertUnwindSafe(owner.wait(remaining, &mut cancel)).catch_unwind(),
+            )
+            .await
+            {
+                Ok(waited) => waited,
+                Err(_) => {
+                    fixture_budget_failure_2787("OWNED_WAIT_PANIC", &id);
+                    TargetWait::TimedOut
+                }
+            }
+        };
+        if matches!(waited, TargetWait::TimedOut) && role != "hang" && setup_error.is_none() {
+            fixture_budget_failure_2787("WORKER_BUDGET_EXCEEDED", &id);
+        }
+        fixture_case_state_2787(
+            &id,
+            json!({"state":"settling","normalJob":"retained","stdoutReader":"retained until drain","stderrReader":"retained until drain"}),
+        );
+        let recovery_start = Instant::now();
+        let settled = wf_settle_retained_2787(&mut owner, &waited, &id).await;
+        let settlement_clean = settled.defects.is_empty();
+        fixture_case_state_2787(
+            &id,
+            json!({"normalJob":"observed empty and released by real settlement","stdoutReader":"drained","stderrReader":"drained","settlementDefects":settled.defects}),
+        );
+        let mut quota_errors = Vec::new();
+        let mut budget_recorded = false;
+        let quota_empty = if let Some(job) = quota.as_ref() {
+            fixture_observe_group_2787(&id,async {
+                loop {
+                    match wf_members_2787(job) {
+                        Ok((0,total,ids))=>{fixture_case_state_2787(&id,json!({"quotaJob":"observed empty","quotaTotalProcesses":total,"quotaMembers":ids}));break true;}
+                        Ok((active,total,ids))=>{fixture_case_state_2787(&id,json!({"quotaJob":"retained pending accounting","quotaActive":active,"quotaTotalProcesses":total,"quotaMembers":ids}));}
+                        Err(error)=>{if quota_errors.is_empty() {quota_errors.push(error.to_string());}}
+                    }
+                    // SAFETY: terminate only our retained owned quota; request is not proof.
+                    if unsafe {windows_sys::Win32::System::JobObjects::TerminateJobObject(job.0,1)}==0&&quota_errors.is_empty() {quota_errors.push(std::io::Error::last_os_error().to_string());}
+                    if recovery_start.elapsed()>WRAPPER_CAP_2787&&!budget_recorded {budget_recorded=true;fixture_budget_failure_2787("WORKER_RECOVERY_BUDGET_EXCEEDED",&id);}
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }).await
+        } else {
+            true
+        };
+        let run = install_run_from_settlement(waited, settled, Duration::from_secs(30));
+        let dead = worker_handle.as_ref().is_some_and(wf_dead_2787);
+        let safety_dead = safety_handle.as_ref().map(wf_dead_2787);
+        let settlement_proven = dead
+            && quota_empty
+            && settlement_clean
+            && quota_errors.is_empty()
+            && (!matches!(role, "hang" | "panic") || safety_dead == Some(true));
+        let recovery = if settlement_proven {
+            wf_recover_source_2787(&root, &wf_script_2787(role, key, exit))
+        } else {
+            wf_retained_residue_2787(&root)
+        };
+        let recovery_clean = recovery.as_ref().is_ok_and(|v| {
+            v.get("foreignOrChangedRetained")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty)
+        });
+        let result = std::fs::read(root.join("worker-result.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+        let output_written = std::fs::write(root.join("worker.stdout"), &run.stdout).is_ok()
+            && std::fs::write(root.join("worker.stderr"), &run.stderr).is_ok();
+        let ok = setup_error.is_none()
+            && settlement_proven
+            && recovery_clean
+            && output_written
+            && (if role == "hang" {
+                run.detail.contains("timed out")
+            } else if role == "panic" {
+                run.exit_code == Some(101)
+            } else {
+                run.ok && result.as_ref().is_some_and(|v| v["ok"] == true)
+            })
+            && !fixtures_2787().blocked.load(Ordering::SeqCst);
+        fixture_case_state_2787(
+            &id,
+            json!({"state":"complete","normalJob":"settled","quotaJob":if quota.is_some() {"observed empty, handle release next"} else {"none"},"workerDead":dead,"safetyDescendantDead":safety_dead,"settlementProven":settlement_proven,"residueRetained":!settlement_proven,"readers":"drained"}),
+        );
+        fixtures_2787().completed.fetch_add(1, Ordering::SeqCst);
+        fixture_record_2787(
+            json!({"id":id,"role":role,"root":root,"workerPid":pid,"workerDead":dead,"safetyDescendantDead":safety_dead,
+            "status":if ok {"PASS"} else {"BLOCKED_OR_FAIL"},"setupError":setup_error,"rawExit":run.exit_code,"detail":run.detail,
+            "elapsedMs":started.elapsed().as_millis(),"recoveryMs":recovery_start.elapsed().as_millis(),"quotaEmpty":quota_empty,"quotaErrors":quota_errors,
+            "quotaObservations":observed,"workerResult":result,"settlementClean":settlement_clean,"settlementProven":settlement_proven,
+            "recovery":recovery.as_ref().ok(),"recoveryError":recovery.err().map(|e|e.to_string())}),
+        );
+        drop(quota);
+        ok
+    }
+
+    #[cfg(windows)]
+    async fn wf_batch_2787(cases: Vec<(&str, &str, bool, i32, bool, bool)>) {
+        use futures_util::FutureExt;
+        for batch in cases.chunks(16) {
+            let results = futures_util::future::join_all(batch.iter().map(
+                |(role, key, spaced, exit, fault, restricted)| {
+                    // The parent keeps each owner across caught borrowed observation/settlement.
+                    // Case-level catch prevents a pre-spawn/post-settlement panic dropping siblings.
+                    std::panic::AssertUnwindSafe(wf_worker_2787(
+                        role,
+                        key,
+                        *spaced,
+                        *exit,
+                        *fault,
+                        *restricted,
+                    ))
+                    .catch_unwind()
+                },
+            ))
+            .await;
+            assert!(
+                results.iter().all(|result| matches!(result, Ok(true))),
+                "WF phase failed; all admitted retained workers settled"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn agent_install_2787_wf_create() {
+        let _phase = fixture_phase_2787().await;
+        let mut cases = Vec::new();
+        for spaced in [false, true] {
+            for fault in [false, true] {
+                cases.push(("startup", "claude", spaced, 0, fault, false));
+            }
+        }
+        // Four native calibration calls are distinct from wrapper controls.
+        wf_batch_2787(cases).await;
+        let mut cases = Vec::new();
         for key in native_keys_2787() {
-            for body in [
-                "[Console]::Error.WriteLine('RAN-2787'); throw 'terminating-2787'",
-                "[Console]::Error.WriteLine('RAN-2787'); Write-Error 'nonterminating-2787'",
-            ] {
-                wrapper_case_2787(key, 200, body, Some(1), 1).await;
+            for spaced in [false, true] {
+                cases.push(("create", *key, spaced, 0, true, false));
+                cases.push(("success", *key, spaced, 0, false, false));
+                for role in ["http", "empty", "syntax"] {
+                    cases.push((role, *key, spaced, 0, false, false));
+                }
+            }
+        }
+        wf_batch_2787(cases).await;
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn agent_install_2787_wf_cleanup() {
+        let _phase = fixture_phase_2787().await;
+        let mut cases = Vec::new();
+        for key in native_keys_2787() {
+            for spaced in [false, true] {
+                for exit in [0, 7] {
+                    cases.push(("cleanup", *key, spaced, exit, false, false));
+                    cases.push(("unlocked", *key, spaced, exit, false, false));
+                }
+            }
+        }
+        for spaced in [false, true] {
+            cases.push(("missing-ready", "claude", spaced, 0, false, false));
+        }
+        wf_batch_2787(cases).await;
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn agent_install_2787_wf_runner() {
+        let _phase = fixture_phase_2787().await;
+        let mut cases = Vec::new();
+        for key in native_keys_2787() {
+            for spaced in [false, true] {
+                for role in ["deadline", "cancel", "force"] {
+                    cases.push((role, *key, spaced, 0, false, false));
+                }
+            }
+        }
+        for spaced in [false, true] {
+            for role in ["hang", "panic"] {
+                cases.push((role, "claude", spaced, 0, false, false));
+            }
+        }
+        wf_batch_2787(cases).await;
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn agent_install_2787_wf_launch_calibration() {
+        let _phase = fixture_phase_2787().await;
+        // Only two workers/four real calls: no wider matrix or retries.
+        let restricted = wf_worker_2787("launch", "claude", false, 0, false, true).await;
+        let unlimited = wf_worker_2787("launch", "claude", false, 0, false, false).await;
+        assert!(
+            restricted && unlimited,
+            "limited LAUNCH attribution unavailable; return mechanism limit to R7, NULL unexecuted"
+        );
+    }
+
+    #[cfg(windows)]
+    struct WfSourceWatch2787 {
+        directory: WfHandle2787,
+        event: WfHandle2787,
+        overlap: Box<windows_sys::Win32::System::IO::OVERLAPPED>,
+        buffer: Box<[u8; 8192]>,
+        pending: bool,
+    }
+    #[cfg(windows)]
+    impl WfSourceWatch2787 {
+        fn new(root: &Path) -> std::io::Result<Self> {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::{
+                Foundation::INVALID_HANDLE_VALUE, Storage::FileSystem::*,
+                System::Threading::CreateEventW,
+            };
+            let path: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
+            // SAFETY: root is owned; observer has directory notification rights and deletion sharing.
+            unsafe {
+                let directory = CreateFileW(
+                    path.as_ptr(),
+                    FILE_LIST_DIRECTORY,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+                    std::ptr::null_mut(),
+                );
+                if directory == INVALID_HANDLE_VALUE {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let directory = WfHandle2787(directory);
+                let event = CreateEventW(std::ptr::null(), 1, 0, std::ptr::null());
+                if event.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let event = WfHandle2787(event);
+                let mut overlap: Box<windows_sys::Win32::System::IO::OVERLAPPED> =
+                    Box::new(std::mem::zeroed());
+                overlap.hEvent = event.0;
+                let mut watch = Self {
+                    directory,
+                    event,
+                    overlap,
+                    buffer: Box::new([0; 8192]),
+                    pending: false,
+                };
+                watch.arm()?;
+                Ok(watch)
+            }
+        }
+        fn arm(&mut self) -> std::io::Result<()> {
+            use windows_sys::Win32::{Storage::FileSystem::*, System::Threading::ResetEvent};
+            // SAFETY: stable boxed output/OVERLAPPED remain retained until completion/cancel drain.
+            unsafe {
+                ResetEvent(self.event.0);
+                if ReadDirectoryChangesW(
+                    self.directory.0,
+                    self.buffer.as_mut_ptr() as *mut _,
+                    self.buffer.len() as u32,
+                    0,
+                    FILE_NOTIFY_CHANGE_FILE_NAME
+                        | FILE_NOTIFY_CHANGE_SIZE
+                        | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                    std::ptr::null_mut(),
+                    self.overlap.as_mut(),
+                    None,
+                ) == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                self.pending = true;
+                Ok(())
+            }
+        }
+        fn notifications(&mut self) -> std::io::Result<Vec<String>> {
+            use windows_sys::Win32::{
+                Foundation::WAIT_OBJECT_0,
+                System::{Threading::WaitForSingleObject, IO::GetOverlappedResult},
+            };
+            // SAFETY: event/operation owned; inspect bytes only after actual completion.
+            unsafe {
+                if WaitForSingleObject(self.event.0, 0) != WAIT_OBJECT_0 {
+                    return Ok(Vec::new());
+                }
+                let mut count = 0;
+                if GetOverlappedResult(self.directory.0, self.overlap.as_mut(), &mut count, 0) == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                self.pending = false;
+                if count == 0 {
+                    return Err(std::io::Error::other(
+                        "SETUP_BLOCKED lost filesystem notifications",
+                    ));
+                }
+                let mut names = Vec::new();
+                let mut offset = 0usize;
+                loop {
+                    if offset + 12 > count as usize {
+                        return Err(std::io::Error::other("invalid notification extent"));
+                    }
+                    let word =
+                        |i| u32::from_le_bytes(self.buffer[i..i + 4].try_into().unwrap()) as usize;
+                    let next = word(offset);
+                    let bytes = word(offset + 8);
+                    if bytes % 2 != 0 || offset + 12 + bytes > count as usize {
+                        return Err(std::io::Error::other("invalid notification name"));
+                    }
+                    let units: Vec<u16> = self.buffer[offset + 12..offset + 12 + bytes]
+                        .chunks_exact(2)
+                        .map(|p| u16::from_le_bytes([p[0], p[1]]))
+                        .collect();
+                    let name = String::from_utf16(&units).map_err(std::io::Error::other)?;
+                    if name.starts_with("ac-install-2787-") && name.ends_with(".ps1") {
+                        names.push(name);
+                    }
+                    if next == 0 {
+                        break;
+                    }
+                    offset += next;
+                }
+                self.arm()?;
+                Ok(names)
+            }
+        }
+    }
+    #[cfg(windows)]
+    impl Drop for WfSourceWatch2787 {
+        fn drop(&mut self) {
+            if self.pending {
+                // SAFETY: cancel only our retained request; drain it before releasing buffers/handles.
+                unsafe {
+                    windows_sys::Win32::System::IO::CancelIoEx(
+                        self.directory.0,
+                        self.overlap.as_mut(),
+                    );
+                    let mut count = 0;
+                    windows_sys::Win32::System::IO::GetOverlappedResult(
+                        self.directory.0,
+                        self.overlap.as_mut(),
+                        &mut count,
+                        1,
+                    );
+                }
             }
         }
     }
 
-    #[tokio::test]
-    async fn agent_install_2787_wrapper_negative_controls() {
-        let (app, _rx) = app_with_broadcaster();
-        let dir = tempfile::Builder::new()
-            .prefix("negative fixture 2787 ")
-            .tempdir()
-            .unwrap();
-        for key in native_keys_2787() {
-            // PowerShell already rejects an HTTP error without this guard;
-            // its unguarded empty download is the false-success control.
-            // Unix pipelines instead mask curl's HTTP failure with shell exit0.
-            let status = if cfg!(windows) { 200 } else { 503 };
-            let (url, server) = http_fixture_2787(status, "", 1).await;
-            let command = if cfg!(windows) {
-                encode_wrapper_2787(&format!(
-                    "Invoke-RestMethod -Uri '{url}' | powershell.exe -NoProfile -NonInteractive -Command -"
-                ))
-            } else {
-                format!(
-                    "curl -fsSL '{url}' | {}",
-                    if *key == "codex" { "sh" } else { "bash" }
-                )
-            };
-            let run =
-                run_agent_install(app.handle(), key, &command, dir.path(), WRAPPER_CAP_2787).await;
-            assert_eq!(
-                run.exit_code,
-                Some(0),
-                "unguarded fetch exposes false success: {}",
-                run.detail
-            );
-            assert!(run.ok);
-            if !cfg!(windows) {
-                assert!(!run.stderr.is_empty(), "failed fetch diagnostics retained");
-            }
-            server.await.unwrap();
-            #[cfg(windows)]
-            {
-                let command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"[Console]::Error.WriteLine('RAN-2787'); exit 7\"";
-                let run =
-                    run_agent_install(app.handle(), key, command, dir.path(), WRAPPER_CAP_2787)
-                        .await;
-                assert!(
-                    run.ok,
-                    "previous quoted -Command demonstrates false success: {}",
-                    run.detail
-                );
-                assert_eq!(run.exit_code, Some(0));
-                assert!(!String::from_utf8_lossy(&run.stderr).contains("RAN-2787"));
-                assert!(
-                    String::from_utf8_lossy(&run.stdout).contains("RAN-2787"),
-                    "script printed, not executed"
-                );
-            }
-            eprintln!("CASE-2787 negative-control {key}");
+    #[cfg(windows)]
+    fn wf_image_2787(handle: &WfHandle2787) -> std::io::Result<String> {
+        let mut name = [0u16; 32768];
+        let mut size = name.len() as u32;
+        // SAFETY: retained read-only process identity and correctly sized UTF16 output.
+        if unsafe {
+            windows_sys::Win32::System::Threading::QueryFullProcessImageNameW(
+                handle.0,
+                0,
+                name.as_mut_ptr(),
+                &mut size,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
         }
+        String::from_utf16(&name[..size as usize]).map_err(std::io::Error::other)
+    }
+
+    #[cfg(windows)]
+    async fn wf_launch_http_2787(
+        root: &Path,
+        body: &str,
+        call: usize,
+    ) -> std::io::Result<(String, tokio::task::JoinHandle<()>)> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let token = uuid::Uuid::new_v4().to_string();
+        let url = format!("http://{}/{token}", listener.local_addr()?);
+        let root = root.to_path_buf();
+        let body = body.to_string();
+        let server = tokio::spawn(async move {
+            tokio::time::timeout(WRAPPER_CAP_2787,async {
+                let (mut stream,_)=listener.accept().await.unwrap();let mut request=Vec::new();
+                while !request.windows(4).any(|p|p==b"\r\n\r\n") {
+                    let mut buffer=[0u8;1024];let n=stream.read(&mut buffer).await.unwrap();
+                    assert!(n>0&&request.len()<8192);request.extend_from_slice(&buffer[..n]);
+                }
+                assert!(String::from_utf8_lossy(&request).starts_with(&format!("GET /{token} ")));
+                wf_write_2787(&root,&format!("call{call}-request"),&json!({"token":token,"request":String::from_utf8_lossy(&request)}));
+                wf_wait_file_2787(&root.join(format!("call{call}-release")),Duration::from_secs(5)).await.unwrap();
+                let response=format!("HTTP/1.1 200 Fixture\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
+                stream.write_all(response.as_bytes()).await.unwrap();stream.shutdown().await.unwrap();
+            }).await.expect("launch call request/barrier within10s");
+        });
+        Ok((url, server))
+    }
+
+    #[cfg(windows)]
+    async fn wf_parent_launch_2787(
+        root: &Path,
+        job: &WfHandle2787,
+        restricted: bool,
+        observed: &mut Vec<Value>,
+        id: &str,
+    ) -> std::io::Result<()> {
+        use sha2::Digest;
+        use std::{io::Read, os::windows::fs::OpenOptionsExt};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let worker = serde_json::from_slice::<Value>(&std::fs::read(root.join("worker-ready"))?)
+            .map_err(std::io::Error::other)?["pid"]
+            .as_u64()
+            .unwrap() as u32;
+        for call in 0..2 {
+            let began = Instant::now();
+            wf_wait_file_2787(
+                &root.join(format!("call{call}-request")),
+                Duration::from_secs(5),
+            )
+            .await?;
+            // Observer armed before releasing the authenticated owned GET response.
+            let mut watch = WfSourceWatch2787::new(&root.join("temp"))?;
+            let before = wf_members_2787(job)?;
+            fixture_case_state_2787(
+                id,
+                json!({"quotaActive":before.0,"quotaTotalProcesses":before.1,"quotaMembers":before.2,"quotaJob":"retained; launch barrier"}),
+            );
+            let mut handles = Vec::new();
+            let mut outer = None;
+            let mut hierarchy = Vec::new();
+            for pid in &before.2 {
+                let handle = wf_process_2787(*pid)?;
+                let image = wf_image_2787(&handle)?;
+                let name = std::path::Path::new(&image)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_ascii_lowercase();
+                if *pid != worker
+                    && !matches!(name.as_str(), "cmd.exe" | "powershell.exe" | "conhost.exe")
+                {
+                    return Err(std::io::Error::other(format!(
+                        "SETUP_BLOCKED unidentified Job member {pid}: {image}"
+                    )));
+                }
+                if name == "powershell.exe" {
+                    outer = Some(image.clone());
+                }
+                hierarchy.push(json!({"pid":pid,"image":image}));
+                handles.push((*pid, handle));
+            }
+            if outer.is_none() || before.0 != before.2.len() as u32 || before.0 == 0 {
+                return Err(std::io::Error::other(
+                    "SETUP_BLOCKED unresolved outer hierarchy",
+                ));
+            }
+            let stable = wf_members_2787(job)?;
+            if stable != before {
+                return Err(std::io::Error::other(
+                    "SETUP_BLOCKED unstable barrier membership",
+                ));
+            }
+            if restricted {
+                wf_limit_2787(job, before.0)?;
+            }
+            wf_write_2787(
+                root,
+                &format!("call{call}-release"),
+                &json!({"members":before.2,"limit":if restricted {Some(before.0)} else {None}}),
+            );
+            let expected = [
+                &[0xef, 0xbb, 0xbf][..],
+                wf_script_2787("launch", "claude", 0).as_bytes(),
+            ]
+            .concat();
+            let mut candidates = std::collections::BTreeSet::new();
+            let mut source = None;
+            loop {
+                for name in watch.notifications()? {
+                    candidates.insert(name);
+                }
+                for name in &candidates {
+                    let path = root.join("temp").join(name);
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                        .open(&path)
+                    {
+                        let mut bytes = Vec::new();
+                        if file.read_to_end(&mut bytes).is_ok() && bytes == expected {
+                            source = Some(
+                                json!({"path":path,"sha256":format!("{:x}",sha2::Sha256::digest(&bytes)),"bytes":bytes.len(),"notificationObserved":true,"deleteSharing":true}),
+                            );
+                        }
+                    }
+                }
+                if root.join(format!("call{call}-done")).exists() {
+                    break;
+                }
+                if began.elapsed() >= WRAPPER_CAP_2787 {
+                    return Err(std::io::Error::other(
+                        "SETUP_BLOCKED LAUNCH observation budget",
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            drop(watch);
+            let after = wf_members_2787(job)?;
+            let result: Value =
+                serde_json::from_slice(&std::fs::read(root.join(format!("call{call}.json")))?)
+                    .map_err(std::io::Error::other)?;
+            let stderr = std::fs::read_to_string(root.join(format!("call{call}.stderr")))?;
+            let members_dead = handles
+                .iter()
+                .filter(|(pid, _)| *pid != worker)
+                .all(|(_, h)| wf_dead_2787(h));
+            let launch_name = outer.unwrap();
+            let diagnostic = stderr.contains(&launch_name)
+                || stderr
+                    .replace('\\', "/")
+                    .contains(&launch_name.replace('\\', "/"));
+            let exact = source.is_some()
+                && members_dead
+                && if restricted {
+                    result["ok"] == false && diagnostic && after.1 == before.1
+                } else {
+                    result["ok"] == true && after.1 > before.1
+                };
+            observed.push(json!({"call":call,"restricted":restricted,"before":before,"after":after,"hierarchy":hierarchy,"source":source,
+                "knownCallHandlesDead":members_dead,"absoluteChildDiagnostic":diagnostic,"exactLaunchAttribution":exact,
+                "qualification":"Stable snapshots are not interval-stability proof; total-process delta and launch diagnostic discriminate creation denial from a started child. Missing source/diagnostic yields SETUP_BLOCKED."}));
+            wf_write_2787(
+                root,
+                &format!("call{call}-retired"),
+                &json!({"settled":true}),
+            );
+            if !exact {
+                return Err(std::io::Error::other("SETUP_BLOCKED limited LAUNCH attribution unavailable (source/read race, diagnostic or process churn); NULL remains NO EJERCITADA"));
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]
