@@ -150,6 +150,8 @@ const INVENTORY: &[Row] = &[
     ),
     ("src-tauri/src/cli/harness.rs", 3, 2, &[(WindowsOnly, 1)]),
     ("src-tauri/src/cli/mod.rs", 1, 0, &[(TestOnly, 1)]),
+    // #2839: issue_2837_child relaunches the test binary inside #[cfg(test)].
+    ("src-tauri/src/cli/task_ops.rs", 1, 0, &[(TestOnly, 1)]),
     (
         "src-tauri/src/commands/ac_discovery.rs",
         32,
