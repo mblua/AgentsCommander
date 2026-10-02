@@ -761,7 +761,7 @@ fn io_boundary(name: &str) -> std::io::Result<()> {
                 std::fs::write(path, bytes).unwrap();
             }
         });
-        return IO_FAULT.with(|f| {
+        IO_FAULT.with(|f| {
             let mut f = f.borrow_mut();
             f.1.push(name.into());
             if f.0.as_deref() == Some(name) {
@@ -769,7 +769,7 @@ fn io_boundary(name: &str) -> std::io::Result<()> {
             } else {
                 Ok(())
             }
-        });
+        })
     }
     #[cfg(not(test))]
     {
@@ -2991,7 +2991,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_2837_clean_pair_matrix_exact_bytes_noop_aba_and_collision() {
+    fn issue_2837_clean_pair_matrix_exact_bytes_noop_and_aba() {
         for (task_exists, log_exists) in
             [(true, true), (true, false), (false, true), (false, false)]
         {
@@ -3045,6 +3045,10 @@ mod tests {
             ));
             assert_ne!(read_snapshot(root).unwrap().revision, snapshot.revision);
         }
+    }
+
+    #[test]
+    fn issue_2837_clean_backup_collision_on_either_side() {
         for collision_on_task in [true, false] {
             let f = issue_2837_fixture();
             let root = f.path();
@@ -3563,26 +3567,7 @@ mod tests {
         assert!(!root.join("TASK.md").exists());
         assert_eq!(issue_2837_log(root), b"prior log");
     }
-    fn issue_2837_backup_write_failure_case(point: &str, task_backup_completed: bool) {
-        let fixture = issue_2837_fixture();
-        let root = fixture.path();
-        let original_task = format!(
-            "\u{feff}---\r\ntitle: 'USER: Keep original'\r\n---\r\n{}\r\n",
-            "original description 🦀\r\n".repeat(6_000)
-        )
-        .into_bytes();
-        assert!(
-            original_task.len() > 65_536,
-            "TASK must span multiple copy blocks"
-        );
-        let original_log = b"{old completed row}\npartial\xf0\x9f";
-        std::fs::write(root.join("TASK.md"), &original_task).unwrap();
-        std::fs::write(root.join(STATUS_NAME), original_log).unwrap();
-        issue_2837_fault(Some(point));
-        assert!(
-            matches!(issue_2837_clean(root), Err(TaskOpError::WriteFailed(_))),
-            "{point}"
-        );
+    fn issue_2837_assert_backup_fault_calls(point: &str) {
         let calls = issue_2837_calls();
         assert_eq!(
             calls.iter().filter(|c| c.as_str() == point).count(),
@@ -3607,7 +3592,14 @@ mod tests {
             assert!(calls.iter().any(|c| c == "task_backup_sync"));
             assert!(!calls.iter().any(|c| c == "status_backup_after_write"));
         }
-        issue_2837_fault(None);
+    }
+
+    fn issue_2837_assert_failed_backup_pair(
+        root: &Path,
+        original_task: &[u8],
+        original_log: &[u8],
+        task_backup_completed: bool,
+    ) {
         assert_eq!(
             std::fs::read(root.join("TASK.md")).unwrap(),
             original_task,
@@ -3645,6 +3637,37 @@ mod tests {
             .unwrap()
             .flatten()
             .any(|e| e.file_name().to_string_lossy().contains(".tmp.")));
+    }
+
+    fn issue_2837_backup_write_failure_case(point: &str, task_backup_completed: bool) {
+        let fixture = issue_2837_fixture();
+        let root = fixture.path();
+        let original_task = format!(
+            "\u{feff}---\r\ntitle: 'USER: Keep original'\r\n---\r\n{}\r\n",
+            "original description 🦀\r\n".repeat(6_000)
+        )
+        .into_bytes();
+        assert!(
+            original_task.len() > 65_536,
+            "TASK must span multiple copy blocks"
+        );
+        let original_log = b"{old completed row}\npartial\xf0\x9f";
+        std::fs::write(root.join("TASK.md"), &original_task).unwrap();
+        std::fs::write(root.join(STATUS_NAME), original_log).unwrap();
+        issue_2837_fault(Some(point));
+        assert!(
+            matches!(issue_2837_clean(root), Err(TaskOpError::WriteFailed(_))),
+            "{point}"
+        );
+        issue_2837_assert_backup_fault_calls(point);
+        issue_2837_fault(None);
+        issue_2837_assert_failed_backup_pair(
+            root,
+            &original_task,
+            original_log,
+            task_backup_completed,
+        );
+        let (task_backup, _) = backup_names("20261002-210000", 0);
         assert!(
             matches!(issue_2837_clean(root), Ok(EditOutcome::Wrote { .. })),
             "retry succeeds"
