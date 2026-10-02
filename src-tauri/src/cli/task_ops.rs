@@ -3563,4 +3563,133 @@ mod tests {
         assert!(!root.join("TASK.md").exists());
         assert_eq!(issue_2837_log(root), b"prior log");
     }
+    fn issue_2837_backup_write_failure_case(point: &str, task_backup_completed: bool) {
+        let fixture = issue_2837_fixture();
+        let root = fixture.path();
+        let original_task = format!(
+            "\u{feff}---\r\ntitle: 'USER: Keep original'\r\n---\r\n{}\r\n",
+            "original description 🦀\r\n".repeat(6_000)
+        )
+        .into_bytes();
+        assert!(
+            original_task.len() > 65_536,
+            "TASK must span multiple copy blocks"
+        );
+        let original_log = b"{old completed row}\npartial\xf0\x9f";
+        std::fs::write(root.join("TASK.md"), &original_task).unwrap();
+        std::fs::write(root.join(STATUS_NAME), original_log).unwrap();
+        issue_2837_fault(Some(point));
+        assert!(
+            matches!(issue_2837_clean(root), Err(TaskOpError::WriteFailed(_))),
+            "{point}"
+        );
+        let calls = issue_2837_calls();
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() == point).count(),
+            1,
+            "must execute requested boundary"
+        );
+        if point == "task_backup_after_write" {
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c.as_str() == "task_backup_write")
+                    .count(),
+                1,
+                "fail immediately after the first block"
+            );
+            assert!(!calls.iter().any(|c| c == "task_backup_sync"));
+        }
+        if point == "task_backup_write" {
+            assert!(!calls.iter().any(|c| c == "task_backup_after_write"));
+        }
+        if point == "status_backup_write" {
+            assert!(calls.iter().any(|c| c == "task_backup_sync"));
+            assert!(!calls.iter().any(|c| c == "status_backup_after_write"));
+        }
+        issue_2837_fault(None);
+        assert_eq!(
+            std::fs::read(root.join("TASK.md")).unwrap(),
+            original_task,
+            "original TASK unchanged"
+        );
+        assert_eq!(issue_2837_log(root), original_log, "original log unchanged");
+        assert!(
+            !root.join(JOURNAL_NAME).exists(),
+            "no reset transaction published"
+        );
+        let (task_backup, status_backup) = backup_names("20261002-210000", 0);
+        assert!(
+            !root.join(&status_backup).exists(),
+            "own empty log reservation removed"
+        );
+        if task_backup_completed {
+            assert_eq!(
+                std::fs::read(root.join(&task_backup)).unwrap(),
+                original_task,
+                "completed TASK backup preserved"
+            );
+        } else {
+            assert!(
+                !root.join(&task_backup).exists(),
+                "own empty/partial TASK reservation removed"
+            );
+        }
+        let backups = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".bak."))
+            .count();
+        assert_eq!(backups, usize::from(task_backup_completed));
+        assert!(!std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().contains(".tmp.")));
+        assert!(
+            matches!(issue_2837_clean(root), Ok(EditOutcome::Wrote { .. })),
+            "retry succeeds"
+        );
+        let suffix = u32::from(task_backup_completed);
+        let (retry_task_backup, retry_status_backup) = backup_names("20261002-210000", suffix);
+        assert_eq!(
+            std::fs::read(root.join(retry_task_backup)).unwrap(),
+            original_task,
+            "retry archives exact TASK"
+        );
+        assert_eq!(
+            std::fs::read(root.join(retry_status_backup)).unwrap(),
+            original_log,
+            "retry archives exact log including partial UTF-8"
+        );
+        if task_backup_completed {
+            assert_eq!(
+                std::fs::read(root.join(task_backup)).unwrap(),
+                original_task,
+                "retry cannot overwrite finished archive"
+            );
+        }
+        let snapshot = read_snapshot(root).unwrap();
+        assert_eq!(snapshot.task_title.as_deref(), Some("Clean"));
+        assert_eq!(snapshot.description, "Ready to start a new topic\n");
+        let seed = snapshot.status_record.unwrap();
+        assert_eq!(seed.kind, "topic_started");
+        assert_eq!(seed.sequence, 0);
+        assert_eq!(issue_2837_lines(root), 1);
+        assert!(!root.join(JOURNAL_NAME).exists());
+    }
+
+    #[test]
+    fn issue_2837_task_backup_write_failure_preserves_originals_and_retries() {
+        issue_2837_backup_write_failure_case("task_backup_write", false);
+    }
+
+    #[test]
+    fn issue_2837_status_backup_write_failure_preserves_finished_task_and_retries() {
+        issue_2837_backup_write_failure_case("status_backup_write", true);
+    }
+
+    #[test]
+    fn issue_2837_task_backup_after_write_cleans_first_partial_block_and_retries() {
+        issue_2837_backup_write_failure_case("task_backup_after_write", false);
+    }
 }
