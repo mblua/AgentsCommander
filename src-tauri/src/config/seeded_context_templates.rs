@@ -1312,6 +1312,36 @@ where
     )
 }
 
+// All generated migrations share publication/state handling. Eligibility stays
+// at each caller, and state advances only after successful publication.
+fn sync_generated_template(
+    path: &Path,
+    spec: SeededContextTemplateSpec,
+    expected_sha256: &str,
+    loaded: &mut LoadedState,
+    current_default_sha256: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+) -> ContextTemplateExecution<TemplateSyncOutcome> {
+    let execution = auto_update_generated_template(path, spec, expected_sha256, clock);
+    let published = execution.published;
+    match execution.completion {
+        Ok(target_outcome) => {
+            if matches!(target_outcome, TemplatePublication::Published(_)) {
+                loaded.mark_seeded(spec, current_default_sha256);
+            }
+            ContextTemplateExecution::from_parts(
+                Ok(TemplateSyncOutcome {
+                    pending_update: None,
+                    replacement: None,
+                    target_outcome,
+                }),
+                published,
+            )
+        }
+        Err(error) => ContextTemplateExecution::from_parts(Err(error), published),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sync_one_template(
     project_dir: Option<&Path>,
@@ -1523,24 +1553,14 @@ fn sync_one_template(
             .is_known_generated
             .is_some_and(|matches| matches(&snapshot.content))
     {
-        let execution = auto_update_generated_template(&path, spec, &snapshot.sha256, clock);
-        let published = execution.published;
-        return match execution.completion {
-            Ok(target_outcome) => {
-                if matches!(target_outcome, TemplatePublication::Published(_)) {
-                    loaded.mark_seeded(spec, &current_default_sha256);
-                }
-                ContextTemplateExecution::from_parts(
-                    Ok(TemplateSyncOutcome {
-                        pending_update: None,
-                        replacement: None,
-                        target_outcome,
-                    }),
-                    published,
-                )
-            }
-            Err(error) => ContextTemplateExecution::from_parts(Err(error), published),
-        };
+        return sync_generated_template(
+            &path,
+            spec,
+            &snapshot.sha256,
+            loaded,
+            &current_default_sha256,
+            clock,
+        );
     }
     if spec.id == "rootAgent" {
         log::warn!(
@@ -1556,24 +1576,14 @@ fn sync_one_template(
                 .is_known_generated
                 .is_some_and(|matches| matches(&snapshot.content))
         {
-            let execution = auto_update_generated_template(&path, spec, &snapshot.sha256, clock);
-            let published = execution.published;
-            return match execution.completion {
-                Ok(target_outcome) => {
-                    if matches!(target_outcome, TemplatePublication::Published(_)) {
-                        loaded.mark_seeded(spec, &current_default_sha256);
-                    }
-                    ContextTemplateExecution::from_parts(
-                        Ok(TemplateSyncOutcome {
-                            pending_update: None,
-                            replacement: None,
-                            target_outcome,
-                        }),
-                        published,
-                    )
-                }
-                Err(error) => ContextTemplateExecution::from_parts(Err(error), published),
-            };
+            return sync_generated_template(
+                &path,
+                spec,
+                &snapshot.sha256,
+                loaded,
+                &current_default_sha256,
+                clock,
+            );
         }
     }
 
@@ -1583,24 +1593,14 @@ fn sync_one_template(
             .is_known_generated
             .is_some_and(|matches| matches(&snapshot.content))
     {
-        let execution = auto_update_generated_template(&path, spec, &snapshot.sha256, clock);
-        let published = execution.published;
-        return match execution.completion {
-            Ok(target_outcome) => {
-                if matches!(target_outcome, TemplatePublication::Published(_)) {
-                    loaded.mark_seeded(spec, &current_default_sha256);
-                }
-                ContextTemplateExecution::from_parts(
-                    Ok(TemplateSyncOutcome {
-                        pending_update: None,
-                        replacement: None,
-                        target_outcome,
-                    }),
-                    published,
-                )
-            }
-            Err(error) => ContextTemplateExecution::from_parts(Err(error), published),
-        };
+        return sync_generated_template(
+            &path,
+            spec,
+            &snapshot.sha256,
+            loaded,
+            &current_default_sha256,
+            clock,
+        );
     }
 
     if spec.suppress_unknown_without_state && !has_valid_entry {
