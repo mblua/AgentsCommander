@@ -884,6 +884,14 @@ pub fn is_root_agent_path(cwd: &str) -> bool {
     paths_equivalent(Path::new(cwd), Path::new(&root_dir))
 }
 
+/// Isolated context fixtures use the same canonical path comparison as live
+/// Root routing, with an explicit configuration directory and existing roots.
+#[cfg(test)]
+pub(crate) fn is_root_agent_path_at(cwd: &str, config_dir: &Path) -> bool {
+    let configured = config_dir.join(ROOT_AGENT_DIR_NAME);
+    Path::new(cwd).is_dir() && configured.is_dir() && paths_equivalent(Path::new(cwd), &configured)
+}
+
 /// Read-only proof that `path` is the existing canonical Root Agent directory.
 /// This wrapper never provisions or repairs Root state.
 pub(crate) fn verify_live_root_agent_path(

@@ -150,8 +150,7 @@ fn ensure_session_context_with_config(
     if root_context_candidate(agent_root) {
         verify_root_context_identity(agent_root)?;
         super::root_agent::ensure_default_root_agent_skills_at(Path::new(agent_root))?;
-        let config_dir = super::config_dir()
-            .ok_or_else(|| "Could not resolve app config directory".to_string())?;
+        let config_dir = root_context_config_dir()?;
         let path = config_dir.join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
         let content = read_rendered_root_template(
             agent_root,
@@ -843,14 +842,25 @@ fn truncate_to_byte_budget(output: &mut String, max_bytes: usize) {
     output.truncate(boundary);
 }
 
-fn append_budget_summary(output: &mut String, omitted_skills: usize, omitted_warnings: usize) {
+fn append_budget_summary(
+    output: &mut String,
+    omitted_skills: usize,
+    omitted_warnings: usize,
+    include_instructions: bool,
+) {
     if omitted_skills == 0 && omitted_warnings == 0 {
         return;
     }
 
     let summary = format!(
-        "Skill index startup-context budget reached; omitted {} skills and {} warnings. Inspect SKILL.md files if needed.\n",
-        omitted_skills, omitted_warnings
+        "Skill index startup-context budget reached; omitted {} skills and {} warnings.{}\n",
+        omitted_skills,
+        omitted_warnings,
+        if include_instructions {
+            " Inspect SKILL.md files if needed."
+        } else {
+            ""
+        }
     );
 
     log::warn!(
@@ -1010,7 +1020,7 @@ fn render_skills_section(index: &SkillIndex) -> String {
         }
     }
 
-    append_budget_summary(&mut output, omitted_skills, omitted_warnings);
+    append_budget_summary(&mut output, omitted_skills, omitted_warnings, true);
     output
 }
 
@@ -2136,7 +2146,31 @@ fn root_context_candidate(root: &str) -> bool {
             .is_some_and(|path| super::root_agent::is_root_agent_dir_name(&display_path(&path)))
 }
 
+// Thread-local configuration injection keeps successful Root acceptance tests
+// inside isolated fixtures; it is absent from production builds. Identity still
+// requires the supplied directory to match the configured canonical Root path.
+#[cfg(test)]
+thread_local! {
+    static ROOT_CONTEXT_TEST_CONFIG: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+fn root_context_config_dir() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(dir) = ROOT_CONTEXT_TEST_CONFIG.with(|slot| slot.borrow().clone()) {
+        return Ok(dir);
+    }
+    super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())
+}
+
 fn verify_root_context_identity(root: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(dir) = ROOT_CONTEXT_TEST_CONFIG.with(|slot| slot.borrow().clone()) {
+        return if super::root_agent::is_root_agent_path_at(root, &dir) {
+            Ok(())
+        } else {
+            Err(format!("Root identity validation failed for {}", root))
+        };
+    }
     if super::root_agent::is_root_agent_path(root) {
         Ok(())
     } else {
@@ -2260,13 +2294,17 @@ fn render_root_skills_list(index: &SkillIndex) -> String {
     for skill in &index.skills {
         let name = sanitize_skill_metadata_for_context(&skill.name);
         let entrypoint = sanitize_skill_metadata_for_context(&skill.entrypoint_path);
-        let trigger = sanitize_skill_metadata_for_context(&skill_trigger_text(skill));
+        let trigger =
+            sanitize_skill_metadata_for_context(&match (&skill.description, &skill.when_to_use) {
+                (None, None) => "No description metadata.".to_string(),
+                _ => skill_trigger_text(skill),
+            });
         let entry = format!(
             "- `{}` - {}\n  Scope: Root Agent durable skills\n  Entrypoint: `{}`\n",
             name, trigger, entrypoint
         );
         if !push_with_budget(&mut output, &entry) {
-            let minimal = format!("- `{}` - Metadata omitted because the skill index exceeded the {} byte startup-context budget; inspect SKILL.md if needed.\n  Scope: Root Agent durable skills\n  Entrypoint: `{}`\n", name, SKILL_INDEX_TOTAL_MAX_BYTES, entrypoint);
+            let minimal = format!("- `{}` - Metadata omitted because the skill index exceeded the {} byte startup-context budget.\n  Scope: Root Agent durable skills\n  Entrypoint: `{}`\n", name, SKILL_INDEX_TOTAL_MAX_BYTES, entrypoint);
             if !push_with_budget(&mut output, &minimal) {
                 omitted_skills += 1;
             }
@@ -2298,7 +2336,7 @@ fn render_root_skills_list(index: &SkillIndex) -> String {
             log::warn!("[skills] {}: {}", skill.folder_name, warning);
         }
     }
-    append_budget_summary(&mut output, omitted_skills, omitted_warnings);
+    append_budget_summary(&mut output, omitted_skills, omitted_warnings, false);
     output
 }
 
@@ -2446,8 +2484,7 @@ fn build_root_agent_context_with_auto(
     auto_self_clear: bool,
 ) -> Result<String, String> {
     verify_root_context_identity(cwd)?;
-    let config_dir =
-        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
+    let config_dir = root_context_config_dir()?;
     build_root_agent_context_at(cwd, &config_dir, repo_mounts, auto_self_clear)
 }
 
@@ -5055,15 +5092,35 @@ mod tests {
         (temp, root)
     }
 
+    fn with_issue_2832_root_config<T>(config_dir: &Path, action: impl FnOnce() -> T) -> T {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                ROOT_CONTEXT_TEST_CONFIG.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        ROOT_CONTEXT_TEST_CONFIG.with(|slot| {
+            assert!(slot.borrow().is_none(), "nested Root fixture");
+            *slot.borrow_mut() = Some(config_dir.to_path_buf());
+        });
+        let _reset = Reset;
+        action()
+    }
+
     fn issue_2832_combined(root: &Path, config_dir: &Path, auto: bool) -> String {
-        let cache =
-            build_root_agent_context_at(&path_string(root), config_dir, None, auto).unwrap();
-        let content = std::fs::read_to_string(cache).unwrap();
-        let managed =
-            materialize_resolved_context_file(&path_string(root), "AGENTS.md", &[], &content)
-                .unwrap()
-                .unwrap();
-        std::fs::read_to_string(managed).unwrap()
+        with_issue_2832_root_config(config_dir, || {
+            let managed = materialize_agent_context_file_with_filename(
+                &path_string(root),
+                "AGENTS.md",
+                &[],
+                true,
+                auto,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            std::fs::read_to_string(managed).unwrap()
+        })
     }
 
     #[test]
@@ -5353,6 +5410,227 @@ mod tests {
         }
         assert_eq!(cases, 160);
         println!("issue_2832 custom-byte/state materialization cases: {cases}");
+    }
+
+    #[test]
+    fn issue_2832_successful_root_resolver_and_direct_ensure_preserve_exclusions() {
+        let temp = tempfile::tempdir().unwrap();
+        let project_context = temp.path().join(".ac");
+        let config_dir = project_context.join("room-1-demo");
+        let root = config_dir.join("ac-root-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        let base = config_dir.join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let overlay = config_dir.join("Context.root-agent.local.md");
+        let role = "## Self-Maintenance\nAUTHORED ROLE\n";
+        std::fs::write(root.join("Role.md"), role).unwrap();
+        let protected: Vec<PathBuf> = [&project_context, &config_dir, &root]
+            .into_iter()
+            .flat_map(|dir| {
+                [
+                    GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+                    COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+                    HOST_PLATFORM_RULES_FILENAME_WINDOWS,
+                    HOST_PLATFORM_RULES_FILENAME_LINUX,
+                    HOST_PLATFORM_RULES_FILENAME_MACOS,
+                ]
+                .into_iter()
+                .map(move |name| dir.join(name))
+            })
+            .collect();
+        let authored = "## Self-Maintenance\nAUTHORED POLICY\n{{#AUTO_SELF_CLEAR}}\nAUTHORED AUTO\n{{/AUTO_SELF_CLEAR}}\n";
+        let authored_off = "## Self-Maintenance\nAUTHORED POLICY\n";
+        let local = "## Self-Maintenance\nAUTHORED LOCAL\n";
+        let mut cases = 0;
+        for sentinels_present in [false, true] {
+            for path in &protected {
+                if sentinels_present {
+                    std::fs::write(path, "PROTECTED CONTEXT SENTINEL\n").unwrap();
+                }
+            }
+            for (source, selected_override, entries, selected_off, selected_on) in [
+                (
+                    authored,
+                    None,
+                    serde_json::json!(["../Context.root-agent.md"]),
+                    authored_off,
+                    "## Self-Maintenance\nAUTHORED POLICY\nAUTHORED AUTO\n",
+                ),
+                (
+                    "DELETED ALL DEFAULT SECTIONS\n",
+                    None,
+                    serde_json::json!(["../Context.root-agent.md"]),
+                    "DELETED ALL DEFAULT SECTIONS\n",
+                    "DELETED ALL DEFAULT SECTIONS\n",
+                ),
+                (
+                    "",
+                    None,
+                    serde_json::json!(["../Context.root-agent.md"]),
+                    "",
+                    "",
+                ),
+                (
+                    authored,
+                    Some(local),
+                    serde_json::json!(["../Context.root-agent.md"]),
+                    local,
+                    local,
+                ),
+                (
+                    authored,
+                    Some(""),
+                    serde_json::json!(["../Context.root-agent.md"]),
+                    "",
+                    "",
+                ),
+                (
+                    authored,
+                    None,
+                    serde_json::json!([]),
+                    authored_off,
+                    "## Self-Maintenance\nAUTHORED POLICY\nAUTHORED AUTO\n",
+                ),
+                (
+                    authored,
+                    None,
+                    serde_json::json!(["Role.md"]),
+                    authored_off,
+                    "## Self-Maintenance\nAUTHORED POLICY\nAUTHORED AUTO\n",
+                ),
+            ] {
+                std::fs::write(&base, source).unwrap();
+                match selected_override {
+                    Some(text) => std::fs::write(&overlay, text).unwrap(),
+                    None => {
+                        if overlay.exists() {
+                            std::fs::remove_file(&overlay).unwrap();
+                        }
+                    }
+                }
+                std::fs::write(
+                    root.join("config.json"),
+                    serde_json::json!({"context":entries}).to_string(),
+                )
+                .unwrap();
+                for auto in [false, true] {
+                    let expected = if entries == serde_json::json!([]) {
+                        ""
+                    } else if entries == serde_json::json!(["Role.md"]) {
+                        role
+                    } else if auto {
+                        selected_on
+                    } else {
+                        selected_off
+                    };
+                    for _ in 0..2 {
+                        // Actual public materializer -> production resolver -> Root
+                        // identity/builder -> final writer, with coordinator=true.
+                        assert_eq!(issue_2832_combined(&root, &config_dir, auto), expected);
+                        let direct = with_issue_2832_root_config(&config_dir, || {
+                            let path = ensure_session_context(&path_string(&root)).unwrap();
+                            std::fs::read_to_string(path).unwrap()
+                        });
+                        assert_eq!(direct, selected_off, "direct ensure renders selected file with auto=false, independently of context[]");
+                        for path in &protected {
+                            if sentinels_present {
+                                assert_eq!(
+                                    std::fs::read_to_string(path).unwrap(),
+                                    "PROTECTED CONTEXT SENTINEL\n",
+                                    "{}",
+                                    path.display()
+                                );
+                            } else {
+                                assert!(!path.exists(), "created excluded file {}", path.display());
+                            }
+                        }
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 28);
+        println!(
+            "issue_2832 production resolver/direct-ensure cases: {cases}, each repeated twice"
+        );
+        // The seam changes only configuration, never accepts another Root path.
+        let spoof = temp.path().join("ac-root-agent");
+        std::fs::create_dir(&spoof).unwrap();
+        with_issue_2832_root_config(&config_dir, || {
+            assert!(ensure_session_context(&path_string(&spoof))
+                .unwrap_err()
+                .contains("Root identity"));
+        });
+        assert!(!spoof.join("skills").exists());
+    }
+
+    #[test]
+    fn issue_2832_skill_budget_overflow_is_data_only_and_non_root_keeps_instructions() {
+        let (temp, root) = issue_2832_fixture();
+        std::fs::write(
+            root.join("config.json"),
+            serde_json::json!({"context":["../Context.root-agent.md"]}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
+            "{{SKILLS_LIST}}",
+        )
+        .unwrap();
+        for index in 0..200 {
+            write_skill(
+                &root,
+                &format!("overflow-{index:03}"),
+                &format!(
+                    "---\nname: overflow-{index:03}\ndescription: {}\n---\nBODY\n",
+                    "x".repeat(2048)
+                ),
+            );
+        }
+        write_skill(
+            &root,
+            "no-description",
+            "---\nname: no-description\n---\nBODY\n",
+        );
+        let rendered = issue_2832_combined(&root, temp.path(), true);
+        assert!(rendered.len() <= SKILL_INDEX_TOTAL_MAX_BYTES);
+        assert!(
+            rendered.contains("Metadata omitted because"),
+            "minimal-entry fallback exercised"
+        );
+        assert!(
+            rendered.contains("budget reached; omitted"),
+            "summary fallback exercised"
+        );
+        assert!(rendered.contains("Entrypoint:"));
+        assert!(!rendered.contains("inspect SKILL.md"));
+        assert!(!rendered.contains("Inspect SKILL.md"));
+        assert!(!rendered.contains("## Skills"));
+        assert!(!rendered.contains("Self-Maintenance"));
+        let index = discover_skill_index(Some(&path_string(&root)));
+        let non_root = render_skills_section(&index);
+        assert!(non_root.len() <= SKILL_INDEX_TOTAL_MAX_BYTES);
+        assert!(non_root.contains("Inspect SKILL.md files if needed."));
+        assert!(non_root.contains("inspect SKILL.md if needed."));
+        let missing_description = SkillIndex {
+            matrix_root: None,
+            skills_root: None,
+            skills: vec![SkillMetadata {
+                folder_name: "no-description".to_string(),
+                name: "no-description".to_string(),
+                entrypoint_path: "skills/no-description/SKILL.md".to_string(),
+                description: None,
+                when_to_use: None,
+                metadata_warnings: vec![],
+            }],
+            warnings: vec![],
+        };
+        assert!(render_root_skills_list(&missing_description).contains("No description metadata."));
+        assert!(!render_root_skills_list(&missing_description).contains("inspect"));
+        assert!(
+            render_skills_section(&missing_description).contains("inspect SKILL.md before use.")
+        );
+        assert!(crate::config::root_agent::default_root_context_template()
+            .contains("inspect the canonical SKILL.md files if needed."));
     }
 
     #[test]
@@ -10012,14 +10290,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         )
         .unwrap();
         std::fs::write(root.join("Role.md"), "ROOT BASE CONTEXT").unwrap();
-        let cwd = path_string(&root);
-        let on = build_root_agent_context_at(&cwd, temp.path(), None, true).unwrap();
-        let on = std::fs::read_to_string(on).unwrap();
+        let on = issue_2832_combined(&root, temp.path(), true);
         assert!(on.contains("max 240 char forgotten summary"));
         assert!(on.contains("closed background"));
         assert!(on.contains("ROOT BASE CONTEXT"));
-        let off = build_root_agent_context_at(&cwd, temp.path(), None, false).unwrap();
-        let off = std::fs::read_to_string(off).unwrap();
+        let off = issue_2832_combined(&root, temp.path(), false);
         assert!(!off.contains("## Self-Maintenance"));
         assert!(off.contains("ROOT BASE CONTEXT"));
     }

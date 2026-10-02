@@ -73,6 +73,8 @@ When running from a room replica, resolve skills/... against the origin Agent Ma
 
 ### Available Skills
 
+If metadata or entries are omitted because the startup-context budget was reached, inspect the canonical SKILL.md files if needed.
+
 {{SKILLS_LIST}}
 
 # Agent Repos
