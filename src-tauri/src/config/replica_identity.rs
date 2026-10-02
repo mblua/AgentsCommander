@@ -876,4 +876,99 @@ mod tests {
             r#"{"tooling":5}"#
         );
     }
+
+    /// C4 (#2470): the seeded state file of every row that seeds one. All four
+    /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
+    #[rustfmt::skip]
+    const C4_SEEDED_STATE: &str =
+        r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+
+    /// C4 (#2470): the state file beside a tracked `config.json`.
+    fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
+        tracked.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+    }
+
+    /// C4 (#2470): after one writer, the tracked file carries none of the four
+    /// state keys. This says nothing at all about the state file: `c4_state_is`
+    /// is the only helper that reads it, and the row calls them in that order.
+    fn c4_tracked_is_clean(tracked: &std::path::Path, site: &str) {
+        let text = std::fs::read_to_string(tracked).expect("tracked file");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("tracked json");
+        let tooling = value.get("tooling");
+        c4_absent(tooling, "lastCodingAgent", site, &value);
+        c4_absent(tooling, "codingAgents", site, &value);
+        c4_absent(tooling, "lastAgentMessageAt", site, &value);
+        c4_absent(tooling, "profileContentHash", site, &value);
+    }
+
+    fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_json::Value) {
+        assert!(
+            t.and_then(|t| t.get(key)).is_none(),
+            "{site} left {key}: {all}"
+        );
+    }
+
+    /// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
+    /// as parsed JSON so the pretty-printing of `publish_pair_side` is never
+    /// the subject. `expected` is always a literal written in the row. Absence
+    /// is NOT admitted here and no longer reads as JSON `null`:
+    /// `c4_no_state_file` is the only helper that may conclude absence.
+    fn c4_state_is(state: &std::path::Path, expected: &str, site: &str) {
+        let want: serde_json::Value = serde_json::from_str(expected).expect("expected json");
+        let raw = std::fs::read_to_string(state).expect("state file");
+        let got: serde_json::Value = serde_json::from_str(&raw).expect("state json");
+        assert_eq!(got, want, "{site} state file");
+    }
+
+    /// C4 (#2470) E13, site 12: the repair rewrites the tracked file and leaves
+    /// the state file alone.
+    #[test]
+    fn c4_site_12_leaves_no_state_key_in_the_tracked_file() {
+        let temp = setup_replica(".ac");
+        let journal = tempfile::tempdir().expect("journal dir");
+        let _journal = crate::config::agent_config::journal_redirect::set(journal.path());
+        let replica = temp
+            .path()
+            .join("AgentsCommander_ac")
+            .join(".ac")
+            .join("wg-2-dev-team")
+            .join("__agent_tech-lead");
+        let stale = temp
+            .path()
+            .join("agentscommander-old")
+            .join(".ac")
+            .join("_agent_tech-lead")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let tracked = replica.join("config.json");
+        std::fs::write(
+            &tracked,
+            serde_json::json!({
+                "identity": stale,
+                "context": [
+                    "$AGENTSCOMMANDER_CONTEXT",
+                    "../../../../agentscommander-old/.ac/_agent_tech-lead/Role.md",
+                    "notes.md",
+                    "../../_agent_tech-lead/Role.md"
+                ],
+                "repos": [],
+                "tooling": {}
+            })
+            .to_string(),
+        )
+        .expect("write config");
+        std::fs::write(c4_state_path(&tracked), C4_SEEDED_STATE).expect("seed state");
+
+        let (config, identity) =
+            read_and_repair_wg_replica_config(&replica, WG_REPLICA_REQUIRED_CONTEXT)
+                .expect("site 12");
+
+        c4_tracked_is_clean(&tracked, "site 12");
+        c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 12");
+        assert_eq!(identity.identity, "../../_agent_tech-lead");
+        assert_eq!(config["identity"], "../../_agent_tech-lead");
+        let raw = std::fs::read_to_string(&tracked).expect("read config");
+        let on_disk: Value = serde_json::from_str(&raw).expect("parse config");
+        assert_eq!(on_disk["identity"], "../../_agent_tech-lead");
+    }
 }
