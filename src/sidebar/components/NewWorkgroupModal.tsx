@@ -113,6 +113,7 @@ const NewWorkgroupModal: Component<{
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.defaultPrevented || e.isComposing || compositionActive) return;
+    if (e.target instanceof Element && e.target.closest("button")) return;
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       handleCreate();
