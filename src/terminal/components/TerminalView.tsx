@@ -249,7 +249,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     replayStatus.setAttribute("data-ac-testid", `terminal.replay-status.${sessionId}`);
     container.appendChild(replayStatus);
 
-    // #1682 - the bottom status strip. The stamp sits immediately LEFT of the
+    // #1682 - the top-right status strip. The stamp sits immediately LEFT of the
     // COLS/ROWS chip, and the chip's width varies with its digit count, so a
     // second independently right-anchored sibling would drift: one flex row
     // right-anchored as a whole is what keeps the gap exact. The positioning,
@@ -259,7 +259,7 @@ const TerminalView: Component<TerminalViewProps> = (props) => {
     statusStrip.className = "terminal-status-strip";
     statusStrip.style.position = "absolute";
     statusStrip.style.right = "8px";
-    statusStrip.style.bottom = "4px";
+    statusStrip.style.top = "4px";
     statusStrip.style.zIndex = "2";
     statusStrip.style.pointerEvents = "none";
     statusStrip.style.display = "flex";
