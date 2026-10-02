@@ -734,7 +734,7 @@ fn root_spec() -> SeededContextTemplateSpec {
         id: "rootAgent",
         filename: crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME,
         label: "Root agent context",
-        current_version: 8,
+        current_version: 9,
         current_content: crate::config::root_agent::default_root_context_template,
         is_known_generated: Some(
             crate::config::root_agent::is_known_generated_root_context_template,
@@ -1231,6 +1231,32 @@ where
         &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
     ) -> Result<chrono::DateTime<chrono::Utc>, String>,
 {
+    auto_update_generated_template_with_backup(
+        path,
+        spec,
+        expected_file_sha256,
+        clock,
+        create_backup,
+        replace,
+    )
+}
+
+fn auto_update_generated_template_with_backup<B, R>(
+    path: &Path,
+    spec: SeededContextTemplateSpec,
+    expected_file_sha256: &str,
+    clock: &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    backup: B,
+    replace: R,
+) -> ContextTemplateExecution<TemplatePublication>
+where
+    B: FnOnce(&Path, &[u8]) -> Result<PathBuf, String>,
+    R: FnOnce(
+        &Path,
+        &str,
+        &mut dyn FnMut() -> chrono::DateTime<chrono::Utc>,
+    ) -> Result<chrono::DateTime<chrono::Utc>, String>,
+{
     let snapshot = match read_validated_snapshot(path, "Context template") {
         Ok(Some(snapshot)) => snapshot,
         Ok(None) => {
@@ -1254,6 +1280,26 @@ where
             path.display()
         );
         return ContextTemplateExecution::completed(TemplatePublication::ChangedUnderUs);
+    }
+    if spec.id == "rootAgent" {
+        let backup_path = match backup(path, &snapshot.bytes) {
+            Ok(path) => path,
+            Err(error) => return ContextTemplateExecution::failed(error),
+        };
+        let after_backup = match read_validated_snapshot(path, "Context template") {
+            Ok(snapshot) => snapshot,
+            Err(error) => return ContextTemplateExecution::failed(error),
+        };
+        if !after_backup.as_ref().is_some_and(|current| {
+            current.sha256 == snapshot.sha256 && current.bytes == snapshot.bytes
+        }) {
+            log::warn!(
+                "[context-templates] {} changed after Root backup {}; preserving current content",
+                path.display(),
+                backup_path.display()
+            );
+            return ContextTemplateExecution::completed(TemplatePublication::ChangedUnderUs);
+        }
     }
     let published_at = match replace(path, (spec.current_content)(), clock) {
         Ok(published_at) => published_at,
@@ -1308,7 +1354,9 @@ fn sync_one_template(
             }
         };
         if let Some(snapshot) = &snapshot {
-            if snapshot.sha256 == current_default_sha256 {
+            if snapshot.sha256 == current_default_sha256
+                && (spec.id != "rootAgent" || snapshot.bytes == current_default.as_bytes())
+            {
                 loaded.mark_seeded(spec, &current_default_sha256);
                 let target_outcome = carried_publication
                     .map(TemplatePublication::Published)
@@ -1341,7 +1389,9 @@ fn sync_one_template(
         );
     };
 
-    if snapshot.sha256 == current_default_sha256 {
+    if snapshot.sha256 == current_default_sha256
+        && (spec.id != "rootAgent" || snapshot.bytes == current_default.as_bytes())
+    {
         loaded.mark_seeded(spec, &current_default_sha256);
         let target_outcome = carried_publication
             .map(TemplatePublication::Published)
@@ -1466,6 +1516,38 @@ fn sync_one_template(
         );
     }
 
+    // Root migration authority comes only from exact shipped bytes, independently
+    // of absent, stale, or forged persisted state.
+    if spec.id == "rootAgent"
+        && spec
+            .is_known_generated
+            .is_some_and(|matches| matches(&snapshot.content))
+    {
+        let execution = auto_update_generated_template(&path, spec, &snapshot.sha256, clock);
+        let published = execution.published;
+        return match execution.completion {
+            Ok(target_outcome) => {
+                if matches!(target_outcome, TemplatePublication::Published(_)) {
+                    loaded.mark_seeded(spec, &current_default_sha256);
+                }
+                ContextTemplateExecution::from_parts(
+                    Ok(TemplateSyncOutcome {
+                        pending_update: None,
+                        replacement: None,
+                        target_outcome,
+                    }),
+                    published,
+                )
+            }
+            Err(error) => ContextTemplateExecution::from_parts(Err(error), published),
+        };
+    }
+    if spec.id == "rootAgent" {
+        log::warn!(
+            "[context-templates] custom Root context {} is solely authoritative",
+            path.display()
+        );
+    }
     let trusted_entry = loaded.trusted_entry(spec).cloned();
     if let Some(entry) = trusted_entry.as_ref() {
         if entry.last_seeded_sha256.as_deref() == Some(snapshot.sha256.as_str())
@@ -2486,6 +2568,254 @@ pub fn dedupe_context_template_updates(updates: &mut Vec<ContextTemplateUpdate>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn issue_2832_state(dir: &Path, content: &str, version: u32) {
+        let state = serde_json::json!({"schemaVersion":1,"templates":{"rootAgent":{
+            "templateId":"rootAgent","currentVersion":version,"lastSeededSha256":hash_text(content)
+        }}});
+        std::fs::write(
+            dir.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
+            state.to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn issue_2832_every_exact_snapshot_migrates_despite_state_and_preserves_backup() {
+        let snapshots = crate::config::root_agent::frozen_root_context_snapshots();
+        let mut cases = 0;
+        for old in snapshots {
+            for state in 0..4 {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join(root_spec().filename);
+                std::fs::write(&path, old).unwrap();
+                let existing = temp.path().join(format!("{}.bak", root_spec().filename));
+                std::fs::write(&existing, "PREEXISTING BACKUP").unwrap();
+                match state {
+                    1 => issue_2832_state(temp.path(), "stale", 1),
+                    2 => issue_2832_state(temp.path(), old, 8),
+                    3 => issue_2832_state(temp.path(), "forged", 9),
+                    _ => {}
+                }
+                ensure_root_context_template(temp.path()).unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(&path).unwrap(),
+                    (root_spec().current_content)()
+                );
+                let backups = backup_files(temp.path());
+                assert_eq!(backups.len(), 2);
+                assert_eq!(
+                    std::fs::read_to_string(&existing).unwrap(),
+                    "PREEXISTING BACKUP"
+                );
+                let backup = backups.iter().find(|p| **p != existing).unwrap();
+                assert_eq!(std::fs::read(backup).unwrap(), old.as_bytes());
+                let state_bytes =
+                    std::fs::read(temp.path().join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                        .unwrap();
+                let state: serde_json::Value = serde_json::from_slice(&state_bytes).unwrap();
+                assert_eq!(state["templates"]["rootAgent"]["currentVersion"], 9);
+                assert_eq!(
+                    state["templates"]["rootAgent"]["lastSeededSha256"],
+                    hash_text((root_spec().current_content)())
+                );
+                ensure_root_context_template(temp.path()).unwrap();
+                assert_eq!(backup_files(temp.path()), backups);
+                assert_eq!(
+                    std::fs::read(temp.path().join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                        .unwrap(),
+                    state_bytes
+                );
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 36);
+        println!("issue_2832 exact-snapshot/state cases: {cases}");
+    }
+
+    #[test]
+    fn issue_2832_custom_bytes_survive_absent_and_forged_state() {
+        let mut snapshots = crate::config::root_agent::frozen_root_context_snapshots().to_vec();
+        snapshots.push((root_spec().current_content)());
+        let mut cases = 0;
+        for source in snapshots {
+            let edits = [
+                format!("{source} "),
+                format!(" {source}"),
+                format!("{source}\n"),
+                source.strip_suffix('\n').unwrap().to_string(),
+                source.replacen("AgentsCommander", "AgentsCommandex", 1),
+                source.replace('\n', "\r\n"),
+                String::new(),
+                "\n".to_string(),
+            ];
+            for custom in edits {
+                assert!(
+                    !crate::config::root_agent::is_known_generated_root_context_template(&custom)
+                );
+                for forged in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let path = temp.path().join(root_spec().filename);
+                    std::fs::write(&path, &custom).unwrap();
+                    if forged {
+                        issue_2832_state(temp.path(), &custom, 8);
+                    }
+                    for _ in 0..2 {
+                        ensure_root_context_template(temp.path()).unwrap();
+                        assert_eq!(std::fs::read(&path).unwrap(), custom.as_bytes());
+                        assert!(backup_files(temp.path()).is_empty());
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 160);
+        println!("issue_2832 custom-byte/state cases: {cases}");
+    }
+
+    #[test]
+    fn issue_2832_fresh_and_current_v9_do_not_backup_or_rewrite() {
+        let temp = tempfile::tempdir().unwrap();
+        ensure_root_context_template(temp.path()).unwrap();
+        let path = temp.path().join(root_spec().filename);
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        ensure_root_context_template(temp.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            (root_spec().current_content)()
+        );
+        assert!(backup_files(temp.path()).is_empty());
+    }
+
+    #[test]
+    fn issue_2832_backup_failures_prevent_publication_and_preserve_source_and_state() {
+        let old = crate::config::root_agent::frozen_root_context_snapshots()[8];
+        for operation in ["create", "write", "flush", "sync"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(root_spec().filename);
+            std::fs::write(&path, old).unwrap();
+            issue_2832_state(temp.path(), old, 8);
+            let prior =
+                std::fs::read(temp.path().join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME)).unwrap();
+            let mut clock = || fixed_publication_time();
+            let execution = auto_update_generated_template_with_backup(
+                &path,
+                root_spec(),
+                &hash_text(old),
+                &mut clock,
+                |path, bytes| {
+                    assert_eq!(bytes, old.as_bytes());
+                    Err(format!(
+                        "Failed to {operation} backup context template {}.bak: injected",
+                        path.display()
+                    ))
+                },
+                |_, _, _| panic!("publication must not run after failed {operation}"),
+            );
+            assert!(execution.completion.unwrap_err().contains(operation));
+            assert!(execution.published.is_none());
+            assert_eq!(std::fs::read(&path).unwrap(), old.as_bytes());
+            assert_eq!(
+                std::fs::read(temp.path().join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME)).unwrap(),
+                prior
+            );
+        }
+    }
+
+    #[test]
+    fn issue_2832_backup_precedes_publication_and_replace_failure_preserves_recovery() {
+        let old = crate::config::root_agent::frozen_root_context_snapshots()[8];
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(root_spec().filename);
+        std::fs::write(&path, old).unwrap();
+        let mut clock = || fixed_publication_time();
+        let execution = auto_update_generated_template_with(
+            &path,
+            root_spec(),
+            &hash_text(old),
+            &mut clock,
+            |path, _, _| {
+                let backups = backup_files(path.parent().unwrap());
+                assert_eq!(backups.len(), 1);
+                assert_eq!(std::fs::read(&backups[0]).unwrap(), old.as_bytes());
+                Err("injected replacement failure".to_string())
+            },
+        );
+        assert!(execution.completion.is_err());
+        assert!(execution.published.is_none());
+        assert_eq!(std::fs::read(path).unwrap(), old.as_bytes());
+        assert_eq!(backup_files(temp.path()).len(), 1);
+    }
+
+    #[test]
+    fn issue_2832_edit_or_removal_after_backup_has_no_publication() {
+        let old = crate::config::root_agent::frozen_root_context_snapshots()[8];
+        for remove in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(root_spec().filename);
+            std::fs::write(&path, old).unwrap();
+            let mut clock = || fixed_publication_time();
+            let execution = auto_update_generated_template_with_backup(
+                &path,
+                root_spec(),
+                &hash_text(old),
+                &mut clock,
+                |path, bytes| {
+                    let backup = create_backup(path, bytes)?;
+                    if remove {
+                        std::fs::remove_file(path).unwrap();
+                    } else {
+                        std::fs::write(path, "OPERATOR EDIT").unwrap();
+                    }
+                    Ok(backup)
+                },
+                |_, _, _| panic!("changed source must not publish"),
+            );
+            assert_eq!(
+                execution.completion.unwrap(),
+                TemplatePublication::ChangedUnderUs
+            );
+            assert!(execution.published.is_none());
+            assert_eq!(
+                std::fs::read(&backup_files(temp.path())[0]).unwrap(),
+                old.as_bytes()
+            );
+            if remove {
+                assert!(!path.exists());
+            } else {
+                assert_eq!(std::fs::read_to_string(path).unwrap(), "OPERATOR EDIT");
+            }
+        }
+    }
+
+    #[test]
+    fn issue_2832_state_persistence_failure_keeps_published_v9_and_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(root_spec().filename);
+        let old = crate::config::root_agent::frozen_root_context_snapshots()[8];
+        std::fs::write(&path, old).unwrap();
+        std::fs::create_dir(temp.path().join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME)).unwrap();
+        ensure_root_context_template(temp.path()).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            (root_spec().current_content)()
+        );
+        assert_eq!(
+            std::fs::read(&backup_files(temp.path())[0]).unwrap(),
+            old.as_bytes()
+        );
+        ensure_root_context_template(temp.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(path).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(backup_files(temp.path()).len(), 1);
+    }
     use crate::config::session_context::{
         get_default_coordinator_template, COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
         GLOBAL_CONTEXT_TEMPLATE_FILENAME,
@@ -2586,7 +2916,7 @@ mod tests {
         let [global, coordinator, ..] = project_specs();
         assert_eq!(global.current_version, 6, "global 5 -> 6");
         assert_eq!(coordinator.current_version, 6, "coordinator 5 -> 6");
-        assert_eq!(root_spec().current_version, 8, "rootAgent 7 -> 8");
+        assert_eq!(root_spec().current_version, 9, "rootAgent 8 -> 9");
     }
 
     /// #1614 AC7.1 and AC7.2. The expected values come from the frozen base and

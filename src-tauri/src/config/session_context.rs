@@ -147,6 +147,22 @@ fn ensure_session_context_with_config(
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<String, String> {
+    if root_context_candidate(agent_root) {
+        verify_root_context_identity(agent_root)?;
+        super::root_agent::ensure_default_root_agent_skills_at(Path::new(agent_root))?;
+        let config_dir = super::config_dir()
+            .ok_or_else(|| "Could not resolve app config directory".to_string())?;
+        let path = config_dir.join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let content = read_rendered_root_template(
+            agent_root,
+            &path,
+            &config_dir,
+            config,
+            repo_mounts,
+            false,
+        )?;
+        return write_root_context_cache(agent_root, &config_dir, &content, "ac-context");
+    }
     let config_dir =
         super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
     let context_dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
@@ -157,9 +173,6 @@ fn ensure_session_context_with_config(
     let canonical_root = std::fs::canonicalize(agent_root)
         .map(|p| display_path(&p))
         .unwrap_or_else(|_| agent_root.to_string());
-    if super::root_agent::is_root_agent_dir_name(agent_root) {
-        super::root_agent::ensure_default_root_agent_skills_at(Path::new(agent_root))?;
-    }
     let matrix_root = resolve_replica_matrix_root(agent_root)?;
     ensure_replica_shared_locations(agent_root, &canonical_root);
     let skill_owner_root = resolve_skill_owner_root(agent_root, matrix_root.as_deref());
@@ -178,34 +191,17 @@ fn ensure_session_context_with_config(
     let hash = simple_hash(agent_root);
     let file_path = context_dir.join(format!("ac-context-{}.md", hash));
 
-    // #979 load-bearing guard 1 of 2: the Root Agent never reaches the global
-    // resolver, so no `.ac`-ancestor global can be read, created, synced, or
-    // healed on its behalf. G6: test the RAW and the CANONICAL basename. This
-    // function holds both (`agent_root` at :23, `canonical_root` at :35) and
-    // passes `canonical_root` to `resolve_agent_context`, so a junction whose
-    // target has a different basename would otherwise let the two Root guards
-    // disagree on the very input trying to evade them.
-    let content = if super::root_agent::is_root_agent_dir_name(agent_root)
-        || super::root_agent::is_root_agent_dir_name(&canonical_root)
-    {
-        render_root_runtime_prologue(
-            &canonical_root,
-            &skills_section,
-            Path::new(agent_root),
-            config,
-            repo_mounts,
-        )
-    } else {
-        resolve_agent_context_with_activation(
-            &canonical_root,
-            matrix_root.as_deref(),
-            &skills_section,
-            Path::new(agent_root),
-            config,
-            repo_mounts,
-            activation,
-        )?
-    };
+    // Raw and canonical Root identities return above without entering the global
+    // resolver or creating project/coordinator/platform templates.
+    let content = resolve_agent_context_with_activation(
+        &canonical_root,
+        matrix_root.as_deref(),
+        &skills_section,
+        Path::new(agent_root),
+        config,
+        repo_mounts,
+        activation,
+    )?;
     std::fs::write(&file_path, content)
         .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
     log::info!(
@@ -1977,9 +1973,9 @@ fn build_replica_context_with_activation(
     // line, ahead of the missing-config early return below: a Root without a
     // config.json would otherwise still get `Ok(None)` and fall back into the
     // token-aware generic path.
-    if super::root_agent::is_root_agent_dir_name(cwd) {
+    if root_context_candidate(cwd) {
         return Err(format!(
-            "Root agent directory {} must be built with build_root_agent_context, not the replica builder",
+            "Root identity requires directory {} to be built with build_root_agent_context, not the replica builder",
             cwd
         ));
     }
@@ -2132,101 +2128,415 @@ fn build_replica_context_from_config(
 /// runtime prologue is always the first resolved path, even when `context[]` is
 /// absent, null, non-array, or empty; the configured raw Root files follow in
 /// their stored order.
-fn build_root_agent_context(
-    cwd: &str,
-    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
-) -> Result<String, String> {
-    let cwd_path = Path::new(cwd);
-    let config_path = cwd_path.join("config.json");
+fn root_context_candidate(root: &str) -> bool {
+    super::root_agent::is_root_agent_dir_name(root)
+        || super::root_agent::is_root_agent_path(root)
+        || std::fs::canonicalize(root)
+            .ok()
+            .is_some_and(|path| super::root_agent::is_root_agent_dir_name(&display_path(&path)))
+}
 
-    // A missing config is allowed and yields a prologue-only Root; canonical
-    // provisioning (merge_root_agent_config) normally writes config.json first.
-    let config: Option<serde_json::Value> = if config_path.exists() {
-        let config_content = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
-        Some(
-            serde_json::from_str(&config_content)
-                .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?,
-        )
+fn verify_root_context_identity(root: &str) -> Result<(), String> {
+    if super::root_agent::is_root_agent_path(root) {
+        Ok(())
     } else {
-        None
-    };
+        Err(format!("Root identity validation failed for {}", root))
+    }
+}
 
-    // Unconditional and always first: this is the structural non-suppression
-    // guarantee. There is no editable Root runtime template.
-    // #1065 Stage F: Root has no project context template, so its `ensure` routes to
-    // `render_root_runtime_prologue` and records nothing; pass `None`.
-    let prologue_path =
-        ensure_session_context_with_config(cwd, config.as_ref(), repo_mounts, None)?;
-    let mut resolved_paths: Vec<(String, std::path::PathBuf)> = vec![(
-        "AgentsCommanderRootContext.md".to_string(),
-        std::path::PathBuf::from(&prologue_path),
-    )];
-    let mut missing: Vec<String> = Vec::new();
+fn root_conditions(
+    mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    auto: bool,
+) -> [bool; 4] {
+    [
+        mounts.is_none() && cfg!(target_os = "windows"),
+        mounts.is_none() && cfg!(target_os = "linux"),
+        mounts.is_none() && cfg!(target_os = "macos"),
+        auto,
+    ]
+}
 
-    let context_array = config
-        .as_ref()
-        .and_then(|config| config.get("context"))
-        .and_then(|v| v.as_array());
-    for entry in context_array.into_iter().flatten() {
-        let raw = match entry.as_str() {
-            Some(s) => s,
-            None => continue,
-        };
-
-        if raw == CONTEXT_TOKEN_GLOBAL {
-            // Never call ensure_session_context_with_config from this branch: the
-            // prologue is already resolved above, and the token no longer selects
-            // any file for Root.
-            log::warn!(
-                "[979] ignoring stale global context token {} in root agent config {}; the Root runtime prologue is code-owned",
-                CONTEXT_TOKEN_GLOBAL,
-                config_path.display()
-            );
-        } else if raw == CONTEXT_TOKEN_REPOS {
-            log::debug!(
-                "Skipping deprecated {} context token for {}",
-                CONTEXT_TOKEN_REPOS,
-                cwd
-            );
+// Conditions are standalone, non-nesting lines. Values are interpreted only in
+// selected original text; inserted paths and metadata never become template code.
+fn render_root_template_text(
+    source: &str,
+    path: &Path,
+    values: &HashMap<&str, String>,
+    predicates: [bool; 4],
+) -> Result<String, String> {
+    const CONDITIONS: [&str; 4] = [
+        "HOST_WINDOWS",
+        "HOST_LINUX",
+        "HOST_MACOS",
+        "AUTO_SELF_CLEAR",
+    ];
+    const VALUES: [&str; 7] = [
+        "AGENT_ROOT",
+        "ROOT_MESSAGING_DIR",
+        "APP_CONFIG_DIR",
+        "AGENCY_CACHE_DIR",
+        "ROOT_SKILLS_DIR",
+        "SKILLS_LIST",
+        "AGENT_REPOS_LIST",
+    ];
+    let mut selected = String::new();
+    let mut active: Option<(usize, usize)> = None;
+    for (line_index, line) in source.split_inclusive('\n').enumerate() {
+        let marker = line.trim_end_matches(['\n', '\r']);
+        let mut handled = false;
+        for (index, name) in CONDITIONS.iter().enumerate() {
+            if marker == format!("{{{{#{name}}}}}") {
+                if active.is_some() {
+                    return Err(format!(
+                        "{}:{}: nested Root condition {}",
+                        path.display(),
+                        line_index + 1,
+                        name
+                    ));
+                }
+                active = Some((index, line_index + 1));
+                handled = true;
+                break;
+            }
+            if marker == format!("{{{{/{name}}}}}") {
+                if active.map(|(open, _)| open) != Some(index) {
+                    return Err(format!(
+                        "{}:{}: unmatched Root condition {}",
+                        path.display(),
+                        line_index + 1,
+                        name
+                    ));
+                }
+                active = None;
+                handled = true;
+                break;
+            }
+        }
+        if !handled && active.is_none_or(|(index, _)| predicates[index]) {
+            selected.push_str(line);
+        }
+    }
+    if let Some((index, line)) = active {
+        return Err(format!(
+            "{}:{}: unclosed Root condition {}",
+            path.display(),
+            line,
+            CONDITIONS[index]
+        ));
+    }
+    let mut out = String::with_capacity(selected.len());
+    let mut rest = selected.as_str();
+    let tokens: Vec<(&str, String)> = VALUES
+        .iter()
+        .map(|name| (*name, format!("{{{{{name}}}}}")))
+        .collect();
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        if let Some((name, token)) = tokens.iter().find(|(_, token)| rest.starts_with(token)) {
+            if let Some(value) = values.get(name) {
+                out.push_str(value);
+            }
+            rest = &rest[token.len()..];
         } else {
-            let abs = cwd_path.join(raw);
-            if abs.exists() {
-                let label = abs
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(raw)
-                    .to_string();
-                resolved_paths.push((label, abs));
-            } else {
-                missing.push(raw.to_string());
+            out.push_str("{{");
+            rest = &rest[2..];
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+fn render_root_skills_list(index: &SkillIndex) -> String {
+    let mut output = String::new();
+    let mut omitted_skills = 0;
+    let mut omitted_warnings = 0;
+    if index.skills.is_empty() {
+        push_with_budget(
+            &mut output,
+            "No valid skills with parseable SKILL.md frontmatter were discovered.\n",
+        );
+    }
+    for skill in &index.skills {
+        let name = sanitize_skill_metadata_for_context(&skill.name);
+        let entrypoint = sanitize_skill_metadata_for_context(&skill.entrypoint_path);
+        let trigger = sanitize_skill_metadata_for_context(&skill_trigger_text(skill));
+        let entry = format!(
+            "- `{}` - {}\n  Scope: Root Agent durable skills\n  Entrypoint: `{}`\n",
+            name, trigger, entrypoint
+        );
+        if !push_with_budget(&mut output, &entry) {
+            let minimal = format!("- `{}` - Metadata omitted because the skill index exceeded the {} byte startup-context budget; inspect SKILL.md if needed.\n  Scope: Root Agent durable skills\n  Entrypoint: `{}`\n", name, SKILL_INDEX_TOTAL_MAX_BYTES, entrypoint);
+            if !push_with_budget(&mut output, &minimal) {
+                omitted_skills += 1;
             }
         }
     }
+    for warning in &index.warnings {
+        if !push_with_budget(
+            &mut output,
+            &format!(
+                "- Discovery warning: {}\n",
+                sanitize_skill_metadata_for_context(warning)
+            ),
+        ) {
+            omitted_warnings += 1;
+        }
+        log::warn!("[skills] {}", warning);
+    }
+    for skill in &index.skills {
+        for warning in &skill.metadata_warnings {
+            let entry = format!(
+                "- Discovery warning: `{}` (`{}`): {}\n",
+                sanitize_skill_metadata_for_context(&skill.name),
+                sanitize_skill_metadata_for_context(&skill.folder_name),
+                sanitize_skill_metadata_for_context(warning)
+            );
+            if !push_with_budget(&mut output, &entry) {
+                omitted_warnings += 1;
+            }
+            log::warn!("[skills] {}: {}", skill.folder_name, warning);
+        }
+    }
+    append_budget_summary(&mut output, omitted_skills, omitted_warnings);
+    output
+}
 
+fn render_root_repos_list(
+    cwd: &Path,
+    config: Option<&serde_json::Value>,
+    mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+) -> String {
+    use crate::pty::container_repos::RepoOutcome;
+    let mut out = String::new();
+    if let Some(mounts) = mounts {
+        for entry in &mounts.entries {
+            match &entry.outcome {
+                RepoOutcome::Mounted {
+                    name,
+                    host_path,
+                    container_path,
+                } => {
+                    let branch = detect_git_branch(&host_path.to_string_lossy())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    out.push_str(&format!(
+                        "- **{}** — Path: `{}` — Branch: `{}`\n",
+                        sanitize_skill_metadata_for_context(name),
+                        sanitize_skill_metadata_for_context(container_path),
+                        sanitize_skill_metadata_for_context(&branch)
+                    ));
+                }
+                RepoOutcome::NotFound => {
+                    let name = Path::new(&entry.config_entry)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&entry.config_entry);
+                    out.push_str(&format!(
+                        "- **{}** — Path: `{}/{}` — **(NOT FOUND)**\n",
+                        sanitize_skill_metadata_for_context(name),
+                        crate::pty::container_repos::CONTAINER_REPOS_ROOT,
+                        sanitize_skill_metadata_for_context(name)
+                    ));
+                }
+            }
+        }
+    } else {
+        for rel in config
+            .and_then(|c| c.get("repos"))
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+        {
+            let resolved = cwd.join(rel);
+            let path = std::fs::canonicalize(&resolved)
+                .map(|p| display_path(&p))
+                .unwrap_or_else(|_| display_path(&resolved));
+            let name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or(rel);
+            let status = if resolved.exists() {
+                format!(
+                    "Branch: `{}`",
+                    sanitize_skill_metadata_for_context(
+                        &detect_git_branch(&path).unwrap_or_else(|| "unknown".to_string())
+                    )
+                )
+            } else {
+                "**(NOT FOUND)**".to_string()
+            };
+            out.push_str(&format!(
+                "- **{}** — Path: `{}` — {}\n",
+                sanitize_skill_metadata_for_context(name),
+                sanitize_skill_metadata_for_context(&path),
+                status
+            ));
+        }
+    }
+    if out.is_empty() {
+        out.push_str("No repos configured for the Root Agent.\n");
+    }
+    out
+}
+
+fn root_runtime_values(
+    root: &str,
+    config_dir: &Path,
+    config: Option<&serde_json::Value>,
+    mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+) -> HashMap<&'static str, String> {
+    let root_path = Path::new(root);
+    let canonical = std::fs::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf());
+    let index = discover_skill_index(Some(root));
+    HashMap::from([
+        ("AGENT_ROOT", display_path(&canonical)),
+        (
+            "ROOT_MESSAGING_DIR",
+            display_path(&canonical.join(crate::phone::messaging::MESSAGING_DIR_NAME)),
+        ),
+        ("APP_CONFIG_DIR", display_path(config_dir)),
+        (
+            "AGENCY_CACHE_DIR",
+            display_path(&config_dir.join(crate::commands::role_templates::AGENCY_TEMPLATES_DIR)),
+        ),
+        ("ROOT_SKILLS_DIR", display_path(&canonical.join("skills"))),
+        ("SKILLS_LIST", render_root_skills_list(&index)),
+        (
+            "AGENT_REPOS_LIST",
+            render_root_repos_list(root_path, config, mounts),
+        ),
+    ])
+}
+
+fn read_rendered_root_template(
+    root: &str,
+    path: &Path,
+    config_dir: &Path,
+    config: Option<&serde_json::Value>,
+    mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    auto_self_clear: bool,
+) -> Result<String, String> {
+    let base = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
+    let selected = managed_template_local_override(path).unwrap_or(base);
+    render_root_template_text(
+        &selected,
+        path,
+        &root_runtime_values(root, config_dir, config, mounts),
+        root_conditions(mounts, auto_self_clear),
+    )
+}
+
+fn write_root_context_cache(
+    root: &str,
+    config_dir: &Path,
+    content: &str,
+    prefix: &str,
+) -> Result<String, String> {
+    let dir = config_dir.join(CONTEXT_CACHE_DIR_NAME);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
+    let path = dir.join(format!("{}-{}.md", prefix, simple_hash(root)));
+    std::fs::write(&path, content)
+        .map_err(|e| format!("Failed to write combined context file: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn build_root_agent_context_with_auto(
+    cwd: &str,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    auto_self_clear: bool,
+) -> Result<String, String> {
+    verify_root_context_identity(cwd)?;
+    let config_dir =
+        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
+    build_root_agent_context_at(cwd, &config_dir, repo_mounts, auto_self_clear)
+}
+
+// Caller has verified canonical Root identity. Explicit roots permit isolated
+// fixtures without mutating production configuration.
+fn build_root_agent_context_at(
+    cwd: &str,
+    config_dir: &Path,
+    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
+    auto_self_clear: bool,
+) -> Result<String, String> {
+    let cwd_path = Path::new(cwd);
+    let config_path = cwd_path.join("config.json");
+    let config: Option<serde_json::Value> = match std::fs::read_to_string(&config_path) {
+        Ok(text) => Some(
+            serde_json::from_str(&text)
+                .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?,
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("Failed to read {}: {}", config_path.display(), e)),
+    };
+    let defaults = serde_json::json!(["../Context.root-agent.md", "Role.md"]);
+    super::root_agent::ensure_default_root_agent_skills_at(cwd_path)?;
+    let entries = config
+        .as_ref()
+        .and_then(|c| c.get("context"))
+        .unwrap_or(&defaults)
+        .as_array();
+    let canonical_template = config_dir.join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+    let missing: Vec<&str> = entries
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.as_str())
+        .filter(|raw| *raw != CONTEXT_TOKEN_GLOBAL && *raw != CONTEXT_TOKEN_REPOS)
+        .filter(|raw| !cwd_path.join(raw).exists())
+        .collect();
     if !missing.is_empty() {
         return Err(format!(
             "Root Agent has missing context files:\n{}",
             missing
                 .iter()
-                .map(|m| format!("  - {}", m))
+                .map(|raw| format!("  - {}", raw))
                 .collect::<Vec<_>>()
                 .join("\n")
         ));
     }
-
-    // Reuse the `replica-context` prefix: cache GC recognizes only `ac-context-*`,
-    // `replica-context-*`, and `matrix-context-*`.
-    let file_path = write_combined_context_file(cwd, &resolved_paths, "replica-context")?;
-
-    log::info!(
-        "Built root agent context for {} ({} context files) → {}",
-        cwd,
-        resolved_paths.len(),
-        file_path
-    );
-
-    Ok(file_path)
+    let mut combined = String::new();
+    let mut first = true;
+    for raw in entries.into_iter().flatten().filter_map(|e| e.as_str()) {
+        if raw == CONTEXT_TOKEN_GLOBAL || raw == CONTEXT_TOKEN_REPOS {
+            log::debug!("Ignoring deprecated Root context token {}", raw);
+            continue;
+        }
+        let path = cwd_path.join(raw);
+        let label = path.file_name().and_then(|n| n.to_str()).unwrap_or(raw);
+        let is_template = match (
+            std::fs::canonicalize(&path),
+            std::fs::canonicalize(&canonical_template),
+        ) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => path == canonical_template,
+        };
+        // Always read the base before accepting an override.
+        let content = if is_template {
+            read_rendered_root_template(
+                cwd,
+                &path,
+                config_dir,
+                config.as_ref(),
+                repo_mounts,
+                auto_self_clear,
+            )?
+        } else {
+            let base = std::fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
+            let selected = managed_template_local_override(&path).unwrap_or(base);
+            if path.file_name() == Some(OsStr::new(ROLE_MD_FILENAME)) {
+                strip_yaml_frontmatter(&selected).to_string()
+            } else {
+                selected
+            }
+        };
+        if !first {
+            combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", label));
+        }
+        first = false;
+        combined.push_str(&content);
+    }
+    write_root_context_cache(cwd, config_dir, &combined, "replica-context")
 }
 
 fn build_direct_matrix_context(
@@ -2351,7 +2661,12 @@ fn resolve_session_context_content_with_activation(
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     activation: Option<&crate::config::seed_manifest::ManifestActivationToken>,
 ) -> Result<Option<String>, String> {
-    let context_path = if is_replica_agent_dir(cwd) {
+    let is_root = root_context_candidate(cwd);
+    let context_path = if is_root {
+        // Identity validation precedes config/template reads, including aliases
+        // whose raw name would otherwise select the replica branch.
+        build_root_agent_context_with_auto(cwd, repo_mounts, auto_self_clear)?
+    } else if is_replica_agent_dir(cwd) {
         match build_replica_context_with_activation(cwd, repo_mounts, activation) {
             Ok(Some(combined_path)) => {
                 log::info!(
@@ -2363,17 +2678,6 @@ fn resolve_session_context_content_with_activation(
             Ok(None) => ensure_session_context_with_config(cwd, None, repo_mounts, activation)?,
             Err(e) => return Err(e),
         }
-    } else if super::root_agent::is_root_agent_dir_name(cwd) {
-        // #979: Root is routed through its dedicated builder only. The former
-        // `Ok(None)` fallback is gone: `build_root_agent_context` always emits the
-        // code-owned prologue, so a degenerate no-context[] Root cannot lose its
-        // mandatory governance and never re-enters the token-aware generic path.
-        let combined_path = build_root_agent_context(cwd, repo_mounts)?;
-        log::info!(
-            "Using root-agent combined context for agent session: {}",
-            combined_path
-        );
-        combined_path
     } else if is_canonical_agent_matrix_dir(cwd) {
         build_direct_matrix_context(cwd, repo_mounts, activation)?
     } else {
@@ -2394,7 +2698,7 @@ fn resolve_session_context_content_with_activation(
     // `Context.coordinator.md`. `is_coordinator` is false for Root today
     // (`is_coordinator_for_cwd` derives an FQN from the cwd and checks team
     // membership, teams.rs:802-805); this guard makes a wrong caller flag harmless.
-    if is_coordinator && !super::root_agent::is_root_agent_dir_name(cwd) {
+    if is_coordinator && !is_root {
         let coordinator_body = read_or_create_context_recorded(
             cwd,
             COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
@@ -2422,9 +2726,11 @@ fn resolve_session_context_content_with_activation(
     // (an existing workgroup may have one frozen in its persisted coordinator
     // template on disk), then append the canonical gated directive when ON.
     // Strip ALWAYS so an OFF setting truly removes the old always-on block.
-    content = strip_legacy_self_maintenance(&content);
-    if auto_self_clear {
-        content.push_str(SELF_MAINTENANCE_AUTO_SECTION);
+    if !is_root {
+        content = strip_legacy_self_maintenance(&content);
+        if auto_self_clear {
+            content.push_str(SELF_MAINTENANCE_AUTO_SECTION);
+        }
     }
 
     Ok(Some(content))
@@ -2488,6 +2794,15 @@ pub(crate) fn materialize_agent_context_file_with_filename_activated(
         None => return Ok(None),
     };
 
+    materialize_resolved_context_file(cwd, target_filename, extra_managed_filenames, &content)
+}
+
+fn materialize_resolved_context_file(
+    cwd: &str,
+    target_filename: &str,
+    extra_managed_filenames: &[String],
+    content: &str,
+) -> Result<Option<String>, String> {
     // String-level guard (path escape): never write outside the root, even if a
     // direct `pub` caller bypassed settings validation. The on-disk link checks
     // below guard against state no string validation can detect.
@@ -2567,7 +2882,7 @@ pub(crate) fn materialize_agent_context_file_with_filename_activated(
             ));
         }
     }
-    std::fs::write(&target_path, &content)
+    std::fs::write(&target_path, content)
         .map_err(|e| format!("Failed to write {}: {}", target_path.display(), e))?;
 
     log::info!(
@@ -3455,18 +3770,6 @@ fn coarse_section_dedup_safe(
 /// #979: the fixed heading and intro of the code-owned Root runtime prologue.
 /// Reproduces the preamble of `get_default_agent_template()` for the one agent
 /// that no longer reads any global template.
-const ROOT_RUNTIME_PROLOGUE_HEADER: &str = r#"# AgentsCommander Root Runtime Context
-
-You are running inside an AgentsCommander session - a terminal session manager coordinating multiple AI agents."#;
-
-pub(crate) const ROOT_PTY_INPUT_CONTEXT: &str = r#"## Privileged PTY Input to Room Orchestrators
-
-As the live local Root Agent, you may ask AgentsCommander to submit validated text only to an identity-verified room orchestrator replica returned by `list-peers-lean`. Worker replicas, origin orchestrators, Root itself, and orchestrator-to-orchestrator requests from any non-Root sender are not valid targets. This writes text into the target coding-agent PTY; it never directly executes a host or container OS shell command.
-
-"<AGENTSCOMMANDER_BINARY_PATH>" send --token <AGENTSCOMMANDER_TOKEN> --root "<AGENTSCOMMANDER_ROOT>" --to "<orchestrator_name>" --pty-input-stdin --mode wake
-
-Prefer stdin for multiline or sensitive text. `Queued` is not `Injected`. If confirmation times out, keep the reported injection ID and inspect the metadata-only outbox artifact; do not submit the text again under a new ID."#;
-
 /// #979 G4: Root is the agent that creates and coordinates teams and workgroups,
 /// so it keeps the Core Concepts prose it receives today through
 /// `get_default_agent_template()`. Byte-identical to that template's section; a
@@ -3475,100 +3778,37 @@ Prefer stdin for multiline or sensitive text. `Queued` is not `Injected`. If con
 /// pinned by `is_known_generated_global_template`, by
 /// `classify_legacy_rendered_default_context`, and by the seeded-state SHA
 /// machinery.
+#[cfg(test)]
 const CORE_CONCEPTS_SECTION: &str = r#"## Core Concepts
 
 - **Team**: the logical capability and organization. It defines membership, who coordinates, and which repos are available.
 - **Room**: a runtime replica of a team for a specific task. It contains replica agents and `repo-*` working repos."#;
 
-/// #979: assemble the Root Agent's unconditional, code-owned runtime prologue.
-///
-/// Deliberately calls NONE of `get_default_agent_template`,
-/// `render_agent_context_template`, `resolve_agent_context`, or
-/// `read_or_create_context_template`. The blocks are concatenated directly from
-/// the shared dynamic-value helpers, so no editable file and no missing
-/// placeholder can suppress a mandatory Root block. This is a stronger property
-/// than the global renderer's mandatory-placeholder append fallback.
-fn render_root_runtime_prologue(
-    agent_root: &str,
-    skills_section: &str,
-    cwd_path: &Path,
-    config: Option<&serde_json::Value>,
-    repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
-) -> String {
-    // Same anti-spoof gate as `render_agent_context_template`: a directory merely
-    // NAMED `ac-root-agent` may select this assembly path, but only the canonical
-    // configured Root path receives ROOT_PROJECT_SCOPE_ENTRY / ROOT_AUTHORITY_SECTION.
-    let is_root_agent = super::root_agent::is_root_agent_path(agent_root);
-    render_root_runtime_prologue_inner(
-        agent_root,
-        skills_section,
-        cwd_path,
-        config,
-        repo_mounts,
-        is_root_agent,
-    )
-}
-
-/// Test seam mirroring `render_agent_context_template_inner`: a temp directory
-/// named `ac-root-agent` is intentionally NOT the canonical Root path, so tests
-/// pass the authority boolean explicitly.
+#[cfg(test)]
 fn render_root_runtime_prologue_inner(
     agent_root: &str,
-    skills_section: &str,
+    _skills_section: &str,
     cwd_path: &Path,
     config: Option<&serde_json::Value>,
     repo_mounts: Option<&crate::pty::container_repos::RepoMountResolution>,
     is_root_agent: bool,
 ) -> String {
-    // matrix_root is None for Root: `resolve_replica_matrix_root` returns None
-    // unless the basename starts with `__agent_`, and the single item-"3."
-    // invariant in `default_context_dynamic_values` debug-asserts exactly that.
-    let rendered = default_context_dynamic_values(agent_root, None, skills_section, is_root_agent);
-    let write_restrictions = render_write_restrictions_block(agent_root, &rendered);
-    let agent_repos = render_agent_repos_string(cwd_path, config, repo_mounts, is_root_agent);
-    // #1605: the 10th block, mirroring the template order between CLI context and
-    // session credentials; the `if block.is_empty() { continue; }` below drops it
-    // naturally for container roots.
-    let host_platform_rules = render_host_platform_rules_block(agent_root, repo_mounts);
-    let inter_agent_messaging = render_inter_agent_messaging_block(&rendered);
-
-    // Ten blocks (#979 G4): the heading and Core Concepts reproduce the built-in
-    // template's preamble, then the eight mandatory blocks in the order
-    // `get_default_agent_template()` renders them today. ROOT_AUTHORITY_SECTION is
-    // already emitted INSIDE the write-restrictions block and must not be appended
-    // separately. Do not "simplify" this back to eight blocks.
-    let blocks: [&str; 10] = [
-        ROOT_RUNTIME_PROLOGUE_HEADER,
-        CORE_CONCEPTS_SECTION,
-        &write_restrictions,
-        DEFAULT_DELEGATED_TASK_REPORTING,
-        skills_section,
-        &agent_repos,
-        DEFAULT_CLI_CONTEXT,
-        &host_platform_rules,
-        DEFAULT_SESSION_CREDENTIALS,
-        &inter_agent_messaging,
-    ];
-
-    let mut out = String::new();
-    for block in blocks {
-        // Normalize only these generated boundaries. Raw Root files are never
-        // parsed or trimmed; they are appended verbatim by the builder.
-        let block = block.trim_end();
-        if block.is_empty() {
-            continue;
+    let config_dir = cwd_path.parent().unwrap_or(cwd_path);
+    let values = root_runtime_values(agent_root, config_dir, config, repo_mounts);
+    render_root_template_text(
+        super::root_agent::default_root_context_template(),
+        cwd_path,
+        &values,
+        root_conditions(repo_mounts, false),
+    )
+    .map(|content| {
+        if is_root_agent {
+            content
+        } else {
+            String::new()
         }
-        if !out.is_empty() {
-            out.push_str("\n\n");
-        }
-        out.push_str(block);
-    }
-    if is_root_agent {
-        out.push_str("\n\n");
-        out.push_str(ROOT_PTY_INPUT_CONTEXT);
-    }
-    out.push('\n');
-    out
+    })
+    .unwrap()
 }
 
 const DEFAULT_CLI_CONTEXT: &str = r#"## CLI executable
@@ -4801,6 +5041,409 @@ pub(crate) fn is_replica_agent_dir(cwd: &str) -> bool {
 mod tests {
     use super::*;
     use std::sync::{mpsc, Arc, Barrier};
+
+    fn issue_2832_fixture() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("ac-root-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        crate::config::seeded_context_templates::ensure_root_context_template(temp.path()).unwrap();
+        std::fs::write(
+            root.join("Role.md"),
+            "---\nname: root\n---\n# Role\nROOT ROLE\n",
+        )
+        .unwrap();
+        (temp, root)
+    }
+
+    fn issue_2832_combined(root: &Path, config_dir: &Path, auto: bool) -> String {
+        let cache =
+            build_root_agent_context_at(&path_string(root), config_dir, None, auto).unwrap();
+        let content = std::fs::read_to_string(cache).unwrap();
+        let managed =
+            materialize_resolved_context_file(&path_string(root), "AGENTS.md", &[], &content)
+                .unwrap()
+                .unwrap();
+        std::fs::read_to_string(managed).unwrap()
+    }
+
+    #[test]
+    fn issue_2832_default_blocks_render_once_in_configured_order() {
+        let (temp, root) = issue_2832_fixture();
+        let source =
+            std::fs::read_to_string(temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME))
+                .unwrap();
+        assert_eq!(
+            source,
+            crate::config::root_agent::default_root_context_template()
+        );
+        assert!(source.contains("{{#AUTO_SELF_CLEAR}}"));
+        let out = issue_2832_combined(&root, temp.path(), true);
+        for heading in [
+            "# AgentsCommander Root Runtime Context",
+            "## Core Concepts",
+            "## GOLDEN RULE",
+            "## Root Agent Authority",
+            "## Delegated Task Reporting",
+            "## Skills",
+            "# Agent Repos",
+            "## CLI executable",
+            "## Host Platform Rules",
+            "## Session credentials",
+            "## Inter-Agent Messaging",
+            "## Privileged PTY Input",
+            "## Responsibility",
+            "## Self-Maintenance",
+        ] {
+            assert_eq!(out.matches(heading).count(), 1, "{heading}");
+        }
+        assert!(!out.contains("{{"));
+        assert!(out.contains("\n\n---\n\n# Context: Role.md\n\n# Role\nROOT ROLE\n"));
+        assert!(!out.contains("name: root"));
+        assert!(out.find("## Editing this context").unwrap() < out.find("ROOT ROLE").unwrap());
+        assert!(!out.contains("# Orchestrator Context"));
+        assert!(!temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).exists());
+        for filename in [
+            HOST_PLATFORM_RULES_FILENAME_WINDOWS,
+            HOST_PLATFORM_RULES_FILENAME_LINUX,
+            HOST_PLATFORM_RULES_FILENAME_MACOS,
+        ] {
+            assert!(!temp.path().join(filename).exists());
+        }
+    }
+
+    #[test]
+    fn issue_2832_edits_deletions_and_empty_content_remain_authoritative() {
+        let (temp, root) = issue_2832_fixture();
+        let path = temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let default = crate::config::root_agent::default_root_context_template();
+        let mut edited = default.replace(
+            "**You answer to the user, and to no one else.**",
+            "AUTHORED POLICY SENTENCE",
+        );
+        for (start, end) in [
+            ("## Inter-Agent Messaging", "## Privileged PTY Input"),
+            ("## Privileged PTY Input", "# Agents Commander"),
+        ] {
+            let a = edited.find(start).unwrap();
+            let b = edited[a..].find(end).unwrap() + a;
+            edited.replace_range(a..b, "");
+        }
+        let a = edited.find("## Root Agent Authority").unwrap();
+        let b = edited[a..].find("## Delegated Task Reporting").unwrap() + a;
+        edited.replace_range(a..b, "AUTHORED POLICY SENTENCE\n\n");
+        for authored in [edited.as_str(), "OPERATOR TEXT WITHOUT TOKENS\n", ""] {
+            std::fs::write(&path, authored).unwrap();
+            for _ in 0..2 {
+                crate::config::seeded_context_templates::ensure_root_context_template(temp.path())
+                    .unwrap();
+                let out = issue_2832_combined(&root, temp.path(), false);
+                assert!(!out.contains("## Root Agent Authority"));
+                assert!(!out.contains("## Privileged PTY Input"));
+                assert!(!out.contains("## Inter-Agent Messaging"));
+                assert!(out.contains("ROOT ROLE"));
+                if authored.is_empty() {
+                    assert!(out.starts_with("\n\n---\n\n# Context: Role.md"));
+                } else if authored == edited {
+                    assert!(out.contains("AUTHORED POLICY SENTENCE"));
+                } else {
+                    assert!(out.starts_with(authored));
+                    assert!(!out.contains("## GOLDEN RULE"));
+                }
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), authored);
+            }
+        }
+    }
+
+    #[test]
+    fn issue_2832_custom_context_arrays_order_and_raw_files() {
+        let (temp, root) = issue_2832_fixture();
+        std::fs::write(
+            root.join("Context.root-agent.md"),
+            "RAW {{AGENT_ROOT}}\n{{#HOST_WINDOWS}}\nRAW CONDITION\n{{/HOST_WINDOWS}}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("extra.md"), "EXTRA").unwrap();
+        for (entries, expected) in [
+            (serde_json::json!([]), ""),
+            (serde_json::json!(["Role.md"]), "# Role\nROOT ROLE\n"),
+        ] {
+            std::fs::write(
+                root.join("config.json"),
+                serde_json::json!({"context":entries}).to_string(),
+            )
+            .unwrap();
+            assert_eq!(issue_2832_combined(&root, temp.path(), true), expected);
+        }
+        std::fs::write(root.join("config.json"), serde_json::json!({"context":["extra.md", "../Context.root-agent.md", "Context.root-agent.md", "Role.md"]}).to_string()).unwrap();
+        let out = issue_2832_combined(&root, temp.path(), false);
+        assert!(out.starts_with("EXTRA\n\n---\n\n# Context: Context.root-agent.md"));
+        assert!(out.contains("RAW {{AGENT_ROOT}}\n{{#HOST_WINDOWS}}\nRAW CONDITION"));
+        assert!(out.find("EXTRA").unwrap() < out.find("## GOLDEN RULE").unwrap());
+        assert!(out.find("## GOLDEN RULE").unwrap() < out.find("RAW {{AGENT_ROOT}}").unwrap());
+    }
+
+    #[test]
+    fn issue_2832_missing_invalid_and_directory_bases_fail_before_overrides() {
+        let (temp, root) = issue_2832_fixture();
+        let base = temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(
+            temp.path().join("Context.root-agent.local.md"),
+            "VALID OVERRIDE",
+        )
+        .unwrap();
+        std::fs::write(&base, [0xff, 0xfe]).unwrap();
+        assert!(
+            build_root_agent_context_at(&path_string(&root), temp.path(), None, false)
+                .unwrap_err()
+                .contains("Failed to read context file")
+        );
+        std::fs::remove_file(&base).unwrap();
+        assert!(
+            build_root_agent_context_at(&path_string(&root), temp.path(), None, false)
+                .unwrap_err()
+                .contains("missing context files")
+        );
+        std::fs::create_dir(&base).unwrap();
+        assert!(
+            build_root_agent_context_at(&path_string(&root), temp.path(), None, false)
+                .unwrap_err()
+                .contains("Failed to read context file")
+        );
+        std::fs::write(root.join("config.json"), "{").unwrap();
+        assert!(
+            build_root_agent_context_at(&path_string(&root), temp.path(), None, false)
+                .unwrap_err()
+                .contains("Failed to parse")
+        );
+    }
+
+    #[test]
+    fn issue_2832_overrides_render_once_empty_suppresses_and_rejection_falls_back() {
+        let (temp, root) = issue_2832_fixture();
+        let overlay = temp.path().join("Context.root-agent.local.md");
+        std::fs::write(&overlay, "LOCAL {{AGENT_ROOT}} {{UNKNOWN}}\n{{#AUTO_SELF_CLEAR}}\nAUTHORED CLEAR\n{{/AUTO_SELF_CLEAR}}\n").unwrap();
+        let on = issue_2832_combined(&root, temp.path(), true);
+        assert!(on.contains("AUTHORED CLEAR"));
+        assert!(on.contains("{{UNKNOWN}}"));
+        assert!(!on.contains("{{AGENT_ROOT}}"));
+        assert!(!on.contains("## GOLDEN RULE"));
+        assert!(!issue_2832_combined(&root, temp.path(), false).contains("AUTHORED CLEAR"));
+        std::fs::write(&overlay, "").unwrap();
+        assert!(!issue_2832_combined(&root, temp.path(), true).contains("## Self-Maintenance"));
+        std::fs::write(&overlay, [0xff]).unwrap();
+        assert!(issue_2832_combined(&root, temp.path(), false).contains("## GOLDEN RULE"));
+    }
+
+    #[test]
+    fn issue_2832_condition_errors_repetition_unknowns_and_single_pass_values() {
+        let path = Path::new("fixture/Context.root-agent.md");
+        let values = HashMap::from([
+            (
+                "AGENT_ROOT",
+                "path/{{APP_CONFIG_DIR}}/{{#HOST_WINDOWS}}".to_string(),
+            ),
+            ("APP_CONFIG_DIR", "config".to_string()),
+        ]);
+        let source = "{{UNKNOWN}} {{AGENT_ROOT}} {{AGENT_ROOT}}\n{{#HOST_WINDOWS}}\nW\n{{/HOST_WINDOWS}}\n{{#HOST_WINDOWS}}\nW2\n{{/HOST_WINDOWS}}\n{{#HOST_LINUX}}\nL\n{{/HOST_LINUX}}\n{{#HOST_MACOS}}\nM\n{{/HOST_MACOS}}\n";
+        for (predicates, wanted) in [
+            ([true, false, false, false], "W\nW2\n"),
+            ([false, true, false, false], "L\n"),
+            ([false, false, true, false], "M\n"),
+            ([false, false, false, false], ""),
+        ] {
+            let out = render_root_template_text(source, path, &values, predicates).unwrap();
+            assert_eq!(out, format!("{{{{UNKNOWN}}}} path/{{{{APP_CONFIG_DIR}}}}/{{{{#HOST_WINDOWS}}}} path/{{{{APP_CONFIG_DIR}}}}/{{{{#HOST_WINDOWS}}}}\n{wanted}"));
+        }
+        for malformed in [
+            "{{/HOST_WINDOWS}}\n",
+            "{{#HOST_WINDOWS}}\n",
+            "{{#HOST_WINDOWS}}\n{{#HOST_LINUX}}\n",
+            "{{#HOST_WINDOWS}}\n{{/HOST_LINUX}}\n",
+        ] {
+            let error =
+                render_root_template_text(malformed, path, &values, [false; 4]).unwrap_err();
+            assert!(error.contains("Context.root-agent.md:"));
+        }
+        assert_eq!(
+            render_root_template_text("", path, &values, [true; 4]).unwrap(),
+            ""
+        );
+        assert_eq!(
+            root_conditions(
+                Some(&crate::pty::container_repos::RepoMountResolution::default()),
+                true
+            ),
+            [false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn issue_2832_self_maintenance_is_authored_and_never_heading_rewritten() {
+        let (temp, root) = issue_2832_fixture();
+        let base = temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+        let custom = "## Self-Maintenance custom heading\nKEEP THIS\n{{#AUTO_SELF_CLEAR}}\nAUTHORED AUTO\n{{/AUTO_SELF_CLEAR}}\n";
+        std::fs::write(&base, custom).unwrap();
+        let on = issue_2832_combined(&root, temp.path(), true);
+        let off = issue_2832_combined(&root, temp.path(), false);
+        for out in [&on, &off] {
+            assert!(out.contains("## Self-Maintenance custom heading\nKEEP THIS"));
+            assert!(!out.contains("reaches 3 such lines"));
+        }
+        assert!(on.contains("AUTHORED AUTO"));
+        assert!(!off.contains("AUTHORED AUTO"));
+        std::fs::write(&base, "## Self-Maintenance custom heading\nKEEP THIS\n").unwrap();
+        assert!(!issue_2832_combined(&root, temp.path(), true).contains("AUTHORED AUTO"));
+    }
+
+    #[test]
+    fn issue_2832_modified_snapshots_survive_provisioning_and_final_materialization() {
+        use sha2::{Digest, Sha256};
+        let mut sources = crate::config::root_agent::frozen_root_context_snapshots().to_vec();
+        sources.push(crate::config::root_agent::default_root_context_template());
+        let mut cases = 0;
+        for source in sources {
+            for custom in [
+                format!("{source} "),
+                format!(" {source}"),
+                format!("{source}\n"),
+                source.strip_suffix('\n').unwrap().to_string(),
+                source.replacen("AgentsCommander", "AgentsCommandex", 1),
+                source.replace('\n', "\r\n"),
+                String::new(),
+                "\n".to_string(),
+            ] {
+                for forged in [false, true] {
+                    let (temp, root) = issue_2832_fixture();
+                    let path = temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
+                    std::fs::write(&path, &custom).unwrap();
+                    let state_path = temp.path().join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
+                    if forged {
+                        let state = serde_json::json!({"schemaVersion":1,"templates":{"rootAgent":{"templateId":"rootAgent","currentVersion":8,"lastSeededSha256":format!("{:x}", Sha256::digest(custom.as_bytes()))}}});
+                        std::fs::write(&state_path, state.to_string()).unwrap();
+                    } else {
+                        std::fs::remove_file(&state_path).unwrap();
+                    }
+                    std::fs::write(
+                        root.join("config.json"),
+                        serde_json::json!({"context":["../Context.root-agent.md"]}).to_string(),
+                    )
+                    .unwrap();
+                    for _ in 0..2 {
+                        crate::config::seeded_context_templates::ensure_root_context_template(
+                            temp.path(),
+                        )
+                        .unwrap();
+                        let out = issue_2832_combined(&root, temp.path(), false);
+                        let expected = render_root_template_text(
+                            &custom,
+                            &path,
+                            &root_runtime_values(&path_string(&root), temp.path(), None, None),
+                            root_conditions(None, false),
+                        )
+                        .unwrap();
+                        assert_eq!(out, expected);
+                        assert_eq!(std::fs::read(&path).unwrap(), custom.as_bytes());
+                        if custom.is_empty() || custom == "\n" {
+                            assert_eq!(out, custom);
+                        }
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 160);
+        println!("issue_2832 custom-byte/state materialization cases: {cases}");
+    }
+
+    #[test]
+    fn issue_2832_runtime_skills_and_repos_refresh_without_instructional_helpers() {
+        let (temp, root) = issue_2832_fixture();
+        std::fs::write(
+            temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
+            "{{SKILLS_LIST}}\n{{AGENT_REPOS_LIST}}\n",
+        )
+        .unwrap();
+        let first = issue_2832_combined(&root, temp.path(), false);
+        assert!(first.contains("No repos configured"));
+        write_skill(
+            &root,
+            "new-skill",
+            "---\nname: new-skill\ndescription: RUNTIME METADATA\n---\nBODY\n",
+        );
+        std::fs::write(root.join("config.json"), serde_json::json!({"repos":["../repo-{{AGENT_ROOT}}"],"context":["../Context.root-agent.md"]}).to_string()).unwrap();
+        let second = issue_2832_combined(&root, temp.path(), false);
+        assert!(second.contains("RUNTIME METADATA"));
+        assert!(second.contains("repo-{{AGENT_ROOT}}"));
+        assert!(second.contains("NOT FOUND"));
+        for heading in [
+            "## Skills",
+            "### Available Skills",
+            "# Agent Repos",
+            "You are the Root Agent",
+            "AgentsCommander indexes skills",
+        ] {
+            assert!(!second.contains(heading));
+        }
+    }
+
+    #[test]
+    fn issue_2832_spoofed_root_rejected_before_config_context_and_provisioning() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("ac-root-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("config.json"), "{").unwrap();
+        std::fs::write(
+            temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
+            [0xff],
+        )
+        .unwrap();
+        let cwd = path_string(&root);
+        for result in [
+            ensure_session_context(&cwd),
+            build_root_agent_context_with_auto(&cwd, None, true),
+            resolve_session_context_content(&cwd, true, true, None).map(|_| String::new()),
+        ] {
+            assert!(result.unwrap_err().contains("Root identity"));
+        }
+        assert!(!root.join("skills").exists());
+        assert!(!root.join("AGENTS.md").exists());
+        assert!(!temp.path().join(CONTEXT_CACHE_DIR_NAME).exists());
+        assert!(!temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME).exists());
+    }
+
+    #[test]
+    fn issue_2832_raw_and_canonical_aliases_cannot_enter_other_context_routes() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target").join("ac-root-agent");
+        let alias = temp.path().join("__agent_alias");
+        std::fs::create_dir_all(&target).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&target, &alias).is_err() {
+            println!("issue_2832 alias fixture unavailable: Windows symlink privilege");
+            return;
+        }
+        std::fs::write(target.join("config.json"), "{").unwrap();
+        for root in [&alias, &target] {
+            let cwd = path_string(root);
+            assert!(ensure_session_context(&cwd)
+                .unwrap_err()
+                .contains("Root identity"));
+            assert!(resolve_session_context_content(&cwd, true, true, None)
+                .unwrap_err()
+                .contains("Root identity"));
+            assert!(build_replica_context(&cwd, None)
+                .unwrap_err()
+                .contains("Root identity"));
+        }
+        assert!(!target.join("skills").exists());
+        assert!(!target
+            .parent()
+            .unwrap()
+            .join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
+    }
 
     fn no_skill_section() -> String {
         render_skills_section(&discover_skill_index(None))
@@ -7010,22 +7653,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     #[test]
     fn root_grant_fires_through_production_path_gate() {
-        // Closes M3. #979 G.3: repointed at the PRODUCTION Root prologue wrapper.
-        // Root no longer reaches render_agent_context_template, so driving that
-        // renderer here would leave the only test of the real path gate vacuous.
-        // render_root_runtime_prologue (not the _inner DI seam) is what exercises
-        // is_root_agent_path() returning true for the genuine root. root_agent_dir()
-        // resolves via config_dir() in tests (current_exe() parent), and
-        // is_root_agent_path compares the cached root against itself, so this holds
-        // regardless of where config_dir lands and is robust to test ordering /
-        // OnceLock caching.
-        let Ok(root) = crate::config::root_agent::root_agent_dir() else {
-            return; // config_dir unresolvable in this env; nothing to assert
-        };
-        let out =
-            render_root_runtime_prologue(&root, &no_skill_section(), Path::new(&root), None, None);
+        let root = crate::config::root_agent::root_agent_dir().expect("canonical identity");
+        verify_root_context_identity(&root).expect("canonical Root accepted");
+        let out = default_context_as_root(&root, None, &no_skill_section());
         assert!(out.contains("Every registered AgentsCommander project folder"));
-        assert!(out.contains("## Root Agent Authority and Chain of Command"));
         assert_eq!(
             out.matches("## Privileged PTY Input to Room Orchestrators")
                 .count(),
@@ -7035,30 +7666,16 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     #[test]
     fn root_prologue_does_not_grant_authority_to_a_merely_named_directory() {
-        // The production wrapper is path-gated, not name-gated: a temp directory
-        // called `ac-root-agent` selects the Root ASSEMBLY path (so it never touches
-        // a global template) but must NOT receive the Root authority grant.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let fake_root = temp
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("ac-root-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        let error = ensure_session_context(&path_string(&root)).unwrap_err();
+        assert!(error.contains("Root identity"));
+        assert!(!root.join("skills").exists());
+        assert!(!temp
             .path()
-            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
-        std::fs::create_dir_all(&fake_root).expect("create fake root");
-        let out = render_root_runtime_prologue(
-            &path_string(&fake_root),
-            &no_skill_section(),
-            &fake_root,
-            None,
-            None,
-        );
-        assert!(!out.contains("Every registered AgentsCommander project folder"));
-        // #1005 S3: the Allowed bullet is extinct everywhere; pair on the live grant anchor.
-        assert!(!out.contains(
-            "you may create, modify, and delete files anywhere under ANY project folder"
-        ));
-        assert!(!out.contains("## Root Agent Authority and Chain of Command"));
-        assert!(!out.contains("## Privileged PTY Input to Room Orchestrators"));
-        // ...but the name-based Root messaging text is still present (gate unchanged).
-        assert!(out.contains("Narrow exception — Root Agent messaging directory"));
+            .join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME)
+            .exists());
     }
 
     #[test]
@@ -8401,121 +9018,33 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     #[test]
     fn root_never_reads_creates_syncs_or_heals_a_ac_ancestor_global() {
-        // #979 G.5. Replaces `stale_generated_legacy_default_heals_on_disk_for_root_agent`:
-        // healing a Root global is no longer valid behavior.
-        //
-        // INVARIANT CARRIED FORWARD from that deleted test: it had to construct temp
-        // dirs with NO `.ac` ancestor, precisely because "the context dir resolves via
-        // the root-agent parent fallback in `resolve_ac_root_context_dir`". That is
-        // the whole point here. `find_ac_root` is the FIRST branch and matches
-        // any `.ac` ancestor, and `config_dir()` sits INSIDE a `.ac` tree in the dev
-        // and workgroup layouts, so a Root there resolved the PROJECT's global and
-        // could create, sync, and atomically heal it. This test is therefore built on
-        // a `.ac` ancestor; a bare-parent version of it can pass with the real hole
-        // wide open.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let ac_dir = temp.path().join(".ac");
-        let root = ac_dir.join("wg-1-demo").join("ac-root-agent");
-        std::fs::create_dir_all(&root).expect("create root under a .ac ancestor");
-
-        let sentinel_path = ac_dir.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        let sentinel = "PROJECT_GLOBAL_SENTINEL {{AGENT_ROOT}}\n";
-        std::fs::write(&sentinel_path, sentinel).expect("write project global sentinel");
-        let state_path = ac_dir
-            .join(crate::config::seeded_context_templates::SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
-        let state = r#"{"schemaVersion":1,"templates":{"global":{"templateId":"global","currentVersion":1}}}"#;
-        std::fs::write(&state_path, state).expect("write project template state");
-
-        let root_str = path_string(&root);
-        // Sanity: this really is the layout the guard exists for.
+        let temp = tempfile::tempdir().unwrap();
+        let ac = temp.path().join(".ac");
+        let root = ac.join("room-1-demo").join("ac-root-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        let sentinel = ac.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&sentinel, "PROJECT_GLOBAL_SENTINEL {{AGENT_ROOT}}\n").unwrap();
+        std::fs::write(root.join("config.json"), r#"{"context":[]}"#).unwrap();
+        let cache =
+            build_root_agent_context_at(&path_string(&root), root.parent().unwrap(), None, false)
+                .unwrap();
+        assert_eq!(std::fs::read_to_string(cache).unwrap(), "");
         assert_eq!(
-            resolve_ac_root_context_dir(&root).map(|p| canonical_or_original(&p)),
-            Some(canonical_or_original(&ac_dir)),
-            "the Root path must still resolve the `.ac` ancestor; that is why the guard is needed"
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "PROJECT_GLOBAL_SENTINEL {{AGENT_ROOT}}\n"
         );
-
-        // (a) the cache writer returns the code-owned prologue, not the global.
-        let cached = ensure_session_context(&root_str).expect("ensure session context");
-        let prologue = std::fs::read_to_string(&cached).expect("read cached prologue");
-        assert!(prologue.contains("# AgentsCommander Root Runtime Context"));
-        assert!(prologue.contains("## GOLDEN RULE"));
-        assert!(!prologue.contains("PROJECT_GLOBAL_SENTINEL"));
-
-        // (b) the dedicated builder's output carries none of the sentinel bytes.
-        let built = build_root_agent_context(&root_str, None).expect("build root context");
-        let built_content = std::fs::read_to_string(&built).expect("read built root context");
-        assert!(!built_content.contains("PROJECT_GLOBAL_SENTINEL"));
-
-        // (c) the global resolver refuses a Root-named path outright.
-        let err = resolve_agent_context(&root_str, None, &no_skill_section(), &root, None, None)
-            .expect_err("resolve_agent_context must refuse a Root-named path");
-        assert!(
-            err.contains("must not resolve the global context template"),
-            "{}",
-            err
-        );
-
-        // (d) the project's global and its state entry are byte-identical
-        // afterwards: not read into the output, not synced, not healed. The
-        // state FILE itself gains the three `platform.*` entries: per #1625 the
-        // render path seeds the missing platform rule files absent-only in any
-        // host session under a resolvable `.ac` ancestor (the hook lives in
-        // `render_host_platform_rules_block`, which also covers the root
-        // prologue); the invariant under test here is that Root never touches
-        // the project GLOBAL.
-        use sha2::{Digest, Sha256};
-        assert_eq!(
-            std::fs::read(&sentinel_path).expect("read sentinel"),
-            sentinel.as_bytes()
-        );
-        let state_after = std::fs::read_to_string(&state_path).expect("read state");
-        let parsed: serde_json::Value = serde_json::from_str(&state_after).expect("parse state");
-        assert_eq!(
-            parsed["templates"]["global"]["templateId"], "global",
-            "the project global state entry must stay untouched by Root renders"
-        );
-        assert_eq!(
-            parsed["templates"]["global"]["currentVersion"], 1,
-            "the project global must not be synced/healed by Root renders"
-        );
-        assert_eq!(
-            parsed["templates"]["global"]["lastSeededSha256"],
-            serde_json::Value::Null,
-            "the project global must not be seeded by Root renders"
-        );
-        for (id, default) in [
-            (
-                "platform.windows",
-                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
-            ),
-            (
-                "platform.linux",
-                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
-            ),
-            (
-                "platform.macos",
-                crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
-            ),
+        std::fs::remove_file(&sentinel).unwrap();
+        build_root_agent_context_at(&path_string(&root), root.parent().unwrap(), None, false)
+            .unwrap();
+        for filename in [
+            GLOBAL_CONTEXT_TEMPLATE_FILENAME,
+            COORDINATOR_CONTEXT_TEMPLATE_FILENAME,
+            HOST_PLATFORM_RULES_FILENAME_WINDOWS,
+            HOST_PLATFORM_RULES_FILENAME_LINUX,
+            HOST_PLATFORM_RULES_FILENAME_MACOS,
         ] {
-            assert_eq!(
-                parsed["templates"][id]["currentVersion"], 1,
-                "{id} must be seeded v1 by the render (absent-only, per #1625)"
-            );
-            assert_eq!(
-                parsed["templates"][id]["lastSeededSha256"],
-                format!("{:x}", Sha256::digest(default.as_bytes())),
-                "{id} must carry the default sha"
-            );
+            assert!(!ac.join(filename).exists());
         }
-
-        // (e) with the sentinel ABSENT, Root creates no `Context.AgentsCommander.md`.
-        std::fs::remove_file(&sentinel_path).expect("remove sentinel");
-        ensure_session_context(&root_str).expect("ensure session context without a global");
-        build_root_agent_context(&root_str, None).expect("build root context without a global");
-        assert!(
-            !sentinel_path.exists(),
-            "Root must never create a project global context template"
-        );
     }
 
     #[test]
@@ -8552,24 +9081,17 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     #[test]
     fn ensure_session_context_returns_the_root_prologue_and_never_touches_the_global() {
-        // #979 G.4, guard 3 of 4 (the cache writer). Even the public entry point
-        // cannot send a Root-named path to the global resolver.
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("ac-root-agent");
-        std::fs::create_dir_all(&root).expect("create root");
-        let sentinel_path = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
-        let sentinel = "PARENT_GLOBAL_SENTINEL\n";
-        std::fs::write(&sentinel_path, sentinel).expect("write parent sentinel");
-
-        let cached = ensure_session_context(&path_string(&root)).expect("ensure session context");
-        let content = std::fs::read_to_string(&cached).expect("read cached context");
-
-        assert!(content.contains("# AgentsCommander Root Runtime Context"));
-        assert!(content.contains("## Core Concepts"));
-        assert!(!content.contains("PARENT_GLOBAL_SENTINEL"));
+        std::fs::create_dir_all(&root).unwrap();
+        let sentinel = temp.path().join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&sentinel, "PARENT_GLOBAL_SENTINEL\n").unwrap();
+        assert!(ensure_session_context(&path_string(&root))
+            .unwrap_err()
+            .contains("Root identity"));
         assert_eq!(
-            std::fs::read(&sentinel_path).expect("read sentinel"),
-            sentinel.as_bytes()
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "PARENT_GLOBAL_SENTINEL\n"
         );
     }
 
@@ -8633,16 +9155,14 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         )
         .expect("write config");
 
-        let built =
-            build_root_agent_context(&path_string(&root), None).expect("build root context");
+        let built = build_root_agent_context_at(&path_string(&root), temp.path(), None, false)
+            .expect("build root context");
         let content = std::fs::read_to_string(&built).expect("read built context");
 
-        let prologue = content
-            .find("# AgentsCommander Root Runtime Context")
-            .expect("prologue present");
+        assert!(!content.contains("# AgentsCommander Root Runtime Context"));
         let a = content.find("RAW_ENTRY_A").expect("a.md present");
         let b = content.find("RAW_ENTRY_B").expect("b.md present");
-        assert!(prologue < a && a < b, "prologue, then a.md, then b.md");
+        assert!(a < b, "a.md, then b.md");
         assert!(!content.contains("$AGENTSCOMMANDER_CONTEXT"));
         assert!(!content.contains("$REPOS_WORKSPACE_INFO"));
     }
@@ -8659,7 +9179,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         )
         .expect("write config");
 
-        let err = build_root_agent_context(&path_string(&root), None)
+        let err = build_root_agent_context_at(&path_string(&root), temp.path(), None, false)
             .expect_err("missing raw context files must fail the build");
         assert!(
             err.contains("Root Agent has missing context files"),
@@ -8679,19 +9199,24 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let root = temp.path().join("ac-root-agent");
         std::fs::create_dir_all(&root).expect("create root");
 
+        std::fs::write(
+            temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
+            super::super::root_agent::default_root_context_template(),
+        )
+        .unwrap();
+        std::fs::write(root.join("Role.md"), "ROLE").unwrap();
         let built =
-            build_root_agent_context(&path_string(&root), None).expect("build root context");
-        let content = std::fs::read_to_string(&built).expect("read built context");
+            build_root_agent_context_at(&path_string(&root), temp.path(), None, false).unwrap();
+        let content = std::fs::read_to_string(&built).unwrap();
         assert!(content.contains("# AgentsCommander Root Runtime Context"));
         assert!(content.contains("## GOLDEN RULE"));
         assert!(content.contains("## Inter-Agent Messaging"));
 
         std::fs::write(root.join("config.json"), r#"{"context":[]}"#).expect("write empty context");
-        let built =
-            build_root_agent_context(&path_string(&root), None).expect("build root context");
+        let built = build_root_agent_context_at(&path_string(&root), temp.path(), None, false)
+            .expect("build root context");
         let content = std::fs::read_to_string(&built).expect("read built context");
-        assert!(content.contains("# AgentsCommander Root Runtime Context"));
-        assert!(content.contains("## GOLDEN RULE"));
+        assert_eq!(content, "");
     }
 
     #[test]
@@ -9478,86 +10003,53 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
     #[test]
     fn root_materialized_context_gates_self_maintenance_by_flag() {
-        // #640 M2: the Root reaches the gated directive through the path-2 append.
-        // #979 G.7: the invariant is now asserted against `build_root_agent_context`,
-        // the dedicated builder Root is routed through; `build_replica_context`
-        // refuses a Root path outright. ON/OFF and the custom file are unchanged.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root_dir = temp
-            .path()
-            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
-        std::fs::create_dir_all(&root_dir).expect("create root dir");
-        std::fs::write(root_dir.join("base.md"), "ROOT BASE CONTEXT").expect("write base context");
-        std::fs::write(root_dir.join("config.json"), r#"{"context":["base.md"]}"#)
-            .expect("write root config");
-        let cwd = path_string(&root_dir);
-
-        // Invariant: the dedicated builder always produces a combined context, and
-        // it always leads with the code-owned prologue.
-        let built = build_root_agent_context(&cwd, None).expect("build root context");
-        let built_content = std::fs::read_to_string(&built).expect("read built context");
-        assert!(built_content.contains("# AgentsCommander Root Runtime Context"));
-        // Sanity: the dir-name gate recognizes this as the Root.
-        assert!(crate::config::root_agent::is_root_agent_dir_name(&cwd));
-
-        let on = resolve_session_context_content(&cwd, false, true, None)
-            .expect("resolve ON")
-            .expect("root content");
-        assert!(on.contains("## Self-Maintenance (auto self-handoff-and-clear)"));
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("ac-root-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
+            crate::config::root_agent::default_root_context_template(),
+        )
+        .unwrap();
+        std::fs::write(root.join("Role.md"), "ROOT BASE CONTEXT").unwrap();
+        let cwd = path_string(&root);
+        let on = build_root_agent_context_at(&cwd, temp.path(), None, true).unwrap();
+        let on = std::fs::read_to_string(on).unwrap();
         assert!(on.contains("max 240 char forgotten summary"));
         assert!(on.contains("closed background"));
-        assert!(on.contains("ROOT BASE CONTEXT"), "base context preserved");
-
-        let off = resolve_session_context_content(&cwd, false, false, None)
-            .expect("resolve OFF")
-            .expect("root content");
+        assert!(on.contains("ROOT BASE CONTEXT"));
+        let off = build_root_agent_context_at(&cwd, temp.path(), None, false).unwrap();
+        let off = std::fs::read_to_string(off).unwrap();
         assert!(!off.contains("## Self-Maintenance"));
-        assert!(!off.contains("max 240 char forgotten summary"));
-        assert!(off.contains("ROOT BASE CONTEXT"), "base context preserved");
+        assert!(off.contains("ROOT BASE CONTEXT"));
     }
 
     #[test]
     fn root_never_appends_creates_or_rewrites_a_coordinator_template() {
-        // #979 G.7. `is_coordinator` is false for Root today, but the coordinator
-        // branch calls `read_or_create_context_template`, which resolves through the
-        // same `resolve_ac_root_context_dir`: with a `.ac`-ancestor config dir an
-        // incorrect flag would CREATE and SYNC the *project's* Context.coordinator.md.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let ac_dir = temp.path().join(".ac");
-        let root_dir = ac_dir
-            .join("wg-1-demo")
-            .join(crate::config::root_agent::ROOT_AGENT_DIR_NAME);
-        std::fs::create_dir_all(&root_dir).expect("create root under a .ac ancestor");
-        std::fs::write(root_dir.join("base.md"), "ROOT BASE CONTEXT").expect("write base context");
-        std::fs::write(root_dir.join("config.json"), r#"{"context":["base.md"]}"#)
-            .expect("write root config");
-
-        let coordinator_path = ac_dir.join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
-        let sentinel = "COORDINATOR_SENTINEL_BODY\n";
-        std::fs::write(&coordinator_path, sentinel).expect("write coordinator sentinel");
-
-        let content = resolve_session_context_content(&path_string(&root_dir), true, false, None)
-            .expect("resolve as coordinator")
-            .expect("root content");
-
-        assert!(!content.contains("COORDINATOR_SENTINEL_BODY"));
-        assert!(!content.contains("# Orchestrator Context"));
-        assert!(content.contains("# AgentsCommander Root Runtime Context"));
-        assert_eq!(
-            std::fs::read(&coordinator_path).expect("read coordinator sentinel"),
-            sentinel.as_bytes()
-        );
-
-        // ...and with the coordinator template ABSENT, a Root flagged as coordinator
-        // creates none.
-        std::fs::remove_file(&coordinator_path).expect("remove coordinator sentinel");
-        resolve_session_context_content(&path_string(&root_dir), true, false, None)
-            .expect("resolve as coordinator")
-            .expect("root content");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp
+            .path()
+            .join(".ac")
+            .join("room-1-demo")
+            .join("ac-root-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        let coordinator = root
+            .parent()
+            .unwrap()
+            .join(COORDINATOR_CONTEXT_TEMPLATE_FILENAME);
+        std::fs::write(&coordinator, "COORDINATOR_SENTINEL").unwrap();
         assert!(
-            !coordinator_path.exists(),
-            "Root must never create a coordinator context template"
+            resolve_session_context_content(&path_string(&root), true, false, None)
+                .unwrap_err()
+                .contains("Root identity")
         );
+        assert_eq!(
+            std::fs::read_to_string(&coordinator).unwrap(),
+            "COORDINATOR_SENTINEL"
+        );
+        std::fs::remove_file(&coordinator).unwrap();
+        assert!(resolve_session_context_content(&path_string(&root), true, false, None).is_err());
+        assert!(!coordinator.exists());
     }
 
     #[test]
@@ -10793,14 +11285,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             .path()
             .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
 
-        let materialized =
-            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
-                .expect("materialize context")
-                .expect("context path");
-        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+        let content = issue_2832_combined(&root, root.parent().unwrap(), false);
 
-        // #979 G.6: the contract is code-owned prologue, then the Root supplement,
-        // then Role. The prologue is not a file and cannot be edited away.
+        // The complete default owns policy and supplement; Role follows it.
         let prologue = content
             .find("# AgentsCommander Root Runtime Context")
             .expect("prologue present");
@@ -10820,33 +11307,28 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         assert_eq!(
             content.matches("Root messaging is **file-based**").count(),
             1,
-            "root operational messaging comes only from the code-owned prologue"
+            "root operational messaging comes only from the selected file"
         );
         assert!(!content.contains("Direct file-based workgroup messaging is not available"));
 
-        // Editing the Root supplement changes ONLY that raw section. It cannot
-        // change or suppress any prologue block.
+        // Editing the file removes all default prose from final materialization.
         std::fs::write(
             &root_context_path,
             "# Live Root Context\n\nLIVE_ROOT_CONTEXT_BODY\n",
         )
         .expect("edit root context");
 
-        let materialized =
-            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
-                .expect("rematerialize context")
-                .expect("context path");
-        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+        let content = issue_2832_combined(&root, root.parent().unwrap(), false);
 
         assert!(content.contains("LIVE_ROOT_CONTEXT_BODY"));
         assert!(!content.contains("You are the AgentsCommander Root Agent"));
-        assert!(content.contains("# AgentsCommander Root Runtime Context"));
-        assert!(content.contains("## Core Concepts"));
-        assert!(content.contains("## GOLDEN RULE"));
+        assert!(!content.contains("# AgentsCommander Root Runtime Context"));
+        assert!(!content.contains("## Core Concepts"));
+        assert!(!content.contains("## GOLDEN RULE"));
         assert_eq!(
             content.matches("Root messaging is **file-based**").count(),
-            1,
-            "an edited Root supplement can neither suppress nor duplicate the prologue"
+            0,
+            "an edited Root file suppresses the removed messaging prose"
         );
         assert!(content.contains("You are the personal Root Agent for AgentsCommander."));
     }
@@ -10955,11 +11437,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         )
         .expect("write root Role.md");
 
-        let materialized =
-            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
-                .expect("materialize context")
-                .expect("context path");
-        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+        let content = issue_2832_combined(&root, root.parent().unwrap(), false);
 
         let prologue = content
             .find("# AgentsCommander Root Runtime Context")
@@ -11104,7 +11582,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             .expect("write role");
         std::fs::write(
             temp.path().join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
-            "# Root Context\n\nROOT_TEMPLATE_BODY\n",
+            "# Root Context\n\nROOT_TEMPLATE_BODY\n{{SKILLS_LIST}}\n",
         )
         .expect("write root context");
         let skill = root
@@ -11112,11 +11590,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             .join("role-skill-boundary-audit")
             .join("SKILL.md");
 
-        let materialized =
-            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
-                .expect("materialize context")
-                .expect("context path");
-        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+        let content = issue_2832_combined(&root, root.parent().unwrap(), false);
 
         assert!(skill.is_file());
         assert!(content.contains("role-skill-boundary-audit"));
@@ -11137,11 +11611,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             .join("SKILL.md");
         std::fs::remove_file(&skill).expect("remove skill");
 
-        let materialized =
-            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
-                .expect("materialize context")
-                .expect("context path");
-        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+        let content = issue_2832_combined(&root, root.parent().unwrap(), false);
 
         assert!(skill.is_file());
         assert!(content.contains("role-skill-boundary-audit"));
@@ -11176,15 +11646,11 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             root.parent()
                 .expect("root parent")
                 .join(ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME),
-            "# Root Context\n\nROOT_TEMPLATE_BODY\n",
+            "# Root Context\n\nROOT_TEMPLATE_BODY\n{{AGENT_ROOT}}\n",
         )
         .expect("write root context");
 
-        let materialized =
-            materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
-                .expect("materialize context")
-                .expect("context path");
-        let content = std::fs::read_to_string(materialized).expect("read materialized context");
+        let content = issue_2832_combined(&root, root.parent().unwrap(), false);
 
         // The sentinel never reaches the Root's prompt...
         assert!(!content.contains("CUSTOM_STANDALONE_GLOBAL"));
@@ -11194,8 +11660,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             sentinel
         );
 
-        // Every mandatory prologue section appears exactly once, and the supplement
-        // and Role follow in order.
+        // No removed default section reappears; authored body and Role keep order.
         for heading in [
             "# AgentsCommander Root Runtime Context",
             "## Core Concepts",
@@ -11207,8 +11672,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         ] {
             assert_eq!(
                 content.matches(heading).count(),
-                1,
-                "mandatory Root block {} must appear exactly once",
+                0,
+                "removed Root block {} must stay absent",
                 heading
             );
         }
@@ -11221,9 +11686,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
 
         // With the global ABSENT, Root creates none.
         std::fs::remove_file(&global_template_path).expect("remove global template");
-        materialize_agent_context_file(&path_string(&root), ManagedContextTarget::Codex, false)
-            .expect("rematerialize context")
-            .expect("context path");
+        issue_2832_combined(&root, root.parent().unwrap(), false);
         assert!(
             !global_template_path.exists(),
             "Root must never create a project global context template"
@@ -12322,8 +12785,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             )
             .expect("config");
 
-            let error = build_root_agent_context(&path_string(&root_agent), None)
-                .expect_err("a missing base is still a hard error");
+            let error =
+                build_root_agent_context_at(&path_string(&root_agent), &ac_root, None, false)
+                    .expect_err("a missing base is still a hard error");
             assert!(
                 error.contains("Root Agent has missing context files"),
                 "{error}"
