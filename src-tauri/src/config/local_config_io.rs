@@ -354,7 +354,6 @@ where
 
 /// #2786 (C1) - the caller-supplied cleanup sequence of `update_config_pair`:
 /// it edits the decisions map and the state map before `mutate` runs.
-#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
 pub(crate) type ConfigPairCleanup<'a> =
     &'a dyn Fn(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>;
 
@@ -376,7 +375,6 @@ pub(crate) type ConfigPairCleanup<'a> =
 ///
 /// Neither closure may call a config writer: a nested call on the same thread
 /// returns an error, and one waited on from another thread would deadlock.
-#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
 pub(crate) fn update_config_pair<F>(
     decisions: &Path,
     state: &Path,
@@ -436,7 +434,6 @@ where
 
 /// #2786 (C1) - one side of the pair as a map: absent is empty, anything that
 /// is not a readable JSON object is an error.
-#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
 fn read_pair_side(path: &Path) -> Result<Map<String, Value>, String> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
@@ -455,7 +452,6 @@ fn read_pair_side(path: &Path) -> Result<Map<String, Value>, String> {
 
 /// #2786 (C1) - publish the changed sides of one sequence, state first, firing
 /// each side's stage only after its write.
-#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
 fn publish_pair_sides(
     decisions: (&Path, &Map<String, Value>, &Map<String, Value>),
     state: (&Path, &Map<String, Value>, &Map<String, Value>),
@@ -473,7 +469,6 @@ fn publish_pair_sides(
 
 /// #2786 (C1) - temp plus `publish_temp_config`, never `write_file_atomic`:
 /// the pair already holds the process `Mutex`, which is not reentrant.
-#[cfg_attr(not(test), allow(dead_code))] // no production caller until C3 (#2470)
 fn publish_pair_side(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
     let mut json = serde_json::to_string_pretty(map)
         .map_err(|e| format!("Failed to serialize {}: {}", path.display(), e))?;

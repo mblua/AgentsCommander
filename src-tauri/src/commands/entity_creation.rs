@@ -330,16 +330,26 @@ pub(crate) fn parse_task_title(content: &str) -> Option<String> {
 
 /// TASK.md content for a brand-new workgroup.
 ///
-/// Workgroups now start with an explicit task title, so there is no follow-up
-/// auto-title prompt. Store the title in the same frontmatter shape used by
-/// the title editor.
+/// Empty titles start Clean; explicit titles use the title editor's frontmatter.
 fn build_task_content(task_title: &str) -> String {
+    if task_title.trim().is_empty() {
+        return "---\ntitle: 'Clean'\n---\nReady to start a new topic\n".to_string();
+    }
     // #738: the workgroup-creation title is a human decision, so store it as
     // user-owned (`USER:`). This locks it against coordinator auto-retitle until
     // a Clean resets the task. `user_owned_title` trims and avoids double-prefix.
     let title = task_ops::user_owned_title(task_title);
     let escaped = title.replace('\'', "''");
     format!("---\ntitle: '{}'\n---\n", escaped)
+}
+
+/// Validate and prepare the initial task before the GUI creates any files.
+fn prepare_new_room_task_content(task_title: &str) -> Result<String, String> {
+    let task_title = task_title.trim();
+    if !task_title.is_empty() {
+        validate_task_title(task_title)?;
+    }
+    Ok(build_task_content(task_title))
 }
 
 /// Build the Role.md body written by `create_agent_matrix`. Kept as a separate
@@ -2905,18 +2915,7 @@ pub async fn create_workgroup(
     task_title: String,
 ) -> Result<WorkgroupCloneResult, String> {
     let safe_team = sanitize_name(&team_name)?;
-    let task_title = task_title.trim().to_string();
-    if task_title.is_empty() {
-        return Err("Task title cannot be empty".to_string());
-    }
-    if task_title.chars().any(|c| c.is_control() && c != '\t') {
-        return Err("Task title must be a single line of printable characters \
-             (control characters other than tab are not allowed)"
-            .to_string());
-    }
-    if task_title.chars().count() > 256 {
-        return Err("Task title is too long (max 256 characters)".to_string());
-    }
+    let task_content = prepare_new_room_task_content(&task_title)?;
     let base = selected_ac_root(Path::new(&project_path))?;
 
     // Ensure gitignore protects workgroup clones from parent repo operations
@@ -2942,8 +2941,7 @@ pub async fn create_workgroup(
     std::fs::create_dir_all(wg_dir.join(crate::phone::messaging::MESSAGING_DIR_NAME))
         .map_err(|e| format!("Failed to create messaging directory: {}", e))?;
 
-    // TASK.md: every new workgroup starts with an explicit task title.
-    let task_content = build_task_content(&task_title);
+    // Write the prepared Clean or user-owned task before replicas and clones.
     std::fs::write(wg_dir.join("TASK.md"), &task_content)
         .map_err(|e| format!("Failed to write TASK.md: {}", e))?;
 
@@ -7471,6 +7469,84 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prepare_new_room_task_content_starts_clean_only_for_empty_titles() {
+        for input in ["", "   "] {
+            let content = prepare_new_room_task_content(input).unwrap();
+            assert_eq!(
+                content.as_bytes(),
+                b"---\ntitle: 'Clean'\n---\nReady to start a new topic\n"
+            );
+            assert!(!content.contains("USER:"));
+            assert_eq!(build_task_content(input), content);
+        }
+        assert_eq!(
+            prepare_new_room_task_content("  Clean  ").unwrap(),
+            "---\ntitle: 'USER: Clean'\n---\n"
+        );
+    }
+
+    #[test]
+    fn prepare_new_room_task_content_preserves_title_validation() {
+        assert!(prepare_new_room_task_content(&"é".repeat(256)).is_ok());
+        assert!(prepare_new_room_task_content(&"é".repeat(257)).is_err());
+        for control in ['\n', '\r', '\0', '\u{7f}'] {
+            assert!(prepare_new_room_task_content(&format!("a{control}b")).is_err());
+        }
+        assert_eq!(
+            prepare_new_room_task_content(" a\tb ").unwrap(),
+            "---\ntitle: 'USER: a\tb'\n---\n"
+        );
+        assert!(validate_task_title("").is_err());
+    }
+
+    #[test]
+    fn create_workgroup_prepares_task_once_before_mutation() {
+        let source = include_str!("entity_creation.rs");
+        let command = source
+            .split_once("pub async fn create_workgroup(")
+            .unwrap()
+            .1;
+        let body_start = command.find('{').unwrap();
+        let mut depth = 0;
+        let body_end = command[body_start..]
+            .char_indices()
+            .find_map(|(offset, ch)| {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(body_start + offset)
+            })
+            .unwrap();
+        let body = &command[body_start..=body_end];
+        let preparation = "let task_content = prepare_new_room_task_content(&task_title)?;";
+        assert_eq!(body.matches("prepare_new_room_task_content(").count(), 1);
+        assert!(body.find(preparation).unwrap() < body.find("ensure_ac_root_gitignore(").unwrap());
+        assert!(body.find(preparation).unwrap() < body.find("std::fs::create_dir_all(").unwrap());
+        for forbidden in [
+            "build_task_content(",
+            "validate_task_title(",
+            ".trim()",
+            "Task title cannot be empty",
+        ] {
+            assert!(!body.contains(forbidden), "unexpected {forbidden}");
+        }
+        assert_eq!(body.matches("let task_content =").count(), 1);
+        assert!(body.contains("std::fs::write(wg_dir.join(\"TASK.md\"), &task_content)"));
+
+        // CLI/on-disk creation still validates before generating task content.
+        let cli = source
+            .split_once("pub(crate) async fn create_workgroup_on_disk(")
+            .unwrap()
+            .1;
+        assert!(
+            cli.find("validate_task_title(&task_title)?;").unwrap()
+                < cli.find("build_task_content(&task_title)").unwrap()
+        );
+    }
+
     // ── #738: build_task_content marks creation titles as user-owned ──
 
     #[test]
@@ -8330,6 +8406,110 @@ mod tests {
             assert_eq!(width, default_width, "mask {mask:?}");
             assert_eq!(room_dir_name(1, "team", width), "room-1-team");
         }
+    }
+
+    /// C4 (#2470): the seeded state file of every row that seeds one. All four
+    /// state keys, plus the exact D7 marker `stamp_split_marker` writes.
+    #[rustfmt::skip]
+    const C4_SEEDED_STATE: &str =
+        r#"{"tooling":{"lastCodingAgent":"codex","codingAgents":{},"lastAgentMessageAt":"2026-01-01T00:00:00Z","profileContentHash":"h"},"split":{"v":1,"keys":["lastCodingAgent","codingAgents","lastAgentMessageAt","profileContentHash"]}}"#;
+
+    /// C4 (#2470): the state file beside a tracked `config.json`.
+    fn c4_state_path(tracked: &std::path::Path) -> std::path::PathBuf {
+        tracked.with_file_name(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+    }
+
+    /// C4 (#2470): after one writer, the tracked file carries none of the four
+    /// state keys. This says nothing at all about the state file: `c4_state_is`
+    /// is the only helper that reads it, and the row calls them in that order.
+    fn c4_tracked_is_clean(tracked: &std::path::Path, site: &str) {
+        let text = std::fs::read_to_string(tracked).expect("tracked file");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("tracked json");
+        let tooling = value.get("tooling");
+        c4_absent(tooling, "lastCodingAgent", site, &value);
+        c4_absent(tooling, "codingAgents", site, &value);
+        c4_absent(tooling, "lastAgentMessageAt", site, &value);
+        c4_absent(tooling, "profileContentHash", site, &value);
+    }
+
+    fn c4_absent(t: Option<&serde_json::Value>, key: &str, site: &str, all: &serde_json::Value) {
+        assert!(
+            t.and_then(|t| t.get(key)).is_none(),
+            "{site} left {key}: {all}"
+        );
+    }
+
+    /// C4 (#2470): the state file EXISTS and is exactly `expected`, compared
+    /// as parsed JSON so the pretty-printing of `publish_pair_side` is never
+    /// the subject. `expected` is always a literal written in the row. Absence
+    /// is NOT admitted here and no longer reads as JSON `null`:
+    /// `c4_no_state_file` is the only helper that may conclude absence.
+    fn c4_state_is(state: &std::path::Path, expected: &str, site: &str) {
+        let want: serde_json::Value = serde_json::from_str(expected).expect("expected json");
+        let raw = std::fs::read_to_string(state).expect("state file");
+        let got: serde_json::Value = serde_json::from_str(&raw).expect("state json");
+        assert_eq!(got, want, "{site} state file");
+    }
+
+    /// C4 (#2470) E3, sites 5, 6 and 7, each on its own seeded directory: none
+    /// writes a state key to the tracked file and none touches the state file.
+    #[test]
+    fn c4_sites_5_6_7_leave_no_state_key() {
+        let journal = tempfile::tempdir().expect("journal dir");
+        let _journal = crate::config::agent_config::journal_redirect::set(journal.path());
+        let seeded_replica = |fixture: &ReplicaCreationFixture| -> PathBuf {
+            let replica_dir = fixture.wg_dir.join("__agent_tech-lead");
+            std::fs::create_dir_all(&replica_dir).expect("create replica dir");
+            let tracked = replica_dir.join("config.json");
+            let seed = r#"{"identity": "../../_agent_tech-lead", "tooling": {}}"#;
+            std::fs::write(&tracked, seed).expect("seed tracked");
+            std::fs::write(c4_state_path(&tracked), C4_SEEDED_STATE).expect("seed state");
+            replica_dir
+        };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tracked = tmp.path().join("config.json");
+        std::fs::write(&tracked, r#"{"tooling": {}}"#).expect("seed tracked");
+        std::fs::write(c4_state_path(&tracked), C4_SEEDED_STATE).expect("seed state");
+        assert_eq!(
+            write_local_config_value(&tracked, default_agent_matrix_config()),
+            Ok(())
+        );
+        c4_tracked_is_clean(&tracked, "site 5");
+        c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 5");
+        let written = replica_config(tmp.path());
+        assert_eq!(
+            written["context"],
+            serde_json::json!(["$AGENTSCOMMANDER_CONTEXT", "Role.md"])
+        );
+        assert_eq!(written["tooling"], serde_json::json!({}));
+
+        let fixture = replica_creation_fixture();
+        let replica_dir = seeded_replica(&fixture);
+        let tracked = replica_dir.join("config.json");
+        let result = initialize_replica_config_on_disk(&replica_dir, &["repo-a".to_string()]);
+        assert_eq!(result, Ok(()));
+        c4_tracked_is_clean(&tracked, "site 6");
+        c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 6");
+        let written = replica_config(&replica_dir);
+        assert_eq!(written["repos"], serde_json::json!(["repo-a"]));
+        assert_eq!(
+            written["context"][0],
+            serde_json::json!("$AGENTSCOMMANDER_CONTEXT")
+        );
+
+        let fixture = replica_creation_fixture();
+        let replica_dir = seeded_replica(&fixture);
+        let tracked = replica_dir.join("config.json");
+        let identity =
+            apply_wg_replica_repos(&replica_dir, &["repo-b".to_string()]).expect("site 7");
+        assert_eq!(identity.identity, "../../_agent_tech-lead");
+        c4_tracked_is_clean(&tracked, "site 7");
+        c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 7");
+        assert_eq!(
+            replica_config(&replica_dir)["repos"],
+            serde_json::json!(["repo-b"])
+        );
     }
 }
 
