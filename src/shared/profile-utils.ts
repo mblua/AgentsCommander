@@ -451,7 +451,7 @@ export const CODEX_CONTEXT_REGEX = String.raw`^ {2}(?:.*· )?Context (\d{1,3})% 
 export const PI_CONTEXT_REGEX = String.raw`^(?:.*? )?(\d{1,3})\.\d%/`;
 
 export const ANTIGRAVITY_CONTEXT_REGEX = String.raw`(?:^|[ |])Ctx: (\d{1,3})%`;
-export const ANTIGRAVITY_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ |])[Ww]eekly: (\d{1,3})%`;
+export const ANTIGRAVITY_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ |])[Ww]eekly (\d{1,3})% used`;
 
 export function suggestedContextRegex(command: string): string | null {
   const stem = commandExecutableStem(command);

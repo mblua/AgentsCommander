@@ -5068,6 +5068,9 @@ describe("SettingsModal weekly quota pattern (#2482)", () => {
     expect(saved?.quotaSources?.a1).toEqual(target === "quota"
       ? { kind: "screenRegex", pattern: ANTIGRAVITY_WEEKLY_QUOTA_REGEX }
       : { kind: "screenRegexRemaining", pattern: "CUSTOM QUOTA" });
+    if (target === "quota") {
+      expect(saved?.quotaSources?.a1).toEqual({ kind: "screenRegex", pattern: String.raw`(?:^|[ |])[Ww]eekly (\d{1,3})% used` });
+    }
     expect(saved?.agents[1].contextRegex).toBe("SIBLING CONTEXT");
     expect(saved?.quotaSources?.b2).toEqual({ kind: "screenRegex", pattern: "SIBLING QUOTA" });
     dispose();

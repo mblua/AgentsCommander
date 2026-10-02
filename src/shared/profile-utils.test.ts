@@ -947,23 +947,40 @@ describe("Antigravity indicator suggestions (#2836)", () => {
     expect(suggestedQuotaSource(command)).toBeNull();
   });
   it("reads the footer and weekly with later context clipped", () => {
-    const footer = "5h: 1% (4h 17m) | weekly: 10% (4d 5h) | Ctx: 0%";
+    const footer = "5h: 1% (4h 17m) | weekly 10% used (4d 5h) | Ctx: 0%";
     expect(new RegExp(ANTIGRAVITY_CONTEXT_REGEX).exec(footer)?.[1]).toBe("0");
     expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec(footer)?.[1]).toBe("10");
     expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec(footer.slice(0, -2))?.[1]).toBe("10");
   });
   it.each([0, 10, 100, 101])("captures displayed %i without range validation", (value) => {
     expect(new RegExp(ANTIGRAVITY_CONTEXT_REGEX).exec("Ctx: " + value + "%")?.[1]).toBe(String(value));
-    expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec("Weekly: " + value + "%")?.[1]).toBe(String(value));
+    expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec("Weekly " + value + "% used")?.[1]).toBe(String(value));
   });
   it.each([ANTIGRAVITY_CONTEXT_REGEX, ANTIGRAVITY_WEEKLY_QUOTA_REGEX])(
     "requires a complete label and percentage on one row: %s", (pattern) => {
-      const label = pattern === ANTIGRAVITY_CONTEXT_REGEX ? "Ctx" : "weekly";
+      const context = pattern === ANTIGRAVITY_CONTEXT_REGEX;
+      const label = context ? "Ctx:" : "weekly";
+      const suffix = context ? "%" : "% used";
       const re = new RegExp(pattern);
-      for (const row of ["5h: 10%", label + ": 100", label + ": 10", label.slice(0, -1),
-        label + ": 1.5%", label + ":\n10%", label.slice(0, -1) + "\n" + label.slice(-1) + ": 10%"])
+      for (const row of ["5h: 10%", label + " 100", label + " 10", label.slice(0, -1),
+        label + " 1.5" + suffix, label + "\n10" + suffix,
+        label.slice(0, -1) + "\n" + label.slice(-1) + " 10" + suffix])
         expect(re.exec(row), row).toBeNull();
-      expect(re.exec(label + ": 10%")?.[1]).toBe("10");
+      expect(re.exec(label + " 10" + suffix)?.[1]).toBe("10");
     },
   );
+  it.each(["weekly: 10%", "weekly: 10% used", "weekly 10%", "weekly 10% use",
+    "weekly 10%\nused", "weekly 10% u\nsed", "10% used"])(
+    "rejects ambiguous or clipped weekly reading %s", (row) => {
+      expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec(row)).toBeNull();
+    },
+  );
+  it("reads complete labels on separate physical rows independently", () => {
+    const weeklyRow = "weekly 10% used (4d 5h)";
+    const contextRow = "Ctx: 0%";
+    expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec(weeklyRow)?.[1]).toBe("10");
+    expect(new RegExp(ANTIGRAVITY_CONTEXT_REGEX).exec(contextRow)?.[1]).toBe("0");
+    expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec(contextRow)).toBeNull();
+    expect(new RegExp(ANTIGRAVITY_CONTEXT_REGEX).exec(weeklyRow)).toBeNull();
+  });
 });
