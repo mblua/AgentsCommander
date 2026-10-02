@@ -371,8 +371,7 @@ pub(crate) const SETTINGS_BACKUP_ROTATION_TARGET_GLOB: &str =
 pub(crate) const CODING_AGENTS_BASE_TARGET_NAME: &str = layered_name!("agents", default, "json");
 pub(crate) const CODING_AGENTS_LOCAL_TARGET_NAME: &str =
     layered_name!("agents", personal, no_git, "json");
-/// Tracked; the file does not exist yet, the location work creates it.
-#[allow(dead_code)] // switched on in Phase B
+/// Tracked, optional user/team-authored project patch; AC only reads it.
 pub(crate) const CODING_AGENTS_PROJECT_TARGET_NAME: &str = layered_name!("agents", project, "json");
 pub(crate) const CODING_AGENTS_LOCK_TARGET_NAME: &str =
     concat!(".", layered_name!("agents", default, "json"), ".lock");
