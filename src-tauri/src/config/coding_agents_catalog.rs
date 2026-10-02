@@ -5322,13 +5322,15 @@ mod tests {
                 keys_of(&direct.catalog)
             );
         }
-        let mut settings = AppSettings::default();
-        settings.project_paths = vec![
-            " ".into(),
-            primary.path().display().to_string(),
-            secondary.path().display().to_string(),
-        ];
-        settings.project_path = Some(secondary.path().display().to_string());
+        let mut settings = AppSettings {
+            project_paths: vec![
+                " ".into(),
+                primary.path().display().to_string(),
+                secondary.path().display().to_string(),
+            ],
+            project_path: Some(secondary.path().display().to_string()),
+            ..Default::default()
+        };
         let report = load_catalog_report_for_settings_with_config_dir(
             &settings,
             Some(instance.path().to_path_buf()),
