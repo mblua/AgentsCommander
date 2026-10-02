@@ -25,9 +25,7 @@ use chrono::{DateTime, Utc};
 /// wins, second polls every 50 ms for up to this window, else `LockTimeout`.
 const LOCK_TIMEOUT_5S: Duration = Duration::from_secs(5);
 
-/// Stale-lock window. After this elapsed since the lockfile's mtime, the next
-/// caller treats the lock as abandoned and removes it (HIGH-2 in plan #137).
-/// Production value 5 minutes; tests pass a smaller value to `LockGuard::acquire`.
+/// Compatibility acquisition argument; age no longer controls ownership.
 const LOCK_STALE_AFTER_5M: Duration = Duration::from_secs(300);
 
 // ── Public surface ──────────────────────────────────────────────────────────
@@ -141,6 +139,26 @@ pub enum TaskOpError {
     /// input: exit 1, no stdout, TASK.md unchanged, no backup.
     #[error("--title cannot start with reserved USER: prefix")]
     ReservedUserTitlePrefix,
+    #[error("invalid_status: {0}")]
+    InvalidStatus(String),
+    #[error("snapshot_too_large: TASK.md exceeds 256 KiB")]
+    SnapshotTooLarge,
+    #[error("status_too_large: encoded record exceeds 65536 bytes")]
+    StatusTooLarge,
+    #[error("sequence_overflow")]
+    SequenceOverflow,
+    #[error("request_id_conflict")]
+    RequestIdConflict,
+    #[error("revision_conflict: currentRevision={current_revision}")]
+    RevisionConflict { current_revision: String },
+    #[error("write_failed: {0}")]
+    WriteFailed(std::io::Error),
+    #[error("write_failed: status source changed; partial evidence preserved")]
+    StatusSourceChanged,
+    #[error("clean_recovery_pending: {0}")]
+    CleanRecoveryPending(String),
+    #[error("clean_recovery_conflict: {0}")]
+    CleanRecoveryConflict(String),
     #[error("TASK.md is locked by another writer (5s timeout). Try again.")]
     LockTimeout,
     #[error("failed to acquire TASK.md lock at {}: {}. Aborting; TASK.md left unchanged.", .0.display(), .1)]
@@ -415,94 +433,1060 @@ pub(crate) fn title_value_of(parsed: &ParsedTask) -> Option<String> {
 
 // ── Lock guard ──────────────────────────────────────────────────────────────
 
-/// Cooperative file-lock via `OpenOptions::create_new` (kernel-level mutex —
-/// `O_CREAT | O_EXCL` on Unix, `CREATE_NEW` on Windows). On `Drop` removes the
-/// lockfile best-effort. NOT mandatory — does not block external editors;
-/// see the size+mtime sentinel in `perform_inner` for that surface.
+/// Stable kernel lock. Each acquisition opens a separate handle; the kernel
+/// releases ownership on process death. Never unlink or replace this file.
 pub(crate) struct LockGuard {
-    path: PathBuf,
+    _file: std::fs::File,
 }
-
-/// #1579: on Windows a contended `CREATE_NEW` can fail with ERROR_ACCESS_DENIED (5) while the
-/// holder's `remove_file` is in flight, or ERROR_SHARING_VIOLATION (32) while another process
-/// holds the file. Both are contention. Raw codes only on Windows: 5 is EIO and 32 is EPIPE on Unix.
-#[cfg(windows)]
-fn is_transient_lock_open_error(e: &std::io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(5) | Some(32))
-}
-
-#[cfg(not(windows))]
-fn is_transient_lock_open_error(_e: &std::io::Error) -> bool {
-    false
-}
-
 impl LockGuard {
     pub(crate) fn acquire(
         path: &Path,
         timeout: Duration,
-        stale_after: Duration,
+        _stale_after: Duration,
     ) -> Result<Self, TaskOpError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|e| TaskOpError::LockIo(path.to_path_buf(), e))?;
         let start = Instant::now();
-        let mut saw_already_exists = false;
         loop {
-            match OpenOptions::new().write(true).create_new(true).open(path) {
-                Ok(mut file) => {
-                    // Best-effort metadata write — never abort lock acquisition on this.
-                    let _ = writeln!(
-                        file,
-                        "pid={} ts={}",
-                        std::process::id(),
-                        Utc::now().to_rfc3339()
-                    );
-                    return Ok(LockGuard {
-                        path: path.to_path_buf(),
-                    });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    saw_already_exists = true;
-                    // Stale-lock recovery: kernel CREATE_NEW is the mutex —
-                    // exactly one writer wins after the remove_file race.
-                    if let Ok(meta) = std::fs::metadata(path) {
-                        if meta
-                            .modified()
-                            .ok()
-                            .and_then(|m| m.elapsed().ok())
-                            .map(|d| d > stale_after)
-                            .unwrap_or(false)
-                        {
-                            log::warn!("[task] removing stale lock at {}", path.display());
-                            let _ = std::fs::remove_file(path);
-                            continue;
-                        }
-                    }
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(std::fs::TryLockError::WouldBlock) => {
                     if start.elapsed() >= timeout {
                         return Err(TaskOpError::LockTimeout);
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                Err(e) if is_transient_lock_open_error(&e) => {
-                    // #1579: contention only if a holder was ever seen. A persistent 5/32 with no
-                    // AlreadyExists in this call (directory at the path, ACL denial, foreign holder)
-                    // is a real I/O failure and must not be reported as a timeout.
-                    if start.elapsed() >= timeout {
-                        return Err(if saw_already_exists {
-                            TaskOpError::LockTimeout
-                        } else {
-                            TaskOpError::LockIo(path.to_path_buf(), e)
-                        });
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
+                Err(std::fs::TryLockError::Error(e)) => {
+                    return Err(TaskOpError::LockIo(path.to_path_buf(), e))
                 }
-                Err(e) => return Err(TaskOpError::LockIo(path.to_path_buf(), e)),
             }
         }
     }
 }
 
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+// Status persistence shares the TASK lock; callers own authorization.
+const STATUS_LIMIT: usize = 65_536;
+const STATUS_WINDOW: u64 = 131_073;
+const TASK_LIMIT: u64 = 256 * 1024;
+const MAX_SEQUENCE: u64 = (1u64 << 53) - 1;
+const STATUS_NAME: &str = "TASK-status.jsonl";
+const JOURNAL_NAME: &str = "TASK-clean.pending.json";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusRecord {
+    pub schema_version: u32,
+    pub kind: String,
+    pub topic_id: String,
+    pub sequence: u64,
+    pub request_id: Option<String>,
+    pub base_revision: Option<String>,
+    pub recorded_at: String,
+    pub author: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSnapshot {
+    pub workgroup_root: String,
+    pub task: Option<String>,
+    pub task_title: Option<String>,
+    pub description: String,
+    pub status: Option<String>,
+    pub revision: String,
+    pub status_record: Option<StatusRecord>,
+    pub tail_incomplete: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusReceipt {
+    pub revision: String,
+    pub record: StatusRecord,
+    pub replayed: bool,
+}
+
+struct StatusTail {
+    record: Option<StatusRecord>,
+    partial: Vec<u8>,
+    complete_len: u64,
+    len: u64,
+    modified: Option<SystemTime>,
+    bytes_read: usize,
+}
+
+impl StatusTail {
+    fn revision(&self) -> String {
+        self.record.as_ref().map_or_else(
+            || "legacy:0".into(),
+            |r| format!("{}:{}", r.topic_id, r.sequence),
+        )
     }
+}
+
+fn status_invalid(reason: impl Into<String>) -> TaskOpError {
+    TaskOpError::InvalidStatus(reason.into())
+}
+
+fn validate_status_text(text: &str) -> Result<(), TaskOpError> {
+    if text.trim().is_empty()
+        || text
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(status_invalid(
+            "empty status or forbidden control character",
+        ));
+    }
+    Ok(())
+}
+
+fn valid_author(author: &str) -> bool {
+    !author.chars().any(|c| c.is_whitespace() || c.is_control())
+        && author.split_once('/').is_some_and(|(project, agent)| {
+            !project.is_empty() && !agent.is_empty() && !agent.contains('/')
+        })
+}
+
+fn valid_revision(revision: &str) -> bool {
+    revision == "legacy:0"
+        || revision.rsplit_once(':').is_some_and(|(topic, sequence)| {
+            uuid::Uuid::parse_str(topic).is_ok()
+                && sequence
+                    .parse::<u64>()
+                    .is_ok_and(|n| n <= MAX_SEQUENCE && n.to_string() == sequence)
+        })
+}
+
+fn validate_record(bytes: &[u8]) -> Result<StatusRecord, TaskOpError> {
+    if bytes.len() + 1 > STATUS_LIMIT {
+        return Err(status_invalid("completed row exceeds 65536 bytes"));
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|e| status_invalid(format!("invalid completed JSON: {e}")))?;
+    for field in [
+        "schemaVersion",
+        "kind",
+        "topicId",
+        "sequence",
+        "requestId",
+        "baseRevision",
+        "recordedAt",
+        "author",
+        "status",
+    ] {
+        if value.get(field).is_none() {
+            return Err(status_invalid(format!("missing {field}")));
+        }
+    }
+    let r: StatusRecord = serde_json::from_value(value)
+        .map_err(|e| status_invalid(format!("invalid record shape: {e}")))?;
+    if r.schema_version != 1
+        || uuid::Uuid::parse_str(&r.topic_id).is_err()
+        || r.sequence > MAX_SEQUENCE
+        || DateTime::parse_from_rfc3339(&r.recorded_at)
+            .map_or(true, |t| t.offset().local_minus_utc() != 0)
+    {
+        return Err(status_invalid(
+            "unsupported schema, topic, sequence or UTC time",
+        ));
+    }
+    match r.kind.as_str() {
+        "topic_started"
+            if r.sequence == 0
+                && r.request_id.is_none()
+                && r.base_revision.is_none()
+                && r.author.is_none()
+                && r.status.is_none() => {}
+        "status"
+            if r.sequence > 0
+                && r.request_id
+                    .as_deref()
+                    .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
+                && r.base_revision.as_deref().is_some_and(valid_revision)
+                && r.author.as_deref().is_some_and(valid_author) =>
+        {
+            validate_status_text(
+                r.status
+                    .as_deref()
+                    .ok_or_else(|| status_invalid("missing status"))?,
+            )?;
+            let base = r.base_revision.as_deref().unwrap();
+            let expected = if r.sequence == 1 && base == "legacy:0" {
+                "legacy:0".to_string()
+            } else {
+                format!("{}:{}", r.topic_id, r.sequence - 1)
+            };
+            if base != expected {
+                return Err(status_invalid("invalid base sequence"));
+            }
+        }
+        _ => return Err(status_invalid("invalid kind or record semantics")),
+    }
+    Ok(r)
+}
+
+fn read_latest_status_locked(root: &Path) -> Result<StatusTail, TaskOpError> {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = root.join(STATUS_NAME);
+    let mut file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(StatusTail {
+                record: None,
+                partial: Vec::new(),
+                complete_len: 0,
+                len: 0,
+                modified: None,
+                bytes_read: 0,
+            })
+        }
+        Err(e) => return Err(TaskOpError::ReadFailed(path, e)),
+    };
+    let meta = file
+        .metadata()
+        .map_err(|e| TaskOpError::ReadFailed(path.clone(), e))?;
+    let len = file
+        .seek(SeekFrom::End(0))
+        .map_err(|e| TaskOpError::ReadFailed(path.clone(), e))?;
+    let start = len.saturating_sub(STATUS_WINDOW);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| TaskOpError::ReadFailed(path.clone(), e))?;
+    let mut bytes = Vec::with_capacity((len - start) as usize);
+    file.take(STATUS_WINDOW)
+        .read_to_end(&mut bytes)
+        .map_err(|e| TaskOpError::ReadFailed(path, e))?;
+    let last_lf = bytes.iter().rposition(|b| *b == b'\n');
+    let end = last_lf.map_or(0, |i| i + 1);
+    let partial = bytes[end..].to_vec();
+    if partial.len() >= STATUS_LIMIT || (last_lf.is_none() && start != 0) {
+        return Err(status_invalid("partial suffix exceeds 65535 bytes"));
+    }
+    let record = if let Some(lf) = last_lf {
+        let row_start = bytes[..lf]
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map_or(0, |i| i + 1);
+        if row_start == 0 && start != 0 {
+            return Err(status_invalid("oversized completed row"));
+        }
+        Some(validate_record(&bytes[row_start..lf])?)
+    } else {
+        None
+    };
+    Ok(StatusTail {
+        record,
+        partial,
+        complete_len: start + end as u64,
+        len,
+        modified: meta.modified().ok(),
+        bytes_read: bytes.len(),
+    })
+}
+
+pub fn read_latest_status(root: &Path) -> Result<TaskSnapshot, TaskOpError> {
+    read_snapshot(root)
+}
+
+pub fn read_snapshot(root: &Path) -> Result<TaskSnapshot, TaskOpError> {
+    use std::io::Read;
+    let _lock = LockGuard::acquire(
+        &root.join("TASK.md.lock"),
+        LOCK_TIMEOUT_5S,
+        LOCK_STALE_AFTER_5M,
+    )?;
+    recover_clean_pair_locked(root)?;
+    let path = root.join("TASK.md");
+    let task = match std::fs::File::open(&path) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(TASK_LIMIT + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| TaskOpError::ReadFailed(path.clone(), e))?;
+            if bytes.len() as u64 > TASK_LIMIT {
+                return Err(TaskOpError::SnapshotTooLarge);
+            }
+            Some(String::from_utf8(bytes).map_err(|e| {
+                TaskOpError::ReadFailed(
+                    path.clone(),
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                )
+            })?)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(TaskOpError::ReadFailed(path, e)),
+    };
+    let parsed = parse_task(task.as_deref().unwrap_or(""));
+    let tail = read_latest_status_locked(root)?;
+    Ok(TaskSnapshot {
+        workgroup_root: root.to_string_lossy().into_owned(),
+        task_title: title_value_of(&parsed),
+        description: parsed.body,
+        task,
+        status: tail.record.as_ref().and_then(|r| r.status.clone()),
+        revision: tail.revision(),
+        tail_incomplete: !tail.partial.is_empty(),
+        status_record: tail.record,
+    })
+}
+
+fn write_failed(e: std::io::Error) -> TaskOpError {
+    TaskOpError::WriteFailed(e)
+}
+
+// Failures are injected only in fixtures, in this thread and this module.
+#[cfg(test)]
+thread_local! {
+    static IO_MUTATION: std::cell::RefCell<Option<(String, PathBuf, Vec<u8>)>> = const { std::cell::RefCell::new(None) };
+    static IO_FAULT: std::cell::RefCell<(Option<String>, Vec<String>)> = const { std::cell::RefCell::new((None, Vec::new())) };
+}
+fn io_boundary(name: &str) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        if std::env::var("AC_TASK_OPS_CHILD_BOUNDARY").as_deref() == Ok(name)
+            && std::env::var_os("AC_TASK_OPS_CHILD_FIXTURE").is_some()
+        {
+            std::process::exit(71);
+        }
+        IO_MUTATION.with(|v| {
+            let mut v = v.borrow_mut();
+            if v.as_ref().is_some_and(|(point, _, _)| point == name) {
+                let (_, path, bytes) = v.take().unwrap();
+                std::fs::write(path, bytes).unwrap();
+            }
+        });
+        return IO_FAULT.with(|f| {
+            let mut f = f.borrow_mut();
+            f.1.push(name.into());
+            if f.0.as_deref() == Some(name) {
+                Err(std::io::Error::other(format!("fixture: {name}")))
+            } else {
+                Ok(())
+            }
+        });
+    }
+    #[cfg(not(test))]
+    {
+        let _ = name;
+        Ok(())
+    }
+}
+
+fn sync_file(file: &std::fs::File, boundary: &str) -> std::io::Result<()> {
+    io_boundary(boundary)?;
+    file.sync_all()
+}
+
+fn repair_partial_locked(root: &Path, tail: &StatusTail) -> Result<(), TaskOpError> {
+    if tail.partial.is_empty() {
+        return Ok(());
+    }
+    let path = root.join(STATUS_NAME);
+    let unchanged = |current: &StatusTail| {
+        current.len == tail.len
+            && current.modified == tail.modified
+            && current.partial == tail.partial
+            && current.complete_len == tail.complete_len
+            && current.record == tail.record
+    };
+    if !unchanged(&read_latest_status_locked(root)?) {
+        return Err(TaskOpError::StatusSourceChanged);
+    }
+    let backup = root.join(format!(
+        "TASK-status.partial.{}.{}.bak",
+        Utc::now().format("%Y%m%d-%H%M%S"),
+        uuid::Uuid::new_v4()
+    ));
+    io_boundary("partial_backup_create").map_err(write_failed)?;
+    let mut saved = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&backup)
+        .map_err(write_failed)?;
+    io_boundary("partial_backup_write").map_err(write_failed)?;
+    saved.write_all(&tail.partial).map_err(write_failed)?;
+    sync_file(&saved, "partial_backup_sync").map_err(write_failed)?;
+    if !unchanged(&read_latest_status_locked(root)?) {
+        return Err(TaskOpError::StatusSourceChanged);
+    }
+    io_boundary("partial_truncate").map_err(write_failed)?;
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(write_failed)?;
+    file.set_len(tail.complete_len).map_err(write_failed)?;
+    sync_file(&file, "partial_truncate_sync").map_err(write_failed)
+}
+
+pub fn append_status(
+    root: &Path,
+    expected_revision: &str,
+    request_id: &str,
+    text: &str,
+    author: &str,
+) -> Result<StatusReceipt, TaskOpError> {
+    let _lock = LockGuard::acquire(
+        &root.join("TASK.md.lock"),
+        LOCK_TIMEOUT_5S,
+        LOCK_STALE_AFTER_5M,
+    )?;
+    recover_clean_pair_locked(root)?;
+    let tail = read_latest_status_locked(root)?;
+    if let Some(last) = &tail.record {
+        if last.request_id.as_deref() == Some(request_id) {
+            if last.base_revision.as_deref() != Some(expected_revision)
+                || last.author.as_deref() != Some(author)
+                || last.status.as_deref() != Some(text)
+            {
+                return Err(TaskOpError::RequestIdConflict);
+            }
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(root.join(STATUS_NAME))
+                .map_err(write_failed)?;
+            sync_file(&file, "append_sync").map_err(write_failed)?;
+            return Ok(StatusReceipt {
+                revision: tail.revision(),
+                record: last.clone(),
+                replayed: true,
+            });
+        }
+    }
+    validate_status_text(text)?;
+    if uuid::Uuid::parse_str(request_id).is_err()
+        || !valid_revision(expected_revision)
+        || !valid_author(author)
+    {
+        return Err(status_invalid("invalid request, revision or author"));
+    }
+    let revision = tail.revision();
+    if expected_revision != revision {
+        return Err(TaskOpError::RevisionConflict {
+            current_revision: revision,
+        });
+    }
+    let (topic, sequence) = match &tail.record {
+        Some(r) if r.sequence == MAX_SEQUENCE => return Err(TaskOpError::SequenceOverflow),
+        Some(r) => (r.topic_id.clone(), r.sequence + 1),
+        None => (uuid::Uuid::new_v4().to_string(), 1),
+    };
+    let record = StatusRecord {
+        schema_version: 1,
+        kind: "status".into(),
+        topic_id: topic,
+        sequence,
+        request_id: Some(request_id.into()),
+        base_revision: Some(expected_revision.into()),
+        recorded_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        author: Some(author.into()),
+        status: Some(text.into()),
+    };
+    let mut bytes = serde_json::to_vec(&record).map_err(|e| status_invalid(e.to_string()))?;
+    bytes.push(b'\n');
+    if bytes.len() > STATUS_LIMIT {
+        return Err(TaskOpError::StatusTooLarge);
+    }
+    repair_partial_locked(root, &tail)?;
+    io_boundary("append_open").map_err(write_failed)?;
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(root.join(STATUS_NAME))
+        .map_err(write_failed)?;
+    #[cfg(test)]
+    if IO_FAULT.with(|f| f.borrow().0.as_deref() == Some("append_partial")) {
+        file.write_all(&bytes[..20]).map_err(write_failed)?;
+        return Err(write_failed(std::io::Error::other("fixture partial")));
+    }
+    io_boundary("append_write").map_err(write_failed)?;
+    file.write_all(&bytes).map_err(write_failed)?;
+    sync_file(&file, "append_sync").map_err(write_failed)?;
+    Ok(StatusReceipt {
+        revision: format!("{}:{}", record.topic_id, record.sequence),
+        record,
+        replayed: false,
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CleanSide {
+    existed: bool,
+    original_hash: Option<String>,
+    target_hash: String,
+    backup: Option<String>,
+    stage: String,
+}
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CleanJournal {
+    schema_version: u32,
+    tx_id: String,
+    stamp: String,
+    suffix: u32,
+    task: CleanSide,
+    status: CleanSide,
+}
+#[derive(PartialEq)]
+struct SourceState {
+    hash: Option<String>,
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+fn source_state(path: &Path) -> std::io::Result<SourceState> {
+    use sha2::Digest;
+    use std::io::Read;
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SourceState {
+                hash: None,
+                len: 0,
+                modified: None,
+            })
+        }
+        Err(e) => return Err(e),
+    };
+    let meta = file.metadata()?;
+    let mut hash = sha2::Sha256::new();
+    let mut buf = [0u8; 65536];
+    let mut len = 0;
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+        len += n as u64;
+    }
+    if len != meta.len() {
+        return Err(std::io::Error::other("source changed while hashing"));
+    }
+    Ok(SourceState {
+        hash: Some(format!("{:x}", hash.finalize())),
+        len,
+        modified: meta.modified().ok(),
+    })
+}
+
+fn rename_retry(source: &Path, target: &Path) -> std::io::Result<()> {
+    for attempt in 0..3 {
+        match std::fs::rename(source, target) {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if attempt < 2
+                    && (e.kind() == std::io::ErrorKind::PermissionDenied
+                        || matches!(e.raw_os_error(), Some(5) | Some(32))) =>
+            {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!()
+}
+
+fn clean_conflict(reason: impl Into<String>) -> TaskOpError {
+    TaskOpError::CleanRecoveryConflict(reason.into())
+}
+fn clean_pending(e: std::io::Error) -> TaskOpError {
+    TaskOpError::CleanRecoveryPending(e.to_string())
+}
+
+fn backup_names(stamp: &str, suffix: u32) -> (String, String) {
+    let tag = if suffix == 0 {
+        stamp.into()
+    } else {
+        format!("{stamp}.{suffix}")
+    };
+    (
+        format!("TASK.{tag}.bak.md"),
+        format!("TASK-status.{tag}.bak.jsonl"),
+    )
+}
+
+fn validate_journal(j: &CleanJournal) -> Result<(), TaskOpError> {
+    let hash_ok = |h: &str| {
+        h.len() == 64
+            && h.bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    };
+    let stamp_ok = j.stamp.len() == 15
+        && j.stamp.as_bytes()[8] == b'-'
+        && j.stamp
+            .bytes()
+            .enumerate()
+            .all(|(i, c)| i == 8 || c.is_ascii_digit())
+        && chrono::NaiveDateTime::parse_from_str(&j.stamp, "%Y%m%d-%H%M%S").is_ok();
+    if j.schema_version != 1
+        || uuid::Uuid::parse_str(&j.tx_id).is_err()
+        || !stamp_ok
+        || j.suffix > 99
+    {
+        return Err(clean_conflict("invalid journal header"));
+    }
+    let names = backup_names(&j.stamp, j.suffix);
+    let any = j.task.existed || j.status.existed;
+    for (side, target, backup) in [
+        (&j.task, "TASK.md", names.0),
+        (&j.status, STATUS_NAME, names.1),
+    ] {
+        if side.stage != format!("{target}.tmp.{}", j.tx_id)
+            || side.backup != any.then_some(backup)
+            || side.existed != side.original_hash.is_some()
+            || side.original_hash.as_deref().is_some_and(|h| !hash_ok(h))
+            || !hash_ok(&side.target_hash)
+        {
+            return Err(clean_conflict("invalid journal side or basename"));
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_owned(path: &Path, hash: &str) {
+    if source_state(path).ok().and_then(|s| s.hash).as_deref() == Some(hash) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub fn recover_clean_pair(root: &Path) -> Result<(), TaskOpError> {
+    let _lock = LockGuard::acquire(
+        &root.join("TASK.md.lock"),
+        LOCK_TIMEOUT_5S,
+        LOCK_STALE_AFTER_5M,
+    )?;
+    recover_clean_pair_locked(root)
+}
+
+fn recover_clean_pair_locked(root: &Path) -> Result<(), TaskOpError> {
+    use std::io::Read;
+    let journal_path = root.join(JOURNAL_NAME);
+    let file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&journal_path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(clean_pending(e)),
+    };
+    let mut bytes = Vec::new();
+    file.take(16_385)
+        .read_to_end(&mut bytes)
+        .map_err(clean_pending)?;
+    if bytes.len() > 16_384 {
+        return Err(clean_conflict("oversized journal"));
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| clean_conflict(e.to_string()))?;
+    for field in ["schemaVersion", "txId", "stamp", "suffix", "task", "status"] {
+        if value.get(field).is_none() {
+            return Err(clean_conflict("missing journal field"));
+        }
+    }
+    for side in ["task", "status"] {
+        for field in ["existed", "originalHash", "targetHash", "backup", "stage"] {
+            if value[side].get(field).is_none() {
+                return Err(clean_conflict("missing journal side field"));
+            }
+        }
+    }
+    let journal: CleanJournal =
+        serde_json::from_value(value).map_err(|e| clean_conflict(e.to_string()))?;
+    validate_journal(&journal)?;
+    let journal_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&journal_path)
+        .map_err(clean_pending)?;
+    sync_file(&journal_file, "journal_sync").map_err(clean_pending)?;
+    drop(journal_file);
+    finish_clean_locked(root, &journal, &bytes)
+}
+
+fn finish_clean_locked(
+    root: &Path,
+    journal: &CleanJournal,
+    journal_bytes: &[u8],
+) -> Result<(), TaskOpError> {
+    // Validate the entire pair before replacing either target.
+    for (side, target) in [(&journal.task, "TASK.md"), (&journal.status, STATUS_NAME)] {
+        let current = source_state(&root.join(target)).map_err(clean_pending)?;
+        if current.hash.as_deref() != Some(&side.target_hash) && current.hash != side.original_hash
+        {
+            return Err(clean_conflict(format!("external edit: {target}")));
+        }
+        if let Some(backup) = &side.backup {
+            let expected = side
+                .original_hash
+                .clone()
+                .unwrap_or_else(|| hash_bytes(&[]));
+            if source_state(&root.join(backup))
+                .map_err(|e| clean_conflict(e.to_string()))?
+                .hash
+                .as_deref()
+                != Some(&expected)
+            {
+                return Err(clean_conflict("missing or changed backup"));
+            }
+        }
+        if current.hash.as_deref() != Some(&side.target_hash)
+            && source_state(&root.join(&side.stage))
+                .map_err(|e| clean_conflict(e.to_string()))?
+                .hash
+                .as_deref()
+                != Some(&side.target_hash)
+        {
+            return Err(clean_conflict("missing or changed needed stage"));
+        }
+    }
+    for (side, target, boundary) in [
+        (&journal.task, "TASK.md", "task_rename"),
+        (&journal.status, STATUS_NAME, "status_rename"),
+    ] {
+        let path = root.join(target);
+        let current = source_state(&path).map_err(clean_pending)?;
+        if current.hash.as_deref() == Some(&side.target_hash) {
+            continue;
+        }
+        if current.hash != side.original_hash {
+            return Err(clean_conflict(format!(
+                "external edit before replacement: {target}"
+            )));
+        }
+        io_boundary(boundary).map_err(clean_pending)?;
+        if source_state(&path).map_err(clean_pending)?.hash != side.original_hash {
+            return Err(clean_conflict(
+                "external edit immediately before replacement",
+            ));
+        }
+        if source_state(&root.join(&side.stage))
+            .map_err(|e| clean_conflict(e.to_string()))?
+            .hash
+            .as_deref()
+            != Some(&side.target_hash)
+        {
+            return Err(clean_conflict(
+                "stage changed immediately before replacement",
+            ));
+        }
+        rename_retry(&root.join(&side.stage), &path).map_err(clean_pending)?;
+        io_boundary(&format!("after_{boundary}")).map_err(clean_pending)?;
+    }
+    // Even an already-new pair requires fresh sync attempts for BOTH targets.
+    // Keep the first failure while still attempting the other target.
+    let mut sync_error = None;
+    for (side, target, boundary) in [
+        (&journal.task, "TASK.md", "task_target_sync"),
+        (&journal.status, STATUS_NAME, "status_target_sync"),
+    ] {
+        let path = root.join(target);
+        if source_state(&path).map_err(clean_pending)?.hash.as_deref() != Some(&side.target_hash) {
+            return Err(clean_conflict("target hash changed"));
+        }
+        let attempt = io_boundary(&format!("{boundary}_open")).and_then(|()| {
+            let file = OpenOptions::new().read(true).write(true).open(path)?;
+            sync_file(&file, boundary)
+        });
+        if let Err(e) = attempt {
+            if sync_error.is_none() {
+                sync_error = Some(e);
+            }
+        }
+    }
+    if let Some(e) = sync_error {
+        return Err(clean_pending(e));
+    }
+    for (side, target) in [(&journal.task, "TASK.md"), (&journal.status, STATUS_NAME)] {
+        if source_state(&root.join(target))
+            .map_err(clean_pending)?
+            .hash
+            .as_deref()
+            != Some(&side.target_hash)
+        {
+            return Err(clean_conflict("target changed after sync"));
+        }
+    }
+    if std::fs::read(root.join(JOURNAL_NAME)).map_err(clean_pending)? != journal_bytes {
+        return Err(clean_conflict("journal changed"));
+    }
+    io_boundary("journal_remove").map_err(clean_pending)?;
+    std::fs::remove_file(root.join(JOURNAL_NAME)).map_err(clean_pending)?;
+    for side in [&journal.task, &journal.status] {
+        cleanup_owned(&root.join(&side.stage), &side.target_hash);
+    }
+    Ok(())
+}
+
+fn copy_backup(
+    source: &Path,
+    dest: &mut std::fs::File,
+    exists: bool,
+    boundary: &str,
+    owned_hash: &mut String,
+) -> std::io::Result<()> {
+    use sha2::Digest;
+    use std::io::Read;
+    let mut hash = sha2::Sha256::new();
+    io_boundary(&format!("{boundary}_copy"))?;
+    if exists {
+        let mut source = std::fs::File::open(source)?;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let count = source.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            let mut offset = 0;
+            while offset < count {
+                io_boundary(&format!("{boundary}_write"))?;
+                let written = dest.write(&buffer[offset..count])?;
+                if written == 0 {
+                    return Err(std::io::ErrorKind::WriteZero.into());
+                }
+                hash.update(&buffer[offset..offset + written]);
+                *owned_hash = format!("{:x}", hash.clone().finalize());
+                offset += written;
+                io_boundary(&format!("{boundary}_after_write"))?;
+            }
+        }
+    }
+    sync_file(dest, &format!("{boundary}_sync"))
+}
+
+pub fn clean_pair(root: &Path) -> Result<EditOutcome, TaskOpError> {
+    perform(root, TaskOp::Clean)
+}
+
+fn clean_pair_locked(
+    root: &Path,
+    existing: &str,
+    now: DateTime<Utc>,
+) -> Result<EditOutcome, TaskOpError> {
+    let parsed = parse_task(existing);
+    let cleaned = apply_clean(&parsed);
+    // Corrupt logs are intentionally archivable; only inspect for NoOp when
+    // the description already matches the canonical reset.
+    if cleaned.frontmatter == parsed.frontmatter && cleaned.body == parsed.body {
+        if let Ok(tail) = read_latest_status_locked(root) {
+            if tail.partial.is_empty()
+                && (tail.len == 0
+                    || tail
+                        .record
+                        .as_ref()
+                        .is_some_and(|r| r.kind == "topic_started")
+                        && tail.complete_len == tail.bytes_read as u64
+                        && tail.bytes_read <= STATUS_LIMIT
+                        && {
+                            let bytes =
+                                std::fs::read(root.join(STATUS_NAME)).map_err(write_failed)?;
+                            bytes.iter().filter(|b| **b == b'\n').count() == 1
+                        })
+            {
+                return Ok(EditOutcome::NoOp {
+                    content: existing.into(),
+                    title: title_value_of(&parsed),
+                });
+            }
+        }
+    }
+    let task_path = root.join("TASK.md");
+    let status_path = root.join(STATUS_NAME);
+    let original_task = source_state(&task_path).map_err(write_failed)?;
+    let original_status = source_state(&status_path).map_err(write_failed)?;
+    // The caller's description must still be the description being archived.
+    if original_task
+        .hash
+        .as_deref()
+        .is_some_and(|h| h != hash_bytes(existing.as_bytes()))
+    {
+        return Err(clean_conflict("description changed before archive"));
+    }
+    let new_content = render(&cleaned);
+    let seed = StatusRecord {
+        schema_version: 1,
+        kind: "topic_started".into(),
+        topic_id: uuid::Uuid::new_v4().to_string(),
+        sequence: 0,
+        request_id: None,
+        base_revision: None,
+        recorded_at: now.to_rfc3339(),
+        author: None,
+        status: None,
+    };
+    let mut seed_bytes = serde_json::to_vec(&seed).map_err(|e| status_invalid(e.to_string()))?;
+    seed_bytes.push(b'\n');
+    let tx = uuid::Uuid::new_v4().to_string();
+    let stamp = now.format("%Y%m%d-%H%M%S").to_string();
+    let mut journal = CleanJournal {
+        schema_version: 1,
+        tx_id: tx.clone(),
+        stamp: stamp.clone(),
+        suffix: 0,
+        task: CleanSide {
+            existed: original_task.hash.is_some(),
+            original_hash: original_task.hash.clone(),
+            target_hash: hash_bytes(new_content.as_bytes()),
+            backup: None,
+            stage: format!("TASK.md.tmp.{tx}"),
+        },
+        status: CleanSide {
+            existed: original_status.hash.is_some(),
+            original_hash: original_status.hash.clone(),
+            target_hash: hash_bytes(&seed_bytes),
+            backup: None,
+            stage: format!("TASK-status.jsonl.tmp.{tx}"),
+        },
+    };
+    if journal.task.existed || journal.status.existed {
+        let mut reserved = None;
+        for n in 0..=99 {
+            let (task_name, status_name) = backup_names(&stamp, n);
+            io_boundary("task_backup_create").map_err(write_failed)?;
+            let task_file = match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(root.join(&task_name))
+            {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(write_failed(e)),
+            };
+            let status_file = io_boundary("status_backup_create").and_then(|()| {
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(root.join(&status_name))
+            });
+            match status_file {
+                Ok(f) => {
+                    reserved = Some((n, task_name, status_name, task_file, f));
+                    break;
+                }
+                Err(e) => {
+                    drop(task_file);
+                    cleanup_owned(&root.join(&task_name), &hash_bytes(&[]));
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        continue;
+                    }
+                    return Err(write_failed(e));
+                }
+            }
+        }
+        let (n, task_name, status_name, mut task_file, mut status_file) =
+            reserved.ok_or_else(|| {
+                TaskOpError::BackupExhausted(root.join(format!("TASK.{stamp}.bak.md")))
+            })?;
+        journal.suffix = n;
+        journal.task.backup = Some(task_name.clone());
+        journal.status.backup = Some(status_name.clone());
+        // Track bytes actually written, so failure cleanup cannot delete a
+        // foreign replacement. Successfully synced archives stay immutable.
+        let mut task_owned_hash = hash_bytes(&[]);
+        let mut status_owned_hash = hash_bytes(&[]);
+        let task_result = copy_backup(
+            &task_path,
+            &mut task_file,
+            journal.task.existed,
+            "task_backup",
+            &mut task_owned_hash,
+        );
+        let task_finished = task_result.is_ok();
+        let copied = task_result.and_then(|()| {
+            copy_backup(
+                &status_path,
+                &mut status_file,
+                journal.status.existed,
+                "status_backup",
+                &mut status_owned_hash,
+            )
+        });
+        drop(task_file);
+        drop(status_file);
+        if let Err(e) = copied {
+            if !task_finished {
+                cleanup_owned(&root.join(&task_name), &task_owned_hash);
+            }
+            cleanup_owned(&root.join(&status_name), &status_owned_hash);
+            return Err(write_failed(e));
+        }
+        for (side, expected) in [
+            (&journal.task, &original_task),
+            (&journal.status, &original_status),
+        ] {
+            let backup_hash = source_state(&root.join(side.backup.as_ref().unwrap()))
+                .map_err(write_failed)?
+                .hash;
+            if backup_hash != Some(expected.hash.clone().unwrap_or_else(|| hash_bytes(&[]))) {
+                return Err(clean_conflict("archive source changed"));
+            }
+        }
+    }
+    for (side, bytes, boundary) in [
+        (&journal.task, new_content.as_bytes(), "task_stage"),
+        (&journal.status, seed_bytes.as_slice(), "status_stage"),
+    ] {
+        io_boundary(&format!("{boundary}_create")).map_err(write_failed)?;
+        let mut stage = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(root.join(&side.stage))
+            .map_err(write_failed)?;
+        io_boundary(&format!("{boundary}_write")).map_err(write_failed)?;
+        stage.write_all(bytes).map_err(write_failed)?;
+        sync_file(&stage, &format!("{boundary}_sync")).map_err(write_failed)?;
+    }
+    io_boundary("before_source_recheck").map_err(write_failed)?;
+    if source_state(&task_path).map_err(write_failed)? != original_task
+        || source_state(&status_path).map_err(write_failed)? != original_status
+    {
+        return Err(clean_conflict("source changed before journal"));
+    }
+    let journal_bytes = serde_json::to_vec(&journal).map_err(|e| clean_conflict(e.to_string()))?;
+    let tmp = root.join(format!("{JOURNAL_NAME}.tmp.{tx}"));
+    io_boundary("journal_create").map_err(write_failed)?;
+    let mut journal_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(write_failed)?;
+    io_boundary("journal_write").map_err(write_failed)?;
+    journal_file
+        .write_all(&journal_bytes)
+        .map_err(write_failed)?;
+    sync_file(&journal_file, "journal_stage_sync").map_err(write_failed)?;
+    drop(journal_file);
+    if root.join(JOURNAL_NAME).exists() {
+        return Err(clean_conflict("foreign journal appeared"));
+    }
+    io_boundary("journal_publish").map_err(write_failed)?;
+    rename_retry(&tmp, &root.join(JOURNAL_NAME)).map_err(write_failed)?;
+    io_boundary("after_journal_publish").map_err(clean_pending)?;
+    let published = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join(JOURNAL_NAME))
+        .map_err(clean_pending)?;
+    sync_file(&published, "journal_sync").map_err(clean_pending)?;
+    drop(published);
+    finish_clean_locked(root, &journal, &journal_bytes)?;
+    Ok(EditOutcome::Wrote {
+        backup: journal.task.backup.map(|p| root.join(p)),
+        content: new_content,
+        title: title_value_of(&cleaned),
+    })
 }
 
 // ── Core flow (clock-injection seam, §G.1) ─────────────────────────────────
@@ -523,12 +1507,18 @@ where
 
     let _lock = LockGuard::acquire(&lock_path, LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M)?;
 
+    recover_clean_pair_locked(wg_root)?;
+
     // ── 2. Read existing content ───────────────────────────────────────────
     let (existing, file_existed) = match std::fs::read_to_string(&task_path) {
         Ok(s) => (s, true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
         Err(e) => return Err(TaskOpError::ReadFailed(task_path, e)),
     };
+
+    if matches!(op, TaskOp::Clean) {
+        return clean_pair_locked(wg_root, &existing, now());
+    }
 
     // ── 2a. Capture pre-edit sentinel (HIGH-4) ────────────────────────────
     // Snapshot is taken AFTER the read, so an external write that lands in the
@@ -934,14 +1924,14 @@ mod tests {
     // ── U19-U22: LockGuard + atomic publish ─────────────────────────────
 
     #[test]
-    fn lock_guard_creates_and_removes_lockfile() {
+    fn lock_guard_creates_and_preserves_lockfile() {
         let fix = FixtureRoot::new("task-u19");
         let lock_path = fix.path().join("TASK.md.lock");
         {
             let _g = LockGuard::acquire(&lock_path, LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M).unwrap();
             assert!(lock_path.exists());
         }
-        assert!(!lock_path.exists());
+        assert!(lock_path.exists());
     }
 
     #[test]
@@ -954,7 +1944,7 @@ mod tests {
     }
 
     #[test]
-    fn lock_guard_recovers_stale_lockfile() {
+    fn lock_guard_ignores_stale_unowned_contents() {
         // Test approach (std-only — no `filetime`, no FFI):
         // pre-create the lockfile via OpenOptions::create_new, drop the handle,
         // sleep ~30 ms, then call acquire with a small `stale_after` (e.g. 10 ms).
@@ -979,105 +1969,7 @@ mod tests {
         .expect("stale lock should be recovered");
         assert!(lock_path.exists());
         drop(g);
-        assert!(!lock_path.exists());
-    }
-
-    // ── #1579: transient Windows lock-open retry ────────────────────────
-
-    #[test]
-    fn issue_1579_transient_lock_open_error_classification() {
-        let on_windows = cfg!(windows);
-        assert_eq!(
-            is_transient_lock_open_error(&std::io::Error::from_raw_os_error(5)),
-            on_windows
-        );
-        assert_eq!(
-            is_transient_lock_open_error(&std::io::Error::from_raw_os_error(32)),
-            on_windows
-        );
-        assert!(!is_transient_lock_open_error(
-            &std::io::Error::from_raw_os_error(2)
-        ));
-        assert!(!is_transient_lock_open_error(
-            &std::io::Error::from_raw_os_error(303)
-        ));
-        assert!(!is_transient_lock_open_error(&std::io::Error::from(
-            std::io::ErrorKind::AlreadyExists
-        )));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn issue_1579_directory_at_lock_path_is_lock_io_after_deadline() {
-        let fix = FixtureRoot::new("task-1579-dir");
-        let lock_path = fix.path().join("TASK.md.lock");
-        std::fs::create_dir(&lock_path).unwrap();
-
-        let started = Instant::now();
-        let res = LockGuard::acquire(&lock_path, Duration::from_millis(300), LOCK_STALE_AFTER_5M);
-        let elapsed = started.elapsed();
-
-        match res {
-            Err(TaskOpError::LockIo(p, e)) => {
-                assert_eq!(p, lock_path);
-                assert_eq!(e.raw_os_error(), Some(5));
-            }
-            Err(other) => panic!("expected LockIo, got {other:?}"),
-            Ok(_) => panic!("expected LockIo, got Ok"),
-        }
-        assert!(
-            elapsed >= Duration::from_millis(300),
-            "retry must last to the deadline; elapsed {elapsed:?}"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn issue_1579_acquire_retries_access_denied_race() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let fix = FixtureRoot::new("task-1579-race");
-        let lock_path = fix.path().join("TASK.md.lock");
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut hammers = Vec::new();
-        for _ in 0..4 {
-            let p = lock_path.clone();
-            let stop = stop.clone();
-            hammers.push(thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    // A hammer removes only a file it created.
-                    if let Ok(f) = OpenOptions::new().write(true).create_new(true).open(&p) {
-                        drop(f);
-                        let _ = std::fs::remove_file(&p);
-                    }
-                }
-            }));
-        }
-
-        let deadline = Instant::now() + Duration::from_secs(8);
-        let mut acquired = 0usize;
-        while Instant::now() < deadline {
-            match LockGuard::acquire(&lock_path, LOCK_TIMEOUT_5S, LOCK_STALE_AFTER_5M) {
-                Ok(g) => {
-                    drop(g);
-                    acquired += 1;
-                }
-                Err(e) => {
-                    stop.store(true, Ordering::Relaxed);
-                    for h in hammers {
-                        h.join().unwrap();
-                    }
-                    panic!("acquire failed after {acquired} successes: {e:?}");
-                }
-            }
-        }
-
-        stop.store(true, Ordering::Relaxed);
-        for h in hammers {
-            h.join().unwrap();
-        }
-        assert!(acquired > 0, "no acquisition succeeded");
+        assert!(lock_path.exists());
     }
 
     #[test]
@@ -1100,8 +1992,8 @@ mod tests {
                 name
             );
         }
-        // Lock file must also be gone.
-        assert!(!wg.join("TASK.md.lock").exists());
+        // Stable lock file remains.
+        assert!(wg.join("TASK.md.lock").exists());
     }
 
     // ── U23: backup filename format ─────────────────────────────────────
@@ -1170,7 +2062,7 @@ mod tests {
         // TASK.md unchanged.
         assert_eq!(std::fs::read(&task).unwrap(), original);
         // U30: lock cleaned up.
-        assert!(!wg.join("TASK.md.lock").exists());
+        assert!(wg.join("TASK.md.lock").exists());
         // No tmp file written (we abort before the tmp-write).
         let pid_tmp = wg.join(format!("TASK.md.tmp.{}", std::process::id()));
         assert!(!pid_tmp.exists());
@@ -1193,7 +2085,7 @@ mod tests {
             std::fs::create_dir(&candidate).unwrap();
         }
         let _ = perform_inner(&wg, TaskOp::SetTitle("x".into()), now);
-        assert!(!wg.join("TASK.md.lock").exists());
+        assert!(wg.join("TASK.md.lock").exists());
     }
 
     // ── U25: concurrent set-title + append-body ─────────────────────────
@@ -1727,5 +2619,948 @@ mod tests {
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
         let r = perform_inner(&wg, TaskOp::SetTitle("Auto".into()), now).unwrap();
         assert!(matches!(r, EditOutcome::NoOp { .. }));
+    }
+    fn issue_2837_fixture() -> FixtureRoot {
+        let f = FixtureRoot::new("issue-2837");
+        std::fs::create_dir_all(f.path()).unwrap();
+        f
+    }
+    fn issue_2837_id() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+    fn issue_2837_fault(point: Option<&str>) {
+        IO_FAULT.with(|f| *f.borrow_mut() = (point.map(str::to_string), Vec::new()));
+    }
+    fn issue_2837_calls() -> Vec<String> {
+        IO_FAULT.with(|f| f.borrow().1.clone())
+    }
+    fn issue_2837_append(root: &Path, revision: &str, text: &str) -> StatusReceipt {
+        append_status(
+            root,
+            revision,
+            &issue_2837_id(),
+            text,
+            "project:room-10/agent",
+        )
+        .unwrap()
+    }
+    fn issue_2837_log(root: &Path) -> Vec<u8> {
+        std::fs::read(root.join(STATUS_NAME)).unwrap()
+    }
+    fn issue_2837_lines(root: &Path) -> usize {
+        issue_2837_log(root).iter().filter(|c| **c == b'\n').count()
+    }
+    fn issue_2837_clean(root: &Path) -> Result<EditOutcome, TaskOpError> {
+        perform_inner(root, TaskOp::Clean, || fixed_now_at(2026, 10, 2, 21, 0, 0))
+    }
+
+    #[test]
+    fn issue_2837_legacy_missing_bom_crlf_user_description() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        let s = read_snapshot(root).unwrap();
+        assert_eq!(s.revision, "legacy:0");
+        assert!(s.task.is_none() && s.status_record.is_none() && !s.tail_incomplete);
+        let task = "\u{feff}---\r\ntitle: 'USER: Hold'\r\n---\r\nOne\r\nTwo\r\n";
+        std::fs::write(root.join("TASK.md"), task).unwrap();
+        let s = read_snapshot(root).unwrap();
+        assert_eq!(s.task.as_deref(), Some(task));
+        assert_eq!(s.task_title.as_deref(), Some("USER: Hold"));
+        assert_eq!(s.description, "One\r\nTwo\r\n");
+        assert!(s.status.is_none());
+        issue_2837_append(
+            root,
+            "legacy:0",
+            "Tickets: uno\nFUP: ninguno\t🦀\r\nContinue: sí",
+        );
+        assert_eq!(std::fs::read_to_string(root.join("TASK.md")).unwrap(), task);
+        let s = read_snapshot(root).unwrap();
+        issue_2837_append(root, &s.revision, "Replacement complete");
+        assert_eq!(
+            read_snapshot(root).unwrap().status.as_deref(),
+            Some("Replacement complete")
+        );
+        assert_eq!(issue_2837_lines(root), 2);
+        let wire = serde_json::to_value(read_snapshot(root).unwrap()).unwrap();
+        assert!(wire.get("workgroupRoot").is_some() && wire.get("statusRecord").is_some());
+        std::fs::write(root.join("TASK.md"), vec![b'x'; TASK_LIMIT as usize + 1]).unwrap();
+        assert!(matches!(
+            read_snapshot(root),
+            Err(TaskOpError::SnapshotTooLarge)
+        ));
+    }
+
+    #[test]
+    fn issue_2837_retry_mismatch_overtaken_and_cas() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        let id = issue_2837_id();
+        let first = append_status(root, "legacy:0", &id, "one", "p/a").unwrap();
+        assert!(!first.replayed);
+        let bytes = issue_2837_log(root);
+        issue_2837_fault(None);
+        assert!(
+            append_status(root, "legacy:0", &id, "one", "p/a")
+                .unwrap()
+                .replayed
+        );
+        assert_eq!(issue_2837_calls(), vec!["append_sync"]);
+        for (base, author, text) in [
+            ("legacy:0", "p/b", "one"),
+            ("legacy:0", "p/a", "two"),
+            (first.revision.as_str(), "p/a", "one"),
+        ] {
+            assert!(matches!(
+                append_status(root, base, &id, text, author),
+                Err(TaskOpError::RequestIdConflict)
+            ));
+        }
+        assert_eq!(issue_2837_log(root), bytes);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            let p = root.to_path_buf();
+            let b = barrier.clone();
+            let revision = first.revision.clone();
+            threads.push(thread::spawn(move || {
+                b.wait();
+                append_status(&p, &revision, &issue_2837_id(), "next", "p/a")
+            }));
+        }
+        let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| matches!(r, Err(TaskOpError::RevisionConflict { .. })))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            append_status(root, "legacy:0", &id, "one", "p/a"),
+            Err(TaskOpError::RevisionConflict { .. })
+        ));
+        assert_eq!(issue_2837_lines(root), 2);
+        issue_2837_fault(None);
+    }
+
+    #[test]
+    fn issue_2837_complete_append_failed_sync_retry_requires_fresh_sync() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        let id = issue_2837_id();
+        issue_2837_fault(Some("append_sync"));
+        assert!(matches!(
+            append_status(root, "legacy:0", &id, "text", "p/a"),
+            Err(TaskOpError::WriteFailed(_))
+        ));
+        assert_eq!(issue_2837_lines(root), 1);
+        let bytes = issue_2837_log(root);
+        assert_eq!(read_snapshot(root).unwrap().status.as_deref(), Some("text"));
+        issue_2837_fault(Some("append_sync"));
+        assert!(matches!(
+            append_status(root, "legacy:0", &id, "text", "p/a"),
+            Err(TaskOpError::WriteFailed(_))
+        ));
+        assert_eq!(issue_2837_calls(), vec!["append_sync"]);
+        assert_eq!(issue_2837_log(root), bytes);
+        issue_2837_fault(None);
+        assert!(
+            append_status(root, "legacy:0", &id, "text", "p/a")
+                .unwrap()
+                .replayed
+        );
+        assert_eq!(issue_2837_calls(), vec!["append_sync"]);
+        assert_eq!(issue_2837_log(root), bytes);
+    }
+
+    #[test]
+    fn issue_2837_first_partial_twenty_bytes_and_split_utf8_repair() {
+        for split_utf8 in [false, true] {
+            let f = issue_2837_fixture();
+            let root = f.path();
+            let id = issue_2837_id();
+            if split_utf8 {
+                let mut bytes = vec![b'x'; 18];
+                bytes.extend_from_slice(&[0xf0, 0x9f]);
+                std::fs::write(root.join(STATUS_NAME), bytes).unwrap();
+            } else {
+                issue_2837_fault(Some("append_partial"));
+                assert!(matches!(
+                    append_status(root, "legacy:0", &id, "🦀", "p/a"),
+                    Err(TaskOpError::WriteFailed(_))
+                ));
+            }
+            let original = issue_2837_log(root);
+            assert_eq!(original.len(), 20);
+            let s = read_snapshot(root).unwrap();
+            assert_eq!(s.revision, "legacy:0");
+            assert!(s.status_record.is_none() && s.tail_incomplete);
+            for point in [
+                "partial_backup_create",
+                "partial_backup_write",
+                "partial_backup_sync",
+            ] {
+                issue_2837_fault(Some(point));
+                assert!(matches!(
+                    append_status(root, "legacy:0", &id, "🦀", "p/a"),
+                    Err(TaskOpError::WriteFailed(_))
+                ));
+                assert_eq!(issue_2837_log(root), original);
+            }
+            issue_2837_fault(None);
+            let receipt = append_status(root, "legacy:0", &id, "🦀", "p/a").unwrap();
+            assert_eq!(receipt.record.sequence, 1);
+            assert_eq!(issue_2837_lines(root), 1);
+            assert!(!read_snapshot(root).unwrap().tail_incomplete);
+            assert!(std::fs::read_dir(root).unwrap().flatten().any(|e| e
+                .file_name()
+                .to_string_lossy()
+                .starts_with("TASK-status.partial.")
+                && std::fs::read(e.path()).unwrap() == original));
+        }
+    }
+
+    #[test]
+    fn issue_2837_partial_bounds_and_validation_before_repair() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        let first = issue_2837_append(root, "legacy:0", "valid");
+        let complete = issue_2837_log(root);
+        let mut bytes = complete.clone();
+        bytes.extend(vec![b'x'; 65_535]);
+        std::fs::write(root.join(STATUS_NAME), &bytes).unwrap();
+        let s = read_snapshot(root).unwrap();
+        assert!(s.tail_incomplete);
+        assert_eq!(s.revision, first.revision);
+        assert!(matches!(
+            append_status(root, "legacy:0", &issue_2837_id(), "wrong base", "p/a"),
+            Err(TaskOpError::RevisionConflict { .. })
+        ));
+        assert!(matches!(
+            append_status(root, &first.revision, &issue_2837_id(), " \t", "p/a"),
+            Err(TaskOpError::InvalidStatus(_))
+        ));
+        assert_eq!(issue_2837_log(root), bytes);
+        issue_2837_append(root, &first.revision, "next");
+        assert!(issue_2837_log(root).starts_with(&complete));
+        let mut bytes = issue_2837_log(root);
+        bytes.extend(vec![b'x'; 65_536]);
+        std::fs::write(root.join(STATUS_NAME), bytes).unwrap();
+        assert!(matches!(
+            read_snapshot(root),
+            Err(TaskOpError::InvalidStatus(_))
+        ));
+        std::fs::write(root.join(STATUS_NAME), vec![0xf0; 65_535]).unwrap();
+        assert!(read_snapshot(root).unwrap().tail_incomplete);
+        std::fs::write(root.join(STATUS_NAME), vec![0xf0; 65_536]).unwrap();
+        assert!(matches!(
+            read_snapshot(root),
+            Err(TaskOpError::InvalidStatus(_))
+        ));
+    }
+
+    #[test]
+    fn issue_2837_corrupt_complete_schema_shape_and_sequence() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        let first = issue_2837_append(root, "legacy:0", "original");
+        for field in [
+            "schemaVersion",
+            "kind",
+            "topicId",
+            "sequence",
+            "requestId",
+            "baseRevision",
+            "recordedAt",
+            "author",
+            "status",
+        ] {
+            let mut value = serde_json::to_value(&first.record).unwrap();
+            value.as_object_mut().unwrap().remove(field);
+            let mut bytes = serde_json::to_vec(&value).unwrap();
+            bytes.push(b'\n');
+            std::fs::write(root.join(STATUS_NAME), bytes).unwrap();
+            assert!(
+                matches!(read_snapshot(root), Err(TaskOpError::InvalidStatus(_))),
+                "missing {field}"
+            );
+        }
+        for (field, value) in [
+            ("schemaVersion", serde_json::json!(2)),
+            ("kind", serde_json::json!("clear")),
+            ("topicId", serde_json::json!("bad")),
+            ("sequence", serde_json::json!(0)),
+            ("sequence", serde_json::json!(MAX_SEQUENCE + 1)),
+            ("status", serde_json::json!("\u{7}")),
+            ("recordedAt", serde_json::json!("2026-01-01T00:00:00+03:00")),
+        ] {
+            let mut record = serde_json::to_value(&first.record).unwrap();
+            record[field] = value;
+            let mut bytes = serde_json::to_vec(&record).unwrap();
+            bytes.push(b'\n');
+            std::fs::write(root.join(STATUS_NAME), bytes).unwrap();
+            assert!(
+                matches!(read_snapshot(root), Err(TaskOpError::InvalidStatus(_))),
+                "invalid {field}"
+            );
+        }
+        for bytes in [
+            b"{broken}\n".to_vec(),
+            [vec![b'x'; 65_536], vec![b'\n']].concat(),
+        ] {
+            std::fs::write(root.join(STATUS_NAME), bytes).unwrap();
+            assert!(matches!(
+                read_snapshot(root),
+                Err(TaskOpError::InvalidStatus(_))
+            ));
+        }
+        let mut record = first.record;
+        record.sequence = MAX_SEQUENCE;
+        record.base_revision = Some(format!("{}:{}", record.topic_id, MAX_SEQUENCE - 1));
+        let mut bytes = serde_json::to_vec(&record).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(root.join(STATUS_NAME), &bytes).unwrap();
+        assert!(matches!(
+            append_status(
+                root,
+                &format!("{}:{}", record.topic_id, MAX_SEQUENCE),
+                &issue_2837_id(),
+                "overflow",
+                "p/a"
+            ),
+            Err(TaskOpError::SequenceOverflow)
+        ));
+        assert_eq!(issue_2837_log(root), bytes);
+    }
+
+    #[test]
+    fn issue_2837_encoded_size_boundary_and_bounded_history_read() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        let id = issue_2837_id();
+        let receipt = append_status(root, "legacy:0", &id, "x", "p/a").unwrap();
+        let overhead = issue_2837_log(root).len() - 1;
+        // Timestamp formatting is stable for Utc::now(); allow for nanosecond
+        // formatter width by explicitly checking encoded rows, not characters.
+        let mut r = receipt.record.clone();
+        r.status = Some("x".repeat(STATUS_LIMIT - overhead));
+        let mut row = serde_json::to_vec(&r).unwrap();
+        row.push(b'\n');
+        assert_eq!(row.len(), STATUS_LIMIT);
+        assert!(validate_record(&row[..row.len() - 1]).is_ok());
+        row.insert(row.len() - 2, b'x');
+        assert!(matches!(
+            validate_record(&row[..row.len() - 1]),
+            Err(TaskOpError::InvalidStatus(_))
+        ));
+        let original = issue_2837_log(root);
+        assert!(matches!(
+            append_status(
+                root,
+                &receipt.revision,
+                &issue_2837_id(),
+                &"\n".repeat(STATUS_LIMIT),
+                "p/a"
+            ),
+            Err(TaskOpError::InvalidStatus(_))
+        ));
+        assert!(matches!(
+            append_status(
+                root,
+                &receipt.revision,
+                &issue_2837_id(),
+                &format!("x{}", "\n".repeat(STATUS_LIMIT)),
+                "p/a"
+            ),
+            Err(TaskOpError::StatusTooLarge)
+        ));
+        assert_eq!(issue_2837_log(root), original);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(root.join(STATUS_NAME))
+            .unwrap();
+        for _ in 0..50_000 {
+            file.write_all(&original).unwrap();
+        }
+        drop(file);
+        let tail = read_latest_status_locked(root).unwrap();
+        assert_eq!(tail.bytes_read as u64, STATUS_WINDOW);
+        assert_eq!(tail.record.unwrap(), receipt.record);
+    }
+
+    #[test]
+    fn issue_2837_clean_pair_matrix_exact_bytes_noop_aba_and_collision() {
+        for (task_exists, log_exists) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let f = issue_2837_fixture();
+            let root = f.path();
+            let task = b"\xef\xbb\xbf---\r\ntitle: 'USER: Original'\r\n---\r\nbody\r\n";
+            let log = b"{corrupt complete}\n\xf0\x9f";
+            if task_exists {
+                std::fs::write(root.join("TASK.md"), task).unwrap();
+            }
+            if log_exists {
+                std::fs::write(root.join(STATUS_NAME), log).unwrap();
+            }
+            let result = issue_2837_clean(root).unwrap();
+            assert!(matches!(result, EditOutcome::Wrote { .. }));
+            let (t, s) = backup_names("20261002-210000", 0);
+            if task_exists || log_exists {
+                assert_eq!(
+                    std::fs::read(root.join(t)).unwrap(),
+                    if task_exists { task.as_slice() } else { &[] }
+                );
+                assert_eq!(
+                    std::fs::read(root.join(s)).unwrap(),
+                    if log_exists { log.as_slice() } else { &[] }
+                );
+            } else {
+                assert!(!root.join(t).exists() && !root.join(s).exists());
+            }
+            let snapshot = read_snapshot(root).unwrap();
+            assert_eq!(snapshot.task_title.as_deref(), Some("Clean"));
+            assert_eq!(
+                snapshot.status_record.as_ref().unwrap().kind,
+                "topic_started"
+            );
+            assert!(snapshot.revision.ends_with(":0"));
+            assert_ne!(snapshot.revision, "legacy:0");
+            let bytes = issue_2837_log(root);
+            assert!(matches!(
+                issue_2837_clean(root),
+                Ok(EditOutcome::NoOp { .. })
+            ));
+            assert_eq!(issue_2837_log(root), bytes);
+            assert!(matches!(
+                append_status(root, "legacy:0", &issue_2837_id(), "stale", "p/a"),
+                Err(TaskOpError::RevisionConflict { .. })
+            ));
+            issue_2837_append(root, &snapshot.revision, "history after Clean");
+            assert!(matches!(
+                issue_2837_clean(root),
+                Ok(EditOutcome::Wrote { .. })
+            ));
+            assert_ne!(read_snapshot(root).unwrap().revision, snapshot.revision);
+        }
+        for collision_on_task in [true, false] {
+            let f = issue_2837_fixture();
+            let root = f.path();
+            std::fs::write(root.join("TASK.md"), "old").unwrap();
+            let (t, s) = backup_names("20261002-210000", 0);
+            let foreign = if collision_on_task {
+                t.clone()
+            } else {
+                s.clone()
+            };
+            std::fs::write(root.join(&foreign), "foreign").unwrap();
+            issue_2837_clean(root).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(root.join(foreign)).unwrap(),
+                "foreign"
+            );
+            let (t1, s1) = backup_names("20261002-210000", 1);
+            assert!(root.join(t1).exists() && root.join(s1).exists());
+            if !collision_on_task {
+                assert!(!root.join(t).exists());
+            }
+        }
+    }
+
+    #[test]
+    fn issue_2837_clean_prejournal_failure_matrix_preserves_originals() {
+        for point in [
+            "task_backup_create",
+            "status_backup_create",
+            "task_backup_copy",
+            "task_backup_sync",
+            "status_backup_copy",
+            "status_backup_sync",
+            "task_stage_create",
+            "task_stage_write",
+            "task_stage_sync",
+            "status_stage_create",
+            "status_stage_write",
+            "status_stage_sync",
+            "journal_create",
+            "journal_write",
+            "journal_stage_sync",
+            "journal_publish",
+        ] {
+            let f = issue_2837_fixture();
+            let root = f.path();
+            std::fs::write(root.join("TASK.md"), "old task").unwrap();
+            std::fs::write(root.join(STATUS_NAME), b"old\npartial\xf0").unwrap();
+            let old_task = std::fs::read(root.join("TASK.md")).unwrap();
+            let old_log = issue_2837_log(root);
+            issue_2837_fault(Some(point));
+            assert!(issue_2837_clean(root).is_err(), "{point}");
+            assert_eq!(
+                std::fs::read(root.join("TASK.md")).unwrap(),
+                old_task,
+                "{point}"
+            );
+            assert_eq!(issue_2837_log(root), old_log, "{point}");
+            assert!(!root.join(JOURNAL_NAME).exists(), "{point}");
+            issue_2837_fault(None);
+            issue_2837_clean(root).unwrap();
+            assert!(read_snapshot(root).unwrap().status.is_none());
+        }
+    }
+
+    #[test]
+    fn issue_2837_clean_postjournal_failure_matrix_and_repeat_recovery() {
+        for point in [
+            "after_journal_publish",
+            "journal_sync",
+            "task_rename",
+            "after_task_rename",
+            "status_rename",
+            "after_status_rename",
+            "task_target_sync_open",
+            "task_target_sync",
+            "status_target_sync_open",
+            "status_target_sync",
+            "journal_remove",
+        ] {
+            let f = issue_2837_fixture();
+            let root = f.path();
+            std::fs::write(root.join("TASK.md"), "old task").unwrap();
+            std::fs::write(root.join(STATUS_NAME), "old log").unwrap();
+            issue_2837_fault(Some(point));
+            assert!(
+                matches!(
+                    issue_2837_clean(root),
+                    Err(TaskOpError::CleanRecoveryPending(_))
+                ),
+                "{point}"
+            );
+            assert!(root.join(JOURNAL_NAME).exists(), "{point}");
+            issue_2837_fault(None);
+            recover_clean_pair(root).unwrap();
+            let new_task = std::fs::read(root.join("TASK.md")).unwrap();
+            let new_log = issue_2837_log(root);
+            assert!(!root.join(JOURNAL_NAME).exists());
+            let calls = issue_2837_calls();
+            let task_sync = calls.iter().position(|c| c == "task_target_sync").unwrap();
+            let status_sync = calls
+                .iter()
+                .position(|c| c == "status_target_sync")
+                .unwrap();
+            let remove = calls.iter().position(|c| c == "journal_remove").unwrap();
+            assert!(task_sync < status_sync && status_sync < remove);
+            recover_clean_pair(root).unwrap();
+            assert_eq!(std::fs::read(root.join("TASK.md")).unwrap(), new_task);
+            assert_eq!(issue_2837_log(root), new_log);
+        }
+    }
+
+    #[test]
+    fn issue_2837_already_new_pair_retries_both_syncs_before_cleanup() {
+        for fail_sync in ["task_target_sync", "status_target_sync"] {
+            let f = issue_2837_fixture();
+            let root = f.path();
+            std::fs::write(root.join("TASK.md"), "old").unwrap();
+            issue_2837_fault(Some("after_status_rename"));
+            assert!(matches!(
+                issue_2837_clean(root),
+                Err(TaskOpError::CleanRecoveryPending(_))
+            ));
+            let task = std::fs::read(root.join("TASK.md")).unwrap();
+            let log = issue_2837_log(root);
+            let journal = std::fs::read(root.join(JOURNAL_NAME)).unwrap();
+            let backup = std::fs::read(root.join("TASK.20261002-210000.bak.md")).unwrap();
+            for _ in 0..2 {
+                issue_2837_fault(Some(fail_sync));
+                assert!(matches!(
+                    read_snapshot(root),
+                    Err(TaskOpError::CleanRecoveryPending(_))
+                ));
+                assert_eq!(std::fs::read(root.join(JOURNAL_NAME)).unwrap(), journal);
+                assert_eq!(std::fs::read(root.join("TASK.md")).unwrap(), task);
+                assert_eq!(issue_2837_log(root), log);
+                let calls = issue_2837_calls();
+                assert!(!calls
+                    .iter()
+                    .any(|c| c.contains("rename") || c == "journal_remove"));
+                assert_eq!(
+                    calls
+                        .iter()
+                        .filter(|c| c.as_str() == "task_target_sync")
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    calls
+                        .iter()
+                        .filter(|c| c.as_str() == "status_target_sync")
+                        .count(),
+                    1
+                );
+            }
+            issue_2837_fault(None);
+            let s = read_snapshot(root).unwrap();
+            assert_eq!(s.status_record.unwrap().sequence, 0);
+            assert_eq!(
+                issue_2837_calls(),
+                vec![
+                    "journal_sync",
+                    "task_target_sync_open",
+                    "task_target_sync",
+                    "status_target_sync_open",
+                    "status_target_sync",
+                    "journal_remove"
+                ]
+            );
+            assert_eq!(std::fs::read(root.join("TASK.md")).unwrap(), task);
+            assert_eq!(issue_2837_log(root), log);
+            assert_eq!(
+                std::fs::read(root.join("TASK.20261002-210000.bak.md")).unwrap(),
+                backup
+            );
+            assert!(!root.join(JOURNAL_NAME).exists());
+        }
+    }
+
+    #[test]
+    fn issue_2837_recovery_external_edits_missing_evidence_invalid_journal() {
+        for mode in ["task", "status", "backup", "stage", "journal"] {
+            let f = issue_2837_fixture();
+            let root = f.path();
+            std::fs::write(root.join("TASK.md"), "old").unwrap();
+            issue_2837_fault(Some("task_rename"));
+            assert!(issue_2837_clean(root).is_err());
+            issue_2837_fault(None);
+            let journal: CleanJournal =
+                serde_json::from_slice(&std::fs::read(root.join(JOURNAL_NAME)).unwrap()).unwrap();
+            match mode {
+                "task" => std::fs::write(root.join("TASK.md"), "external").unwrap(),
+                "status" => std::fs::write(root.join(STATUS_NAME), "external").unwrap(),
+                "backup" => std::fs::remove_file(root.join(journal.task.backup.unwrap())).unwrap(),
+                "stage" => std::fs::remove_file(root.join(journal.task.stage)).unwrap(),
+                "journal" => {
+                    let mut value = serde_json::to_value(journal).unwrap();
+                    value["task"]["stage"] = serde_json::json!("../foreign");
+                    std::fs::write(root.join(JOURNAL_NAME), serde_json::to_vec(&value).unwrap())
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let task = std::fs::read(root.join("TASK.md")).unwrap();
+            let log = std::fs::read(root.join(STATUS_NAME)).ok();
+            assert!(
+                matches!(
+                    read_snapshot(root),
+                    Err(TaskOpError::CleanRecoveryConflict(_))
+                ),
+                "{mode}"
+            );
+            assert!(root.join(JOURNAL_NAME).exists());
+            assert_eq!(std::fs::read(root.join("TASK.md")).unwrap(), task);
+            assert_eq!(std::fs::read(root.join(STATUS_NAME)).ok(), log);
+        }
+    }
+
+    #[test]
+    fn issue_2837_append_title_body_clean_concurrency() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        let first = issue_2837_append(root, "legacy:0", "status");
+        let original = issue_2837_log(root);
+        perform(root, TaskOp::SetTitle("title".into())).unwrap();
+        perform(root, TaskOp::AppendBody("description".into())).unwrap();
+        assert_eq!(issue_2837_log(root), original);
+        let barrier = Arc::new(Barrier::new(3));
+        let mut handles = Vec::new();
+        for op in 0..3 {
+            let p = root.to_path_buf();
+            let b = barrier.clone();
+            let revision = first.revision.clone();
+            handles.push(thread::spawn(move || {
+                b.wait();
+                match op {
+                    0 => append_status(&p, &revision, &issue_2837_id(), "new status", "p/a")
+                        .map(|_| ()),
+                    1 => perform(&p, TaskOp::AppendBody("new description".into())).map(|_| ()),
+                    _ => perform(&p, TaskOp::Clean).map(|_| ()),
+                }
+            }));
+        }
+        for (i, h) in handles.into_iter().enumerate() {
+            let r = h.join().unwrap();
+            assert!(r.is_ok() || i == 0 && matches!(r, Err(TaskOpError::RevisionConflict { .. })));
+        }
+        let s = read_snapshot(root).unwrap();
+        assert_eq!(s.task_title.as_deref(), Some("Clean"));
+        assert_eq!(s.status_record.unwrap().kind, "topic_started");
+    }
+
+    #[test]
+    fn issue_2837_child_fixture() {
+        let Some(root) = std::env::var_os("AC_TASK_OPS_CHILD_FIXTURE") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        if std::env::var_os("AC_TASK_OPS_CHILD_LOCK").is_some() {
+            let _held = LockGuard::acquire(
+                &root.join("TASK.md.lock"),
+                LOCK_TIMEOUT_5S,
+                LOCK_STALE_AFTER_5M,
+            )
+            .unwrap();
+            std::fs::write(root.join("child-ready"), "ready").unwrap();
+            std::thread::sleep(Duration::from_secs(30));
+        } else {
+            let _ = issue_2837_clean(&root);
+        }
+    }
+
+    fn issue_2837_child(root: &Path) -> std::process::Command {
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "cli::task_ops::tests::issue_2837_child_fixture",
+            "--nocapture",
+        ])
+        .env("AC_TASK_OPS_CHILD_FIXTURE", root);
+        cmd
+    }
+
+    #[test]
+    fn issue_2837_kernel_lock_child_exit_and_stable_file() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        std::fs::write(root.join("TASK.md.lock"), "old stale contents").unwrap();
+        let mut child = issue_2837_child(root)
+            .env("AC_TASK_OPS_CHILD_LOCK", "1")
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !root.join("child-ready").exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        if !root.join("child-ready").exists() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child failed to acquire lock");
+        }
+        assert!(matches!(
+            LockGuard::acquire(
+                &root.join("TASK.md.lock"),
+                Duration::from_millis(100),
+                Duration::ZERO
+            ),
+            Err(TaskOpError::LockTimeout)
+        ));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let held = LockGuard::acquire(
+            &root.join("TASK.md.lock"),
+            Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .unwrap();
+        drop(held);
+        assert_eq!(
+            std::fs::read_to_string(root.join("TASK.md.lock")).unwrap(),
+            "old stale contents"
+        );
+        assert!(root.join("TASK.md.lock").exists());
+        std::fs::create_dir(root.join("directory-lock")).unwrap();
+        assert!(matches!(
+            LockGuard::acquire(&root.join("directory-lock"), Duration::ZERO, Duration::ZERO),
+            Err(TaskOpError::LockIo(..))
+        ));
+    }
+
+    #[test]
+    fn issue_2837_process_exit_publication_boundaries_recover_pair() {
+        for point in [
+            "after_journal_publish",
+            "after_task_rename",
+            "after_status_rename",
+            "task_target_sync",
+            "status_target_sync",
+            "journal_remove",
+        ] {
+            let f = issue_2837_fixture();
+            let root = f.path();
+            std::fs::write(root.join("TASK.md"), "prior task").unwrap();
+            std::fs::write(root.join(STATUS_NAME), "prior log\npartial").unwrap();
+            let status = issue_2837_child(root)
+                .env("AC_TASK_OPS_CHILD_BOUNDARY", point)
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(71), "{point}");
+            assert!(root.join(JOURNAL_NAME).exists());
+            let s = read_snapshot(root).unwrap();
+            assert_eq!(s.task_title.as_deref(), Some("Clean"));
+            assert_eq!(s.status_record.unwrap().kind, "topic_started");
+            assert!(!root.join(JOURNAL_NAME).exists());
+            assert_eq!(
+                std::fs::read_to_string(root.join("TASK.20261002-210000.bak.md")).unwrap(),
+                "prior task"
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("TASK-status.20261002-210000.bak.jsonl"))
+                    .unwrap(),
+                "prior log\npartial"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_2837_unknown_fields_and_preceding_corrupt_row_partial() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        let r = issue_2837_append(root, "legacy:0", "text");
+        let mut value = serde_json::to_value(&r.record).unwrap();
+        value["futureV1Extension"] = serde_json::json!({"ok":true});
+        let mut row = serde_json::to_vec(&value).unwrap();
+        row.push(b'\n');
+        std::fs::write(root.join(STATUS_NAME), &row).unwrap();
+        assert_eq!(read_snapshot(root).unwrap().status.as_deref(), Some("text"));
+        let mut bytes = row;
+        bytes.extend_from_slice(b"{broken}\n\xf0\x9f");
+        std::fs::write(root.join(STATUS_NAME), &bytes).unwrap();
+        assert!(matches!(
+            read_snapshot(root),
+            Err(TaskOpError::InvalidStatus(_))
+        ));
+        assert!(append_status(root, &r.revision, &issue_2837_id(), "next", "p/a").is_err());
+        assert_eq!(issue_2837_log(root), bytes);
+    }
+
+    #[test]
+    fn issue_2837_recovery_preserves_foreign_unused_stage() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        std::fs::write(root.join("TASK.md"), "old").unwrap();
+        issue_2837_fault(Some("after_status_rename"));
+        assert!(issue_2837_clean(root).is_err());
+        issue_2837_fault(None);
+        let journal: CleanJournal =
+            serde_json::from_slice(&std::fs::read(root.join(JOURNAL_NAME)).unwrap()).unwrap();
+        let foreign = root.join(&journal.task.stage);
+        std::fs::write(&foreign, "foreign replacement of unused stage").unwrap();
+        recover_clean_pair(root).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(foreign).unwrap(),
+            "foreign replacement of unused stage"
+        );
+        assert!(!root.join(JOURNAL_NAME).exists());
+    }
+
+    #[test]
+    fn issue_2837_clean_external_change_before_journal_keeps_pair() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        std::fs::write(root.join("TASK.md"), "old").unwrap();
+        std::fs::write(root.join(STATUS_NAME), "old log").unwrap();
+        IO_MUTATION.with(|v| {
+            *v.borrow_mut() = Some((
+                "before_source_recheck".into(),
+                root.join(STATUS_NAME),
+                b"external history".to_vec(),
+            ))
+        });
+        assert!(matches!(
+            issue_2837_clean(root),
+            Err(TaskOpError::CleanRecoveryConflict(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("TASK.md")).unwrap(),
+            "old"
+        );
+        assert_eq!(issue_2837_log(root), b"external history");
+        assert!(!root.join(JOURNAL_NAME).exists());
+    }
+
+    #[test]
+    fn issue_2837_clean_external_change_immediately_before_rename() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        std::fs::write(root.join("TASK.md"), "old").unwrap();
+        IO_MUTATION.with(|v| {
+            *v.borrow_mut() = Some((
+                "task_rename".into(),
+                root.join("TASK.md"),
+                b"external task".to_vec(),
+            ))
+        });
+        assert!(matches!(
+            issue_2837_clean(root),
+            Err(TaskOpError::CleanRecoveryConflict(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("TASK.md")).unwrap(),
+            "external task"
+        );
+        assert!(root.join(JOURNAL_NAME).exists());
+        assert!(!root.join(STATUS_NAME).exists());
+    }
+    #[test]
+    fn issue_2837_append_exact_encoded_limit_and_one_byte_over() {
+        let first = issue_2837_fixture();
+        let root = first.path();
+        issue_2837_append(root, "legacy:0", "x");
+        let overhead = issue_2837_log(root).len() - 1;
+        let exact = issue_2837_fixture();
+        let root = exact.path();
+        let text = "x".repeat(STATUS_LIMIT - overhead);
+        issue_2837_append(root, "legacy:0", &text);
+        assert_eq!(issue_2837_log(root).len(), STATUS_LIMIT);
+        let over = issue_2837_fixture();
+        let root = over.path();
+        assert!(matches!(
+            append_status(
+                root,
+                "legacy:0",
+                &issue_2837_id(),
+                &format!("{text}x"),
+                "project:room-10/agent"
+            ),
+            Err(TaskOpError::StatusTooLarge)
+        ));
+        assert!(!root.join(STATUS_NAME).exists());
+    }
+
+    #[test]
+    fn issue_2837_backup_partial_failure_cleanup_and_finished_empty_side() {
+        let f = issue_2837_fixture();
+        let root = f.path();
+        std::fs::write(root.join("TASK.md"), "prior description").unwrap();
+        let original = vec![b'x'; 200_000];
+        std::fs::write(root.join(STATUS_NAME), &original).unwrap();
+        issue_2837_fault(Some("status_backup_after_write"));
+        assert!(matches!(
+            issue_2837_clean(root),
+            Err(TaskOpError::WriteFailed(_))
+        ));
+        issue_2837_fault(None);
+        assert_eq!(issue_2837_log(root), original);
+        assert_eq!(
+            std::fs::read_to_string(root.join("TASK.20261002-210000.bak.md")).unwrap(),
+            "prior description"
+        );
+        assert!(!root.join("TASK-status.20261002-210000.bak.jsonl").exists());
+        let f = issue_2837_fixture();
+        let root = f.path();
+        std::fs::write(root.join(STATUS_NAME), "prior log").unwrap();
+        issue_2837_fault(Some("status_backup_sync"));
+        assert!(matches!(
+            issue_2837_clean(root),
+            Err(TaskOpError::WriteFailed(_))
+        ));
+        issue_2837_fault(None);
+        assert_eq!(
+            std::fs::read(root.join("TASK.20261002-210000.bak.md")).unwrap(),
+            Vec::<u8>::new()
+        );
+        assert!(!root.join("TASK-status.20261002-210000.bak.jsonl").exists());
+        assert!(!root.join("TASK.md").exists());
+        assert_eq!(issue_2837_log(root), b"prior log");
     }
 }
