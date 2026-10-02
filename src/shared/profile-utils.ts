@@ -450,7 +450,12 @@ export const CLAUDE_CONTEXT_REGEX = String.raw`(?:\[[^\]]+\] ctx|^ {2}Context [â
 export const CODEX_CONTEXT_REGEX = String.raw`^ {2}(?:.*Â· )?Context (\d{1,3})% used`;
 export const PI_CONTEXT_REGEX = String.raw`^(?:.*? )?(\d{1,3})\.\d%/`;
 
+export const ANTIGRAVITY_CONTEXT_REGEX = String.raw`(?:^|[ |])Ctx: (\d{1,3})%`;
+export const ANTIGRAVITY_WEEKLY_QUOTA_REGEX = String.raw`(?:^|[ |])[Ww]eekly: (\d{1,3})%`;
+
 export function suggestedContextRegex(command: string): string | null {
+  const stem = commandExecutableStem(command);
+  if (stem === "agy" || stem === "antigravity") return ANTIGRAVITY_CONTEXT_REGEX;
   const parsed = parseArgvText(command);
   const tokens = parsed.error
     ? command.trim().split(/\s+/).filter(Boolean)
@@ -506,6 +511,9 @@ export function commandExecutableStem(command: string): string {
 
 export function suggestedQuotaSource(command: string): SuggestedQuotaSource | null {
   const stem = commandExecutableStem(command);
+  if (stem === "agy" || stem === "antigravity") {
+    return { kind: "screenRegex", pattern: ANTIGRAVITY_WEEKLY_QUOTA_REGEX };
+  }
   if (stem.startsWith("claude")) return { kind: "screenRegex", pattern: CLAUDE_WEEKLY_QUOTA_REGEX };
   if (stem.startsWith("codex")) {
     return { kind: "screenRegexRemaining", pattern: CODEX_WEEKLY_QUOTA_REGEX };

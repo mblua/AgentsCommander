@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import type { AgentConfig, CodingAgentProfilesConfig } from "./types";
 import {
+  ANTIGRAVITY_CONTEXT_REGEX,
+  ANTIGRAVITY_WEEKLY_QUOTA_REGEX,
   CLAUDE_CONTEXT_REGEX,
   CLAUDE_WEEKLY_QUOTA_REGEX,
   CODEX_WEEKLY_QUOTA_REGEX,
@@ -551,8 +553,6 @@ describe("profileBadgeKind (#526/#527 shared Config/Selection taxonomy)", () => 
     // Deliberately NOT defaultInstructionsFilename's "AGENTS.md"-style fallback: a
     // wrong filename costs a renamed file, a wrong pattern costs a silently wrong
     // percentage. No evidence, no guess.
-    expect(suggestedContextRegex("agy")).toBeNull();
-    expect(suggestedContextRegex("antigravity")).toBeNull();
     expect(suggestedContextRegex("nonsense")).toBeNull();
     expect(suggestedContextRegex("opencode")).toBeNull();
     expect(suggestedContextRegex("my-agent-cli --flag")).toBeNull();
@@ -682,8 +682,8 @@ describe("suggestedQuotaSource (#2482 weekly quota, #2687 codex kind)", () => {
     expect(suggestedQuotaSource("cmd /C claude.cmd")).toEqual(claude);
   });
 
-  it("suggested_quota_source_returns_null_for_pi_and_antigravity", () => {
-    for (const command of ["pi", "antigravity", ""]) {
+  it("suggested_quota_source_returns_null_for_pi", () => {
+    for (const command of ["pi", ""]) {
       expect(suggestedQuotaSource(command)).toBeNull();
     }
   });
@@ -922,4 +922,48 @@ describe("orphanNoticeKey (#2568)", () => {
       orphanNoticeKey({ workingDirectory: "C:\\other", agentId: "codex" }),
     );
   });
+});
+
+
+describe("Antigravity indicator suggestions (#2836)", () => {
+  it.each([
+    "agy", "antigravity", "AGY --yolo", "Antigravity --flag",
+    '"C:\\Program Files\\Antigravity\\agy.exe" --yolo',
+    '"/opt/Agent Tools/antigravity" --flag',
+    "agy.cmd", "antigravity.bat", "agy.com", "agy.any-extension",
+    "cmd /c agy", "cmd.exe /C antigravity.exe --flag",
+  ])("recognizes executable %s without adding defaults", (command) => {
+    expect(suggestedContextRegex(command)).toBe(ANTIGRAVITY_CONTEXT_REGEX);
+    expect(suggestedQuotaSource(command)).toEqual({
+      kind: "screenRegex", pattern: ANTIGRAVITY_WEEKLY_QUOTA_REGEX,
+    });
+    expect(defaultQuotaSourceForNewAgent(command)).toBeNull();
+  });
+  it.each([
+    "", "agy-helper", "antigravity-pro", "echo agy", "cmd /c echo agy",
+    "myalias", "npm exec agy", "bash -c agy", "other --provider antigravity",
+  ])("rejects non-executable identification %s", (command) => {
+    expect(suggestedContextRegex(command)).toBeNull();
+    expect(suggestedQuotaSource(command)).toBeNull();
+  });
+  it("reads the footer and weekly with later context clipped", () => {
+    const footer = "5h: 1% (4h 17m) | weekly: 10% (4d 5h) | Ctx: 0%";
+    expect(new RegExp(ANTIGRAVITY_CONTEXT_REGEX).exec(footer)?.[1]).toBe("0");
+    expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec(footer)?.[1]).toBe("10");
+    expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec(footer.slice(0, -2))?.[1]).toBe("10");
+  });
+  it.each([0, 10, 100, 101])("captures displayed %i without range validation", (value) => {
+    expect(new RegExp(ANTIGRAVITY_CONTEXT_REGEX).exec("Ctx: " + value + "%")?.[1]).toBe(String(value));
+    expect(new RegExp(ANTIGRAVITY_WEEKLY_QUOTA_REGEX).exec("Weekly: " + value + "%")?.[1]).toBe(String(value));
+  });
+  it.each([ANTIGRAVITY_CONTEXT_REGEX, ANTIGRAVITY_WEEKLY_QUOTA_REGEX])(
+    "requires a complete label and percentage on one row: %s", (pattern) => {
+      const label = pattern === ANTIGRAVITY_CONTEXT_REGEX ? "Ctx" : "weekly";
+      const re = new RegExp(pattern);
+      for (const row of ["5h: 10%", label + ": 100", label + ": 10", label.slice(0, -1),
+        label + ": 1.5%", label + ":\n10%", label.slice(0, -1) + "\n" + label.slice(-1) + ": 10%"])
+        expect(re.exec(row), row).toBeNull();
+      expect(re.exec(label + ": 10%")?.[1]).toBe("10");
+    },
+  );
 });
