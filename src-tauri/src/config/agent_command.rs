@@ -1551,6 +1551,8 @@ mod tests {
 
     fn agent(id: &str, command: &str) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: id.to_string(),
             command: command.to_string(),
@@ -1697,6 +1699,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: BTreeMap::from([
@@ -1765,6 +1769,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: BTreeMap::from([(
@@ -1812,6 +1818,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "--flag".to_string(),
                     env: BTreeMap::new(),
@@ -1884,6 +1892,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: BTreeMap::from([
@@ -1946,6 +1956,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: BTreeMap::from([(
@@ -2506,6 +2518,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: opencode_env(&target.to_string_lossy()),
@@ -2587,6 +2601,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: opencode_env(&target.to_string_lossy()),
@@ -2635,6 +2651,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: opencode_env(r"%AC_REPLICA_ROOT%\.opencode"),
@@ -2905,6 +2923,8 @@ mod tests {
 
     fn cell(command: &str, env: BTreeMap<String, String>) -> ProfileCellConfig {
         ProfileCellConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             enabled: true,
             command: command.to_string(),
             env,
@@ -3419,6 +3439,8 @@ exit 0
                 .insert(
                     letter.to_string(),
                     ProfileCellConfig {
+                        preflight: None,
+                        preflight_timeout_seconds: None,
                         enabled: *enabled,
                         command: command.to_string(),
                         env: BTreeMap::new(),
@@ -3431,6 +3453,8 @@ exit 0
 
     fn labelled(id: &str, label: &str, command: &str) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             label: label.to_string(),
             ..agent(id, command)
         }

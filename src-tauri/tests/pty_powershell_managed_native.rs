@@ -371,6 +371,8 @@ impl Drop for PathEnvGuard {
 
 fn agent_config(id: &str, command: &str) -> agentscommander_lib::config::settings::AgentConfig {
     agentscommander_lib::config::settings::AgentConfig {
+        preflight: None,
+        preflight_timeout_seconds: None,
         id: id.to_string(),
         label: id.to_string(),
         command: command.to_string(),

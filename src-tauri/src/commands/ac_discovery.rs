@@ -6853,6 +6853,8 @@ mod tests {
         }
         let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings {
             agents: vec![crate::config::settings::AgentConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 id: "codex".to_string(),
                 label: "Codex".to_string(),
                 command: "codex".to_string(),
@@ -7134,6 +7136,8 @@ mod tests {
 
     fn matcher_agent(id: &str, label: &str, command: &str) -> crate::config::settings::AgentConfig {
         crate::config::settings::AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: label.to_string(),
             command: command.to_string(),

@@ -6357,6 +6357,8 @@ mod tests {
         AppSettings {
             agents: vec![
                 AgentConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     id: "claude".to_string(),
                     label: "Claude Code".to_string(),
                     command: "claude".to_string(),
@@ -6371,6 +6373,8 @@ mod tests {
                     backend: Default::default(),
                 },
                 AgentConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     id: "codex".to_string(),
                     label: "Codex".to_string(),
                     command: "codex".to_string(),
@@ -6605,6 +6609,8 @@ mod tests {
         let cwd = matrix.to_string_lossy().to_string();
         let settings = AppSettings {
             agents: vec![AgentConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 id: "pi".to_string(),
                 label: "Pi".to_string(),
                 command: "pi".to_string(),
@@ -6662,6 +6668,8 @@ mod tests {
     fn inert_pi_spawn() -> crate::config::agent_command::AgentSpawnCommand {
         let settings = AppSettings {
             agents: vec![AgentConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 id: "pi".to_string(),
                 label: "Pi".to_string(),
                 command: "pi".to_string(),
@@ -10722,6 +10730,8 @@ mod tests {
             .insert(
                 "C".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     // #597 - the cell holds params only; they append to the agent
                     // base command (`codex`) to launch `codex --profile-c`.
@@ -10803,6 +10813,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "--v1".to_string(),
                     env: BTreeMap::new(),
@@ -10855,6 +10867,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "--v1".to_string(),
                     env: BTreeMap::new(),
@@ -11277,6 +11291,8 @@ mod tests {
     fn heuristic_agent_metadata_cannot_authorize_pi_mutation() {
         let settings = AppSettings {
             agents: vec![AgentConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 id: "unrelated-cmd".to_string(),
                 label: "Unrelated cmd recipe".to_string(),
                 command: "cmd".to_string(),
@@ -11568,6 +11584,8 @@ mod tests {
     fn resolve_actual_agent_keeps_requested_agent_when_normalized_command_matches() {
         let mut settings = test_settings();
         settings.agents.push(AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: "codex-yolo".to_string(),
             label: "Codex Yolo".to_string(),
             command: "codex --yolo".to_string(),
@@ -11649,6 +11667,8 @@ mod tests {
     fn resolve_agent_from_shell_skips_invalid_configured_command() {
         let mut settings = test_settings();
         settings.agents = vec![AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: "broken-codex".to_string(),
             label: "Broken Codex".to_string(),
             command: "codex \"unterminated".to_string(),
@@ -12937,6 +12957,8 @@ exec claude \"$@\"
     fn muse_test_settings(command: &str) -> AppSettings {
         let mut settings = test_settings();
         settings.agents.push(AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: "muse".to_string(),
             label: "Muse Code".to_string(),
             command: command.to_string(),
@@ -13376,6 +13398,8 @@ exec claude \"$@\"
             .insert(
                 "A".to_string(),
                 crate::config::settings::ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: BTreeMap::from([(
@@ -15014,6 +15038,8 @@ exec claude \"$@\"
 
     fn route_agent(id: &str, label: &str, command: &str) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: label.to_string(),
             command: command.to_string(),
@@ -15044,6 +15070,8 @@ exec claude \"$@\"
                 .insert(
                     letter.to_string(),
                     ProfileCellConfig {
+                        preflight: None,
+                        preflight_timeout_seconds: None,
                         enabled: true,
                         command: command.to_string(),
                         env: BTreeMap::new(),
@@ -15704,6 +15732,8 @@ exec claude \"$@\"
 
     fn descriptor_settings() -> AppSettings {
         let agent = |id: &str, command: &str| AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: id.to_string(),
             command: command.to_string(),
@@ -15718,6 +15748,8 @@ exec claude \"$@\"
             backend: Default::default(),
         };
         let cell = |enabled: bool, command: &str| ProfileCellConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             enabled,
             command: command.to_string(),
             env: BTreeMap::new(),

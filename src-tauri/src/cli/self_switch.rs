@@ -496,6 +496,8 @@ mod tests {
 
     fn agent(id: &str, label: &str, command: &str) -> crate::config::settings::AgentConfig {
         crate::config::settings::AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: label.to_string(),
             command: command.to_string(),
@@ -513,6 +515,8 @@ mod tests {
 
     fn enabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
         crate::config::settings::ProfileCellConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             enabled: true,
             command: command.to_string(),
             env: std::collections::BTreeMap::new(),
@@ -522,6 +526,8 @@ mod tests {
 
     fn disabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
         crate::config::settings::ProfileCellConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             enabled: false,
             command: command.to_string(),
             env: std::collections::BTreeMap::new(),
