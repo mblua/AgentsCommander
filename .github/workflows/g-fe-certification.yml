@@ -2,13 +2,21 @@ name: G-FE certification
 on:
   push:
     branches: ['fix/2817-tauri-keyboard-deadlock']
+  workflow_dispatch:
+    inputs:
+      focused_i2836:
+        description: Run only the pinned I2836 frontend checks
+        type: boolean
+        required: true
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: g-fe-certification-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'workflow_dispatch' && 'i2836-frontend-focused-824dc91b8ad10a74c8b50cafd22cd3be0650cd25' || format('g-fe-certification-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 jobs:
   g-fe:
+    if: github.event_name == 'push'
     name: g-fe
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -234,3 +242,215 @@ jobs:
           name: g-fe-evidence-${{ github.sha }}
           path: ${{ runner.temp }}/g-fe-evidence/
           if-no-files-found: error
+
+  i2836-frontend-focused:
+    if: github.event_name == 'workflow_dispatch' && inputs.focused_i2836
+    name: I2836 pinned focused frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ github.workspace }}
+    env:
+      I2836_SOURCE_SHA: 824dc91b8ad10a74c8b50cafd22cd3be0650cd25
+      I2836_SOURCE_TREE: 1e0f97cfa01a2a622ffdb4eab64b7192d20cf13d
+      I2836_EVIDENCE: ${{ runner.temp }}/i2836-frontend-focused
+      I2836_CONTROL_SHA: ${{ github.workflow_sha }}
+      I2836_CONTROL_REF: ${{ github.workflow_ref }}
+    steps:
+      - uses: actions/checkout@v5
+        timeout-minutes: 5
+        with:
+          ref: 824dc91b8ad10a74c8b50cafd22cd3be0650cd25
+          persist-credentials: false
+      - name: Verify immutable input and record source/control identities
+        timeout-minutes: 2
+        run: |
+          test "$(git rev-parse HEAD)" = "$I2836_SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$I2836_SOURCE_TREE"
+          test -z "$(git status --porcelain)"
+          mkdir "$I2836_EVIDENCE"
+          {
+            echo "inputSha=$I2836_SOURCE_SHA inputTree=$I2836_SOURCE_TREE"
+            echo "controlWorkflowSha=$I2836_CONTROL_SHA controlWorkflowRef=$I2836_CONTROL_REF"
+            echo "eventSha=$GITHUB_SHA event=$GITHUB_EVENT_NAME ref=$GITHUB_REF"
+            echo "run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT job=$GITHUB_JOB"
+            echo "runnerOs=$RUNNER_OS runnerArch=$RUNNER_ARCH"
+            sha256sum package.json package-lock.json vitest.config.ts tsconfig.json
+          } > "$I2836_EVIDENCE/identity.log"
+      - uses: actions/setup-node@v5
+        timeout-minutes: 5
+        with:
+          node-version: 22.14.0
+      - name: Pin npm and record/assert toolchain subcommands
+        id: toolchain
+        timeout-minutes: 5
+        run: |
+          mkdir "$I2836_EVIDENCE/toolchain"
+          mkdir "$I2836_EVIDENCE/toolchain/npm-pin"
+          : > "$I2836_EVIDENCE/toolchain/npm-pin/stdout.log"
+          : > "$I2836_EVIDENCE/toolchain/npm-pin/stderr.log"
+          printf '%s\n' 'npm install -g npm@11.6.2 --ignore-scripts' > "$I2836_EVIDENCE/toolchain/npm-pin/command.txt"
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/toolchain/npm-pin/start.utc"
+          set +e
+          npm install -g npm@11.6.2 --ignore-scripts > "$I2836_EVIDENCE/toolchain/npm-pin/stdout.log" 2> "$I2836_EVIDENCE/toolchain/npm-pin/stderr.log"
+          command_status=$?
+          printf '%s\n' "$command_status" > "$I2836_EVIDENCE/toolchain/npm-pin/command.status"
+          status_write_status=$?
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/toolchain/npm-pin/end.utc"
+          end_write_status=$?
+          set -e
+          if [ "$command_status" -ne 0 ]; then exit "$command_status"; fi
+          test "$status_write_status" -eq 0
+          test "$end_write_status" -eq 0
+          cat "$I2836_EVIDENCE/toolchain/npm-pin/stdout.log"
+          cat "$I2836_EVIDENCE/toolchain/npm-pin/stderr.log" >&2
+          mkdir "$I2836_EVIDENCE/toolchain/node-version"
+          : > "$I2836_EVIDENCE/toolchain/node-version/stdout.log"
+          : > "$I2836_EVIDENCE/toolchain/node-version/stderr.log"
+          printf '%s\n' 'node --version' > "$I2836_EVIDENCE/toolchain/node-version/command.txt"
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/toolchain/node-version/start.utc"
+          set +e
+          node --version > "$I2836_EVIDENCE/toolchain/node-version/stdout.log" 2> "$I2836_EVIDENCE/toolchain/node-version/stderr.log"
+          command_status=$?
+          printf '%s\n' "$command_status" > "$I2836_EVIDENCE/toolchain/node-version/command.status"
+          status_write_status=$?
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/toolchain/node-version/end.utc"
+          end_write_status=$?
+          set -e
+          if [ "$command_status" -ne 0 ]; then exit "$command_status"; fi
+          test "$status_write_status" -eq 0
+          test "$end_write_status" -eq 0
+          cat "$I2836_EVIDENCE/toolchain/node-version/stdout.log"
+          cat "$I2836_EVIDENCE/toolchain/node-version/stderr.log" >&2
+          test "$(cat "$I2836_EVIDENCE/toolchain/node-version/stdout.log")" = v22.14.0
+          mkdir "$I2836_EVIDENCE/toolchain/npm-version"
+          : > "$I2836_EVIDENCE/toolchain/npm-version/stdout.log"
+          : > "$I2836_EVIDENCE/toolchain/npm-version/stderr.log"
+          printf '%s\n' 'npm --version' > "$I2836_EVIDENCE/toolchain/npm-version/command.txt"
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/toolchain/npm-version/start.utc"
+          set +e
+          npm --version > "$I2836_EVIDENCE/toolchain/npm-version/stdout.log" 2> "$I2836_EVIDENCE/toolchain/npm-version/stderr.log"
+          command_status=$?
+          printf '%s\n' "$command_status" > "$I2836_EVIDENCE/toolchain/npm-version/command.status"
+          status_write_status=$?
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/toolchain/npm-version/end.utc"
+          end_write_status=$?
+          set -e
+          if [ "$command_status" -ne 0 ]; then exit "$command_status"; fi
+          test "$status_write_status" -eq 0
+          test "$end_write_status" -eq 0
+          cat "$I2836_EVIDENCE/toolchain/npm-version/stdout.log"
+          cat "$I2836_EVIDENCE/toolchain/npm-version/stderr.log" >&2
+          test "$(cat "$I2836_EVIDENCE/toolchain/npm-version/stdout.log")" = 11.6.2
+      - name: Retain npm pin/version command evidence on every outcome
+        if: ${{ always() && contains(fromJSON('["success","failure","cancelled"]'), steps.toolchain.outcome) }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: i2836-toolchain-${{ env.I2836_SOURCE_SHA }}-${{ github.workflow_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.I2836_EVIDENCE }}/toolchain/
+            ${{ env.I2836_EVIDENCE }}/identity.log
+          if-no-files-found: error
+          retention-days: 30
+      - name: Install locked frontend dependencies
+        id: locked_install
+        timeout-minutes: 10
+        run: |
+          mkdir "$I2836_EVIDENCE/locked-install"
+          : > "$I2836_EVIDENCE/locked-install/stdout.log"
+          : > "$I2836_EVIDENCE/locked-install/stderr.log"
+          printf '%s\n' 'npm ci --ignore-scripts' > "$I2836_EVIDENCE/locked-install/command.txt"
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/locked-install/start.utc"
+          set +e
+          npm ci --ignore-scripts > "$I2836_EVIDENCE/locked-install/stdout.log" 2> "$I2836_EVIDENCE/locked-install/stderr.log"
+          command_status=$?
+          printf '%s\n' "$command_status" > "$I2836_EVIDENCE/locked-install/command.status"
+          status_write_status=$?
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/locked-install/end.utc"
+          end_write_status=$?
+          set -e
+          if [ "$command_status" -ne 0 ]; then exit "$command_status"; fi
+          test "$status_write_status" -eq 0
+          test "$end_write_status" -eq 0
+          cat "$I2836_EVIDENCE/locked-install/stdout.log"
+          cat "$I2836_EVIDENCE/locked-install/stderr.log" >&2
+      - name: Retain locked install command evidence on every outcome
+        if: ${{ always() && contains(fromJSON('["success","failure","cancelled"]'), steps.locked_install.outcome) }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: i2836-locked_install-${{ env.I2836_SOURCE_SHA }}-${{ github.workflow_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.I2836_EVIDENCE }}/locked-install/
+            ${{ env.I2836_EVIDENCE }}/identity.log
+          if-no-files-found: error
+          retention-days: 30
+      - name: Run exactly the three focused test-file selections
+        id: focused_tests
+        timeout-minutes: 15
+        run: |
+          mkdir "$I2836_EVIDENCE/focused-tests"
+          : > "$I2836_EVIDENCE/focused-tests/stdout.log"
+          : > "$I2836_EVIDENCE/focused-tests/stderr.log"
+          printf '%s\n' 'npm test -- src/shared/profile-utils.test.ts src/sidebar/components/SettingsModal.automation.test.ts src/sidebar/components/SettingsModal.quota-remaining.test.tsx --reporter=default --reporter=json --outputFile.json="$I2836_EVIDENCE/focused-tests/results.json"' > "$I2836_EVIDENCE/focused-tests/command.txt"
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/focused-tests/start.utc"
+          set +e
+          npm test -- src/shared/profile-utils.test.ts src/sidebar/components/SettingsModal.automation.test.ts src/sidebar/components/SettingsModal.quota-remaining.test.tsx --reporter=default --reporter=json --outputFile.json="$I2836_EVIDENCE/focused-tests/results.json" > "$I2836_EVIDENCE/focused-tests/stdout.log" 2> "$I2836_EVIDENCE/focused-tests/stderr.log"
+          command_status=$?
+          printf '%s\n' "$command_status" > "$I2836_EVIDENCE/focused-tests/command.status"
+          status_write_status=$?
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/focused-tests/end.utc"
+          end_write_status=$?
+          set -e
+          if [ "$command_status" -ne 0 ]; then exit "$command_status"; fi
+          test "$status_write_status" -eq 0
+          test "$end_write_status" -eq 0
+          cat "$I2836_EVIDENCE/focused-tests/stdout.log"
+          cat "$I2836_EVIDENCE/focused-tests/stderr.log" >&2
+      - name: Retain focused suite command evidence on every outcome
+        if: ${{ always() && contains(fromJSON('["success","failure","cancelled"]'), steps.focused_tests.outcome) }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: i2836-focused_tests-${{ env.I2836_SOURCE_SHA }}-${{ github.workflow_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.I2836_EVIDENCE }}/focused-tests/
+            ${{ env.I2836_EVIDENCE }}/identity.log
+          if-no-files-found: error
+          retention-days: 30
+      - name: Typecheck after successful suite and evidence uploads
+        id: typecheck
+        timeout-minutes: 5
+        run: |
+          mkdir "$I2836_EVIDENCE/typecheck"
+          : > "$I2836_EVIDENCE/typecheck/stdout.log"
+          : > "$I2836_EVIDENCE/typecheck/stderr.log"
+          printf '%s\n' 'npm run typecheck' > "$I2836_EVIDENCE/typecheck/command.txt"
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/typecheck/start.utc"
+          set +e
+          npm run typecheck > "$I2836_EVIDENCE/typecheck/stdout.log" 2> "$I2836_EVIDENCE/typecheck/stderr.log"
+          command_status=$?
+          printf '%s\n' "$command_status" > "$I2836_EVIDENCE/typecheck/command.status"
+          status_write_status=$?
+          date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$I2836_EVIDENCE/typecheck/end.utc"
+          end_write_status=$?
+          set -e
+          if [ "$command_status" -ne 0 ]; then exit "$command_status"; fi
+          test "$status_write_status" -eq 0
+          test "$end_write_status" -eq 0
+          cat "$I2836_EVIDENCE/typecheck/stdout.log"
+          cat "$I2836_EVIDENCE/typecheck/stderr.log" >&2
+      - name: Retain typecheck command evidence on every outcome
+        if: ${{ always() && contains(fromJSON('["success","failure","cancelled"]'), steps.typecheck.outcome) }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: i2836-typecheck-${{ env.I2836_SOURCE_SHA }}-${{ github.workflow_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.I2836_EVIDENCE }}/typecheck/
+            ${{ env.I2836_EVIDENCE }}/identity.log
+          if-no-files-found: error
+          retention-days: 30
