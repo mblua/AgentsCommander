@@ -4,7 +4,7 @@ These cases validate the first-run and settings surfaces that let a user configu
 
 Use the deterministic testable app mode from `README.md#deterministic-testable-app`. Run `agentscommander_testeable.exe test-reset --confirm-testeable` before first-run cases that require clean disposable state, and only when the testable GUI is not active.
 
-Product actions must be performed through the GUI. CLI is allowed only for harness control, semantic UI automation, screenshots, logs, and read-only verification.
+For OCA-001 through OCA-008, product actions must use the GUI; CLI is allowed only for harness control, semantic UI automation, screenshots, logs, and read-only verification. Their existing permissions and fixture requirements remain in force. Native installer acceptance below uses a non-GUI runner in disposable environments and is exempt from this OCA-only GUI rule.
 
 ## Execution Log
 
@@ -360,3 +360,64 @@ Evidence Required:
 Pass/Fail Criteria:
 
 PASS if every state renders as described on both surfaces, Reload recovers without a restart, selection never survives a source change, and no read writes fixture bytes. FAIL if a state is silently replaced by embedded presets, a path or reason is missing, Reload cannot recover, or a stale preset can be confirmed. BLOCKED if the disposable fixture cannot be prepared or restored safely.
+
+## Native installer acceptance
+
+**Status: UNEXECUTED / BLOCKED for native runtime qualification on all three platforms.** This documentation phase ran no installers, product tests, GUI, screenshots or input automation. The user owns future Windows, macOS and Linux testing after opting in; this procedure does not authorize execution. Use disposable native OS environments and user profiles when execution is separately authorized. Never use a live profile for replacement/rerun scenarios.
+
+[PR #2856](https://github.com/mblua/AgentsCommander/pull/2856) merged the default-off routes and closed #2800. It records catalog **6/6**, settings **4/4** and focused UI **92/92**; these are PR-recorded results, not reruns in this documentation phase. The accepted default-off scope changed the earlier landing prerequisites; merge and generic checks did not satisfy native acceptance. The PR explicitly reports no real installer/native/GUI/transport qualification. Documentation completion supplies no runtime PASS, cannot retroactively qualify unperformed P1 tests, and does not close #2787.
+
+### Existing automated evidence and its limits
+
+At source `d88299216ee22eb8aefef0802ec05eceb89eb8af`, [coding_agents_catalog.rs](../../src-tauri/src/config/coding_agents_catalog.rs) contains these six `scope_b_catalog_2800_` tests:
+
+- `scope_b_catalog_2800_exact_32_cells`
+- `scope_b_catalog_2800_non_install_fields_unchanged`
+- `scope_b_catalog_2800_unknown_os_and_missing_override_use_default`
+- `scope_b_catalog_2800_host_selector_matches_supported_cfg`
+- `scope_b_catalog_2800_project_and_personal_composition_preserved`
+- `scope_b_catalog_2800_malformed_project_and_muse_policy_preserved`
+
+They check catalog selection/composition, including eight agents × three OS overrides plus eight defaults; they reuse existing 2736 regressions. They do not execute installers. Any future report using this family must select and pass all six, with zero failed/ignored, and retain the source SHA, exact command, selected/passed/failed/ignored counts and full logs.
+
+The `agent_install_2736_` tests in [agent_update.rs](../../src-tauri/src/agent_update.rs) cover the generic runner using synthetic success/exit-3 commands, timeout, concurrency, events, containment, cleanup and payloads. They do not execute the eight shipped platform wrappers. Neither `agent_install_2787_catalog_` nor `agent_install_2787_wrapper_` exists at this source; do not invent a selector or passing count. Dedicated shipped-wrapper/native qualification remains missing. Any required product test or runner change needs separate authorized scope.
+
+### Record 24 independent native cells
+
+Every cell below is unexecuted: setup, executed command and runtime logs are missing. Record each as PASS, FAIL or BLOCKED with the specific missing prerequisite/evidence; an unavailable OS remains BLOCKED. Do not hide skips or substitute one OS, architecture, agent, generic test or catalog assertion for another cell.
+
+| Catalog key / binary | Windows native | macOS native | Linux native |
+|---|---|---|---|
+| `claude` / `claude` | BLOCKED — unexecuted | BLOCKED — unexecuted | BLOCKED — unexecuted |
+| `codex` / `codex` | BLOCKED — unexecuted | BLOCKED — unexecuted | BLOCKED — unexecuted |
+| `hermes` / `hermes` | BLOCKED — unexecuted | BLOCKED — unexecuted | BLOCKED — unexecuted |
+| `cursor` / `agent` | BLOCKED — unexecuted | BLOCKED — unexecuted | BLOCKED — unexecuted |
+| `pi` / `pi` | BLOCKED — unexecuted | BLOCKED — unexecuted | BLOCKED — unexecuted |
+| `opencode` / `opencode` | BLOCKED — unexecuted | BLOCKED — unexecuted | BLOCKED — unexecuted |
+| `antigravity` / `agy` | BLOCKED — unexecuted | BLOCKED — unexecuted | BLOCKED — unexecuted |
+| `grok` / `grok` | BLOCKED — unexecuted | BLOCKED — unexecuted | BLOCKED — unexecuted |
+
+For each cell, retain source SHA, effective persisted command and catalog/override hashes; OS version/architecture; shell, PowerShell, curl, Node/npm and archive/checksum tool versions where applicable; prerequisite checks; profile and CWD (including a path with spaces); inherited/effective PATH; null stdin; start/end times, exit status and complete stdout/stderr. Record the chosen native runner invocation rather than inventing a shipped qualification harness. Require nonzero selected counts with zero hidden ignores for any automated claim.
+
+1. Capture executable presence and AC presence before installation. Execute the exact selected persisted command through the shipped runner with null stdin and its 300-second bound. Retain command/output/status even on failure or timeout.
+2. Locate the installed executable and independently run its **full path** with `--version`; retain exit/output and the actual path. Exit 0 from the installer or Welcome's Installed indicator alone cannot pass the cell.
+3. Record AC presence in the same process, then restart AC from a fresh OS environment and record presence again. On Windows, a User PATH change does not refresh running AC. On Unix, account for existing user-bin directories and the once-cached login PATH. A terminal-only restart is insufficient evidence of a fresh AC environment.
+4. Repeat with an existing install in the disposable profile and with a spaced CWD. Record replacement, profile/tool-store changes and recovery. Capture any prerequisite, PATH, timeout or rerun failure instead of reducing it to a successful exit.
+
+### Missing shipped-wrapper and catalog scenarios
+
+The following runtime/fixture scenarios are also **UNEXECUTED / BLOCKED**: no independently reviewed native artifact supplies their setup, exact invocation and logs. Future execution must preserve the actual shipped wrapper/runner; synthetic generic-runner commands cannot substitute for it.
+
+| Scenario | Required evidence |
+|---|---|
+| Positive script and exact exit | Shipped-wrapper fixture executes a marker exactly once; capture positive exit 0 and explicit downloaded-script `exit 7`. Independently capture a native child exiting 7 and whether the upstream script propagates it. |
+| Failed/empty fetch | Initial download failure and empty response return failure, with no execution marker; additionally check Windows whitespace-only rejection. Record fetch deadline and error/output; do not treat pipeline success as download success. |
+| PowerShell propagation | Capture terminating and nonterminating script errors, ignored versus propagated native exits, fetch/write/cleanup failures, child status and raw stderr/CLIXML. Verify UTF-16LE/no-BOM outer payload and UTF-8/BOM temporary script separately. Do not assume every script error produces failure. |
+| Hermes noninteractive flags | Prove the selected Windows `-NonInteractive` script argument or Unix `bash -s -- --non-interactive` reaches upstream, with null stdin and no setup prompt; record managed-tool and optional-component outcomes. |
+| OpenCode Windows npm route | Record npm's `--allow-scripts` support, resolved package/Node engines, optional platform binary presence and independent version. Audit that only `opencode-ai` lifecycle is permitted; retain evidence of no global wildcard/config change or project approval write. |
+| Pi prerequisites | Record existing compatible Node/npm; separately prove behavior when either is missing under null stdin. AC's npm route does not bootstrap them. |
+| PATH, CWD and rerun | Retain the before/same-process/fresh-process presence and independent full-path version results, spaced-CWD run, existing-install rerun and upstream changes; account for Cursor Windows replacement. |
+| Managed refresh and override preservation | Start with a verified old managed revision in disposable fixtures, preserve project 40/personal 50 hashes, then startup/register with the new revision. Verify local default/OS strings stay verbatim, omitted keys inherit, whole-object null clears, OS null falls back to composed default, new definitions validate, and Muse stays suppressed. |
+| Edited/unmanaged and read-only reload | Compare bytes/hashes before and after startup/registration/read-only Reload: semantic edits/unmanaged bases retain bytes and warnings/old installers; Reload writes nothing. A formatting-only managed edit may refresh when its semantic hash matches and the shipped revision differs. |
+
+For a PASS, require complete per-cell prerequisites, command/exit/timing/logs, independent version and AC-presence evidence plus applicable wrapper/refresh scenarios. FAIL records an observed mismatch; BLOCKED records missing setup or proof. CI is runtime evidence only when those exact tests actually execute with nonzero selection, no ignores and retained logs. Catalog/generic-runner checks alone never qualify these native cells.
