@@ -21,9 +21,7 @@ pub use crate::config::ROOT_AGENT_DIR_NAME;
 pub const ROOT_AGENT_SESSION_NAME: &str = "Root Agent";
 pub const ROOT_AGENT_SENDER: &str = "agentscommander://root-agent";
 pub const ROOT_AGENT_SHORT_NAME: &str = "root";
-/// #979: the canonical Root `context[]`. The global sentinel is gone: Root's
-/// governance is the code-owned runtime prologue that
-/// `session_context::build_root_agent_context` always prepends, never a file.
+/// Canonical Root context order. The selected file owns all instructional prose.
 const ROOT_AGENT_DEFAULT_CONTEXT: &[&str] = &["../Context.root-agent.md", "Role.md"];
 /// Frozen pre-979 default, kept for exact legacy recognition during migration.
 const ROOT_AGENT_PRE_979_DEFAULT_CONTEXT: &[&str] = &[
@@ -707,6 +705,7 @@ The audit is a review lens: produce a structured recommendation before any refac
 Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
 "#;
 
+// Frozen v8 supplemental context and Role migration input. Never edit its bytes.
 const ROOT_ROLE_MD: &str = r#"---
 name: 'agents-commander'
 description: 'Static supplemental root context for AgentsCommander.'
@@ -818,23 +817,38 @@ The audit is a review lens: produce a structured recommendation before any refac
 Before creating any new specialist agent (any role-defined `create-agent-matrix`), load and apply `skills/agency-agents-roles/SKILL.md`. It defines the mandatory offer of tested Agency Agents role templates, what to state about Agency Agents from real local data (never invented), the bounded skip exceptions, and the `agency-templates` CLI flow.
 "#;
 pub(crate) fn default_root_context_template() -> &'static str {
-    ROOT_ROLE_MD
+    include_str!("root_agent_defaults/Context.root-agent.md")
+}
+
+#[cfg(test)]
+pub(crate) fn frozen_root_context_snapshots() -> [&'static str; 9] {
+    [
+        OLD_ROOT_ROLE_MD,
+        &OLD_ROOT_CONTEXT_WITH_COORDINATION_MD,
+        ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD,
+        ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD,
+        ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD,
+        ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD,
+        ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD,
+        ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD,
+        ROOT_ROLE_MD,
+    ]
 }
 
 pub(crate) fn is_known_generated_root_context_template(content: &str) -> bool {
-    let normalized = normalize_role_text(content);
     let old_generated = [
-        normalize_role_text(OLD_ROOT_ROLE_MD),
-        normalize_role_text(&OLD_ROOT_CONTEXT_WITH_COORDINATION_MD),
-        normalize_role_text(ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD),
-        normalize_role_text(ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD),
-        normalize_role_text(ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD),
-        normalize_role_text(ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD),
-        normalize_role_text(ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD),
-        normalize_role_text(ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD),
-        normalize_role_text(ROOT_ROLE_MD),
+        OLD_ROOT_ROLE_MD,
+        &OLD_ROOT_CONTEXT_WITH_COORDINATION_MD,
+        ROOT_CONTEXT_BEFORE_BOUNDARY_AUDIT_MD,
+        ROOT_CONTEXT_BEFORE_AGENCY_SKILL_MD,
+        ROOT_CONTEXT_BEFORE_TOKEN_MINIMIZATION_MD,
+        ROOT_CONTEXT_BEFORE_WORKSPACE_PROSE_MD,
+        ROOT_CONTEXT_BEFORE_ORCHESTRATOR_RENAME_MD,
+        ROOT_CONTEXT_BEFORE_ROOM_RENAME_MD,
+        ROOT_ROLE_MD,
+        default_root_context_template(),
     ];
-    old_generated.contains(&normalized)
+    old_generated.contains(&content)
 }
 
 const MINIMAL_ROOT_ROLE_MD: &str = r#"# Role
@@ -868,6 +882,14 @@ pub fn is_root_agent_path(cwd: &str) -> bool {
         return false;
     };
     paths_equivalent(Path::new(cwd), Path::new(&root_dir))
+}
+
+/// Isolated context fixtures use the same canonical path comparison as live
+/// Root routing, with an explicit configuration directory and existing roots.
+#[cfg(test)]
+pub(crate) fn is_root_agent_path_at(cwd: &str, config_dir: &Path) -> bool {
+    let configured = config_dir.join(ROOT_AGENT_DIR_NAME);
+    Path::new(cwd).is_dir() && configured.is_dir() && paths_equivalent(Path::new(cwd), &configured)
 }
 
 /// Read-only proof that `path` is the existing canonical Root Agent directory.
@@ -2157,6 +2179,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn issue_2832_root_recognition_is_exact_while_role_normalization_is_unchanged() {
+        for source in frozen_root_context_snapshots()
+            .into_iter()
+            .chain([default_root_context_template()])
+        {
+            assert!(is_known_generated_root_context_template(source));
+            for edit in [
+                format!(" {source}"),
+                format!("{source} "),
+                format!("{source}\n"),
+                source.replace('\n', "\r\n"),
+            ] {
+                assert!(!is_known_generated_root_context_template(&edit));
+            }
+        }
+        assert_eq!(
+            normalize_role_text(&format!(" {} ", MINIMAL_ROOT_ROLE_MD.replace('\n', "\r\n"))),
+            normalize_role_text(MINIMAL_ROOT_ROLE_MD)
+        );
+        assert!(!is_known_generated_root_context_template(""));
+        assert!(!is_known_generated_root_context_template("\n"));
+    }
+
+    #[test]
+    fn issue_2832_default_contains_literal_policy_and_frozen_v8_supplement_body() {
+        let source = default_root_context_template();
+        let body = ROOT_ROLE_MD
+            .splitn(3, "---")
+            .nth(2)
+            .unwrap()
+            .trim_start_matches('\n');
+        // Markdown checkout line endings may differ by host. Check the complete
+        // literal supplement by lines; production recognition remains byte-exact.
+        let source_lines: Vec<_> = source.lines().collect();
+        let body_lines: Vec<_> = body.lines().collect();
+        assert!(source_lines
+            .windows(body_lines.len())
+            .any(|lines| lines == body_lines));
+        for heading in [
+            "## GOLDEN RULE",
+            "## Root Agent Authority",
+            "## Skills",
+            "## Inter-Agent Messaging",
+            "## Privileged PTY Input",
+            "## Self-Maintenance",
+            "## Host Platform Rules",
+        ] {
+            assert!(source.contains(heading));
+        }
+        for coarse in [
+            "{{WRITE_RESTRICTIONS}}",
+            "{{ROOT_AUTHORITY}}",
+            "{{CLI_CONTEXT}}",
+            "{{INTER_AGENT_MESSAGING}}",
+            "{{HOST_PLATFORM_RULES}}",
+            "{{SELF_MAINTENANCE}}",
+        ] {
+            assert!(!source.contains(coarse));
+        }
+        assert!(!source.starts_with("---"));
+    }
+
+    #[test]
     #[cfg(windows)]
     fn display_path_converts_verbatim_unc() {
         assert_eq!(
@@ -2259,7 +2344,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(template_path).expect("read template"),
-            ROOT_ROLE_MD
+            default_root_context_template()
         );
         let config_raw = std::fs::read_to_string(root.join("config.json")).expect("read config");
         let config: Value = serde_json::from_str(&config_raw).expect("parse config");
@@ -2384,16 +2469,13 @@ mod tests {
         assert!(retired_global_backups(temp.path()).is_empty());
     }
 
-    /// #1370 C7 / AC-3: the template the Root Agent actually ships must not use
-    /// the deprecated word. Immune to the frozen legacy snapshots, which keep it
-    /// on purpose.
+    /// The frozen v8 supplement retains the #1370 vocabulary contract. The v9
+    /// resource also includes filesystem policy that describes workspace roots.
     #[test]
-    fn shipped_root_context_template_has_no_workspace_prose() {
+    fn frozen_v8_root_supplement_has_no_workspace_prose() {
         assert!(
-            !default_root_context_template()
-                .to_lowercase()
-                .contains("workspace"),
-            "the shipped Root Agent template must not use the deprecated word"
+            !ROOT_ROLE_MD.to_lowercase().contains("workspace"),
+            "the frozen v8 supplement must not use the deprecated word"
         );
     }
 
@@ -2609,8 +2691,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 8,
-            "root_spec current_version must be bumped to 8 by the #1614 room rename"
+            parsed["templates"]["rootAgent"]["currentVersion"], 9,
+            "root_spec current_version must be bumped to 9 by #2832"
         );
     }
 
@@ -2678,8 +2760,8 @@ mod tests {
             .expect("read seeded state");
         let parsed: Value = serde_json::from_str(&state).expect("parse seeded state");
         assert_eq!(
-            parsed["templates"]["rootAgent"]["currentVersion"], 8,
-            "root_spec current_version must be bumped to 8 by the #1614 room rename"
+            parsed["templates"]["rootAgent"]["currentVersion"], 9,
+            "root_spec current_version must be bumped to 9 by #2832"
         );
     }
 
@@ -2754,7 +2836,7 @@ mod tests {
 
             assert_eq!(
                 std::fs::read_to_string(template_path).expect("read template"),
-                ROOT_ROLE_MD
+                default_root_context_template()
             );
         }
     }
@@ -2796,7 +2878,7 @@ mod tests {
         ensure_root_agent_dir_at(&root).expect("ensure root");
 
         let migrated = std::fs::read_to_string(template_path).expect("read template");
-        assert_eq!(migrated, ROOT_ROLE_MD);
+        assert_eq!(migrated, default_root_context_template());
         assert!(migrated.contains("role-skill-boundary-audit"));
     }
 
@@ -2992,9 +3074,9 @@ mod tests {
         ensure_root_agent_dir_at(&root).expect("ensure root");
 
         let migrated = std::fs::read_to_string(template_path).expect("read template");
-        assert_eq!(migrated, ROOT_ROLE_MD);
+        assert_eq!(migrated, default_root_context_template());
         assert!(migrated.contains("skills/agency-agents-roles/SKILL.md"));
-        assert!(!migrated.contains("agency-templates update"));
+        assert!(migrated.contains("agency-templates update"));
     }
 
     #[test]
