@@ -24,8 +24,8 @@ publication by AgentsCommander. Two publisher families write rows:
   actual base publication: the first management of a fresh catalog, a one-time
   legacy migration, or a later refresh to a new shipped revision. The row is
   re-timestamped on each such publication; a bookkeeping retry can add the row
-  for an already-published base without republishing it. The user-owned
-  `agents.50.personal.no-git.json`, the migration backup `agents.migration-v1.backup.json`
+  for an already-published base without republishing it. The user-written
+  `agents.40.project.json`, the personal `agents.50.personal.no-git.json`, the migration backup `agents.migration-v1.backup.json`
   and the journal `.agents.migration-v1.json` are never published files and
   never get rows. The `_seed/` masters tree is not rowed.
 
