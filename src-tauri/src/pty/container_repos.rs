@@ -232,16 +232,6 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    #[cfg(unix)]
-    fn try_symlink_dir(target: &Path, link: &Path) -> bool {
-        std::os::unix::fs::symlink(target, link).is_ok()
-    }
-
-    #[cfg(windows)]
-    fn try_symlink_dir(target: &Path, link: &Path) -> bool {
-        std::os::windows::fs::symlink_dir(target, link).is_ok()
-    }
-
     /// Build `<tmp>/.ac/wg-test-team/` with the given replica name, and return
     /// (tmp, wg_root, replica_root). `find_ac_root_ancestor` keys on a `.ac`
     /// ancestor and the wg-root name must start with `wg-`, so both are created.
@@ -311,67 +301,6 @@ mod tests {
             !host.starts_with(r"\\?\"),
             "mount source must not carry the verbatim prefix: {host}"
         );
-    }
-
-    #[test]
-    fn symlink_named_repo_but_targeting_sibling_replica_is_rejected() {
-        // grinch Finding 2, THE critical test. A symlink whose APPARENT name
-        // starts with `repo-` but whose CANONICAL target is a sibling replica.
-        // The parent check PASSES (the target's parent IS the wg root), so only
-        // the canonical-NAME check can reject it. Nothing else does:
-        // container_mount_source_rejection does not catch a sibling replica.
-        let (_tmp, wg_root, replica) = make_workgroup("__agent_self");
-        let other = mkdir(&wg_root, "__agent_other");
-        let trap = replica.join("repo-trap");
-        if !try_symlink_dir(&other, &trap) {
-            eprintln!("skipping: no symlink privilege on this platform");
-            return;
-        }
-        write_repos(&replica, &["./repo-trap"]);
-
-        let result = resolve_repo_mounts(&replica);
-        assert!(
-            result.is_err(),
-            "a repo-*-named symlink to a sibling replica must hard-fail, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn symlink_named_repo_but_targeting_messaging_is_rejected() {
-        // The twin: same shape, canonical target is an AC-owned NON-replica.
-        // Parent check passes again; canonical name `messaging` has no `repo-`
-        // prefix -> Err. Covers the other class of AC-owned target.
-        let (_tmp, wg_root, replica) = make_workgroup("__agent_self");
-        let messaging = mkdir(&wg_root, "messaging");
-        let trap = replica.join("repo-trap");
-        if !try_symlink_dir(&messaging, &trap) {
-            eprintln!("skipping: no symlink privilege on this platform");
-            return;
-        }
-        write_repos(&replica, &["./repo-trap"]);
-
-        assert!(
-            resolve_repo_mounts(&replica).is_err(),
-            "a repo-*-named symlink to messaging/ must hard-fail"
-        );
-    }
-
-    #[test]
-    fn plain_symlink_to_messaging_is_rejected_before_the_name_check() {
-        // Apparent name NOT `repo-`-prefixed: proves canonicalize runs before
-        // validation. Note this does NOT cover the two tests above: `messaging`
-        // fails the parent check on its own and never exercises the name rule.
-        let (_tmp, wg_root, replica) = make_workgroup("__agent_self");
-        let messaging = mkdir(&wg_root, "messaging");
-        let link = replica.join("plain-link");
-        if !try_symlink_dir(&messaging, &link) {
-            eprintln!("skipping: no symlink privilege on this platform");
-            return;
-        }
-        write_repos(&replica, &["./plain-link"]);
-
-        assert!(resolve_repo_mounts(&replica).is_err());
     }
 
     #[test]

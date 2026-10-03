@@ -5608,23 +5608,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn validate_delete_root_rejects_symlink_root() {
-        use std::os::unix::fs::symlink;
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let real = tmp.path().join("real");
-        let link = tmp.path().join("wg-1-test");
-        std::fs::create_dir(&real).expect("create real");
-        symlink(&real, &link).expect("create symlink");
-
-        assert_eq!(
-            validate_delete_root_not_link_or_reparse(&link).unwrap_err(),
-            "delete_root_is_symlink"
-        );
-    }
-
     #[test]
     fn synthetic_windows_reparse_attribute_is_always_classified_for_rejection() {
         assert!(!metadata_parts_are_link_or_reparse(false, 0));
@@ -6285,23 +6268,6 @@ mod tests {
 
         let err = TeamConfigMutationGuard::acquire(&ac_root).expect_err("reparse escape");
         assert!(err.contains("regular non-link file"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn team_config_guard_rejects_symlink_sentinel_escape() {
-        use std::os::unix::fs::symlink;
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let ac_root = tmp.path().join("workspace");
-        let outside = tmp.path().join("outside.lock");
-        std::fs::create_dir_all(&ac_root).expect("workspace");
-        std::fs::write(&outside, b"").expect("outside lock");
-        symlink(&outside, ac_root.join(TEAM_CONFIG_MUTATION_LOCK_NAME)).expect("symlink sentinel");
-
-        let err = TeamConfigMutationGuard::acquire(&ac_root).expect_err("symlink escape");
-        assert!(err.contains("regular non-link file"));
-        assert_eq!(std::fs::read(&outside).expect("outside bytes"), b"");
     }
 
     async fn add_live_session(

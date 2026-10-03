@@ -2706,8 +2706,9 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
-    fn copy_tree_skips_symlink_and_junction_entries() {
+    fn copy_tree_skips_junction_entries() {
         let temp = tempfile::tempdir().unwrap();
         let src = temp.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -2717,10 +2718,6 @@ mod tests {
 
         let link = src.join("linked");
         let created;
-        #[cfg(unix)]
-        {
-            created = std::os::unix::fs::symlink(&target, &link).is_ok();
-        }
         #[cfg(windows)]
         {
             let mut cmd = std::process::Command::new("cmd");
@@ -2737,7 +2734,7 @@ mod tests {
             created = matches!(status, Ok(s) if s.success());
         }
         if !created {
-            return; // environment cannot create links — skip gracefully.
+            return; // environment cannot create junctions — skip gracefully.
         }
 
         let dst = temp.path().join("dst");
@@ -2746,7 +2743,7 @@ mod tests {
         assert!(dst.join("real.txt").exists(), "real file must be copied");
         assert!(
             !dst.join("linked").exists(),
-            "symlink/junction entry must be skipped"
+            "junction entry must be skipped"
         );
     }
 

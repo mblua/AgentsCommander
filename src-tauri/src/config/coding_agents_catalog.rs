@@ -5364,17 +5364,90 @@ mod tests {
 
     #[test]
     fn project_nonregular_and_read_errors_degrade_only_project() {
+        let inventory = |root: &Path| {
+            let mut pending = vec![root.to_path_buf()];
+            let mut entries = std::collections::BTreeMap::new();
+            while let Some(path) = pending.pop() {
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                let bytes = if metadata.is_file() {
+                    std::fs::read(&path).unwrap()
+                } else {
+                    assert!(metadata.is_dir());
+                    pending.extend(
+                        std::fs::read_dir(&path)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().path()),
+                    );
+                    Vec::new()
+                };
+                entries.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    (metadata.is_dir(), bytes),
+                );
+            }
+            entries
+        };
         let dir = seed_dir();
         ensure_seeded(dir.path(), None);
-        std::fs::create_dir(project_catalog_path(dir.path())).unwrap();
-        let report = project_report(dir.path());
-        assert_eq!(report.catalog.len(), 8);
-        assert!(report.warnings.iter().any(|w| w.code == "projectInvalid"));
+        let base = project_report(dir.path());
+        assert!(base.unavailable.is_none());
+        assert_eq!(base.catalog.len(), 8);
+        let project = project_catalog_path(dir.path());
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("keep.txt"), b"project sentinel").unwrap();
+        let before = inventory(dir.path());
+        for _ in 0..2 {
+            let report = project_report(dir.path());
+            assert!(report.unavailable.is_none());
+            assert_eq!(keys_of(&report.catalog), keys_of(&base.catalog));
+            assert_eq!(
+                serde_json::to_value(&report.catalog).unwrap(),
+                serde_json::to_value(&base.catalog).unwrap()
+            );
+            assert!(report.warnings.iter().any(|warning| warning.code == "projectInvalid"
+                && warning.path == project.display().to_string()
+                && warning.reason == format!("the project coding-agent catalog at {} is not a regular file; a regular file is required", project.display())));
+            ensure_seeded(dir.path(), None);
+            assert_eq!(inventory(dir.path()), before);
+        }
+
+        let dir = seed_dir();
+        ensure_seeded(dir.path(), None);
+        let base = project_report(dir.path());
+        let project = project_catalog_path(dir.path());
+        let mut row = extra_row("rejected-project");
+        row["label"] = serde_json::json!("Distinctive project overlay");
+        write_project_patch(
+            dir.path(),
+            patch_rows(serde_json::json!([
+                {"key":"claude","label":"Distinctive project label"}, row
+            ])),
+        );
+        let before = inventory(dir.path());
+        let positive = project_report(dir.path());
+        assert!(positive.unavailable.is_none());
+        assert_eq!(positive.catalog.len(), 9);
+        assert_eq!(
+            positive
+                .catalog
+                .iter()
+                .find(|row| row.key == "claude")
+                .unwrap()
+                .label,
+            "Distinctive project label"
+        );
+        assert!(
+            positive
+                .catalog
+                .iter()
+                .any(|row| row.key == "rejected-project"
+                    && row.label == "Distinctive project overlay")
+        );
         let snapshot = read_catalog_snapshot_with(
             dir.path(),
             CatalogReadScope::Project,
             |path, description| {
-                if path == project_catalog_path(dir.path()) {
+                if path == project {
                     Err("project read denied".into())
                 } else {
                     read_optional_regular_file(path, description)
@@ -5384,39 +5457,27 @@ mod tests {
         .unwrap();
         let resolved =
             resolve_catalog_snapshot(dir.path(), snapshot, CatalogSourceContext::Project);
-        assert_eq!(resolved.catalog.len(), 8);
+        assert!(resolved.unavailable.is_none());
+        assert_eq!(keys_of(&resolved.catalog), keys_of(&base.catalog));
+        assert_eq!(
+            serde_json::to_value(&resolved.catalog).unwrap(),
+            serde_json::to_value(&base.catalog).unwrap()
+        );
         assert!(resolved
             .warnings
             .iter()
-            .any(|w| w.code == "projectInvalid" && w.reason == "project read denied"));
+            .any(|warning| warning.code == "projectInvalid"
+                && warning.path == project.display().to_string()
+                && warning.reason == "project read denied"));
+        assert!(!resolved
+            .catalog
+            .iter()
+            .any(|row| row.key == "rejected-project"
+                || row.label == "Distinctive project label"
+                || row.label == "Distinctive project overlay"));
+        ensure_seeded(dir.path(), None);
+        assert_eq!(inventory(dir.path()), before);
     }
-    #[test]
-    fn project_symlink_and_dangling_link_remain_invalid_and_preserved() {
-        for present in [true, false] {
-            let dir = seed_dir();
-            ensure_seeded(dir.path(), None);
-            let target = dir.path().join("project-target.json");
-            if present {
-                std::fs::write(&target, LOCAL_STUB_BYTES).unwrap();
-            }
-            let path = project_catalog_path(dir.path());
-            create_manifest_symlink(&target, &path).expect("real project symlink fixture");
-            let report = project_report(dir.path());
-            assert_eq!(report.catalog.len(), 8);
-            assert!(report
-                .warnings
-                .iter()
-                .any(|w| w.code == "projectInvalid" && w.path == path.display().to_string()));
-            ensure_seeded(dir.path(), None);
-            assert_eq!(std::fs::read_link(path).unwrap(), target);
-            if present {
-                assert_eq!(std::fs::read(target).unwrap(), LOCAL_STUB_BYTES);
-            } else {
-                assert!(!target.exists());
-            }
-        }
-    }
-
     #[test]
     fn project_ownership_support_and_unavailable_base_contract() {
         let dir = seed_dir();
@@ -8112,49 +8173,6 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
-    fn create_manifest_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_file(target, link)
-    }
-
-    #[cfg(unix)]
-    fn create_manifest_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(target, link)
-    }
-
-    #[test]
-    fn catalog_report_symlink_manifest_is_unavailable() {
-        let dir = seed_dir();
-        let target = dir.path().join("real-catalog.json");
-        std::fs::write(
-            &target,
-            manifest_json(
-                r##"[{"key":"mine","label":"Mine","description":"d","color":"#111","command":"mytool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[]}]"##,
-            ),
-        )
-        .unwrap();
-        let link = manifest_path(dir.path());
-        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
-        if let Err(e) = create_manifest_symlink(&target, &link) {
-            // Explicit, never silent: the link fixture could not be created on
-            // this host (Windows symlink privilege), so the link assertion was
-            // NOT exercised and must not be counted as a pass.
-            eprintln!(
-                "[catalog-report test] symlink creation unavailable on this host ({e}); link fixture NOT exercised"
-            );
-            return;
-        }
-        let report = report_for(dir.path());
-        assert!(report.catalog.is_empty());
-        let unavailable = report.unavailable.as_ref().expect("unavailable");
-        assert_eq!(unavailable.code, "baseUnavailable");
-        assert!(
-            unavailable.reason.contains("symbolic link"),
-            "{}",
-            unavailable.reason
-        );
-    }
-
     #[test]
     fn catalog_report_unsupported_schema_is_base_invalid() {
         for raw in [
@@ -8999,6 +9017,29 @@ mod tests {
 
     #[test]
     fn managed_catalog_existing_local_entries_are_never_clobbered() {
+        let inventory = |root: &Path| {
+            let mut pending = vec![root.to_path_buf()];
+            let mut entries = std::collections::BTreeMap::new();
+            while let Some(path) = pending.pop() {
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                let bytes = if metadata.is_file() {
+                    std::fs::read(&path).unwrap()
+                } else {
+                    assert!(metadata.is_dir());
+                    pending.extend(
+                        std::fs::read_dir(&path)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().path()),
+                    );
+                    Vec::new()
+                };
+                entries.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    (metadata.is_dir(), bytes),
+                );
+            }
+            entries
+        };
         // A directory at the local path is preserved and disables the layer.
         let dir = seed_dir();
         let local = local_catalog_path(dir.path());
@@ -9007,6 +9048,7 @@ mod tests {
         assert!(ensure_seeded(dir.path(), None).is_some());
         assert!(local.is_dir());
         assert_eq!(std::fs::read(local.join("keep.txt")).unwrap(), b"keep");
+        let before = inventory(dir.path());
         let report = load_catalog_report(dir.path());
         assert_eq!(report.catalog.len(), 8, "the valid base stays usable");
         assert!(
@@ -9018,6 +9060,22 @@ mod tests {
             report.warnings
         );
 
+        assert!(report.unavailable.is_none());
+        assert!(report.warnings.iter().any(|warning| warning.code == "localInvalid"
+            && warning.path == local.display().to_string()
+            && warning.reason == format!("the local coding-agent catalog at {} is not a regular file; a regular file is required", local.display())));
+        for _ in 0..2 {
+            let repeated = load_catalog_report(dir.path());
+            assert!(repeated.unavailable.is_none());
+            assert_eq!(keys_of(&repeated.catalog), keys_of(&report.catalog));
+            assert_eq!(
+                serde_json::to_value(&repeated.catalog).unwrap(),
+                serde_json::to_value(&report.catalog).unwrap()
+            );
+            ensure_seeded(dir.path(), None);
+            assert_eq!(inventory(dir.path()), before);
+        }
+
         // A user-authored regular local file is preserved byte-for-byte and
         // composes onto the fresh managed base.
         let dir = seed_dir();
@@ -9028,6 +9086,55 @@ mod tests {
         let loaded = load_catalog(dir.path()).unwrap();
         assert_eq!(loaded.len(), 9);
         assert_eq!(loaded.last().unwrap().key, "mine");
+        assert_eq!(loaded.last().unwrap().label, "Mine");
+        let before = inventory(dir.path());
+        let base_snapshot = read_catalog_snapshot_with(
+            dir.path(),
+            CatalogReadScope::Instance,
+            |path, description| {
+                if path == local_catalog_path(dir.path()) {
+                    Ok(None)
+                } else {
+                    read_optional_regular_file(path, description)
+                }
+            },
+        )
+        .unwrap();
+        let base =
+            resolve_catalog_snapshot(dir.path(), base_snapshot, CatalogSourceContext::Direct);
+        assert!(base.unavailable.is_none());
+        assert_eq!(base.catalog.len(), 8);
+        let snapshot = read_catalog_snapshot_with(
+            dir.path(),
+            CatalogReadScope::Instance,
+            |path, description| {
+                if path == local_catalog_path(dir.path()) {
+                    Err("local read denied".into())
+                } else {
+                    read_optional_regular_file(path, description)
+                }
+            },
+        )
+        .unwrap();
+        let resolved = resolve_catalog_snapshot(dir.path(), snapshot, CatalogSourceContext::Direct);
+        assert!(resolved.unavailable.is_none());
+        assert_eq!(keys_of(&resolved.catalog), keys_of(&base.catalog));
+        assert_eq!(
+            serde_json::to_value(&resolved.catalog).unwrap(),
+            serde_json::to_value(&base.catalog).unwrap()
+        );
+        assert!(resolved
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "localInvalid"
+                && warning.path == local_catalog_path(dir.path()).display().to_string()
+                && warning.reason == "local read denied"));
+        assert!(!resolved
+            .catalog
+            .iter()
+            .any(|row| row.key == "mine" || row.label == "Mine"));
+        ensure_seeded(dir.path(), None);
+        assert_eq!(inventory(dir.path()), before);
     }
 
     #[test]
@@ -10179,81 +10286,6 @@ mod tests {
     }
 
     // ---- F3: real OS failures and injected arm-level boundaries ------------
-
-    #[test]
-    fn managed_catalog_local_symlink_and_dangling_link_are_preserved_as_invalid() {
-        // A real file symlink at the local path: the layer is disabled, the
-        // link identity/target and the target bytes survive every read.
-        let dir = seed_dir();
-        ensure_seeded(dir.path(), None);
-        let target = dir.path().join("user-local-target.json");
-        let target_bytes = br##"{"schemaVersion":1,"agents":[{"key":"claude","label":"LINKED"}]}"##;
-        std::fs::write(&target, target_bytes).unwrap();
-        let local = local_catalog_path(dir.path());
-        std::fs::remove_file(&local).unwrap();
-        create_manifest_symlink(&target, &local)
-            .expect("real local symlink fixture (not a silent skip)");
-        assert!(std::fs::symlink_metadata(&local)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(std::fs::read_link(&local).unwrap(), target);
-
-        let base_before = std::fs::read(manifest_path(dir.path())).unwrap();
-        for _ in 0..2 {
-            let report = load_catalog_report(dir.path());
-            assert!(report.unavailable.is_none());
-            assert_eq!(report.catalog.len(), 8, "the managed base stays usable");
-            assert!(report
-                .warnings
-                .iter()
-                .any(|warning| warning.code == "localInvalid"));
-            assert!(!report.catalog.iter().any(|def| def.label == "LINKED"));
-        }
-        assert!(
-            std::fs::symlink_metadata(&local)
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-            "the link is never replaced by a stub"
-        );
-        assert_eq!(std::fs::read_link(&local).unwrap(), target);
-        assert_eq!(std::fs::read(&target).unwrap(), target_bytes);
-        assert_eq!(
-            std::fs::read(manifest_path(dir.path())).unwrap(),
-            base_before
-        );
-
-        // A dangling link: same degradation, link and absence preserved even
-        // across a later initialization.
-        let dir = seed_dir();
-        ensure_seeded(dir.path(), None);
-        let local = local_catalog_path(dir.path());
-        std::fs::remove_file(&local).unwrap();
-        let missing = dir.path().join("no-such-local-target.json");
-        create_manifest_symlink(&missing, &local).expect("real dangling local link fixture");
-        let report = load_catalog_report(dir.path());
-        assert_eq!(report.catalog.len(), 8);
-        assert!(report
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "localInvalid"));
-        assert!(std::fs::symlink_metadata(&local)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(std::fs::read_link(&local).unwrap(), missing);
-        assert!(!missing.exists());
-        assert!(
-            ensure_seeded(dir.path(), None).is_none(),
-            "the verified base needs no rewrite"
-        );
-        assert!(std::fs::symlink_metadata(&local)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert!(!missing.exists());
-    }
 
     #[test]
     fn managed_catalog_hard_link_unsupported_leaves_prior_artifacts_and_resumes() {

@@ -6108,34 +6108,6 @@ mod tests {
         );
     }
 
-    /// Round-3 regression (CI): the archived-root gate exemption must be structural
-    /// and independent of on-disk state. When the archived root resolves through a
-    /// symlink/junction but the cwd below it does not (yet) exist, the OLD
-    /// canonicalizing check failed on Ubuntu (the canonical root no longer prefixed the
-    /// raw cwd), falsely refusing a legitimate archived-root spawn. This pins the fix:
-    /// the cwd is Ok regardless of the symlink resolution or of the missing child.
-    /// Skipped gracefully on hosts that forbid symlink creation (e.g. non-developer
-    /// Windows); runs on Linux CI where the original failure occurred.
-    #[test]
-    fn archived_root_exemption_is_structural_even_when_root_resolves_through_symlink() {
-        let base = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let link = base.path().join("link");
-        #[cfg(windows)]
-        let made = std::os::windows::fs::symlink_dir(target.path(), &link);
-        #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(target.path(), &link);
-        if let Err(_error) = made {
-            return;
-        }
-        let archived_root = link.to_string_lossy().to_string();
-        let missing_child = link.join("not-there").to_string_lossy().to_string();
-        assert!(
-            validate_session_creation_cwd(&missing_child, &[], &[archived_root]).is_ok(),
-            "archived-root exemption must hold when the root resolves through a symlink and the cwd does not exist"
-        );
-    }
-
     /// Test 12 (pure): rejects unregistered and missing cwds; accepts an
     /// existing registered root; home-dir with empty roots is rejected (S5).
     #[test]

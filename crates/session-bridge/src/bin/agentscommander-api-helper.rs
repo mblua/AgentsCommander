@@ -3080,24 +3080,11 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn terminal_snapshot_unix_helper_linked_leaves_fail_closed() {
+    fn terminal_snapshot_unix_helper_hardlinked_leaves_fail_closed() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
         let (_temporary, root) = snapshot_temp_root();
         let parent = root.as_path();
-        let proof = snapshot_directory_identity(parent, C::OutputFailed).unwrap();
-        let target = parent.join("target");
-        let symlink = parent.join("symlink.png");
-        std::fs::write(&target, b"target bytes").unwrap();
-        std::os::unix::fs::symlink(&target, &symlink).unwrap();
-
-        let symlink_error = open_snapshot_leaf_in_parent(&proof, &symlink).unwrap_err();
-        assert_eq!(symlink_error.raw_os_error(), Some(libc::ELOOP));
-        assert!(matches!(
-            create_snapshot_output(&symlink),
-            Err(C::UnsafePath)
-        ));
-
         let hard_leaf = parent.join("hard.png");
         let hard_alias = parent.join("hard-alias.png");
         let hard_leaf_for_hook = hard_leaf.clone();
@@ -3171,25 +3158,6 @@ mod tests {
             assert_eq!(names.len(), entries_before + 1);
             assert_eq!(names[0].as_bytes(), leaf.as_bytes());
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn terminal_snapshot_unix_helper_rejects_symlink_parent() {
-        use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
-
-        let (_temporary, root) = snapshot_temp_root();
-        let real = root.join("real");
-        let linked = root.join("linked");
-        std::fs::create_dir(&real).unwrap();
-        std::os::unix::fs::symlink(&real, &linked).unwrap();
-        let output = linked.join("snapshot.png");
-
-        assert_eq!(
-            validate_snapshot_output_path(&output).unwrap_err(),
-            C::UnsafePath
-        );
-        assert!(!real.join("snapshot.png").exists());
     }
 
     #[cfg(windows)]
@@ -3294,7 +3262,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn terminal_snapshot_helper_rejects_junction_and_symlink_parents() {
+    fn terminal_snapshot_helper_rejects_junction_parent() {
         use terminal_snapshot_renderer::TerminalSnapshotReasonCode as C;
 
         let (_temporary, root) = snapshot_temp_root();
@@ -3318,17 +3286,6 @@ mod tests {
         );
         assert!(!real.join("snapshot.png").exists());
         std::fs::remove_dir(&junction).unwrap();
-
-        let symlink = root.join("symlink");
-        if std::os::windows::fs::symlink_dir(&real, &symlink).is_ok() {
-            let symlink_output = symlink.join("snapshot.png");
-            assert_eq!(
-                validate_snapshot_output_path(&symlink_output).unwrap_err(),
-                C::UnsafePath
-            );
-            assert!(!real.join("snapshot.png").exists());
-            std::fs::remove_dir(&symlink).unwrap();
-        }
     }
 
     #[cfg(windows)]

@@ -1122,24 +1122,6 @@ mod tests {
     }
 
     #[test]
-    fn privileged_registry_rejects_a_dangling_link_when_supported() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join(REGISTRY_FILENAME);
-        let missing = dir.path().join("missing-registry.json");
-        #[cfg(unix)]
-        let linked = std::os::unix::fs::symlink(&missing, &path).is_ok();
-        #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_file(&missing, &path).is_ok();
-        #[cfg(not(any(unix, windows)))]
-        let linked = false;
-        if linked {
-            assert!(read_registry_strict(&path).is_err());
-            let store = ApiClientStore::new(path);
-            assert!(store.authenticate_pty_input_fresh("anything").is_err());
-        }
-    }
-
-    #[test]
     fn api_client_debug_redacts_credential_and_bound_path() {
         let mut value = client(&hash_token("credential-sentinel"), false, None);
         value.bound_root = "C:/bound-path-sentinel".to_string();

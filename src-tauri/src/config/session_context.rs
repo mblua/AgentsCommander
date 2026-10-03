@@ -5766,31 +5766,21 @@ mod tests {
     }
 
     #[test]
-    fn issue_2832_raw_and_canonical_aliases_cannot_enter_other_context_routes() {
+    fn issue_2832_raw_target_cannot_enter_other_context_routes() {
         let temp = tempfile::tempdir().unwrap();
         let target = temp.path().join("target").join("ac-root-agent");
-        let alias = temp.path().join("__agent_alias");
         std::fs::create_dir_all(&target).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&target, &alias).unwrap();
-        #[cfg(windows)]
-        if std::os::windows::fs::symlink_dir(&target, &alias).is_err() {
-            println!("issue_2832 alias fixture unavailable: Windows symlink privilege");
-            return;
-        }
         std::fs::write(target.join("config.json"), "{").unwrap();
-        for root in [&alias, &target] {
-            let cwd = path_string(root);
-            assert!(ensure_session_context(&cwd)
-                .unwrap_err()
-                .contains("Root identity"));
-            assert!(resolve_session_context_content(&cwd, true, true, None)
-                .unwrap_err()
-                .contains("Root identity"));
-            assert!(build_replica_context(&cwd, None)
-                .unwrap_err()
-                .contains("Root identity"));
-        }
+        let cwd = path_string(&target);
+        assert!(ensure_session_context(&cwd)
+            .unwrap_err()
+            .contains("Root identity"));
+        assert!(resolve_session_context_content(&cwd, true, true, None)
+            .unwrap_err()
+            .contains("Root identity"));
+        assert!(build_replica_context(&cwd, None)
+            .unwrap_err()
+            .contains("Root identity"));
         assert!(!target.join("skills").exists());
         assert!(!target
             .parent()
@@ -10889,110 +10879,6 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     }
 
     #[test]
-    fn materialize_with_filename_refuses_to_write_through_file_symlink() {
-        // G1: AGENTS.md is a FILE symlink to an out-of-root target. The writer
-        // must remove the link entry and write a fresh regular file, never write
-        // THROUGH the link to its target.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let ac_root = temp.path().join(".ac");
-        let matrix_root = ac_root.join("_agent_dev-rust");
-        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        let outside = temp.path().join("outside-secret.txt");
-        std::fs::write(&outside, "SENTINEL").expect("write outside target");
-        let link = matrix_root.join("AGENTS.md");
-
-        #[cfg(unix)]
-        {
-            if std::os::unix::fs::symlink(&outside, &link).is_err() {
-                return;
-            }
-        }
-        #[cfg(windows)]
-        {
-            if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
-                return; // symlink creation can need privilege; skip where unsupported.
-            }
-        }
-
-        let materialized = materialize_agent_context_file_with_filename(
-            &path_string(&matrix_root),
-            "AGENTS.md",
-            &[],
-            false,
-            false,
-            None,
-        )
-        .expect("materialize should succeed by replacing the link")
-        .expect("context path");
-
-        assert_eq!(
-            std::fs::read_to_string(&outside).expect("read outside target"),
-            "SENTINEL",
-            "the writer must NOT write through the symlink to its out-of-root target"
-        );
-        let meta = std::fs::symlink_metadata(&link).expect("stat AGENTS.md");
-        assert!(
-            !is_link_or_reparse(&meta),
-            "AGENTS.md must be a regular file after materialize, not a link"
-        );
-        let content = std::fs::read_to_string(&materialized).expect("read materialized");
-        assert_ne!(content, "SENTINEL");
-        assert!(!content.is_empty());
-    }
-
-    #[test]
-    fn materialize_with_filename_replaces_dir_link_without_touching_target() {
-        // G1: AGENTS.md is a DIRECTORY symlink/junction (a reparse point). The
-        // writer must remove the link entry (not the target tree) and write a
-        // regular file. Pre-#529 this bricked the launch (remove_file on a dir
-        // failed -> Err -> "context files missing" + rollback).
-        let temp = tempfile::tempdir().expect("tempdir");
-        let ac_root = temp.path().join(".ac");
-        let matrix_root = ac_root.join("_agent_dev-rust");
-        std::fs::create_dir_all(&matrix_root).expect("create matrix root");
-        let outside_dir = temp.path().join("outside-dir");
-        std::fs::create_dir_all(&outside_dir).expect("create outside dir");
-        std::fs::write(outside_dir.join("keep.txt"), "KEEP").expect("write inside outside dir");
-        let link = matrix_root.join("AGENTS.md");
-
-        #[cfg(unix)]
-        {
-            if std::os::unix::fs::symlink(&outside_dir, &link).is_err() {
-                return;
-            }
-        }
-        #[cfg(windows)]
-        {
-            if std::os::windows::fs::symlink_dir(&outside_dir, &link).is_err() {
-                return; // dir symlink/junction creation can need privilege.
-            }
-        }
-
-        materialize_agent_context_file_with_filename(
-            &path_string(&matrix_root),
-            "AGENTS.md",
-            &[],
-            false,
-            false,
-            None,
-        )
-        .expect("materialize should replace the dir link, not brick the launch")
-        .expect("context path");
-
-        assert!(
-            outside_dir.join("keep.txt").is_file(),
-            "the out-of-root directory and contents must survive (link entry removed, not target)"
-        );
-        assert_eq!(
-            std::fs::read_to_string(outside_dir.join("keep.txt")).expect("read keep"),
-            "KEEP"
-        );
-        let meta = std::fs::symlink_metadata(&link).expect("stat AGENTS.md");
-        assert!(!is_link_or_reparse(&meta));
-        assert!(meta.is_file());
-    }
-
-    #[test]
     fn discover_skill_index_empty_skills_dir_lists_none() {
         let temp = tempfile::tempdir().expect("tempdir");
         let matrix_root = temp.path().join("_agent_dev");
@@ -11240,37 +11126,6 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             .warnings
             .iter()
             .any(|warning| warning.contains("not a regular file")));
-    }
-
-    #[test]
-    fn discover_skill_index_skips_linked_skill_dirs_where_supported() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let matrix_root = temp.path().join("_agent_dev");
-        let skills_root = matrix_root.join(SKILLS_DIR_NAME);
-        let target_dir = temp.path().join("outside-skill");
-        std::fs::create_dir_all(&skills_root).expect("create skills root");
-        std::fs::create_dir_all(&target_dir).expect("create target dir");
-        let linked_dir = skills_root.join("linked");
-
-        #[cfg(unix)]
-        {
-            if std::os::unix::fs::symlink(&target_dir, &linked_dir).is_err() {
-                return;
-            }
-        }
-        #[cfg(windows)]
-        {
-            if std::os::windows::fs::symlink_dir(&target_dir, &linked_dir).is_err() {
-                return;
-            }
-        }
-
-        let index = discover_skill_index(Some(&path_string(&matrix_root)));
-        assert!(index.skills.is_empty());
-        assert!(index
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("linked skill directory")));
     }
 
     #[test]

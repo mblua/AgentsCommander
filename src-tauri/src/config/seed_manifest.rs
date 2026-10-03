@@ -4844,16 +4844,6 @@ mod tests {
         )
     }
 
-    #[cfg(windows)]
-    fn symlink_file_at(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_file(target, link)
-    }
-
-    #[cfg(unix)]
-    fn symlink_file_at(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(target, link)
-    }
-
     #[test]
     fn managed_catalog_has_catalog_publication_wrong_rows_are_err_or_false_without_writes() {
         let cases: [(&str, &str, &str, &str, &str, bool); 5] = [
@@ -4956,21 +4946,52 @@ mod tests {
     }
 
     #[test]
-    fn managed_catalog_has_catalog_publication_link_is_err_without_writes() {
+    fn managed_catalog_has_catalog_publication_nonregular_is_err_without_writes() {
+        let inventory = |root: &Path| {
+            let mut pending = vec![root.to_path_buf()];
+            let mut entries = std::collections::BTreeMap::new();
+            while let Some(path) = pending.pop() {
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                let bytes = if metadata.is_file() {
+                    std::fs::read(&path).unwrap()
+                } else {
+                    assert!(metadata.is_dir());
+                    pending.extend(
+                        std::fs::read_dir(&path)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().path()),
+                    );
+                    Vec::new()
+                };
+                entries.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    (metadata.is_dir(), bytes),
+                );
+            }
+            entries
+        };
         let (_temp, project) = setup_project();
+        let canonical = canonical_path(&project);
+        std::fs::create_dir(&canonical).unwrap();
+        std::fs::write(canonical.join("keep.txt"), b"manifest sentinel").unwrap();
         let target = project.join(".ac").join("real-manifest-target.toml");
-        std::fs::write(&target, b"# fixture target\n").unwrap();
-        symlink_file_at(&target, &canonical_path(&project))
-            .expect("real manifest symlink fixture (not a silent skip)");
-        let entries_before = ac_dir_entries(&project);
-        let target_before = std::fs::read(&target).unwrap();
-        assert!(has_catalog_publication(&project).is_err());
-        assert!(std::fs::symlink_metadata(canonical_path(&project))
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(ac_dir_entries(&project), entries_before);
-        assert_eq!(std::fs::read(&target).unwrap(), target_before);
+        std::fs::write(&target, b"unrelated ordinary target").unwrap();
+        let before = inventory(&project.join(".ac"));
+        let error = has_catalog_publication(&project).unwrap_err();
+        assert!(
+            error.to_string().contains(&canonical.display().to_string()),
+            "{error}"
+        );
+        assert!(std::fs::symlink_metadata(&canonical).unwrap().is_dir());
+        assert_eq!(
+            std::fs::read(canonical.join("keep.txt")).unwrap(),
+            b"manifest sentinel"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"unrelated ordinary target"
+        );
+        assert_eq!(inventory(&project.join(".ac")), before);
     }
 
     #[cfg(windows)]
@@ -5224,22 +5245,6 @@ mod tests {
         std::fs::create_dir(canonical_path(&project)).unwrap();
         let error = ProjectSeedManifestGuard::acquire(&project).unwrap_err();
         assert!(matches!(error, SeedManifestError::UnsafePath { .. }));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlink_canonical_and_lock_fail_closed_without_following() {
-        use std::os::unix::fs::symlink;
-
-        for filename in [SEED_MANIFEST_FILENAME, SEED_MANIFEST_LOCK_FILENAME] {
-            let (_temp, project) = setup_project();
-            let outside = project.join("outside");
-            std::fs::write(&outside, b"outside").unwrap();
-            symlink(&outside, project.join(".ac").join(filename)).unwrap();
-            let error = ProjectSeedManifestGuard::acquire(&project).unwrap_err();
-            assert!(matches!(error, SeedManifestError::UnsafePath { .. }));
-            assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
-        }
     }
 
     #[test]

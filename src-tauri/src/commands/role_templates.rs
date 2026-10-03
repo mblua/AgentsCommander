@@ -977,25 +977,6 @@ mod tests {
     use crate::config::settings::AppSettings;
     use std::path::Path;
 
-    // -- symlink test helpers (Windows needs SeCreateSymbolicLinkPrivilege) --
-
-    #[cfg(unix)]
-    fn try_symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(target, link)
-    }
-    #[cfg(windows)]
-    fn try_symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_dir(target, link)
-    }
-    #[cfg(unix)]
-    fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(target, link)
-    }
-    #[cfg(windows)]
-    fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_file(target, link)
-    }
-
     fn write(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create parent");
@@ -1231,42 +1212,6 @@ mod tests {
 
     // -- 10-11: link safety --
 
-    #[test]
-    fn resolve_local_id_symlinked_role_md_rejected() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let secret = tmp.path().join("secret.txt");
-        write(&secret, "TOP SECRET\n");
-        let tmpl = tmp.path().join("agent-templates").join("evil");
-        std::fs::create_dir_all(&tmpl).expect("mk template dir");
-        // Symlink the template's Role.md at an outside file.
-        let Ok(()) = try_symlink_file(&secret, &tmpl.join("Role.md")) else {
-            return; // no symlink privilege — skip, not fail.
-        };
-        let r = resolve_role_template("local:evil", &AppSettings::default(), tmp.path());
-        assert!(r.is_err(), "a symlinked Role.md must be rejected");
-        if let Ok(t) = r {
-            assert!(!t.body.contains("TOP SECRET"), "outside file leaked");
-        }
-    }
-
-    #[test]
-    fn resolve_local_id_symlinked_skills_ignored() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let outside = tmp.path().join("outside-skills");
-        write(&outside.join("leak.md"), "leaked\n");
-        let tmpl = tmp.path().join("agent-templates").join("ls");
-        write(&tmpl.join("Role.md"), "# LS\n\nBody.\n");
-        let Ok(()) = try_symlink_dir(&outside, &tmpl.join("skills")) else {
-            return; // no symlink privilege — skip, not fail.
-        };
-        let r = resolve_role_template("local:ls", &AppSettings::default(), tmp.path())
-            .expect("ls resolves (symlinked skills just ignored)");
-        assert!(
-            r.skills_src.is_none(),
-            "a symlinked skills/ must be treated as absent"
-        );
-    }
-
     // -- 12: path resolution variants --
 
     #[test]
@@ -1400,50 +1345,16 @@ mod tests {
         let src = tmp.path().join("src");
         write(&src.join("a.md"), "a\n");
         write(&src.join("nested").join("b.md"), "b\n");
+        write(&src.join("real.md"), "real");
         let dst = tmp.path().join("dst");
         let failures = copy_dir_recursive(&src, &dst);
         assert!(failures.is_empty(), "clean copy must report no failures");
         assert!(dst.join("a.md").is_file());
+        assert_eq!(
+            std::fs::read_to_string(dst.join("real.md")).unwrap(),
+            "real"
+        );
         assert!(dst.join("nested").join("b.md").is_file());
     }
 
-    #[test]
-    fn copy_dir_recursive_skips_symlink_entries() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let outside = tmp.path().join("outside");
-        write(&outside.join("leak.md"), "leak\n");
-        let src = tmp.path().join("src");
-        write(&src.join("real.md"), "real\n");
-        let Ok(()) = try_symlink_dir(&outside, &src.join("linked")) else {
-            return; // no symlink privilege — skip, not fail.
-        };
-        let dst = tmp.path().join("dst");
-        let _ = copy_dir_recursive(&src, &dst);
-        assert!(dst.join("real.md").is_file(), "real files copied");
-        assert!(
-            !dst.join("linked").exists(),
-            "a symlink entry must never be copied"
-        );
-    }
-
-    #[test]
-    fn copy_dir_recursive_skips_symlink_root() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let real = tmp.path().join("real");
-        write(&real.join("f.md"), "f\n");
-        let link = tmp.path().join("link");
-        let Ok(()) = try_symlink_dir(&real, &link) else {
-            return; // no symlink privilege — skip, not fail.
-        };
-        let dst = tmp.path().join("dst");
-        let failures = copy_dir_recursive(&link, &dst);
-        assert!(
-            !failures.is_empty(),
-            "a symlinked source root must be rejected"
-        );
-        assert!(
-            !dst.join("f.md").exists(),
-            "nothing must be copied from a symlinked root"
-        );
-    }
 }

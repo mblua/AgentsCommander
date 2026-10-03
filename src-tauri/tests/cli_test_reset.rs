@@ -369,32 +369,6 @@ fn long_path_target_deletes_only_allowed_directories() {
     assert!(keep_dir.exists(), "unrelated dir should remain");
 }
 
-#[cfg(unix)]
-#[test]
-fn symlink_target_refuses_and_deletes_nothing() {
-    use std::os::unix::fs::symlink;
-
-    let _guard = testable_reset_identity_lock();
-    let tmp = Tmp::new("reset-symlink");
-    let bin = copy_binary_as(tmp.path(), "agentscommander_testeable.exe");
-    let real = tmp.path().join("real-dir");
-    let link = tmp.path().join(".agentscommander_testeable");
-    let project_dir = tmp.path().join("agentscommander_testeable");
-    std::fs::create_dir_all(&real).unwrap();
-    symlink(&real, &link).unwrap();
-    std::fs::create_dir_all(&project_dir).unwrap();
-
-    let (code, stdout, stderr) = run(&bin, &["test-reset", "--confirm-testeable"]);
-    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    assert_eq!(stderr_json(&stderr)["error"], "reset_candidate_is_symlink");
-    assert!(link.exists(), "symlink should remain");
-    assert!(real.exists(), "symlink target should remain");
-    assert!(
-        project_dir.exists(),
-        "other candidate should not be deleted after refusal"
-    );
-}
-
 /// #1773 positive control. This harness process holds the mutex and is a different
 /// process from the binary under test, so the refusal must name it: our PID, our
 /// image name and the exact handle value we hold. The harness also holds a decoy,

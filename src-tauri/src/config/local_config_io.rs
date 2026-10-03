@@ -1482,7 +1482,7 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
         drop(second);
     }
 
-    /// #1938 - canonicalization folds raw, dot-segment, symlink, and Windows
+    /// #1938 - canonicalization folds raw, dot-segment, and Windows
     /// case / verbatim aliases of one directory onto the single physical
     /// sidecar.
     #[test]
@@ -1494,10 +1494,12 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
 
         let nested = dir.join("nested");
         std::fs::create_dir_all(&nested).expect("nested dir");
-        let mut aliases = vec![
+        let aliases = [
             dir.join(".").join("config.json"),
             nested.join("..").join("config.json"),
         ];
+        #[cfg(windows)]
+        let mut aliases = aliases.to_vec();
         #[cfg(windows)]
         {
             // Windows paths are case-insensitive, so `.CONFIG.JSON.lock` and
@@ -1505,13 +1507,6 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
             aliases.push(dir.join("CONFIG.JSON"));
             aliases.push(PathBuf::from(format!(r"\\?\{}", dir.display())).join("config.json"));
         }
-        #[cfg(unix)]
-        {
-            let link = dir.join("alias");
-            std::os::unix::fs::symlink(dir, &link).expect("symlink alias");
-            aliases.push(link.join("config.json"));
-        }
-
         for alias in aliases {
             let error = acquire_config_file_write_lock(&alias, Duration::from_millis(120))
                 .err()

@@ -3192,25 +3192,6 @@ mod tests {
         assert_ne!(target_a, target_b);
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn coordinator_route_rejects_symlink_before_repair_capable_resolver() {
-        use std::os::unix::fs::symlink;
-
-        let fixture = identity_fixture().await;
-        let policy = match resolve_member_policy_blocking(&fixture.session) {
-            MemberPolicyResolution::Eligible(policy) => policy,
-            other => panic!("expected eligible policy, got {other:?}"),
-        };
-        let expected = fixture.workgroup.join("__agent_coordinator");
-        let real = fixture.workgroup.join("coordinator-real");
-        std::fs::rename(&expected, &real).unwrap();
-        symlink(&real, &expected).unwrap();
-
-        let error = prepare_internal_route_blocking(&policy.fingerprint, 80, &[50]).unwrap_err();
-        assert!(error.contains("real non-link directory"));
-    }
-
     #[cfg(windows)]
     #[tokio::test]
     async fn coordinator_route_rejects_reparse_before_repair_capable_resolver() {

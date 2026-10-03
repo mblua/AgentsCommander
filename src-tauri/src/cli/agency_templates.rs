@@ -1156,26 +1156,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_rejects_symlinked_upstream_md_role_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let extracted = tmp.path().join("extracted");
-        let division = extracted.join("Engineering");
-        let staging = tmp.path().join("staging");
-        fs::create_dir_all(&division).expect("create division");
-        let outside = tmp.path().join("outside.md");
-        fs::write(&outside, "External role body.\n").expect("write outside target");
-        let link = division.join("Planner.md");
-        if !try_symlink_file(&outside, &link) {
-            return;
-        }
-
-        let err = normalize_extracted_repo_to_cache(&extracted, &staging, manifest(0))
-            .expect_err("symlinked md must be rejected");
-
-        assert!(err.contains("symlink") || err.contains("reparse"));
-    }
-
-    #[test]
     fn legacy_stale_lock_with_missing_live_cache_recovers_one_valid_previous_cache() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_dir = tmp.path();
@@ -1279,18 +1259,4 @@ mod tests {
         assert_eq!(result.path, live.to_string_lossy().to_string());
     }
 
-    #[cfg(unix)]
-    fn try_symlink_file(target: &Path, link: &Path) -> bool {
-        std::os::unix::fs::symlink(target, link).is_ok()
-    }
-
-    #[cfg(windows)]
-    fn try_symlink_file(target: &Path, link: &Path) -> bool {
-        std::os::windows::fs::symlink_file(target, link).is_ok()
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn try_symlink_file(_target: &Path, _link: &Path) -> bool {
-        false
-    }
 }

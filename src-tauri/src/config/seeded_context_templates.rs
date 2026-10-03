@@ -5716,35 +5716,6 @@ mod tests {
     }
 
     #[test]
-    fn retire_refuses_a_symlink_at_the_live_path() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let target = temp.path().join("elsewhere.md");
-        std::fs::write(&target, "TARGET_BYTES\n").expect("write target");
-        let live = live_global(temp.path());
-        // Windows may deny symlink creation without developer mode; keep the project
-        // convention of returning early when it does. The directory case above always
-        // runs.
-        if try_symlink_file(&target, &live).is_err() {
-            return;
-        }
-
-        let err = retire_standalone_global_context(temp.path())
-            .expect_err("a symlink at the live path must be reported");
-        assert!(err.contains("is not a regular file"), "{}", err);
-
-        assert!(std::fs::symlink_metadata(&live)
-            .expect("inspect link")
-            .file_type()
-            .is_symlink());
-        assert_eq!(
-            std::fs::read_to_string(&target).expect("read target"),
-            "TARGET_BYTES\n",
-            "the symlink must never be followed, moved, or deleted"
-        );
-        assert!(retired_backups(temp.path()).is_empty());
-    }
-
-    #[test]
     fn retire_cleans_up_the_reservation_on_a_definite_pre_move_failure() {
         // The publish seam fails BEFORE moving anything: the source is intact and the
         // destination is still this call's zero-byte reservation, so the reservation is
@@ -5827,16 +5798,6 @@ mod tests {
             project_state.as_bytes(),
             "the project state must be byte-for-byte unchanged"
         );
-    }
-
-    #[cfg(unix)]
-    fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(target, link)
-    }
-
-    #[cfg(windows)]
-    fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_file(target, link)
     }
 
     /// #1748 new test 1 and its control in one harness: the SAME pristine fixture

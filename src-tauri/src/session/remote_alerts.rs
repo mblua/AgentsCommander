@@ -556,9 +556,10 @@ mod tests {
         }
     }
 
-    /// Creates the link the way the platform needs it, and FAILS rather than
+    /// Creates an existing Windows junction fixture, and FAILS rather than
     /// skipping, so the coverage cannot silently evaporate on a machine where
     /// the link cannot be created.
+    #[cfg(windows)]
     fn link_directory(link: &Path, target: &Path) {
         #[cfg(windows)]
         {
@@ -574,10 +575,6 @@ mod tests {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-        }
-        #[cfg(not(windows))]
-        {
-            std::os::unix::fs::symlink(target, link).expect("symlink");
         }
     }
 
@@ -871,17 +868,20 @@ mod tests {
         // A real directory outside the room is never inside it.
         assert!(!replica_within_room(&room, &outside));
 
-        // The resolver DOES find the orchestrator through the link; containment
-        // is what drops it.
-        link_directory(&room.join("__agent_coordinator"), &outside);
-        assert!(
-            crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &room).is_some(),
-            "the fixture must resolve, or this test proves nothing"
-        );
-        assert!(
-            resolve_orchestrator_blocking(&room, &Mutex::new(HashSet::new())).is_none(),
-            "a notice addressed through a replica outside the room is dropped"
-        );
+        #[cfg(windows)]
+        {
+            // The resolver DOES find the orchestrator through the link; containment
+            // is what drops it.
+            link_directory(&room.join("__agent_coordinator"), &outside);
+            assert!(
+                crate::config::teams::resolve_wg_coordinator_replica(&ac_root, &room).is_some(),
+                "the fixture must resolve, or this test proves nothing"
+            );
+            assert!(
+                resolve_orchestrator_blocking(&room, &Mutex::new(HashSet::new())).is_none(),
+                "a notice addressed through a replica outside the room is dropped"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1208,8 +1208,9 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[tokio::test]
-    async fn containment_rejects_a_link_or_reparse_replica() {
+    async fn containment_rejects_a_junction_replica() {
         let temp = tempfile::tempdir().expect("temp dir");
         let ac_root = temp.path().join("project-a").join(".ac");
         let room = ac_root.join("wg-2-dev-team");

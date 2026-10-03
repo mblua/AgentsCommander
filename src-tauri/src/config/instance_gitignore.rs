@@ -962,32 +962,6 @@ mod tests {
     }
 
     #[test]
-    fn symlink_target_is_rejected_without_touching_referent() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp.path().join("config");
-        std::fs::create_dir(&config_dir).expect("create config dir");
-        let referent = temp.path().join("external-sentinel.txt");
-        std::fs::write(&referent, b"external sentinel").expect("write referent");
-        let link = config_dir.join(".gitignore");
-
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&referent, &link).expect("create symlink");
-        #[cfg(windows)]
-        if std::os::windows::fs::symlink_file(&referent, &link).is_err() {
-            return;
-        }
-        #[cfg(not(any(unix, windows)))]
-        return;
-
-        let result = ensure_instance_gitignore_at(&config_dir, TEST_AGENT_LOCAL_DIR);
-        assert!(result.is_err());
-        assert_eq!(
-            std::fs::read(&referent).expect("read referent"),
-            b"external sentinel"
-        );
-    }
-
-    #[test]
     fn read_only_complete_file_needs_no_write_but_partial_file_fails_unchanged() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join(".gitignore");

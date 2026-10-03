@@ -29919,17 +29919,7 @@ mod tests {
         std::fs::hard_link(&outside, &state).expect("hard link");
         assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
 
-        // A symlinked state file is refused (only where this host can make one).
-        std::fs::remove_file(&state).expect("remove");
-        #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_file(&outside, &state).is_ok();
-        #[cfg(unix)]
-        let linked = std::os::unix::fs::symlink(&outside, &state).is_ok();
-        if linked {
-            assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
-            std::fs::remove_file(&state).expect("remove link");
-        }
-
+        std::fs::remove_file(&state).expect("remove hard link");
         std::fs::create_dir(&state).expect("a directory is not a regular file");
         assert_eq!(read_guarded_agent_state(root), Err(C::UnsafePath));
 

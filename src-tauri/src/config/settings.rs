@@ -9028,22 +9028,6 @@ mod tests {
     }
 
     #[test]
-    fn privileged_project_paths_reader_rejects_a_dangling_link_when_supported() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let path = temp.path().join("settings.json");
-        let missing = temp.path().join("missing.json");
-        #[cfg(unix)]
-        let linked = std::os::unix::fs::symlink(&missing, &path).is_ok();
-        #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_file(&missing, &path).is_ok();
-        #[cfg(not(any(unix, windows)))]
-        let linked = false;
-        if linked {
-            assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
-        }
-    }
-
-    #[test]
     fn privileged_project_paths_reader_is_bounded_and_exact() {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("settings.json");

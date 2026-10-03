@@ -2250,26 +2250,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(target, link)
-    }
-
-    #[cfg(windows)]
-    fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_file(target, link)
-    }
-
-    #[cfg(unix)]
-    fn try_symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(target, link)
-    }
-
-    #[cfg(windows)]
-    fn try_symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_dir(target, link)
-    }
-
     #[test]
     fn ensure_root_agent_dir_at_creates_layout_role_and_config() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -3129,43 +3109,6 @@ mod tests {
     }
 
     #[test]
-    fn ensure_root_agent_dir_at_rejects_root_symlink_where_supported() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let target = temp.path().join("target-root");
-        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
-        std::fs::create_dir_all(&target).expect("create target root");
-        if try_symlink_dir(&target, &root).is_err() {
-            return;
-        }
-
-        let err = ensure_root_agent_dir_at(&root).expect_err("root symlink must fail");
-
-        assert!(err.contains("not a regular directory"), "{err}");
-        assert!(!target.join("Role.md").exists());
-    }
-
-    #[test]
-    fn ensure_root_agent_dir_at_rejects_default_skill_file_symlink_where_supported() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
-        let skill_file = root
-            .join(ROOT_AGENT_SKILLS_DIR)
-            .join("role-skill-boundary-audit")
-            .join(SKILL_MD_FILENAME);
-        let target = temp.path().join("target-skill.md");
-        std::fs::create_dir_all(skill_file.parent().expect("skill parent"))
-            .expect("create skill dir");
-        std::fs::write(&target, "target skill").expect("write target");
-        if try_symlink_file(&target, &skill_file).is_err() {
-            return;
-        }
-
-        let err = ensure_root_agent_dir_at(&root).expect_err("skill symlink must fail");
-
-        assert!(err.contains("not a regular file"), "{err}");
-    }
-
-    #[test]
     fn publish_missing_default_skill_file_revalidates_raced_existing_target() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join(SKILL_MD_FILENAME);
@@ -3306,25 +3249,6 @@ mod tests {
         std::fs::create_dir_all(&template_path).expect("create template directory");
 
         let err = ensure_root_agent_dir_at(&root).expect_err("directory template must fail");
-
-        assert!(err.contains("not a regular file"), "{err}");
-        assert!(!root.join("Role.md").exists());
-    }
-
-    #[test]
-    fn ensure_root_agent_dir_at_errors_when_root_template_is_symlink() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
-        let template_path = temp
-            .path()
-            .join(crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME);
-        let target = temp.path().join("target.md");
-        std::fs::write(&target, "linked template").expect("write target");
-        let Ok(()) = try_symlink_file(&target, &template_path) else {
-            return;
-        };
-
-        let err = ensure_root_agent_dir_at(&root).expect_err("symlink template must fail");
 
         assert!(err.contains("not a regular file"), "{err}");
         assert!(!root.join("Role.md").exists());

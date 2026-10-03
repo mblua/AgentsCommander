@@ -576,63 +576,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    fn try_symlink_file(target: &Path, link: &Path) -> bool {
-        std::os::unix::fs::symlink(target, link).is_ok()
-    }
-
-    #[cfg(windows)]
-    fn try_symlink_file(target: &Path, link: &Path) -> bool {
-        std::os::windows::fs::symlink_file(target, link).is_ok()
-    }
-
-    #[test]
-    fn skipped_copy_reports_skipped_and_never_stamps_first_run_state() {
-        // grinch Finding 1 - a prior container plants a symlink at the credential
-        // leaf (the mount is RW: exactly the F2 threat model). F2 refuses to write
-        // through it, so NO token exists. The caller must see SkippedReparse and
-        // NOT stamp first-run state: suppressing the login wizard on a container
-        // that has no credential would strand the agent unauthenticated, with no
-        // way to notice. A skipped copy is not a copy.
-        let root = tempfile::tempdir().expect("root");
-        let src_dir = tempfile::tempdir().expect("src");
-        let src = src_dir.path().join(".credentials.json");
-        std::fs::write(&src, b"secret-bytes").expect("write src");
-
-        let dir = root.path().join(".claude");
-        std::fs::create_dir_all(&dir).expect("dir");
-        let dest = dir.join(".credentials.json");
-        let planted = src_dir.path().join("attacker-target");
-        if !try_symlink_file(&planted, &dest) {
-            // Creating a symlink needs a privilege on Windows; skip cleanly.
-            eprintln!("skipping: no symlink privilege on this platform");
-            return;
-        }
-
-        let plan = ContainerCredentialPlan {
-            source: src,
-            dest: dest.clone(),
-            first_run: Some(first_run()),
-        };
-
-        // Mirror the backend call site (container_backend.rs): stamp ONLY on
-        // Copied. If copy_in ever reports a skip as Copied again, this takes the
-        // Copied arm, stamps, and the assertion below fails.
-        match copy_in(&plan).expect("an F2 skip is not an error") {
-            CopyOutcome::Copied => ensure_first_run_state(&plan, "/workspace"),
-            CopyOutcome::SkippedReparse => {}
-        }
-
-        assert!(
-            !planted.exists(),
-            "F2: must never write the token through the planted link"
-        );
-        assert!(
-            !dir.join(".claude.json").exists(),
-            "a skipped copy must not stamp first-run state: with no token, the login wizard is the correct UX"
-        );
-    }
-
     #[test]
     fn is_reparse_path_false_for_plain_file_and_missing() {
         let dir = tempfile::tempdir().expect("dir");

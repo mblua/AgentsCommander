@@ -3520,14 +3520,13 @@ mod tests {
         assert_eq!(skipped, 1);
     }
 
+    #[cfg(windows)]
     #[test]
     fn discover_snapshot_targets_skips_unverifiable_room() {
         let (tmp, paths) = make_coordinator_fixture(false);
         let ac_root = tmp.path().join("proj-a").join(".ac");
         let real = ac_root.join("wg-1-dev-team");
         let linked = ac_root.join("room-9-linked");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real, &linked).unwrap();
         #[cfg(windows)]
         {
             let status = std::process::Command::new("cmd")

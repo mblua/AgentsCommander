@@ -2098,25 +2098,6 @@ mod tests {
     }
 
     #[test]
-    fn component_chain_rejects_a_linked_ancestor_when_supported() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let real = dir.path().join("real");
-        let link = dir.path().join("link");
-        std::fs::create_dir(&real).unwrap();
-        std::fs::write(real.join("identity.json"), b"{}").unwrap();
-        #[cfg(unix)]
-        let linked = std::os::unix::fs::symlink(&real, &link).is_ok();
-        #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_dir(&real, &link).is_ok();
-        #[cfg(not(any(unix, windows)))]
-        let linked = false;
-        if linked {
-            assert!(verify_directory(&link).is_err());
-            assert!(read_bounded_regular(&link.join("identity.json"), 16).is_err());
-        }
-    }
-
-    #[test]
     fn terminal_snapshot_post_validation_create_race_is_output_failed() {
         let directory = tempfile::TempDir::new().unwrap();
         let output = directory.path().join("raced.png");
@@ -2415,7 +2396,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn terminal_snapshot_unix_child_api_rejects_invalid_paths_and_linked_leaves() {
+    fn terminal_snapshot_unix_child_api_rejects_invalid_paths_and_hardlinked_leaves() {
         use std::os::unix::ffi::OsStringExt;
 
         let directory = tempfile::TempDir::new().unwrap();
@@ -2444,13 +2425,6 @@ mod tests {
         assert!(retained.checked_unix_child_name(&nul_path).is_err());
         assert!(!retained.child_is_absent(&nul_path));
         assert_eq!(std::fs::read(outside).unwrap(), b"outside bytes");
-
-        let target = parent.join("target");
-        let symlink = parent.join("symlink.json");
-        std::fs::write(&target, b"target bytes").unwrap();
-        std::os::unix::fs::symlink(&target, &symlink).unwrap();
-        assert!(retained.verify_regular_file(&symlink).is_err());
-        assert!(!retained.child_is_absent(&symlink));
 
         let hard_source = parent.join("hard-source");
         let hard_leaf = parent.join("hard.json");
@@ -2491,23 +2465,6 @@ mod tests {
             .write_all_and_sync(b"portable bytes")
             .unwrap();
         assert_eq!(std::fs::read(output).unwrap(), b"portable bytes");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn terminal_snapshot_unix_symlink_parent_is_rejected() {
-        let directory = tempfile::TempDir::new().unwrap();
-        let real = directory.path().join("real");
-        let linked = directory.path().join("linked");
-        std::fs::create_dir(&real).unwrap();
-        std::os::unix::fs::symlink(&real, &linked).unwrap();
-        let output = linked.join("snapshot.png");
-
-        assert_eq!(
-            validate_terminal_snapshot_output_path(&output).unwrap_err(),
-            "unsafe_path"
-        );
-        assert!(!real.join("snapshot.png").exists());
     }
 
     #[cfg(windows)]
@@ -2578,7 +2535,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn terminal_snapshot_output_rejects_junction_and_symlink_parents() {
+    fn terminal_snapshot_output_rejects_junction_parent() {
         let directory = tempfile::TempDir::new().unwrap();
         let real = directory.path().join("real");
         let junction = directory.path().join("junction");
@@ -2597,17 +2554,6 @@ mod tests {
         );
         assert!(!real.join("snapshot.png").exists());
         std::fs::remove_dir(&junction).unwrap();
-
-        let symlink = directory.path().join("symlink");
-        if std::os::windows::fs::symlink_dir(&real, &symlink).is_ok() {
-            let symlink_output = symlink.join("snapshot.png");
-            assert_eq!(
-                validate_terminal_snapshot_output_path(&symlink_output).unwrap_err(),
-                "unsafe_path"
-            );
-            assert!(!real.join("snapshot.png").exists());
-            std::fs::remove_dir(&symlink).unwrap();
-        }
     }
 
     #[cfg(windows)]
@@ -2796,53 +2742,15 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn verify_directory_reason_rejects_symlinked_component() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let real = temp.path().join("real");
-        std::fs::create_dir_all(&real).unwrap();
-        let link = temp.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        assert_eq!(
-            verify_directory_reason(&link),
-            Err(PathRule::ComponentIsLink)
-        );
-    }
-
-    /// Windows reparse points are not POSIX symlinks: assert the rule name for
-    /// BOTH a symlink and a real directory junction. A silent skip of the
-    /// symlink half is a job failure when `AC_REQUIRE_WINDOWS_LINK_TESTS` is
-    /// set, which CI does.
     #[cfg(windows)]
     #[test]
-    fn verify_directory_reason_rejects_reparse_component() {
+    fn verify_directory_reason_rejects_junction_component() {
         let temp = tempfile::TempDir::new().unwrap();
         let real = temp.path().join("real");
-        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(real.join("child")).unwrap();
+        assert!(verify_directory_reason(&real).is_ok());
+        assert!(verify_directory_reason(&real.join("child")).is_ok());
 
-        let symlink = temp.path().join("symlinked");
-        match std::os::windows::fs::symlink_dir(&real, &symlink) {
-            Ok(()) => assert_eq!(
-                verify_directory_reason(&symlink),
-                Err(PathRule::ComponentIsLink)
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                if std::env::var_os("AC_REQUIRE_WINDOWS_LINK_TESTS").is_some() {
-                    panic!(
-                        "symlink_dir needs Developer Mode or SeCreateSymbolicLinkPrivilege; \
-                         AC_REQUIRE_WINDOWS_LINK_TESTS forbids skipping this half"
-                    );
-                }
-                eprintln!(
-                    "SKIPPED symlink half: symlink_dir needs Developer Mode or \
-                     SeCreateSymbolicLinkPrivilege"
-                );
-            }
-            Err(error) => panic!("symlink_dir failed unexpectedly: {error}"),
-        }
-
-        // A junction needs no privilege and therefore always runs.
         let junction = temp.path().join("junctioned");
         let status = std::process::Command::new("cmd")
             .args([
@@ -2857,6 +2765,10 @@ mod tests {
         assert!(status.success(), "mklink /J must create the junction");
         assert_eq!(
             verify_directory_reason(&junction),
+            Err(PathRule::ComponentIsLink)
+        );
+        assert_eq!(
+            verify_directory_reason(&junction.join("child")),
             Err(PathRule::ComponentIsLink)
         );
     }

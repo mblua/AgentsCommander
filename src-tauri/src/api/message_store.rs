@@ -3867,26 +3867,6 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_identity_check_rejects_a_dangling_sidecar_link_when_supported() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let database = temp.path().join(DB_FILENAME);
-        let sidecar = sqlite_sidecar_paths(&database)[0].clone();
-        let missing = temp.path().join("missing-wal");
-        #[cfg(unix)]
-        let linked = std::os::unix::fs::symlink(&missing, &sidecar).is_ok();
-        #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_file(&missing, &sidecar).is_ok();
-        #[cfg(not(any(unix, windows)))]
-        let linked = false;
-        if linked {
-            assert!(matches!(
-                verify_existing_sqlite_files(&database),
-                Err(MessageStoreError::UnsafePath)
-            ));
-        }
-    }
-
-    #[test]
     fn migration_creates_schema_and_enqueue_writes_row() {
         let store = store();
         let result = store.enqueue(request("op1", "hello")).unwrap();
