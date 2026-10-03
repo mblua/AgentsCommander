@@ -939,6 +939,8 @@ mod tests {
     fn muse_loop_cold_is_fresh_and_known_state_resumes_without_provider_drift() {
         use crate::config::settings::{AgentConfig, AppSettings};
         let agent = |id: &str, command: &str| AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: id.to_string(),
             command: command.to_string(),
@@ -1135,6 +1137,8 @@ mod tests {
 
     fn loop_test_agent(id: &str, command: &str) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: id.to_string(),
             command: command.to_string(),
@@ -1175,6 +1179,8 @@ mod tests {
             .insert(
                 letter.to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: BTreeMap::from([(env_key.to_string(), env_value.to_string())]),

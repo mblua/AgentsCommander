@@ -8408,6 +8408,8 @@ mod tests {
     fn settings_with_agent() -> AppSettings {
         AppSettings {
             agents: vec![AgentConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 id: "codex".to_string(),
                 label: "Codex".to_string(),
                 command: "codex".to_string(),

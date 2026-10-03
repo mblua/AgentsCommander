@@ -271,6 +271,8 @@ mod tests {
 
     fn agent(id: &str, label: &str, command: &str) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: label.to_string(),
             command: command.to_string(),

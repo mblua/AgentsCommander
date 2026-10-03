@@ -725,6 +725,8 @@ mod tests {
 
     fn agent(id: &str, label: &str, command: &str) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: label.to_string(),
             command: command.to_string(),
@@ -742,6 +744,120 @@ mod tests {
 
     fn add(agent: AgentConfig) -> CodingAgentOp {
         CodingAgentOp::Add { agent }
+    }
+
+    #[test]
+    fn issue_2859_preflight_add_and_patch_preserve_supplied_and_dormant_fields() {
+        let mut settings = AppSettings::default();
+        let mut row = agent("first", "First", "codex");
+        row.preflight = Some(" raw  command ".into());
+        row.preflight_timeout_seconds = Some(123);
+        apply_coding_agent_op(&mut settings, &add(row.clone())).unwrap();
+        row.id = "second".into();
+        row.label = "Second".into();
+        row.preflight = None;
+        row.preflight_timeout_seconds = Some(60);
+        apply_coding_agent_op(&mut settings, &add(row)).unwrap();
+        apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "first".into(),
+                patch: AgentPatch {
+                    label: Some("Renamed".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            settings.agents[0].preflight.as_deref(),
+            Some(" raw  command ")
+        );
+        assert_eq!(settings.agents[0].preflight_timeout_seconds, Some(123));
+        assert!(settings.agents[1].preflight.is_none());
+        assert_eq!(settings.agents[1].preflight_timeout_seconds, Some(60));
+    }
+
+    #[test]
+    fn issue_2859_preflight_request_save_path_rejects_zero_and_persists_valid_values() {
+        for (timeout, accepted) in [(0, false), (60, true), (u32::MAX, true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
+            let results = requests.join(RESULTS_SUBDIR);
+            let persisted = dir.path().join("saved.json");
+            let mut row = agent("row", "Row", "codex");
+            row.preflight = Some(" raw  command ".into());
+            row.preflight_timeout_seconds = Some(timeout);
+            let path = write_request_file(&requests, "preflight", 100, add(row));
+            let mut settings = AppSettings::default();
+            let mut save = |settings: &AppSettings| {
+                std::fs::write(&persisted, serde_json::to_vec(settings).unwrap())
+                    .map_err(|error| error.to_string())
+            };
+            let disposition =
+                process_coding_agent_request(&path, &results, 200, &mut settings, &mut save);
+            assert_eq!(
+                matches!(disposition, RequestDisposition::Applied { .. }),
+                accepted
+            );
+            assert_eq!(persisted.exists(), accepted);
+            let result = read_coding_agent_result(&results, "preflight").unwrap();
+            assert_eq!(result.ok, accepted);
+            if accepted {
+                let saved: AppSettings =
+                    serde_json::from_slice(&std::fs::read(&persisted).unwrap()).unwrap();
+                assert_eq!(saved.agents[0].preflight.as_deref(), Some(" raw  command "));
+                assert_eq!(saved.agents[0].preflight_timeout_seconds, Some(timeout));
+            } else {
+                let error = result.error.unwrap();
+                assert!(error.contains("row") && error.contains("preflightTimeoutSeconds"));
+                assert!(!error.contains("raw  command"));
+            }
+        }
+    }
+
+    #[test]
+    fn issue_2859_preflight_save_path_validates_dormant_profile_cells_before_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
+        let results = requests.join(RESULTS_SUBDIR);
+        let mut settings = AppSettings::default();
+        apply_coding_agent_op(&mut settings, &add(agent("row", "Row", "codex"))).unwrap();
+        let cell = settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("row")
+            .unwrap()
+            .get_mut("A")
+            .unwrap();
+        cell.enabled = false;
+        cell.preflight_timeout_seconds = Some(0);
+        let path = write_request_file(
+            &requests,
+            "profile-zero",
+            100,
+            CodingAgentOp::Update {
+                id: "row".into(),
+                patch: AgentPatch::default(),
+            },
+        );
+        let mut saves = 0;
+        let disposition =
+            process_coding_agent_request(&path, &results, 200, &mut settings, &mut |_| {
+                saves += 1;
+                Ok(())
+            });
+        assert_eq!(disposition, RequestDisposition::Rejected);
+        assert_eq!(saves, 0);
+        let error = read_coding_agent_result(&results, "profile-zero")
+            .unwrap()
+            .error
+            .unwrap();
+        assert!(
+            error.contains("row")
+                && error.contains("profile 'A'")
+                && error.contains("preflightTimeoutSeconds")
+        );
     }
 
     fn noop_save() -> impl FnMut(&AppSettings) -> Result<(), String> {
