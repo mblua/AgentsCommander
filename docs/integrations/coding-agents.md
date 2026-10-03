@@ -38,30 +38,185 @@ Pi is a tuned `CodingAgentKind` for the auto-resume, profile, and wire behavior 
 
 ## Installing the CLIs
 
-AC does not install the coding-agent binaries. Use the upstream installers:
+Welcome can run installation commands from your persisted catalog after you opt in. Installation actions are **off by default**: close AC, set `codingAgentInstallEnabled` to `true` in the active configuration directory's `settings.30.instance.no-git.json`, then restart. See [the setting reference](../reference/settings.md#window--ui). The setting controls UI visibility and click dispatch; it is not backend authorization or proof that an installer works. You can also install manually using the official links below.
 
-- **Claude Code:** [docs.claude.com/en/docs/claude-code](https://docs.claude.com/en/docs/claude-code)
-- **Codex:** [github.com/openai/codex](https://github.com/openai/codex)
-- **Antigravity:** [antigravity.google](https://antigravity.google) (Antigravity CLI docs)
+The shipped routes cover eight enabled catalog agents. Muse remains disabled. **Native installation is unverified on Windows, macOS and Linux**; the user owns future testing after opt-in. [Installer acceptance](../testing/02-onboarding-and-coding-agents.md#native-installer-acceptance) lists the missing evidence. Route availability does not establish runtime compatibility.
 
-Antigravity's recommended flags (`--dangerously-skip-permissions`, `--model <model>`, `--effort <effort>`) are **not** baked into the seeded catalog command: `--dangerously-skip-permissions` disables agy's own permission prompts, and `<model>`/`<effort>` are user placeholders. Add them per agent via the coding-agent profile cells.
-- **Pi Coding Agent:** [github.com/earendil-works/pi](https://github.com/earendil-works/pi)
+This table names the exact command blocks below; macOS and Linux currently share each Unix command. Scripts need network access, a writable user installation directory, and the upstream archive/checksum tools and platform requirements. Check the linked vendor guide before installing.
 
-Install Pi with npm:
+| Agent / binary / official guide | Windows native | macOS native | Linux native | Prerequisites for the selected route |
+|---|---|---|---|---|
+| [Claude Code](https://code.claude.com/docs/en/setup) / `claude` | claude-windows (PowerShell: `https://claude.ai/install.ps1`) | claude-unix | claude-unix | PowerShell 5.1 on Windows; curl + Bash on Unix; vendor-supported OS/architecture. |
+| [Codex](https://github.com/openai/codex) / `codex` | codex-windows (PowerShell: `https://chatgpt.com/codex/install.ps1`) | codex-unix | codex-unix | PowerShell 5.1 and 64-bit Windows; curl + sh + tar on Unix. |
+| [Hermes](https://hermes-agent.nousresearch.com/docs/getting-started/installation) / `hermes` | hermes-windows (PowerShell: `https://hermes-agent.nousresearch.com/install.ps1`) | hermes-unix | hermes-unix | PowerShell 5.1 on Windows; curl + Bash, Git, tar and SHA-256 utilities on Unix; source builds may need a compiler/system libraries. |
+| [Cursor CLI](https://prod.cursor.com/docs/cli/installation) / `agent` | cursor-windows (PowerShell: `https://cursor.com/install?win32=true`) | cursor-unix | cursor-unix | PowerShell 5.1 on Windows; curl + Bash on Unix. |
+| [Pi](https://pi.dev/) / `pi` | pi-windows | pi-unix | pi-unix | Node >=22.19.0 and npm on every OS; optional packages included, lifecycle scripts disabled. |
+| [OpenCode](https://opencode.ai/docs/) / `opencode` | opencode-windows | opencode-unix | opencode-unix | Windows: npm 11.20.0 with --allow-scripts support and compatible Node; Unix: curl + Bash. |
+| [Antigravity](https://antigravity.google/docs/cli/install/) / `agy` | antigravity-windows (PowerShell: `https://antigravity.google/cli/install.ps1`) | antigravity-unix | antigravity-unix | PowerShell 5.1 on Windows; curl + Bash on Unix; check CLI requirements, not desktop minima. |
+| [Grok Build](https://docs.x.ai/build/overview) / `grok` | grok-windows (PowerShell: `https://x.ai/cli/install.ps1`) | grok-unix | grok-unix | PowerShell 5.1 on Windows; curl + Bash on Unix. |
 
-```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+Claude's current [system requirements](https://code.claude.com/docs/en/setup#system-requirements) list macOS 13+, Windows 10 1809+/Server 2019+, and supported Linux distributions, with x64/ARM64 and 4 GB RAM. Hermes' [platform matrix](https://hermes-agent.nousresearch.com/docs/getting-started/platform-support) lists native Windows 10/11 and Linux x64/ARM64; Apple Silicon has Tier 1 priority. Intel Macs have native x64 bundle/CLI methods; the DMG bootstrap is ARM64-only. This does not qualify AC's Intel installer at runtime. Hermes' source route manages its pinned tools and skips interactive setup with the flags below; it can also install browser/computer-use components and require distribution libraries.
+
+OpenCode's Windows route requires npm's global-install `--allow-scripts` support (npm 11.20.0) and includes optional platform binaries. It permits the `opencode-ai` lifecycle only; it does not change npm configuration or write project approvals. See [npm install-script permissions](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/). Node must satisfy the resolved packages and npm's engine. As checked on 2026-10-03, As checked on 2026-10-03, npm 11.20.0 requires `^20.17.0 || >=22.9.0`; `opencode-ai@1.18.34` declares no Node engine. Recheck resolved versions before testing. Pi's npm route requires existing Node/npm; it cannot bootstrap missing prerequisites under AC's null stdin.
+
+AC executes a selected command through `cmd.exe /C` on Windows or `sh -c` elsewhere, with null stdin and a 300-second deadline. Unix script commands guard the initial fetch (20-second connection timeout, 120-second total) and reject an empty response before invoking the named interpreter. Upstream downloads and profile/tool-store changes remain upstream behavior. Cursor's Windows script replaces an existing `%LOCALAPPDATA%\cursor-agent` directory, so rerun qualification uses a disposable profile.
+
+**Exact shipped commands.** These blocks come from [agents.default.json](../../src-tauri/resources/coding-agents/agents.default.json); your effective persisted commands can differ through overrides or a preserved old base. They are documentation, not a runtime test result. Each `*-unix` block is byte-identical for macOS and Linux. Windows script commands explicitly invoke Windows PowerShell 5.1; do not replace their encoded payload with a quoted `-Command` or a fixed `install.cmd` in the project directory.
+
+<details>
+<summary>claude-windows: exact catalog command</summary>
+
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYwBsAGEAdQBkAGUALgBhAGkALwBpAG4AcwB0AGEAbABsAC4AcABzADEAJwAgAC0AVABpAG0AZQBvAHUAdABTAGUAYwAgADEAMgAwACAALQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AIABTAHQAbwBwADsAIABpAGYAIAAoAFsAcwB0AHIAaQBuAGcAXQA6ADoASQBzAE4AdQBsAGwATwByAFcAaABpAHQAZQBTAHAAYQBjAGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAIAB7ACAAdABoAHIAbwB3ACAAJwBFAG0AcAB0AHkAIABpAG4AcwB0AGEAbABsAGUAcgAgAHIAZQBzAHAAbwBuAHMAZQAnACAAfQA7ACAAJABhAGMAXwBwAGEAdABoAD0ASgBvAGkAbgAtAFAAYQB0AGgAIAAoAFsASQBPAC4AUABhAHQAaABdADoAOgBHAGUAdABUAGUAbQBwAFAAYQB0AGgAKAApACkAIAAoACcAYQBjAC0AaQBuAHMAdABhAGwAbAAtADIANwA4ADcALQAnACsAWwBHAHUAaQBkAF0AOgA6AE4AZQB3AEcAdQBpAGQAKAApAC4AVABvAFMAdAByAGkAbgBnACgAJwBOACcAKQArACcALgBwAHMAMQAnACkAOwAgACQAYQBjAF8AZgBpAGwAZQA9AFsASQBPAC4ARgBpAGwAZQBdADoAOgBPAHAAZQBuACgAJABhAGMAXwBwAGEAdABoACwAWwBJAE8ALgBGAGkAbABlAE0AbwBkAGUAXQA6ADoAQwByAGUAYQB0AGUATgBlAHcALABbAEkATwAuAEYAaQBsAGUAQQBjAGMAZQBzAHMAXQA6ADoAVwByAGkAdABlACwAWwBJAE8ALgBGAGkAbABlAFMAaABhAHIAZQBdADoAOgBOAG8AbgBlACkAOwAgACQAYQBjAF8AYwByAGUAYQB0AGUAZAA9ACQAdAByAHUAZQA7ACAAdAByAHkAIAB7ACAAWwBiAHkAdABlAFsAXQBdACQAYQBjAF8AYgB5AHQAZQBzAD0AWwBUAGUAeAB0AC4ARQBuAGMAbwBkAGkAbgBnAF0AOgA6AFUAVABGADgALgBHAGUAdABQAHIAZQBhAG0AYgBsAGUAKAApACsAWwBUAGUAeAB0AC4ARQBuAGMAbwBkAGkAbgBnAF0AOgA6AFUAVABGADgALgBHAGUAdABCAHkAdABlAHMAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApADsAIAAkAGEAYwBfAGYAaQBsAGUALgBXAHIAaQB0AGUAKAAkAGEAYwBfAGIAeQB0AGUAcwAsADAALAAkAGEAYwBfAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAIAB9ACAAZgBpAG4AYQBsAGwAeQAgAHsAIAAkAGEAYwBfAGYAaQBsAGUALgBEAGkAcwBwAG8AcwBlACgAKQAgAH0AOwAgACQAZwBsAG8AYgBhAGwAOgBMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA9ACQAbgB1AGwAbAA7ACAAJgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAFAAUwBIAE8ATQBFACAAJwBwAG8AdwBlAHIAcwBoAGUAbABsAC4AZQB4AGUAJwApACAALQBOAG8AUAByAG8AZgBpAGwAZQAgAC0ATgBvAG4ASQBuAHQAZQByAGEAYwB0AGkAdgBlACAALQBFAHgAZQBjAHUAdABpAG8AbgBQAG8AbABpAGMAeQAgAEIAeQBwAGEAcwBzACAALQBGAGkAbABlACAAJABhAGMAXwBwAGEAdABoADsAIAAkAGEAYwBfAGUAeABpAHQAPQAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFADsAIABpAGYAIAAoACQAbgB1AGwAbAAgAC0AZQBxACAAJABhAGMAXwBlAHgAaQB0ACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAaQBmACAAKAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAKQAgAHsAIAB0AHIAeQAgAHsAIABSAGUAbQBvAHYAZQAtAEkAdABlAG0AIAAtAEwAaQB0AGUAcgBhAGwAUABhAHQAaAAgACQAYQBjAF8AcABhAHQAaAAgAC0ARgBvAHIAYwBlACAALQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AIABTAHQAbwBwACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAaQBmACAAKAAkAGEAYwBfAGUAeABpAHQAIAAtAGUAcQAgADAAKQAgAHsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAH0AIAB9ACAAfQA7ACAAZQB4AGkAdAAgACQAYQBjAF8AZQB4AGkAdAA=
 ```
 
-Or use the upstream installer:
+</details>
 
-```bash
-curl -fsSL https://pi.dev/install.sh | sh
+claude-unix:
+
+```sh
+ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://claude.ai/install.sh') && [ -n "$ac_install_script" ] && printf '%s\n' "$ac_install_script" | bash
 ```
 
-Run `pi --help` to verify the install. It exits successfully and lists `--continue, -c` as `Continue previous session`.
+<details>
+<summary>codex-windows: exact catalog command</summary>
 
-After installation, each CLI handles its own authentication (login flow, API key, or both). Pi auto-resume does not touch credentials or CLI-managed state. The separate generic config-seed feature runs only when configured. Container credential copy-in is Claude Code only today; see [Container coding agents](../features/container-coding-agents.md).
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYwBoAGEAdABnAHAAdAAuAGMAbwBtAC8AYwBvAGQAZQB4AC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAA7ACAAJABhAGMAXwBlAHgAaQB0AD0AJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA7ACAAaQBmACAAKAAkAG4AdQBsAGwAIAAtAGUAcQAgACQAYQBjAF8AZQB4AGkAdAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgAGkAZgAgACgAJABhAGMAXwBjAHIAZQBhAHQAZQBkACkAIAB7ACAAdAByAHkAIAB7ACAAUgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGEAYwBfAHAAYQB0AGgAIAAtAEYAbwByAGMAZQAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGkAZgAgACgAJABhAGMAXwBlAHgAaQB0ACAALQBlAHEAIAAwACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAfQAgAH0AOwAgAGUAeABpAHQAIAAkAGEAYwBfAGUAeABpAHQA
+```
+
+</details>
+
+codex-unix:
+
+```sh
+ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://chatgpt.com/codex/install.sh') && [ -n "$ac_install_script" ] && printf '%s\n' "$ac_install_script" | sh
+```
+
+<details>
+<summary>hermes-windows: exact catalog command</summary>
+
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AaABlAHIAbQBlAHMALQBhAGcAZQBuAHQALgBuAG8AdQBzAHIAZQBzAGUAYQByAGMAaAAuAGMAbwBtAC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAAgAC0ATgBvAG4ASQBuAHQAZQByAGEAYwB0AGkAdgBlADsAIAAkAGEAYwBfAGUAeABpAHQAPQAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFADsAIABpAGYAIAAoACQAbgB1AGwAbAAgAC0AZQBxACAAJABhAGMAXwBlAHgAaQB0ACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAaQBmACAAKAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAKQAgAHsAIAB0AHIAeQAgAHsAIABSAGUAbQBvAHYAZQAtAEkAdABlAG0AIAAtAEwAaQB0AGUAcgBhAGwAUABhAHQAaAAgACQAYQBjAF8AcABhAHQAaAAgAC0ARgBvAHIAYwBlACAALQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AIABTAHQAbwBwACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAaQBmACAAKAAkAGEAYwBfAGUAeABpAHQAIAAtAGUAcQAgADAAKQAgAHsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAH0AIAB9ACAAfQA7ACAAZQB4AGkAdAAgACQAYQBjAF8AZQB4AGkAdAA=
+```
+
+</details>
+
+hermes-unix:
+
+```sh
+ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://hermes-agent.nousresearch.com/install.sh') && [ -n "$ac_install_script" ] && printf '%s\n' "$ac_install_script" | bash -s -- --non-interactive
+```
+
+<details>
+<summary>cursor-windows: exact catalog command</summary>
+
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYwB1AHIAcwBvAHIALgBjAG8AbQAvAGkAbgBzAHQAYQBsAGwAPwB3AGkAbgAzADIAPQB0AHIAdQBlACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAA7ACAAJABhAGMAXwBlAHgAaQB0AD0AJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA7ACAAaQBmACAAKAAkAG4AdQBsAGwAIAAtAGUAcQAgACQAYQBjAF8AZQB4AGkAdAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgAGkAZgAgACgAJABhAGMAXwBjAHIAZQBhAHQAZQBkACkAIAB7ACAAdAByAHkAIAB7ACAAUgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGEAYwBfAHAAYQB0AGgAIAAtAEYAbwByAGMAZQAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGkAZgAgACgAJABhAGMAXwBlAHgAaQB0ACAALQBlAHEAIAAwACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAfQAgAH0AOwAgAGUAeABpAHQAIAAkAGEAYwBfAGUAeABpAHQA
+```
+
+</details>
+
+cursor-unix:
+
+```sh
+ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://cursor.com/install') && [ -n "$ac_install_script" ] && printf '%s\n' "$ac_install_script" | bash
+```
+
+<details>
+<summary>pi-windows: exact catalog command</summary>
+
+```text
+npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent
+```
+
+</details>
+
+pi-unix:
+
+```sh
+npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent
+```
+
+<details>
+<summary>opencode-windows: exact catalog command</summary>
+
+```text
+npm install -g --ignore-scripts=false --include=optional --allow-scripts=opencode-ai opencode-ai
+```
+
+</details>
+
+opencode-unix:
+
+```sh
+ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://opencode.ai/install') && [ -n "$ac_install_script" ] && printf '%s\n' "$ac_install_script" | bash
+```
+
+<details>
+<summary>antigravity-windows: exact catalog command</summary>
+
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYQBuAHQAaQBnAHIAYQB2AGkAdAB5AC4AZwBvAG8AZwBsAGUALwBjAGwAaQAvAGkAbgBzAHQAYQBsAGwALgBwAHMAMQAnACAALQBUAGkAbQBlAG8AdQB0AFMAZQBjACAAMQAyADAAIAAtAEUAcgByAG8AcgBBAGMAdABpAG8AbgAgAFMAdABvAHAAOwAgAGkAZgAgACgAWwBzAHQAcgBpAG4AZwBdADoAOgBJAHMATgB1AGwAbABPAHIAVwBoAGkAdABlAFMAcABhAGMAZQAoACQAYQBjAF8AaQBuAHMAdABhAGwAbABfAHMAYwByAGkAcAB0ACkAKQAgAHsAIAB0AGgAcgBvAHcAIAAnAEUAbQBwAHQAeQAgAGkAbgBzAHQAYQBsAGwAZQByACAAcgBlAHMAcABvAG4AcwBlACcAIAB9ADsAIAAkAGEAYwBfAHAAYQB0AGgAPQBKAG8AaQBuAC0AUABhAHQAaAAgACgAWwBJAE8ALgBQAGEAdABoAF0AOgA6AEcAZQB0AFQAZQBtAHAAUABhAHQAaAAoACkAKQAgACgAJwBhAGMALQBpAG4AcwB0AGEAbABsAC0AMgA3ADgANwAtACcAKwBbAEcAdQBpAGQAXQA6ADoATgBlAHcARwB1AGkAZAAoACkALgBUAG8AUwB0AHIAaQBuAGcAKAAnAE4AJwApACsAJwAuAHAAcwAxACcAKQA7ACAAJABhAGMAXwBmAGkAbABlAD0AWwBJAE8ALgBGAGkAbABlAF0AOgA6AE8AcABlAG4AKAAkAGEAYwBfAHAAYQB0AGgALABbAEkATwAuAEYAaQBsAGUATQBvAGQAZQBdADoAOgBDAHIAZQBhAHQAZQBOAGUAdwAsAFsASQBPAC4ARgBpAGwAZQBBAGMAYwBlAHMAcwBdADoAOgBXAHIAaQB0AGUALABbAEkATwAuAEYAaQBsAGUAUwBoAGEAcgBlAF0AOgA6AE4AbwBuAGUAKQA7ACAAJABhAGMAXwBjAHIAZQBhAHQAZQBkAD0AJAB0AHIAdQBlADsAIAB0AHIAeQAgAHsAIABbAGIAeQB0AGUAWwBdAF0AJABhAGMAXwBiAHkAdABlAHMAPQBbAFQAZQB4AHQALgBFAG4AYwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAuAEcAZQB0AFAAcgBlAGEAbQBiAGwAZQAoACkAKwBbAFQAZQB4AHQALgBFAG4AYwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAuAEcAZQB0AEIAeQB0AGUAcwAoACQAYQBjAF8AaQBuAHMAdABhAGwAbABfAHMAYwByAGkAcAB0ACkAOwAgACQAYQBjAF8AZgBpAGwAZQAuAFcAcgBpAHQAZQAoACQAYQBjAF8AYgB5AHQAZQBzACwAMAAsACQAYQBjAF8AYgB5AHQAZQBzAC4ATABlAG4AZwB0AGgAKQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgACQAYQBjAF8AZgBpAGwAZQAuAEQAaQBzAHAAbwBzAGUAKAApACAAfQA7ACAAJABnAGwAbwBiAGEAbAA6AEwAQQBTAFQARQBYAEkAVABDAE8ARABFAD0AJABuAHUAbABsADsAIAAmACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAUABTAEgATwBNAEUAIAAnAHAAbwB3AGUAcgBzAGgAZQBsAGwALgBlAHgAZQAnACkAIAAtAE4AbwBQAHIAbwBmAGkAbABlACAALQBOAG8AbgBJAG4AdABlAHIAYQBjAHQAaQB2AGUAIAAtAEUAeABlAGMAdQB0AGkAbwBuAFAAbwBsAGkAYwB5ACAAQgB5AHAAYQBzAHMAIAAtAEYAaQBsAGUAIAAkAGEAYwBfAHAAYQB0AGgAOwAgACQAYQBjAF8AZQB4AGkAdAA9ACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAOwAgAGkAZgAgACgAJABuAHUAbABsACAALQBlAHEAIAAkAGEAYwBfAGUAeABpAHQAKQAgAHsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAZgBpAG4AYQBsAGwAeQAgAHsAIABpAGYAIAAoACQAYQBjAF8AYwByAGUAYQB0AGUAZAApACAAewAgAHQAcgB5ACAAewAgAFIAZQBtAG8AdgBlAC0ASQB0AGUAbQAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAJABhAGMAXwBwAGEAdABoACAALQBGAG8AcgBjAGUAIAAtAEUAcgByAG8AcgBBAGMAdABpAG8AbgAgAFMAdABvAHAAIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIABpAGYAIAAoACQAYQBjAF8AZQB4AGkAdAAgAC0AZQBxACAAMAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAH0AIAB9ADsAIABlAHgAaQB0ACAAJABhAGMAXwBlAHgAaQB0AA==
+```
+
+</details>
+
+antigravity-unix:
+
+```sh
+ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://antigravity.google/cli/install.sh') && [ -n "$ac_install_script" ] && printf '%s\n' "$ac_install_script" | bash
+```
+
+<details>
+<summary>grok-windows: exact catalog command</summary>
+
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AeAAuAGEAaQAvAGMAbABpAC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAA7ACAAJABhAGMAXwBlAHgAaQB0AD0AJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA7ACAAaQBmACAAKAAkAG4AdQBsAGwAIAAtAGUAcQAgACQAYQBjAF8AZQB4AGkAdAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgAGkAZgAgACgAJABhAGMAXwBjAHIAZQBhAHQAZQBkACkAIAB7ACAAdAByAHkAIAB7ACAAUgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGEAYwBfAHAAYQB0AGgAIAAtAEYAbwByAGMAZQAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGkAZgAgACgAJABhAGMAXwBlAHgAaQB0ACAALQBlAHEAIAAwACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAfQAgAH0AOwAgAGUAeABpAHQAIAAkAGEAYwBfAGUAeABpAHQA
+```
+
+</details>
+
+grok-unix:
+
+```sh
+ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://x.ai/cli/install.sh') && [ -n "$ac_install_script" ] && printf '%s\n' "$ac_install_script" | bash
+```
+
+**Windows wrapper and exit limits.** The outer `-EncodedCommand` payload is standard Base64 of UTF-16LE without a BOM. The downloaded temporary `.ps1` is UTF-8 **with** a BOM. These are different encodings. `-ExecutionPolicy Bypass` applies to the child process; it does not persist a policy change. See [powershell.exe parameters](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1).
+
+The decoded Claude body below also describes Codex, Cursor, Antigravity and Grok with their table URLs. Hermes adds `-NonInteractive` **after** `-File $ac_path` as an upstream-script argument, separate from PowerShell's own `-NonInteractive`.
+
+<details>
+<summary>Readable decoded Windows wrapper (Claude)</summary>
+
+```powershell
+$ac_path=$null;
+$ac_created=$false;
+$ac_exit=1;
+try { $ac_install_script=Invoke-RestMethod -Uri 'https://claude.ai/install.ps1' -TimeoutSec 120 -ErrorAction Stop;
+if ([string]::IsNullOrWhiteSpace($ac_install_script)) { throw 'Empty installer response' };
+$ac_path=Join-Path ([IO.Path]::GetTempPath()) ('ac-install-2787-'+[Guid]::NewGuid().ToString('N')+'.ps1');
+$ac_file=[IO.File]::Open($ac_path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);
+$ac_created=$true;
+try { [byte[]]$ac_bytes=[Text.Encoding]::UTF8.GetPreamble()+[Text.Encoding]::UTF8.GetBytes($ac_install_script);
+$ac_file.Write($ac_bytes,0,$ac_bytes.Length) } finally { $ac_file.Dispose() };
+$global:LASTEXITCODE=$null;
+& (Join-Path $PSHOME 'powershell.exe') -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ac_path;
+$ac_exit=$LASTEXITCODE;
+if ($null -eq $ac_exit) { $ac_exit=1 } } catch { [Console]::Error.WriteLine($_);
+$ac_exit=1 } finally { if ($ac_created) { try { Remove-Item -LiteralPath $ac_path -Force -ErrorAction Stop } catch { [Console]::Error.WriteLine($_);
+if ($ac_exit -eq 0) { $ac_exit=1 } } } };
+exit $ac_exit
+```
+
+</details>
+
+The wrapper fetches with `-ErrorAction Stop`, rejects whitespace-only content, creates a unique temporary file, executes it in a separate `powershell.exe -File` child, returns that child's exit code and cleans up. Fetch, write and cleanup errors fail the wrapper (a cleanup failure changes success to failure). A downloaded script's explicit `exit 7` is preserved. A native child returning 7 is preserved only if its upstream script propagates that status; arbitrary nonterminating PowerShell errors and ignored native exits are not forced to fail. Raw stderr can contain CLIXML. The future acceptance procedure records these outcomes separately.
+
+Antigravity's recommended flags (`--dangerously-skip-permissions`, `--model <model>`, `--effort <effort>`) remain outside the seeded launch command: the first disables agy's permission prompts; the others are user placeholders. Add them through coding-agent profile cells.
+
+Each installed CLI handles its own authentication. Installation success does not authenticate it. Pi auto-resume does not touch credentials or CLI-managed state. The generic config-seed feature runs only when configured. Container credential copy-in remains Claude Code only; see [Container coding agents](../features/container-coding-agents.md).
 
 ## How AC finds them
 
@@ -85,17 +240,21 @@ On startup AC reads `agents.30.instance.no-git.json → agents[]`. Each entry ha
 
 The default coding-agent catalog includes a Pi entry with command `pi` and instructions file `AGENTS.md`.
 
-**Where `updateCommands` lives.** The catalog is a separate manifest from `settings.30.instance.no-git.json`. It is `<project>/.ac/coding-agents/agents.10.default.json`, an AC-managed snapshot that startup and project registration initialize or refresh; your optional shared patch lives beside it in `<project>/.ac/coding-agents/agents.40.project.json`, and your personal overrides in `<project>/.ac/coding-agents/agents.50.personal.no-git.json`. Each catalog definition can carry `updateCommands`, the commands AC runs to update that tool, and `autoUpdate`. **Neither is a `settings.30.instance.no-git.json` key**, and the CLI exposes the catalog read-only (`coding-agent catalog`). What you set in `settings.30.instance.no-git.json` is your answer to the startup prompt, `agentAutoUpdateByCommand`, described in [Coding agent auto-update](../features/agent-auto-update.md); the catalog's `autoUpdate` field is inert.
+**Where `installCommands` and `updateCommands` live.** The catalog is a separate manifest from `settings.30.instance.no-git.json`. It is `<project>/.ac/coding-agents/agents.10.default.json`, an AC-managed snapshot that startup and project registration initialize or refresh; your optional shared patch lives beside it in `<project>/.ac/coding-agents/agents.40.project.json`, and your personal overrides in `<project>/.ac/coding-agents/agents.50.personal.no-git.json`. Each catalog definition can carry `installCommands` for installation, `updateCommands` for updates, and `autoUpdate`. **None is a `settings.30.instance.no-git.json` key**, and the CLI exposes the catalog read-only (`coding-agent catalog`). What you set in `settings.30.instance.no-git.json` is your answer to the startup prompt, `agentAutoUpdateByCommand`, described in [Coding agent auto-update](../features/agent-auto-update.md); the catalog's `autoUpdate` field is inert.
 
-Commands resolve only from the persisted catalog. AC never substitutes the shipped defaults at read time, so a legacy catalog's absent `updateCommands` stays empty until a supported restart migrates it; `cursor`, `grok` and `muse` intentionally ship no update command (`cursor`'s CLI self-updates with the desktop app). See [Managed catalog: base, local overrides, and migration](#managed-catalog-base-local-overrides-and-migration) for the schema, refresh and recovery rules.
+Commands resolve only from the persisted catalog. An absent `installCommands` stays unavailable on read; only eligible initialization/migration/refresh or your valid override can supply it. AC never substitutes the shipped defaults at read time, so a legacy catalog's absent `updateCommands` stays empty until a supported restart migrates it; `cursor`, `grok` and `muse` intentionally ship no update command (`cursor`'s CLI self-updates with the desktop app). See [Managed catalog: base, local overrides, and migration](#managed-catalog-base-local-overrides-and-migration) for the schema, refresh and recovery rules.
 
 In the Settings > Coding Agents **Auto-update** table, one row appears per command whose first effective entry has a non-empty `updateCommands` (see [Coding agent auto-update](../features/agent-auto-update.md)). There is no `versionCommand` field: AC detects installed versions with a built-in `--version` probe for the built-in commands (`claude`, `codex`, `hermes`, `pi`, `opencode`, `agy`), only for bare command names resolved through PATH; a custom entry or an explicit path shows `Installed` without a version.
+
+Welcome's **Installed** indicator checks executable presence, not a successful version probe. The automatic built-in version probes above omit Cursor's `agent` and Grok's `grok`. Independently run the installed executable by its full path with `--version` and retain its exit/output before checking AC presence.
+
+Windows AC keeps its inherited process PATH: an installer changing User PATH cannot update the running AC process. Relaunch AC from a fresh OS environment after the PATH change; restarting only its terminal may leave AC's environment stale. On Unix, AC adds existing user-bin directories and caches one login-shell PATH probe per process. Verify presence before installation, in the same AC process afterwards, and after a fresh process restart.
 
 ## Managed catalog: base, local overrides, and migration
 
 `<project>/.ac/coding-agents/agents.10.default.json` is the file AgentsCommander manages; `<project>/.ac/coding-agents/agents.50.personal.no-git.json` is yours. Startup and every project registration initialize or refresh the managed base. Ordinary reads and **Reload catalog** never write. The embedded catalog is seed material only. With no registered project, startup initializes or refreshes the instance managed base at `<config_dir>/coding-agents/agents.10.default.json` and, on initialization, creates the `agents.50.personal.no-git.json` stub beside it; it never rewrites a legacy or edited instance file. Registering a project later gives that project its own managed base.
 
-**Existing registrations are snapshots.** `agents.30.instance.no-git.json` stores registered snapshots and profiles separately; it is not a catalog input layer. This catalog contract does not specify collection for every agent or profile (tracked separately in #2432/#2436). Adding an agent from the catalog copies `label`, `command`, `color`, `envs`, `isolatedHome`, and, when present, `instructionsFilename` and `configSeed` into `settings.agents[]` (the CLI's `add --from-catalog` does the same). Later catalog changes do not rewrite registered agents. `updateCommands`, `autoUpdate` and `idleBurst` are catalog-only and are never copied into `settings.agents[]`.
+**Existing registrations are snapshots.** `agents.30.instance.no-git.json` stores registered snapshots and profiles separately; it is not a catalog input layer. This catalog contract does not specify collection for every agent or profile (tracked separately in #2432/#2436). Adding an agent from the catalog copies `label`, `command`, `color`, `envs`, `isolatedHome`, and, when present, `instructionsFilename` and `configSeed` into `settings.agents[]` (the CLI's `add --from-catalog` does the same). Later catalog changes do not rewrite registered agents. `installCommands`, `updateCommands`, `autoUpdate` and `idleBurst` are catalog-only and are never copied into `settings.agents[]`.
 
 ### The optional project patch
 
@@ -123,7 +282,7 @@ Readers require regular, readable layer files and reject links and reparse point
 
 `agents.50.personal.no-git.json` is strict. Its root is an object with `schemaVersion: 1`, an `agents` array, and an optional `order` array of unique keys. Anything AC does not recognize — an unknown field at the root, in a row or in a nested object; a duplicate JSON member; a duplicate key; an unsupported `schemaVersion` — disables the **whole** local layer with a `localInvalid` warning naming the path and reason. The base and any accepted project patch stay readable and usable; AC never applies a partial local file or rewrites it.
 
-A row with an existing `key` patches the immediately lower accepted entry. `label`, `description`, `color`, `command`, `instructionsFilename`, `envs`, `isolatedHome`, `configSeed`, `removable`, `updateCommands`, `autoUpdate`, `idleBurst` and `installCommands` are accepted. A field you omit is inherited; `false`, `""` and `[]` are explicit values. `null` is accepted only for `instructionsFilename` (clear it), `configSeed` (clear the whole object), `idleBurst` and `installCommands` (clear the whole object). `configSeed` and `idleBurst` merge by presence (`configSeed`: `enabled`, `dest` only; `idleBurst`: `maxBytes`, `maxSecs`, `priorSilenceSecs` only); an object after a missing or `null` base starts from the AC defaults. `envs` and `updateCommands` replace the whole array in the order you write; env rows are never merged by key. `installCommands` merges by presence: `default` is a string, and `windows`, `macos` and `linux` are strings or `null` (clear that platform override). An object without a lower value needs a valid nonblank `default`; a null whole object clears it. Each env object accepts only `key`, `value`, `source` (`user` or `system`/`agentsCommander`) and `enabled`.
+A row with an existing `key` patches the immediately lower accepted entry. `label`, `description`, `color`, `command`, `instructionsFilename`, `envs`, `isolatedHome`, `configSeed`, `removable`, `updateCommands`, `autoUpdate`, `idleBurst` and `installCommands` are accepted. A field you omit is inherited; `false`, `""` and `[]` are explicit values. `null` is accepted only for `instructionsFilename` (clear it), `configSeed` (clear the whole object), `idleBurst` and `installCommands` (clear the whole object). `configSeed` and `idleBurst` merge by presence (`configSeed`: `enabled`, `dest` only; `idleBurst`: `maxBytes`, `maxSecs`, `priorSilenceSecs` only); an object after a missing or `null` base starts from the AC defaults. `envs` and `updateCommands` replace the whole array in the order you write; env rows are never merged by key. `installCommands` merges by presence: `default` is a string, and `windows`, `macos` and `linux` are strings or `null` (clear that platform override). An object without a lower value needs a valid nonblank `default`; `default: null` is invalid. A null whole object clears it. Strings remain verbatim; omitted keys inherit. Clearing an OS override falls back to the composed `default`, not another OS command. The shipped fallback is `echo No verified installer for this platform 1>&2 && exit 1`: unsupported targets download nothing. A local `default` can replace that fallback. Composed values must remain valid. Each env object accepts only `key`, `value`, `source` (`user` or `system`/`agentsCommander`) and `enabled`.
 
 A row with a new `key` must be complete: `label`, `description`, `color`, `command`, `envs`, `isolatedHome`, `removable`, `updateCommands` and `autoUpdate` are all required; `instructionsFilename`, `configSeed`, `idleBurst` and `installCommands` may be absent or `null`. New definitions append after the base entries unless `order` places them.
 
@@ -178,7 +337,7 @@ A base AC owns carries a `managed` marker beside `schemaVersion: 1` and `agents`
 
 An unrecognized owner or version means the file is not AC's: it stays readable but is never refreshed or migrated. A formatting-only edit does not change `contentSha256` and does not pin the file. A semantic edit stops `contentSha256` matching the entries; the file stays readable with a `managedBaseEdited` warning, and AC never auto-refreshes or auto-migrates it. To customize entries, use `agents.50.personal.no-git.json`, not `agents.10.default.json`.
 
-A refresh replaces only a verified managed base: it can bring new or updated shipped definitions into the composed view you read, and it never edits either user patch, `agents.40.project.json` or `agents.50.personal.no-git.json`. A fresh project writes the base and a creation-only stub `{"schemaVersion":1,"agents":[]}` in `agents.50.personal.no-git.json`, and only when the local path does not exist at all: any existing entry is preserved and never overwritten. An existing valid regular file is composed as your overrides with no warning; a directory, link, unreadable or schema-invalid local is preserved and surfaces `localInvalid` with the path and reason when read. If the stub cannot be created, the usable base remains and a startup log names the local path.
+At startup or project registration, a refresh requires a recognized owner/version, a matching deterministic semantic-content hash, no blocking unknown fields, and a different shipped revision. It replaces only a verified managed base: it can bring new or updated shipped definitions into the composed view you read, and it never edits either user patch, `agents.40.project.json` or `agents.50.personal.no-git.json`. Refresh leaves edited or unmanaged bases with their user bytes, warnings and old installer commands; the separate legacy migration rules below still apply. Reload catalog is read-only and does not refresh them. A fresh project writes the base and a creation-only stub `{"schemaVersion":1,"agents":[]}` in `agents.50.personal.no-git.json`, and only when the local path does not exist at all: any existing entry is preserved and never overwritten. An existing valid regular file is composed as your overrides with no warning; a directory, link, unreadable or schema-invalid local is preserved and surfaces `localInvalid` with the path and reason when read. If the stub cannot be created, the usable base remains and a startup log names the local path.
 
 ### Migration, sidecars, and recovery
 
