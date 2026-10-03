@@ -2,8 +2,8 @@
 
 For contributors who add, rename, or review an AgentsCommander config file. Check this page before you name a file, so that the name tells every reader who owns it, which layer wins, and whether it may be committed.
 
-> **Status: implemented, except `agents.40.project.json`.**
-> The product owner decided this convention on 2026-09-23 ([#2448](https://github.com/mblua/AgentsCommander/issues/2448)). The file-naming epic ([#2470](https://github.com/mblua/AgentsCommander/issues/2470)) shipped the renames below. AC now reads and writes only the new names. `agents.40.project.json` is reserved: its name exists in code, but no build reads or writes it yet.
+> **Status: implemented.**
+> The product owner decided this convention on 2026-09-23 ([#2448](https://github.com/mblua/AgentsCommander/issues/2448)). The file-naming epic ([#2470](https://github.com/mblua/AgentsCommander/issues/2470)) shipped the renames below. AC now reads and writes only the new names. `<primary-project>/.ac/coding-agents/agents.40.project.json` is an optional project catalog patch you or your team author and share through your own Git workflow. AC reads it; AC never creates, edits, deletes, migrates, publishes or stages it. Generated ignores leave it trackable; your own ignore rules may exclude it.
 > The migration is **forward only**: once a version renames your files, you cannot downgrade past it.
 
 ## The rule
@@ -44,7 +44,7 @@ Only the three layered families are renamed: `settings.*`, `blocking-menus.*` an
 
 Every other AC file keeps its name: logs, locks, pids, databases, queues, directories, context templates, RTK files, tokens, and `CLAUDE.md` / `AGENTS.md` (coding-agent CLIs read those by fixed name).
 
-The 7 git-tracked instance entries also keep their names (`src-tauri/src/config/instance_artifacts.rs:651-693`):
+The 7 git-tracked instance entries also keep their names (`src-tauri/src/config/instance_artifacts.rs`, registry `INSTANCE_ARTIFACTS`):
 
 - `Context.AgentsCommander.md`
 - its backup glob `Context.AgentsCommander.md.retired-*.bak`
