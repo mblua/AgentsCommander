@@ -159,6 +159,190 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
     }
 }
 
+/// Credentials are explicit flags, preserving the existing trusted-local-session model.
+#[derive(Args)]
+pub struct TaskGetArgs {
+    #[arg(long)]
+    pub token: String,
+    #[arg(long)]
+    pub root: String,
+}
+
+#[derive(Args)]
+pub struct TaskStatusSetArgs {
+    #[arg(long)]
+    pub token: String,
+    #[arg(long)]
+    pub root: String,
+    #[arg(long)]
+    pub expected_revision: String,
+    #[arg(long)]
+    pub request_id: String,
+    /// Complete replacement status, including remaining tickets and continuation.
+    #[arg(long)]
+    pub text: String,
+}
+
+fn task_error(code: &str, message: &str, current_revision: Option<&str>) -> i32 {
+    let mut value = serde_json::json!({"error": code, "message": message});
+    if let Some(revision) = current_revision {
+        value["currentRevision"] = revision.into();
+    }
+    eprintln!("{value}");
+    if code == "revision_conflict" {
+        2
+    } else {
+        1
+    }
+}
+
+fn task_authorization(token: &str, root: &str) -> Result<(std::path::PathBuf, String), i32> {
+    let denied = || {
+        task_error(
+            "authorization_denied",
+            "Room orchestrator authorization required",
+            None,
+        )
+    };
+    let (_, is_master) =
+        crate::cli::validate_cli_token(&Some(token.to_owned())).map_err(|_| denied())?;
+    let sender = agent_name_from_root(root);
+    if !is_master {
+        let teams = crate::config::teams::discover_teams();
+        if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
+            return Err(denied());
+        }
+    }
+    let room = crate::phone::messaging::workgroup_root(Path::new(root))
+        .ok()
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("room-") || n.starts_with("wg-"))
+                && path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|n| n == ".ac")
+        })
+        .ok_or_else(denied)?;
+    Ok((room, sender))
+}
+
+fn task_storage_error(error: task_ops::TaskOpError) -> i32 {
+    use task_ops::TaskOpError;
+    let code = match &error {
+        TaskOpError::RevisionConflict { current_revision } => {
+            return task_error(
+                "revision_conflict",
+                "Status revision changed",
+                Some(current_revision),
+            );
+        }
+        TaskOpError::RequestIdConflict => "request_id_conflict",
+        TaskOpError::InvalidStatus(_) => "status_corrupt",
+        TaskOpError::StatusTooLarge => "invalid_input",
+        TaskOpError::SequenceOverflow => "status_corrupt",
+        TaskOpError::SnapshotTooLarge | TaskOpError::ReadFailed(..) => "read_failed",
+        TaskOpError::LockTimeout => "lock_timeout",
+        TaskOpError::CleanRecoveryPending(_) => "clean_recovery_pending",
+        TaskOpError::CleanRecoveryConflict(_) => "clean_recovery_conflict",
+        _ => "write_failed",
+    };
+    // Do not expose storage diagnostics containing caller-supplied text or paths.
+    task_error(code, "Room task operation failed", None)
+}
+
+pub fn execute_get(args: TaskGetArgs) -> i32 {
+    let (room, sender) = match task_authorization(&args.token, &args.root) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+    match task_ops::read_snapshot(&room) {
+        Ok(snapshot) => {
+            log::info!(
+                "[task] get: sender={} wg={} pid={} revision={}",
+                sender,
+                room.display(),
+                std::process::id(),
+                snapshot.revision
+            );
+            crate::cli_println!("{}", serde_json::json!(snapshot));
+            0
+        }
+        Err(error) => task_storage_error(error),
+    }
+}
+
+fn valid_status_args(args: &TaskStatusSetArgs) -> bool {
+    let revision_valid = args.expected_revision == "legacy:0"
+        || args
+            .expected_revision
+            .rsplit_once(':')
+            .is_some_and(|(topic, sequence)| {
+                uuid::Uuid::parse_str(topic).is_ok()
+                    && sequence
+                        .parse::<u64>()
+                        .is_ok_and(|n| n <= 9_007_199_254_740_991 && n.to_string() == sequence)
+            });
+    revision_valid
+        && uuid::Uuid::parse_str(&args.request_id).is_ok()
+        && !args.text.trim().is_empty()
+        && args.text.len() <= 48 * 1024
+        && !args
+            .text
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+}
+
+pub fn execute_status_set(args: TaskStatusSetArgs) -> i32 {
+    let (room, sender) = match task_authorization(&args.token, &args.root) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+    if !valid_status_args(&args) {
+        return task_error(
+            "invalid_input",
+            "Invalid status, revision or request UUID",
+            None,
+        );
+    }
+    match task_ops::append_status(
+        &room,
+        &args.expected_revision,
+        &args.request_id,
+        &args.text,
+        &sender,
+    ) {
+        Ok(receipt) => {
+            log::info!(
+                "[task] status-set: sender={} wg={} pid={} revision={} requestId={} replayed={}",
+                sender,
+                room.display(),
+                std::process::id(),
+                receipt.revision,
+                args.request_id,
+                receipt.replayed
+            );
+            crate::cli_println!(
+                "{}",
+                serde_json::json!({
+                    "workgroupRoot": room.to_string_lossy(),
+                    "revision": receipt.revision,
+                    "requestId": receipt.record.request_id,
+                    "recordedAt": receipt.record.recorded_at,
+                    "status": receipt.record.status,
+                    "replayed": receipt.replayed,
+                })
+            );
+            0
+        }
+        Err(error) => task_storage_error(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +393,36 @@ mod tests {
             root,
             text: text.to_string(),
         }
+    }
+
+    #[test]
+    fn status_input_validation_bounds_and_revision() {
+        let mut args = TaskStatusSetArgs {
+            token: "fixture".into(),
+            root: "fixture".into(),
+            expected_revision: "legacy:0".into(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            text: "Remaining 🦀\nFUP\r\tcontinuation".into(),
+        };
+        assert!(valid_status_args(&args));
+        for text in ["", " \t\n", "bad\u{0}", "bad\u{7}", "bad\u{7f}"] {
+            args.text = text.into();
+            assert!(!valid_status_args(&args));
+        }
+        args.text = "🦀".repeat(12 * 1024);
+        assert!(valid_status_args(&args));
+        args.text.push('x');
+        assert!(!valid_status_args(&args));
+        args.text = "complete status".into();
+        args.expected_revision = format!("{}:9007199254740991", uuid::Uuid::new_v4());
+        assert!(valid_status_args(&args));
+        args.expected_revision = format!("{}:9007199254740992", uuid::Uuid::new_v4());
+        assert!(!valid_status_args(&args));
+        args.expected_revision = format!("{}:01", uuid::Uuid::new_v4());
+        assert!(!valid_status_args(&args));
+        args.expected_revision = "legacy:0".into();
+        args.request_id = "invalid".into();
+        assert!(!valid_status_args(&args));
     }
 
     // ── I4: non-coordinator rejected ────────────────────────────────────
