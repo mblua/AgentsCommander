@@ -14192,10 +14192,16 @@ mod tests {
         // S6
         #[test]
         fn a_no_overlay_save_writes_the_control_captured_on_the_pinned_base() {
-            assert_eq!(
-                s6_normalized_non_project_settings(),
-                EXPECTED_NON_PROJECT_SETTINGS_JSON
-            );
+            let mut expected: Value =
+                serde_json::from_str(EXPECTED_NON_PROJECT_SETTINGS_JSON).unwrap();
+            let object = expected.as_object_mut().unwrap();
+            assert!(!object.contains_key("codingAgentInstallEnabled"));
+            // #2800 extends the schema; the historical captured control stays intact.
+            object.insert("codingAgentInstallEnabled".to_string(), Value::Bool(false));
+            let sorted: BTreeMap<String, Value> =
+                object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let expected = serde_json::to_string_pretty(&sorted).unwrap();
+            assert_eq!(s6_normalized_non_project_settings(), expected);
         }
 
         // S7
