@@ -55,14 +55,9 @@ vi.mock("../../shared/ipc", () => ({
 }));
 
 vi.mock("../../shared/stores/settings", async () => {
-  const { createSignal } = await import("solid-js");
-  const [current, setCurrent] = createSignal<AppSettings | null>(null);
+  const { createTestSettingsStore } = await import("../../shared/testing/base-settings");
   return {
-    settingsStore: {
-      refresh: vi.fn(),
-      get current() { return current(); },
-      set current(value: AppSettings | null) { setCurrent(value); },
-    },
+    settingsStore: createTestSettingsStore(vi.fn()),
   };
 });
 
