@@ -1,4 +1,14 @@
+import { createSignal } from "solid-js";
 import type { AppSettings, CodingAgentProfilesConfig } from "../types";
+
+export function createTestSettingsStore<T>(refresh: T) {
+  const [current, setCurrent] = createSignal<AppSettings | null>(null);
+  return {
+    refresh,
+    get current() { return current(); },
+    set current(value: AppSettings | null) { setCurrent(value); },
+  };
+}
 
 function defaultCodingAgentProfiles(): CodingAgentProfilesConfig {
   return {
