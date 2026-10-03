@@ -549,6 +549,8 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<(), String> {
 
 fn blank_agent() -> AgentConfig {
     AgentConfig {
+        preflight: None,
+        preflight_timeout_seconds: None,
         id: String::new(),
         label: String::new(),
         command: String::new(),
@@ -570,6 +572,8 @@ fn blank_agent() -> AgentConfig {
 /// only when present; drop key/description/removable; id is minted by the caller.
 fn definition_to_agent_seed(def: &CodingAgentDefinition) -> AgentConfig {
     AgentConfig {
+        preflight: None,
+        preflight_timeout_seconds: None,
         id: String::new(),
         label: def.label.clone(),
         command: def.command.clone(),

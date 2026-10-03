@@ -14554,6 +14554,8 @@ mod tests {
 
     fn wake_agent(id: &str, label: &str, command: &str) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.into(),
             label: label.into(),
             command: command.into(),
@@ -22991,6 +22993,8 @@ mod tests {
             cells.insert(
                 "A".to_string(),
                 crate::config::settings::ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     command: "pi".into(),
                     ..crate::config::settings::empty_profile_cell()
                 },
@@ -25930,6 +25934,8 @@ mod tests {
                             (
                                 (*letter).to_string(),
                                 crate::config::settings::ProfileCellConfig {
+                                    preflight: None,
+                                    preflight_timeout_seconds: None,
                                     enabled: *enabled,
                                     command: format!("codex --{}", letter.to_ascii_lowercase()),
                                     env: std::collections::BTreeMap::new(),

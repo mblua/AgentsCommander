@@ -637,6 +637,8 @@ mod tests {
         blocking_menus: Option<Vec<BlockingMenuEntry>>,
     ) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: id.to_string(),
             command: command.to_string(),

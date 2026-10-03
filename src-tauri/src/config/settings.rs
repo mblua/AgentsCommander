@@ -58,6 +58,10 @@ pub struct AgentConfig {
     pub id: String,
     pub label: String,
     pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight_timeout_seconds: Option<u32>,
     pub color: String,
     /// Base environment rows applied to every launch of this coding agent.
     #[serde(default)]
@@ -286,6 +290,10 @@ pub struct ProfileCellConfig {
     pub enabled: bool,
     #[serde(default)]
     pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight_timeout_seconds: Option<u32>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
@@ -3068,6 +3076,8 @@ fn default_settings_with_overlay(settings_path: &Path, source: &str) -> AppSetti
 
 pub fn empty_profile_cell() -> ProfileCellConfig {
     ProfileCellConfig {
+        preflight: None,
+        preflight_timeout_seconds: None,
         enabled: true,
         command: String::new(),
         env: BTreeMap::new(),
@@ -3501,7 +3511,31 @@ fn normalize_agent_backend_configs(settings: &mut AppSettings) -> Result<(), Str
     Ok(())
 }
 
+/// Validate stored seconds without resolving the later execution default.
+pub fn validate_preflight_timeout_seconds(value: Option<u32>) -> Result<(), String> {
+    if value == Some(0) {
+        Err("preflightTimeoutSeconds must be at least 1 second".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn validate_preflight_timeouts(settings: &AppSettings) -> Result<(), String> {
+    for agent in &settings.agents {
+        validate_preflight_timeout_seconds(agent.preflight_timeout_seconds)
+            .map_err(|error| format!("Agent '{}' {error}", agent.id))?;
+    }
+    for (agent_id, cells) in &settings.coding_agent_profiles.profiles_by_agent {
+        for (letter, cell) in cells {
+            validate_preflight_timeout_seconds(cell.preflight_timeout_seconds)
+                .map_err(|error| format!("Agent '{agent_id}' profile '{letter}' {error}"))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), String> {
+    validate_preflight_timeouts(settings)?;
     adopt_orphaned_profiles(settings);
     normalize_agent_backend_configs(settings)?;
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
@@ -9063,12 +9097,241 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
+    #[test]
+    fn issue_2859_optional_preflight_serde_preserves_legacy_and_raw_values() {
+        let legacy = serde_json::json!({
+            "id": "row", "label": "Row", "command": "codex", "color": "#000000"
+        });
+        for null_fields in [false, true] {
+            let mut row = legacy.clone();
+            let mut cell = serde_json::json!({});
+            if null_fields {
+                for value in [&mut row, &mut cell] {
+                    value["preflight"] = serde_json::Value::Null;
+                    value["preflightTimeoutSeconds"] = serde_json::Value::Null;
+                }
+            }
+            let row: AgentConfig = serde_json::from_value(row).unwrap();
+            let cell: ProfileCellConfig = serde_json::from_value(cell).unwrap();
+            assert!(row.preflight.is_none() && row.preflight_timeout_seconds.is_none());
+            assert!(cell.preflight.is_none() && cell.preflight_timeout_seconds.is_none());
+            for value in [
+                serde_json::to_value(row).unwrap(),
+                serde_json::to_value(cell).unwrap(),
+            ] {
+                assert!(value.get("preflight").is_none());
+                assert!(value.get("preflightTimeoutSeconds").is_none());
+            }
+        }
+        for timeout in [1, 60, 123, u32::MAX] {
+            for command in ["", "  ", " echo  raw command "] {
+                let mut row = legacy.clone();
+                row["preflight"] = serde_json::json!(command);
+                row["preflightTimeoutSeconds"] = serde_json::json!(timeout);
+                let row: AgentConfig = serde_json::from_value(row).unwrap();
+                let cell: ProfileCellConfig = serde_json::from_value(serde_json::json!({
+                    "enabled": false, "preflight": command, "preflightTimeoutSeconds": timeout
+                }))
+                .unwrap();
+                for value in [
+                    serde_json::to_value(row).unwrap(),
+                    serde_json::to_value(cell).unwrap(),
+                ] {
+                    assert_eq!(value["preflight"], command);
+                    assert_eq!(value["preflightTimeoutSeconds"], timeout);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issue_2859_preflight_timeout_rejects_malformed_wire_values_at_both_levels() {
+        for raw in [
+            "-1",
+            "1.5",
+            "\"60\"",
+            "4294967296",
+            "NaN",
+            "Infinity",
+            "1e999",
+        ] {
+            let row = format!(
+                r##"{{"id":"row","label":"Row","command":"codex","color":"#000000","preflightTimeoutSeconds":{raw}}}"##
+            );
+            let cell = format!(r#"{{"preflightTimeoutSeconds":{raw}}}"#);
+            assert!(serde_json::from_str::<AgentConfig>(&row).is_err(), "{raw}");
+            assert!(
+                serde_json::from_str::<ProfileCellConfig>(&cell).is_err(),
+                "{raw}"
+            );
+        }
+        assert!(super::validate_preflight_timeout_seconds(Some(0)).is_err());
+        for value in [None, Some(1), Some(60), Some(u32::MAX)] {
+            super::validate_preflight_timeout_seconds(value).unwrap();
+        }
+    }
+
+    #[test]
+    fn issue_2859_preflight_validation_checks_disabled_and_invalid_letter_before_repair() {
+        let mut settings = settings_with_agents(&[("Row", "codex")]);
+        settings.agents[0].preflight = Some("secret row command".into());
+        settings.agents[0].preflight_timeout_seconds = Some(0);
+        let error = super::validate_and_repair_settings(&mut settings).unwrap_err();
+        assert!(error.contains("agent-0") && error.contains("preflightTimeoutSeconds"));
+        assert!(!error.contains("secret"));
+        settings.agents[0].preflight_timeout_seconds = None;
+        let mut cell = super::empty_profile_cell();
+        cell.enabled = false;
+        cell.preflight = Some("secret cell command".into());
+        cell.preflight_timeout_seconds = Some(0);
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .entry("orphan".into())
+            .or_default()
+            .insert("invalid-letter".into(), cell);
+        let error = super::validate_and_repair_settings(&mut settings).unwrap_err();
+        assert!(
+            error.contains("orphan")
+                && error.contains("invalid-letter")
+                && error.contains("preflightTimeoutSeconds")
+        );
+        assert!(!error.contains("secret"));
+        assert!(settings.coding_agent_profiles.profiles_by_agent["orphan"]
+            .contains_key("invalid-letter"));
+    }
+
+    #[test]
+    fn issue_2859_preflight_copy_repair_and_protected_merge_keep_row_cell_identity() {
+        let mut settings = settings_with_agents(&[("First", "codex"), ("Second", "codex")]);
+        for (index, row) in settings.agents.iter_mut().enumerate() {
+            row.preflight = Some(format!(" raw  row {index} "));
+            row.preflight_timeout_seconds = Some(60 + index as u32);
+            let mut cell = super::empty_profile_cell();
+            cell.enabled = false;
+            cell.preflight_timeout_seconds = Some(100 + index as u32);
+            settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .entry(row.id.clone())
+                .or_default()
+                .insert("B".into(), cell);
+        }
+        super::validate_and_repair_settings(&mut settings).unwrap();
+        let copied = settings.clone();
+        let merged = super::merge_protected_coding_agent_settings(&settings, copied);
+        let restored: AppSettings =
+            serde_json::from_value(serde_json::to_value(&merged).unwrap()).unwrap();
+        for (index, row) in restored.agents.iter().enumerate() {
+            assert_eq!(
+                row.preflight.as_deref(),
+                Some(format!(" raw  row {index} ").as_str())
+            );
+            assert_eq!(row.preflight_timeout_seconds, Some(60 + index as u32));
+            let cell = &restored.coding_agent_profiles.profiles_by_agent[&row.id]["B"];
+            assert_eq!(cell.preflight_timeout_seconds, Some(100 + index as u32));
+            assert!(cell.preflight.is_none() && !cell.enabled);
+        }
+    }
+
+    #[test]
+    fn issue_2859_preflight_overlay_save_retains_base_and_effective_whole_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(super::SETTINGS_FILE_NAME);
+        let mut base = settings_with_agents(&[("Row", "codex")]);
+        base.root_token = Some("test-token".into());
+        base.agents[0].preflight = Some(" base  command ".into());
+        base.agents[0].preflight_timeout_seconds = Some(60);
+        super::validate_and_repair_settings(&mut base).unwrap();
+        let mut cell = super::empty_profile_cell();
+        cell.preflight_timeout_seconds = Some(123);
+        base.coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .insert("B".into(), cell);
+        let original = serde_json::to_string(&base).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        let mut overlay = serde_json::to_value(&base).unwrap();
+        overlay["agents"][0]["preflight"] = serde_json::json!(" overlay  command ");
+        overlay["agents"][0]["preflightTimeoutSeconds"] = serde_json::json!(456);
+        overlay["codingAgentProfiles"]["profilesByAgent"]["agent-0"]["B"]
+            ["preflightTimeoutSeconds"] = serde_json::json!(789);
+        std::fs::write(
+            dir.path().join(super::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+            serde_json::to_vec(&serde_json::json!({
+                "agents": overlay["agents"], "codingAgentProfiles": overlay["codingAgentProfiles"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (mut effective, _) =
+            super::parse_settings_json(&original, "test", Some(&path)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "load must not eagerly rewrite fields"
+        );
+        super::validate_and_repair_settings(&mut effective).unwrap();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&effective, &path).unwrap();
+        assert_eq!(
+            written.agents[0].preflight.as_deref(),
+            Some(" overlay  command ")
+        );
+        assert_eq!(written.agents[0].preflight_timeout_seconds, Some(456));
+        assert_eq!(
+            written.coding_agent_profiles.profiles_by_agent["agent-0"]["B"]
+                .preflight_timeout_seconds,
+            Some(789)
+        );
+        std::fs::remove_file(dir.path().join(super::SETTINGS_LOCAL_OVERRIDE_FILE_NAME)).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let (base_again, _) = super::parse_settings_json(&contents, "test", Some(&path)).unwrap();
+        assert_eq!(
+            base_again.agents[0].preflight.as_deref(),
+            Some(" base  command ")
+        );
+        assert_eq!(base_again.agents[0].preflight_timeout_seconds, Some(60));
+        assert_eq!(
+            base_again.coding_agent_profiles.profiles_by_agent["agent-0"]["B"]
+                .preflight_timeout_seconds,
+            Some(123)
+        );
+    }
+
+    #[test]
+    fn issue_2859_legacy_load_does_not_persist_preflight_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(super::SETTINGS_FILE_NAME);
+        let mut settings = settings_with_agents(&[("Row", "codex")]);
+        settings.root_token = Some("test-token".into());
+        super::validate_and_repair_settings(&mut settings).unwrap();
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        let agents_path = dir.path().join(super::AGENTS_INSTANCE_FILE_NAME);
+        let before_settings = std::fs::read(&path).unwrap();
+        let before_agents = std::fs::read(&agents_path).unwrap();
+        let loaded = super::load_settings_from_path(&path);
+        assert_eq!(loaded.agents.len(), 1);
+        assert!(loaded.agents[0].preflight.is_none());
+        assert!(loaded.agents[0].preflight_timeout_seconds.is_none());
+        let cell = &loaded.coding_agent_profiles.profiles_by_agent["agent-0"]["A"];
+        assert!(cell.preflight.is_none() && cell.preflight_timeout_seconds.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), before_settings);
+        assert_eq!(std::fs::read(&agents_path).unwrap(), before_agents);
+        assert!(!String::from_utf8(before_agents)
+            .unwrap()
+            .contains("preflight"));
+    }
+
     fn settings_with_agents(commands: &[(&str, &str)]) -> AppSettings {
         AppSettings {
             agents: commands
                 .iter()
                 .enumerate()
                 .map(|(idx, (label, command))| AgentConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     id: format!("agent-{idx}"),
                     label: (*label).to_string(),
                     command: (*command).to_string(),
@@ -9171,6 +9434,8 @@ mod tests {
         use super::AgentConfig;
         // Present -> serializes as nested `configSeed { enabled, dest }`.
         let mut agent = AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: "claude".to_string(),
             label: "Claude".to_string(),
             command: "claude".to_string(),
@@ -9968,6 +10233,8 @@ mod tests {
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "codex --current".to_string(),
                     env: BTreeMap::new(),
@@ -10025,6 +10292,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "--continue".to_string(),
                     env: BTreeMap::new(),
@@ -10052,6 +10321,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "--continue".to_string(),
                     env: BTreeMap::new(),
@@ -10115,6 +10386,8 @@ mod tests {
                     .insert(
                         "A".to_string(),
                         ProfileCellConfig {
+                            preflight: None,
+                            preflight_timeout_seconds: None,
                             enabled: true,
                             command: format!("--model {provider} {selector}"),
                             env: BTreeMap::new(),
@@ -10157,6 +10430,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "--workspace /tmp/codex resume --last".to_string(),
                     env: BTreeMap::new(),
@@ -12468,6 +12743,8 @@ mod tests {
         );
 
         let cleared = super::AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             context_regex: None,
             ..agent
         };
@@ -12639,6 +12916,8 @@ mod tests {
         blocking_menus: Option<Vec<super::BlockingMenuEntry>>,
     ) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: id.to_string(),
             command: command.to_string(),
@@ -12925,6 +13204,8 @@ mod tests {
 
         fn cell(command: &str) -> ProfileCellConfig {
             ProfileCellConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 command: command.to_string(),
                 ..empty_profile_cell()
             }
@@ -16178,6 +16459,8 @@ mod tests {
             let store =
                 BlockingMenusStore::with_layers(remote_grok(vec![g]), BlockingMenusFile::default());
             let agent = AgentConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 id: "grok-1".to_string(),
                 label: "grok-1".to_string(),
                 command: "grok".to_string(),
