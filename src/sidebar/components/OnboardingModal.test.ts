@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import OnboardingModal from "./OnboardingModal";
 import type { AppSettings } from "../../shared/types";
-import { SettingsAPI } from "../../shared/ipc";
+import { CodingAgentsAPI, SettingsAPI } from "../../shared/ipc";
+import { settingsStore } from "../../shared/stores/settings";
 import { onboardingPendingSettings } from "../../shared/testing/base-settings";
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {
@@ -53,11 +54,21 @@ vi.mock("../../shared/ipc", () => ({
   onCodingAgentInstallFinished: vi.fn(() => Promise.resolve(() => {})),
 }));
 
-vi.mock("../../shared/stores/settings", () => ({
-  settingsStore: {
-    refresh: vi.fn(),
-  },
-}));
+vi.mock("../../shared/stores/settings", async () => {
+  const { createSignal } = await import("solid-js");
+  const [current, setCurrent] = createSignal<AppSettings | null>(null);
+  return {
+    settingsStore: {
+      refresh: vi.fn(),
+      get current() { return current(); },
+      set current(value: AppSettings | null) { setCurrent(value); },
+    },
+  };
+});
+
+function setCurrentSettings(value: AppSettings | null): void {
+  (settingsStore as { current: AppSettings | null }).current = value;
+}
 
 async function settle(): Promise<void> {
   await Promise.resolve();
@@ -71,6 +82,36 @@ function pressEscape(): void {
 }
 
 describe("OnboardingModal", () => {
+  beforeEach(() => {
+    setCurrentSettings(null);
+    vi.mocked(CodingAgentsAPI.welcomeStatus).mockResolvedValue([]);
+  });
+
+  it.each([false, true])("eligible Welcome installation actions require opt-in: %s", async (enabled) => {
+    setCurrentSettings(settings(enabled ? { codingAgentInstallEnabled: true } : {}));
+    vi.mocked(CodingAgentsAPI.welcomeStatus).mockResolvedValue([
+      { key: "codex", installed: false, testedLevel: "high", installCommand: "npm install -g @openai/codex" },
+    ]);
+    const root = document.createElement("div");
+    document.body.append(root);
+    const dispose = render(() => OnboardingModal({ onClose: vi.fn() }), root);
+    await settle();
+
+    const card = document.querySelector<HTMLButtonElement>('[data-ac-testid="onboarding.agentPreset.codex"]')!;
+    expect(card).not.toBeNull();
+    expect(document.querySelector('[data-ac-testid="onboarding.agentPreset.codex.status"]')?.textContent).toBe("Not installed");
+    expect(document.querySelector('[data-ac-testid="onboarding.agentPreset.codex.tested"]')?.textContent).toBe("AC Support: Stable");
+    card.click();
+    await settle();
+    expect(document.querySelector<HTMLButtonElement>('[data-ac-testid="onboarding.confirm"]')?.disabled).toBe(false);
+    const install = document.querySelector<HTMLButtonElement>('[data-ac-testid="onboarding.agentPreset.codex.install"]');
+    expect(install !== null).toBe(enabled);
+    expect(document.querySelector(".onboarding-card-install") !== null).toBe(enabled);
+    install?.click();
+    await settle();
+    expect(CodingAgentsAPI.install).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    dispose();
+  });
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();

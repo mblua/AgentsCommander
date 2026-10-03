@@ -300,6 +300,7 @@ The two `gitSweep*` dials are manual-only (no UI) and are read from the in-memor
 | `sidebarGeometry` / `terminalGeometry` | object \| null | `null` | Legacy keys from the two-window layout. AC reads them at load; when the file has no `mainGeometry` and no local overlay pins it, `terminalGeometry` seeds `mainGeometry`. |
 | `themeLight` | bool | `false` | Light theme on; dark theme when false. Fresh and missing values default to dark. |
 | `specBoardEnabled` | bool | `false` | Shows the Spec Board toolbar button when true. This only controls the sidebar toolbar entrypoint; backend Spec Board commands remain callable and this is not an access-control or security boundary. |
+| `codingAgentInstallEnabled` | bool | `false` | Shows eligible Coding Agent installation actions (command, copy, Install and output) when `true`. To opt in, close AgentsCommander, set this key to `true` in the active configuration directory's `settings.30.instance.no-git.json`, then restart. Omitted or `false` hides the actions; presence/support chips and agent selection remain available. Controls UI visibility only, not backend authorization or installer correctness. |
 | `sidebarStyle` | string | `"noir-minimal"` | Sidebar visual variant. Options: `noir-minimal`, `card-sections`, `command-center`, `deep-space`, `arctic-ops`, `obsidian-mesh`, `neon-circuit`. |
 | `soundsEnabled` | bool | `true` | Master switch for all app-emitted sounds. |
 | `teamIdleBeepEnabled` | bool | `true` | Beep when a team transitions from busy → all-idle. Gated by `soundsEnabled`. |

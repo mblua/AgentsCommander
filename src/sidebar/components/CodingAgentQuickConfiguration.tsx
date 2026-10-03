@@ -194,7 +194,9 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
 
   const installCommandOf = (key: string): string | null =>
     statusRowOf(key)?.installCommand ?? null;
+  const installEnabled = () => settingsStore.current?.codingAgentInstallEnabled === true;
   const showInstallRow = (key: string): boolean =>
+    installEnabled() &&
     !!props.showInstallStatus &&
     !statusRowOf(key)?.installed &&
     installCommandOf(key) !== null &&
@@ -213,7 +215,7 @@ const CodingAgentQuickConfiguration: Component<CodingAgentQuickConfigurationProp
   };
 
   const runInstall = async (key: string) => {
-    if (!installReady() || installing().has(key)) return;
+    if (!installEnabled() || !installReady() || installing().has(key)) return;
     setInstallFailed((set) => withoutKey(set, key));
     clearOutput(key);
     setInstalling((set) => withKey(set, key));

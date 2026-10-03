@@ -532,6 +532,10 @@ pub struct AppSettings {
     /// `settings.json` by hand; there is no UI control. Takes effect on restart.
     #[serde(default)]
     pub co_managed_enabled: bool,
+    /// Show coding-agent installation actions only after a manual opt-in.
+    /// Fresh settings and older files without this key keep the actions hidden.
+    #[serde(default)]
+    pub coding_agent_install_enabled: bool,
     /// Auto-execute (send Enter) after voice transcription
     #[serde(default = "default_true")]
     pub voice_auto_execute: bool,
@@ -1299,6 +1303,7 @@ impl Default for AppSettings {
             jev_threshold: default_jev_threshold(),
             jev_margin: default_jev_margin(),
             co_managed_enabled: false,
+            coding_agent_install_enabled: false,
             voice_auto_execute: true,
             voice_auto_execute_delay: default_voice_delay(),
             sidebar_zoom: default_zoom(),
@@ -12201,6 +12206,56 @@ mod tests {
 
         let s: AppSettings = serde_json::from_str(json).expect("deserialize old json");
         assert!(!s.spec_board_enabled);
+    }
+
+    #[test]
+    fn coding_agent_install_enabled_default_impl_is_false() {
+        assert!(!AppSettings::default().coding_agent_install_enabled);
+    }
+
+    #[test]
+    fn coding_agent_install_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+        let settings: AppSettings =
+            serde_json::from_str(json).expect("deserialize legacy settings");
+        assert!(!settings.coding_agent_install_enabled);
+    }
+
+    #[test]
+    fn coding_agent_install_enabled_explicit_false_round_trips() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["codingAgentInstallEnabled"] = serde_json::Value::Bool(false);
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(!settings.coding_agent_install_enabled);
+        assert_eq!(
+            serde_json::to_value(settings).unwrap()["codingAgentInstallEnabled"],
+            serde_json::Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn coding_agent_install_enabled_true_round_trips_under_camel_case_key() {
+        let settings = AppSettings {
+            coding_agent_install_enabled: true,
+            ..AppSettings::default()
+        };
+        let value = serde_json::to_value(settings).unwrap();
+        assert_eq!(
+            value["codingAgentInstallEnabled"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(value.get("coding_agent_install_enabled").is_none());
+        let back: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(back.coding_agent_install_enabled);
+        assert_eq!(
+            serde_json::to_value(back).unwrap()["codingAgentInstallEnabled"],
+            serde_json::Value::Bool(true)
+        );
     }
 
     #[test]
