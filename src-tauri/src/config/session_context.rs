@@ -11419,7 +11419,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 std::fs::remove_dir(&target_dir).unwrap();
             }
             assert_eq!(
-                super::shared_locations::ensure_project_skills_dir(&ac)
+                crate::config::shared_locations::ensure_project_skills_dir(&ac)
                     .unwrap_err()
                     .to_string(),
                 "linked/reparse directory is not allowed"
@@ -13906,7 +13906,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "---\nname: agent\ndescription: Agent stays\n---\n",
         );
         assert_eq!(
-            super::shared_locations::ensure_project_skills_dir(&ac)
+            crate::config::shared_locations::ensure_project_skills_dir(&ac)
                 .unwrap_err()
                 .to_string(),
             "not an ordinary directory"
@@ -14129,7 +14129,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 std::fs::remove_dir(&target).unwrap();
             }
             assert_eq!(
-                super::shared_locations::ensure_project_skills_dir(&ac)
+                crate::config::shared_locations::ensure_project_skills_dir(&ac)
                     .unwrap_err()
                     .to_string(),
                 "linked/reparse directory is not allowed"
