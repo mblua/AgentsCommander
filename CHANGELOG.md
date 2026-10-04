@@ -6,6 +6,24 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- Project coding-agent catalogs support a project policy layer between instance settings and personal overrides. (#2833, #2834)
+- Task storage adds status history and paired Clean backups; CLI and UI integration remain for later phases. (#2839)
+- Coding-agent settings can store preflight commands and timeouts; command execution is not activated yet. (#2859)
+
+### Changed
+
+- Root Agent instructions are owned by the editable context file. Exact historical defaults migrate with a backup; customized and empty contexts remain authoritative. (#2832)
+- Coding-agent installer actions are disabled by default and require an explicit opt-in. The catalog supplies platform-specific commands, with updated installation guidance. (#2800, #2801)
+- Configuration regression checks cover state-key readers and prevent tracked configuration from receiving runtime state keys. (#2823)
+
+### Fixed
+
+- Updated Tauri and tao to remove a Windows keyboard reentrancy deadlock. The reported freeze was not reproduced on the old version, so its cause remains unconfirmed. (#2817)
+- Enter on the focused Cancel button in New Room cancels rather than creating a room. The physical Windows keyboard check remains pending. (#2809)
+- Terminal timestamps and dimensions appear in the upper-right corner. (#2829)
+
 ## 0.42.0
 
 ### Added
