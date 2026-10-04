@@ -13671,7 +13671,12 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     // Deliberately independent of renderer constants: removing or weakening the
     // authorization while leaving catalog entries must fail these cache tests.
     fn issue_2868_assert_permission(content: &str, root: &Path) {
-        let root = display_path(&canonical_or_original(root));
+        // Canonicalize the authoritative parent, not an occupied source that
+        // might be a rejected junction/link to an external target.
+        let root = display_path(
+            &canonical_or_original(root.parent().expect("project .ac parent"))
+                .join(root.file_name().expect("project skills basename")),
+        );
         let paragraph = format!("Filesystem authorization amendment: You MAY READ {root} and its descendants, including skill bodies and supporting resources. This is an explicit additional exception to every preceding filesystem restriction in this context, including the GOLDEN RULE absolute/exclusive entry ranges, the forbidden-read scope, the refusal instruction, and any statement that nothing else under .ac is readable. Those restrictions remain in force for all other paths. This amendment grants no write permission and no access to external link/reference targets; those require an existing independent permission. Private agent state and TASK.md write protection remain unchanged. This read authorization also applies when no preceding filesystem rule exists.");
         assert_eq!(content.matches(&paragraph).count(), 1, "{content}");
         assert_eq!(content.matches("## Project Skills").count(), 1);
