@@ -30,6 +30,10 @@ pub struct TaskUpdateResult {
     /// file is empty or missing post-edit (defensive — should not happen
     /// after a successful Wrote, but possible on race-deletion).
     pub task: Option<String>,
+    pub task_title: Option<String>,
+    pub status: Option<String>,
+    pub revision: String,
+    pub tail_incomplete: bool,
 }
 
 /// Resolve the workgroup root for a session id, returning a user-facing
@@ -40,7 +44,7 @@ async fn resolve_wg_root(
     session_id: &str,
 ) -> Result<std::path::PathBuf, String> {
     let uuid = Uuid::parse_str(session_id).map_err(|e| format!("invalid session id: {}", e))?;
-    let mgr = session_mgr.read().await;
+    let mgr = session_mgr.read().await.clone();
     let cwd = mgr
         .get_session(uuid)
         .await
@@ -151,25 +155,85 @@ fn validate_wg_root(
 }
 
 fn strip_unc(p: &Path) -> String {
-    let raw = p.to_string_lossy().into_owned();
-    raw.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(raw)
+    let raw = p.to_string_lossy();
+    if cfg!(windows) {
+        if let Some(rest) = raw
+            .strip_prefix(r"\\?\UNC\")
+            .or_else(|| raw.strip_prefix(r"\??\UNC\"))
+        {
+            return format!(r"\\{}", rest);
+        }
+        if let Some(rest) = raw
+            .strip_prefix(r"\\?\")
+            .or_else(|| raw.strip_prefix(r"\??\"))
+        {
+            return rest.to_string();
+        }
+    }
+    raw.into_owned()
 }
 
-fn emit_task_updated(
-    app: &AppHandle,
-    wg_root: &Path,
-    task: &Option<String>,
-    task_title: &Option<String>,
-) {
-    let _ = app.emit(
+fn committed_task_error(stage: &str, error: impl std::fmt::Display) -> String {
+    log::warn!("[task] mutation already committed; {stage} failed: {error}");
+    format!("task mutation already committed; {stage} failed: {error}; do not repeat Clean")
+}
+
+fn task_result_from_snapshot(snapshot: task_ops::TaskSnapshot) -> TaskUpdateResult {
+    TaskUpdateResult {
+        workgroup_root: strip_unc(Path::new(&snapshot.workgroup_root)),
+        task: snapshot
+            .task
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned),
+        task_title: snapshot.task_title,
+        status: snapshot.status,
+        revision: snapshot.revision,
+        tail_incomplete: snapshot.tail_incomplete,
+    }
+}
+
+fn emit_task_updated(app: &AppHandle, result: &TaskUpdateResult) -> Result<(), String> {
+    app.emit(
         "workgroup_task_updated",
         serde_json::json!({
-            "workgroupRoot": strip_unc(wg_root),
+            "workgroupRoot": result.workgroup_root,
             "source": "manual",
-            "task": task.clone(),
-            "taskTitle": task_title.clone(),
+            "task": result.task,
+            "taskTitle": result.task_title,
+            "status": result.status,
+            "revision": result.revision,
+            "tailIncomplete": result.tail_incomplete,
         }),
-    );
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn read_committed_task_snapshot(
+    root: std::path::PathBuf,
+) -> Result<TaskUpdateResult, String> {
+    let snapshot = tokio::task::spawn_blocking(move || task_ops::read_snapshot(&root))
+        .await
+        .map_err(|error| committed_task_error("snapshot worker", error))?
+        .map_err(|error| committed_task_error("snapshot read", error))?;
+    Ok(task_result_from_snapshot(snapshot))
+}
+
+fn deliver_committed_task(
+    result: TaskUpdateResult,
+    emit: impl FnOnce(&TaskUpdateResult) -> Result<(), String>,
+) -> Result<TaskUpdateResult, String> {
+    emit(&result).map_err(|error| committed_task_error("event delivery", error))?;
+    Ok(result)
+}
+
+async fn publish_committed_task(
+    app: &AppHandle,
+    root: std::path::PathBuf,
+) -> Result<TaskUpdateResult, String> {
+    let result = read_committed_task_snapshot(root).await?;
+    deliver_committed_task(result, |result| emit_task_updated(app, result))
 }
 
 /// Read the current YAML-frontmatter `title:` value of the workgroup
@@ -236,25 +300,7 @@ pub async fn task_set_title(
         outcome
     );
 
-    let (content, task_title) = match &outcome {
-        task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
-        task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
-        task_ops::EditOutcome::RejectedUserTitle { content, title } => {
-            (content.clone(), title.clone())
-        }
-    };
-    let trimmed = content.trim();
-    let task = if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    };
-    let result = TaskUpdateResult {
-        workgroup_root: strip_unc(&wg_root),
-        task: task.clone(),
-    };
-    emit_task_updated(&app, &wg_root, &task, &task_title);
-    Ok(result)
+    publish_committed_task(&app, wg_root).await
 }
 
 /// Clear the workgroup TASK.md for the given session to the canonical Clean state.
@@ -270,25 +316,7 @@ pub async fn task_clean(
     let outcome = task_ops::perform(&wg_root, TaskOp::Clean).map_err(|e| e.to_string())?;
     log::info!("[task] clean for session {} -> {:?}", session_id, outcome);
 
-    let (content, task_title) = match &outcome {
-        task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
-        task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
-        task_ops::EditOutcome::RejectedUserTitle { content, title } => {
-            (content.clone(), title.clone())
-        }
-    };
-    let trimmed = content.trim();
-    let task = if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    };
-    let result = TaskUpdateResult {
-        workgroup_root: strip_unc(&wg_root),
-        task: task.clone(),
-    };
-    emit_task_updated(&app, &wg_root, &task, &task_title);
-    Ok(result)
+    publish_committed_task(&app, wg_root).await
 }
 
 /// Clear the workgroup TASK.md addressed directly by its `wg-*` root path, for
@@ -310,25 +338,7 @@ pub async fn task_clean_at(
     let outcome = task_ops::perform(&wg_root, TaskOp::Clean).map_err(|e| e.to_string())?;
     log::info!("[task] clean_at for {} -> {:?}", workgroup_root, outcome);
 
-    let (content, task_title) = match &outcome {
-        task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
-        task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
-        task_ops::EditOutcome::RejectedUserTitle { content, title } => {
-            (content.clone(), title.clone())
-        }
-    };
-    let trimmed = content.trim();
-    let task = if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    };
-    let result = TaskUpdateResult {
-        workgroup_root: strip_unc(&wg_root),
-        task: task.clone(),
-    };
-    emit_task_updated(&app, &wg_root, &task, &task_title);
-    Ok(result)
+    publish_committed_task(&app, wg_root).await
 }
 
 /// Set the YAML-frontmatter `title:` field of the workgroup TASK.md addressed
@@ -358,25 +368,7 @@ pub async fn task_set_title_at(
         outcome
     );
 
-    let (content, task_title) = match &outcome {
-        task_ops::EditOutcome::Wrote { content, title, .. } => (content.clone(), title.clone()),
-        task_ops::EditOutcome::NoOp { content, title } => (content.clone(), title.clone()),
-        task_ops::EditOutcome::RejectedUserTitle { content, title } => {
-            (content.clone(), title.clone())
-        }
-    };
-    let trimmed = content.trim();
-    let task = if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    };
-    let result = TaskUpdateResult {
-        workgroup_root: strip_unc(&wg_root),
-        task: task.clone(),
-    };
-    emit_task_updated(&app, &wg_root, &task, &task_title);
-    Ok(result)
+    publish_committed_task(&app, wg_root).await
 }
 
 #[cfg(test)]
@@ -774,5 +766,96 @@ mod tests {
     fn validate_user_title_accepts_normal_title() {
         assert!(validate_user_title("My Title").is_ok());
         assert!(validate_user_title("tab\tbetween").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod committed_snapshot_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mutation_snapshot_preserves_legacy_projection_and_committed_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("TASK.md");
+        std::fs::write(&file, "\nbody 🦀\n").unwrap();
+        task_ops::perform(dir.path(), TaskOp::SetUserTitle("café".into())).unwrap();
+        task_ops::append_status(
+            dir.path(),
+            "legacy:0",
+            "12345678-1234-4234-8234-123456789abc",
+            "ready",
+            "project/fixture",
+        )
+        .unwrap();
+        let bytes = std::fs::read(&file).unwrap();
+        let result = read_committed_task_snapshot(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        assert_eq!(
+            result.task.as_deref(),
+            Some(std::str::from_utf8(&bytes).unwrap().trim())
+        );
+        assert_eq!(result.task_title.as_deref(), Some("USER: café"));
+        assert_eq!(result.status.as_deref(), Some("ready"));
+        let event = serde_json::to_value(&result).unwrap();
+        assert_eq!(event["taskTitle"], "USER: café");
+        let error = deliver_committed_task(result, |_| Err("injected emit".into())).unwrap_err();
+        assert!(error.contains("already committed"));
+        assert!(error.contains("do not repeat Clean"));
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        std::fs::write(dir.path().join("TASK-status.jsonl"), "[]\n").unwrap();
+        let error = read_committed_task_snapshot(dir.path().to_path_buf())
+            .await
+            .unwrap_err();
+        assert!(error.contains("already committed"));
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn clean_null_topic_and_delivery_failure_do_not_replay_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("TASK.md"), "old body").unwrap();
+        task_ops::perform(dir.path(), TaskOp::Clean).unwrap();
+        let result = read_committed_task_snapshot(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        assert!(result.status.is_none());
+        assert!(result.revision.ends_with(":0"));
+        let revision = result.revision.clone();
+        let entries = std::fs::read_dir(dir.path()).unwrap().count();
+        assert!(deliver_committed_task(result, |_| Err("offline".into())).is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), entries);
+        let retry_read = read_committed_task_snapshot(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        assert_eq!(retry_read.revision, revision);
+        assert!(serde_json::to_value(retry_read).unwrap()["status"].is_null());
+    }
+
+    #[test]
+    fn root_keys_preserve_ordinary_paths_and_normalize_windows_unc() {
+        let samples = [
+            (
+                r"C:\PROGRA~1\project\.ac\room-1",
+                r"C:\PROGRA~1\project\.ac\room-1",
+            ),
+            (r"\\server\share\.ac\room-1", r"\\server\share\.ac\room-1"),
+            (
+                r"\\?\C:\PROGRA~1\project\.ac\room-1",
+                r"C:\PROGRA~1\project\.ac\room-1",
+            ),
+            (
+                r"\\?\UNC\server\share\.ac\room-1",
+                r"\\server\share\.ac\room-1",
+            ),
+            (
+                r"\??\UNC\server\share\.ac\room-1",
+                r"\\server\share\.ac\room-1",
+            ),
+        ];
+        for (raw, windows_key) in samples {
+            let expected = if cfg!(windows) { windows_key } else { raw };
+            assert_eq!(strip_unc(Path::new(raw)), expected);
+        }
     }
 }
