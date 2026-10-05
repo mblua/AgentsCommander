@@ -1497,6 +1497,8 @@ mod tests {
                             (
                                 (*letter).to_string(),
                                 ProfileCellConfig {
+                                    preflight: None,
+                                    preflight_timeout_seconds: None,
                                     enabled: true,
                                     command: format!("codex --{}", letter.to_ascii_lowercase()),
                                     env: BTreeMap::new(),
@@ -1524,6 +1526,8 @@ mod tests {
         let mut settings = settings_with_cells(&[("codex", vec!["A", "B", "C"])]);
         settings.project_paths = vec![project.to_string_lossy().to_string()];
         settings.agents = vec![AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: "codex".to_string(),
             label: "Codex".to_string(),
             command: "codex".to_string(),

@@ -1607,6 +1607,8 @@ mod tests {
 
     fn test_agent(id: &str) -> crate::config::settings::AgentConfig {
         crate::config::settings::AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: id.to_string(),
             command: id.to_string(),

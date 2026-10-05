@@ -5738,6 +5738,8 @@ mod tests {
 
     fn profile_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
         crate::config::settings::ProfileCellConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             enabled: true,
             command: command.to_string(),
             env: BTreeMap::new(),

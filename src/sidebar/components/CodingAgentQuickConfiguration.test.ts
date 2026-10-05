@@ -65,11 +65,16 @@ vi.mock("../../shared/ipc", () => ({
   },
 }));
 
-vi.mock("../../shared/stores/settings", () => ({
-  settingsStore: {
-    refresh: vi.fn(),
-  },
-}));
+vi.mock("../../shared/stores/settings", async () => {
+  const { createTestSettingsStore } = await import("../../shared/testing/base-settings");
+  return {
+    settingsStore: createTestSettingsStore(vi.fn()),
+  };
+});
+
+function setCurrentSettings(value: AppSettings | null): void {
+  (settingsStore as { current: AppSettings | null }).current = value;
+}
 
 function catalogDef(key: string, label: string, command: string): CodingAgentDefinition {
   return {
@@ -157,6 +162,7 @@ function renderModal(): () => void {
 
 describe("CodingAgentQuickConfiguration", () => {
   beforeEach(() => {
+    setCurrentSettings(null);
     codingAgentsStore.resetForTests();
   });
 
@@ -1177,6 +1183,7 @@ describe("CodingAgentQuickConfiguration", () => {
     let unlisten: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
+      setCurrentSettings(settings({ codingAgentInstallEnabled: true }));
       finishedHandler = null;
       // Like the real transport, an unlistened handler receives nothing more.
       unlisten = vi.fn(() => {
@@ -1262,6 +1269,43 @@ describe("CodingAgentQuickConfiguration", () => {
       expect(installButton("codex")?.getAttribute("data-ac-state")).toBe("idle");
       return dispose;
     }
+
+    it.each([
+      ["not loaded", null],
+      ["missing key", settings()],
+      ["explicit false", settings({ codingAgentInstallEnabled: false })],
+    ] as const)("installation actions stay off with %s settings", async (_label, current) => {
+      setCurrentSettings(current);
+      const dispose = renderInstall(true);
+      await settle();
+
+      expect(document.querySelector(".onboarding-card-install")).toBeNull();
+      expect(card("codex")).not.toBeNull();
+      expect(byTestId("onboarding.agentPreset.codex.status")?.textContent).toBe("Not installed");
+      expect(byTestId("onboarding.agentPreset.codex.tested")?.textContent).toBe("AC Support: Stable");
+      card("codex").click();
+      await settle();
+      expect(byTestId<HTMLButtonElement>("onboarding.confirm")?.disabled).toBe(false);
+      expect(CodingAgentsAPI.install).not.toHaveBeenCalled();
+      dispose();
+    });
+
+    it("disabling installation removes the row and blocks its retained click callback", async () => {
+      const dispose = await mountReady();
+      const button = installButton("codex")!;
+      // Solid delegates clicks through document. Reattach the retained button
+      // after removal so the stale click reaches its original handler.
+      setCurrentSettings(settings({ codingAgentInstallEnabled: false }));
+      await settle();
+      expect(document.querySelector(".onboarding-card-install")).toBeNull();
+      document.body.append(button);
+      button.click();
+      await settle();
+      expect(CodingAgentsAPI.install).not.toHaveBeenCalled();
+      expect(button.getAttribute("data-ac-state")).toBe("idle");
+      button.remove();
+      dispose();
+    });
 
     it("install_2736_shows_command_copy_and_install_only_for_a_missing_agent_with_a_command", async () => {
       const dispose = await mountReady();

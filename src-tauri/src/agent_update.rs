@@ -6425,6 +6425,8 @@ mod tests {
         let settings = AppSettings {
             project_paths: vec![dir.path().to_string_lossy().to_string()],
             agents: vec![AgentConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 id: "agent-0".to_string(),
                 label: "Bob".to_string(),
                 command: "bob-1551-missing".to_string(),
@@ -6526,6 +6528,8 @@ mod tests {
         let settings = AppSettings {
             project_paths: vec![dir.path().to_string_lossy().to_string()],
             agents: vec![AgentConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 id: "agent-0".to_string(),
                 label: "Bob".to_string(),
                 command: "bob-1551-missing".to_string(),

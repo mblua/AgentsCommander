@@ -882,6 +882,8 @@ export interface AppSettings {
   /** Global Co-managed switch. Absent or `false` = off.
    *  Off by default: the feature is in development. */
   coManagedEnabled?: boolean;
+  /** Installation actions are opt-in. Absent or false = off. */
+  codingAgentInstallEnabled?: boolean;
 }
 
 // ── #2265/#2232 Co-managed: the phase-2 command wire shapes ──────────────────

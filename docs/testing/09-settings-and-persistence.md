@@ -41,6 +41,11 @@ Test data: TBD
 | SET-011 | NOT RUN | No evidence because NOT RUN. | CLI/GUI interleaving pair preservation not executed in this run. |
 | SET-012 | NOT RUN | No evidence because NOT RUN. | Managed catalog migration/restart recovery not executed in this run. |
 | SET-013 | NOT RUN | No evidence because NOT RUN. | Registered-agent snapshot preservation not executed in this run. |
+| SET-014 | NOT RUN | No evidence because NOT RUN. | Optional shared patch and personal precedence not executed in this run. |
+| SET-015 | NOT RUN | No evidence because NOT RUN. | Whole-layer fallback warnings not executed in this run. |
+| SET-016 | NOT RUN | No evidence because NOT RUN. | Primary-project scope not executed in this run. |
+| SET-017 | NOT RUN | No evidence because NOT RUN. | Restart and registered snapshot isolation not executed in this run. |
+| SET-018 | NOT RUN | No evidence because NOT RUN. | No-project visible exclusion not executed in this run. |
 
 Residual test data:
 
@@ -533,3 +538,193 @@ Evidence Required:
 Pass/Fail Criteria:
 
 PASS if the existing registered row never changes and the new registration carries the edited values. PARTIAL if behavior is correct but one snapshot is missing. FAIL if a catalog change rewrites a registered agent or the new registration keeps the old values. BLOCKED if the disposable registration cannot be prepared or restored safely.
+
+### Project patch fixture coverage
+
+SET-014..SET-018 are manual instructions only; all remain NOT RUN. The landed P1 Rust fixtures in `config::coding_agents_catalog::tests` are the authority for add/null/nested/order/removal/reintroduction, cascading donor failures, the support gate, edited/stale/legacy/foreign/unavailable bases, Direct reads, actual no-read exclusion, four-artifact churn, initialization/refresh/re-seeding/interrupted/blocked recovery byte preservation, and generated-ignore Git trackability. Manual results cannot certify these behaviors; this note makes no claim that those fixtures ran in this documentation phase.
+
+### SET-014: Optional shared patch and personal precedence
+
+Status: PENDING - not run. This case needs GUI interaction and fixture files; it was not executed in the documentation phase.
+
+Purpose:
+
+Verify optional project customization, personal precedence and return to the baseline.
+
+Preconditions:
+
+- Inherit the suite's visual and testable-identity rules; verify a fresh disposable identity and disposable projects where required, never a live project. Close the GUI before external JSON edits.
+- Extend the hand-edit boundary only to these disposable projects' `.ac/coding-agents/`. Back up existing 10/40/50 and registered `agents.30.instance.no-git.json` bytes, record initial absence, and restore originals and absences afterward. SET-018's stray instance 40 stays inside the disposable testable identity.
+- Use a valid managed 10 with shipped supported `codex`, label `Codex`, command `codex`, and empty 50 `{"schemaVersion":1,"agents":[]}` plus LF unless a step changes it. Unsafe preparation, target identification or restoration is BLOCKED. Do not launch providers.
+
+Steps:
+
+1. With 40 absent and 50 empty, capture Settings > Coding Agents and the baseline Codex label.
+2. Close the GUI. Create 40 with `{"schemaVersion":1,"agents":[{"key":"codex","label":"Team Codex"}]}`. Relaunch or reload and capture the `Team Codex` preset.
+3. Close the GUI. Set 50 to `{"schemaVersion":1,"agents":[{"key":"codex","label":"Personal Codex"}]}`. Relaunch or reload and capture `Personal Codex`.
+4. Close the GUI. Restore the initial 40 absence and empty 50, relaunch and confirm the baseline label.
+5. Close the GUI, restore all backed-up originals and initial absences, and record restoration.
+
+Expected Result:
+
+The absent patch leaves the baseline label; 40 changes it to `Team Codex`; 50 overrides it with `Personal Codex`; removing the test changes returns the baseline label.
+
+Evidence Required:
+
+- `SET-014-*.png` Settings/preset and relevant launcher captures for every stage; target-window identity evidence.
+- `SET-014-*.json` and exact-byte snapshots of the inputs and persisted rows at each stage, including initial absences and failed file bytes where applicable.
+- Relevant warning path/reason captures, project-order or no-project settings evidence where specified, restart/process evidence and a restoration receipt comparing originals and absences.
+
+Pass/Fail Criteria:
+
+PASS requires every listed observable result and safe restoration. PARTIAL means results are correct but evidence is incomplete. FAIL means a wrong label, warning or path, a changed protected snapshot/file, or lost bytes. BLOCKED means unsafe or unavailable preparation, target identification or restoration.
+
+### SET-015: Whole-layer fallback warnings
+
+Status: PENDING - not run. This case needs GUI interaction and fixture files; it was not executed in the documentation phase.
+
+Purpose:
+
+Verify that rejection of either patch retains the accepted lower catalog and identifies the failed file.
+
+Preconditions:
+
+- Inherit the suite's visual and testable-identity rules; verify a fresh disposable identity and disposable projects where required, never a live project. Close the GUI before external JSON edits.
+- Extend the hand-edit boundary only to these disposable projects' `.ac/coding-agents/`. Back up existing 10/40/50 and registered `agents.30.instance.no-git.json` bytes, record initial absence, and restore originals and absences afterward. SET-018's stray instance 40 stays inside the disposable testable identity.
+- Use a valid managed 10 with shipped supported `codex`, label `Codex`, command `codex`, and empty 50 `{"schemaVersion":1,"agents":[]}` plus LF unless a step changes it. Unsafe preparation, target identification or restoration is BLOCKED. Do not launch providers.
+
+Steps:
+
+1. Close the GUI. Write Git conflict markers into 40 and independent valid 50 `{"schemaVersion":1,"agents":[{"key":"codex","label":"Personal Codex"}]}`. Keep managed 10 valid.
+2. Relaunch and capture Settings > Coding Agents: the warning names the 40 path and its reason, and the preset shows `Personal Codex`.
+3. Close the GUI. Write valid 40 `{"schemaVersion":1,"agents":[{"key":"codex","label":"Team Codex"}]}` and malformed JSON into 50. Keep managed 10 valid.
+4. Relaunch and capture the warning naming the 50 path and its reason, with preset label `Team Codex`.
+5. Close the GUI, restore originals and initial absences, and record restoration.
+
+Expected Result:
+
+Rejected 40 leaves valid personal customization usable; rejected 50 leaves the accepted team customization usable. Both warnings identify the affected path and reason. Diagnostic codes `projectInvalid`/`localInvalid` are Rust/report assertions, not required visible GUI text.
+
+Evidence Required:
+
+- `SET-015-*.png` Settings/preset and relevant launcher captures for every stage; target-window identity evidence.
+- `SET-015-*.json` and exact-byte snapshots of the inputs and persisted rows at each stage, including initial absences and failed file bytes where applicable.
+- Relevant warning path/reason captures, project-order or no-project settings evidence where specified, restart/process evidence and a restoration receipt comparing originals and absences.
+
+Pass/Fail Criteria:
+
+PASS requires every listed observable result and safe restoration. PARTIAL means results are correct but evidence is incomplete. FAIL means a wrong label, warning or path, a changed protected snapshot/file, or lost bytes. BLOCKED means unsafe or unavailable preparation, target identification or restoration.
+
+### SET-016: Primary-project scope
+
+Status: PENDING - not run. This case needs GUI interaction and fixture files; it was not executed in the documentation phase.
+
+Purpose:
+
+Verify Settings selects only the primary project patch and never falls back to a secondary patch.
+
+Preconditions:
+
+- Inherit the suite's visual and testable-identity rules; verify a fresh disposable identity and disposable projects where required, never a live project. Close the GUI before external JSON edits.
+- Extend the hand-edit boundary only to these disposable projects' `.ac/coding-agents/`. Back up existing 10/40/50 and registered `agents.30.instance.no-git.json` bytes, record initial absence, and restore originals and absences afterward. SET-018's stray instance 40 stays inside the disposable testable identity.
+- Use a valid managed 10 with shipped supported `codex`, label `Codex`, command `codex`, and empty 50 `{"schemaVersion":1,"agents":[]}` plus LF unless a step changes it. Unsafe preparation, target identification or restoration is BLOCKED. Do not launch providers.
+
+Steps:
+
+1. Register disposable A as primary and B as secondary. Save settings evidence that A is the first nonblank `project_paths` entry (serialized as `projectPaths`). Both projects need valid managed 10 and empty 50.
+2. Close the GUI. Set A40 to `{"schemaVersion":1,"agents":[{"key":"codex","label":"Team A"}]}` and B40 to the same patch with label `Team B`.
+3. Relaunch and open Settings > Coding Agents. Capture `settings.agentPreset.codex` showing `+ Team A`, with no `Team B` preset.
+4. Close the GUI and make A40 malformed. Relaunch to the same panel. Capture the warning naming A40 and its reason, the baseline 10 Codex preset label, and no `Team B`.
+5. Do not click presets or create or launch sessions. Close the GUI, restore both projects' originals and initial absences, and record restoration.
+
+Expected Result:
+
+Settings shows only A customization. Malformed A40 yields a warning at A40 and the baseline label, never B customization. This case proves Settings primary-only selection and fallback; session routing remains Rust-fixture proof.
+
+Evidence Required:
+
+- `SET-016-*.png` Settings/preset and relevant launcher captures for every stage; target-window identity evidence.
+- `SET-016-*.json` and exact-byte snapshots of the inputs and persisted rows at each stage, including initial absences and failed file bytes where applicable.
+- Relevant warning path/reason captures, project-order or no-project settings evidence where specified, restart/process evidence and a restoration receipt comparing originals and absences.
+
+Pass/Fail Criteria:
+
+PASS requires every listed observable result and safe restoration. PARTIAL means results are correct but evidence is incomplete. FAIL means a wrong label, warning or path, a changed protected snapshot/file, or lost bytes. BLOCKED means unsafe or unavailable preparation, target identification or restoration.
+
+### SET-017: Restart and registered snapshot isolation
+
+Status: PENDING - not run. This case needs GUI interaction and fixture files; it was not executed in the documentation phase.
+
+Purpose:
+
+Verify a project patch changes a new registration while the protected old snapshot, row ID and launcher label survive restart. This complements unchanged SET-013.
+
+Preconditions:
+
+- Inherit the suite's visual and testable-identity rules; verify a fresh disposable identity and disposable projects where required, never a live project. Close the GUI before external JSON edits.
+- Extend the hand-edit boundary only to these disposable projects' `.ac/coding-agents/`. Back up existing 10/40/50 and registered `agents.30.instance.no-git.json` bytes, record initial absence, and restore originals and absences afterward. SET-018's stray instance 40 stays inside the disposable testable identity.
+- Use a valid managed 10 with shipped supported `codex`, label `Codex`, command `codex`, and empty 50 `{"schemaVersion":1,"agents":[]}` plus LF unless a step changes it. Unsafe preparation, target identification or restoration is BLOCKED. Do not launch providers.
+- Keep empty 50 bytes exactly `{"schemaVersion":1,"agents":[]}` followed by one LF throughout. Write this single UTF-8 line without BOM and with one trailing LF as the exact primary-project 40 fixture; do not substitute the key, label or command:
+
+```json
+{"schemaVersion":1,"agents":[{"key":"codex","label":"Team Codex","command":"codex --help"}]}
+```
+
+- If the exact supported baseline or fixture cannot be prepared safely, mark BLOCKED and restore. Schema 1 accepts existing-key label/command patches; omitted fields inherit. Support checks key `codex`, independently of command. The save validators reject manual `resume`/`--last`, neither present here. Source inspection and pure JSON/predicate checks establish feasibility only; GUI registration/restart and execution of the 40 parser remain NOT RUN.
+
+Steps:
+
+1. Back up originals. With the GUI closed, prepare absent 40 and empty 50. Relaunch; confirm the baseline Codex preset is available and no registered command starts with `codex`. Otherwise mark BLOCKED and restore. Register `settings.agentPreset.codex`, save Settings and close the GUI. Record persisted 30 bytes and the new row ID, label `Codex` and command `codex`; this is the protected old snapshot.
+2. With the GUI closed, write the exact 40 fixture below. Relaunch. Capture unchanged old row ID/fields and launcher label `Codex`; capture `settings.agentPreset.codex` showing `+ Team Codex` and state `available`. Do not edit or remove the old row.
+3. Click that same Codex preset, save Settings and close the GUI. Record persisted 30: the old row retains every recorded field; a distinct new ID has label `Team Codex` and command `codex --help`. Compare the old row, not full-file byte identity: the full 30 file grows. Confirm exact 40 bytes match the fixture.
+4. Relaunch; capture both stored rows and launcher labels, then close and compare persisted fields/IDs and exact 40 bytes again. The changed preset is now disabled by its newly registered command.
+5. With the GUI closed, restore all backed-up originals and initial absences; record restoration. Never execute either stored command or open a session from either row.
+
+Expected Result:
+
+The old row keeps its ID and fields and launcher label `Codex`. A distinct new row snapshots `Team Codex` and `codex --help`; both survive restart. Exact 40 bytes remain unchanged. The preset is available before the second registration and disabled afterward: `"codex".startsWith("codex --help")` is false, while `"codex --help".startsWith("codex --help")` is true. These commands are storage fixtures only.
+
+Evidence Required:
+
+- `SET-017-*.png` Settings/preset and relevant launcher captures for every stage; target-window identity evidence.
+- `SET-017-*.json` and exact-byte snapshots of the inputs and persisted rows at each stage, including initial absences and failed file bytes where applicable.
+- Relevant warning path/reason captures, project-order or no-project settings evidence where specified, restart/process evidence and a restoration receipt comparing originals and absences.
+
+Pass/Fail Criteria:
+
+PASS requires every listed observable result and safe restoration. PARTIAL means results are correct but evidence is incomplete. FAIL means a wrong label, warning or path, a changed protected snapshot/file, or lost bytes. BLOCKED means unsafe or unavailable preparation, target identification or restoration.
+
+### SET-018: No-project visible exclusion
+
+Status: PENDING - not run. This case needs GUI interaction and fixture files; it was not executed in the documentation phase.
+
+Purpose:
+
+Verify a stray instance 40 does not change the visible catalog when no primary project is active.
+
+Preconditions:
+
+- Inherit the suite's visual and testable-identity rules; verify a fresh disposable identity and disposable projects where required, never a live project. Close the GUI before external JSON edits.
+- Extend the hand-edit boundary only to these disposable projects' `.ac/coding-agents/`. Back up existing 10/40/50 and registered `agents.30.instance.no-git.json` bytes, record initial absence, and restore originals and absences afterward. SET-018's stray instance 40 stays inside the disposable testable identity.
+- Use a valid managed 10 with shipped supported `codex`, label `Codex`, command `codex`, and empty 50 `{"schemaVersion":1,"agents":[]}` plus LF unless a step changes it. Unsafe preparation, target identification or restoration is BLOCKED. Do not launch providers.
+
+Steps:
+
+1. Use the disposable testable identity with no active primary project, a valid managed instance 10 and empty 50. Save no-project settings evidence and capture the baseline catalog.
+2. Close the GUI. Place valid stray 40 `{"schemaVersion":1,"agents":[{"key":"codex","label":"Ignored Project"}]}` only in that identity's catalog directory, inside the disposable testable boundary.
+3. Relaunch or reload and capture the unchanged baseline and absence of `Ignored Project`.
+4. Close the GUI, restore originals and initial absences, and record restoration.
+
+Expected Result:
+
+The visible instance catalog remains the baseline with no `Ignored Project` label. This case proves visible exclusion only; zero filesystem reads of 40 require Rust-fixture proof.
+
+Evidence Required:
+
+- `SET-018-*.png` Settings/preset and relevant launcher captures for every stage; target-window identity evidence.
+- `SET-018-*.json` and exact-byte snapshots of the inputs and persisted rows at each stage, including initial absences and failed file bytes where applicable.
+- Relevant warning path/reason captures, project-order or no-project settings evidence where specified, restart/process evidence and a restoration receipt comparing originals and absences.
+
+Pass/Fail Criteria:
+
+PASS requires every listed observable result and safe restoration. PARTIAL means results are correct but evidence is incomplete. FAIL means a wrong label, warning or path, a changed protected snapshot/file, or lost bytes. BLOCKED means unsafe or unavailable preparation, target identification or restoration.
