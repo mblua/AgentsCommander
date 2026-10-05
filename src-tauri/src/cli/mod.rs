@@ -171,6 +171,10 @@ pub enum Commands {
     TaskSetTitle(task_set_title::TaskSetTitleArgs),
     /// Append text to the body of the room TASK.md (orchestrator-only)
     TaskAppendBody(task_append_body::TaskAppendBodyArgs),
+    /// Read the caller's room task and current status (orchestrator-only)
+    TaskGet(task_append_body::TaskGetArgs),
+    /// Replace the complete room status using a revision and request UUID
+    TaskStatusSet(task_append_body::TaskStatusSetArgs),
     /// Register an existing AC project (.ac must already exist) in settings
     OpenProject(open_project::OpenProjectArgs),
     /// Create an AC project (create `.ac/` Project AC Root if missing) and register it in settings
@@ -441,6 +445,8 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::PurgeWg(args) => purge_wg::execute(args),
         Commands::TaskSetTitle(args) => task_set_title::execute(args),
         Commands::TaskAppendBody(args) => task_append_body::execute(args),
+        Commands::TaskGet(args) => task_append_body::execute_get(args),
+        Commands::TaskStatusSet(args) => task_append_body::execute_status_set(args),
         Commands::OpenProject(args) => open_project::execute(args),
         Commands::NewProject(args) => new_project::execute(args),
         Commands::TelegramSendImage(args) => telegram_send_image::execute(args),

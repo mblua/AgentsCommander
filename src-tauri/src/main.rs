@@ -47,6 +47,8 @@ fn main() {
                                 | agentscommander_lib::cli::Commands::UiBackend(_)
                                 | agentscommander_lib::cli::Commands::UiWait(_)
                                 | agentscommander_lib::cli::Commands::TaskSetTitle(_)
+                                | agentscommander_lib::cli::Commands::TaskGet(_)
+                                | agentscommander_lib::cli::Commands::TaskStatusSet(_)
                                 | agentscommander_lib::cli::Commands::CodingAgent(_)
                                 | agentscommander_lib::cli::Commands::TerminalSnapshot(_)
                         ) {
