@@ -131,14 +131,16 @@ pub(crate) fn tested_level_for(key: &str) -> Option<TestedLevel> {
 
 /// #2736 - the install command for THIS host: the platform key when present,
 /// else `default`. `windows` for target_os = "windows", `macos` for "macos",
-/// `linux` for every other target.
+/// `linux` for "linux"; every other target uses `default`.
 pub(crate) fn resolve_install_command(commands: &InstallCommands) -> &str {
     let os = if cfg!(target_os = "windows") {
         "windows"
     } else if cfg!(target_os = "macos") {
         "macos"
-    } else {
+    } else if cfg!(target_os = "linux") {
         "linux"
+    } else {
+        "unknown"
     };
     install_command_for_os(commands, os)
 }
@@ -5720,28 +5722,20 @@ mod tests {
     /// `embedded_default_matches_current_presets_exactly` so that test stays
     /// under the pinned cognitive complexity threshold of 25.
     fn assert_shipped_install_commands_2736(key: &str, def: &CodingAgentDefinition) {
-        let expected_install = match key {
-            "claude" => Some("npm install -g @anthropic-ai/claude-code"),
-            "codex" => Some("npm install -g @openai/codex"),
-            "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
-            "opencode" => Some("npm install -g opencode-ai"),
-            _ => None,
-        };
-        match expected_install {
-            Some(expected) => {
-                let ic = def
-                    .install_commands
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("{key} must ship installCommands"));
-                assert_eq!(ic.default, expected, "{key} installCommands.default");
-                assert!(
-                    ic.windows.is_none() && ic.macos.is_none() && ic.linux.is_none(),
-                    "{key} must ship no per-OS override"
-                );
-            }
+        match scope_b_expected_commands_2800(key) {
+            Some(expected) => assert_eq!(
+                serde_json::to_value(
+                    def.install_commands
+                        .as_ref()
+                        .expect("matrix row install commands")
+                )
+                .unwrap(),
+                expected,
+                "{key}"
+            ),
             None => assert!(
                 def.install_commands.is_none(),
-                "{key} must ship no installCommands"
+                "{key} excluded from install matrix"
             ),
         }
     }
@@ -5943,10 +5937,8 @@ mod tests {
     /// #2736 - the shipped `installCommands` value for `key`, if any.
     fn expected_install_2736(key: &str) -> Option<&'static str> {
         match key {
-            "claude" => Some("npm install -g @anthropic-ai/claude-code"),
-            "codex" => Some("npm install -g @openai/codex"),
-            "pi" => Some("npm install -g @mariozechner/pi-coding-agent"),
-            "opencode" => Some("npm install -g opencode-ai"),
+            "claude" | "codex" | "hermes" | "cursor" | "pi" | "opencode" | "antigravity"
+            | "grok" => Some("echo No verified installer for this platform 1>&2 && exit 1"),
             _ => None,
         }
     }
@@ -5966,28 +5958,15 @@ mod tests {
     }
 
     #[test]
-    fn install_commands_2736_shipped_for_four_builtins_and_absent_for_the_rest() {
+    fn install_commands_2736_shipped_for_eight_builtins_and_absent_for_muse() {
         let catalog = embedded_default_catalog();
         assert_eq!(catalog.agents.len(), 9);
         for def in &catalog.agents {
-            let key = def.key.as_str();
-            match expected_install_2736(key) {
-                Some(expected) => {
-                    let ic = def
-                        .install_commands
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("{key} must ship installCommands"));
-                    assert_eq!(ic.default, expected, "{key} installCommands.default");
-                    assert!(
-                        ic.windows.is_none() && ic.macos.is_none() && ic.linux.is_none(),
-                        "{key} must ship no per-OS override"
-                    );
-                }
-                None => assert!(
-                    def.install_commands.is_none(),
-                    "{key} must ship no installCommands"
-                ),
-            }
+            assert_shipped_install_commands_2736(&def.key, def);
+            assert_eq!(
+                def.install_commands.as_ref().map(|ic| ic.default.as_str()),
+                expected_install_2736(&def.key)
+            );
         }
         assert_eq!(
             catalog
@@ -5995,7 +5974,7 @@ mod tests {
                 .iter()
                 .filter(|def| def.install_commands.is_some())
                 .count(),
-            4
+            8
         );
     }
 
@@ -6152,9 +6131,11 @@ mod tests {
             .install_commands
             .as_ref()
             .expect("composed");
-        assert_eq!(ic.default, "npm install -g @anthropic-ai/claude-code");
+        assert_eq!(ic.default, expected_install_2736("claude").unwrap());
         assert_eq!(ic.windows.as_deref(), Some("winget install claude"));
-        assert!(ic.macos.is_none() && ic.linux.is_none());
+        let expected = scope_b_expected_commands_2800("claude").unwrap();
+        assert_eq!(ic.macos.as_deref(), expected["macos"].as_str());
+        assert_eq!(ic.linux.as_deref(), expected["linux"].as_str());
     }
 
     #[test]
@@ -6234,7 +6215,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .default,
-                "npm install -g @anthropic-ai/claude-code",
+                expected_install_2736("claude").unwrap(),
                 "{local}: the base entry stays intact"
             );
         }
@@ -6328,7 +6309,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .default,
-            "npm install -g @anthropic-ai/claude-code"
+            expected_install_2736("claude").unwrap()
         );
     }
 
@@ -6405,7 +6386,7 @@ mod tests {
         with_key.insert("key".to_string(), serde_json::json!("claude"));
         with_key.insert(
             "installCommands".to_string(),
-            serde_json::json!({"default": "npm install -g @anthropic-ai/claude-code"}),
+            serde_json::to_value(definition.install_commands.as_ref().unwrap()).unwrap(),
         );
         let mut without_key = serde_json::Map::new();
         without_key.insert("key".to_string(), serde_json::json!("claude"));
@@ -6417,7 +6398,7 @@ mod tests {
             let value = serde_json::to_value(&wire).unwrap();
             assert_eq!(
                 value["installCommands"],
-                serde_json::json!({"default": "npm install -g @anthropic-ai/claude-code"})
+                serde_json::to_value(definition.install_commands.as_ref().unwrap()).unwrap()
             );
         }
         for wire in [
@@ -12413,5 +12394,127 @@ mod tests {
         let object = value.as_object().expect("definition object");
         assert!(!object.contains_key("testedLevel"));
         assert!(!object.contains_key("installed"));
+    }
+
+    const SCOPE_B_EXPECTED_2800: &str = r#####"{"claude":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYwBsAGEAdQBkAGUALgBhAGkALwBpAG4AcwB0AGEAbABsAC4AcABzADEAJwAgAC0AVABpAG0AZQBvAHUAdABTAGUAYwAgADEAMgAwACAALQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AIABTAHQAbwBwADsAIABpAGYAIAAoAFsAcwB0AHIAaQBuAGcAXQA6ADoASQBzAE4AdQBsAGwATwByAFcAaABpAHQAZQBTAHAAYQBjAGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAIAB7ACAAdABoAHIAbwB3ACAAJwBFAG0AcAB0AHkAIABpAG4AcwB0AGEAbABsAGUAcgAgAHIAZQBzAHAAbwBuAHMAZQAnACAAfQA7ACAAJABhAGMAXwBwAGEAdABoAD0ASgBvAGkAbgAtAFAAYQB0AGgAIAAoAFsASQBPAC4AUABhAHQAaABdADoAOgBHAGUAdABUAGUAbQBwAFAAYQB0AGgAKAApACkAIAAoACcAYQBjAC0AaQBuAHMAdABhAGwAbAAtADIANwA4ADcALQAnACsAWwBHAHUAaQBkAF0AOgA6AE4AZQB3AEcAdQBpAGQAKAApAC4AVABvAFMAdAByAGkAbgBnACgAJwBOACcAKQArACcALgBwAHMAMQAnACkAOwAgACQAYQBjAF8AZgBpAGwAZQA9AFsASQBPAC4ARgBpAGwAZQBdADoAOgBPAHAAZQBuACgAJABhAGMAXwBwAGEAdABoACwAWwBJAE8ALgBGAGkAbABlAE0AbwBkAGUAXQA6ADoAQwByAGUAYQB0AGUATgBlAHcALABbAEkATwAuAEYAaQBsAGUAQQBjAGMAZQBzAHMAXQA6ADoAVwByAGkAdABlACwAWwBJAE8ALgBGAGkAbABlAFMAaABhAHIAZQBdADoAOgBOAG8AbgBlACkAOwAgACQAYQBjAF8AYwByAGUAYQB0AGUAZAA9ACQAdAByAHUAZQA7ACAAdAByAHkAIAB7ACAAWwBiAHkAdABlAFsAXQBdACQAYQBjAF8AYgB5AHQAZQBzAD0AWwBUAGUAeAB0AC4ARQBuAGMAbwBkAGkAbgBnAF0AOgA6AFUAVABGADgALgBHAGUAdABQAHIAZQBhAG0AYgBsAGUAKAApACsAWwBUAGUAeAB0AC4ARQBuAGMAbwBkAGkAbgBnAF0AOgA6AFUAVABGADgALgBHAGUAdABCAHkAdABlAHMAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApADsAIAAkAGEAYwBfAGYAaQBsAGUALgBXAHIAaQB0AGUAKAAkAGEAYwBfAGIAeQB0AGUAcwAsADAALAAkAGEAYwBfAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAIAB9ACAAZgBpAG4AYQBsAGwAeQAgAHsAIAAkAGEAYwBfAGYAaQBsAGUALgBEAGkAcwBwAG8AcwBlACgAKQAgAH0AOwAgACQAZwBsAG8AYgBhAGwAOgBMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA9ACQAbgB1AGwAbAA7ACAAJgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAFAAUwBIAE8ATQBFACAAJwBwAG8AdwBlAHIAcwBoAGUAbABsAC4AZQB4AGUAJwApACAALQBOAG8AUAByAG8AZgBpAGwAZQAgAC0ATgBvAG4ASQBuAHQAZQByAGEAYwB0AGkAdgBlACAALQBFAHgAZQBjAHUAdABpAG8AbgBQAG8AbABpAGMAeQAgAEIAeQBwAGEAcwBzACAALQBGAGkAbABlACAAJABhAGMAXwBwAGEAdABoADsAIAAkAGEAYwBfAGUAeABpAHQAPQAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFADsAIABpAGYAIAAoACQAbgB1AGwAbAAgAC0AZQBxACAAJABhAGMAXwBlAHgAaQB0ACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAaQBmACAAKAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAKQAgAHsAIAB0AHIAeQAgAHsAIABSAGUAbQBvAHYAZQAtAEkAdABlAG0AIAAtAEwAaQB0AGUAcgBhAGwAUABhAHQAaAAgACQAYQBjAF8AcABhAHQAaAAgAC0ARgBvAHIAYwBlACAALQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AIABTAHQAbwBwACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAaQBmACAAKAAkAGEAYwBfAGUAeABpAHQAIAAtAGUAcQAgADAAKQAgAHsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAH0AIAB9ACAAfQA7ACAAZQB4AGkAdAAgACQAYQBjAF8AZQB4AGkAdAA=","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://claude.ai/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://claude.ai/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"},"codex":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYwBoAGEAdABnAHAAdAAuAGMAbwBtAC8AYwBvAGQAZQB4AC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAA7ACAAJABhAGMAXwBlAHgAaQB0AD0AJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA7ACAAaQBmACAAKAAkAG4AdQBsAGwAIAAtAGUAcQAgACQAYQBjAF8AZQB4AGkAdAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgAGkAZgAgACgAJABhAGMAXwBjAHIAZQBhAHQAZQBkACkAIAB7ACAAdAByAHkAIAB7ACAAUgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGEAYwBfAHAAYQB0AGgAIAAtAEYAbwByAGMAZQAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGkAZgAgACgAJABhAGMAXwBlAHgAaQB0ACAALQBlAHEAIAAwACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAfQAgAH0AOwAgAGUAeABpAHQAIAAkAGEAYwBfAGUAeABpAHQA","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://chatgpt.com/codex/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | sh","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://chatgpt.com/codex/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | sh","default":"echo No verified installer for this platform 1>&2 && exit 1"},"hermes":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AaABlAHIAbQBlAHMALQBhAGcAZQBuAHQALgBuAG8AdQBzAHIAZQBzAGUAYQByAGMAaAAuAGMAbwBtAC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAAgAC0ATgBvAG4ASQBuAHQAZQByAGEAYwB0AGkAdgBlADsAIAAkAGEAYwBfAGUAeABpAHQAPQAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFADsAIABpAGYAIAAoACQAbgB1AGwAbAAgAC0AZQBxACAAJABhAGMAXwBlAHgAaQB0ACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAaQBmACAAKAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAKQAgAHsAIAB0AHIAeQAgAHsAIABSAGUAbQBvAHYAZQAtAEkAdABlAG0AIAAtAEwAaQB0AGUAcgBhAGwAUABhAHQAaAAgACQAYQBjAF8AcABhAHQAaAAgAC0ARgBvAHIAYwBlACAALQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AIABTAHQAbwBwACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAaQBmACAAKAAkAGEAYwBfAGUAeABpAHQAIAAtAGUAcQAgADAAKQAgAHsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAH0AIAB9ACAAfQA7ACAAZQB4AGkAdAAgACQAYQBjAF8AZQB4AGkAdAA=","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://hermes-agent.nousresearch.com/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash -s -- --non-interactive","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://hermes-agent.nousresearch.com/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash -s -- --non-interactive","default":"echo No verified installer for this platform 1>&2 && exit 1"},"cursor":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYwB1AHIAcwBvAHIALgBjAG8AbQAvAGkAbgBzAHQAYQBsAGwAPwB3AGkAbgAzADIAPQB0AHIAdQBlACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAA7ACAAJABhAGMAXwBlAHgAaQB0AD0AJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA7ACAAaQBmACAAKAAkAG4AdQBsAGwAIAAtAGUAcQAgACQAYQBjAF8AZQB4AGkAdAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgAGkAZgAgACgAJABhAGMAXwBjAHIAZQBhAHQAZQBkACkAIAB7ACAAdAByAHkAIAB7ACAAUgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGEAYwBfAHAAYQB0AGgAIAAtAEYAbwByAGMAZQAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGkAZgAgACgAJABhAGMAXwBlAHgAaQB0ACAALQBlAHEAIAAwACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAfQAgAH0AOwAgAGUAeABpAHQAIAAkAGEAYwBfAGUAeABpAHQA","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://cursor.com/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://cursor.com/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"},"pi":{"windows":"npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent","macos":"npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent","linux":"npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent","default":"echo No verified installer for this platform 1>&2 && exit 1"},"opencode":{"windows":"npm install -g --ignore-scripts=false --include=optional --allow-scripts=opencode-ai opencode-ai","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://opencode.ai/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://opencode.ai/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"},"antigravity":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYQBuAHQAaQBnAHIAYQB2AGkAdAB5AC4AZwBvAG8AZwBsAGUALwBjAGwAaQAvAGkAbgBzAHQAYQBsAGwALgBwAHMAMQAnACAALQBUAGkAbQBlAG8AdQB0AFMAZQBjACAAMQAyADAAIAAtAEUAcgByAG8AcgBBAGMAdABpAG8AbgAgAFMAdABvAHAAOwAgAGkAZgAgACgAWwBzAHQAcgBpAG4AZwBdADoAOgBJAHMATgB1AGwAbABPAHIAVwBoAGkAdABlAFMAcABhAGMAZQAoACQAYQBjAF8AaQBuAHMAdABhAGwAbABfAHMAYwByAGkAcAB0ACkAKQAgAHsAIAB0AGgAcgBvAHcAIAAnAEUAbQBwAHQAeQAgAGkAbgBzAHQAYQBsAGwAZQByACAAcgBlAHMAcABvAG4AcwBlACcAIAB9ADsAIAAkAGEAYwBfAHAAYQB0AGgAPQBKAG8AaQBuAC0AUABhAHQAaAAgACgAWwBJAE8ALgBQAGEAdABoAF0AOgA6AEcAZQB0AFQAZQBtAHAAUABhAHQAaAAoACkAKQAgACgAJwBhAGMALQBpAG4AcwB0AGEAbABsAC0AMgA3ADgANwAtACcAKwBbAEcAdQBpAGQAXQA6ADoATgBlAHcARwB1AGkAZAAoACkALgBUAG8AUwB0AHIAaQBuAGcAKAAnAE4AJwApACsAJwAuAHAAcwAxACcAKQA7ACAAJABhAGMAXwBmAGkAbABlAD0AWwBJAE8ALgBGAGkAbABlAF0AOgA6AE8AcABlAG4AKAAkAGEAYwBfAHAAYQB0AGgALABbAEkATwAuAEYAaQBsAGUATQBvAGQAZQBdADoAOgBDAHIAZQBhAHQAZQBOAGUAdwAsAFsASQBPAC4ARgBpAGwAZQBBAGMAYwBlAHMAcwBdADoAOgBXAHIAaQB0AGUALABbAEkATwAuAEYAaQBsAGUAUwBoAGEAcgBlAF0AOgA6AE4AbwBuAGUAKQA7ACAAJABhAGMAXwBjAHIAZQBhAHQAZQBkAD0AJAB0AHIAdQBlADsAIAB0AHIAeQAgAHsAIABbAGIAeQB0AGUAWwBdAF0AJABhAGMAXwBiAHkAdABlAHMAPQBbAFQAZQB4AHQALgBFAG4AYwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAuAEcAZQB0AFAAcgBlAGEAbQBiAGwAZQAoACkAKwBbAFQAZQB4AHQALgBFAG4AYwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAuAEcAZQB0AEIAeQB0AGUAcwAoACQAYQBjAF8AaQBuAHMAdABhAGwAbABfAHMAYwByAGkAcAB0ACkAOwAgACQAYQBjAF8AZgBpAGwAZQAuAFcAcgBpAHQAZQAoACQAYQBjAF8AYgB5AHQAZQBzACwAMAAsACQAYQBjAF8AYgB5AHQAZQBzAC4ATABlAG4AZwB0AGgAKQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgACQAYQBjAF8AZgBpAGwAZQAuAEQAaQBzAHAAbwBzAGUAKAApACAAfQA7ACAAJABnAGwAbwBiAGEAbAA6AEwAQQBTAFQARQBYAEkAVABDAE8ARABFAD0AJABuAHUAbABsADsAIAAmACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAUABTAEgATwBNAEUAIAAnAHAAbwB3AGUAcgBzAGgAZQBsAGwALgBlAHgAZQAnACkAIAAtAE4AbwBQAHIAbwBmAGkAbABlACAALQBOAG8AbgBJAG4AdABlAHIAYQBjAHQAaQB2AGUAIAAtAEUAeABlAGMAdQB0AGkAbwBuAFAAbwBsAGkAYwB5ACAAQgB5AHAAYQBzAHMAIAAtAEYAaQBsAGUAIAAkAGEAYwBfAHAAYQB0AGgAOwAgACQAYQBjAF8AZQB4AGkAdAA9ACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAOwAgAGkAZgAgACgAJABuAHUAbABsACAALQBlAHEAIAAkAGEAYwBfAGUAeABpAHQAKQAgAHsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAZgBpAG4AYQBsAGwAeQAgAHsAIABpAGYAIAAoACQAYQBjAF8AYwByAGUAYQB0AGUAZAApACAAewAgAHQAcgB5ACAAewAgAFIAZQBtAG8AdgBlAC0ASQB0AGUAbQAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAJABhAGMAXwBwAGEAdABoACAALQBGAG8AcgBjAGUAIAAtAEUAcgByAG8AcgBBAGMAdABpAG8AbgAgAFMAdABvAHAAIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIABpAGYAIAAoACQAYQBjAF8AZQB4AGkAdAAgAC0AZQBxACAAMAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAH0AIAB9ADsAIABlAHgAaQB0ACAAJABhAGMAXwBlAHgAaQB0AA==","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://antigravity.google/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://antigravity.google/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"},"grok":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AeAAuAGEAaQAvAGMAbABpAC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAA7ACAAJABhAGMAXwBlAHgAaQB0AD0AJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA7ACAAaQBmACAAKAAkAG4AdQBsAGwAIAAtAGUAcQAgACQAYQBjAF8AZQB4AGkAdAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgAGkAZgAgACgAJABhAGMAXwBjAHIAZQBhAHQAZQBkACkAIAB7ACAAdAByAHkAIAB7ACAAUgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGEAYwBfAHAAYQB0AGgAIAAtAEYAbwByAGMAZQAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGkAZgAgACgAJABhAGMAXwBlAHgAaQB0ACAALQBlAHEAIAAwACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAfQAgAH0AOwAgAGUAeABpAHQAIAAkAGEAYwBfAGUAeABpAHQA","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://x.ai/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://x.ai/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"}}"#####;
+    const SCOPE_B_NON_INSTALL_MAIN_2800: &str = r#####"{"schemaVersion":1,"agents":[{"key":"claude","label":"Claude Code","description":"Coding Agent by Anthropic","color":"#d97706","command":"claude","instructionsFilename":"CLAUDE.md","envs":[],"isolatedHome":false,"configSeed":{"enabled":true,"dest":".claude"},"removable":true,"updateCommands":["claude --update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"codex","label":"Codex","description":"Coding Agent by OpenAI","color":"#10b981","command":"codex","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"configSeed":{"enabled":true,"dest":".codex"},"removable":true,"updateCommands":["codex update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"hermes","label":"Hermes","description":"Coding Agent by Nous Research","color":"#8b5cf6","command":"hermes","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["hermes update --yes"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"cursor","label":"Cursor CLI","description":"Coding Agent by Cursor","color":"#22d3ee","command":"agent","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"pi","label":"Pi","description":"Coding Agent by Earendil Inc","color":"#ec4899","command":"pi","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["pi update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"opencode","label":"OpenCode","description":"Open-source terminal coding agent by Anomaly","color":"#64748b","command":"opencode","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"configSeed":{"enabled":true,"dest":".opencode"},"removable":true,"updateCommands":["opencode upgrade"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"antigravity","label":"Antigravity","description":"Coding Agent by Google","color":"#4285F4","command":"agy","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["agy update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"grok","label":"Grok Build","description":"Coding Agent by SpaceXAI","color":"#64748b","command":"grok","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"muse","label":"Muse Code","description":"Meta terminal coding agent (beta; macOS/Linux host only)","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false,"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}}]}"#####;
+
+    fn scope_b_expected_commands_2800(key: &str) -> Option<serde_json::Value> {
+        let expected: serde_json::Value = serde_json::from_str(SCOPE_B_EXPECTED_2800).unwrap();
+        expected.get(key).cloned()
+    }
+
+    #[test]
+    fn scope_b_catalog_2800_exact_32_cells() {
+        let expected: serde_json::Value = serde_json::from_str(SCOPE_B_EXPECTED_2800).unwrap();
+        let actual: serde_json::Value =
+            serde_json::from_str(EMBEDDED_DEFAULT_CATALOG_JSON).unwrap();
+        assert_eq!(expected.as_object().unwrap().len(), 8);
+        let mut cells = 0;
+        for (key, commands) in expected.as_object().unwrap() {
+            let row = actual["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["key"] == key.as_str())
+                .unwrap();
+            assert_eq!(row["installCommands"], *commands, "{key}");
+            assert_eq!(commands.as_object().unwrap().len(), 4);
+            for os in ["windows", "macos", "linux", "default"] {
+                assert!(!commands[os].as_str().unwrap().is_empty());
+                cells += 1;
+            }
+            let definition = embedded_default_catalog()
+                .agents
+                .into_iter()
+                .find(|row| row.key == *key)
+                .unwrap();
+            let typed = definition.install_commands.unwrap();
+            for os in ["windows", "macos", "linux", "default"] {
+                assert_eq!(
+                    install_command_for_os(&typed, os),
+                    commands[os].as_str().unwrap()
+                );
+            }
+        }
+        assert_eq!(cells, 32);
+        embedded_default_matches_current_presets_exactly();
+        install_commands_2736_shipped_for_eight_builtins_and_absent_for_muse();
+    }
+
+    #[test]
+    fn scope_b_catalog_2800_non_install_fields_unchanged() {
+        let expected: serde_json::Value =
+            serde_json::from_str(SCOPE_B_NON_INSTALL_MAIN_2800).unwrap();
+        let mut actual: serde_json::Value =
+            serde_json::from_str(EMBEDDED_DEFAULT_CATALOG_JSON).unwrap();
+        for row in actual["agents"].as_array_mut().unwrap() {
+            row.as_object_mut().unwrap().remove("installCommands");
+        }
+        assert_eq!(
+            actual, expected,
+            "pinned main fields/schema/order/ninth row"
+        );
+    }
+
+    #[test]
+    fn scope_b_catalog_2800_unknown_os_and_missing_override_use_default() {
+        let mut commands = InstallCommands {
+            default: "default sentinel".to_string(),
+            windows: Some("windows sentinel".to_string()),
+            macos: Some("macos sentinel".to_string()),
+            linux: Some("linux sentinel".to_string()),
+        };
+        for unknown in ["unknown", "freebsd", "android", ""] {
+            assert_eq!(
+                install_command_for_os(&commands, unknown),
+                "default sentinel"
+            );
+        }
+        commands.windows = None;
+        commands.macos = None;
+        commands.linux = None;
+        for os in ["windows", "macos", "linux"] {
+            assert_eq!(install_command_for_os(&commands, os), "default sentinel");
+        }
+    }
+
+    #[test]
+    fn scope_b_catalog_2800_host_selector_matches_supported_cfg() {
+        let commands = InstallCommands {
+            default: "default sentinel".to_string(),
+            windows: Some("windows sentinel".to_string()),
+            macos: Some("macos sentinel".to_string()),
+            linux: Some("linux sentinel".to_string()),
+        };
+        let expected = if cfg!(target_os = "windows") {
+            "windows sentinel"
+        } else if cfg!(target_os = "macos") {
+            "macos sentinel"
+        } else if cfg!(target_os = "linux") {
+            "linux sentinel"
+        } else {
+            "default sentinel"
+        };
+        assert_eq!(resolve_install_command(&commands), expected);
+    }
+
+    #[test]
+    fn scope_b_catalog_2800_project_and_personal_composition_preserved() {
+        // Reuse the exact existing main regressions; no copied implementation/harness.
+        project_absence_preserves_direct_report_and_catalog();
+        project_then_personal_merges_fields_nulls_and_exact_order();
+        install_commands_2736_local_layer_patches_windows_and_inherits_default();
+        install_commands_2736_one_bad_local_value_discards_the_entire_local_layer();
+        install_commands_2736_managed_base_refreshes_from_the_previous_revision();
+        install_commands_2736_pin_wire_keeps_presence_semantics();
+    }
+
+    #[test]
+    fn scope_b_catalog_2800_malformed_project_and_muse_policy_preserved() {
+        project_invalid_schema_preserves_base_and_independent_personal();
+        project_rejection_has_no_donor_and_personal_rejection_keeps_project();
+        project_ownership_support_and_unavailable_base_contract();
+        builtin_agent_support_ships_only_muse_disabled();
     }
 }

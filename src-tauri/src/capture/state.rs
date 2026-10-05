@@ -1405,16 +1405,17 @@ mod tests {
         let started = Instant::now();
         let outcome = commit_effect(&root, &slot, seq, &key, &pre);
         let elapsed = started.elapsed();
+        let snapshot_age = pre.observed_at.elapsed();
         holder.join().expect("holder");
 
         assert_eq!(outcome, Err(AbstainReason::LockBusy));
         assert!(
             elapsed <= LOCK_WAIT_BUDGET + Duration::from_millis(150),
-            "gave up after {elapsed:?}"
+            "gave up after {elapsed:?}, snapshot age {snapshot_age:?}"
         );
         assert!(
-            pre.observed_at.elapsed() < STALE_PRECONDITIONS + Duration::from_millis(150),
-            "the snapshot was still fresh when the call gave up"
+            snapshot_age < STALE_PRECONDITIONS + Duration::from_millis(150),
+            "the snapshot was still fresh when the call gave up: age {snapshot_age:?}, elapsed {elapsed:?}"
         );
         assert_eq!(budget(&root), BUDGET_CAP);
         assert_eq!(watermark(&root, &file), None);

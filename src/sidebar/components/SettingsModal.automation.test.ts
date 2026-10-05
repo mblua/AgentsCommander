@@ -18,6 +18,8 @@ import {
   CLAUDE_WEEKLY_QUOTA_REGEX,
   CODEX_WEEKLY_QUOTA_REGEX,
   PI_CONTEXT_REGEX,
+  ANTIGRAVITY_CONTEXT_REGEX,
+  ANTIGRAVITY_WEEKLY_QUOTA_REGEX,
 } from "../../shared/profile-utils";
 import { registerShortcuts, unregisterShortcuts } from "../../shared/shortcuts";
 import {
@@ -5018,6 +5020,79 @@ describe("SettingsModal weekly quota pattern (#2482)", () => {
     const { newId, store, wire } = await savedWithNewId();
     expect(store[newId]).toEqual(CODEX_SEED);
     expect(wire[newId]).toStrictEqual(CODEX_SEED);
+    dispose();
+  });
+
+
+  const context = (row = 0) => byTestId<HTMLInputElement>("settings.agentRow." + row + ".contextRegex");
+  const agySnapshot = (custom = false) => settings({
+    agents: [
+      { ...QUOTA_AGENTS[0], command: "agy", contextRegex: custom ? "CUSTOM CONTEXT" : "" },
+      { ...QUOTA_AGENTS[1], contextRegex: "SIBLING CONTEXT" },
+    ],
+    quotaSources: {
+      ...(custom ? { a1: { kind: "screenRegexRemaining" as const, pattern: "CUSTOM QUOTA" } } : {}),
+      b2: { kind: "screenRegex", pattern: "SIBLING QUOTA" },
+    },
+  });
+
+  it("Antigravity suggestions remain placeholders through opening and save", async () => {
+    const dispose = await mountQuota(agySnapshot());
+    expect(context().value).toBe("");
+    expect(context().placeholder).toBe(ANTIGRAVITY_CONTEXT_REGEX);
+    expect(field().value).toBe("");
+    expect(field().placeholder).toBe(ANTIGRAVITY_WEEKLY_QUOTA_REGEX);
+    expect(byTestId("settings.agentRow.0.contextRegex.suggest")).toBeTruthy();
+    expect(suggestButton()).not.toBeNull();
+    const saved = await saveAndReadDraft();
+    expect(saved?.agents[0].contextRegex ?? "").toBe("");
+    expect(saved?.quotaSources?.a1).toBeUndefined();
+    expect(saved?.quotaSources?.b2).toEqual({ kind: "screenRegex", pattern: "SIBLING QUOTA" });
+    dispose();
+  });
+
+  it.each(["context", "quota"])("Antigravity %s click replaces only its selected field", async (target) => {
+    const dispose = await mountQuota(agySnapshot(true));
+    await typeInto(commandField(0), "cmd /C antigravity.exe --flag");
+    expect(context().value).toBe("CUSTOM CONTEXT");
+    expect(field().value).toBe("CUSTOM QUOTA");
+    const before = await saveAndReadDraft();
+    expect(before?.agents[0].contextRegex).toBe("CUSTOM CONTEXT");
+    expect(before?.quotaSources?.a1).toEqual({ kind: "screenRegexRemaining", pattern: "CUSTOM QUOTA" });
+    vi.mocked(SettingsAPI.saveDraft).mockClear();
+    if (target === "context") byTestId<HTMLButtonElement>("settings.agentRow.0.contextRegex.suggest").click();
+    else suggestButton()!.click();
+    await settle();
+    const saved = await saveAndReadDraft();
+    expect(saved?.agents[0].contextRegex).toBe(target === "context" ? ANTIGRAVITY_CONTEXT_REGEX : "CUSTOM CONTEXT");
+    expect(saved?.quotaSources?.a1).toEqual(target === "quota"
+      ? { kind: "screenRegex", pattern: ANTIGRAVITY_WEEKLY_QUOTA_REGEX }
+      : { kind: "screenRegexRemaining", pattern: "CUSTOM QUOTA" });
+    if (target === "quota") {
+      expect(saved?.quotaSources?.a1).toEqual({ kind: "screenRegex", pattern: String.raw`(?:^|[ |])[Ww]eekly (\d{1,3})% used` });
+    }
+    expect(saved?.agents[1].contextRegex).toBe("SIBLING CONTEXT");
+    expect(saved?.quotaSources?.b2).toEqual({ kind: "screenRegex", pattern: "SIBLING QUOTA" });
+    dispose();
+  });
+
+  it.each(["catalog", "custom"])("new Antigravity %s entries never seed indicators", async (path) => {
+    const dispose = await mountCreation();
+    if (path === "catalog") {
+      byTestId<HTMLButtonElement>("settings.agentPreset.antigravity").click();
+      await settle();
+    } else {
+      await addManual();
+      await typeInto(commandField(), "agy");
+      await typeInto(commandField(), "cmd /C antigravity");
+    }
+    expect(context(1).value).toBe("");
+    expect(field(1).value).toBe("");
+    expect(field(1).placeholder).toBe(ANTIGRAVITY_WEEKLY_QUOTA_REGEX);
+    const saved = await saveAndReadDraft();
+    const id = saved!.agents[1].id;
+    expect(saved?.agents[1].contextRegex ?? "").toBe("");
+    expect(saved?.quotaSources?.[id]).toBeUndefined();
     dispose();
   });
 });

@@ -956,6 +956,8 @@ pub(crate) mod load_probe_harness {
     /// `via-<command>`, so the resolved agent id names the descriptor read.
     pub(crate) fn snapshot_settings() -> crate::config::settings::AppSettings {
         let agent = |command: &str| crate::config::settings::AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: format!("via-{command}"),
             label: format!("label-{command}"),
             command: command.to_string(),

@@ -4818,6 +4818,8 @@ mod tests {
     fn settings_with_single_agent() -> AppSettings {
         AppSettings {
             agents: vec![AgentConfig {
+                preflight: None,
+                preflight_timeout_seconds: None,
                 id: "agent-0".to_string(),
                 label: "Codex".to_string(),
                 command: "codex".to_string(),
@@ -6783,6 +6785,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: String::new(),
                     env: BTreeMap::from([("AGENTSCOMMANDER_ROOT".to_string(), "bad".to_string())]),
@@ -6819,6 +6823,8 @@ mod tests {
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "codex --current-profile".to_string(),
                     env: BTreeMap::new(),
@@ -6844,6 +6850,8 @@ mod tests {
             .insert(
                 "C".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "codex --draft-profile".to_string(),
                     env: BTreeMap::from([("AGENTSCOMMANDER_TOKEN".to_string(), "bad".to_string())]),
@@ -6957,6 +6965,8 @@ mod tests {
 
     fn agent_with_order(id: &str, order: Option<u32>) -> AgentConfig {
         AgentConfig {
+            preflight: None,
+            preflight_timeout_seconds: None,
             id: id.to_string(),
             label: format!("{id}-label"),
             command: format!("{id}-cmd"),
@@ -8132,6 +8142,8 @@ mod tests {
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
+                    preflight: None,
+                    preflight_timeout_seconds: None,
                     enabled: true,
                     command: "codex --current-profile".to_string(),
                     env: BTreeMap::new(),
