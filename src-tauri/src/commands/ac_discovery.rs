@@ -494,11 +494,21 @@ struct StatSentinel {
     mtime: Option<SystemTime>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct TaskSentinels {
+    task: Option<StatSentinel>,
+    status: Option<StatSentinel>,
+    journal: bool,
+}
+
 #[derive(Clone)]
 struct TaskCacheEntry {
-    sentinel: Option<StatSentinel>,
+    sentinel: TaskSentinels,
     task: Option<String>,
     task_title: Option<String>,
+    status: Option<String>,
+    revision: String,
+    tail_incomplete: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -513,6 +523,159 @@ struct TaskUpdatedPayload {
     // on PR #304: normalize both emitters to explicit-null.
     task_title: Option<String>,
     session_ids: Vec<String>,
+    status: Option<String>,
+    revision: String,
+    tail_incomplete: bool,
+}
+
+fn validate_snapshot_room(raw: &str, projects: &[String]) -> Result<PathBuf, String> {
+    let canonical =
+        std::fs::canonicalize(raw).map_err(|error| format!("invalid room root: {error}"))?;
+    let room_name = canonical.file_name().and_then(|name| name.to_str());
+    let workspace_name = canonical
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str());
+    if !canonical.is_dir()
+        || !room_name.is_some_and(crate::config::entity_prefix::has_entity_prefix)
+        || !workspace_name.is_some_and(crate::config::ac_root::is_ac_root_name)
+    {
+        return Err(
+            "room root must be a room-* or wg-* directory directly under an AC workspace".into(),
+        );
+    }
+    let configured = projects
+        .iter()
+        .filter_map(|project| std::fs::canonicalize(project).ok())
+        .any(|project| canonical.starts_with(project));
+    if !configured {
+        return Err("room root is outside configured project paths".into());
+    }
+    Ok(PathBuf::from(raw))
+}
+
+/// Shared Tauri/WS admission and bounded snapshot reader. All guards are dropped
+/// before path IO, storage locking or recovery on the blocking worker.
+pub(crate) async fn task_snapshot_inner(
+    manager: &Arc<tokio::sync::RwLock<SessionManager>>,
+    settings: &SettingsState,
+    session_id: Option<&str>,
+    workgroup_root: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let (cwd, raw, projects) = match (session_id, workgroup_root) {
+        (Some(id), None) => {
+            let uuid =
+                Uuid::parse_str(id).map_err(|error| format!("invalid session id: {error}"))?;
+            let manager = manager.read().await.clone();
+            let session = manager
+                .get_session(uuid)
+                .await
+                .ok_or_else(|| "session not found".to_string())?;
+            (Some(session.working_directory), None, Vec::new())
+        }
+        (None, Some(raw)) => {
+            let projects = settings.read().await.project_paths.clone();
+            (None, Some(raw.to_owned()), projects)
+        }
+        _ => return Err("exactly one sessionId or workgroupRoot is required".into()),
+    };
+    tokio::task::spawn_blocking(move || {
+        let root = match cwd {
+            Some(cwd) => crate::session::session::find_workgroup_task_path_for_cwd(&cwd)
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+                .ok_or_else(|| "session is outside a room".to_string())?,
+            None => validate_snapshot_room(raw.as_deref().ok_or("missing room root")?, &projects)?,
+        };
+        crate::commands::entity_creation::read_room_task_snapshot_json(&root)
+    })
+    .await
+    .map_err(|error| format!("snapshot worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn task_get_snapshot(
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    settings: State<'_, SettingsState>,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    task_snapshot_inner(&session_mgr, &settings, Some(&session_id), None).await
+}
+
+#[tauri::command]
+pub async fn task_get_snapshot_at(
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    settings: State<'_, SettingsState>,
+    workgroup_root: String,
+) -> Result<serde_json::Value, String> {
+    task_snapshot_inner(&session_mgr, &settings, None, Some(&workgroup_root)).await
+}
+
+fn task_sentinels(root: &Path) -> Result<TaskSentinels, String> {
+    let stat = |name| match std::fs::metadata(root.join(name)) {
+        Ok(metadata) => Ok(Some(StatSentinel {
+            len: metadata.len(),
+            mtime: metadata.modified().ok(),
+        })),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("snapshot sentinel read failed: {error}")),
+    };
+    Ok(TaskSentinels {
+        task: stat("TASK.md")?,
+        status: stat("TASK-status.jsonl")?,
+        journal: stat("TASK-clean.pending.json")?.is_some(),
+    })
+}
+
+fn poll_task_snapshot(
+    root: &Path,
+    previous: Option<TaskSentinels>,
+) -> Result<Option<TaskCacheEntry>, String> {
+    let before = task_sentinels(root)?;
+    if !before.journal && previous.as_ref() == Some(&before) {
+        return Ok(None);
+    }
+    let value = crate::commands::entity_creation::read_room_task_snapshot_json(root)?;
+    let after = task_sentinels(root)?;
+    if before != after {
+        return Ok(None);
+    }
+    let task: Option<String> =
+        serde_json::from_value(value["task"].clone()).map_err(|error| error.to_string())?;
+    Ok(Some(TaskCacheEntry {
+        sentinel: after,
+        task: task.as_deref().and_then(extract_task_first_line),
+        task_title: serde_json::from_value(value["taskTitle"].clone())
+            .map_err(|error| error.to_string())?,
+        status: serde_json::from_value(value["status"].clone())
+            .map_err(|error| error.to_string())?,
+        revision: value["revision"]
+            .as_str()
+            .ok_or("snapshot revision missing")?
+            .to_owned(),
+        tail_incomplete: value["tailIncomplete"]
+            .as_bool()
+            .ok_or("snapshot tail flag missing")?,
+    }))
+}
+
+/// The caller commits the returned cache only on success. Failed emission leaves
+/// the old sentinels intact, so an unchanged-stat next pass retries delivery.
+fn deliver_poll_task(
+    previous: Option<&TaskCacheEntry>,
+    next: TaskCacheEntry,
+    emit: impl FnOnce(&TaskCacheEntry) -> Result<(), String>,
+) -> Result<TaskCacheEntry, String> {
+    let changed = previous.is_none_or(|old| {
+        old.task != next.task
+            || old.task_title != next.task_title
+            || old.status != next.status
+            || old.revision != next.revision
+            || old.tail_incomplete != next.tail_incomplete
+    });
+    if changed {
+        emit(&next)?;
+    }
+    Ok(next)
 }
 
 pub struct DiscoveryBranchWatcher {
@@ -925,7 +1088,7 @@ impl DiscoveryBranchWatcher {
             cfg.archived_project_paths.clone()
         };
         let sessions: Vec<(Uuid, String)> = {
-            let mgr = self.session_manager.read().await;
+            let mgr = self.session_manager.read().await.clone();
             mgr.get_sessions_working_dirs().await
         };
         let sessions = if archived.is_empty() {
@@ -964,103 +1127,53 @@ impl DiscoveryBranchWatcher {
     /// stat-change, reads (with size cap), re-stats (defends against torn
     /// in-place editor saves), and emits if content actually changed.
     async fn check_workgroup_task(&self, wg_root: PathBuf, session_ids: Vec<Uuid>) {
-        let task_path = wg_root.join("TASK.md");
-
-        let now_sentinel = std::fs::metadata(&task_path).ok().map(|m| StatSentinel {
-            len: m.len(),
-            mtime: m.modified().ok(),
-        });
-
-        // Mutex held only for the duration of the get; released before any I/O.
-        // CRITICAL: never hold std::sync::Mutex across an .await — it's not
-        // tokio-aware and would deadlock under load.
-        let prev = self.task_cache.lock().unwrap().get(&wg_root).cloned();
-
-        // Stat-equality short-circuit — the steady-state path. Cost: one
-        // metadata() call per wg per tick when nothing has changed.
-        if let Some(ref prev_entry) = prev {
-            if prev_entry.sentinel == now_sentinel {
+        let previous = self.task_cache.lock().unwrap().get(&wg_root).cloned();
+        let sentinel = previous.as_ref().map(|entry| entry.sentinel.clone());
+        let root = wg_root.clone();
+        let next = match tokio::task::spawn_blocking(move || poll_task_snapshot(&root, sentinel))
+            .await
+        {
+            Ok(Ok(Some(next))) => next,
+            Ok(Ok(None)) => return,
+            Ok(Err(error)) => {
+                log::warn!(
+                    "[DiscoveryBranchWatcher] task snapshot failed for {}: {}; retrying next pass",
+                    wg_root.display(),
+                    error
+                );
                 return;
             }
-        }
-
-        // Read with a 256 KiB cap. A bigger TASK.md is either accidental
-        // (someone catted /dev/urandom into it) or adversarial; either way,
-        // we don't want it streamed through Tauri IPC every 15s. On overflow
-        // we treat the file as effectively missing (None); the frontend
-        // already handles `brief: null` (panel falls back to "...").
-        let (new_task, new_title) = read_task_fields(wg_root.as_path());
-
-        // Re-stat. If the file changed during our read window (external
-        // editor mid-save — Notepad does CreateFile(OPEN_EXISTING) +
-        // SetEndOfFile + write, NOT atomic rename), the read may be torn.
-        // Defer to the next tick when the stat has settled.
-        let post_sentinel = std::fs::metadata(&task_path).ok().map(|m| StatSentinel {
-            len: m.len(),
-            mtime: m.modified().ok(),
+            Err(error) => {
+                log::warn!("[DiscoveryBranchWatcher] task snapshot worker failed for {}: {}; retrying next pass", wg_root.display(), error);
+                return;
+            }
+        };
+        let shipped = deliver_poll_task(previous.as_ref(), next, |next| {
+            self.app_handle
+                .emit(
+                    "workgroup_task_updated",
+                    TaskUpdatedPayload {
+                        workgroup_root: projected_path_string(&wg_root),
+                        source: "poll".into(),
+                        task: next.task.clone(),
+                        task_title: next.task_title.clone(),
+                        session_ids: session_ids.iter().map(Uuid::to_string).collect(),
+                        status: next.status.clone(),
+                        revision: next.revision.clone(),
+                        tail_incomplete: next.tail_incomplete,
+                    },
+                )
+                .map_err(|error| error.to_string())
         });
-        if post_sentinel != now_sentinel {
-            log::debug!(
-                "[DiscoveryBranchWatcher] stat changed during read of {} (likely torn — external editor mid-save); deferring to next tick",
-                task_path.display()
-            );
-            return;
-        }
-
-        let content_changed = match prev.as_ref() {
-            Some(p) => p.task != new_task || p.task_title != new_title,
-            None => true,
-        };
-
-        // ALWAYS refresh the sentinel (next-tick short-circuit depends on
-        // it). Insert a placeholder `task = prev.task` so a failed emit
-        // below leaves the cache holding the previously-shipped content,
-        // not the new content — that way the next stat-change retries
-        // emission instead of silently accepting the failed state.
-        {
-            let mut cache = self.task_cache.lock().unwrap();
-            cache
-                .entry(wg_root.clone())
-                .and_modify(|e| e.sentinel = now_sentinel.clone())
-                .or_insert(TaskCacheEntry {
-                    sentinel: now_sentinel.clone(),
-                    task: prev.as_ref().and_then(|p| p.task.clone()),
-                    task_title: prev.as_ref().and_then(|p| p.task_title.clone()),
-                });
-        }
-
-        if !content_changed {
-            return;
-        }
-
-        let payload = TaskUpdatedPayload {
-            workgroup_root: wg_root.to_string_lossy().into_owned(),
-            source: "poll".to_string(),
-            task: new_task.clone(),
-            task_title: new_title.clone(),
-            session_ids: session_ids.iter().map(|u| u.to_string()).collect(),
-        };
-        match self.app_handle.emit("workgroup_task_updated", payload) {
-            Ok(()) => {
-                // Commit shipped content. Mirrors GitWatcher's emit-then-cache
-                // ordering — invariant: the cache's `brief` field is the last
-                // value the FRONTEND has, not the last value we read.
-                self.task_cache
-                    .lock()
-                    .unwrap()
-                    .entry(wg_root.clone())
-                    .and_modify(|e| {
-                        e.task = new_task;
-                        e.task_title = new_title;
-                    });
+        match shipped {
+            Ok(next) => {
+                self.task_cache.lock().unwrap().insert(wg_root, next);
             }
-            Err(e) => {
-                log::warn!(
-                    "[DiscoveryBranchWatcher] task emit failed for {} ({}); leaving cached task stale so next stat-change retries",
-                    wg_root.display(),
-                    e
-                );
-            }
+            Err(error) => log::warn!(
+                "[DiscoveryBranchWatcher] task emit failed for {}: {}; retrying next pass",
+                wg_root.display(),
+                error
+            ),
         }
     }
 }
@@ -7498,5 +7611,383 @@ mod tests {
         c4_tracked_is_clean(&tracked, "site 4 remove");
         c4_state_is(&c4_state_path(&tracked), C4_SEEDED_STATE, "site 4 remove");
         assert!(read(&tracked).get("context").is_none());
+    }
+}
+
+#[cfg(test)]
+mod snapshot_refresh_tests {
+    use super::*;
+    use crate::config::settings::AppSettings;
+    use fs2::FileExt;
+
+    fn fixture() -> (
+        tempfile::TempDir,
+        PathBuf,
+        SettingsState,
+        Arc<tokio::sync::RwLock<SessionManager>>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".ac/room-1");
+        std::fs::create_dir_all(&root).unwrap();
+        let settings = Arc::new(tokio::sync::RwLock::new(AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().into_owned()],
+            ..Default::default()
+        }));
+        (
+            dir,
+            root,
+            settings,
+            Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
+        )
+    }
+
+    fn status_line(sequence: u64, status: &str) -> String {
+        serde_json::json!({"schemaVersion":1,"kind":"status","topicId":"12345678-1234-4234-8234-123456789abc",
+            "sequence":sequence,"requestId":"87654321-4321-4321-8321-123456789abc","baseRevision":if sequence == 1 { "legacy:0".to_owned() } else { format!("12345678-1234-4234-8234-123456789abc:{}", sequence-1) },
+            "recordedAt":"2026-10-05T18:00:00Z","author":"project/fixture","status":status}).to_string()+"\n"
+    }
+
+    #[test]
+    fn path_admission_matrix_preserves_original_key_and_fails_closed() {
+        let (dir, root, _, _) = fixture();
+        let projects = vec![dir.path().to_string_lossy().into_owned()];
+        let valid = root.to_string_lossy().into_owned();
+        assert_eq!(validate_snapshot_room(&valid, &projects).unwrap(), root);
+        let legacy = dir.path().join(".AC/wg-2");
+        std::fs::create_dir_all(&legacy).unwrap();
+        assert_eq!(
+            validate_snapshot_room(&legacy.to_string_lossy(), &projects).unwrap(),
+            legacy
+        );
+        let invalid = [
+            dir.path().join("missing"),
+            dir.path().join("room-outside"),
+            dir.path().join(".ac/no-room"),
+        ];
+        for candidate in &invalid[1..] {
+            std::fs::create_dir_all(candidate).unwrap();
+        }
+        for candidate in invalid {
+            assert!(validate_snapshot_room(&candidate.to_string_lossy(), &projects).is_err());
+        }
+        let file = root.join("room-file");
+        std::fs::write(&file, "x").unwrap();
+        assert!(validate_snapshot_room(&file.to_string_lossy(), &projects).is_err());
+        assert!(validate_snapshot_room(&valid, &[]).is_err());
+        assert!(validate_snapshot_room(
+            &valid,
+            &[dir.path().join("missing").to_string_lossy().into_owned()]
+        )
+        .is_err());
+        let outside = tempfile::tempdir().unwrap();
+        let escaped = outside.path().join(".ac/room-escape");
+        std::fs::create_dir_all(&escaped).unwrap();
+        assert!(validate_snapshot_room(&escaped.to_string_lossy(), &projects).is_err());
+        let traversal = root
+            .join("../../..")
+            .join(outside.path().file_name().unwrap())
+            .join(".ac/room-escape");
+        assert!(validate_snapshot_room(&traversal.to_string_lossy(), &projects).is_err());
+        let raw = root.join("../room-1").to_string_lossy().into_owned();
+        assert_eq!(
+            validate_snapshot_room(&raw, &projects).unwrap(),
+            PathBuf::from(raw)
+        );
+        #[cfg(windows)]
+        {
+            let variant = valid.to_uppercase();
+            assert_eq!(
+                validate_snapshot_room(&variant, &projects).unwrap(),
+                PathBuf::from(variant)
+            );
+            let canonical = std::fs::canonicalize(&root).unwrap();
+            assert!(validate_snapshot_room(&canonical.to_string_lossy(), &projects).is_ok());
+        }
+    }
+
+    #[test]
+    fn status_only_partial_deletion_errors_and_emit_retry_keep_shipped_state() {
+        let (_dir, root, _, _) = fixture();
+        std::fs::write(
+            root.join("TASK.md"),
+            "\u{feff}---\ntitle: 'USER: café'\n---\n\n# 日本語 🦀\n",
+        )
+        .unwrap();
+        let initial = poll_task_snapshot(&root, None).unwrap().unwrap();
+        assert_eq!(initial.task.as_deref(), Some("日本語 🦀"));
+        assert!(poll_task_snapshot(&root, Some(initial.sentinel.clone()))
+            .unwrap()
+            .is_none());
+        let line = status_line(1, "ready");
+        std::fs::write(root.join("TASK-status.jsonl"), format!("{line}partial")).unwrap();
+        let changed = poll_task_snapshot(&root, Some(initial.sentinel.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed.status.as_deref(), Some("ready"));
+        assert!(changed.tail_incomplete);
+        assert!(deliver_poll_task(Some(&initial), changed, |_| Err("offline".into())).is_err());
+        let retry = poll_task_snapshot(&root, Some(initial.sentinel.clone()))
+            .unwrap()
+            .unwrap();
+        let shipped = deliver_poll_task(Some(&initial), retry, |_| Ok(())).unwrap();
+        assert!(poll_task_snapshot(&root, Some(shipped.sentinel.clone()))
+            .unwrap()
+            .is_none());
+        std::fs::write(root.join("TASK-status.jsonl"), &line).unwrap();
+        let completed = poll_task_snapshot(&root, Some(shipped.sentinel.clone()))
+            .unwrap()
+            .unwrap();
+        assert!(!completed.tail_incomplete);
+        assert_eq!(completed.status.as_deref(), Some("ready"));
+        std::fs::remove_file(root.join("TASK-status.jsonl")).unwrap();
+        let deleted = poll_task_snapshot(&root, Some(completed.sentinel.clone()))
+            .unwrap()
+            .unwrap();
+        assert!(deleted.status.is_none());
+        assert_eq!(deleted.revision, "legacy:0");
+        std::fs::write(root.join("TASK-clean.pending.json"), "{}").unwrap();
+        assert!(poll_task_snapshot(&root, Some(deleted.sentinel.clone())).is_err());
+        std::fs::remove_file(root.join("TASK-clean.pending.json")).unwrap();
+        for content in [vec![0xff], vec![b'x'; 256 * 1024 + 1]] {
+            std::fs::write(root.join("TASK.md"), content).unwrap();
+            assert!(poll_task_snapshot(&root, Some(deleted.sentinel.clone())).is_err());
+        }
+        std::fs::write(root.join("TASK.md"), "body").unwrap();
+        std::fs::write(root.join("TASK-status.jsonl"), "[]\n").unwrap();
+        assert!(poll_task_snapshot(&root, Some(deleted.sentinel.clone())).is_err());
+        assert_eq!(deleted.revision, "legacy:0");
+    }
+
+    #[tokio::test]
+    async fn snapshot_admission_uses_current_sessions_and_releases_guards_during_io() {
+        let (_dir, root, settings, manager) = fixture();
+        std::fs::write(root.join("TASK.md"), "body 🦀").unwrap();
+        let manager_handle = manager.read().await.clone();
+        let session = manager_handle
+            .create_session(
+                "fixture".into(),
+                vec![],
+                root.join("__agent_fixture").to_string_lossy().into_owned(),
+                None,
+                None,
+                vec![],
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let id = session.id.to_string();
+        let path = root.to_string_lossy().into_owned();
+        let by_session = task_snapshot_inner(&manager, &settings, Some(&id), None)
+            .await
+            .unwrap();
+        let by_path = task_snapshot_inner(&manager, &settings, None, Some(&path))
+            .await
+            .unwrap();
+        assert_eq!(by_session, by_path);
+        for invalid in ["invalid".to_owned(), Uuid::new_v4().to_string()] {
+            assert!(
+                task_snapshot_inner(&manager, &settings, Some(&invalid), None)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(task_snapshot_inner(&manager, &settings, None, None)
+            .await
+            .is_err());
+        assert!(
+            task_snapshot_inner(&manager, &settings, Some(&id), Some(&path))
+                .await
+                .is_err()
+        );
+        let outside = manager_handle
+            .create_session(
+                "fixture".into(),
+                vec![],
+                "C:/outside-room".into(),
+                None,
+                None,
+                vec![],
+                false,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        assert!(
+            task_snapshot_inner(&manager, &settings, Some(&outside.id.to_string()), None)
+                .await
+                .is_err()
+        );
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join("TASK.md.lock"))
+            .unwrap();
+        FileExt::lock_exclusive(&lock).unwrap();
+        let query_manager = manager.clone();
+        let query_settings = settings.clone();
+        let query = tokio::spawn(async move {
+            task_snapshot_inner(&query_manager, &query_settings, Some(&id), None).await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let manager_guard = tokio::time::timeout(Duration::from_secs(1), manager.write())
+            .await
+            .unwrap();
+        let settings_guard = tokio::time::timeout(Duration::from_secs(1), settings.write())
+            .await
+            .unwrap();
+        drop(manager_guard);
+        drop(settings_guard);
+        FileExt::unlock(&lock).unwrap();
+        assert_eq!(query.await.unwrap().unwrap(), by_path);
+    }
+
+    #[tokio::test]
+    async fn watcher_loaded_room_without_session_and_shared_session_root() {
+        use tauri::Listener;
+        let (_dir, root, settings, manager) = fixture();
+        std::fs::write(root.join("TASK.md"), "body").unwrap();
+        let app = crate::test_support::test_builder()
+            .manage(settings.clone())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let watcher = DiscoveryBranchWatcher::new(app.handle().clone(), manager.clone());
+        let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let capture = events.clone();
+        app.listen("workgroup_task_updated", move |event| {
+            capture
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap())
+        });
+        let entries = [ReplicaBranchEntry {
+            replica_path: root.join("__agent_fixture").to_string_lossy().into_owned(),
+            repos: vec![],
+            session_name: "fixture".into(),
+        }];
+        watcher.poll_tasks(&entries).await.unwrap();
+        assert_eq!(watcher.task_cache.lock().unwrap().len(), 1);
+        assert_eq!(
+            events.lock().unwrap()[0]["sessionIds"],
+            serde_json::json!([])
+        );
+        let manager_handle = manager.read().await.clone();
+        for _ in 0..2 {
+            manager_handle
+                .create_session(
+                    "fixture".into(),
+                    vec![],
+                    entries[0].replica_path.clone(),
+                    None,
+                    None,
+                    vec![],
+                    false,
+                    crate::pty::backend::SessionBackendKind::LocalProcess,
+                )
+                .await
+                .unwrap();
+        }
+        std::fs::write(root.join("TASK-status.jsonl"), status_line(1, "updated")).unwrap();
+        watcher.poll_tasks(&entries).await.unwrap();
+        assert_eq!(watcher.task_cache.lock().unwrap().len(), 1);
+        let captured = events.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[1]["sessionIds"].as_array().unwrap().len(), 2);
+        assert_eq!(captured[1]["status"], "updated");
+        drop(captured);
+        // Existing lock timeout leaves the previous shipped cache intact.
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join("TASK.md.lock"))
+            .unwrap();
+        FileExt::lock_exclusive(&lock).unwrap();
+        std::fs::write(
+            root.join("TASK-status.jsonl"),
+            status_line(2, "after timeout"),
+        )
+        .unwrap();
+        let waiting = watcher.clone();
+        let waiting_root = root.clone();
+        let query =
+            tokio::spawn(async move { waiting.check_workgroup_task(waiting_root, vec![]).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(watcher.task_cache.try_lock().is_ok());
+        query.await.unwrap();
+        assert_eq!(
+            watcher
+                .task_cache
+                .lock()
+                .unwrap()
+                .get(&root)
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("updated")
+        );
+        FileExt::unlock(&lock).unwrap();
+        watcher.poll_tasks(&entries).await.unwrap();
+        assert_eq!(
+            watcher
+                .task_cache
+                .lock()
+                .unwrap()
+                .get(&root)
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("after timeout")
+        );
+    }
+}
+
+#[cfg(test)]
+mod snapshot_null_tests {
+    use super::*;
+
+    #[test]
+    fn poll_partial_only_and_clean_seed_deliver_explicit_null_with_new_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("TASK.md"), "  \n").unwrap();
+        std::fs::write(root.join("TASK-status.jsonl"), "partial").unwrap();
+        let partial = poll_task_snapshot(root, None).unwrap().unwrap();
+        assert!(partial.task.is_none());
+        assert!(partial.status.is_none());
+        assert!(partial.tail_incomplete);
+        assert_eq!(partial.revision, "legacy:0");
+        std::fs::write(
+            root.join("TASK.md"),
+            "---\ntitle: 'Clean'\n---\nReady to start a new topic\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("TASK-status.jsonl"), serde_json::json!({
+            "schemaVersion":1,"kind":"topic_started","topicId":"12345678-1234-4234-8234-123456789abc","sequence":0,
+            "requestId":null,"baseRevision":null,"recordedAt":"2026-10-05T18:00:00Z","author":null,"status":null
+        }).to_string()+"\n").unwrap();
+        let clean = poll_task_snapshot(root, Some(partial.sentinel.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(clean.task_title.as_deref(), Some("Clean"));
+        assert!(!clean.tail_incomplete);
+        assert_eq!(clean.revision, "12345678-1234-4234-8234-123456789abc:0");
+        let mut emitted = false;
+        let clean = deliver_poll_task(Some(&partial), clean, |value| {
+            emitted = true;
+            assert!(value.status.is_none());
+            Ok(())
+        })
+        .unwrap();
+        assert!(emitted);
+        std::fs::remove_file(root.join("TASK.md")).unwrap();
+        let missing = poll_task_snapshot(root, Some(clean.sentinel))
+            .unwrap()
+            .unwrap();
+        assert!(missing.task.is_none());
+        assert!(missing.task_title.is_none());
     }
 }
