@@ -4,13 +4,17 @@ For developers who already use a trusted Coding Agent, this contract gets you to
 
 ## Support gates
 
+**Linux & macOS: Experimental**
+
+Testing is limited. Expect bugs and unexpected behavior. Please report issues on GitHub.
+
 An artifact on a GitHub release proves that the build exists. It does not make that platform supported.
 
 | Host | Native architecture | Support tier | Normal installation |
 |---|---|---|---|
 | Windows 10 version 1809 or newer, or Windows 11 | x86_64 / AMD64 | Fully supported; primary development and release-validation platform | Yes |
-| Linux | x86_64 / AMD64 | Supported with medium test coverage; some turbulence is expected | Only after a warning and explicit confirmation |
-| macOS | Any | Supported via npm only, with very low test coverage; errors are expected | Yes, through npm, after a warning and explicit confirmation |
+| Linux | x86_64 / AMD64 | Experimental; supported with medium test coverage; some turbulence is expected | Only after a warning and explicit confirmation |
+| macOS | Any | Experimental; supported via npm only, with very low test coverage; errors are expected | Yes, through npm, after a warning and explicit confirmation |
 | Any other OS or architecture | Any | Unsupported | No; stop without substitution, emulation, or fallback |
 
 Linux does not currently include every Windows capability. Verified Windows-only features include native window listing and capture (the `window-list` and `window-screenshot` verbs and the control-plane window-screenshot route), and detection of a running GUI before CLI configuration writes. Screenshot capture works on Windows, macOS and Linux/X11, but not in a Wayland session. See [Screenshot capture](features/screenshot-capture.md), [Window capture](features/window-capture.md), and the [CLI reference](reference/cli.md#coding-agent).
@@ -182,7 +186,7 @@ Manual installation is secondary to the reviewed Coding Agent plan:
 
 ## Help extend Linux and macOS support
 
-Linux and macOS are supported and lightly tested: Linux has medium test coverage, macOS very low. Reproducible reports are how those gaps get fixed. Open a [GitHub issue](https://github.com/mblua/AgentsCommander/issues) with this report:
+Linux and macOS are experimental, supported and lightly tested: Linux has medium test coverage, macOS very low. Reproducible reports are how those gaps get fixed. Open a [GitHub issue](https://github.com/mblua/AgentsCommander/issues) with this report:
 
 ```text
 OS and version:

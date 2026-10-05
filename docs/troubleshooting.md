@@ -4,7 +4,11 @@ For developers hitting an error. Skim the headings for the symptom that matches 
 
 ## Installation
 
-Start with the [installation support gates](install-with-agent.md#support-gates). Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported. Linux x86_64/AMD64 is supported with medium test coverage and requires an explicit warning and confirmation. macOS is supported via npm only, with very low test coverage, so expect errors.
+**Linux & macOS: Experimental**
+
+Testing is limited. Expect bugs and unexpected behavior. Please report issues on GitHub.
+
+Start with the [installation support gates](install-with-agent.md#support-gates). Windows 10 1809+ and Windows 11 on x86_64/AMD64 are fully supported. Linux x86_64/AMD64 is experimental and supported with medium test coverage and requires an explicit warning and confirmation. macOS is experimental and supported via npm only, with very low test coverage, so expect errors.
 
 ### Windows: SmartScreen blocks the installer
 
@@ -19,7 +23,7 @@ Until Windows signing is active, `Status` may read `NotSigned`. Ask separately b
 
 ### Linux: `.AppImage` will not execute
 
-Linux x86_64/AMD64 is supported with medium test coverage, so expect some turbulence. Continue only after acknowledging that tier and verifying `Agents.Commander_<version>_amd64.AppImage` against the same release's `SHASUMS256.txt`.
+Linux x86_64/AMD64 is experimental and supported with medium test coverage, so expect some turbulence. Continue only after acknowledging that tier and verifying `Agents.Commander_<version>_amd64.AppImage` against the same release's `SHASUMS256.txt`.
 
 ```bash
 asset='Agents.Commander_<version>_amd64.AppImage'
@@ -31,7 +35,7 @@ chmod +x "$asset"
 
 ### macOS: install or launch fails
 
-macOS is supported via npm only, with very low test coverage, so errors are expected. Install it after the platform warning with:
+macOS is experimental and supported via npm only, with very low test coverage, so errors are expected. Install it after the platform warning with:
 
 ```bash
 npm install -g @mblua/agentscommander

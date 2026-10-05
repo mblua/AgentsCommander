@@ -6,7 +6,11 @@ By the end of this guide you will have AgentsCommander installed, an AC project 
 
 ## Prerequisites
 
-- A host covered by the [platform support policy](install-with-agent.md#support-gates). Windows 10 1809+ or Windows 11 on x86_64/AMD64 is fully supported. Linux x86_64/AMD64 is supported with medium test coverage — expect some turbulence — and requires explicit confirmation before installation. macOS is supported via npm only, with very low test coverage, so expect errors.
+**Linux & macOS: Experimental**
+
+Testing is limited. Expect bugs and unexpected behavior. Please report issues on GitHub.
+
+- A host covered by the [platform support policy](install-with-agent.md#support-gates). Windows 10 1809+ or Windows 11 on x86_64/AMD64 is fully supported. Linux x86_64/AMD64 is experimental and supported with medium test coverage — expect some turbulence — and requires explicit confirmation before installation. macOS is experimental and supported via npm only, with very low test coverage, so expect errors.
 - At least one supported coding-agent CLI (Claude Code, Codex, Antigravity, or Pi) installed and authenticated as its CLI requires. See [Installing the coding-agent CLIs](integrations/coding-agents.md#installing-the-clis) for the exact upstream links and Pi install commands. You can install more than one; AC lets you pick per agent.
 - Node.js 18+ and npm only if you choose the npm route; on macOS it is the only supported route.
 - Git installed.

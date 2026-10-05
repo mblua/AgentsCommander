@@ -141,6 +141,10 @@ Turn it off in **Settings → General → Container Coding Agents**, or set `con
 
 ## Code signing
 
+**Linux & macOS: Experimental**
+
+Testing is limited. Expect bugs and unexpected behavior. Please report issues on GitHub.
+
 Windows code signing is planned through SignPath Foundation and is pending setup and approval. Current Windows release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. See [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md).
 
 Verify every exact downloaded filename against the `SHASUMS256.txt` file attached to the same GitHub release. A checksum match does not protect against replacement of both files through a compromised publisher or repository account. On Windows, inspect Authenticode status separately with:
@@ -150,11 +154,11 @@ Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsof
 Get-AuthenticodeSignature -LiteralPath ".\Agents.Commander_<version>_x64-setup.exe"
 ```
 
-Linux and macOS builds are not signed today, including the macOS `.app` bundle that npm installs. Build availability does not change the [platform support tiers](install-with-agent.md#support-gates); macOS is supported via npm with very low test coverage, so expect errors and report them instead of bypassing Gatekeeper.
+Linux and macOS builds are not signed today, including the macOS `.app` bundle that npm installs. Build availability does not change the [platform support tiers](install-with-agent.md#support-gates); macOS is experimental and supported via npm with very low test coverage, so expect errors and report them instead of bypassing Gatekeeper.
 
 ## Known gaps
 
-- **macOS code signing** is not in place: the `.app` bundle is unsigned. macOS is supported via npm with very low test coverage; send reproducible errors through the [platform report](install-with-agent.md#help-extend-linux-and-macos-support) instead of bypassing Gatekeeper.
+- **macOS code signing** is not in place: the `.app` bundle is unsigned. macOS is experimental and supported via npm with very low test coverage; send reproducible errors through the [platform report](install-with-agent.md#help-extend-linux-and-macos-support) instead of bypassing Gatekeeper.
 - **Windows code signing** is pending SignPath setup and approval ([#717](https://github.com/mblua/AgentsCommander/issues/717)).
 - **`--root` is unverified** at the CLI boundary. A malicious local process with shell access can spoof its own root. Mitigated by the daemon-side per-session token check, but not eliminated.
 - **No sandbox between agents.** Two agents in the same room share filesystem access. If you need hard isolation, run each agent in its own VM or container.

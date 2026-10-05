@@ -31,6 +31,10 @@
 
 ## Installation
 
+**Linux & macOS: Experimental**
+
+Testing is limited. Expect bugs and unexpected behavior. Please report issues on GitHub.
+
 <a id="install-with-a-coding-agent"></a>
 
 ### Install with a trusted Coding Agent
@@ -42,7 +46,7 @@ Install AgentsCommander safely using only the official `mblua/AgentsCommander` r
 
 First resolve/report the current `main` snapshot's full commit SHA, then read the guide at that pinned commit. Treat the entire pinned guide, especially `Support gates`, `Use only pinned official evidence`, `Storage, backup, and upgrades`, and `Coding Agent contract`, as binding. Fail closed on every stop condition and on missing, ambiguous, or conflicting required evidence.
 
-Before any download or mutation, perform/report every required read-only preflight and the complete plan: OS/version/architectures/support tier and Linux distribution; existing install/version/provenance; independently resolved target stable tag; storage, backup, upgrade, and uninstall-state requirements from the canonical owner https://github.com/mblua/AgentsCommander/issues/1118 (`main` is not published-binary evidence); mapped release/asset URLs and exact checksum record; destination, commands, created/overwritten files, privilege, PATH/system-wide effects, preservation, validation, and rollback. Apply the guide's gates exactly: Windows 10 1809+/11 x86_64/AMD64 is full; Linux x86_64/AMD64 is supported with medium test coverage and requires the limitations explained plus explicit confirmation; macOS is supported via npm only with very low test coverage, so warn that errors are expected, get explicit confirmation, and use no other macOS route; all other platforms stop. On Linux, identify the distro from read-only OS information using ID first, then recognized ID_LIKE family tokens: Debian/Ubuntu selects DEB, Fedora/RHEL selects RPM, other Linux selects AppImage. Conflicting family evidence or a missing exact mapped asset stops. Prefer least privilege. Await plan approval plus separate consent for elevation, system-wide/PATH changes, overwrites, and unsigned execution.
+Before any download or mutation, perform/report every required read-only preflight and the complete plan: OS/version/architectures/support tier and Linux distribution; existing install/version/provenance; independently resolved target stable tag; storage, backup, upgrade, and uninstall-state requirements from the canonical owner https://github.com/mblua/AgentsCommander/issues/1118 (`main` is not published-binary evidence); mapped release/asset URLs and exact checksum record; destination, commands, created/overwritten files, privilege, PATH/system-wide effects, preservation, validation, and rollback. Apply the guide's gates exactly: Windows 10 1809+/11 x86_64/AMD64 is full; Linux x86_64/AMD64 is experimental and supported with medium test coverage and requires the limitations explained plus explicit confirmation; macOS is experimental and supported via npm only with very low test coverage, so warn that errors are expected, get explicit confirmation, and use no other macOS route; all other platforms stop. On Linux, identify the distro from read-only OS information using ID first, then recognized ID_LIKE family tokens: Debian/Ubuntu selects DEB, Fedora/RHEL selects RPM, other Linux selects AppImage. Conflicting family evidence or a missing exact mapped asset stops. Prefer least privilege. Await plan approval plus separate consent for elevation, system-wide/PATH changes, overwrites, and unsigned execution.
 
 Only afterward follow the guide's exact same-release download, one-record full-SHA-256 verification, data preservation under #1118, approved execution, exact-path validation/reporting, and rollback rules. Stop an existing-install update or uninstall if canonical guidance is insufficient; do not invent storage or migration behavior. Warn that Windows artifacts and the macOS `.app` bundle may be unsigned, and that a matching release checksum detects corruption/asset mismatch, not publisher/repository-account compromise. Enforce all prohibitions: silent security bypass, automatic elevation, `curl | shell`, mirrors, source fallback, emulation/substitute assets, npm fallback outside the macOS route, and installing/authenticating a Coding Agent CLI for me.
 ```
@@ -133,8 +137,8 @@ These are not accidents.
 | Platform | Native architecture | Status |
 |---|---|---|
 | **Windows 10 1809+ / Windows 11** | x86_64 / AMD64 | Fully supported; primary development and release-validation platform. |
-| **Linux** | x86_64 / AMD64 | Supported with medium test coverage; some features are untested or unsupported, so expect some turbulence. Confirm the limitation before installing. |
-| **macOS** | Any | Supported via npm only, with very low test coverage; errors are expected. |
+| **Linux** | x86_64 / AMD64 | Experimental; supported with medium test coverage; some features are untested or unsupported, so expect some turbulence. Confirm the limitation before installing. |
+| **macOS** | Any | Experimental; supported via npm only, with very low test coverage; errors are expected. |
 | **Other combinations** | Any | Unsupported; do not substitute assets or use emulation as an install fallback. |
 
 An artifact on a release is not a support promise. The [canonical installation guide](docs/install-with-agent.md) defines the operational gates and lists verified Windows-only features.
@@ -158,7 +162,7 @@ A release checksum detects corruption or a file that differs from the release re
 
 ### Help extend Linux and macOS support
 
-Linux is supported with medium test coverage and macOS via npm with very low test coverage. Both tiers need the reports that turn gaps into fixes. If either platform misbehaves, file a reproducible [GitHub issue](https://github.com/mblua/AgentsCommander/issues) with your OS version, native architecture, AgentsCommander version or exact release asset, exact steps, expected result, actual result, and relevant sanitized logs. Contributors can follow [`CONTRIBUTING.md`](CONTRIBUTING.md); the [installation guide](docs/install-with-agent.md#help-extend-linux-and-macos-support) has a copyable report template.
+Linux and macOS are experimental: Linux is supported with medium test coverage and macOS via npm with very low test coverage. Both tiers need the reports that turn gaps into fixes. If either platform misbehaves, file a reproducible [GitHub issue](https://github.com/mblua/AgentsCommander/issues) with your OS version, native architecture, AgentsCommander version or exact release asset, exact steps, expected result, actual result, and relevant sanitized logs. Contributors can follow [`CONTRIBUTING.md`](CONTRIBUTING.md); the [installation guide](docs/install-with-agent.md#help-extend-linux-and-macos-support) has a copyable report template.
 
 ## Contributing
 
