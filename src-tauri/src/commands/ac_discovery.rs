@@ -7618,7 +7618,6 @@ mod tests {
 mod snapshot_refresh_tests {
     use super::*;
     use crate::config::settings::AppSettings;
-    use fs2::FileExt;
 
     fn fixture() -> (
         tempfile::TempDir,
@@ -7825,7 +7824,7 @@ mod snapshot_refresh_tests {
             .truncate(false)
             .open(root.join("TASK.md.lock"))
             .unwrap();
-        FileExt::lock_exclusive(&lock).unwrap();
+        lock.lock().unwrap();
         let query_manager = manager.clone();
         let query_settings = settings.clone();
         let query = tokio::spawn(async move {
@@ -7840,7 +7839,7 @@ mod snapshot_refresh_tests {
             .unwrap();
         drop(manager_guard);
         drop(settings_guard);
-        FileExt::unlock(&lock).unwrap();
+        lock.unlock().unwrap();
         assert_eq!(query.await.unwrap().unwrap(), by_path);
     }
 
@@ -7905,7 +7904,7 @@ mod snapshot_refresh_tests {
             .truncate(false)
             .open(root.join("TASK.md.lock"))
             .unwrap();
-        FileExt::lock_exclusive(&lock).unwrap();
+        lock.lock().unwrap();
         std::fs::write(
             root.join("TASK-status.jsonl"),
             status_line(2, "after timeout"),
@@ -7929,7 +7928,7 @@ mod snapshot_refresh_tests {
                 .as_deref(),
             Some("updated")
         );
-        FileExt::unlock(&lock).unwrap();
+        lock.unlock().unwrap();
         watcher.poll_tasks(&entries).await.unwrap();
         assert_eq!(
             watcher
