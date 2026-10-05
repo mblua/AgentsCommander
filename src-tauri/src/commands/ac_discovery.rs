@@ -7891,11 +7891,12 @@ mod snapshot_refresh_tests {
         std::fs::write(root.join("TASK-status.jsonl"), status_line(1, "updated")).unwrap();
         watcher.poll_tasks(&entries).await.unwrap();
         assert_eq!(watcher.task_cache.lock().unwrap().len(), 1);
-        let captured = events.lock().unwrap();
-        assert_eq!(captured.len(), 2);
-        assert_eq!(captured[1]["sessionIds"].as_array().unwrap().len(), 2);
-        assert_eq!(captured[1]["status"], "updated");
-        drop(captured);
+        {
+            let captured = events.lock().unwrap();
+            assert_eq!(captured.len(), 2);
+            assert_eq!(captured[1]["sessionIds"].as_array().unwrap().len(), 2);
+            assert_eq!(captured[1]["status"], "updated");
+        }
         // Existing lock timeout leaves the previous shipped cache intact.
         let lock = std::fs::OpenOptions::new()
             .read(true)
