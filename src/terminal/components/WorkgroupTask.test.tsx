@@ -24,7 +24,7 @@ import {
 
 /** The two buttons F6 gates, in render order: Edit then Clean. */
 function actionButtons(): HTMLButtonElement[] {
-  return Array.from(document.querySelectorAll<HTMLButtonElement>("button.workgroup-task-action"));
+  return ["edit", "clean"].flatMap(id => Array.from(document.querySelectorAll<HTMLButtonElement>(`[data-ac-testid="workgroupTask.${id}"]`)));
 }
 
 /** Bind a live session whose cwd is `cwd`, then render the component. */
@@ -142,8 +142,8 @@ describe("WorkgroupTask, frontmatter title parsing (#2608)", () => {
     try {
       terminalStore.setActiveWorkgroupTask(task);
       actionButtons()[0].click();
-      await waitFor(() => expect(document.querySelector(".workgroup-task-title-input")).toBeTruthy());
-      return document.querySelector<HTMLInputElement>(".workgroup-task-title-input")?.value || null;
+      await waitFor(() => expect(document.querySelector('[data-ac-testid="workgroupTask.titleInput"]')).toBeTruthy());
+      return document.querySelector<HTMLInputElement>('[data-ac-testid="workgroupTask.titleInput"]')?.value || null;
     } finally {
       rendered.cleanup();
     }
@@ -175,21 +175,67 @@ describe("P4 authoritative description and accessible status", () => {
   beforeEach(() => { terminalStore.resetForTests(); resetUiStoresForTests(); });
   afterEach(() => { vi.useRealTimers(); terminalStore.resetForTests(); resetUiStoresForTests(); document.body.replaceChildren(); });
 
+
+  it("exposes unique semantic targets through editor, mutation and disposal", async () => {
+    const fake = new FakeTransport();
+    let settle: (value: unknown) => void = () => {};
+    fake.onInvoke("task_set_title", () => new Promise(resolve => { settle = resolve; }));
+    const view = await renderWithCwd(root + "/__agent_x", fake);
+    const target = <T extends HTMLElement>(id: string, role: string): T => {
+      const nodes = document.querySelectorAll<T>(`[data-ac-testid="workgroupTask.${id}"]`);
+      expect(nodes.length).toBe(1); expect(nodes[0].getAttribute("data-ac-role")).toBe(role);
+      return nodes[0];
+    };
+    try {
+      target("root", "surface");
+      expect(target("readMessage", "status").textContent).toBe("Loading task…");
+      publish({ tailIncomplete: true });
+      target("title", "surface"); target("description", "surface");
+      expect(target("tooltip", "overlay").style.display).toBe("none");
+      target("historyIncomplete", "status");
+      target<HTMLButtonElement>("edit", "button").click();
+      const input = target<HTMLInputElement>("titleInput", "textbox");
+      input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true }));
+      expect(target<HTMLButtonElement>("save", "button").disabled).toBe(true);
+      target<HTMLButtonElement>("cancel", "button").click();
+      expect(fake.callsFor("task_set_title")).toHaveLength(0);
+      target<HTMLButtonElement>("edit", "button").click();
+      const draft = target<HTMLInputElement>("titleInput", "textbox");
+      draft.value = "New title"; draft.dispatchEvent(new Event("input", { bubbles: true }));
+      target<HTMLButtonElement>("save", "button").click();
+      await waitFor(() => expect(fake.callsFor("task_set_title")).toHaveLength(1));
+      expect(fake.callsFor("task_set_title")[0].args).toEqual({ sessionId: "session-1614", title: "New title" });
+      expect(target<HTMLButtonElement>("edit", "button").disabled).toBe(true);
+      expect(target<HTMLButtonElement>("clean", "button").disabled).toBe(true);
+      expect(target<HTMLButtonElement>("save", "button").disabled).toBe(true);
+      settle({ workgroupRoot: root, task: "New title" });
+      await waitFor(() => expect(document.querySelector('[data-ac-testid="workgroupTask.titleInput"]')).toBeNull());
+      expect(fake.callsFor("task_clean")).toHaveLength(0);
+      expect(fake.callsFor("task_clean_at")).toHaveLength(0);
+      publish();
+      fake.reject("task_set_title", "Title failed");
+      target<HTMLButtonElement>("edit", "button").click();
+      target<HTMLButtonElement>("save", "button").click();
+      await waitFor(() => expect(target("mutationError", "status").textContent).toContain("Title failed"));
+    } finally { view.cleanup(); }
+    expect(document.querySelectorAll('[data-ac-testid^="workgroupTask."]')).toHaveLength(0);
+  });
+
   it("renders escaped human description and full status only in the Portal tooltip", async () => {
     const view = await renderWithCwd(root + "/__agent_x");
     try {
       expect(document.body.textContent).toContain("Loading task…");
-      expect(document.querySelector(".workgroup-task-title")).toBeNull();
+      expect(document.querySelector('[data-ac-testid="workgroupTask.title"]')).toBeNull();
       publish();
-      const title = document.querySelector<HTMLElement>(".workgroup-task-title")!;
+      const title = document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.title"]')!;
       expect(title.textContent).toBe("Human title");
       expect(title.tabIndex).toBe(0);
-      expect(document.querySelector(".workgroup-task-text")?.textContent).toBe(snapshot().description);
+      expect(document.querySelector('[data-ac-testid="workgroupTask.description"]')?.textContent).toBe(snapshot().description);
       expect(document.querySelector(".workgroup-task-text b")).toBeNull();
-      const tooltip = document.querySelector<HTMLElement>('[role="tooltip"]')!;
+      const tooltip = document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.tooltip"]')!;
       expect(tooltip.textContent).toBe(snapshot().status);
       expect(title.getAttribute("aria-describedby")).toBe(tooltip.id);
-      expect(document.querySelector(".workgroup-task-panel")?.contains(tooltip)).toBe(false);
+      expect(document.querySelector('[data-ac-testid="workgroupTask.root"]')?.contains(tooltip)).toBe(false);
       title.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
       title.focus();
       await waitFor(() => expect(tooltip.style.display).toBe("block"));
@@ -198,10 +244,10 @@ describe("P4 authoritative description and accessible status", () => {
       expect(tooltip.style.display).toBe("none");
       window.dispatchEvent(new Event("resize"));
       publish({ status: "Refreshed status" });
-      expect(document.querySelector<HTMLElement>('[role="tooltip"]')!.style.display).toBe("none");
+      expect(document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.tooltip"]')!.style.display).toBe("none");
       title.blur(); title.focus();
-      await waitFor(() => expect(document.querySelector<HTMLElement>('[role="tooltip"]')!.style.display).toBe("block"));
-      expect(document.querySelector<HTMLElement>('[role="tooltip"]')!.style.display).toBe("block");
+      await waitFor(() => expect(document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.tooltip"]')!.style.display).toBe("block"));
+      expect(document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.tooltip"]')!.style.display).toBe("block");
     } finally { view.cleanup(); }
   });
 
@@ -211,14 +257,14 @@ describe("P4 authoritative description and accessible status", () => {
       publish();
       terminalStore.invalidateTask(root);
       expect(document.body.textContent).toContain("Refreshing task…");
-      expect(document.querySelector('[role="tooltip"]')).toBeNull();
-      expect(document.querySelector(".workgroup-task-text")?.textContent).toBe(snapshot().description);
+      expect(document.querySelector('[data-ac-testid="workgroupTask.tooltip"]')).toBeNull();
+      expect(document.querySelector('[data-ac-testid="workgroupTask.description"]')?.textContent).toBe(snapshot().description);
       terminalStore.failTaskRead(terminalStore.beginTaskRead());
       expect(document.body.textContent).toContain("Could not refresh the task.");
-      expect(document.querySelector('[role="tooltip"]')).toBeNull();
+      expect(document.querySelector('[data-ac-testid="workgroupTask.tooltip"]')).toBeNull();
       publish({ taskTitle: null, status: null, revision: "legacy:0", tailIncomplete: true });
-      expect(document.querySelector(".workgroup-task-title")?.textContent).toBe("--No title specified--");
-      expect(document.querySelector(".workgroup-task-title")?.hasAttribute("aria-describedby")).toBe(false);
+      expect(document.querySelector('[data-ac-testid="workgroupTask.title"]')?.textContent).toBe("--No title specified--");
+      expect(document.querySelector('[data-ac-testid="workgroupTask.title"]')?.hasAttribute("aria-describedby")).toBe(false);
       expect(document.body.textContent).toContain("Task history is incomplete.");
     } finally { view.cleanup(); }
   });
@@ -229,7 +275,7 @@ describe("P4 authoritative description and accessible status", () => {
       terminalStore.failTaskRead(terminalStore.beginTaskRead());
       expect(document.body.textContent).toContain("Could not read the task.");
       publish({ task: null, taskTitle: null, description: "", status: null });
-      expect(document.querySelector(".workgroup-task-title")?.textContent).toBe("--No title specified--");
+      expect(document.querySelector('[data-ac-testid="workgroupTask.title"]')?.textContent).toBe("--No title specified--");
       expect(document.body.textContent).not.toContain("Could not read");
     } finally { view.cleanup(); }
   });
@@ -238,8 +284,8 @@ describe("P4 authoritative description and accessible status", () => {
     const view = await renderWithCwd(root + "/__agent_x");
     try {
       publish(); vi.useFakeTimers();
-      const title = document.querySelector<HTMLElement>(".workgroup-task-title")!;
-      const tooltip = document.querySelector<HTMLElement>('[role="tooltip"]')!;
+      const title = document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.title"]')!;
+      const tooltip = document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.tooltip"]')!;
       title.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
       title.dispatchEvent(new Event("pointerenter"));
       title.dispatchEvent(new Event("pointerleave"));
@@ -257,25 +303,25 @@ describe("P4 authoritative description and accessible status", () => {
       title.dispatchEvent(tab); expect(tab.defaultPrevented).toBe(false);
       tooltip.dispatchEvent(new Event("pointerleave")); vi.advanceTimersByTime(150);
       expect(tooltip.style.display).toBe("none");
-      view.cleanup(); vi.runAllTimers(); expect(document.querySelector('[role="tooltip"]')).toBeNull();
+      view.cleanup(); vi.runAllTimers(); expect(document.querySelector('[data-ac-testid="workgroupTask.tooltip"]')).toBeNull();
     } finally { view.cleanup(); }
   });
   it("B3 hover Escape closes the tooltip while the focused terminal receives its key", async () => {
     const view = await renderWithCwd(root + "/__agent_x");
     try {
       publish();
-      const title = document.querySelector<HTMLElement>(".workgroup-task-title")!;
+      const title = document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.title"]')!;
       title.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
       const terminalInput = document.createElement("textarea"); document.body.appendChild(terminalInput);
       terminalInput.focus();
       title.dispatchEvent(new Event("pointerenter"));
-      await waitFor(() => expect(document.querySelector<HTMLElement>('[role="tooltip"]')?.style.display).toBe("block"));
+      await waitFor(() => expect(document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.tooltip"]')?.style.display).toBe("block"));
       const received = vi.fn(); terminalInput.addEventListener("keydown", received);
       const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
       terminalInput.dispatchEvent(escape);
       expect(received).toHaveBeenCalledOnce();
       expect(escape.defaultPrevented).toBe(false);
-      expect(document.querySelector<HTMLElement>('[role="tooltip"]')?.style.display).toBe("none");
+      expect(document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.tooltip"]')?.style.display).toBe("none");
       title.focus(); publish({ status: null });
       const noTooltipEscape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
       title.dispatchEvent(noTooltipEscape); expect(noTooltipEscape.defaultPrevented).toBe(false);

@@ -45,20 +45,20 @@ const TaskCleanConfirmModal: Component<TaskCleanConfirmModalProps> = (props) => 
 
   return (
     <div
-      class="quit-confirm-backdrop"
+      data-ac-testid="taskCleanConfirm.root" data-ac-role="dialog" class="quit-confirm-backdrop"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="task-clean-title"
       aria-describedby="task-clean-body"
     >
       <div class="quit-confirm-modal">
-        <h2 id="task-clean-title" class="quit-confirm-title">Clean TASK?</h2>
-        <p id="task-clean-body" class="quit-confirm-body">
+        <h2 data-ac-testid="taskCleanConfirm.title" data-ac-role="surface" id="task-clean-title" class="quit-confirm-title">Clean TASK?</h2>
+        <p data-ac-testid="taskCleanConfirm.body" data-ac-role="surface" id="task-clean-body" class="quit-confirm-body">
           Back up the task and its history with the same timestamp, then start a new topic?
         </p>
         <div class="quit-confirm-actions">
           <button
-            ref={cancelBtnRef}
+            data-ac-testid="taskCleanConfirm.cancel" data-ac-role="button" ref={cancelBtnRef}
             class="quit-confirm-btn quit-confirm-btn-cancel"
             onClick={() => props.onCancel()}
             type="button"
@@ -66,7 +66,7 @@ const TaskCleanConfirmModal: Component<TaskCleanConfirmModalProps> = (props) => 
             Cancel
           </button>
           <button
-            ref={confirmBtnRef}
+            data-ac-testid="taskCleanConfirm.confirm" data-ac-role="button" ref={confirmBtnRef}
             class="quit-confirm-btn quit-confirm-btn-quit"
             onClick={() => props.onConfirm()}
             type="button"

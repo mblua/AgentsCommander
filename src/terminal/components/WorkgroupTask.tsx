@@ -375,13 +375,13 @@ const WorkgroupTask: Component = () => {
 
 
   return (
-    <div class="workgroup-task-panel">
+    <div data-ac-testid="workgroupTask.root" data-ac-role="surface" class="workgroup-task-panel">
       <div class="workgroup-task-header">
         <div class="workgroup-task-label">
           TASK
           <Show when={readable()}>
             <span>: </span>
-            <span ref={titleAnchor} class="workgroup-task-title" tabIndex={0}
+            <span data-ac-testid="workgroupTask.title" data-ac-role="surface" ref={titleAnchor} class="workgroup-task-title" tabIndex={0}
               aria-describedby={tooltipStatus() !== null ? tooltipId : undefined}
               onPointerEnter={() => enterTooltip("title")} onPointerLeave={() => leaveTooltip("title")}
               onFocus={() => { titleFocused = true; escaped = false; openTooltip(); }}
@@ -394,6 +394,7 @@ const WorkgroupTask: Component = () => {
             class="workgroup-task-action"
             onClick={startEditing}
             disabled={editDisabled()}
+            data-ac-testid="workgroupTask.edit" data-ac-role="button"
             title="Edit TASK title"
             type="button"
           >
@@ -403,6 +404,7 @@ const WorkgroupTask: Component = () => {
             class="workgroup-task-action"
             onClick={requestClean}
             disabled={cleanDisabled()}
+            data-ac-testid="workgroupTask.clean" data-ac-role="button"
             title="Clean TASK (reset for new topic)"
             type="button"
           >
@@ -411,12 +413,12 @@ const WorkgroupTask: Component = () => {
         </div>
       </div>
       <Show when={readMessage()}>
-        <div class="workgroup-task-error" classList={{ "workgroup-task-loading": terminalStore.taskReadState === "loading" || terminalStore.taskReadState === "refreshing" || (terminalStore.cleanPending && !terminalStore.cleanReadFailed) }}>{readMessage()}</div>
+        <div data-ac-testid="workgroupTask.readMessage" data-ac-role="status" class="workgroup-task-error" classList={{ "workgroup-task-loading": terminalStore.taskReadState === "loading" || terminalStore.taskReadState === "refreshing" || (terminalStore.cleanPending && !terminalStore.cleanReadFailed) }}>{readMessage()}</div>
       </Show>
-      <Show when={readable()}><div class="workgroup-task-text">{snapshot()?.description}</div></Show>
-      <Show when={snapshot()?.tailIncomplete && readable()}><div class="workgroup-task-error">Task history is incomplete.</div></Show>
+      <Show when={readable()}><div data-ac-testid="workgroupTask.description" data-ac-role="surface" class="workgroup-task-text">{snapshot()?.description}</div></Show>
+      <Show when={snapshot()?.tailIncomplete && readable()}><div data-ac-testid="workgroupTask.historyIncomplete" data-ac-role="status" class="workgroup-task-error">Task history is incomplete.</div></Show>
       <Show when={tooltipStatus() !== null}>
-        <Portal><div id={tooltipId} ref={tooltipElement} role="tooltip" class="workgroup-task-tooltip"
+        <Portal><div data-ac-testid="workgroupTask.tooltip" data-ac-role="overlay" id={tooltipId} ref={tooltipElement} role="tooltip" class="workgroup-task-tooltip"
           style={{ display: tooltipOpen() && tooltipVisible() ? "block" : "none", left: tooltipPosition().left + "px", top: tooltipPosition().top + "px",
             "max-width": tooltipPosition().width + "px", "max-height": tooltipPosition().height + "px" }}
           onPointerEnter={() => enterTooltip("tooltip")} onPointerLeave={() => leaveTooltip("tooltip")}>{tooltipStatus()}</div></Portal>
@@ -424,6 +426,7 @@ const WorkgroupTask: Component = () => {
       <Show when={editing()}>
         <div class="workgroup-task-title-edit">
           <input
+            data-ac-testid="workgroupTask.titleInput" data-ac-role="textbox"
             ref={onInputRef}
             class="workgroup-task-title-input"
             value={titleDraft()}
@@ -433,6 +436,7 @@ const WorkgroupTask: Component = () => {
             disabled={busy()}
           />
           <button
+            data-ac-testid="workgroupTask.save" data-ac-role="button"
             class="workgroup-task-title-btn save"
             onClick={saveTitle}
             disabled={busy() || !titleDraft().trim()}
@@ -441,6 +445,7 @@ const WorkgroupTask: Component = () => {
             Save
           </button>
           <button
+            data-ac-testid="workgroupTask.cancel" data-ac-role="button"
             class="workgroup-task-title-btn cancel"
             onClick={cancelEditing}
             disabled={busy()}
@@ -451,7 +456,7 @@ const WorkgroupTask: Component = () => {
         </div>
       </Show>
       <Show when={error()}>
-        <div class="workgroup-task-error">{error()}</div>
+        <div data-ac-testid="workgroupTask.mutationError" data-ac-role="status" class="workgroup-task-error">{error()}</div>
       </Show>
       <Show when={confirmingClean()}>
         <Portal>
