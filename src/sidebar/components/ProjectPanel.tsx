@@ -1,4 +1,4 @@
-import { Accessor, Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
+import { Accessor, Component, For, Show, createEffect, createMemo, createSignal, createUniqueId, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings, UnresolvedLoopTarget, CoManagedState, OffReason } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, CoManagedAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
@@ -439,6 +439,161 @@ function remoteActivityClasses(sourcePath: string): string {
   return `${activity.ci === "running" ? " ci-running" : ""}${
     activity.staleness === "stale" ? " stale" : ""
   }`;
+}
+
+// Inline sidebar label: reuse the landed terminal interaction without a cross-surface import.
+const SidebarTaskLabel: Component<{ room: string; text: string; class: string; testId?: string; state?: string }> = (props) => {
+  const tooltipStatus = createMemo(() => projectStore.taskSnapshot(props.room)?.status ?? null);
+  const tooltipId = createUniqueId();
+  let titleAnchor: HTMLSpanElement | undefined;
+  let tooltipElement: HTMLDivElement | undefined;
+  let titlePointer = false;
+  let tooltipPointer = false;
+  let titleFocused = false;
+  let escaped = false;
+  let leaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let frame: number | undefined;
+  const [tooltipOpen, setTooltipOpen] = createSignal(false);
+  const [tooltipVisible, setTooltipVisible] = createSignal(false);
+  const [tooltipPosition, setTooltipPosition] = createSignal({ left: 16, top: 16, width: 640, height: 384 });
+  const cancelLeave = () => { clearTimeout(leaveTimer); leaveTimer = undefined; };
+  const openTooltip = () => {
+    cancelLeave();
+    if (!escaped && tooltipStatus() !== null) setTooltipOpen(true);
+  };
+  const enterTooltip = (region: "title" | "tooltip") => {
+    if (region === "title") { if (!titlePointer) escaped = false; titlePointer = true; }
+    else tooltipPointer = true;
+    openTooltip();
+  };
+  const leaveTooltip = (region: "title" | "tooltip" | "focus") => {
+    if (region === "title") titlePointer = false;
+    if (region === "tooltip") tooltipPointer = false;
+    cancelLeave();
+    if (titleFocused || titlePointer || tooltipPointer) return;
+    leaveTimer = setTimeout(() => { leaveTimer = undefined; setTooltipOpen(false); }, 150);
+  };
+  const positionTooltip = () => {
+    if (!titleAnchor || !tooltipElement) return;
+    const viewport = window.visualViewport;
+    const leftEdge = viewport?.offsetLeft ?? 0;
+    const topEdge = viewport?.offsetTop ?? 0;
+    const width = viewport?.width ?? window.innerWidth;
+    const height = viewport?.height ?? window.innerHeight;
+    const anchor = titleAnchor.getBoundingClientRect();
+    const visible = anchor.right > leftEdge && anchor.left < leftEdge + width &&
+      anchor.bottom > topEdge && anchor.top < topEdge + height;
+    setTooltipVisible(visible);
+    if (!visible) return;
+    const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const maxWidth = Math.max(0, Math.min(40 * rem, width - 32));
+    const maxHeight = Math.max(0, Math.min(24 * rem, height - 32));
+    tooltipElement.style.maxWidth = maxWidth + "px";
+    tooltipElement.style.maxHeight = maxHeight + "px";
+    const rect = tooltipElement.getBoundingClientRect();
+    const below = anchor.bottom + 6;
+    const preferred = below + rect.height <= topEdge + height - 16 ? below : anchor.top - 6 - rect.height;
+    setTooltipPosition({
+      left: Math.max(leftEdge + 16, Math.min(anchor.left, leftEdge + width - 16 - rect.width)),
+      top: Math.max(topEdge + 16, Math.min(preferred, topEdge + height - 16 - rect.height)),
+      width: maxWidth, height: maxHeight,
+    });
+  };
+  const scheduleTooltipPosition = () => {
+    if (frame !== undefined) cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => { frame = undefined; positionTooltip(); });
+  };
+  const dismissTooltip = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || tooltipStatus() === null || !(titleFocused || titlePointer || tooltipPointer)) return;
+    escaped = true;
+    cancelLeave();
+    setTooltipOpen(false);
+    if (event.target === titleAnchor) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+  const tooltipKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") { dismissTooltip(event); return; }
+    const element = tooltipElement;
+    if (!tooltipOpen() || !element || element.scrollHeight <= element.clientHeight) return;
+    const targets: Record<string, number> = {
+      ArrowUp: element.scrollTop - 32, ArrowDown: element.scrollTop + 32,
+      PageUp: element.scrollTop - element.clientHeight, PageDown: element.scrollTop + element.clientHeight,
+      Home: 0, End: element.scrollHeight,
+    };
+    if (!(event.key in targets)) return;
+    element.scrollTop = targets[event.key];
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  createEffect(() => {
+    // Invalidation hides the overlay immediately, retaining Escape's latch.
+    const snapshot = projectStore.taskSnapshot(props.room);
+    if (snapshot?.status === null) escaped = false;
+    if (tooltipStatus() === null) { cancelLeave(); tooltipPointer = false; setTooltipOpen(false); }
+    else if (titleFocused || titlePointer || tooltipPointer) openTooltip();
+  });
+  createEffect(() => {
+    const room = props.room;
+    void room;
+    escaped = false;
+    titlePointer = false;
+    tooltipPointer = false;
+    titleFocused = false;
+    cancelLeave();
+    setTooltipOpen(false);
+  });
+  createEffect(() => {
+    if (!tooltipOpen()) return;
+    tooltipStatus();
+    scheduleTooltipPosition();
+    window.addEventListener("scroll", scheduleTooltipPosition, true);
+    window.addEventListener("resize", scheduleTooltipPosition);
+
+    window.visualViewport?.addEventListener("scroll", scheduleTooltipPosition);
+    window.visualViewport?.addEventListener("resize", scheduleTooltipPosition);
+    onCleanup(() => {
+      window.removeEventListener("scroll", scheduleTooltipPosition, true);
+      window.removeEventListener("resize", scheduleTooltipPosition);
+
+      window.visualViewport?.removeEventListener("scroll", scheduleTooltipPosition);
+      window.visualViewport?.removeEventListener("resize", scheduleTooltipPosition);
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+    });
+  });
+  onMount(() => document.addEventListener("keydown", dismissTooltip, true));
+  onCleanup(() => {
+    document.removeEventListener("keydown", dismissTooltip, true);
+    cancelLeave();
+    if (frame !== undefined) cancelAnimationFrame(frame);
+  });
+
+
+  return <>
+    <span ref={titleAnchor} class={props.class + " sidebar-task-label"} tabIndex={0}
+      data-ac-testid={props.testId} data-ac-role={props.testId ? "text" : undefined} data-ac-state={props.state}
+      aria-describedby={tooltipStatus() !== null ? tooltipId : undefined}
+      onPointerEnter={() => enterTooltip("title")} onPointerLeave={() => leaveTooltip("title")}
+      onFocus={() => { if (!titleFocused) escaped = false; titleFocused = true; openTooltip(); }}
+      onBlur={() => { titleFocused = false; leaveTooltip("focus"); }}
+      onKeyDown={tooltipKeyDown}>{props.text}</span>
+    <Show when={tooltipStatus() !== null}>
+      <Portal><div id={tooltipId} ref={tooltipElement} role="tooltip" class="sidebar-task-tooltip"
+        style={{ display: tooltipOpen() && tooltipVisible() ? "block" : "none", left: tooltipPosition().left + "px", top: tooltipPosition().top + "px",
+          "max-width": tooltipPosition().width + "px", "max-height": tooltipPosition().height + "px" }}
+        onPointerEnter={() => enterTooltip("tooltip")} onPointerLeave={() => leaveTooltip("tooltip")}>{tooltipStatus()}</div></Portal>
+    </Show>
+  </>;
+};
+
+function taskCleanDisabled(room: string): boolean {
+  const snapshot = projectStore.taskSnapshot(room);
+  if (!snapshot || snapshot.statusRecord?.kind === "status" || !isTaskClean(snapshot.taskTitle)) return false;
+  if (snapshot.status !== null) return false;
+  const description = snapshot.description.replace(/\r\n/g, "\n").replace(/\n$/, "");
+  return description === "Ready to start a new topic";
 }
 
 const ProjectPanel: Component = () => {
@@ -2276,6 +2431,7 @@ const ProjectPanel: Component = () => {
             } else {
               await TaskAPI.cleanAt(wg.path);
             }
+            await projectStore.refreshTaskSnapshot(wg.path);
           } catch (e) {
             console.error("Failed to clear task title:", e);
           }
@@ -2352,6 +2508,7 @@ const ProjectPanel: Component = () => {
             } else {
               await TaskAPI.setTitleAt(target.wgPath, title);
             }
+            await projectStore.refreshTaskSnapshot(target.wgPath);
             // Close only if the same workgroup's menu is still open (raw path
             // equality - store events replace wg objects, so reference identity
             // would fail right after the save event lands).
@@ -2906,7 +3063,7 @@ const ProjectPanel: Component = () => {
               <div class="replica-item-info">
                 <Show when={taskTitle}>
                   <div class="coord-task-line">
-                    <span class="coord-task-title" title={taskTitle ?? undefined}>{taskTitle}</span>
+                    <SidebarTaskLabel room={wg.path} class="coord-task-title" text={taskTitle ?? ""} />
                     <Show when={showRaiseHand()}>
                       <span
                         class="coord-communication-slot"
@@ -3134,10 +3291,9 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <span class="ac-wg-name">{wg.name}</span>
                   <Show when={wg.taskTitle?.trim() || stripFrontmatter(wg.taskTitle ?? "").trim()}>
-                    {(text) => <span class="ac-wg-task"
-                      data-ac-testid={`workgroup.taskTitle.${projectAutomationId()}.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}`}
-                      data-ac-role="text"
-                      data-ac-state={isTaskClean(wg.taskTitle) ? "clean" : "task"}>{text()}</span>}
+                    {(text) => <SidebarTaskLabel room={wg.path} class="ac-wg-task" text={text()}
+                      testId={`workgroup.taskTitle.${projectAutomationId()}.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}`}
+                      state={isTaskClean(wg.taskTitle) ? "clean" : "task"} />}
                   </Show>
                 </div>
               </div>
@@ -4202,7 +4358,7 @@ const ProjectPanel: Component = () => {
                 >
                   <Show when={activeReplicaMenu()}>
                     {(menu) => {
-                      const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
+                      const broomDisabled = () => taskCleanDisabled(menu().wg.path);
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
                       const matrixFolder = () => replicaMatrixFolder(menu().replica);
@@ -4395,7 +4551,7 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <Show when={inactiveReplicaMenu()}>
                     {(menu) => {
-                      const broomDisabled = () => isTaskClean(menu().wg.taskTitle);
+                      const broomDisabled = () => taskCleanDisabled(menu().wg.path);
                       const broomTitle = () =>
                         broomDisabled() ? "Nothing to clear" : "Clear task title";
                       const matrixFolder = () => replicaMatrixFolder(menu().replica);
