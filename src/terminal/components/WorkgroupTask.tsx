@@ -218,7 +218,7 @@ const WorkgroupTask: Component = () => {
   });
   onCleanup(() => { cancelLeave(); if (frame !== undefined) cancelAnimationFrame(frame); });
 
-  const mutationRoot = () => snapshot()?.workgroupRoot ?? cwd().replace(/\/g, "/").replace(/((?:^|/)(?:room|wg)-[^/]+).*$/, "$1");
+  const mutationRoot = () => snapshot()?.workgroupRoot ?? cwd().replace(/\/g, "/").replace(/((?:^|\/)(?:room|wg)-[^/]+).*$/, "$1");
   const sessionId = createMemo(() => terminalStore.activeSessionId);
   const cwd = createMemo(() => terminalStore.activeWorkingDirectory);
   const baseDisabled = createMemo(

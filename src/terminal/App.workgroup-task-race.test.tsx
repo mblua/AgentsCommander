@@ -170,13 +170,10 @@ function otherWorkgroupSession(workgroupTask: string | null) {
 }
 
 function taskSnapshot(task = OLD_TASK, workgroupRoot = WG_ROOT) {
-  return { workgroupRoot, task, taskTitle: task.match(/title: ([^
-]+)/)?.[1] ?? null,
-    description: "Human description", status: "In progress
-Issue 2842", revision: "topic:4",
+  return { workgroupRoot, task, taskTitle: task.match(/title: ([^\n]+)/)?.[1] ?? null,
+    description: "Human description", status: "In progress\nIssue 2842", revision: "topic:4",
     statusRecord: { schemaVersion: 1 as const, kind: "status" as const, topicId: "topic", sequence: 4,
-      requestId: null, baseRevision: "topic:3", recordedAt: "2026-10-06", author: null, status: "In progress
-Issue 2842" }, tailIncomplete: false };
+      requestId: null, baseRevision: "topic:3", recordedAt: "2026-10-06", author: null, status: "In progress\nIssue 2842" }, tailIncomplete: false };
 }
 
 function setupTransport(fake: FakeTransport, listSessions: () => unknown): void {

@@ -2098,7 +2098,7 @@ export type WorkgroupTaskUpdatedEvent = Pick<TaskUpdateResult, "status" | "revis
       task: string | null;
       taskTitle: string | null;
       sessionIds: string[];
-    };
+    });
 
 
 export interface ProjectRegistration {
