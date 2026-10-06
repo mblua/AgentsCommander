@@ -347,8 +347,28 @@ pub struct SourceRef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SourceRevision {
-    Bytes { sha256: String },
-    Absent,
+    Bytes {
+        #[serde(deserialize_with = "deserialize_source_sha256")]
+        sha256: String,
+    },
+    Absent {},
+}
+
+fn deserialize_source_sha256<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let sha256 = String::deserialize(deserializer)?;
+    if sha256.len() != 64
+        || !sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(serde::de::Error::custom(
+            "sha256 must be a full lowercase SHA256 digest",
+        ));
+    }
+    Ok(sha256)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -846,7 +866,7 @@ mod source_identity_tests {
 
     #[test]
     fn identity_revision_absent_is_not_empty_bytes_and_rejects_mixed_union() {
-        let absent = serde_json::to_value(SourceRevision::Absent).unwrap();
+        let absent = serde_json::to_value(SourceRevision::Absent {}).unwrap();
         let bytes = serde_json::to_value(SourceRevision::Bytes {
             sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
         })
@@ -857,6 +877,16 @@ mod source_identity_tests {
             serde_json::json!({"kind":"absent","sha256":""})
         )
         .is_err());
+        for digest in [
+            "",
+            "abc",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ] {
+            assert!(serde_json::from_value::<SourceRevision>(
+                serde_json::json!({"kind":"bytes","sha256":digest})
+            )
+            .is_err());
+        }
     }
 
     #[test]
@@ -891,7 +921,7 @@ mod source_identity_tests {
         );
         let ticket = SourceSelectionTicket {
             configuration_ref: configuration_ref(),
-            expected_source_revision: SourceRevision::Absent,
+            expected_source_revision: SourceRevision::Absent {},
             catalog_context_revision: "context-generation".into(),
         };
         assert_eq!(
@@ -901,7 +931,7 @@ mod source_identity_tests {
         );
         let snapshot = SourceSnapshot::<AgentConfig> {
             source: source_ref(),
-            revision: SourceRevision::Absent,
+            revision: SourceRevision::Absent {},
             availability: SourceAvailability::Absent,
             capabilities: SourceCapabilities {
                 editable_create: true,
