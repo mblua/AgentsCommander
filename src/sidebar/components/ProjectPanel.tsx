@@ -1,4 +1,5 @@
-import { Accessor, Component, For, Show, createEffect, createMemo, createSignal, createUniqueId, on, onMount, onCleanup } from "solid-js";
+import { createTaskStatusTooltip } from "../../shared/task-status-tooltip";
+import { Accessor, Component, For, Show, createEffect, createMemo, createSignal, createUniqueId, on, onMount, onCleanup, untrack } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings, UnresolvedLoopTarget, CoManagedState, OffReason } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, CoManagedAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
@@ -441,143 +442,49 @@ function remoteActivityClasses(sourcePath: string): string {
   }`;
 }
 
-// Inline sidebar label: reuse the landed terminal interaction without a cross-surface import.
+// Sidebar retains snapshot ownership and adapts the shared tooltip interaction.
 const SidebarTaskLabel: Component<{ room: string; text: string; class: string; testId?: string; state?: string }> = (props) => {
   const tooltipStatus = createMemo(() => projectStore.taskSnapshot(props.room)?.status ?? null);
   const tooltipId = createUniqueId();
   let titleAnchor: HTMLSpanElement | undefined;
   let tooltipElement: HTMLDivElement | undefined;
-  let titlePointer = false;
-  let tooltipPointer = false;
-  let titleFocused = false;
-  let escaped = false;
-  let leaveTimer: ReturnType<typeof setTimeout> | undefined;
-  let frame: number | undefined;
-  const [tooltipOpen, setTooltipOpen] = createSignal(false);
-  const [tooltipVisible, setTooltipVisible] = createSignal(false);
-  const [tooltipPosition, setTooltipPosition] = createSignal({ left: 16, top: 16, width: 640, height: 384 });
-  const cancelLeave = () => { clearTimeout(leaveTimer); leaveTimer = undefined; };
-  const openTooltip = () => {
-    cancelLeave();
-    if (!escaped && tooltipStatus() !== null) setTooltipOpen(true);
-  };
-  const enterTooltip = (region: "title" | "tooltip") => {
-    if (region === "title") { if (!titlePointer) escaped = false; titlePointer = true; }
-    else tooltipPointer = true;
-    openTooltip();
-  };
-  const leaveTooltip = (region: "title" | "tooltip" | "focus") => {
-    if (region === "title") titlePointer = false;
-    if (region === "tooltip") tooltipPointer = false;
-    cancelLeave();
-    if (titleFocused || titlePointer || tooltipPointer) return;
-    leaveTimer = setTimeout(() => { leaveTimer = undefined; setTooltipOpen(false); }, 150);
-  };
-  const positionTooltip = () => {
-    if (!titleAnchor || !tooltipElement) return;
-    const viewport = window.visualViewport;
-    const leftEdge = viewport?.offsetLeft ?? 0;
-    const topEdge = viewport?.offsetTop ?? 0;
-    const width = viewport?.width ?? window.innerWidth;
-    const height = viewport?.height ?? window.innerHeight;
-    const anchor = titleAnchor.getBoundingClientRect();
-    const visible = anchor.right > leftEdge && anchor.left < leftEdge + width &&
-      anchor.bottom > topEdge && anchor.top < topEdge + height;
-    setTooltipVisible(visible);
-    if (!visible) return;
-    const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const maxWidth = Math.max(0, Math.min(40 * rem, width - 32));
-    const maxHeight = Math.max(0, Math.min(24 * rem, height - 32));
-    tooltipElement.style.maxWidth = maxWidth + "px";
-    tooltipElement.style.maxHeight = maxHeight + "px";
-    const rect = tooltipElement.getBoundingClientRect();
-    const below = anchor.bottom + 6;
-    const preferred = below + rect.height <= topEdge + height - 16 ? below : anchor.top - 6 - rect.height;
-    setTooltipPosition({
-      left: Math.max(leftEdge + 16, Math.min(anchor.left, leftEdge + width - 16 - rect.width)),
-      top: Math.max(topEdge + 16, Math.min(preferred, topEdge + height - 16 - rect.height)),
-      width: maxWidth, height: maxHeight,
-    });
-  };
-  const scheduleTooltipPosition = () => {
-    if (frame !== undefined) cancelAnimationFrame(frame);
-    frame = requestAnimationFrame(() => { frame = undefined; positionTooltip(); });
-  };
+  const tooltip = createTaskStatusTooltip({
+    status: tooltipStatus, titleAnchor: () => titleAnchor, tooltipElement: () => tooltipElement,
+  });
+  const { open: tooltipOpen, visible: tooltipVisible, position: tooltipPosition,
+    enter: enterTooltip, leave: leaveTooltip } = tooltip;
   const dismissTooltip = (event: KeyboardEvent) => {
-    if (event.key !== "Escape" || tooltipStatus() === null || !(titleFocused || titlePointer || tooltipPointer)) return;
-    escaped = true;
-    cancelLeave();
-    setTooltipOpen(false);
-    if (event.target === titleAnchor) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
+    if (tooltipStatus() !== null) tooltip.dismiss(event);
   };
-  const tooltipKeyDown = (event: KeyboardEvent) => {
-    if (event.key === "Escape") { dismissTooltip(event); return; }
-    const element = tooltipElement;
-    if (!tooltipOpen() || !element || element.scrollHeight <= element.clientHeight) return;
-    const targets: Record<string, number> = {
-      ArrowUp: element.scrollTop - 32, ArrowDown: element.scrollTop + 32,
-      PageUp: element.scrollTop - element.clientHeight, PageDown: element.scrollTop + element.clientHeight,
-      Home: 0, End: element.scrollHeight,
-    };
-    if (!(event.key in targets)) return;
-    element.scrollTop = targets[event.key];
-    event.preventDefault();
-    event.stopPropagation();
-  };
+  const tooltipKeyDown = (event: KeyboardEvent) => tooltip.keyDown(event, tooltipStatus() !== null);
   createEffect(() => {
-    // Invalidation hides the overlay immediately, retaining Escape's latch.
     const snapshot = projectStore.taskSnapshot(props.room);
-    if (snapshot?.status === null) escaped = false;
-    if (tooltipStatus() === null) { cancelLeave(); tooltipPointer = false; setTooltipOpen(false); }
-    else if (titleFocused || titlePointer || tooltipPointer) openTooltip();
+    const status = tooltipStatus();
+    untrack(() => {
+      if (snapshot?.status === null) tooltip.resetDismissal();
+      if (status === null) tooltip.hideUnavailable();
+      else tooltip.openIfActive();
+    });
   });
   createEffect(() => {
-    const room = props.room;
-    void room;
-    escaped = false;
-    titlePointer = false;
-    tooltipPointer = false;
-    titleFocused = false;
-    cancelLeave();
-    setTooltipOpen(false);
+    props.room;
+    untrack(tooltip.resetIdentity);
   });
   createEffect(() => {
     if (!tooltipOpen()) return;
     tooltipStatus();
-    scheduleTooltipPosition();
-    window.addEventListener("scroll", scheduleTooltipPosition, true);
-    window.addEventListener("resize", scheduleTooltipPosition);
-
-    window.visualViewport?.addEventListener("scroll", scheduleTooltipPosition);
-    window.visualViewport?.addEventListener("resize", scheduleTooltipPosition);
-    onCleanup(() => {
-      window.removeEventListener("scroll", scheduleTooltipPosition, true);
-      window.removeEventListener("resize", scheduleTooltipPosition);
-
-      window.visualViewport?.removeEventListener("scroll", scheduleTooltipPosition);
-      window.visualViewport?.removeEventListener("resize", scheduleTooltipPosition);
-      if (frame !== undefined) cancelAnimationFrame(frame);
-      frame = undefined;
-    });
+    tooltip.schedulePosition();
   });
   onMount(() => document.addEventListener("keydown", dismissTooltip, true));
-  onCleanup(() => {
-    document.removeEventListener("keydown", dismissTooltip, true);
-    cancelLeave();
-    if (frame !== undefined) cancelAnimationFrame(frame);
-  });
-
+  onCleanup(() => document.removeEventListener("keydown", dismissTooltip, true));
 
   return <>
     <span ref={titleAnchor} class={props.class + " sidebar-task-label"} tabIndex={0}
       data-ac-testid={props.testId} data-ac-role={props.testId ? "text" : undefined} data-ac-state={props.state}
       aria-describedby={tooltipStatus() !== null ? tooltipId : undefined}
       onPointerEnter={() => enterTooltip("title")} onPointerLeave={() => leaveTooltip("title")}
-      onFocus={() => { if (!titleFocused) escaped = false; titleFocused = true; openTooltip(); }}
-      onBlur={() => { titleFocused = false; leaveTooltip("focus"); }}
+      onFocus={tooltip.focus}
+      onBlur={tooltip.blur}
       onKeyDown={tooltipKeyDown}>{props.text}</span>
     <Show when={tooltipStatus() !== null}>
       <Portal><div id={tooltipId} ref={tooltipElement} role="tooltip" class="sidebar-task-tooltip"
@@ -2526,6 +2433,54 @@ const ProjectPanel: Component = () => {
         const cancelReplicaTitleEdit = () => {
           resetTitleEditState();
         };
+
+
+        const renderReplicaTaskTitleEditor = ({ presentationRole }: { presentationRole?: "presentation" }) => (
+          <div
+            class="session-context-title-edit"
+            role={presentationRole}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <input
+              ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
+              class="session-context-title-input"
+              value={titleDraft()}
+              onInput={(e) => setTitleDraft(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                // Strictly required: keydown is not covered by the
+                // container's onClick, and the window keydown dismiss
+                // fires on Escape. Escape must cancel the editor, not
+                // close the whole menu.
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (!titleBusy()) void saveReplicaTitle();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelReplicaTitleEdit();
+                }
+              }}
+              placeholder="Title"
+              disabled={titleBusy()}
+            />
+            <button
+              class="session-context-title-btn save"
+              onClick={(e) => { e.stopPropagation(); void saveReplicaTitle(); }}
+              disabled={titleBusy() || !titleDraft().trim()}
+              type="button"
+            >
+              Save
+            </button>
+            <button
+              class="session-context-title-btn cancel"
+              onClick={(e) => { e.stopPropagation(); cancelReplicaTitleEdit(); }}
+              disabled={titleBusy()}
+              type="button"
+            >
+              Cancel
+            </button>
+          </div>
+        );
 
         const openMatrixFolder = async (path: string) => {
           setAgentCtxMenu(null);
@@ -4488,49 +4443,7 @@ const ProjectPanel: Component = () => {
                           <span class="session-context-option-icon session-context-task-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
                         </button>
                         <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
-                          <div
-                            class="session-context-title-edit"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <input
-                              ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
-                              class="session-context-title-input"
-                              value={titleDraft()}
-                              onInput={(e) => setTitleDraft(e.currentTarget.value)}
-                              onKeyDown={(e) => {
-                                // Strictly required: keydown is not covered by the
-                                // container's onClick, and the window keydown dismiss
-                                // fires on Escape. Escape must cancel the editor, not
-                                // close the whole menu.
-                                e.stopPropagation();
-                                if (e.key === "Enter") {
-                                  e.preventDefault();
-                                  if (!titleBusy()) void saveReplicaTitle();
-                                } else if (e.key === "Escape") {
-                                  e.preventDefault();
-                                  cancelReplicaTitleEdit();
-                                }
-                              }}
-                              placeholder="Title"
-                              disabled={titleBusy()}
-                            />
-                            <button
-                              class="session-context-title-btn save"
-                              onClick={(e) => { e.stopPropagation(); void saveReplicaTitle(); }}
-                              disabled={titleBusy() || !titleDraft().trim()}
-                              type="button"
-                            >
-                              Save
-                            </button>
-                            <button
-                              class="session-context-title-btn cancel"
-                              onClick={(e) => { e.stopPropagation(); cancelReplicaTitleEdit(); }}
-                              disabled={titleBusy()}
-                              type="button"
-                            >
-                              Cancel
-                            </button>
-                          </div>
+                          {renderReplicaTaskTitleEditor({ presentationRole: undefined })}
                         </Show>
                         <Show when={titleError()}>
                           <div class="session-context-title-error">{titleError()}</div>
@@ -4606,51 +4519,8 @@ const ProjectPanel: Component = () => {
                             <span class="session-context-option-icon session-context-task-icon" aria-hidden="true">&#x270E;</span> Edit TASK title
                           </button>
                           <Show when={titleEdit() && titleEdit()!.wgPath === menu().wg.path}>
-                            <div
-                              class="session-context-title-edit"
-                              role="presentation"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <input
-                                ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
-                                class="session-context-title-input"
-                                value={titleDraft()}
-                                onInput={(e) => setTitleDraft(e.currentTarget.value)}
-                                onKeyDown={(e) => {
-                                  // Strictly required: keydown is not covered by the
-                                  // container's onClick, and the window keydown dismiss
-                                  // fires on Escape. Escape must cancel the editor, not
-                                  // close the whole menu.
-                                  e.stopPropagation();
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    if (!titleBusy()) void saveReplicaTitle();
-                                  } else if (e.key === "Escape") {
-                                    e.preventDefault();
-                                    cancelReplicaTitleEdit();
-                                  }
-                                }}
-                                placeholder="Title"
-                                disabled={titleBusy()}
-                              />
-                              <button
-                                class="session-context-title-btn save"
-                                onClick={(e) => { e.stopPropagation(); void saveReplicaTitle(); }}
-                                disabled={titleBusy() || !titleDraft().trim()}
-                                type="button"
-                              >
-                                Save
-                              </button>
-                              <button
-                                class="session-context-title-btn cancel"
-                                onClick={(e) => { e.stopPropagation(); cancelReplicaTitleEdit(); }}
-                                disabled={titleBusy()}
-                                type="button"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </Show>
+                          {renderReplicaTaskTitleEditor({ presentationRole: "presentation" })}
+                        </Show>
                           <Show when={titleError()}>
                             <div class="session-context-title-error">{titleError()}</div>
                           </Show>

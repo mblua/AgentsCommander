@@ -332,6 +332,64 @@ describe("P4 authoritative description and accessible status", () => {
     } finally { view.cleanup(); }
   });
 
+  it("preserves dismissal through confirmed null and closes without reopening after invalidation", async () => {
+    const target = (id: string, role: string) => document.querySelector<HTMLElement>('[data-ac-testid="workgroupTask.' + id + '"][data-ac-role="' + role + '"]')!;
+    const view = await renderWithCwd(root + "/__agent_x");
+    try {
+      publish();
+      const title = target("title", "surface");
+      title.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
+      title.focus();
+      await waitFor(() => expect(target("tooltip", "overlay").style.display).toBe("block"));
+      title.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      publish({ status: null }); publish({ status: "returned" });
+      expect(target("tooltip", "overlay").style.display).toBe("none");
+      title.dispatchEvent(new FocusEvent("focus"));
+      expect(target("tooltip", "overlay").style.display).toBe("none");
+      title.blur(); title.focus();
+      await waitFor(() => expect(target("tooltip", "overlay").style.display).toBe("block"));
+      terminalStore.invalidateTask(root);
+      terminalStore.failTaskRead(terminalStore.beginTaskRead());
+      publish();
+      expect(target("tooltip", "overlay").style.display).toBe("none");
+      const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      title.dispatchEvent(escape);
+      expect(escape.defaultPrevented).toBe(false);
+    } finally { view.cleanup(); }
+  });
+
+  it("isolates repeated terminal owners and removes open-only listeners and pending work", async () => {
+    const first = await renderWithCwd(root + "/__agent_x");
+    const second = renderWithFakeTransport(() => <WorkgroupTask />, new FakeTransport());
+    const add = vi.spyOn(document, "addEventListener");
+    const remove = vi.spyOn(document, "removeEventListener");
+    try {
+      publish(); vi.useFakeTimers();
+      const titles = [...document.querySelectorAll<HTMLElement>('[data-ac-testid="workgroupTask.title"]')];
+      const overlays = [...document.querySelectorAll<HTMLElement>('[data-ac-testid="workgroupTask.tooltip"]')];
+      expect(new Set(overlays.map(element => element.id)).size).toBe(2);
+      for (const title of titles) {
+        title.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
+        title.dispatchEvent(new Event("pointerenter"));
+      }
+      vi.advanceTimersByTime(20);
+      expect(overlays.every(element => element.style.display === "block")).toBe(true);
+      titles[0].dispatchEvent(new Event("pointerleave"));
+      vi.advanceTimersByTime(150);
+      expect(overlays[0].style.display).toBe("none");
+      expect(overlays[1].style.display).toBe("block");
+      const added = add.mock.calls.filter(([event]) => event === "keydown");
+      expect(added).toHaveLength(2);
+      expect(remove.mock.calls.filter(([event]) => event === "keydown")).toHaveLength(1);
+      window.dispatchEvent(new Event("resize"));
+      titles[1].dispatchEvent(new Event("pointerleave"));
+      second.cleanup(); first.cleanup();
+      vi.runAllTimers();
+      expect(remove.mock.calls.filter(([event]) => event === "keydown")).toHaveLength(2);
+      expect(document.querySelector('[data-ac-testid="workgroupTask.tooltip"]')).toBeNull();
+    } finally { first.cleanup(); second.cleanup(); add.mockRestore(); remove.mockRestore(); }
+  });
+
   it("N3 resolves the nearest room when no snapshot exists and uses the backend completion root", async () => {
     const nestedRoot = "C:/room-unrelated/project/.ac/room-2-real";
     const backendRoot = "C:/ROOM-unrelated/project/.ac/room-2-real";

@@ -527,6 +527,28 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     }
   });
 
+  it("keeps repeated label owners independent and removes viewport listeners on disposal", async () => {
+    await statusPanel();
+    const [first, second] = taskLabels();
+    anchorInViewport(first); anchorInViewport(second);
+    const remove = vi.spyOn(window, "removeEventListener");
+    first.dispatchEvent(new Event("pointerenter"));
+    second.dispatchEvent(new Event("pointerenter"));
+    await waitFor(() => {
+      expect(tooltipFor(first).style.display).toBe("block");
+      expect(tooltipFor(second).style.display).toBe("block");
+    });
+    first.dispatchEvent(new Event("pointerleave"));
+    await waitFor(() => expect(tooltipFor(first).style.display).toBe("none"));
+    expect(tooltipFor(second).style.display).toBe("block");
+    second.dispatchEvent(new Event("pointerleave"));
+    rendered!.cleanup(); rendered = null;
+    expect(document.querySelector(".sidebar-task-tooltip")).toBeNull();
+    expect(remove.mock.calls.some(([event, , capture]) => event === "scroll" && capture === true)).toBe(true);
+    expect(remove.mock.calls.some(([event]) => event === "resize")).toBe(true);
+    remove.mockRestore();
+  });
+
   it("keeps Escape dismissed through refresh and error until reentry or refocus", async () => {
     const fake = await statusPanel();
     const title = taskLabels()[0]; anchorInViewport(title); title.focus();
