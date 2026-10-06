@@ -218,7 +218,13 @@ const WorkgroupTask: Component = () => {
   });
   onCleanup(() => { cancelLeave(); if (frame !== undefined) cancelAnimationFrame(frame); });
 
-  const mutationRoot = () => snapshot()?.workgroupRoot ?? cwd().replace(/\/g, "/").replace(/((?:^|\/)(?:room|wg)-[^/]+).*$/, "$1");
+  const mutationRoot = () => {
+    const root = snapshot()?.workgroupRoot;
+    if (root) return root;
+    const parts = cwd().split(String.fromCharCode(92)).join("/").split("/");
+    const index = parts.findIndex(part => part.startsWith("room-") || part.startsWith("wg-"));
+    return parts.slice(0, index < 0 ? parts.length : index + 1).join("/");
+  };
   const sessionId = createMemo(() => terminalStore.activeSessionId);
   const cwd = createMemo(() => terminalStore.activeWorkingDirectory);
   const baseDisabled = createMemo(
