@@ -1996,6 +1996,25 @@ pub(crate) fn discover_teams_in_project_filtered(
     }
 }
 
+/// Reuse the existing classified test-only junction spawn site.
+#[cfg(all(test, windows))]
+pub(crate) fn create_test_junction(link: &Path, target: &Path) {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("mklink /J must run");
+    assert!(
+        output.status.success(),
+        "mklink /J must create junction {} -> {}: stdout={} stderr={}",
+        link.display(),
+        target.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2011,17 +2030,7 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         std::fs::write(target.join("config.json"), "{\"agents\":[]}").unwrap();
         let link = ac.join("_team_linked");
-        let result = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(&link)
-            .arg(&target)
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "junction fixture failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
+        create_test_junction(&link, &target);
         let mut global = Vec::new();
         discover_teams_in_project(&project, &mut global);
         assert_eq!(global.len(), 1);
@@ -3577,19 +3586,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&real, &linked).unwrap();
         #[cfg(windows)]
-        {
-            let status = std::process::Command::new("cmd")
-                .args([
-                    "/C",
-                    "mklink",
-                    "/J",
-                    &linked.to_string_lossy(),
-                    &real.to_string_lossy(),
-                ])
-                .status()
-                .expect("mklink /J must run");
-            assert!(status.success(), "mklink /J must create the junction");
-        }
+        create_test_junction(&linked, &real);
         let discovered = discover_verified_terminal_snapshot_targets_counted(&paths)
             .expect("scan must not abort on a linked room");
         assert_eq!(discovered.targets.len(), 2);

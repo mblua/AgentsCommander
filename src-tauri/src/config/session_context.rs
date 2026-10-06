@@ -14221,19 +14221,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[cfg(windows)]
     #[test]
     fn issue_2868_team_junction_parent_leaf_and_dangling_are_rejected() {
-        fn junction(link: &Path, target: &Path) {
-            let status = std::process::Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(link)
-                .arg(target)
-                .output()
-                .unwrap();
-            assert!(
-                status.status.success(),
-                "junction fixture failed: {}",
-                String::from_utf8_lossy(&status.stderr)
-            );
-        }
+        use super::super::teams::create_test_junction as junction;
         let temp = tempfile::tempdir().unwrap();
         let (ac, _, replica, matrix) = make_valid_replica(temp.path());
         let outside = temp.path().join("outside");
@@ -14708,17 +14696,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         let source = ac.join("project-skills");
         let target = temp.path().join("junction-target");
         std::fs::create_dir(&target).unwrap();
-        let status = std::process::Command::new("cmd.exe")
-            .args(["/C", "mklink", "/J"])
-            .arg(&source)
-            .arg(&target)
-            .output()
-            .expect("Windows junction fixture command");
-        assert!(
-            status.status.success(),
-            "junction fixture failed: {}",
-            String::from_utf8_lossy(&status.stderr)
-        );
+        super::super::teams::create_test_junction(&source, &target);
         assert!(is_link_or_reparse(
             &std::fs::symlink_metadata(&source).unwrap()
         ));
