@@ -871,7 +871,7 @@ Read your room's description and latest status as one snapshot. Use this before 
 On success, the handler exits `0` and prints one JSON object. For a room with no status history yet:
 
 ```json
-{"workgroupRoot":"/project/.ac/room-1-support","task":"---\ntitle: Resolve tickets\n---\n\nFix the reported login failures.\n","taskTitle":"Resolve tickets","description":"Fix the reported login failures.\n","status":null,"revision":"legacy:0","statusRecord":null,"tailIncomplete":false}
+{"workgroupRoot":"/project/.ac/room-1-support","task":"---\ntitle: Resolve tickets\n---\n\nFix the reported login failures.\n","taskTitle":"Resolve tickets","description":"\nFix the reported login failures.\n","status":null,"revision":"legacy:0","statusRecord":null,"tailIncomplete":false}
 ```
 
 `task` is the raw `TASK.md` text (`null` if missing); `taskTitle` is its parsed title (`null` if absent), and `description` is its body. `status` is the complete latest status, independent of that body. A missing history has `status: null` and `revision: "legacy:0"`. After Clean, the revision is a new topic UUID followed by `:0`, with a `topic_started` record and null status.
