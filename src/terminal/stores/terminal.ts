@@ -1,6 +1,30 @@
-import { createSignal } from "solid-js";
-import type { Session, SessionSelection, SessionSelectionMode } from "../../shared/types";
+import { batch, createSignal } from "solid-js";
+import type { Session, SessionSelection, SessionSelectionMode, TaskSnapshot } from "../../shared/types";
 import type { TransportConnectionState } from "../../shared/transport";
+
+export type TaskReadState = "loading" | "ready" | "refreshing" | "error" | "committedCleanPending";
+interface CachedTask {
+  snapshot: TaskSnapshot | null;
+  state: TaskReadState;
+  cleanPending: boolean;
+  cleanReadFailed: boolean;
+}
+const taskCache = new Map<string, CachedTask>();
+const [activeTaskSnapshot, setActiveTaskSnapshot] = createSignal<TaskSnapshot | null>(null);
+const [taskReadState, setTaskReadState] = createSignal<TaskReadState>("loading");
+const [cleanReadFailed, setCleanReadFailed] = createSignal(false);
+const [taskInvalidation, setTaskInvalidation] = createSignal(0);
+let taskRequestGeneration = 0;
+let activeTaskRoot: string | null = null;
+
+function bindTaskCache(cwd: string): void {
+  taskRequestGeneration += 1;
+  const entry = [...taskCache].find(([root]) => cwdUnderWorkgroupRoot(cwd, root));
+  activeTaskRoot = entry?.[0] ?? null;
+  setActiveTaskSnapshot(entry?.[1].snapshot ?? null);
+  setTaskReadState(entry?.[1].state ?? "loading");
+  setCleanReadFailed(entry?.[1].cleanReadFailed ?? false);
+}
 
 export type TerminalBindingState = "pending" | "bound" | "unavailable";
 
@@ -66,6 +90,11 @@ function localTaskWriteWins(sessionCwd: string, expectedTaskSeq: number): boolea
 }
 
 function clearLiveMetadata(): void {
+  taskRequestGeneration += 1;
+  activeTaskRoot = null;
+  setActiveTaskSnapshot(null);
+  setTaskReadState("loading");
+  setCleanReadFailed(false);
   setActiveSessionId(null);
   setActiveSessionName("");
   setActiveShell("");
@@ -135,6 +164,84 @@ export const terminalStore = {
   get activeWorkgroupTask() {
     return activeWorkgroupTask();
   },
+  get activeTaskSnapshot() { return activeTaskSnapshot(); },
+  get taskReadState() { return taskReadState(); },
+  get taskInvalidation() { return taskInvalidation(); },
+  get taskRequestGeneration() { return taskRequestGeneration; },
+  get cleanReadFailed() { return cleanReadFailed(); },
+  get cleanPending() {
+    return taskReadState() === "committedCleanPending";
+  },
+
+  invalidateTask(workgroupRoot?: string): void {
+    if (workgroupRoot) {
+      const root = normalizeTaskPath(workgroupRoot);
+      const entry = taskCache.get(root);
+      if (entry) taskCache.set(root, { ...entry, state: entry.cleanPending ? "committedCleanPending" : "refreshing" });
+      if (!cwdUnderWorkgroupRoot(activeWorkingDirectory(), root)) return;
+    }
+    taskRequestGeneration += 1;
+    setTaskReadState(this.cleanPending ? "committedCleanPending" : activeTaskSnapshot() ? "refreshing" : "loading");
+    setTaskInvalidation(value => value + 1);
+  },
+
+  beginTaskRead(): number {
+    taskRequestGeneration += 1;
+    setTaskReadState(this.cleanPending ? "committedCleanPending" : activeTaskSnapshot() ? "refreshing" : "loading");
+    return taskRequestGeneration;
+  },
+
+  acceptTaskSnapshot(snapshot: TaskSnapshot, generation: number, expectedTaskSeq: number): boolean {
+    if (generation !== taskRequestGeneration || localTaskWriteWins(snapshot.workgroupRoot, expectedTaskSeq) ||
+        !cwdUnderWorkgroupRoot(activeWorkingDirectory(), snapshot.workgroupRoot)) return false;
+    const root = normalizeTaskPath(snapshot.workgroupRoot);
+    taskCache.set(root, { snapshot, state: "ready", cleanPending: false, cleanReadFailed: false });
+    setCleanReadFailed(false);
+    activeTaskRoot = root;
+    setActiveTaskSnapshot(snapshot);
+    setActiveWorkgroupTask(snapshot.task);
+    setTaskReadState("ready");
+    return true;
+  },
+
+  failTaskRead(generation: number): void {
+    if (generation !== taskRequestGeneration) return;
+    const state = this.cleanPending ? "committedCleanPending" : "error";
+    if (activeTaskRoot) {
+      const entry = taskCache.get(activeTaskRoot);
+      if (entry) taskCache.set(activeTaskRoot, { ...entry, state, cleanReadFailed: this.cleanPending });
+    }
+    if (this.cleanPending) setCleanReadFailed(true);
+    setTaskReadState(state);
+  },
+
+  beginTaskMutation(workgroupRoot: string): void {
+    // Pre-submit invalidation does not start a read before Clean completes.
+    taskWriteSeq += 1;
+    lastLocalTaskWrite = { workgroupRoot, seq: taskWriteSeq };
+    taskRequestGeneration += 1;
+    if (cwdUnderWorkgroupRoot(activeWorkingDirectory(), workgroupRoot)) {
+      setTaskReadState(this.cleanPending ? "committedCleanPending" : activeTaskSnapshot() ? "refreshing" : "loading");
+    }
+  },
+
+  finishTaskMutation(workgroupRoot: string, committedClean: boolean): void {
+    taskWriteSeq += 1;
+    lastLocalTaskWrite = { workgroupRoot, seq: taskWriteSeq };
+    const root = normalizeTaskPath(workgroupRoot);
+    if (committedClean) taskCache.set(root, { snapshot: null, state: "committedCleanPending", cleanPending: true, cleanReadFailed: false });
+    if (cwdUnderWorkgroupRoot(activeWorkingDirectory(), root)) {
+      activeTaskRoot = root;
+      if (committedClean) {
+        setCleanReadFailed(false);
+        setActiveTaskSnapshot(null);
+        setActiveWorkgroupTask(null);
+        setTaskReadState("committedCleanPending");
+      }
+    }
+    this.invalidateTask(root);
+  },
+
   get activeIsRootAgent() {
     return activeIsRootAgent();
   },
@@ -223,11 +330,13 @@ export const terminalStore = {
     ) {
       return false;
     }
+    return batch(() => {
     setActiveSessionId(session.id);
     setActiveSessionName(session.name);
     setActiveShell(session.shell);
     setActiveShellArgs(session.effectiveShellArgs);
     setActiveWorkingDirectory(session.workingDirectory);
+    bindTaskCache(session.workingDirectory);
     // #1455 - every other field binds unconditionally; only the task field can lose
     // to a newer local write against the same workgroup's TASK.md.
     if (!localTaskWriteWins(session.workingDirectory, expectedTaskSeq)) {
@@ -235,7 +344,9 @@ export const terminalStore = {
     }
     setActiveIsRootAgent(session.isRootAgent);
     setBindingState("bound");
+    setTaskInvalidation(value => value + 1);
     return true;
+    });
   },
 
   markUnavailable(selection: SessionSelection, generation: number): void {
@@ -261,6 +372,7 @@ export const terminalStore = {
   },
 
   bindLockedSession(session: Session, expectedTaskSeq: number): void {
+    batch(() => {
     setSelectionId(session.id);
     setSelectionMode("live");
     setActiveSessionId(session.id);
@@ -268,12 +380,15 @@ export const terminalStore = {
     setActiveShell(session.shell);
     setActiveShellArgs(session.effectiveShellArgs);
     setActiveWorkingDirectory(session.workingDirectory);
+    bindTaskCache(session.workingDirectory);
     // #1455 - see bindLive.
     if (!localTaskWriteWins(session.workingDirectory, expectedTaskSeq)) {
       setActiveWorkgroupTask(session.workgroupTask ?? null);
     }
     setActiveIsRootAgent(session.isRootAgent);
     setBindingState("bound");
+    setTaskInvalidation(value => value + 1);
+    });
   },
 
   clearLockedSession(): void {
@@ -314,6 +429,8 @@ export const terminalStore = {
   },
 
   resetForTests(): void {
+    taskCache.clear();
+    setTaskInvalidation(0);
     taskWriteSeq = 0;
     lastLocalTaskWrite = null;
     setSelectionId(null);

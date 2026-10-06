@@ -1,4 +1,4 @@
-import { Component, createMemo, onCleanup, onMount, Show } from "solid-js";
+import { Component, createEffect, createMemo, untrack, onCleanup, onMount, Show } from "solid-js";
 import type { SessionSelection } from "../shared/types";
 import type { TransportConnectionState, UnlistenFn } from "../shared/transport";
 import { isTauri } from "../shared/platform";
@@ -12,6 +12,7 @@ import {
   onTransportConnectionState,
   onWorkgroupTaskUpdated,
   SessionAPI,
+  TaskAPI,
   WindowAPI,
 } from "../shared/ipc";
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
@@ -60,6 +61,30 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     generation: -1,
   };
   const mountDisposed = Symbol("terminalAppMountDisposed");
+
+  // App owns reads; browser refreshes use binding/reconnect/mutation triggers.
+  createEffect(() => {
+    const id = terminalStore.activeSessionId;
+    const cwd = terminalStore.activeWorkingDirectory;
+    const binding = terminalStore.bindingState;
+    const connection = terminalStore.connectionGeneration;
+    const epoch = terminalStore.selectionEpoch;
+    const revision = terminalStore.appliedRevision;
+    void terminalStore.taskInvalidation;
+    if (!id || !cwd || binding !== "bound") return;
+    untrack(() => {
+      const request = terminalStore.beginTaskRead();
+      const writeSeq = terminalStore.taskWriteSeq;
+      const current = () => !disposed && terminalStore.activeSessionId === id &&
+        terminalStore.activeWorkingDirectory === cwd && terminalStore.bindingState === "bound" &&
+        terminalStore.connectionGeneration === connection && terminalStore.selectionEpoch === epoch &&
+        terminalStore.appliedRevision === revision;
+      void TaskAPI.getSnapshot(id).then(snapshot => {
+        if (!current()) return;
+        if (!terminalStore.acceptTaskSnapshot(snapshot, request, writeSeq)) terminalStore.failTaskRead(request);
+      }).catch(() => { if (current()) terminalStore.failTaskRead(request); });
+    });
+  });
 
   const isCentral = () => !props.lockedSessionId;
   const isHomeShown = createMemo(
@@ -220,15 +245,17 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     if (state.state === "disconnected") {
       return;
     }
-    void requestHydration(state.generation);
+    if (isCentral()) void requestHydration(state.generation);
+    else void loadLockedSession();
   };
 
   const loadLockedSession = async (): Promise<void> => {
+    const generation = observedConnection.generation;
     try {
       // #1455 - see reconcileSelection.
       const expectedTaskSeq = terminalStore.taskWriteSeq;
       const sessions = await SessionAPI.list();
-      if (disposed) return;
+      if (disposed || observedConnection.generation !== generation || observedConnection.state !== "connected") return;
       const session = sessions.find((candidate) => candidate.id === props.lockedSessionId);
       if (session && typeof session.status === "string") {
         terminalStore.bindLockedSession(session, expectedTaskSeq);
@@ -236,7 +263,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
         terminalStore.clearLockedSession();
       }
     } catch (error) {
-      if (!disposed) {
+      if (!disposed && observedConnection.generation === generation) {
         console.error("[detached] Failed to hydrate locked session:", error);
         terminalStore.clearLockedSession();
       }
@@ -262,20 +289,12 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     if (data.source === "poll") {
       const targetId = props.lockedSessionId ?? terminalStore.activeSessionId;
       if (!targetId || !data.sessionIds.includes(targetId)) return;
-      terminalStore.setActiveWorkgroupTask(data.task);
-    } else if (data.source === "manual") {
-      const workgroupRoot = data.workgroupRoot;
-      const cwd = terminalStore.activeWorkingDirectory;
-      if (!cwd || !workgroupRoot) return;
-      const cwdNormalized = normalizePathForCompare(cwd);
-      const rootNormalized = normalizePathForCompare(workgroupRoot);
-      if (
-        cwdNormalized === rootNormalized ||
-        cwdNormalized.startsWith(`${rootNormalized}/`)
-      ) {
-        terminalStore.setActiveWorkgroupTask(data.task);
-      }
     }
+    const cwd = terminalStore.activeWorkingDirectory;
+    if (!cwd || !data.workgroupRoot) return;
+    const path = normalizePathForCompare(cwd);
+    const root = normalizePathForCompare(data.workgroupRoot);
+    if (path === root || path.startsWith(root + "/")) terminalStore.invalidateTask(data.workgroupRoot);
   };
 
   // The mount steps below return false where onMount must stop (the window was disposed).
@@ -337,15 +356,12 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
     try {
       shortcutHandler = registerShortcuts();
       if (isCentral() && !(await registerCentralListeners())) return;
+      if (!isCentral()) await register(onTransportConnectionState(applyConnectionState));
 
       await register(onSessionDestroyed(handleSessionDestroyed));
       if (disposed) return;
 
-      if (isCentral()) {
-        applyConnectionState(getTransportConnectionState());
-      } else {
-        await loadLockedSession();
-      }
+      applyConnectionState(getTransportConnectionState());
 
       if (!(await attachDetachedCloseHandler())) return;
       if (!(await initWindowChrome())) return;

@@ -38,6 +38,7 @@ fn spawn_lock() -> MutexGuard<'static, ()> {
 
 fn command_for_binary(bin: &Path) -> Command {
     let mut command = Command::new(bin);
+    command.env_remove("AC_MACHINE_OUTPUT");
     let stem = bin.file_stem().expect("bin stem").to_string_lossy();
     if !stem.contains('_') {
         command.env("AGENTSCOMMANDER_CONFIG_DIR", config_dir_for_bin(bin));
@@ -298,4 +299,102 @@ fn task_append_body_audit_line_reaches_file_sink_and_preserves_title() {
         String::from_utf8_lossy(&out.stderr),
         log_contents,
     );
+}
+
+#[test]
+fn task_snapshot_write_replay_emit_real_audit_without_secrets() {
+    let tmp = Tmp::new("task-status-audit");
+    let bin = copy_binary_into(tmp.path());
+    let cfg = config_dir_for_bin(&bin);
+    let token = "master-P2-audit-sensitive-token";
+    seed_master_token(&cfg, token);
+    let root = make_wg_fixture(tmp.path());
+    let room = std::fs::canonicalize(root.parent().unwrap()).unwrap();
+    let log_path = cfg.join("app.log");
+    assert!(
+        !log_path.exists(),
+        "audit log must be newly created by real processes"
+    );
+    let id = uuid::Uuid::new_v4().to_string();
+    let text = "P2-audit-sensitive-body 🦀\nRemaining/FUP/continuation";
+    let root_arg = root.to_string_lossy();
+    let mut first_receipt = None;
+    for (index, args) in [
+        vec!["task-get", "--token", token, "--root", &root_arg],
+        vec![
+            "task-status-set",
+            "--token",
+            token,
+            "--root",
+            &root_arg,
+            "--expected-revision",
+            "legacy:0",
+            "--request-id",
+            &id,
+            "--text",
+            text,
+        ],
+        vec![
+            "task-status-set",
+            "--token",
+            token,
+            "--root",
+            &root_arg,
+            "--expected-revision",
+            "legacy:0",
+            "--request-id",
+            &id,
+            "--text",
+            text,
+        ],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut command = command_for_binary(&bin);
+        command
+            .args(args)
+            .env_remove("AC_MACHINE_OUTPUT")
+            .env("RUST_LOG", "agentscommander=info")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = {
+            let _guard = spawn_lock();
+            command.spawn().unwrap()
+        };
+        let pid = child.id();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(out.stderr, b"");
+        assert!(out.stdout.ends_with(b"\n"));
+        assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 1);
+        let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        let verb = if index == 0 { "get" } else { "status-set" };
+        let line = log
+            .lines()
+            .find(|l| l.contains(&format!("[task] {verb}:")) && l.contains(&format!("pid={pid}")))
+            .expect("actual INFO receipt for child");
+        assert!(line.contains("[INFO]"));
+        assert!(line.contains("sender=proj:wg-1-test/alice"));
+        assert!(line.contains(&format!("wg={}", room.display())));
+        assert!(line.contains(&format!("revision={}", value["revision"].as_str().unwrap())));
+        assert!(!log.contains(token) && !log.contains("P2-audit-sensitive-body"));
+        if index > 0 {
+            assert!(line.contains(&format!("requestId={id}")));
+            assert!(line.contains(&format!("replayed={}", index == 2)));
+            assert_eq!(value["status"], text);
+            if index == 1 {
+                first_receipt = Some(value.clone());
+            } else {
+                assert_eq!(
+                    value["revision"],
+                    first_receipt.as_ref().unwrap()["revision"]
+                );
+            }
+            let bytes = std::fs::read(room.join("TASK-status.jsonl")).unwrap();
+            assert_eq!(bytes.iter().filter(|b| **b == b'\n').count(), 1);
+        }
+    }
 }

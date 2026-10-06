@@ -467,8 +467,8 @@ fn issue_1867_isolation_source_contract() {
         (
             "cli_behavior_contract.rs",
             include_str!("cli_behavior_contract.rs"),
-            2,
-            &[("run", 1), ("run_task_title", 1)],
+            3,
+            &[("run", 1), ("run_task_title", 1), ("invoke", 1)],
             &[],
         ),
         (
@@ -581,11 +581,15 @@ fn issue_1867_isolation_source_contract() {
         (
             "cli_task_logger.rs",
             include_str!("cli_task_logger.rs"),
-            2,
+            3,
             &[
                 ("task_set_title_audit_line_reaches_file_sink", 1),
                 (
                     "task_append_body_audit_line_reaches_file_sink_and_preserves_title",
+                    1,
+                ),
+                (
+                    "task_snapshot_write_replay_emit_real_audit_without_secrets",
                     1,
                 ),
             ],
@@ -661,9 +665,15 @@ fn issue_1867_isolation_source_contract() {
         } else {
             "config_dir_for_bin"
         };
+        let env_remove = if file == "cli_behavior_contract.rs" || file == "cli_task_logger.rs" {
+            r#"command.env_remove("AC_MACHINE_OUTPUT");"#
+        } else {
+            ""
+        };
         let expected = format!(
             r#"fn command_for_binary(bin: &Path) -> Command {{
             let mut command = Command::new(bin);
+            {env_remove}
             let stem = bin.file_stem().expect("bin stem").to_string_lossy();
             if !stem.contains('_') {{
                 command.env("AGENTSCOMMANDER_CONFIG_DIR", {config}(bin));

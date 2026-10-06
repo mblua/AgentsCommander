@@ -1,4 +1,5 @@
-import { Component, createMemo, createSignal, Show } from "solid-js";
+import { createTaskStatusTooltip } from "../../shared/task-status-tooltip";
+import { Component, createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, untrack, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { terminalStore } from "../stores/terminal";
 import { TaskAPI } from "../../shared/ipc";
@@ -93,17 +94,55 @@ const WorkgroupTask: Component = () => {
   const [error, setError] = createSignal<string | null>(null);
   const [capturedSessionId, setCapturedSessionId] = createSignal<string | null>(null);
 
-  const parsedTask = createMemo<ParsedTask>(() =>
-    parseTask(terminalStore.activeWorkgroupTask ?? "")
-  );
-  const taskTitle = createMemo(() => parsedTask().title?.trim() || null);
+  const snapshot = createMemo(() => terminalStore.activeTaskSnapshot);
+  const taskTitle = createMemo(() => snapshot()?.taskTitle?.trim() || "--No title specified--");
+  const readable = createMemo(() => snapshot() !== null && !terminalStore.cleanPending);
+  const tooltipStatus = createMemo(() => terminalStore.taskReadState === "ready" ? snapshot()?.status ?? null : null);
+  const readMessage = createMemo(() => {
+    if (terminalStore.cleanPending) return terminalStore.cleanReadFailed
+      ? "Clean was saved, but the updated task could not be read. Clean is disabled until the task can be read."
+      : "Loading task…";
+    if (terminalStore.taskReadState === "loading") return "Loading task…";
+    if (terminalStore.taskReadState === "refreshing") return "Refreshing task…";
+    if (terminalStore.taskReadState === "error") return readable() ? "Could not refresh the task." : "Could not read the task.";
+    return null;
+  });
+  const tooltipId = createUniqueId();
+  let titleAnchor: HTMLSpanElement | undefined;
+  let tooltipElement: HTMLDivElement | undefined;
+  const tooltip = createTaskStatusTooltip({
+    status: tooltipStatus, titleAnchor: () => titleAnchor, tooltipElement: () => tooltipElement,
+  });
+  const { open: tooltipOpen, visible: tooltipVisible, position: tooltipPosition,
+    enter: enterTooltip, leave: leaveTooltip } = tooltip;
+  const dismissTooltip = (event: KeyboardEvent) => {
+    if (tooltipOpen()) tooltip.dismiss(event);
+  };
+  const tooltipKeyDown = (event: KeyboardEvent) => tooltip.keyDown(event, tooltipOpen());
+  createEffect(() => {
+    if (tooltipStatus() === null) untrack(tooltip.hideUnavailable);
+  });
+  createEffect(on(() => terminalStore.activeSessionId, () => tooltip.resetIdentity()));
+  createEffect(() => {
+    if (!tooltipOpen()) return;
+    document.addEventListener("keydown", dismissTooltip, true);
+    onCleanup(() => document.removeEventListener("keydown", dismissTooltip, true));
+  });
+
+  const mutationRoot = () => {
+    const root = snapshot()?.workgroupRoot;
+    if (root) return root;
+    const parts = cwd().split(String.fromCharCode(92)).join("/").split("/");
+    const index = parts.map(part => part.startsWith("room-") || part.startsWith("wg-")).lastIndexOf(true);
+    return parts.slice(0, index < 0 ? parts.length : index + 1).join("/");
+  };
   const sessionId = createMemo(() => terminalStore.activeSessionId);
   const cwd = createMemo(() => terminalStore.activeWorkingDirectory);
   const baseDisabled = createMemo(
     () => !sessionId() || !hasWorkgroupContext(cwd()) || busy()
   );
   const editDisabled = createMemo(() => baseDisabled() || confirmingClean());
-  const cleanDisabled = createMemo(() => baseDisabled() || editing());
+  const cleanDisabled = createMemo(() => baseDisabled() || editing() || terminalStore.cleanPending);
   const startEditing = async () => {
     if (editDisabled()) return;
     setError(null);
@@ -116,7 +155,7 @@ const WorkgroupTask: Component = () => {
     // could open in parallel with the editor (NB-1 race).
     setCapturedSessionId(id);
     setBusy(true);
-    let prefill = parseTaskTitle(terminalStore.activeWorkgroupTask) ?? "";
+    let prefill = snapshot()?.taskTitle ?? parseTaskTitle(terminalStore.activeWorkgroupTask) ?? "";
     try {
       const fromBackend = await TaskAPI.getTitle(id);
       if (fromBackend !== null && fromBackend !== undefined) {
@@ -156,6 +195,7 @@ const WorkgroupTask: Component = () => {
       setError("Session changed; cancel and retry.");
       return;
     }
+    let workgroupRoot = mutationRoot();
     const title = titleDraft().trim();
     if (!title) {
       setError("Title cannot be empty.");
@@ -163,15 +203,17 @@ const WorkgroupTask: Component = () => {
     }
     setBusy(true);
     setError(null);
+    terminalStore.beginTaskMutation(workgroupRoot);
     try {
       const result = await TaskAPI.setTitle(id, title);
-      terminalStore.applyLocalTask(result.workgroupRoot, result.task);
+      workgroupRoot = result.workgroupRoot;
       setEditing(false);
       setTitleDraft("");
       setCapturedSessionId(null);
     } catch (err) {
       setError(String(err));
     } finally {
+      terminalStore.finishTaskMutation(workgroupRoot, false);
       setBusy(false);
     }
   };
@@ -209,16 +251,22 @@ const WorkgroupTask: Component = () => {
       setError("Session changed; cancel and retry.");
       return;
     }
+    let workgroupRoot = mutationRoot();
+    let committed = false;
     setBusy(true);
     setError(null);
+    terminalStore.beginTaskMutation(workgroupRoot);
     try {
       const result = await TaskAPI.clean(id);
-      terminalStore.applyLocalTask(result.workgroupRoot, result.task);
+      workgroupRoot = result.workgroupRoot;
+      committed = true;
       setEditing(false);
       setTitleDraft("");
     } catch (err) {
+      committed = String(err).includes("task mutation already committed");
       setError(String(err));
     } finally {
+      terminalStore.finishTaskMutation(workgroupRoot, committed);
       setCapturedSessionId(null);
       setBusy(false);
     }
@@ -233,13 +281,18 @@ const WorkgroupTask: Component = () => {
 
 
   return (
-    <div class="workgroup-task-panel">
+    <div data-ac-testid="workgroupTask.root" data-ac-role="surface" class="workgroup-task-panel">
       <div class="workgroup-task-header">
         <div class="workgroup-task-label">
           TASK
-          <Show when={taskTitle()}>
+          <Show when={readable()}>
             <span>: </span>
-            <span class="workgroup-task-title">{taskTitle()}</span>
+            <span data-ac-testid="workgroupTask.title" data-ac-role="surface" ref={titleAnchor} class="workgroup-task-title" tabIndex={0}
+              aria-describedby={tooltipStatus() !== null ? tooltipId : undefined}
+              onPointerEnter={() => enterTooltip("title")} onPointerLeave={() => leaveTooltip("title")}
+              onFocus={tooltip.focus}
+              onBlur={tooltip.blur}
+              onKeyDown={tooltipKeyDown}>{taskTitle()}</span>
           </Show>
         </div>
         <div class="workgroup-task-actions">
@@ -247,6 +300,7 @@ const WorkgroupTask: Component = () => {
             class="workgroup-task-action"
             onClick={startEditing}
             disabled={editDisabled()}
+            data-ac-testid="workgroupTask.edit" data-ac-role="button"
             title="Edit TASK title"
             type="button"
           >
@@ -256,6 +310,7 @@ const WorkgroupTask: Component = () => {
             class="workgroup-task-action"
             onClick={requestClean}
             disabled={cleanDisabled()}
+            data-ac-testid="workgroupTask.clean" data-ac-role="button"
             title="Clean TASK (reset for new topic)"
             type="button"
           >
@@ -263,9 +318,21 @@ const WorkgroupTask: Component = () => {
           </button>
         </div>
       </div>
+      <Show when={readMessage()}>
+        <div data-ac-testid="workgroupTask.readMessage" data-ac-role="status" class="workgroup-task-error" classList={{ "workgroup-task-loading": terminalStore.taskReadState === "loading" || terminalStore.taskReadState === "refreshing" || (terminalStore.cleanPending && !terminalStore.cleanReadFailed) }}>{readMessage()}</div>
+      </Show>
+      <Show when={readable()}><div data-ac-testid="workgroupTask.description" data-ac-role="surface" class="workgroup-task-text">{snapshot()?.description}</div></Show>
+      <Show when={snapshot()?.tailIncomplete && readable()}><div data-ac-testid="workgroupTask.historyIncomplete" data-ac-role="status" class="workgroup-task-error">Task history is incomplete.</div></Show>
+      <Show when={tooltipStatus() !== null}>
+        <Portal><div data-ac-testid="workgroupTask.tooltip" data-ac-role="overlay" id={tooltipId} ref={tooltipElement} role="tooltip" class="workgroup-task-tooltip"
+          style={{ display: tooltipOpen() && tooltipVisible() ? "block" : "none", left: tooltipPosition().left + "px", top: tooltipPosition().top + "px",
+            "max-width": tooltipPosition().width + "px", "max-height": tooltipPosition().height + "px" }}
+          onPointerEnter={() => enterTooltip("tooltip")} onPointerLeave={() => leaveTooltip("tooltip")}>{tooltipStatus()}</div></Portal>
+      </Show>
       <Show when={editing()}>
         <div class="workgroup-task-title-edit">
           <input
+            data-ac-testid="workgroupTask.titleInput" data-ac-role="textbox"
             ref={onInputRef}
             class="workgroup-task-title-input"
             value={titleDraft()}
@@ -275,6 +342,7 @@ const WorkgroupTask: Component = () => {
             disabled={busy()}
           />
           <button
+            data-ac-testid="workgroupTask.save" data-ac-role="button"
             class="workgroup-task-title-btn save"
             onClick={saveTitle}
             disabled={busy() || !titleDraft().trim()}
@@ -283,6 +351,7 @@ const WorkgroupTask: Component = () => {
             Save
           </button>
           <button
+            data-ac-testid="workgroupTask.cancel" data-ac-role="button"
             class="workgroup-task-title-btn cancel"
             onClick={cancelEditing}
             disabled={busy()}
@@ -293,7 +362,7 @@ const WorkgroupTask: Component = () => {
         </div>
       </Show>
       <Show when={error()}>
-        <div class="workgroup-task-error">{error()}</div>
+        <div data-ac-testid="workgroupTask.mutationError" data-ac-role="status" class="workgroup-task-error">{error()}</div>
       </Show>
       <Show when={confirmingClean()}>
         <Portal>

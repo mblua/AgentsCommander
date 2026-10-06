@@ -192,9 +192,9 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/config/agent_memory.rs",
-        1,
+        2,
         0,
-        &[(TestOnly, 1)],
+        &[(TestOnly, 2)],
     ),
     (
         "src-tauri/src/config/agent_path.rs",

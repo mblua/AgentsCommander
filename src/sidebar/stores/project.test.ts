@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  TaskSnapshot,
   AcAgentReplica,
   AcLoopSummary,
   AcWorkgroup,
@@ -9,6 +10,8 @@ import type {
 import { toastStore } from "../../shared/stores/toasts";
 
 const m = vi.hoisted(() => ({
+  connection: { state: "connected" as "connected" | "disconnected", generation: 0 },
+  getSnapshot: vi.fn(),
   open: vi.fn(),
   newProject: vi.fn(),
   discover: vi.fn(),
@@ -18,11 +21,14 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("../../shared/ipc", () => ({
+  getTransportConnectionState: () => m.connection,
+  TaskAPI: { getSnapshotAt: m.getSnapshot },
   ProjectAPI: {
     open: m.open,
     new: m.newProject,
     discover: m.discover,
     remove: m.removeProject,
+    archive: vi.fn(),
   },
   SettingsAPI: {
     get: m.getSettings,
@@ -73,16 +79,120 @@ function findReplica(path: string): AcAgentReplica | undefined {
   return undefined;
 }
 
+function taskSnapshot(path: string, overrides: Partial<TaskSnapshot> = {}): TaskSnapshot {
+  return { workgroupRoot: path, task: "human description", taskTitle: "USER title", description: "human description",
+    status: null, revision: "legacy:0", statusRecord: null, tailIncomplete: false, ...overrides };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
 describe("projectStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     projectStore.clear();
+    m.connection = { state: "connected", generation: 0 };
     m.open.mockResolvedValue({ path: "C:\\Users\\Maria\\Project" });
     m.discover.mockResolvedValue({ workgroups: [], agents: [], teams: [], loops: [] });
   });
 
   afterEach(() => {
     projectStore.clear();
+  });
+
+
+  it("hydrates a no-session room and keeps status separate from its descriptor", async () => {
+    const wg = makeWorkgroup("room-1", []);
+    m.getSnapshot.mockResolvedValue(taskSnapshot(wg.path, { status: "line one\nline two" }));
+    await loadProjectWith([wg]);
+    await Promise.resolve();
+    expect(projectStore.taskSnapshot(wg.path)?.status).toBe("line one\nline two");
+    expect(projectStore.projects[0].workgroups[0].task).toBeNull();
+    expect(projectStore.taskSnapshot(wg.path.split(String.fromCharCode(92)).join("/").toLowerCase())?.taskTitle).toBe("USER title");
+  });
+
+  it("rejects reordered invalidation responses and refreshes a status-only update", async () => {
+    const wg = makeWorkgroup("room-1", []);
+    await loadProjectWith([wg]);
+    const old = deferred<TaskSnapshot>();
+    m.getSnapshot.mockReturnValueOnce(old.promise).mockResolvedValueOnce(taskSnapshot(wg.path, { status: "newest" }));
+    const pending = projectStore.refreshTaskSnapshot(wg.path);
+    projectStore.updateWorkgroupTask(wg.path, null, "USER title");
+    await projectStore.refreshTaskSnapshot(wg.path);
+    old.resolve(taskSnapshot(wg.path, { status: "stale" }));
+    await pending;
+    expect(projectStore.taskSnapshot(wg.path)?.status).toBe("newest");
+  });
+
+  it.each(["remove", "archive", "clear", "reconnect"])("rejects a late snapshot after %s", async (action) => {
+    const wg = makeWorkgroup("room-1", []);
+    await loadProjectWith([wg]);
+    const old = deferred<TaskSnapshot>();
+    m.getSnapshot.mockReturnValueOnce(old.promise);
+    const pending = projectStore.refreshTaskSnapshot(wg.path);
+    if (action === "remove") await projectStore.removeProject(PROJECT_PATH);
+    else if (action === "archive") await projectStore.archiveProject(PROJECT_PATH);
+    else if (action === "clear") projectStore.clear();
+    else {
+      // App's transport connection callback invalidates on disconnect/generation change.
+      m.connection = { state: "disconnected", generation: 0 };
+      projectStore.invalidateTaskSnapshots();
+      m.connection = { state: "connected", generation: 1 };
+      m.getSnapshot.mockResolvedValueOnce(taskSnapshot(wg.path, { status: "new connection" }));
+      await projectStore.refreshTaskSnapshot(wg.path);
+    }
+    old.resolve(taskSnapshot(wg.path, { status: "old connection" }));
+    await pending;
+    expect(projectStore.taskSnapshot(wg.path)?.status).toBe(action === "reconnect" ? "new connection" : undefined);
+  });
+
+  it("rejects pre-Clean responses and applies paired Clean null", async () => {
+    const wg = makeWorkgroup("room-1", []);
+    await loadProjectWith([wg]);
+    const old = deferred<TaskSnapshot>();
+    m.getSnapshot.mockReturnValueOnce(old.promise);
+    const pending = projectStore.refreshTaskSnapshot(wg.path);
+    m.getSnapshot.mockResolvedValueOnce(taskSnapshot(wg.path, { taskTitle: "Clean", description: "Ready to start a new topic\n", status: null }));
+    await projectStore.refreshTaskSnapshot(wg.path);
+    old.resolve(taskSnapshot(wg.path, { status: "before Clean" }));
+    await pending;
+    expect(projectStore.taskSnapshot(wg.path)?.taskTitle).toBe("Clean");
+    expect(projectStore.taskSnapshot(wg.path)?.status).toBeNull();
+  });
+
+  it("preserves independent status over discovery and prunes removed rooms", async () => {
+    const wg = makeWorkgroup("room-1", []);
+    const snapshot = taskSnapshot(wg.path, { status: "latest" });
+    m.getSnapshot.mockResolvedValue(snapshot);
+    await loadProjectWith([wg]);
+    m.discover.mockResolvedValueOnce({ workgroups: [{ ...wg, task: "first line only" }], agents: [], teams: [], loops: [] });
+    await projectStore.reloadProject(PROJECT_PATH);
+    expect(projectStore.taskSnapshot(wg.path)?.status).toBe("latest");
+    m.discover.mockResolvedValueOnce({ workgroups: [], agents: [], teams: [], loops: [] });
+    await projectStore.reloadProject(PROJECT_PATH);
+    expect(projectStore.taskSnapshot(wg.path)).toBeUndefined();
+  });
+
+  it("clears unverified status on errors, reports once, and rejects a different original root", async () => {
+    const wg = makeWorkgroup("room-1", []);
+    await loadProjectWith([wg]);
+    const error = vi.spyOn(toastStore, "error");
+    m.getSnapshot.mockRejectedValue(new Error("unreadable"));
+    await projectStore.refreshTaskSnapshot(wg.path);
+    await projectStore.refreshTaskSnapshot(wg.path);
+    expect(projectStore.taskSnapshot(wg.path)).toBeUndefined();
+    expect(error).toHaveBeenCalledTimes(1);
+    m.getSnapshot.mockResolvedValueOnce(taskSnapshot(wg.path));
+    await projectStore.refreshTaskSnapshot(wg.path);
+    m.getSnapshot.mockResolvedValueOnce(taskSnapshot("C:/another/room"));
+    await projectStore.refreshTaskSnapshot(wg.path);
+    expect(projectStore.taskSnapshot(wg.path)).toBeUndefined();
+    expect(error).toHaveBeenCalledTimes(2);
+    error.mockRestore();
   });
 
   it("shares concurrent loadProject calls for equivalent paths", async () => {

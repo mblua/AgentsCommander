@@ -1818,6 +1818,15 @@ fn ensure_project_context_templates_with_clock(
             e
         )
     })?;
+    if let Err(error) = crate::config::shared_locations::ensure_project_skills_dir(ac_root) {
+        log::warn!(
+            "[project-skills] unavailable at {}: {}; continuing without project skill discovery",
+            ac_root
+                .join(crate::config::shared_locations::PROJECT_SKILLS_DIR)
+                .display(),
+            error
+        );
+    }
     let mut loaded = load_state(ac_root, false)?;
     for spec in project_specs() {
         let execution =
@@ -3153,6 +3162,56 @@ mod tests {
     // recording closure, asserting the resulting manifest row. Removing the
     // `record_project_context_publication` adapter call would leave no manifest and
     // fail them (plan acceptance item 22).
+
+    #[test]
+    fn issue_2868_bootstrap_missing_ordinary_and_occupied_source_still_publishes() {
+        for occupied in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ac = temp.path().join(".ac");
+            std::fs::create_dir(&ac).unwrap();
+            let source = ac.join("project-skills");
+            if occupied {
+                std::fs::write(&source, "OCCUPIED_BOOTSTRAP").unwrap();
+            }
+            for _ in 0..2 {
+                let mut clock = fixed_publication_time;
+                let mut published = Vec::new();
+                let mut on_publication = |filename: &'static str, _: ContextPublication| {
+                    published.push(filename);
+                };
+                ensure_project_context_templates_with_clock(&ac, &mut clock, &mut on_publication)
+                    .unwrap();
+                for name in ["plans", "tools", "errors", "project-shared"] {
+                    assert!(ac.join(name).is_dir());
+                }
+                assert!(ac.join("Context.AgentsCommander.md").is_file());
+                if occupied {
+                    assert_eq!(
+                        std::fs::read_to_string(&source).unwrap(),
+                        "OCCUPIED_BOOTSTRAP"
+                    );
+                } else {
+                    assert!(source.is_dir());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issue_2868_four_directory_failure_still_blocks_before_project_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let ac = temp.path().join(".ac");
+        std::fs::create_dir(&ac).unwrap();
+        std::fs::write(ac.join("plans"), "BLOCK_SHARED").unwrap();
+        let error = ensure_project_context_templates(&ac).unwrap_err();
+        assert!(error.contains("failed to create project shared directories"));
+        assert!(!ac.join("project-skills").exists());
+        assert!(!ac.join("Context.AgentsCommander.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(ac.join("plans")).unwrap(),
+            "BLOCK_SHARED"
+        );
+    }
 
     #[test]
     fn context_create_records_project_templates_under_the_gate() {

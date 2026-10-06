@@ -2787,7 +2787,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                             );
                         // #1172 - rotate the origin Agent Matrix's `memory/` for the fresh session
                         // about to start, so it begins with a clean write target and the previous
-                        // session's memory is preserved under `memory_<ts>/`.
+                        // session's memory is preserved under `memory-archive/memory_<ts>/`.
                         //
                         // Two gates, both load-bearing (D5):
                         //   - `start_fresh`: a RESUME never rotates. This chokepoint also serves the
@@ -7674,11 +7674,15 @@ mod tests {
         (temp, first, second)
     }
 
-    /// #1175. Every rotated sibling of `memory/`, sorted. Same shape as
+    /// #1175. Every nested memory rotation, sorted. Same shape as
     /// `agent_memory.rs:180-189`.
     fn rotated_memory_dirs(matrix: &std::path::Path) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(matrix)
-            .expect("read origin matrix")
+        let entries = match std::fs::read_dir(matrix.join("memory-archive")) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(err) => panic!("read origin memory archive: {err}"),
+        };
+        let mut names: Vec<String> = entries
             .map(|entry| entry.expect("dir entry").file_name())
             .filter_map(|name| name.to_str().map(str::to_string))
             .filter(|name| name.starts_with("memory_"))
@@ -7691,6 +7695,16 @@ mod tests {
     /// for a side whose own launch has not run yet, which is what stops the second
     /// launch from laundering a side effect of the first (D3, hole 2).
     fn assert_memory_pristine(side: &RotationSide, case: &str) {
+        assert!(
+            std::fs::read_dir(&side.matrix)
+                .expect("read matrix")
+                .all(|entry| !entry
+                    .expect("matrix entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("memory_")),
+            "{case}: no root archive may be created"
+        );
         assert_eq!(
             std::fs::read_to_string(side.matrix.join("memory").join("MEMORY.md")).ok(),
             Some(ROTATION_SENTINEL.to_string()),
@@ -7704,7 +7718,9 @@ mod tests {
         );
         let replica = std::path::Path::new(&side.replica_cwd);
         assert!(
-            rotated_memory_dirs(replica).is_empty() && !replica.join("memory").exists(),
+            rotated_memory_dirs(replica).is_empty()
+                && !replica.join("memory").exists()
+                && !replica.join("memory-archive").exists(),
             "#1175 ({case}): the replica itself must gain no memory* entry"
         );
     }
@@ -7736,6 +7752,16 @@ mod tests {
     /// `assert_resume_left_memory_alone` on the resume side attributable to the gate
     /// rather than to an unreached call site.
     fn assert_memory_rotated_once(side: &RotationSide, case: &str) {
+        assert!(
+            std::fs::read_dir(&side.matrix)
+                .expect("read matrix")
+                .all(|entry| !entry
+                    .expect("matrix entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("memory_")),
+            "{case}: no root archive may be created"
+        );
         let rotated = rotated_memory_dirs(&side.matrix);
         assert_eq!(
             rotated.len(),
@@ -7743,7 +7769,13 @@ mod tests {
             "#1175 ({case}): a fresh launch must rotate exactly once, found {rotated:?}"
         );
         assert_eq!(
-            std::fs::read_to_string(side.matrix.join(&rotated[0]).join("MEMORY.md")).ok(),
+            std::fs::read_to_string(
+                side.matrix
+                    .join("memory-archive")
+                    .join(&rotated[0])
+                    .join("MEMORY.md")
+            )
+            .ok(),
             Some(ROTATION_SENTINEL.to_string()),
             "#1175 ({case}): the archive must carry the previous session's bytes"
         );
@@ -7759,7 +7791,9 @@ mod tests {
         );
         let replica = std::path::Path::new(&side.replica_cwd);
         assert!(
-            rotated_memory_dirs(replica).is_empty() && !replica.join("memory").exists(),
+            rotated_memory_dirs(replica).is_empty()
+                && !replica.join("memory").exists()
+                && !replica.join("memory-archive").exists(),
             "#1175 ({case}): the replica itself must gain no memory* entry"
         );
     }

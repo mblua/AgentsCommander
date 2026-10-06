@@ -761,3 +761,25 @@ html.light-theme .workgroup-task-error,
 html.light-theme .status-bar-btn-mic-cancel:hover {
   color: #b91c1c;
 }
+
+.workgroup-task-title:focus-visible {
+  outline: 2px solid var(--focus-ring, #00d4ff);
+  outline-offset: 2px;
+}
+.workgroup-task-error.workgroup-task-loading { color: var(--statusbar-fg); }
+.workgroup-task-tooltip {
+  position: fixed;
+  z-index: 10000;
+  box-sizing: border-box;
+  background: var(--bg-modal, #14141a);
+  color: var(--fg-primary, #e8e8e8);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, .1));
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .6);
+  padding: var(--spacing-sm) var(--spacing-md);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: min(40rem, calc(100vw - 32px));
+  max-height: min(24rem, calc(100dvh - 32px));
+  overflow-y: auto;
+}
