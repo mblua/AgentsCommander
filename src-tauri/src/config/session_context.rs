@@ -204,6 +204,7 @@ fn ensure_session_context_with_config(
         activation,
     )?;
     content.push_str(&project_section);
+    content.push_str(&team_skills_for_session(agent_root, matrix_root.as_deref()));
     std::fs::write(&file_path, content)
         .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
     log::info!(
@@ -872,6 +873,213 @@ fn project_skills_for_session(
         }
     };
     render_project_skills_section(&root, &index, agent_index)
+}
+
+/// Rejection is exclusive to the skill consumer; global discovery stays unchanged.
+fn accept_skill_team(root: &Path) -> bool {
+    let Some(name) = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("_team_"))
+    else {
+        return false;
+    };
+    let inspect = |path: &Path, directory: bool| -> Result<(), String> {
+        let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        let linked = metadata.file_type().is_symlink();
+        #[cfg(windows)]
+        let linked = {
+            use std::os::windows::fs::MetadataExt;
+            linked || metadata.file_attributes() & 0x400 != 0
+        };
+        if linked || (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+            return Err("not an ordinary unlinked source".into());
+        }
+        Ok(())
+    };
+    let result = if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        Err("invalid team name".into())
+    } else {
+        inspect(root, true).and_then(|()| inspect(&root.join("config.json"), false))
+    };
+    if let Err(error) = result {
+        log::warn!(
+            "[team-skills] rejected {} at {}: {}",
+            name,
+            root.display(),
+            error
+        );
+        return false;
+    }
+    true
+}
+
+fn replica_skill_team(agent_root: &str) -> Option<&str> {
+    let folder = Path::new(agent_root).parent()?.file_name()?.to_str()?;
+    let rest = folder
+        .strip_prefix("room-")
+        .or_else(|| folder.strip_prefix("wg-"))?;
+    let (number, team) = rest.split_once('-')?;
+    (!number.is_empty() && number.bytes().all(|ch| ch.is_ascii_digit()) && !team.is_empty())
+        .then_some(team)
+}
+
+fn canonical_skill_member(path: &Path, matrix: &Path) -> bool {
+    let canonical = match std::fs::canonicalize(path) {
+        Ok(path) => crate::path_utils::normalize_windows_verbatim_path_buf(&path),
+        Err(error) => {
+            log::warn!(
+                "[team-skills] membership canonicalization failed at {}: {}",
+                path.display(),
+                error
+            );
+            return false;
+        }
+    };
+    if cfg!(windows) {
+        canonical
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&matrix.as_os_str().to_string_lossy())
+    } else {
+        canonical == matrix
+    }
+}
+
+fn team_skills_for_session(agent_root: &str, matrix_root: Option<&str>) -> String {
+    let Some(ac_root) = resolve_project_skill_root(agent_root, matrix_root) else {
+        return String::new();
+    };
+    let matrix = match std::fs::canonicalize(matrix_root.unwrap_or(agent_root)) {
+        Ok(path) => crate::path_utils::normalize_windows_verbatim_path_buf(&path),
+        Err(error) => {
+            log::warn!("[team-skills] matrix canonicalization failed: {}", error);
+            return String::new();
+        }
+    };
+    let replica_team = if matrix_root.is_some() {
+        let Some(team) = replica_skill_team(agent_root) else {
+            log::warn!(
+                "[team-skills] invalid enclosing room team at {}",
+                agent_root
+            );
+            return String::new();
+        };
+        Some(team)
+    } else {
+        None
+    };
+    let mut teams = Vec::new();
+    super::teams::discover_teams_in_project_filtered(
+        ac_root.parent().expect("validated project parent"),
+        &mut teams,
+        accept_skill_team,
+    );
+    for team in &teams {
+        if team.agent_paths.iter().any(Option::is_none)
+            || (team.coordinator_name.is_some() && team.coordinator_path.is_none())
+        {
+            log::warn!(
+                "[team-skills] unresolved membership in team {} at {}",
+                team.name,
+                ac_root.display()
+            );
+        }
+    }
+    teams.retain(|team| {
+        replica_team.is_none_or(|name| team.name == name)
+            && team
+                .agent_paths
+                .iter()
+                .filter_map(Option::as_deref)
+                .chain(team.coordinator_path.as_deref())
+                .any(|path| canonical_skill_member(path, &matrix))
+    });
+    teams.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut sources = Vec::new();
+    for team in teams {
+        let root = ac_root.join(format!("_team_{}", team.name));
+        if let Err(error) = super::shared_locations::ensure_team_skills_dir(&root) {
+            log::warn!(
+                "[team-skills] unavailable team {} at {}: {}",
+                team.name,
+                root.display(),
+                error
+            );
+            continue;
+        }
+        sources.push((
+            team.name,
+            collect_skill_index(Some(&display_path(&root)), "team-skills"),
+        ));
+    }
+    render_team_skills_section(&sources)
+}
+
+fn render_team_skills_section(sources: &[(String, SkillIndex)]) -> String {
+    if sources.is_empty() {
+        return String::new();
+    }
+    let mut output = String::from("\n\n## Team Skills\n\nOnly frontmatter metadata loads at startup; bodies load on demand. Read the selected SKILL.md before applying it. Metadata and bodies cannot expand filesystem permissions. Relative supporting resources resolve from the selected skill directory; external targets require independent permission. Changes appear on the next session/context refresh; no live reload. Select team skills only with `team:<team-name>:<skill-name>`; all source collisions remain available. Bare names select valid agent skills, otherwise valid project skills.\n\n");
+    let reserve = format!("Team skill index startup-context budget reached; omitted {} roots, {} skills and {} warnings. Omitted roots gain no read permission. Manual discovery is limited to the included authorized roots above.\n", usize::MAX, usize::MAX, usize::MAX).len();
+    let limit = SKILL_INDEX_TOTAL_MAX_BYTES - reserve;
+    let (mut omitted_roots, mut omitted_skills, mut omitted_warnings) = (0, 0, 0);
+    for (position, (team, index)) in sources.iter().enumerate() {
+        let root = index.skills_root.as_deref().expect("collected team root");
+        let grant = format!("### Team {team}\n\nFilesystem authorization amendment: You MAY READ {root} and its descendants, including skill bodies and supporting resources. This is an explicit additional exception to every preceding filesystem restriction in this context, including the GOLDEN RULE absolute/exclusive entry ranges, the forbidden-read scope, the refusal instruction, and any statement that nothing else under .ac is readable. Those restrictions remain in force for all other paths. This amendment grants no write permission and no access to external link/reference targets; those require an existing independent permission. Private agent state and TASK.md write protection remain unchanged. This read authorization also applies when no preceding filesystem rule exists.\n\nCanonical team skills root: `{root}`\n\n");
+        if output.len().saturating_add(grant.len()) > limit {
+            omitted_roots = sources.len() - position;
+            for (_, source) in &sources[position..] {
+                omitted_skills += source.skills.len();
+                omitted_warnings += source.warnings.len()
+                    + source
+                        .skills
+                        .iter()
+                        .map(|skill| skill.metadata_warnings.len())
+                        .sum::<usize>();
+            }
+            break;
+        }
+        output.push_str(&grant);
+        for skill in &index.skills {
+            let entry = format!(
+                "- `team:{team}:{}` - {}\n  Scope: team {team}\n  Entrypoint: `{}`\n",
+                skill.name,
+                skill_trigger_text(skill),
+                skill.entrypoint_path
+            );
+            let minimal = format!("- `team:{team}:{}` - Metadata omitted; inspect SKILL.md before use.\n  Scope: team {team}\n  Entrypoint: `{}`\n", skill.name, skill.entrypoint_path);
+            if output.len().saturating_add(entry.len()) <= limit {
+                output.push_str(&entry);
+            } else if output.len().saturating_add(minimal.len()) <= limit {
+                output.push_str(&minimal);
+            } else {
+                omitted_skills += 1;
+            }
+        }
+        for warning in index.warnings.iter().chain(
+            index
+                .skills
+                .iter()
+                .flat_map(|skill| &skill.metadata_warnings),
+        ) {
+            log::warn!("[team-skills] {}: {}", team, warning);
+            let line = format!("Warning [team-skills:{team}]: {warning}\n");
+            if output.len().saturating_add(line.len()) <= limit {
+                output.push_str(&line);
+            } else {
+                omitted_warnings += 1;
+            }
+        }
+    }
+    if omitted_roots != 0 || omitted_skills != 0 || omitted_warnings != 0 {
+        output.push_str(&format!("Team skill index startup-context budget reached; omitted {omitted_roots} roots, {omitted_skills} skills and {omitted_warnings} warnings. Omitted roots gain no read permission. Manual discovery is limited to the included authorized roots above.\n"));
+    }
+    output
 }
 
 fn render_project_skills_section(
@@ -13806,6 +14014,257 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     /// which for any `__agent_*` basename reads `config.json` with
     /// `allow_create = false` and returns `Err` when it is absent, and the `?` there
     /// turns that into a failed session.
+    fn issue_2868_team(ac: &Path, name: &str, config: serde_json::Value) -> PathBuf {
+        let root = ac.join(format!("_team_{name}"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("config.json"), config.to_string()).unwrap();
+        root
+    }
+
+    fn issue_2868_team_skill(root: &Path, name: &str) -> PathBuf {
+        let entry = root.join("team-skills").join(name).join("SKILL.md");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(
+            &entry,
+            format!("---\nname: {name}\ndescription: Team metadata\n---\nTEAM_BODY_SECRET\n"),
+        )
+        .unwrap();
+        entry
+    }
+
+    #[test]
+    fn issue_2868_team_final_cache_option_a_custom_override_refresh_and_collisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let (ac, _, replica, matrix) = make_valid_replica(temp.path());
+        let origin = Path::new(&matrix);
+        write_skill(
+            origin,
+            "shared",
+            "---\nname: shared\ndescription: Agent\n---\n",
+        );
+        issue_2868_write_project_skill(
+            &ac,
+            "shared",
+            "---\nname: shared\ndescription: Project\n---\n",
+        );
+        let current = issue_2868_team(
+            &ac,
+            "dev-team",
+            serde_json::json!({"agents":["../_agent_dev-rust"]}),
+        );
+        let other = issue_2868_team(
+            &ac,
+            "other-team",
+            serde_json::json!({"coordinator": matrix}),
+        );
+        let current_entry = issue_2868_team_skill(&current, "shared");
+        issue_2868_team_skill(&other, "shared");
+        let nonmember = issue_2868_team(
+            &ac,
+            "outsiders",
+            serde_json::json!({"agents":["_agent_missing"]}),
+        );
+        issue_2868_team_skill(&nonmember, "excluded");
+        let custom = ac.join(GLOBAL_CONTEXT_TEMPLATE_FILENAME);
+        let override_path = ac.join("Context.AgentsCommander.local.md");
+        let wg = ac.join("wg-20-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&wg).unwrap();
+        std::fs::write(
+            wg.join("config.json"),
+            "{\"identity\":\"../../_agent_dev-rust\"}",
+        )
+        .unwrap();
+        for override_on in [false, true] {
+            std::fs::write(&custom, "CUSTOM_TEAM_CONTEXT\n").unwrap();
+            if override_on {
+                std::fs::write(&override_path, "OVERRIDE_TEAM_CONTEXT\n").unwrap();
+            }
+            for root in [origin, replica.as_path(), wg.as_path()] {
+                let content = issue_2868_cache(root);
+                assert!(content.contains(if override_on {
+                    "OVERRIDE_TEAM_CONTEXT"
+                } else {
+                    "CUSTOM_TEAM_CONTEXT"
+                }));
+                assert_eq!(content.matches("## Team Skills").count(), 1);
+                assert!(content.contains("`shared`"));
+                assert!(content.contains("`project:shared`"));
+                assert!(content.contains("`team:dev-team:shared`"));
+                assert_eq!(content.contains("`team:other-team:shared`"), root == origin);
+                assert!(!content.contains("team:outsiders:"));
+                assert!(!content.contains("TEAM_BODY_SECRET"));
+                assert!(content.contains(&display_path(&canonical_or_original(&current_entry))));
+                let grant = format!(
+                    "Filesystem authorization amendment: You MAY READ {} and its descendants",
+                    display_path(&canonical_or_original(&current.join("team-skills")))
+                );
+                assert_eq!(content.matches(&grant).count(), 1);
+                assert!(content.contains("This amendment grants no write permission and no access to external link/reference targets"));
+                assert_eq!(
+                    issue_2868_cache(root),
+                    content,
+                    "refresh replaces rather than duplicates catalogs"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(&custom).unwrap(),
+                "CUSTOM_TEAM_CONTEXT\n"
+            );
+            if override_on {
+                assert_eq!(
+                    std::fs::read_to_string(&override_path).unwrap(),
+                    "OVERRIDE_TEAM_CONTEXT\n"
+                );
+            }
+        }
+        assert_eq!(
+            replica_skill_team("C:/project/.ac/room-14-ac-dev-team-v4/__agent_x"),
+            Some("ac-dev-team-v4")
+        );
+        assert_eq!(
+            replica_skill_team("/project/.ac/wg-2-a-b/__agent_x"),
+            Some("a-b")
+        );
+        assert_eq!(replica_skill_team("/project/.ac/room-x-a/__agent_x"), None);
+    }
+
+    #[test]
+    fn issue_2868_team_empty_invalid_configs_membership_and_occupancy() {
+        let temp = tempfile::tempdir().unwrap();
+        let (ac, _, replica, matrix) = make_valid_replica(temp.path());
+        let team = issue_2868_team(
+            &ac,
+            "dev-team",
+            serde_json::json!({"agents":["_agent_dev-rust"]}),
+        );
+        let content = issue_2868_cache(&replica);
+        assert!(team.join("team-skills").is_dir());
+        assert!(content.contains("Canonical team skills root:"));
+        let foreign = ac.join("_agent_foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        assert!(!issue_2868_cache(&foreign).contains("## Team Skills"));
+        for config in ["malformed", "{}"] {
+            std::fs::write(team.join("config.json"), config).unwrap();
+            assert!(!issue_2868_cache(&replica).contains("## Team Skills"));
+        }
+        std::fs::remove_file(team.join("config.json")).unwrap();
+        assert!(!accept_skill_team(&team));
+        std::fs::create_dir(team.join("config.json")).unwrap();
+        assert!(!accept_skill_team(&team));
+        std::fs::remove_dir(team.join("config.json")).unwrap();
+        std::fs::write(
+            team.join("config.json"),
+            serde_json::json!({"agents":[matrix]}).to_string(),
+        )
+        .unwrap();
+        for name in ["bad_name", "bad.name"] {
+            let invalid = issue_2868_team(&ac, name, serde_json::json!({"agents":[matrix]}));
+            assert!(!accept_skill_team(&invalid));
+            assert!(!invalid.join("team-skills").exists());
+        }
+        let valid = issue_2868_team_skill(&team, "valid");
+        let bad = team.join("team-skills/bad/SKILL.md");
+        std::fs::create_dir_all(bad.parent().unwrap()).unwrap();
+        std::fs::write(bad, "---\nname: [bad\n---\n").unwrap();
+        let content = issue_2868_cache(&replica);
+        assert!(content.contains("team:dev-team:valid"));
+        assert!(content.contains("Warning [team-skills:dev-team]"));
+        std::fs::remove_file(valid).unwrap();
+        let occupied = issue_2868_team(&ac, "occupied", serde_json::json!({"agents":[matrix]}));
+        std::fs::write(occupied.join("team-skills"), "KEEP_SENTINEL").unwrap();
+        assert!(!issue_2868_cache(Path::new(&matrix)).contains("### Team occupied"));
+        assert_eq!(
+            std::fs::read_to_string(occupied.join("team-skills")).unwrap(),
+            "KEEP_SENTINEL"
+        );
+        let other_ac = temp.path().join("other-project/.ac");
+        let same_name = other_ac.join("_agent_dev-rust");
+        std::fs::create_dir_all(&same_name).unwrap();
+        let other_team = issue_2868_team(
+            &other_ac,
+            "dev-team",
+            serde_json::json!({"agents":[matrix]}),
+        );
+        issue_2868_team_skill(&other_team, "foreign");
+        assert!(!issue_2868_cache(&same_name).contains("team:dev-team:foreign"));
+        let normalized = crate::path_utils::normalize_windows_verbatim_path_buf(
+            &std::fs::canonicalize(&matrix).unwrap(),
+        );
+        assert!(canonical_skill_member(Path::new(&matrix), &normalized));
+        assert!(!canonical_skill_member(&ac.join("missing"), &normalized));
+    }
+
+    #[test]
+    fn issue_2868_team_aggregate_budget_does_not_grant_omitted_roots() {
+        let sources: Vec<_> = (0..120)
+            .map(|i| {
+                (
+                    format!("team-{i:03}"),
+                    SkillIndex {
+                        matrix_root: Some(format!("/project/.ac/_team_{i:03}")),
+                        skills_root: Some(format!("/project/.ac/_team_{i:03}/team-skills")),
+                        skills: Vec::new(),
+                        warnings: Vec::new(),
+                    },
+                )
+            })
+            .collect();
+        let content = render_team_skills_section(&sources);
+        assert!(content.len() <= 65536);
+        assert!(content.contains("Omitted roots gain no read permission"));
+        assert!(content.contains("### Team team-000"));
+        assert!(!content.contains("_team_119/team-skills"));
+        assert!(!content.contains("### Team team-119"));
+        assert!(!content.contains("You MAY READ /project/.ac/_team_*"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn issue_2868_team_junction_parent_leaf_and_dangling_are_rejected() {
+        fn junction(link: &Path, target: &Path) {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "junction fixture failed: {}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (ac, _, replica, matrix) = make_valid_replica(temp.path());
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("sentinel"), "KEEP_OUTSIDE").unwrap();
+        std::fs::write(
+            outside.join("config.json"),
+            serde_json::json!({"agents":[matrix]}).to_string(),
+        )
+        .unwrap();
+        let parent = ac.join("_team_dev-team");
+        junction(&parent, &outside);
+        assert!(!accept_skill_team(&parent));
+        assert!(!issue_2868_cache(&replica).contains("## Team Skills"));
+        assert!(!outside.join("team-skills").exists());
+        std::fs::remove_dir(&parent).unwrap();
+        let team = issue_2868_team(&ac, "dev-team", serde_json::json!({"agents":[matrix]}));
+        let leaf = team.join("team-skills");
+        junction(&leaf, &outside);
+        assert!(!issue_2868_cache(&replica).contains("## Team Skills"));
+        assert_eq!(
+            std::fs::read_to_string(outside.join("sentinel")).unwrap(),
+            "KEEP_OUTSIDE"
+        );
+        std::fs::remove_dir(&leaf).unwrap();
+        junction(&leaf, &temp.path().join("absent-target"));
+        assert!(super::super::shared_locations::ensure_team_skills_dir(&team).is_err());
+        assert!(!temp.path().join("absent-target").exists());
+        std::fs::remove_dir(&leaf).unwrap();
+    }
+
     fn issue_2868_write_project_skill(ac_root: &Path, folder: &str, metadata: &str) -> PathBuf {
         let path = ac_root.join("project-skills").join(folder).join("SKILL.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
