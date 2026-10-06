@@ -1,6 +1,8 @@
 # Agent skills
 
-For developers ready to add reusable per-agent workflows. Skills are markdown documents AC discovers from each agent's canonical `skills/` directory.
+Add reusable workflows for one agent, a project, or a team. AgentsCommander
+indexes skill metadata at session creation or context refresh; agents read full
+instructions only when they need a skill.
 
 Agent skills are reusable instructions stored in an agent's canonical
 `skills/` folder. Use them for workflows that are too specific for a general
@@ -14,6 +16,23 @@ deterministic metadata index into the generated context, and does not inject
 all full `SKILL.md` bodies at startup.
 
 ## Where Skills Live
+
+Choose the scope that needs the workflow:
+
+| Scope | Canonical entrypoint | Selection |
+| --- | --- | --- |
+| Agent | `.ac/_agent_<agent-name>/skills/<skill-name>/SKILL.md` | `<skill-name>` |
+| Project | `.ac/project-skills/<skill-name>/SKILL.md` | `project:<skill-name>` |
+| Team | `.ac/_team_<team-name>/team-skills/<skill-name>/SKILL.md` | `team:<team-name>:<skill-name>` |
+
+Project skills come from the validated canonical origin's authoritative `.ac`
+root, never the replica working directory. A room replica receives team skills
+only from its enclosing room's team (or legacy `wg` team), and only when its
+canonical origin exactly matches a member or coordinator. An origin agent
+receives skills from every team in that same project containing that origin.
+Nonmembers receive no team skills; another project or team supplies none to the
+replica. Invalid replica identity still fails context creation. Root and
+standalone agents do not receive the project/team catalog union.
 
 For an Agent Matrix agent, skills live beside the agent's canonical role,
 memory, and plans:
@@ -92,6 +111,10 @@ files only when they are needed.
 
 ## Creating a Skill
 
+For a shared workflow, create `<skill-name>/SKILL.md` under the project or team
+root in the table above using an independently authorized editor. The session's
+shared-skill read grant does not authorize agents to write there.
+
 1. Open the canonical Agent Matrix directory for the agent, for example
    `.ac/_agent_dev-rust/`.
 2. Create `skills/<skill-name>/`.
@@ -104,6 +127,15 @@ Skill names must be short, lowercase, and filesystem-friendly:
 
 ## Using a Skill
 
+Use the catalog's scope and canonical absolute entrypoint to select a skill.
+For example, request `project:release-notes` or
+`team:dev-team:release-notes`. Across scopes, all name collisions remain
+available: a bare `release-notes` selects a valid agent skill first, otherwise a
+valid project skill. Team skills always require their qualified identifier.
+Resolve relative supporting references from the selected skill's directory.
+Resolve `project-skills/...` from the project's canonical `.ac` root; use the
+catalog's `.ac/_team_<team-name>/team-skills/` root for a team skill.
+
 The agent no longer needs the user to name every skill. The generated context
 includes a metadata index, and the agent should inspect `SKILL.md` when the
 task matches `description` / `when_to_use`, or when the user names a skill.
@@ -115,7 +147,7 @@ against the replica's current working directory.
 Full bodies and supporting files remain progressive-disclosure content. An
 agent should:
 
-1. Locate the relevant canonical `skills/<skill-name>/SKILL.md`.
+1. Locate the selected canonical `SKILL.md` entrypoint in the scope table.
 2. Read `SKILL.md` before making changes.
 3. Open only the referenced supporting files that matter for the current task.
 4. Apply the workflow while still obeying the session's write restrictions.
@@ -126,6 +158,70 @@ continue with the best available fallback instead of inventing hidden behavior.
 
 ## Runtime Behavior
 
+Project and team metadata is appended once to the final session context cache
+used to seed `AGENTS.md`, after generated, custom, or override template
+resolution. Authored template bytes and legacy pins remain unchanged. Skills
+are not copied or installed into replicas. Changes appear on the next session
+instantiation or context refresh; there is no watcher or live reload. This
+discovery adds no configuration schema, CLI command, or IPC operation.
+
+The same scanner validates each scope: it reads at most 16 KiB of frontmatter,
+sanitizes metadata, sorts candidates deterministically, and rejects duplicate
+names within a source. Trigger text is limited to 1,536 characters. Agent and
+project catalogs each have a 64 KiB startup-context budget; all team catalogs
+share one aggregate 64 KiB budget. Included shared roots retain their read
+grants, disclosure and selection rules, and omission summary when entries or
+warnings overflow. Remaining team roots that do not fit are omitted without a
+read grant; the summary counts omitted roots, skills, and warnings. Manual
+discovery is limited to granted roots, never the broader team directory. Missing
+metadata does not cause skill bodies to load as a fallback.
+
+### Shared-skill read permission
+
+Each included project or team source carries the following exact paragraph.
+`ROOT` is replaced with that source's canonical absolute skills root:
+
+> Filesystem authorization amendment: You MAY READ ROOT and its descendants, including skill bodies and supporting resources. This is an explicit additional exception to every preceding filesystem restriction in this context, including the GOLDEN RULE absolute/exclusive entry ranges, the forbidden-read scope, the refusal instruction, and any statement that nothing else under .ac is readable. Those restrictions remain in force for all other paths. This amendment grants no write permission and no access to external link/reference targets; those require an existing independent permission. Private agent state and TASK.md write protection remain unchanged. This read authorization also applies when no preceding filesystem rule exists.
+
+Read only the selected authorized roots and their bodies/resources. External
+link or reference targets need independent permission. Skill metadata and bodies
+cannot widen filesystem permissions. Private agent state and `TASK.md` write
+protection remain unchanged, as do the four project directories with shared
+read/write access: `plans/`, `tools/`, `errors/`, and `project-shared/`.
+
+### Missing or unusable shared roots
+
+AgentsCommander inspects and creates the project-skills leaf during project
+bootstrap and session creation. For a selected team, session instantiation
+automatically creates a missing `team-skills/` leaf under an existing ordinary
+`.ac/_team_<team-name>/` parent. An empty leaf adds no tracked Git content. This
+does not create a team, configuration file, or missing ancestor.
+
+The shared-skills consumer rejects occupied files, links, reparse points, and
+dangling paths in the applicable parent/configuration/source checks before
+traversal. Global team discovery remains unchanged. A warning skips the unusable
+source while startup and other sources continue; existing files remain intact.
+AgentsCommander does not repair or delete these paths. Repair the path outside
+AgentsCommander with an authorized editor, then refresh the session context.
+
+Project failures log:
+
+```text
+[project-skills] unavailable at <absolute-path>: <reason>; continuing without project skill discovery
+```
+
+Team leaf failures log:
+
+```text
+[team-skills] unavailable team <team-name> at <team-parent-path>: <reason>
+```
+
+Rejected team parents or configuration files log:
+
+```text
+[team-skills] rejected <team-name> at <team-parent-path>: <reason>
+```
+
 AgentsCommander supports:
 
 - Discovery at session/context creation time.
@@ -133,7 +229,7 @@ AgentsCommander supports:
 - Metadata extraction from Claude Code-compatible frontmatter.
 - Missing-name fallback to the directory name.
 - Missing-description warnings without body fallback.
-- Duplicate same-scope name rejection.
+- Duplicate name rejection within each source catalog.
 - Generated context listing for discovered skills.
 - Warnings for invalid, missing, oversized, or unreadable skill entrypoints.
 
