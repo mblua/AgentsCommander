@@ -191,7 +191,9 @@ describe("P4 authoritative description and accessible status", () => {
       expect(tooltip.textContent).toBe(snapshot().status);
       expect(title.getAttribute("aria-describedby")).toBe(tooltip.id);
       expect(document.querySelector(".workgroup-task-panel")?.contains(tooltip)).toBe(false);
+      title.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
       title.focus();
+      await waitFor(() => expect(tooltip.style.display).toBe("block"));
       expect(tooltip.style.display).toBe("block");
       title.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       expect(tooltip.style.display).toBe("none");
@@ -199,6 +201,7 @@ describe("P4 authoritative description and accessible status", () => {
       publish({ status: "Refreshed status" });
       expect(document.querySelector<HTMLElement>('[role="tooltip"]')!.style.display).toBe("none");
       title.blur(); title.focus();
+      await waitFor(() => expect(document.querySelector<HTMLElement>('[role="tooltip"]')!.style.display).toBe("block"));
       expect(document.querySelector<HTMLElement>('[role="tooltip"]')!.style.display).toBe("block");
     } finally { view.cleanup(); }
   });
@@ -238,6 +241,7 @@ describe("P4 authoritative description and accessible status", () => {
       publish(); vi.useFakeTimers();
       const title = document.querySelector<HTMLElement>(".workgroup-task-title")!;
       const tooltip = document.querySelector<HTMLElement>('[role="tooltip"]')!;
+      title.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
       title.dispatchEvent(new Event("pointerenter"));
       title.dispatchEvent(new Event("pointerleave"));
       vi.advanceTimersByTime(149);

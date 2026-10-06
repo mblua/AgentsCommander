@@ -252,303 +252,59 @@ describe("#1455 TASK header write ordering", () => {
     vi.useRealTimers();
   });
 
-  it("CASE A: a stale list() snapshot resolving AFTER the save must not revert the header", async () => {
+  it.each([
+    ["same session", "list first"], ["same session", "save first"],
+    ["same room sibling", "list first"], ["same room sibling", "save first"],
+    ["other room", "list first"], ["other room", "save first"],
+  ])("#1455 %s / %s retains the authoritative task after rebinding", async (target, order) => {
     const fake = new FakeTransport();
     const staleList = deferred<unknown>();
+    const save = deferred<unknown>();
     let holdList = false;
-    let heldCalls = 0;
-    setupTransport(fake, () => {
-      if (!holdList) return [wgSession(OLD_TASK)];
-      heldCalls += 1;
-      return staleList.promise;
-    });
-
-    const setTitleCall = deferred<unknown>();
-    fake.onInvoke("task_get_title", () => "Old title");
-    fake.onInvoke("task_set_title", () => setTitleCall.promise);
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    setupTransport(fake, () => holdList ? staleList.promise : [wgSession(OLD_TASK)]);
+    fake.resolve("task_get_title", "Old title");
+    fake.onInvoke("task_set_title", () => save.promise);
+    const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Old title"));
-
-      await startSave(rendered.root, "New title");
-
+      await waitFor(() => expect(headerTitle(view.root)).toBe("Old title"));
+      await startSave(view.root, "New title");
+      const other = target === "other room";
+      const id = target === "same session" ? SESSION_A : SESSION_B;
+      fake.resolve("get_active_session", liveSelection(id, 2));
       holdList = true;
       await forceHydration(fake, 1);
-      expect(heldCalls, "hydration must have issued a held list_sessions").toBe(1);
-
-      fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
-      setTitleCall.resolve({ workgroupRoot: WG_ROOT, task: "mutation result is not authoritative" });
-      await flush(10);
-      expect(terminalStore.activeWorkgroupTask).toBe(NEW_TASK);
-
-      staleList.resolve([wgSession(OLD_TASK)]);
-      await flush(10);
-
-      expect(terminalStore.activeWorkgroupTask).toBe(NEW_TASK);
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("New title"));
-      expect(terminalStore.activeSessionId).toBe(SESSION_A);
-      expect(terminalStore.activeWorkingDirectory).toBe(WG_CWD);
+      expect(headerTitle(view.root)).toBeNull();
+      const rebound = target === "same session" ? wgSession(OLD_TASK) :
+        other ? otherWorkgroupSession(OTHER_WG_TASK) : siblingSession(OLD_TASK);
+      const authoritative = other ? taskSnapshot(OTHER_WG_TASK, "C:/Project/.ac/wg-2-other-team") : taskSnapshot(NEW_TASK);
+      fake.resolve("task_get_snapshot", authoritative);
+      if (order === "list first") { staleList.resolve([rebound]); await flush(12); }
+      save.resolve({ workgroupRoot: WG_ROOT, task: "not authoritative" });
+      await flush(12);
+      if (order === "save first") { staleList.resolve([rebound]); await flush(12); }
+      expect(terminalStore.activeSessionId).toBe(id);
+      expect(terminalStore.activeWorkgroupTask).toBe(authoritative.task);
+      expect(headerTitle(view.root)).toBe(authoritative.taskTitle);
       expect(terminalStore.bindingState).toBe("bound");
-    } finally {
-      rendered.cleanup();
-    }
+    } finally { view.cleanup(); }
   });
 
-  it("CASE B: the same snapshot resolving BEFORE the save keeps the new title", async () => {
-    const fake = new FakeTransport();
-    const staleList = deferred<unknown>();
-    let holdList = false;
-    let heldCalls = 0;
-    setupTransport(fake, () => {
-      if (!holdList) return [wgSession(OLD_TASK)];
-      heldCalls += 1;
-      return staleList.promise;
-    });
-
-    const setTitleCall = deferred<unknown>();
-    fake.onInvoke("task_get_title", () => "Old title");
-    fake.onInvoke("task_set_title", () => setTitleCall.promise);
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Old title"));
-
-      await startSave(rendered.root, "New title");
-
-      holdList = true;
-      await forceHydration(fake, 1);
-      expect(heldCalls).toBe(1);
-
-      staleList.resolve([wgSession(OLD_TASK)]);
-      await flush(10);
-
-      fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
-      setTitleCall.resolve({ workgroupRoot: WG_ROOT, task: "mutation result is not authoritative" });
-      await flush(10);
-
-      expect(terminalStore.activeWorkgroupTask).toBe(NEW_TASK);
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("New title"));
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("CASE C: no hydration at all, the save sticks (baseline)", async () => {
-    const fake = new FakeTransport();
-    setupTransport(fake, () => [wgSession(OLD_TASK)]);
-    fake.onInvoke("task_get_title", () => "Old title");
+  it("refreshes a saved title without events, then accepts an external snapshot on reconnect", async () => {
+    const fake = new FakeTransport(); setupTransport(fake, () => [wgSession(OLD_TASK)]);
+    fake.resolve("task_get_title", "Old title");
     fake.onInvoke("task_set_title", () => {
       fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
-      return { workgroupRoot: WG_ROOT, task: "mutation result is not authoritative" };
+      return { workgroupRoot: WG_ROOT, task: "not authoritative" };
     });
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
     try {
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Old title"));
-      await startSave(rendered.root, "New title");
-      await flush(10);
-      expect(terminalStore.activeWorkgroupTask).toBe(NEW_TASK);
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("New title"));
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("CASE D: switch to a DIFFERENT workgroup, snapshot first, the save must be dropped", async () => {
-    const fake = new FakeTransport();
-    const otherList = deferred<unknown>();
-    let holdList = false;
-    setupTransport(fake, () => {
-      if (!holdList) return [wgSession(OLD_TASK)];
-      return otherList.promise;
-    });
-
-    const setTitleCall = deferred<unknown>();
-    fake.onInvoke("task_get_title", () => "Old title");
-    fake.onInvoke("task_set_title", () => setTitleCall.promise);
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Old title"));
-
-      await startSave(rendered.root, "New title");
-
-      fake.resolve("get_active_session", liveSelection(SESSION_B, 2));
-      holdList = true;
-      await forceHydration(fake, 1);
-      fake.resolve("task_get_snapshot", taskSnapshot(OTHER_WG_TASK, "C:/Project/.ac/wg-2-other-team"));
-      otherList.resolve([otherWorkgroupSession(OTHER_WG_TASK)]);
-      await flush(10);
-      expect(terminalStore.activeSessionId).toBe(SESSION_B);
-      expect(headerTitle(rendered.root)).toBe("Other workgroup task");
-
-      // wg-1's save now returns while a wg-2 session is bound. Different TASK.md,
-      // so painting it here would display one workgroup's task under another's.
-      fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
-      setTitleCall.resolve({ workgroupRoot: WG_ROOT, task: "mutation result is not authoritative" });
-      await flush(10);
-
-      expect(terminalStore.activeSessionId).toBe(SESSION_B);
-      expect(terminalStore.activeWorkgroupTask).toBe(OTHER_WG_TASK);
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Other workgroup task"));
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("CASE E: a snapshot taken AFTER the save still refreshes the header (the guard expires)", async () => {
-    const fake = new FakeTransport();
-    let listTask = OLD_TASK;
-    setupTransport(fake, () => [wgSession(listTask)]);
-    fake.onInvoke("task_get_title", () => "Old title");
-    fake.onInvoke("task_set_title", () => {
-      fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
-      return { workgroupRoot: WG_ROOT, task: "mutation result is not authoritative" };
-    });
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Old title"));
-
-      await startSave(rendered.root, "New title");
-      await flush(10);
-      expect(terminalStore.activeWorkgroupTask).toBe(NEW_TASK);
-
-      listTask = EXTERNAL_TASK;
+      await waitFor(() => expect(headerTitle(view.root)).toBe("Old title"));
+      await startSave(view.root, "New title"); await flush(12);
+      expect(headerTitle(view.root)).toBe("New title");
       fake.resolve("task_get_snapshot", taskSnapshot(EXTERNAL_TASK));
-      await forceHydration(fake, 1);
-      await flush(10);
-
-      expect(terminalStore.activeWorkgroupTask).toBe(EXTERNAL_TASK);
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("External title"));
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("CASE F: switch to a SAME-workgroup sibling, snapshot first, the save must still paint", async () => {
-    const fake = new FakeTransport();
-    const siblingList = deferred<unknown>();
-    let holdList = false;
-    setupTransport(fake, () => {
-      if (!holdList) return [wgSession(OLD_TASK)];
-      return siblingList.promise;
-    });
-
-    const setTitleCall = deferred<unknown>();
-    fake.onInvoke("task_get_title", () => "Old title");
-    fake.onInvoke("task_set_title", () => setTitleCall.promise);
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Old title"));
-
-      await startSave(rendered.root, "New title");
-
-      fake.resolve("get_active_session", liveSelection(SESSION_B, 2));
-      holdList = true;
-      await forceHydration(fake, 1);
-      // The sibling's snapshot was served before the write committed, so it carries
-      // the pre-save content of the SHARED file.
-      siblingList.resolve([siblingSession(OLD_TASK)]);
-      await flush(10);
-      expect(terminalStore.activeSessionId).toBe(SESSION_B);
-      expect(headerTitle(rendered.root)).toBe("Old title");
-
-      // The save returns. The sibling displays the very file that was edited, so
-      // dropping this write would leave #1455's own symptom in place.
-      fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
-      setTitleCall.resolve({ workgroupRoot: WG_ROOT, task: "mutation result is not authoritative" });
-      await flush(10);
-
-      expect(terminalStore.activeSessionId).toBe(SESSION_B);
-      expect(terminalStore.activeWorkgroupTask).toBe(NEW_TASK);
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("New title"));
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("CASE G: switch to a SAME-workgroup sibling, save first, the stale sibling snapshot must lose", async () => {
-    const fake = new FakeTransport();
-    const siblingList = deferred<unknown>();
-    let holdList = false;
-    setupTransport(fake, () => {
-      if (!holdList) return [wgSession(OLD_TASK)];
-      return siblingList.promise;
-    });
-
-    const setTitleCall = deferred<unknown>();
-    fake.onInvoke("task_get_title", () => "Old title");
-    fake.onInvoke("task_set_title", () => setTitleCall.promise);
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Old title"));
-
-      await startSave(rendered.root, "New title");
-
-      fake.resolve("get_active_session", liveSelection(SESSION_B, 2));
-      holdList = true;
-      await forceHydration(fake, 1);
-
-      // The save resolves while the store is unbound and the sibling's list is
-      // still in flight.
-      fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
-      setTitleCall.resolve({ workgroupRoot: WG_ROOT, task: "mutation result is not authoritative" });
-      await flush(10);
-
-      // Then the pre-save sibling snapshot lands. Same file, older content.
-      siblingList.resolve([siblingSession(OLD_TASK)]);
-      await flush(10);
-
-      expect(terminalStore.activeSessionId).toBe(SESSION_B);
-      expect(terminalStore.activeWorkgroupTask).toBe(NEW_TASK);
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("New title"));
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it("CASE H: switch to a DIFFERENT workgroup, save first, the new workgroup's snapshot must win", async () => {
-    const fake = new FakeTransport();
-    const otherList = deferred<unknown>();
-    let holdList = false;
-    setupTransport(fake, () => {
-      if (!holdList) return [wgSession(OLD_TASK)];
-      return otherList.promise;
-    });
-
-    const setTitleCall = deferred<unknown>();
-    fake.onInvoke("task_get_title", () => "Old title");
-    fake.onInvoke("task_set_title", () => setTitleCall.promise);
-
-    const rendered = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
-    try {
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Old title"));
-
-      await startSave(rendered.root, "New title");
-
-      fake.resolve("get_active_session", liveSelection(SESSION_B, 2));
-      holdList = true;
-      await forceHydration(fake, 1);
-
-      fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
-      setTitleCall.resolve({ workgroupRoot: WG_ROOT, task: "mutation result is not authoritative" });
-      await flush(10);
-
-      // wg-2's snapshot is a different TASK.md, so the wg-1 write must not suppress it.
-      fake.resolve("task_get_snapshot", taskSnapshot(OTHER_WG_TASK, "C:/Project/.ac/wg-2-other-team"));
-      otherList.resolve([otherWorkgroupSession(OTHER_WG_TASK)]);
-      await flush(10);
-
-      expect(terminalStore.activeSessionId).toBe(SESSION_B);
-      expect(terminalStore.activeWorkgroupTask).toBe(OTHER_WG_TASK);
-      await waitFor(() => expect(headerTitle(rendered.root)).toBe("Other workgroup task"));
-    } finally {
-      rendered.cleanup();
-    }
+      await forceHydration(fake, 1); await flush(12);
+      expect(headerTitle(view.root)).toBe("External title");
+    } finally { view.cleanup(); }
   });
 });
 
@@ -565,7 +321,7 @@ describe("P4 snapshot ownership and reconciliation", () => {
     try {
       await waitFor(() => expect(terminalStore.bindingState).toBe("bound"));
       expect(view.root.textContent).toContain("Loading task…");
-      expect(fake.calls.some(c => c.cmd === "activate_terminal_output")).toBe(true);
+      await waitFor(() => expect(fake.calls.some(c => c.cmd === "activate_terminal_output")).toBe(true));
       fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
       terminalStore.invalidateTask(WG_ROOT); await flush(12);
       expect(headerTitle(view.root)).toBe("New title");
@@ -575,7 +331,7 @@ describe("P4 snapshot ownership and reconciliation", () => {
     } finally { view.cleanup(); }
   });
 
-  it.each(["C:/PROJECT/.ac/wg-1-dev-team", "\\?\C:\Project\.ac\wg-1-dev-team"])("accepts compatible normalized root %s", async workgroupRoot => {
+  it.each(["C:/PROJECT/.ac/wg-1-dev-team", String.fromCharCode(92).repeat(2) + "?" + String.fromCharCode(92) + "C:/Project/.ac/wg-1-dev-team"])("accepts compatible normalized root %s", async workgroupRoot => {
     const fake = new FakeTransport(); setupTransport(fake, () => [wgSession(OLD_TASK)]);
     fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK, workgroupRoot));
     const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
@@ -678,4 +434,63 @@ describe("P4 snapshot ownership and reconciliation", () => {
       expect(fake.calls.filter(c => c.cmd === "task_get_snapshot")).toHaveLength(count);
     } finally { view.cleanup(); }
   });
+  it("manual/poll events only invalidate matching roots and sessions; payloads never replace snapshots", async () => {
+    const fake = new FakeTransport(); setupTransport(fake, () => [wgSession(OLD_TASK)]);
+    const pending = deferred<ReturnType<typeof taskSnapshot>>();
+    const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(fake.listens.some(l => l.event === "workgroup_task_updated")).toBe(true));
+      await waitFor(() => expect(headerTitle(view.root)).toBe("Old title"));
+      fake.onInvoke("task_get_snapshot", () => pending.promise);
+      const count = () => fake.callsFor("task_get_snapshot").length;
+      const before = count();
+      fake.emitFromBackend("workgroup_task_updated", { source: "manual", workgroupRoot: WG_ROOT + "-other", task: "wrong", taskTitle: "wrong" });
+      fake.emitFromBackend("workgroup_task_updated", { source: "poll", workgroupRoot: WG_ROOT, sessionIds: [SESSION_B], task: "wrong", taskTitle: "wrong" });
+      await flush(); expect(count()).toBe(before);
+      fake.emitFromBackend("workgroup_task_updated", { source: "manual", workgroupRoot: "C:/PROJECT/.ac/wg-1-dev-team", task: "wrong", taskTitle: "wrong" });
+      await flush(); expect(count()).toBeGreaterThan(before);
+      expect(headerTitle(view.root)).toBe("Old title");
+      expect(view.root.textContent).toContain("Refreshing task…");
+      expect(document.querySelector('[role="tooltip"]')).toBeNull();
+      fake.emitFromBackend("workgroup_task_updated", { source: "poll", workgroupRoot: WG_ROOT, sessionIds: [SESSION_A], task: "older payload", taskTitle: "older" });
+      await flush();
+      pending.resolve({ ...taskSnapshot(NEW_TASK), revision: "new-topic:1", statusRecord: { ...taskSnapshot().statusRecord, topicId: "new-topic", sequence: 1 } });
+      await flush(16);
+      expect(headerTitle(view.root)).toBe("New title");
+      expect(terminalStore.activeTaskSnapshot?.revision).toBe("new-topic:1");
+    } finally { view.cleanup(); }
+  });
+
+  it("ordinary Clean failure rereads without a committed guard or mutation retry", async () => {
+    const fake = new FakeTransport(); setupTransport(fake, () => [wgSession(OLD_TASK)]);
+    fake.reject("task_clean", "permission denied");
+    const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(headerTitle(view.root)).toBe("Old title"));
+      const before = fake.callsFor("task_get_snapshot").length;
+      click(view.root.querySelector<HTMLButtonElement>('button[title="Clean TASK (reset for new topic)"]')!);
+      await flush(); click(document.querySelector<HTMLButtonElement>(".quit-confirm-btn-quit")!); await flush(16);
+      expect(view.root.textContent).toContain("permission denied");
+      expect(view.root.textContent).not.toContain("Clean was saved");
+      expect(terminalStore.cleanPending).toBe(false);
+      expect(fake.callsFor("task_clean")).toHaveLength(1);
+      expect(fake.callsFor("task_get_snapshot").length).toBeGreaterThan(before);
+      expect(headerTitle(view.root)).toBe("Old title");
+    } finally { view.cleanup(); }
+  });
+
+  it("does not read for empty cwd and drops responses after disposal", async () => {
+    const fake = new FakeTransport(); setupTransport(fake, () => [session({ id: SESSION_A, workingDirectory: "" })]);
+    const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    await waitFor(() => expect(terminalStore.bindingState).toBe("bound"));
+    expect(fake.callsFor("task_get_snapshot")).toHaveLength(0);
+    view.cleanup(); resetUiStoresForTests();
+    setupTransport(fake, () => [wgSession(OLD_TASK)]);
+    const pending = deferred<ReturnType<typeof taskSnapshot>>(); fake.onInvoke("task_get_snapshot", () => pending.promise);
+    const second = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    await waitFor(() => expect(fake.callsFor("task_get_snapshot").length).toBeGreaterThan(0));
+    second.cleanup(); pending.resolve(taskSnapshot(NEW_TASK)); await flush(16);
+    expect(terminalStore.activeTaskSnapshot).toBeNull();
+  });
+
 });

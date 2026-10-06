@@ -145,8 +145,9 @@ const WorkgroupTask: Component = () => {
       anchor.bottom > topEdge && anchor.top < topEdge + height;
     setTooltipVisible(visible);
     if (!visible) return;
-    const maxWidth = Math.max(0, Math.min(640, width - 32));
-    const maxHeight = Math.max(0, Math.min(384, height - 32));
+    const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const maxWidth = Math.max(0, Math.min(40 * rem, width - 32));
+    const maxHeight = Math.max(0, Math.min(24 * rem, height - 32));
     tooltipElement.style.maxWidth = maxWidth + "px";
     tooltipElement.style.maxHeight = maxHeight + "px";
     const rect = tooltipElement.getBoundingClientRect();
