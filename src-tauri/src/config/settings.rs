@@ -300,6 +300,628 @@ pub struct ProfileCellConfig {
     pub notes: String,
 }
 
+// #2892 P01: additive source-aware contracts. These are data and pure helpers;
+// none of them changes the legacy selection, settings or persistence paths.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceFamily {
+    Agents,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceRole {
+    Catalog,
+    Registered,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceScope {
+    Project,
+    Instance,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceKind {
+    CatalogBase,
+    CatalogProject,
+    CatalogPersonal,
+    RegisteredInstance,
+}
+
+/// Logical source only. A backend resolver must derive and authorize its locator
+/// and capabilities; a deserialized reference grants no filesystem authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceRef {
+    pub family: SourceFamily,
+    pub role: SourceRole,
+    pub scope: SourceScope,
+    pub kind: SourceKind,
+    pub context_root: String,
+}
+
+/// Physical absence is distinct from every byte revision, including empty bytes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SourceRevision {
+    Bytes { sha256: String },
+    Absent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationRef {
+    pub version: u32,
+    pub source: SourceRef,
+    pub calculated_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_calculated_id: Option<String>,
+    /// Existing local key/id, never an alternate calculated identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_entry_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceSelectionTicket {
+    #[serde(rename = "ref")]
+    pub configuration_ref: ConfigurationRef,
+    pub expected_source_revision: SourceRevision,
+    pub catalog_context_revision: String,
+}
+
+/// Generic companions keep the legacy pair and complete physical CAS contract
+/// owned by their existing modules, without importing profiles into settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceSelectionState<LegacyPair, PhysicalRevision> {
+    pub legacy_pair: LegacyPair,
+    #[serde(rename = "ref")]
+    pub configuration_ref: Option<ConfigurationRef>,
+    pub physical_revision: PhysicalRevision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceSelectionExpectation<LegacyPair, PhysicalRevision> {
+    pub legacy_pair: LegacyPair,
+    #[serde(rename = "ref")]
+    pub configuration_ref: Option<ConfigurationRef>,
+    pub physical_revision: PhysicalRevision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceSelectionDefault<LegacyPair, PhysicalRevision> {
+    pub legacy_pair: LegacyPair,
+    #[serde(rename = "ref")]
+    pub configuration_ref: ConfigurationRef,
+    pub physical_revision: PhysicalRevision,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceAvailability {
+    Available,
+    Absent,
+    Invalid,
+    IndependentFormatRequired,
+    ContextUnavailable,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceCapabilities {
+    pub available_read: bool,
+    pub editable_create: bool,
+    pub editable_save: bool,
+    pub repair_by_owner: bool,
+    pub publish_managed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceDiagnostic {
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_profile: Option<String>,
+}
+
+/// The agent model is source-owned: registered entries and catalog definitions
+/// need not be converted into one another to carry an independent snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceSnapshot<Agent> {
+    pub source: SourceRef,
+    pub revision: SourceRevision,
+    pub availability: SourceAvailability,
+    pub capabilities: SourceCapabilities,
+    pub agents: Vec<Agent>,
+    pub profiles: BTreeMap<String, BTreeMap<String, ProfileCellConfig>>,
+    pub diagnostics: Vec<SourceDiagnostic>,
+    pub context_revision: String,
+}
+
+fn identity_preimage(parts: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+    let mut scalars = Vec::new();
+    for part in parts {
+        scalars.extend(
+            part.as_ref()
+                .chars()
+                .flat_map(char::to_lowercase)
+                .filter(|scalar| !scalar.is_whitespace()),
+        );
+    }
+    scalars.sort_unstable();
+    scalars.into_iter().collect()
+}
+
+fn configuration_identity_preimage(command: &str, envs: &[CodingAgentEnv]) -> String {
+    identity_preimage(
+        std::iter::once(command).chain(
+            envs.iter()
+                .flat_map(|row| [row.key.as_str(), row.value.as_str()]),
+        ),
+    )
+}
+
+fn profile_identity_preimage(profile: &ProfileCellConfig) -> String {
+    identity_preimage(
+        std::iter::once(profile.command.as_str()).chain(
+            profile
+                .env
+                .iter()
+                .flat_map(|(key, value)| [key.as_str(), value.as_str()]),
+        ),
+    )
+}
+
+fn identity_digest(prefix: &str, preimage: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{prefix}{:x}", Sha256::digest(preimage.as_bytes()))
+}
+
+/// Includes every configured env row, even disabled rows. Labels, backend and
+/// other metadata do not participate. Anagrams and repeated scalars are retained.
+pub fn configuration_identity(command: &str, envs: &[CodingAgentEnv]) -> String {
+    identity_digest("cid1:", &configuration_identity_preimage(command, envs))
+}
+
+/// A configured empty cell has an identity; an absent cell has no identity.
+/// The base configuration ID and decorative profile letter are not inputs.
+pub fn profile_identity(profile: &ProfileCellConfig) -> String {
+    identity_digest("pid1:", &profile_identity_preimage(profile))
+}
+
+/// Borrowed projection lets each source retain its own complete agent model.
+pub struct IdentitySnapshotEntry<'a> {
+    pub key: &'a str,
+    pub name: &'a str,
+    pub command: &'a str,
+    pub envs: &'a [CodingAgentEnv],
+    pub profiles: Option<&'a BTreeMap<String, ProfileCellConfig>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum IdentityValidationCode {
+    DuplicateConfigurationIdentity,
+    DuplicateProfileIdentity,
+    IdentityHashCollision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
+#[error("{code:?}: existing Coding Agent '{existing_name}'")]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityValidationError {
+    pub code: IdentityValidationCode,
+    pub existing_name: String,
+    pub entry_hint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_profile: Option<String>,
+}
+
+/// Validate one physical source at a time; this never compares other sources.
+/// Historical duplicate policy and update exclusion are caller-owned: pass the
+/// complete proposed snapshot, replacing the updated entry rather than appending.
+pub fn validate_identity_snapshot(
+    entries: &[IdentitySnapshotEntry<'_>],
+) -> Result<(), IdentityValidationError> {
+    validate_identity_snapshot_with_digest(entries, identity_digest)
+}
+
+fn validate_identity_snapshot_with_digest(
+    entries: &[IdentitySnapshotEntry<'_>],
+    digest: impl Fn(&str, &str) -> String,
+) -> Result<(), IdentityValidationError> {
+    let mut configurations = BTreeMap::<String, (String, &str)>::new();
+    // Profile identities are local to an agent. Collision evidence, however,
+    // must not be discarded simply because a second preimage is in another one.
+    let mut profile_preimages = BTreeMap::<String, (String, &str)>::new();
+    for entry in entries {
+        let preimage = configuration_identity_preimage(entry.command, entry.envs);
+        let id = digest("cid1:", &preimage);
+        if let Some((existing_preimage, existing_name)) = configurations.get(&id) {
+            return Err(IdentityValidationError {
+                code: if existing_preimage == &preimage {
+                    IdentityValidationCode::DuplicateConfigurationIdentity
+                } else {
+                    IdentityValidationCode::IdentityHashCollision
+                },
+                existing_name: (*existing_name).to_owned(),
+                entry_hint: entry.key.to_owned(),
+                requested_profile: None,
+            });
+        }
+        configurations.insert(id, (preimage, entry.name));
+        let mut local_profiles = BTreeMap::<String, &str>::new();
+        for (letter, profile) in entry.profiles.into_iter().flat_map(|cells| cells.iter()) {
+            let preimage = profile_identity_preimage(profile);
+            let id = digest("pid1:", &preimage);
+            if let Some((existing_preimage, existing_name)) = profile_preimages.get(&id) {
+                if existing_preimage != &preimage {
+                    return Err(IdentityValidationError {
+                        code: IdentityValidationCode::IdentityHashCollision,
+                        existing_name: (*existing_name).to_owned(),
+                        entry_hint: entry.key.to_owned(),
+                        requested_profile: Some(letter.clone()),
+                    });
+                }
+            }
+            profile_preimages
+                .entry(id.clone())
+                .or_insert((preimage, entry.name));
+            if local_profiles.insert(id, letter).is_some() {
+                return Err(IdentityValidationError {
+                    code: IdentityValidationCode::DuplicateProfileIdentity,
+                    existing_name: entry.name.to_owned(),
+                    entry_hint: entry.key.to_owned(),
+                    requested_profile: Some(letter.clone()),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Caller excludes the edited entry and supplies incumbent persisted names.
+/// This computes a proposed name only; notices belong after the later commit.
+pub fn identity_persisted_name(name: &str, occupied: &[String]) -> String {
+    let names: HashSet<String> = occupied
+        .iter()
+        .map(|name| name.trim().to_lowercase())
+        .collect();
+    let available = |candidate: &str| !names.contains(&candidate.trim().to_lowercase());
+    if available(name) {
+        return name.to_owned();
+    }
+    let mut suffix = 1usize;
+    loop {
+        let candidate = format!("{} ({suffix})", name.trim());
+        if available(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+#[cfg(test)]
+mod source_identity_tests {
+    use super::*;
+
+    fn env(key: &str, value: &str, enabled: bool) -> CodingAgentEnv {
+        CodingAgentEnv {
+            key: key.into(),
+            value: value.into(),
+            source: CodingAgentEnvSource::User,
+            enabled,
+        }
+    }
+
+    fn entry<'a>(key: &'a str, name: &'a str, command: &'a str) -> IdentitySnapshotEntry<'a> {
+        IdentitySnapshotEntry {
+            key,
+            name,
+            command,
+            envs: &[],
+            profiles: None,
+        }
+    }
+
+    fn source_ref() -> SourceRef {
+        SourceRef {
+            family: SourceFamily::Agents,
+            role: SourceRole::Catalog,
+            scope: SourceScope::Project,
+            kind: SourceKind::CatalogPersonal,
+            context_root: "D:/fixture/project".into(),
+        }
+    }
+
+    fn configuration_ref() -> ConfigurationRef {
+        ConfigurationRef {
+            version: 1,
+            source: source_ref(),
+            calculated_id: configuration_identity("tool", &[]),
+            requested_profile: Some("B".into()),
+            profile_calculated_id: Some(profile_identity(&empty_profile_cell())),
+            legacy_entry_hint: Some("local-key".into()),
+        }
+    }
+
+    #[test]
+    fn identity_unicode_scalar_hash_literal_and_disabled_env() {
+        // Independent SHA256 fixture of the explicitly sorted UTF8 string
+        // "--abioozßé\u{0307}", obtained with Node crypto, not this normalizer.
+        assert_eq!(
+            configuration_identity("Ba--", &[env(" Z\t", "İß É\u{00a0}OO", false)]),
+            "cid1:7eccb85b0439780c9cb0fcd45fdfdf0e6ee28906a805ea0a1a1bfcd34d875199"
+        );
+    }
+
+    #[test]
+    fn identity_repeated_dash_and_o_are_not_sets() {
+        assert_eq!(
+            configuration_identity("oo -- O", &[]),
+            "cid1:955d19cd39ddcfc4f57dc7d099bb56f703f0dbe00aa64806a6d398993eba4b7c"
+        );
+        assert_eq!(
+            configuration_identity("oo --", &[]),
+            "cid1:b82e31c7f845633e569797ff2ca05d61c74105b2b7580c0e3012ce4d7de4155f"
+        );
+        assert_ne!(
+            configuration_identity("--oo", &[]),
+            configuration_identity("-oo", &[])
+        );
+    }
+
+    #[test]
+    fn identity_anagrams_env_order_and_disabled_metadata() {
+        let rows = vec![env("X", "BA", false), env("Y", "CA", true)];
+        let mut reversed = rows.clone();
+        reversed.reverse();
+        reversed[0].enabled = false;
+        reversed[0].source = CodingAgentEnvSource::System;
+        assert_eq!(
+            configuration_identity("tool", &rows),
+            configuration_identity("loot", &reversed)
+        );
+        assert_ne!(
+            configuration_identity("tool", &rows),
+            configuration_identity("tool", &rows[1..])
+        );
+        assert_eq!(
+            configuration_identity("abc", &[]),
+            configuration_identity("a", &[env("b", "c", false)])
+        );
+    }
+
+    #[test]
+    fn identity_unicode_whitespace_without_nfc_or_zero_width_removal() {
+        assert_eq!(
+            configuration_identity("T\u{0085}\u{00a0}\u{2003}\u{2028}\u{3000} O\nOL", &[]),
+            configuration_identity("tool", &[])
+        );
+        assert_ne!(
+            configuration_identity("é", &[]),
+            configuration_identity("e\u{0301}", &[])
+        );
+        assert_ne!(
+            configuration_identity("tool\u{200b}", &[]),
+            configuration_identity("tool", &[])
+        );
+        assert_ne!(
+            configuration_identity("tool\u{feff}", &[]),
+            configuration_identity("tool", &[])
+        );
+    }
+
+    #[test]
+    fn identity_profile_empty_present_and_agent_local() {
+        let empty = empty_profile_cell();
+        assert_eq!(
+            profile_identity(&empty),
+            "pid1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        let profiles = BTreeMap::from([("B".into(), empty.clone())]);
+        let mut entries = [
+            entry("first", "First", "one"),
+            entry("second", "Second", "two"),
+        ];
+        entries[0].profiles = Some(&profiles);
+        entries[1].profiles = Some(&profiles);
+        assert!(
+            validate_identity_snapshot(&entries).is_ok(),
+            "same pid is allowed in different agents"
+        );
+        let mut changed = empty;
+        changed.enabled = false;
+        changed.notes = "decorative".into();
+        changed.preflight = Some("not identity input".into());
+        assert_eq!(profile_identity(&changed), profile_identity(&profiles["B"]));
+        assert!(validate_identity_snapshot(&[entry("absent", "Absent", "one")]).is_ok());
+    }
+
+    #[test]
+    fn identity_profile_parameters_and_env_change_pid_not_cid() {
+        let mut profile = empty_profile_cell();
+        profile.command = "--MODEL A".into();
+        profile.env.insert("API".into(), "value".into());
+        let original_pid = profile_identity(&profile);
+        let cid = configuration_identity("tool", &[env("BASE", "value", true)]);
+        profile.command.push('o');
+        assert_ne!(original_pid, profile_identity(&profile));
+        assert_eq!(
+            cid,
+            configuration_identity("tool", &[env("BASE", "value", true)])
+        );
+        profile.command.pop();
+        profile.env.insert("API".into(), "different".into());
+        assert_ne!(original_pid, profile_identity(&profile));
+    }
+
+    #[test]
+    fn identity_duplicate_reports_incumbent_name_crossfile_and_update() {
+        let first = entry("first", "Existing Coding Agent", "tool");
+        let replacement = entry("second", "Different name", "loot");
+        assert!(
+            validate_identity_snapshot(&[entry("first", "Existing Coding Agent", "tool")]).is_ok()
+        );
+        assert!(validate_identity_snapshot(&[entry("second", "Different name", "loot")]).is_ok());
+        let error = validate_identity_snapshot(&[first, replacement]).unwrap_err();
+        assert_eq!(
+            error.code,
+            IdentityValidationCode::DuplicateConfigurationIdentity
+        );
+        assert_eq!(error.existing_name, "Existing Coding Agent");
+        assert_eq!(error.entry_hint, "second");
+        // An update replaces only its own row; it cannot exclude another one.
+        assert!(validate_identity_snapshot(&[
+            entry("first", "Renamed", "tool"),
+            entry("second", "Second", "other")
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn identity_disabled_profile_duplicates_are_validated_locally() {
+        let mut disabled = empty_profile_cell();
+        disabled.enabled = false;
+        let profiles = BTreeMap::from([("A".into(), empty_profile_cell()), ("B".into(), disabled)]);
+        let mut candidate = entry("first", "First", "tool");
+        candidate.profiles = Some(&profiles);
+        let error = validate_identity_snapshot(&[candidate]).unwrap_err();
+        assert_eq!(error.code, IdentityValidationCode::DuplicateProfileIdentity);
+        assert_eq!(error.requested_profile.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn identity_injected_hash_collisions_do_not_merge_preimages() {
+        let entries = [
+            entry("first", "First", "abc"),
+            entry("second", "Second", "xyz"),
+        ];
+        let error =
+            validate_identity_snapshot_with_digest(&entries, |_, _| "forced".into()).unwrap_err();
+        assert_eq!(error.code, IdentityValidationCode::IdentityHashCollision);
+        let first_profiles = BTreeMap::from([("A".into(), empty_profile_cell())]);
+        let mut second = empty_profile_cell();
+        second.command = "different".into();
+        let second_profiles = BTreeMap::from([("Z".into(), second)]);
+        let mut entries = entries;
+        entries[0].profiles = Some(&first_profiles);
+        entries[1].profiles = Some(&second_profiles);
+        let error = validate_identity_snapshot_with_digest(&entries, |prefix, preimage| {
+            if prefix == "pid1:" {
+                "forced".into()
+            } else {
+                identity_digest(prefix, preimage)
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.code, IdentityValidationCode::IdentityHashCollision);
+        assert_eq!(error.requested_profile.as_deref(), Some("Z"));
+    }
+
+    #[test]
+    fn identity_name_suffix_first_free_unicode_comparison() {
+        let occupied = vec!["Name".into(), "Name (1)".into(), "Name (3)".into()];
+        assert_eq!(identity_persisted_name(" name ", &occupied), "name (2)");
+        assert_eq!(identity_persisted_name("Other", &occupied), "Other");
+        assert_eq!(
+            identity_persisted_name("i\u{0307}", &["İ".into()]),
+            "i\u{0307} (1)"
+        );
+        assert_eq!(occupied[0], "Name", "incumbent stays unchanged");
+    }
+
+    #[test]
+    fn identity_revision_absent_is_not_empty_bytes_and_rejects_mixed_union() {
+        let absent = serde_json::to_value(SourceRevision::Absent).unwrap();
+        let bytes = serde_json::to_value(SourceRevision::Bytes {
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+        })
+        .unwrap();
+        assert_eq!(absent, serde_json::json!({"kind":"absent"}));
+        assert_ne!(absent, bytes);
+        assert!(serde_json::from_value::<SourceRevision>(
+            serde_json::json!({"kind":"absent","sha256":""})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn identity_serde_companion_carriers_ticket_and_snapshot() {
+        let pair = serde_json::json!({"codingAgentId":"legacy", "requestedProfile":"B", "selectionLocked":true});
+        let physical = serde_json::json!({"tracked":{"kind":"absent"},"state":{"kind":"bytes","sha256":"full-state-digest"}});
+        let state = SourceSelectionState {
+            legacy_pair: pair.clone(),
+            configuration_ref: Some(configuration_ref()),
+            physical_revision: physical.clone(),
+        };
+        let value = serde_json::to_value(&state).unwrap();
+        assert_eq!(value["legacyPair"], pair);
+        assert_eq!(value["physicalRevision"], physical);
+        let decoded: SourceSelectionState<Value, Value> =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded, state);
+        let expectation: SourceSelectionExpectation<Value, Value> =
+            serde_json::from_value(value).unwrap();
+        assert_eq!(expectation.configuration_ref, state.configuration_ref);
+        let default = SourceSelectionDefault {
+            legacy_pair: pair,
+            configuration_ref: configuration_ref(),
+            physical_revision: physical,
+        };
+        assert_eq!(
+            serde_json::from_value::<SourceSelectionDefault<Value, Value>>(
+                serde_json::to_value(&default).unwrap()
+            )
+            .unwrap(),
+            default
+        );
+        let ticket = SourceSelectionTicket {
+            configuration_ref: configuration_ref(),
+            expected_source_revision: SourceRevision::Absent,
+            catalog_context_revision: "context-generation".into(),
+        };
+        assert_eq!(
+            serde_json::from_value::<SourceSelectionTicket>(serde_json::to_value(&ticket).unwrap())
+                .unwrap(),
+            ticket
+        );
+        let snapshot = SourceSnapshot::<AgentConfig> {
+            source: source_ref(),
+            revision: SourceRevision::Absent,
+            availability: SourceAvailability::Absent,
+            capabilities: SourceCapabilities {
+                editable_create: true,
+                ..Default::default()
+            },
+            agents: Vec::new(),
+            profiles: BTreeMap::new(),
+            diagnostics: Vec::new(),
+            context_revision: "context-generation".into(),
+        };
+        let decoded: SourceSnapshot<AgentConfig> =
+            serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap();
+        assert!(!decoded.capabilities.available_read);
+        assert!(decoded.capabilities.editable_create);
+        let mut malicious = serde_json::to_value(source_ref()).unwrap();
+        malicious["rawPath"] = Value::String("unauthorized".into());
+        assert!(serde_json::from_value::<SourceRef>(malicious).is_err());
+    }
+}
+
 /// Optional config-folder seed for a coding agent. When active, AC copies a
 /// template config folder (chosen by convention across profile > matrix >
 /// coding-agent-base; see `config_seed.rs`) into the replica at spawn. `dest` is

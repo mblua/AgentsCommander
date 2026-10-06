@@ -57,8 +57,9 @@ use crate::config::seed_manifest::{
     SEED_MANIFEST_FILENAME,
 };
 use crate::config::settings::{
-    validate_agent_command_text, validate_config_seed_dest, validate_env_rows, AppSettings,
-    CodingAgentEnv, CodingAgentEnvSource, ConfigSeedConfig,
+    validate_agent_command_text, validate_config_seed_dest, validate_env_rows,
+    validate_identity_snapshot, AppSettings, CodingAgentEnv, CodingAgentEnvSource,
+    ConfigSeedConfig, IdentitySnapshotEntry, IdentityValidationError, ProfileCellConfig,
 };
 
 /// Subdirectory of the config dir holding the catalog artifacts.
@@ -330,6 +331,302 @@ pub struct CodingAgentCatalog {
     pub schema_version: u32,
     #[serde(default)]
     pub agents: Vec<CodingAgentDefinition>,
+}
+
+/// #2892: an independent schema2 candidate, never a schema1 patch/composition.
+/// Existing readers, seeders and writers continue to use CodingAgentCatalog.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingAgentCatalogSchema2 {
+    pub schema_version: u32,
+    pub agents: Vec<CodingAgentDefinition>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub coding_agent_profiles:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, ProfileCellConfig>>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub profile_labels:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IdentityCatalogError {
+    #[error("independentFormatRequired")]
+    IndependentFormatRequired,
+    #[error("invalid independent catalog: {0}")]
+    InvalidFormat(String),
+}
+
+impl CodingAgentCatalogSchema2 {
+    /// Explicit editor template only; not a seed, migration or reader fallback.
+    pub fn empty() -> Self {
+        Self {
+            schema_version: 2,
+            agents: Vec::new(),
+            coding_agent_profiles: std::collections::BTreeMap::new(),
+            profile_labels: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Kept separate from decoding: historical identities may be diagnosed
+    /// without losing a structurally valid file or treating it as absent.
+    pub fn validate_identities(&self) -> Result<(), IdentityValidationError> {
+        let entries: Vec<_> = self
+            .agents
+            .iter()
+            .map(|agent| IdentitySnapshotEntry {
+                key: &agent.key,
+                name: &agent.label,
+                command: &agent.command,
+                envs: &agent.envs,
+                profiles: self.coding_agent_profiles.get(&agent.key),
+            })
+            .collect();
+        validate_identity_snapshot(&entries)
+    }
+}
+
+/// Pure, duplicate-key-aware schema2 decoder. It supplies only the model's own
+/// serde defaults and never reads a second source, adapts schema1 or writes IO.
+pub fn parse_catalog_schema2(
+    bytes: &[u8],
+) -> Result<CodingAgentCatalogSchema2, IdentityCatalogError> {
+    let value = parse_strict_json(bytes).map_err(IdentityCatalogError::InvalidFormat)?;
+    match value
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(2) => {}
+        Some(1) => return Err(IdentityCatalogError::IndependentFormatRequired),
+        _ => {
+            return Err(IdentityCatalogError::InvalidFormat(
+                "schemaVersion must be 2".into(),
+            ));
+        }
+    }
+    let catalog: CodingAgentCatalogSchema2 = serde_json::from_value(value)
+        .map_err(|error| IdentityCatalogError::InvalidFormat(error.to_string()))?;
+    let mut keys = HashSet::new();
+    for agent in &catalog.agents {
+        if agent.command.trim().is_empty() {
+            return Err(IdentityCatalogError::InvalidFormat(format!(
+                "catalog key '{}' requires an explicit nonempty command",
+                agent.key
+            )));
+        }
+        validate_definition(agent).map_err(IdentityCatalogError::InvalidFormat)?;
+        if !keys.insert(agent.key.as_str()) {
+            return Err(IdentityCatalogError::InvalidFormat(format!(
+                "duplicate catalog key '{}'",
+                agent.key
+            )));
+        }
+    }
+    for (key, letters) in catalog
+        .coding_agent_profiles
+        .iter()
+        .map(|(key, cells)| (key, cells.keys().collect::<Vec<_>>()))
+        .chain(
+            catalog
+                .profile_labels
+                .iter()
+                .map(|(key, labels)| (key, labels.keys().collect::<Vec<_>>())),
+        )
+    {
+        if !keys.contains(key.as_str()) {
+            return Err(IdentityCatalogError::InvalidFormat(format!(
+                "profile map references unknown catalog key '{key}'"
+            )));
+        }
+        if letters
+            .iter()
+            .any(|letter| letter.len() != 1 || !letter.as_bytes()[0].is_ascii_uppercase())
+        {
+            return Err(IdentityCatalogError::InvalidFormat(format!(
+                "profile letters for '{key}' must be A through Z"
+            )));
+        }
+    }
+    Ok(catalog)
+}
+
+#[cfg(test)]
+mod identity_schema2_tests {
+    use super::*;
+    use crate::config::settings::{
+        configuration_identity, profile_identity, IdentityValidationCode,
+    };
+    use serde_json::{json, Value};
+
+    fn definition(key: &str, command: &str) -> Value {
+        json!({"key":key, "label":key, "description":"own", "color":"#123456", "command":command})
+    }
+
+    fn parse(value: &Value) -> Result<CodingAgentCatalogSchema2, IdentityCatalogError> {
+        parse_catalog_schema2(&serde_json::to_vec(value).unwrap())
+    }
+
+    #[test]
+    fn identity_schema2_complete_model_and_local_profiles_roundtrip() {
+        let mut agent = definition("own", "custom --base");
+        agent["envs"] = json!([{"key":"SECRET", "value":"configured", "enabled":false}]);
+        agent["instructionsFilename"] = json!("AGENTS.md");
+        agent["configSeed"] = json!({"enabled":true,"dest":".custom"});
+        agent["installCommands"] =
+            json!({"default":"install custom", "windows":"install custom-windows"});
+        agent["updateCommands"] = json!(["update custom"]);
+        agent["isolatedHome"] = json!(true);
+        let catalog = parse(&json!({"schemaVersion":2,"agents":[agent],
+            "codingAgentProfiles":{"own":{"Z":{"command":"--model mine","env":{"MODEL":"mine"},"enabled":false,"notes":"own notes"}}},
+            "profileLabels":{"own":{"Z":"Own label"}}
+        })).unwrap();
+        assert_eq!(catalog.agents[0].command, "custom --base");
+        assert!(!catalog.agents[0].envs[0].enabled);
+        assert_eq!(
+            catalog.agents[0]
+                .install_commands
+                .as_ref()
+                .unwrap()
+                .windows
+                .as_deref(),
+            Some("install custom-windows")
+        );
+        assert_eq!(catalog.profile_labels["own"]["Z"], "Own label");
+        assert!(!catalog.coding_agent_profiles["own"]["Z"].enabled);
+        assert!(!catalog.coding_agent_profiles["own"].contains_key("A"));
+        assert_eq!(
+            parse(&serde_json::to_value(&catalog).unwrap()).unwrap(),
+            catalog
+        );
+        assert!(catalog.validate_identities().is_ok());
+    }
+
+    #[test]
+    fn identity_schema2_defaults_are_own_and_no_profile_is_invented() {
+        let catalog =
+            parse(&json!({"schemaVersion":2,"agents":[definition("own", "custom")]})).unwrap();
+        let agent = &catalog.agents[0];
+        assert!(agent.envs.is_empty());
+        assert!(agent.removable);
+        assert!(!agent.auto_update);
+        assert!(agent.config_seed.is_none());
+        assert!(catalog.coding_agent_profiles.is_empty());
+        assert!(catalog.profile_labels.is_empty());
+        let empty =
+            parse(&serde_json::to_value(CodingAgentCatalogSchema2::empty()).unwrap()).unwrap();
+        assert!(empty.agents.is_empty());
+    }
+
+    #[test]
+    fn identity_schema2_requires_version_agents_and_explicit_nonempty_command() {
+        for value in [
+            json!({"schemaVersion":2}),
+            json!({"agents":[]}),
+            json!({"schemaVersion":3,"agents":[]}),
+            json!({"schemaVersion":"2","agents":[]}),
+            json!({"schemaVersion":2,"agents":[{"key":"own","label":"Own","description":"own","color":"#fff"}]}),
+            json!({"schemaVersion":2,"agents":[definition("own", " \u{2003}")]}),
+        ] {
+            assert!(matches!(
+                parse(&value),
+                Err(IdentityCatalogError::InvalidFormat(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn identity_schema2_rejects_schema1_without_patch_composition_or_conversion() {
+        for value in [
+            json!({"schemaVersion":1,"agents":[]}),
+            json!({"schemaVersion":1,"agents":[{"key":"claude","label":"patch only"}]}),
+        ] {
+            assert_eq!(
+                parse(&value).unwrap_err(),
+                IdentityCatalogError::IndependentFormatRequired
+            );
+        }
+        // Additive schema2 parsing does not alter the legacy schema1 DTO.
+        let legacy: CodingAgentCatalog = serde_json::from_value(json!({"agents":[]})).unwrap();
+        assert_eq!(legacy.schema_version, CATALOG_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn identity_schema2_unique_keys_and_local_map_ownership() {
+        for value in [
+            json!({"schemaVersion":2,"agents":[definition("own","one"),definition("own","two")]}),
+            json!({"schemaVersion":2,"agents":[definition("INVALID_KEY","one")]}),
+            json!({"schemaVersion":2,"agents":[definition("own","one")],"codingAgentProfiles":{"foreign":{"A":{}}}}),
+            json!({"schemaVersion":2,"agents":[definition("own","one")],"profileLabels":{"foreign":{"A":"label"}}}),
+        ] {
+            assert!(matches!(
+                parse(&value),
+                Err(IdentityCatalogError::InvalidFormat(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn identity_schema2_letters_are_exact_a_through_z_in_both_maps() {
+        for letter in ["", "a", "AA", "Å", "[", " A"] {
+            for field in ["codingAgentProfiles", "profileLabels"] {
+                let mut value = json!({"schemaVersion":2,"agents":[definition("own","one")]});
+                value[field] = json!({"own":{letter: if field == "profileLabels" { json!("Label") } else { json!({}) }}});
+                assert!(
+                    matches!(parse(&value), Err(IdentityCatalogError::InvalidFormat(_))),
+                    "{field}: {letter:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn identity_schema2_duplicate_json_members_and_trailing_data_rejected() {
+        for bytes in [
+            br#"{"schemaVersion":2,"schemaVersion":2,"agents":[]}"#.as_slice(),
+            br#"{"schemaVersion":2,"agents":[]} {}"#,
+            br#"{"schemaVersion":2,"agents":[],"profileLabels":{"own":{"A":"one","A":"two"}}}"#,
+        ] {
+            assert!(matches!(
+                parse_catalog_schema2(bytes),
+                Err(IdentityCatalogError::InvalidFormat(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn identity_schema2_historical_duplicates_diagnosed_with_existing_name() {
+        let catalog = parse(&json!({"schemaVersion":2,"agents":[definition("existing","tool"),definition("second","loot")]})).unwrap();
+        let error = catalog.validate_identities().unwrap_err();
+        assert_eq!(
+            error.code,
+            IdentityValidationCode::DuplicateConfigurationIdentity
+        );
+        assert_eq!(error.existing_name, "existing");
+        assert_eq!(error.entry_hint, "second");
+        assert!(
+            parse(&json!({"schemaVersion":2,"agents":[definition("second","loot")]}))
+                .unwrap()
+                .validate_identities()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn identity_schema2_pid_only_edit_and_decorative_changes() {
+        let mut value = json!({"schemaVersion":2,"agents":[definition("own","tool")],"codingAgentProfiles":{"own":{"A":{"command":"--model one"}}}});
+        let before = parse(&value).unwrap();
+        value["agents"][0]["label"] = json!("Renamed");
+        value["agents"][0]["color"] = json!("#fff");
+        value["codingAgentProfiles"]["own"]["A"]["command"] = json!("--model two");
+        let after = parse(&value).unwrap();
+        assert_eq!(
+            configuration_identity(&before.agents[0].command, &before.agents[0].envs),
+            configuration_identity(&after.agents[0].command, &after.agents[0].envs)
+        );
+        assert_ne!(
+            profile_identity(&before.coding_agent_profiles["own"]["A"]),
+            profile_identity(&after.coding_agent_profiles["own"]["A"])
+        );
+    }
 }
 
 /// The catalog subdirectory of a project's `.ac` dir.
