@@ -26,6 +26,8 @@ If token validation keeps failing, restart or respawn the session — live token
 
 `list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local settings and agents files or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-room` requires the caller to be the identity-verified room orchestrator, and the master/root token does NOT bypass that check (a root token has no room).
 
+`task-get` and `task-status-set` perform local task operations without a daemon mailbox identity check. They require explicit token/root flags and use the trusted local orchestrator/root-master checks described [below](#task-status-set).
+
 `terminal-snapshot` is a privileged exception. The host CLI requires a canonical UUID-v4 live-session token, rejects persisted Root or master credentials, and leaves final authorization to the daemon's live physical-identity checks. `list-peers-lean --snapshot-targets` remains shape-only, identity-only discovery and grants no snapshot authority.
 
 ## Exit codes
@@ -35,6 +37,7 @@ All subcommands return:
 - `0` — success
 - `1` — error (auth, IO, routing, validation)
 - `2` — special: outcome unknown. Used by `close-session` when no response landed in the wait window (delivery confirmed or not), by `self-handoff-and-clear` / `self-handoff-and-switch` / `self-handoff-and-restart` when the daemon never acknowledged the request, by `raise-hand` when the response is malformed or missing within the timeout, and by `purge-room` when the response is unparseable.
+- `2` also means `revision_conflict` for `task-status-set`: the status revision changed; reread and reconcile before submitting a new request.
 - `3` — `purge-room` only: gate rejected (one or more peers are busy)
 - `4` — `purge-room` only: a destroy failed after the gate passed
 
@@ -847,6 +850,93 @@ agentscommander purge-room \
 The caller itself and the Root Agent are never purged; cross-room purge is not supported. If ANY in-scope peer has produced printable output within `--quiet-period-ms`, the command purges NOBODY and exits 3.
 
 Exit codes: `0` purged (or dry-run would pass), `1` auth or IO error, `2` outcome unknown, `3` gate rejected (a peer is busy), `4` a destroy failed after the gate passed.
+
+---
+
+## `task-get`
+
+Read your room's description and latest status as one snapshot. Use this before writing a status so you can supply its current revision.
+
+```bash
+"$AGENTSCOMMANDER_BINARY_PATH" task-get \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT"
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Session token; see authorization below. |
+| `--root` | Yes | Your agent root inside the room to read, including legacy `wg-*` rooms. |
+
+On success, the handler exits `0` and prints one JSON object. For a room with no status history yet:
+
+```json
+{"workgroupRoot":"/project/.ac/room-1-support","task":"---\ntitle: Resolve tickets\n---\n\nFix the reported login failures.\n","taskTitle":"Resolve tickets","description":"Fix the reported login failures.\n","status":null,"revision":"legacy:0","statusRecord":null,"tailIncomplete":false}
+```
+
+`task` is the raw `TASK.md` text (`null` if missing); `taskTitle` is its parsed title (`null` if absent), and `description` is its body. `status` is the complete latest status, independent of that body. A missing history has `status: null` and `revision: "legacy:0"`. After Clean, the revision is a new topic UUID followed by `:0`, with a `topic_started` record and null status.
+
+A non-null `statusRecord` has `schemaVersion`, `kind`, `topicId`, `sequence`, `requestId`, `baseRevision`, `recordedAt`, `author` and `status`. Schema version is `1`; `kind` is `status` or `topic_started`. Revisions use `topicId:sequence`; sequence, rather than the informational UTC `recordedAt` time, controls updates. The reader checks the latest complete row within a bounded tail, not every historical row.
+
+`tailIncomplete: true` means the history ends in an unfinished row. The snapshot uses the last complete valid row; a bounded partial-only history returns null status, `legacy:0`, and that flag. An invalid latest complete row is an error, not an empty status. See [history recovery](../agents/teams-and-workgroups.md#task-history-and-recovery).
+
+## `task-status-set`
+
+Publish a complete replacement status: remaining tickets, follow-up (FUP), and where to continue. This appends a snapshot to `TASK-status.jsonl` without changing the human title or description in `TASK.md`.
+
+Read with [`task-get`](#task-get) first. The following example applies only when that read returns `legacy:0`. For another revision, use the exact value you read. Choose a fresh UUID for each logical update; the UUID below illustrates one request.
+
+```bash
+"$AGENTSCOMMANDER_BINARY_PATH" task-status-set \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --expected-revision "legacy:0" \
+  --request-id "e146cc82-7e30-4417-b7eb-c1e6d158cc43" \
+  --text "Two tickets remain; FUP: validate the fix; continue P3."
+```
+
+The handler exits `0` and prints one JSON object with `workgroupRoot`, `revision`, `requestId`, `recordedAt`, `status` and `replayed`. A new write returns `replayed: false`; its revision ends in `:1` for a topic's first status. An accepted retry returns the original receipt with `replayed: true`.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--token` | Yes | Session token; see authorization below. |
+| `--root` | Yes | Your agent root in the room to update. |
+| `--expected-revision` | Yes | Exact revision from your read: `legacy:0` or a topic UUID plus `:sequence`. |
+| `--request-id` | Yes | UUID identifying this logical update. Keep it for an uncertain retry. |
+| `--text` | Yes | Entire new status, not a paragraph to add to the previous status. |
+
+Text must contain a non-whitespace character and fit within **48 KiB of UTF-8 bytes**. Newline, carriage return and tab are allowed; other control characters are rejected. The JSON-encoded record, including its terminating LF, must fit within **65,536 bytes**, so escaping can make otherwise acceptable text too large. The `TASK.md` snapshot limit is **256 KiB**, and the maximum sequence is **9,007,199,254,740,991**.
+
+### Retry and conflicts
+
+Keep the request UUID, expected revision and exact text until you know the result. If the reply is lost or a write reports uncertain progress, retry with those same values and the same caller. Replay is recognized only when that request is still the latest record and its author, base revision and text all match; the handler performs a fresh sync before returning a replay receipt.
+
+On `revision_conflict` (exit `2`), read again, reconcile your intended status with the new state, and submit a new logical update with the new revision and a new UUID. Do not blindly retry or automatically replace the revision. On `request_id_conflict`, do not reuse the UUID with different text, base revision or caller.
+
+### Authorization and output
+
+Both verbs use the trusted local CLI model: a UUID-shaped token plus an orchestrator role discovered from the root identity, or a root/master token that bypasses that role check. This is not cryptographic binding to a live session token. The canonical room resolved from `--root` must be an existing `room-*` or `wg-*` directly under `.ac`; use your own room. These verbs do not grant raw editing access to history, backups, journals or lockfiles. Agents may read their room's `TASK.md` directly; only orchestrators change it through the existing task verbs.
+
+After startup and argument parsing succeed, a successful handler writes one JSON object plus LF to stdout, leaves stderr empty, and exits `0`. A failed handler leaves stdout empty and writes one JSON object plus LF to stderr: `{"error":"code","message":"..."}`. Only `revision_conflict` adds `currentRevision` and exits `2`; other handler errors exit `1`.
+
+| Error code | Next step |
+|---|---|
+| `authorization_denied` | Check your room root and orchestrator role; restart or respawn if session credentials are missing or invalid. |
+| `invalid_input` | Check UUID, revision, text controls and both text/encoded-record byte limits. |
+| `revision_conflict` | Reread, reconcile, then use a new UUID and the current revision. |
+| `request_id_conflict` | Preserve the original request values; use a fresh UUID for a different logical update. |
+| `status_corrupt` | Preserve the history and report the invalid latest row or sequence limit; do not treat it as null status. |
+| `read_failed` | Check read access and the description size; preserve the files. |
+| `lock_timeout` | Wait for the competing task operation, then reread; do not delete the lockfile. |
+| `clean_recovery_pending` | Resolve the I/O failure and reread so AC can retry recovery. |
+| `clean_recovery_conflict` | Preserve the journal, targets and backups; report the conflict for reconciliation. |
+| `write_failed` | Treat progress as uncertain; reread and reconcile, retaining the request values for an identical retry. |
+
+Argument syntax failures exit `1` with plain-text stderr; help/version exit `0`. Startup failures precede these handlers and exit `1` without the handler JSON contract. With piped stderr they use stderr; on Windows, unusable standard handles can lead to stdout or a native dialog instead. Do not assume every startup failure has empty stdout or is noninteractive.
+
+On Windows, run these Bash examples through `C:\Program Files\Git\bin\bash.exe`. If PowerShell is unavoidable, invoke that Bash executable with `&` and capture its output with `2>&1 | Out-String`.
+
+See [room tasks, Clean and recovery](../agents/teams-and-workgroups.md#the-task-file-taskmd). The existing [`task-set-title`](#task-set-title) and [`task-append-body`](#task-append-body) verbs retain their text output and `USER:` title rules.
 
 ---
 

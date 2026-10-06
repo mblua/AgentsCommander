@@ -112,6 +112,68 @@ Both verbs validate the caller is an orchestrator of any team in the project and
 
 Orchestrator title updates do not overwrite titles that begin with `USER:` (a human set those through the in-app title editor). Orchestrator-supplied titles also cannot start with the reserved `USER:` prefix. Use Clean to reset a user-owned task before orchestrator auto-title updates resume.
 
+## Current task status
+
+Keep the human goal in `TASK.md` and publish the current work state separately. `TASK-status.jsonl` is an append-only history within a topic. Each status record is a complete snapshot: remaining tickets, follow-up (FUP), and where to continue. Updating status preserves the brief's title, context, links and constraints. AC does not infer status from the description or prune previous snapshots, and the UI has no history browser or status editor.
+
+For example, keep the title “Resolve tickets” and the original login-failure brief while replacing the current status with “Two tickets remain; FUP: validate the fix; continue P3.” A later update supplies the entire new status, not an extra paragraph.
+
+As the orchestrator, read the current revision before updating:
+
+```bash
+"$AGENTSCOMMANDER_BINARY_PATH" task-get \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT"
+```
+
+The handler exits `0` and returns a JSON snapshot containing the description, complete status and revision. If it returns `legacy:0` (no status history yet), a first update can be:
+
+```bash
+"$AGENTSCOMMANDER_BINARY_PATH" task-status-set \
+  --token "$AGENTSCOMMANDER_TOKEN" \
+  --root "$AGENTSCOMMANDER_ROOT" \
+  --expected-revision "legacy:0" \
+  --request-id "d07eedba-6c72-4c6d-8016-3488f0d00dc0" \
+  --text "Two tickets remain; FUP: validate the fix; continue P3."
+```
+
+Success exits `0` with a JSON receipt containing the new revision and `replayed: false`. Use the exact revision you read and a fresh request UUID for each logical update. If the result is uncertain, retain and retry the same UUID, base revision, exact text and caller; replay works only while that request is the latest record. A `revision_conflict` exits `2`: reread, reconcile, then use the new revision and a new UUID. A `request_id_conflict` means the latest matching UUID has different request values; do not repurpose it. See [CLI flags, limits and errors](../reference/cli.md#task-status-set).
+
+Use your own room's agent root and session credentials. The task verbs use trusted local token-shape/root-master and orchestrator-role checks, not cryptographic live-session binding. Workers can read their room's `TASK.md`; status access goes through the authorized CLI. Do not edit history, backups, the recovery journal or lockfile manually. Legacy `wg-*` rooms use the same task model.
+
+### Reading status in the UI
+
+Hover over or focus the task title in the terminal or sidebar to read the **complete status**. The tooltip uses status, not the description or its first line; the terminal continues to show the description separately. Null status produces no tooltip. Read failures remain errors rather than becoming an invented empty status.
+
+The tooltip stays open while the title has focus or the pointer is over the title or tooltip. A 150 ms delay lets you cross the gap. Long text scrolls within the viewport; from the focused title, use Up/Down, Page Up/Page Down, Home or End. Escape closes it until you re-enter the title or blur and refocus. In the sidebar, a transition to null status also resets Escape dismissal for the next status.
+
+CLI updates appear after the next successful task poll on the existing 15-second cadence; committed GUI changes trigger a refresh event. Errors or disconnection can delay refresh, so 15 seconds is not a guaranteed deadline. Reads reject stale results after the room, request generation or connection changes.
+
+## Clean: start a new topic
+
+Use **Clean** to archive the current description and history together and begin another topic. The paired files share a UTC timestamp and, if needed, the same collision suffix:
+
+```text
+TASK.<YYYYMMDD-HHMMSS>[.n].bak.md
+TASK-status.<YYYYMMDD-HHMMSS>[.n].bak.jsonl
+```
+
+The history backup preserves the entire file, including an unfinished tail. If only one source file exists, its missing partner gets an empty backup; if both are absent, there is no prior pair to archive.
+
+Clean resets the title to `Clean` and the body to `Ready to start a new topic`. It replaces the active history with one `topic_started` record: a new topic UUID, sequence `0`, and null status. The revision becomes that UUID plus `:0`. Repeating Clean on the canonical reset is a no-op when history is empty or contains only the complete `topic_started` seed.
+
+The **sidebar broom** is disabled only when a snapshot is available, its title is empty or trims to `Clean`, status is null, the latest record is not `status`, and its description is canonical. That comparison normalizes CRLF and removes one final LF. A different description or a `status` record keeps the action available even with a `Clean` title; a missing snapshot does not prove the room is already clean. This rule describes the sidebar action, not the terminal button.
+
+### Task history and recovery
+
+`task-get` reads the latest complete row from a bounded history tail. `tailIncomplete: true` identifies an unfinished suffix; it does not certify every older row. An invalid latest complete row fails the read instead of silently falling back.
+
+Before an accepted append repairs an unfinished suffix, AC writes and syncs its exact bytes to `TASK-status.partial.<UTCstamp>.<UUID>.bak`, then truncates the active history to the last complete row (offset zero for a partial-only file). A backup creation, write or sync failure before truncation leaves the original untruncated by that operation. A later failure, including sync after truncation, can leave it already truncated. Keep the synced backup, treat progress as uncertain, and reread/reconcile before continuing; do not assume success or restore/delete files manually.
+
+Clean uses `TASK-clean.pending.json` to finish an interrupted pair automatically on subsequent task reads, writes or GUI access. Recovery syncs both targets, including targets already replaced, before declaring success and deleting the journal. An I/O failure preserves the journal for retry; a conflict preserves evidence and reports an error. Resolve an I/O failure before rereading; report conflicting edits for reconciliation rather than unconditionally restoring backups or deleting the journal.
+
+Task operations share the stable internal `TASK.md.lock`; do not delete it. Cooperating readers get a coherent recovered pair. Direct file readers can observe an intermediate pair: Clean is not an atomic two-file rename or a power-loss guarantee. Concurrent writers from mixed product versions are unsupported.
+
 ## Activating a room
 
 From the UI, click **Activate** on the team. From the CLI, use `room add`. AC creates the same disk layout:
