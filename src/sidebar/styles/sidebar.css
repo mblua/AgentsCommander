@@ -10678,3 +10678,30 @@ html.light-theme .ac-discovery-badge.disabled {
 html.light-theme .agent-comparison-table-head {
   background: var(--sidebar-surface);
 }
+
+/* Full room status tooltip, shared by header and quick-view labels. */
+.sidebar-task-label:focus-visible {
+  outline: 2px solid var(--accent, #6ea8fe);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.sidebar-task-tooltip {
+  position: fixed;
+  z-index: 10000;
+  max-width: min(40rem, calc(100vw - 32px));
+  max-height: min(24rem, calc(100dvh - 32px));
+  box-sizing: border-box;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color, #444);
+  border-radius: 6px;
+  background: var(--bg-secondary, #252526);
+  color: var(--text-primary, #eee);
+  box-shadow: 0 4px 16px #0005;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.light-theme .sidebar-task-label:focus-visible { outline-color: #2563eb; }
+.light-theme .sidebar-task-tooltip { background: #fff; color: #222; border-color: #ccc; }

@@ -2519,6 +2519,11 @@ fn classify_injection_error(error: &str) -> (log::Level, &'static str) {
     }
 }
 
+pub(crate) fn is_deferred_internal_delivery_error(error: &str) -> bool {
+    crate::pty::menu_guard::is_menu_guard_deferred_error(error)
+        || crate::pty::menu_guard::is_typing_hold_deferred_error(error)
+}
+
 /// §224 D.3 — pure filter: session infos by exact-FQN match on
 /// `working_directory`. Extracted from `find_all_sessions` so the predicate
 /// can be unit-tested without a live `SessionManager` / `AppHandle`.
@@ -8208,21 +8213,36 @@ impl MailboxPoller {
                     }
                 }
                 _ if has_pty => {
+                    let session_id = Uuid::parse_str(&candidate.id).map_err(|e| {
+                        format!("Invalid orchestrator session id '{}': {}", candidate.id, e)
+                    })?;
+                    let blocked = tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => {
+                            return Err("Context alert delivery was canceled before live injection".to_string());
+                        }
+                        reason = crate::pty::inject::internal_notice_block_reason(app, session_id) => reason,
+                    };
+                    if cancellation.is_cancelled() {
+                        return Err(
+                            "Context alert delivery was canceled before live injection".to_string()
+                        );
+                    }
+                    if let Some(reason) = blocked {
+                        return Err(reason);
+                    }
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => {
                             return Err("Context alert delivery was canceled during live settle".to_string());
                         }
-                        _ = self.settle_internal_live_before_inject(app, Uuid::parse_str(&candidate.id)
-                            .map_err(|e| format!("Invalid orchestrator session id '{}': {}", candidate.id, e))?) => {}
+                        _ = self.settle_internal_live_before_inject(app, session_id) => {}
                     }
                     if cancellation.is_cancelled() {
                         return Err(
                             "Context alert delivery was canceled before live injection".to_string()
                         );
                     }
-                    let session_id = Uuid::parse_str(&candidate.id)
-                        .map_err(|e| format!("Invalid orchestrator session id: {}", e))?;
                     match self
                         .inject_internal_system_notice(
                             app,
@@ -8713,6 +8733,11 @@ impl MailboxPoller {
                 ));
             }
             guard()?;
+            if let Some(reason) =
+                crate::pty::inject::internal_notice_block_reason(app, session_id).await
+            {
+                return Err(reason);
+            }
             hooks.inject_calls.lock().unwrap().push(session_id);
             hooks
                 .internal_payloads
@@ -8746,7 +8771,7 @@ impl MailboxPoller {
                 });
             return Ok(());
         } else {
-            crate::pty::inject::inject_text_into_supported_agent_session_with_pre_write_check(
+            crate::pty::inject::inject_internal_notice_into_supported_agent_session(
                 app,
                 session_id,
                 &payload,
@@ -8767,7 +8792,7 @@ impl MailboxPoller {
         }
 
         #[cfg(not(test))]
-        crate::pty::inject::inject_text_into_supported_agent_session_with_pre_write_check(
+        crate::pty::inject::inject_internal_notice_into_supported_agent_session(
             app,
             session_id,
             &payload,
@@ -17507,6 +17532,237 @@ mod tests {
         drop(settle_release);
         assert!(result.unwrap_err().contains("canceled during live settle"));
         assert!(hooks.inject_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn internal_deferral_classifier_only_accepts_typed_prefixes() {
+        assert!(is_deferred_internal_delivery_error(
+            "typing_hold_deferred: held"
+        ));
+        assert!(is_deferred_internal_delivery_error(
+            "menu_guard_deferred: held"
+        ));
+        for error in [
+            "",
+            "pipe closed",
+            "purge-room in progress; context alert deferred",
+            "PTY write failed: typing_hold_deferred",
+        ] {
+            assert!(!is_deferred_internal_delivery_error(error));
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_live_hold_precheck_preserves_settle_and_retries_once() {
+        let fixture = make_mailbox_fixture();
+        fixture
+            .app
+            .manage(crate::pty::input_activity::new_typing_hold_state());
+        let app = app_handle(&fixture.app);
+        let id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "held",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(id, true);
+        let (release, gate) = tokio::sync::oneshot::channel();
+        *hooks.internal_live_settle_gate.lock().unwrap() = Some(gate);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+        hold.lock().unwrap().note_qualifying_key(id);
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.into(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".into(),
+            "wg-1-dev-team".into(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let error = poller
+            .deliver_internal_system_notice(
+                &app,
+                target.clone(),
+                notice.clone(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(
+            &error
+        ));
+        assert!(hooks.internal_live_settle_gate.lock().unwrap().is_some());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+        assert!(hooks.internal_bookkeeping.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(
+            !hold
+                .lock()
+                .unwrap()
+                .toggle_manual(id, Duration::from_secs(30))
+                .closed
+        );
+        release.send(()).unwrap();
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![id]);
+        assert_eq!(hooks.internal_bookkeeping.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn internal_live_hold_closing_during_settle_defers_before_hook_actuation() {
+        let fixture = make_mailbox_fixture();
+        fixture
+            .app
+            .manage(crate::pty::input_activity::new_typing_hold_state());
+        let app = app_handle(&fixture.app);
+        let id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "hold-race",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(id, true);
+        let (release, gate) = tokio::sync::oneshot::channel();
+        *hooks.internal_live_settle_gate.lock().unwrap() = Some(gate);
+        let racing_app = app.clone();
+        let racing_hooks = hooks.clone();
+        let closer = tokio::spawn(async move {
+            racing_hooks.internal_live_settle_entered.notified().await;
+            racing_app
+                .state::<crate::pty::input_activity::TypingHoldState>()
+                .lock()
+                .unwrap()
+                .note_qualifying_key(id);
+            release.send(()).unwrap();
+        });
+        let error = MailboxPoller::new_with_test_hooks(hooks.clone())
+            .deliver_internal_system_notice(
+                &app,
+                InternalSystemTarget::for_context_alert(
+                    CANONICAL_WAKE_FROM.into(),
+                    fixture.sender_cwd.clone(),
+                )
+                .unwrap(),
+                InternalSystemNotice::for_context_alert(
+                    "dev-rust".into(),
+                    "wg-1-dev-team".into(),
+                    50,
+                    vec![50],
+                )
+                .unwrap(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        closer.await.unwrap();
+        assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(
+            &error
+        ));
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+        assert!(hooks.internal_bookkeeping.lock().unwrap().is_empty());
+        assert!(hooks.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn internal_live_menu_precheck_defers_without_consuming_settle_gate() {
+        let fixture = make_mailbox_fixture();
+        let menu = Arc::new(crate::pty::menu_guard::MenuGuard::new());
+        fixture.app.manage(menu.clone());
+        let app = app_handle(&fixture.app);
+        let id = add_mailbox_session(
+            &app,
+            &fixture.sender_cwd,
+            "menu",
+            SessionStatus::Running,
+            None,
+        )
+        .await;
+        let entries = vec![crate::config::settings::BlockingMenuEntry::Valid(
+            crate::config::settings::BlockingMenuConfig {
+                pattern: "Trust?".into(),
+                notification: "trust".into(),
+                enabled: true,
+                captured_against: None,
+            },
+        )];
+        menu.evaluate_logical_rows(
+            id,
+            &[crate::pty::watchers::frame::LogicalRow {
+                text: "Trust?".into(),
+                start: 0,
+                end: 0,
+            }],
+            &entries,
+        );
+        assert!(menu.is_blocked(id));
+        let hooks = MailboxTestHooks::default();
+        hooks.pty_presence.lock().unwrap().insert(id, true);
+        let (release, gate) = tokio::sync::oneshot::channel();
+        *hooks.internal_live_settle_gate.lock().unwrap() = Some(gate);
+        let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let target = InternalSystemTarget::for_context_alert(
+            CANONICAL_WAKE_FROM.into(),
+            fixture.sender_cwd.clone(),
+        )
+        .unwrap();
+        let notice = InternalSystemNotice::for_context_alert(
+            "dev-rust".into(),
+            "wg-1-dev-team".into(),
+            50,
+            vec![50],
+        )
+        .unwrap();
+        let error = poller
+            .deliver_internal_system_notice(
+                &app,
+                target.clone(),
+                notice.clone(),
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap_err();
+        assert!(crate::pty::menu_guard::is_menu_guard_deferred_error(&error));
+        assert!(hooks.internal_live_settle_gate.lock().unwrap().is_some());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+        assert!(hooks.internal_bookkeeping.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        menu.evaluate_logical_rows(id, &[], &[]);
+        release.send(()).unwrap();
+        poller
+            .deliver_internal_system_notice(
+                &app,
+                target,
+                notice,
+                CancellationToken::new(),
+                Arc::new(|| Ok(())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(*hooks.inject_calls.lock().unwrap(), vec![id]);
     }
 
     #[tokio::test]

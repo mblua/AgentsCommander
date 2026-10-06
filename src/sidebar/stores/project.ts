@@ -1,5 +1,6 @@
 import { batch, createSignal } from "solid-js";
 import type {
+  TaskSnapshot,
   AcWorkgroup,
   AcAgentMatrix,
   AcDiscoveryResult,
@@ -15,7 +16,7 @@ import type {
   RawJsonFieldState,
   RawStringFieldState,
 } from "../../shared/types";
-import { ProjectAPI, AgentCreatorAPI } from "../../shared/ipc";
+import { ProjectAPI, AgentCreatorAPI, TaskAPI, getTransportConnectionState } from "../../shared/ipc";
 import { toastStore } from "../../shared/stores/toasts";
 import {
   findLoadedProjectPathForRefresh,
@@ -47,6 +48,65 @@ const queuedReloads = new Set<string>();
 // exactly one toast; cleared by the store's reset lifecycle (clear()).
 const seenConflictIds = new Set<string>();
 let loadingCount = 0;
+
+// Room snapshots remain independent of discovery descriptors and first lines.
+const [taskSnapshots, setTaskSnapshots] = createSignal<Map<string, TaskSnapshot>>(new Map());
+const taskRequests = new Map<string, number>();
+const taskErrors = new Set<string>();
+let taskGeneration = 0;
+let nextTaskRequest = 0;
+
+function loadedTaskRooms(): Map<string, string> {
+  return new Map(projects().flatMap(project => project.workgroups.map(wg =>
+    [normalizePath(wg.path), wg.path] as const)));
+}
+
+function pruneTaskSnapshots(): void {
+  const rooms = loadedTaskRooms();
+  for (const key of taskRequests.keys()) {
+    if (!rooms.has(key)) { taskRequests.delete(key); taskErrors.delete(key); }
+  }
+  setTaskSnapshots(prev => new Map([...prev].filter(([key]) => rooms.has(key))));
+}
+
+async function refreshTaskSnapshot(path: string): Promise<void> {
+  const key = normalizePath(path);
+  const root = loadedTaskRooms().get(key);
+  if (!root) return;
+  const generation = taskGeneration;
+  const connection = getTransportConnectionState();
+  if (connection.state !== "connected") return;
+  const request = ++nextTaskRequest;
+  taskRequests.set(key, request);
+  setTaskSnapshots(prev => { const next = new Map(prev); next.delete(key); return next; });
+  const current = () => {
+    const now = getTransportConnectionState();
+    return generation === taskGeneration && taskRequests.get(key) === request &&
+      loadedTaskRooms().has(key) && now.state === "connected" && now.generation === connection.generation;
+  };
+  try {
+    const snapshot = await TaskAPI.getSnapshotAt(root);
+    if (!current()) return;
+    if (normalizePath(snapshot.workgroupRoot) !== key) throw new Error("Task snapshot room mismatch");
+    taskErrors.delete(key);
+    setTaskSnapshots(prev => new Map(prev).set(key, snapshot));
+  } catch (error) {
+    if (!current() || taskErrors.has(key)) return;
+    taskErrors.add(key);
+    toastStore.error(`Could not read room task: ${String(error)}`);
+  }
+}
+
+function refreshTaskSnapshots(): void {
+  pruneTaskSnapshots();
+  for (const path of loadedTaskRooms().values()) void refreshTaskSnapshot(path);
+}
+
+function invalidateTaskSnapshots(): void {
+  taskGeneration++;
+  taskRequests.clear();
+  setTaskSnapshots(new Map());
+}
 
 function normalizePath(p: string): string {
   return normalizeProjectPathForCompare(p);
@@ -109,6 +169,7 @@ function appendDiscoveredProject(regPath: string, result: AcDiscoveryResult) {
     });
     if (appended) {
       replicaVolatileStore.clearForPaths(workgroupReplicaPaths(result));
+      refreshTaskSnapshots();
     }
   });
 }
@@ -353,6 +414,10 @@ function issueBlockingText(issue: ProjectPathIssue): string {
 }
 
 export const projectStore = {
+  taskSnapshot(path: string) { return taskSnapshots().get(normalizePath(path)); },
+  refreshTaskSnapshot,
+  refreshTaskSnapshots,
+  invalidateTaskSnapshots,
   get projects() {
     return projects();
   },
@@ -414,6 +479,8 @@ export const projectStore = {
     // sole legacy fallback; a present-but-malformed report fails closed.
     report?: unknown
   ) {
+    invalidateTaskSnapshots();
+    refreshTaskSnapshots();
     setArchivedPaths((prev) => {
       const keys = new Set(prev.map(normalizePath));
       return [...prev, ...archivedProjectPaths.filter((p) => !keys.has(normalizePath(p)))];
@@ -594,6 +661,7 @@ export const projectStore = {
               });
               if (loaded) {
                 replicaVolatileStore.clearForPaths(workgroupReplicaPaths(result));
+                refreshTaskSnapshots();
               }
             });
           } catch (e) {
@@ -621,6 +689,7 @@ export const projectStore = {
     const removed = projects().find((p) => normalizePath(p.path) === normalized);
     batch(() => {
       setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
+      pruneTaskSnapshots();
       setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== normalized));
       if (removed) {
         replicaVolatileStore.clearForPaths(workgroupReplicaPaths(removed));
@@ -636,6 +705,7 @@ export const projectStore = {
       const archived = projects().find((p) => normalizePath(p.path) === normalized);
       batch(() => {
         setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== normalized));
+        pruneTaskSnapshots();
         setArchivedPaths((prev) =>
           prev.some((p) => normalizePath(p) === normalized) ? prev : [...prev, path]
         );
@@ -664,6 +734,7 @@ export const projectStore = {
         const archived = projects().find((p) => normalizePath(p.path) === key);
         batch(() => {
           setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
+          pruneTaskSnapshots();
           setArchivedPaths((prev) =>
             prev.some((p) => normalizePath(p) === key) ? prev : [...prev, event.path]
           );
@@ -678,6 +749,7 @@ export const projectStore = {
         const removed = projects().find((p) => normalizePath(p.path) === key);
         batch(() => {
           setProjects((prev) => prev.filter((p) => normalizePath(p.path) !== key));
+          pruneTaskSnapshots();
           setArchivedPaths((prev) => prev.filter((p) => normalizePath(p) !== key));
           if (removed) {
             replicaVolatileStore.clearForPaths(workgroupReplicaPaths(removed));
@@ -720,6 +792,8 @@ export const projectStore = {
   },
 
   clear() {
+    invalidateTaskSnapshots();
+    taskErrors.clear();
     setProjects([]);
     setArchivedPaths([]);
     loadingCount = 0;

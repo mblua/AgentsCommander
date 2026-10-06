@@ -408,12 +408,18 @@ pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
     message_id: &str,
     settle: SettleReadiness,
 ) -> Result<(), String> {
-    let result =
-        inject_text_into_session_impl(app, session_id, text, Some(message_id), settle, |session| {
+    let result = inject_text_into_session_impl(
+        app,
+        session_id,
+        text,
+        HoldPolicy::PeerWake(message_id),
+        settle,
+        |session| {
             session.ok_or_else(|| format!("Session not found: {}", session_id))?;
             Ok(())
-        })
-        .await;
+        },
+    )
+    .await;
     if result.is_ok() {
         // The message left the deferred set the moment its text was written; a
         // repeated clear is a no-op.
@@ -436,7 +442,7 @@ where
         app,
         session_id,
         text,
-        None,
+        HoldPolicy::Exempt,
         SettleReadiness::Unknown,
         move |session| {
             session.ok_or_else(|| format!("Session not found: {}", session_id))?;
@@ -488,7 +494,67 @@ where
         app,
         session_id,
         text,
-        None,
+        HoldPolicy::Exempt,
+        SettleReadiness::Unknown,
+        move |session| {
+            let session = session.ok_or_else(|| {
+                format!(
+                    "Session {} is missing before supported-agent injection",
+                    session_id
+                )
+            })?;
+            validate_supported_agent_session(session, session_id)?;
+            pre_write_check(session)
+        },
+    )
+    .await
+}
+
+enum HoldPolicy<'a> {
+    Exempt,
+    PeerWake(&'a str),
+    InternalNotice,
+}
+
+/// Read-only preflight; the injector repeats this under the writer permit.
+pub(crate) async fn internal_notice_block_reason<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+) -> Option<String> {
+    if let Some(menu) = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>() {
+        if menu.is_blocked(session_id) {
+            return Some(format!(
+                "{}: session {} is blocked by interactive menu",
+                crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED,
+                session_id
+            ));
+        }
+    }
+    if crate::commands::pty::typing_hold_defers_injection(app, session_id).await {
+        return Some(format!(
+            "{}: session {} is holding internal notice injection while the user is typing",
+            crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED,
+            session_id
+        ));
+    }
+    None
+}
+
+pub(crate) async fn inject_internal_notice_into_supported_agent_session<R, F>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    text: &str,
+    pre_write_check: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    F: FnOnce(&Session) -> Result<(), String>,
+{
+    inject_text_into_session_impl(
+        app,
+        session_id,
+        text,
+        HoldPolicy::InternalNotice,
         SettleReadiness::Unknown,
         move |session| {
             let session = session.ok_or_else(|| {
@@ -508,7 +574,7 @@ async fn inject_text_into_session_impl<R, F>(
     app: &tauri::AppHandle<R>,
     session_id: Uuid,
     text: &str,
-    hold_message_id: Option<&str>,
+    hold_policy: HoldPolicy<'_>,
     settle: SettleReadiness,
     pre_write_check: F,
 ) -> Result<(), String>
@@ -553,11 +619,9 @@ where
 
     // #2336 - the typing hold gate, still under the per-session writer permit so
     // a key written against this session is observed before any payload byte.
-    // Only the peer-wake entry point sets `hold_message_id`; internal notices,
-    // self-maintenance, Telegram and the logical-command follow-up stay on the
-    // plain injector and are never held. Deferring records the message ID and
-    // writes no payload and no Enter byte.
-    if let Some(message_id) = hold_message_id {
+    // Peer wakes record their IDs; internal notices defer without registering
+    // an ID. Plain, restart-resume and logical follow-up writes remain exempt.
+    if let HoldPolicy::PeerWake(message_id) = hold_policy {
         if crate::commands::pty::typing_hold_defers_injection(app, session_id).await {
             crate::commands::pty::note_held_wake(app, session_id, message_id);
             return Err(format!(
@@ -565,6 +629,12 @@ where
                 crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED,
                 session_id
             ));
+        }
+    }
+
+    if matches!(hold_policy, HoldPolicy::InternalNotice) {
+        if let Some(reason) = internal_notice_block_reason(app, session_id).await {
+            return Err(reason);
         }
     }
 
@@ -1483,6 +1553,48 @@ mod tests {
         (app, id, backend)
     }
 
+    async fn supported_agent_typing_hold_app(
+        shell: &str,
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        Uuid,
+        Arc<RecordingBackend>,
+    ) {
+        let session_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let session = session_manager
+            .read()
+            .await
+            .create_session(
+                shell.to_string(),
+                Vec::new(),
+                "C:\\test".to_string(),
+                Some(shell.to_string()),
+                None,
+                Vec::new(),
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let id = session.id;
+        let backend = Arc::new(RecordingBackend::default());
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        pty.lock()
+            .unwrap()
+            .record_route(id, SessionBackendKind::LocalProcess);
+        let settings_state: crate::config::settings::SettingsState = Arc::new(
+            tokio::sync::RwLock::new(crate::config::settings::AppSettings::default()),
+        );
+        let app = tauri::test::mock_builder()
+            .manage(session_manager)
+            .manage(pty)
+            .manage(crate::pty::input_activity::new_typing_hold_state())
+            .manage(settings_state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        (app, id, backend)
+    }
+
     /// #2336 - a peer wake is deferred with zero bytes written while the typing
     /// hold is active; a repeated poll does not grow the unique count; a manual
     /// release lets the very next attempt deliver and clears the id.
@@ -1549,10 +1661,9 @@ mod tests {
         assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
     }
 
-    /// #2336 - internal notices, self-maintenance and Telegram keep the plain
-    /// injector: a hold never delays them.
+    /// Plain maintenance/Telegram writes remain exempt from typing hold.
     #[tokio::test]
-    async fn test_internal_injection_bypasses_typing_hold() {
+    async fn test_plain_injection_bypasses_typing_hold() {
         let (app, id, backend) = typing_hold_app("claude").await;
         app.state::<crate::pty::input_activity::TypingHoldState>()
             .lock()
@@ -1573,6 +1684,97 @@ mod tests {
             .collect();
         assert_eq!(writes.len(), 3);
         assert_eq!(writes[0], b"internal notice".to_vec());
+    }
+
+    #[tokio::test]
+    async fn internal_notice_hold_writes_nothing_and_retries_without_held_id() {
+        for manual in [false, true] {
+            let (app, id, backend) = supported_agent_typing_hold_app("claude").await;
+            let window = std::time::Duration::from_secs(30);
+            let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+            if manual {
+                assert!(hold.lock().unwrap().toggle_manual(id, window).closed);
+            } else {
+                hold.lock().unwrap().note_qualifying_key(id);
+            }
+            let error = inject_internal_notice_into_supported_agent_session(
+                app.handle(),
+                id,
+                "notice",
+                |_| Ok(()),
+            )
+            .await
+            .unwrap_err();
+            assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(
+                &error
+            ));
+            assert!(recorded_writes(&backend, id).is_empty());
+            assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
+            if manual {
+                assert!(!hold.lock().unwrap().toggle_manual(id, window).closed);
+            } else {
+                hold.lock()
+                    .unwrap()
+                    .backdate_last_key_for_test(id, window + std::time::Duration::from_secs(1));
+            }
+            inject_internal_notice_into_supported_agent_session(app.handle(), id, "notice", |_| {
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                recorded_writes(&backend, id),
+                vec![b"notice".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+            );
+            assert_eq!(hold.lock().unwrap().snapshot(id, window).held_count, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn supported_restart_resume_wrapper_remains_exempt_under_hold() {
+        let (app, id, backend) = supported_agent_typing_hold_app("claude").await;
+        app.state::<crate::pty::input_activity::TypingHoldState>()
+            .lock()
+            .unwrap()
+            .note_qualifying_key(id);
+        inject_text_into_supported_agent_session_with_pre_write_check(
+            app.handle(),
+            id,
+            "resume",
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            recorded_writes(&backend, id),
+            vec![b"resume".to_vec(), b"\r".to_vec(), b"\r".to_vec()]
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_notice_queued_behind_writer_rechecks_hold() {
+        let (app, id, backend) = supported_agent_typing_hold_app("claude").await;
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let permit = PtyManager::acquire_input_writer(&pty, id).await.unwrap();
+        let app_clone = app.handle().clone();
+        let queued = tokio::spawn(async move {
+            inject_internal_notice_into_supported_agent_session(
+                &app_clone,
+                id,
+                "notice",
+                |_| Ok(()),
+            )
+            .await
+        });
+        app.state::<crate::pty::input_activity::TypingHoldState>()
+            .lock()
+            .unwrap()
+            .note_qualifying_key(id);
+        drop(permit);
+        assert!(crate::pty::menu_guard::is_typing_hold_deferred_error(
+            &queued.await.unwrap().unwrap_err()
+        ));
+        assert!(recorded_writes(&backend, id).is_empty());
     }
 
     fn recorded_writes(backend: &Arc<RecordingBackend>, id: Uuid) -> Vec<Vec<u8>> {

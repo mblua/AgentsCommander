@@ -24,6 +24,7 @@ pub(crate) const CONTEXT_SAMPLE_QUEUE_CAPACITY: usize = 1024;
 pub(crate) const CONTEXT_ALERT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
 
 const FIRST_RETRY_DELAY: Duration = Duration::from_secs(5);
+const HOLD_RECHECK_DELAY: Duration = Duration::from_secs(2);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1050,6 +1051,13 @@ async fn dispatch_due_batch(
     }
 }
 
+fn defer_batch(state: &mut ActorState, generation: u64, now: Instant) {
+    if let Some(batch) = state.batches.get_mut(&generation) {
+        batch.in_flight = false;
+        batch.due_at = now + HOLD_RECHECK_DELAY;
+    }
+}
+
 fn fail_batch(state: &mut ActorState, generation: u64, now: Instant, message: &str) {
     let Some(batch) = state.batches.get_mut(&generation) else {
         return;
@@ -1109,6 +1117,9 @@ async fn handle_delivery_completion(
     match completion.result {
         Ok(()) => {
             state.remove_batch(completion.generation);
+        }
+        Err(message) if crate::phone::mailbox::is_deferred_internal_delivery_error(&message) => {
+            defer_batch(state, completion.generation, now);
         }
         Err(message) => fail_batch(state, completion.generation, now, &message),
     }
@@ -2364,6 +2375,49 @@ mod tests {
         }
         assert_eq!(state.batches[&generation].failure_count, 6);
         assert_eq!(state.sessions[&id].outstanding[&50], generation);
+    }
+
+    #[tokio::test]
+    async fn held_completion_preserves_attempts_and_another_due_batch() {
+        let now = Instant::now();
+        let mut state = ActorState::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        assert_eq!(state.earliest_due(), None);
+        apply_numeric_resolution(&mut state, None, a, 60, eligible(a, &[50]), now);
+        let generation = *state.batches.keys().next().unwrap();
+        apply_numeric_resolution(&mut state, None, b, 60, eligible(b, &[50]), now);
+        let other = *state.batches.keys().find(|g| **g != generation).unwrap();
+        for _ in 0..3 {
+            state.batches.get_mut(&generation).unwrap().in_flight = true;
+            assert_eq!(state.earliest_due(), Some((now, other)));
+            let mut slot = Some(InFlightSlot {
+                generation,
+                cancellation: CancellationToken::new(),
+                join: tauri::async_runtime::spawn(async {}),
+            });
+            handle_delivery_completion(
+                &mut state,
+                &mut slot,
+                DeliveryCompletion {
+                    generation,
+                    result: Err("typing_hold_deferred: held".into()),
+                },
+                now,
+            )
+            .await;
+            let batch = &state.batches[&generation];
+            assert!(!batch.in_flight);
+            assert_eq!(batch.failure_count, 0);
+            assert_eq!(batch.due_at, now + HOLD_RECHECK_DELAY);
+            assert_eq!(state.earliest_due(), Some((now, other)));
+        }
+        state.remove_batch(other);
+        assert!(state.earliest_due().unwrap().0 > now);
+        fail_batch(&mut state, generation, now, "real failure");
+        assert_eq!(state.batches[&generation].failure_count, 1);
+        assert_eq!(state.batches[&generation].due_at, now + FIRST_RETRY_DELAY);
+        assert_ne!(HOLD_RECHECK_DELAY, FIRST_RETRY_DELAY);
     }
 
     #[test]
