@@ -194,12 +194,14 @@ describe("P4 authoritative description and accessible status", () => {
       expect(target("tooltip", "overlay").style.display).toBe("none");
       target("historyIncomplete", "status");
       target<HTMLButtonElement>("edit", "button").click();
+      await waitFor(() => expect(document.querySelector('[data-ac-testid="workgroupTask.titleInput"]')).toBeTruthy());
       const input = target<HTMLInputElement>("titleInput", "textbox");
       input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true }));
       expect(target<HTMLButtonElement>("save", "button").disabled).toBe(true);
       target<HTMLButtonElement>("cancel", "button").click();
       expect(fake.callsFor("task_set_title")).toHaveLength(0);
       target<HTMLButtonElement>("edit", "button").click();
+      await waitFor(() => expect(document.querySelector('[data-ac-testid="workgroupTask.titleInput"]')).toBeTruthy());
       const draft = target<HTMLInputElement>("titleInput", "textbox");
       draft.value = "New title"; draft.dispatchEvent(new Event("input", { bubbles: true }));
       target<HTMLButtonElement>("save", "button").click();
@@ -215,6 +217,7 @@ describe("P4 authoritative description and accessible status", () => {
       publish();
       fake.reject("task_set_title", "Title failed");
       target<HTMLButtonElement>("edit", "button").click();
+      await waitFor(() => expect(document.querySelector('[data-ac-testid="workgroupTask.titleInput"]')).toBeTruthy());
       target<HTMLButtonElement>("save", "button").click();
       await waitFor(() => expect(target("mutationError", "status").textContent).toContain("Title failed"));
     } finally { view.cleanup(); }

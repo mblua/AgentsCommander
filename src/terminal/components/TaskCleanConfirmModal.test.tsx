@@ -29,7 +29,7 @@ describe("TaskCleanConfirmModal content", () => {
       expect(buttons[0].textContent).toContain("Cancel");
       expect(document.activeElement).toBe(buttons[0]);
       buttons[0].click(); expect(cancelled).toBe(1); expect(confirmed).toBe(0);
-      buttons[1].click(); expect(confirmed).toBe(1);
+      buttons[1].click(); expect(confirmed).toBe(1); expect(cancelled).toBe(1);
     } finally {
       dispose();
       expect(document.querySelectorAll('[data-ac-testid^="taskCleanConfirm."]')).toHaveLength(0);
