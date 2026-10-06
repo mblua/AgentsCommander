@@ -68,6 +68,7 @@ import type {
   TeamConfigResult,
   WindowGeometry,
   TaskUpdateResult,
+  TaskSnapshot,
   WorkgroupTaskUpdatedEvent,
   ProjectRegistration,
   ArchivedProject,
@@ -871,6 +872,12 @@ export const ResourceMonitorAPI = {
 };
 
 export const TaskAPI = {
+  getSnapshot: (sessionId: string) =>
+    transport.invoke<TaskSnapshot>("task_get_snapshot", { sessionId }),
+
+  getSnapshotAt: (workgroupRoot: string) =>
+    transport.invoke<TaskSnapshot>("task_get_snapshot_at", { workgroupRoot }),
+
   getTitle: (sessionId: string) =>
     transport.invoke<string | null>("task_get_title", { sessionId }),
 
