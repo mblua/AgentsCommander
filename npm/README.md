@@ -1,5 +1,9 @@
 # AgentsCommander from npm
 
+**Linux & macOS: Experimental**
+
+Testing is limited. Expect bugs and unexpected behavior. Please report issues on GitHub.
+
 ## Recommended npm installation: global
 
 When installing through npm, use `-g` so the `agentscommander` command is available from any directory:
@@ -37,8 +41,8 @@ Use this package only on these documented combinations:
 | Host | Native architecture | Status |
 |---|---|---|
 | Windows 10 version 1809 or newer, or Windows 11 | x86_64 / AMD64 | Fully supported |
-| Linux | x86_64 / AMD64 | Supported with medium test coverage; some turbulence is expected. Continue after acknowledging the limitation. |
-| macOS | Any | Supported via npm only, with very low test coverage; errors are expected. |
+| Linux | x86_64 / AMD64 | Experimental; supported with medium test coverage; some turbulence is expected. Continue after acknowledging the limitation. |
+| macOS | Any | Experimental; supported via npm only, with very low test coverage; errors are expected. |
 | Any other OS or architecture | Any | Unsupported; do not substitute an asset or use emulation |
 
 The current npm installer does not enforce this complete allowlist: its asset mapping treats architectures other than `arm64` as `x86_64`, so an x64 Node on an arm64 Mac installs the x86_64 bundle. An asset selection or download is not a support promise. Follow the canonical [platform gates](https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md#support-gates).

@@ -1,7 +1,7 @@
 {
   "name": "@mblua/agentscommander",
   "version": "0.43.0",
-  "description": "Install and run AgentsCommander, the local terminal session manager for AI coding agent teams with Claude Code, Codex, Hermes, Cursor CLI, OpenCode, and more to come.",
+  "description": "Install and run AgentsCommander, the local terminal session manager for AI coding agent teams with Claude Code, Codex, Hermes, Cursor CLI, OpenCode, and more to come. Linux & macOS: Experimental. Testing is limited. Expect bugs and unexpected behavior. Please report issues on GitHub.",
   "license": "MIT",
   "bin": {
     "agentscommander": "run.js"
