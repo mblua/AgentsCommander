@@ -16219,8 +16219,8 @@ mod tests {
         #[cfg(windows)]
         if expect_long_path {
             use std::os::windows::ffi::OsStrExt;
-            assert!(!marker_path.to_string_lossy().starts_with(r"\?\"));
-            assert!(!artifact_path.to_string_lossy().starts_with(r"\?\"));
+            assert!(!marker_path.to_string_lossy().starts_with(r"\\?\"));
+            assert!(!artifact_path.to_string_lossy().starts_with(r"\\?\"));
             assert!(artifact_path.as_os_str().encode_wide().count() > 260);
             eprintln!(
                 "marker={}, setup={}, artifact={} UTF-16 units",
