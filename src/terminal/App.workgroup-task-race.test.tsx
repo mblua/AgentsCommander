@@ -322,6 +322,7 @@ describe("P4 snapshot ownership and reconciliation", () => {
       await waitFor(() => expect(terminalStore.bindingState).toBe("bound"));
       expect(view.root.textContent).toContain("Loading task…");
       await waitFor(() => expect(fake.calls.some(c => c.cmd === "activate_terminal_output")).toBe(true));
+      expect(fake.callsFor("task_get_snapshot")).toHaveLength(1);
       fake.resolve("task_get_snapshot", taskSnapshot(NEW_TASK));
       terminalStore.invalidateTask(WG_ROOT); await flush(12);
       expect(headerTitle(view.root)).toBe("New title");
@@ -491,6 +492,57 @@ describe("P4 snapshot ownership and reconciliation", () => {
     await waitFor(() => expect(fake.callsFor("task_get_snapshot").length).toBeGreaterThan(0));
     second.cleanup(); pending.resolve(taskSnapshot(NEW_TASK)); await flush(16);
     expect(terminalStore.activeTaskSnapshot).toBeNull();
+  });
+
+  it.each(["title", "Clean"])("B1 completion of %s in A cannot fail a pending snapshot in B", async kind => {
+    const fake = new FakeTransport(); setupTransport(fake, () => [wgSession(OLD_TASK)]);
+    const mutation = deferred<unknown>();
+    const readB = deferred<ReturnType<typeof taskSnapshot>>();
+    fake.resolve("task_get_title", "Old title");
+    fake.onInvoke(kind === "title" ? "task_set_title" : "task_clean", () => mutation.promise);
+    const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(headerTitle(view.root)).toBe("Old title"));
+      if (kind === "title") await startSave(view.root, "New title");
+      else {
+        click(view.root.querySelector<HTMLButtonElement>('button[title="Clean TASK (reset for new topic)"]')!);
+        await flush(); click(document.querySelector<HTMLButtonElement>(".quit-confirm-btn-quit")!); await flush();
+      }
+      fake.resolve("list_sessions", [otherWorkgroupSession(OTHER_WG_TASK)]);
+      fake.resolve("get_active_session", liveSelection(SESSION_B, 2));
+      fake.onInvoke("task_get_snapshot", () => readB.promise);
+      await forceHydration(fake, 1); await flush(12);
+      expect(terminalStore.activeSessionId).toBe(SESSION_B);
+      mutation.resolve({ workgroupRoot: WG_ROOT, task: "unrelated A result" }); await flush(12);
+      readB.resolve(taskSnapshot(OTHER_WG_TASK, "C:/Project/.ac/wg-2-other-team")); await flush(16);
+      expect(headerTitle(view.root)).toBe("Other workgroup task");
+      expect(view.root.textContent).not.toContain("Could not read the task.");
+      expect(terminalStore.cleanPending).toBe(false);
+    } finally { view.cleanup(); }
+  });
+
+  it("B2 successful Clean waits neutrally, reports only a real read failure, and clears on authoritative recovery", async () => {
+    const fake = new FakeTransport(); setupTransport(fake, () => [wgSession(OLD_TASK)]);
+    const pending = deferred<ReturnType<typeof taskSnapshot>>();
+    fake.onInvoke("task_clean", () => { fake.onInvoke("task_get_snapshot", () => pending.promise); return { workgroupRoot: WG_ROOT, task: "not authoritative" }; });
+    const view = renderWithFakeTransport(() => <TerminalApp embedded />, fake);
+    try {
+      await waitFor(() => expect(headerTitle(view.root)).toBe("Old title"));
+      const clean = view.root.querySelector<HTMLButtonElement>('button[title="Clean TASK (reset for new topic)"]')!;
+      click(clean); await flush(); click(document.querySelector<HTMLButtonElement>(".quit-confirm-btn-quit")!); await flush(16);
+      expect(clean.disabled).toBe(true);
+      expect(headerTitle(view.root)).toBeNull();
+      expect(view.root.textContent).toContain("Loading task…");
+      expect(view.root.textContent).not.toContain("could not be read");
+      expect(view.root.querySelector(".workgroup-task-loading")?.textContent).toBe("Loading task…");
+      fake.reject("task_get_snapshot", "read failed"); terminalStore.invalidateTask(WG_ROOT); await flush(16);
+      expect(view.root.textContent).toContain("Clean was saved, but the updated task could not be read.");
+      pending.resolve(taskSnapshot()); await flush(12);
+      expect(clean.disabled).toBe(true);
+      fake.resolve("task_get_snapshot", { ...taskSnapshot(NEW_TASK), status: null, revision: "clean:0", statusRecord: null });
+      terminalStore.invalidateTask(WG_ROOT); await flush(16);
+      expect(clean.disabled).toBe(false); expect(headerTitle(view.root)).toBe("New title");
+    } finally { view.cleanup(); }
   });
 
 });

@@ -28,7 +28,7 @@ function actionButtons(): HTMLButtonElement[] {
 }
 
 /** Bind a live session whose cwd is `cwd`, then render the component. */
-async function renderWithCwd(cwd: string): Promise<{ cleanup: () => void }> {
+async function renderWithCwd(cwd: string, fake = new FakeTransport()): Promise<{ cleanup: () => void }> {
   terminalStore.bindLockedSession(
     session({
       id: "session-1614",
@@ -38,7 +38,6 @@ async function renderWithCwd(cwd: string): Promise<{ cleanup: () => void }> {
     }),
     0
   );
-  const fake = new FakeTransport();
   fake.resolve("task_get_title", null);
   const rendered = renderWithFakeTransport(() => <WorkgroupTask />, fake);
   await waitFor(() => expect(actionButtons().length).toBe(2));
@@ -261,4 +260,44 @@ describe("P4 authoritative description and accessible status", () => {
       view.cleanup(); vi.runAllTimers(); expect(document.querySelector('[role="tooltip"]')).toBeNull();
     } finally { view.cleanup(); }
   });
+  it("B3 hover Escape closes the tooltip while the focused terminal receives its key", async () => {
+    const view = await renderWithCwd(root + "/__agent_x");
+    try {
+      publish();
+      const title = document.querySelector<HTMLElement>(".workgroup-task-title")!;
+      title.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
+      const terminalInput = document.createElement("textarea"); document.body.appendChild(terminalInput);
+      terminalInput.focus();
+      title.dispatchEvent(new Event("pointerenter"));
+      await waitFor(() => expect(document.querySelector<HTMLElement>('[role="tooltip"]')?.style.display).toBe("block"));
+      const received = vi.fn(); terminalInput.addEventListener("keydown", received);
+      const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      terminalInput.dispatchEvent(escape);
+      expect(received).toHaveBeenCalledOnce();
+      expect(escape.defaultPrevented).toBe(false);
+      expect(document.querySelector<HTMLElement>('[role="tooltip"]')?.style.display).toBe("none");
+      title.focus(); publish({ status: null });
+      const noTooltipEscape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      title.dispatchEvent(noTooltipEscape); expect(noTooltipEscape.defaultPrevented).toBe(false);
+      terminalInput.remove();
+    } finally { view.cleanup(); }
+  });
+
+  it("N3 resolves the nearest room when no snapshot exists and uses the backend completion root", async () => {
+    const nestedRoot = "C:/room-unrelated/project/.ac/room-2-real";
+    const backendRoot = "C:/ROOM-unrelated/project/.ac/room-2-real";
+    const fake = new FakeTransport(); fake.resolve("task_clean", { workgroupRoot: backendRoot, task: null });
+    const begin = vi.spyOn(terminalStore, "beginTaskMutation");
+    const finish = vi.spyOn(terminalStore, "finishTaskMutation");
+    const view = await renderWithCwd(nestedRoot + "/__agent_x", fake);
+    try {
+      actionButtons()[1].click();
+      await waitFor(() => expect(document.querySelector(".quit-confirm-btn-quit")).toBeTruthy());
+      document.querySelector<HTMLButtonElement>(".quit-confirm-btn-quit")!.click();
+      await waitFor(() => expect(finish).toHaveBeenCalled());
+      expect(begin).toHaveBeenCalledWith(nestedRoot);
+      expect(finish).toHaveBeenCalledWith(backendRoot, true);
+    } finally { begin.mockRestore(); finish.mockRestore(); view.cleanup(); }
+  });
+
 });

@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import type { Session, SessionSelection, SessionSelectionMode, TaskSnapshot } from "../../shared/types";
 import type { TransportConnectionState } from "../../shared/transport";
 
@@ -7,10 +7,12 @@ interface CachedTask {
   snapshot: TaskSnapshot | null;
   state: TaskReadState;
   cleanPending: boolean;
+  cleanReadFailed: boolean;
 }
 const taskCache = new Map<string, CachedTask>();
 const [activeTaskSnapshot, setActiveTaskSnapshot] = createSignal<TaskSnapshot | null>(null);
 const [taskReadState, setTaskReadState] = createSignal<TaskReadState>("loading");
+const [cleanReadFailed, setCleanReadFailed] = createSignal(false);
 const [taskInvalidation, setTaskInvalidation] = createSignal(0);
 let taskRequestGeneration = 0;
 let activeTaskRoot: string | null = null;
@@ -21,6 +23,7 @@ function bindTaskCache(cwd: string): void {
   activeTaskRoot = entry?.[0] ?? null;
   setActiveTaskSnapshot(entry?.[1].snapshot ?? null);
   setTaskReadState(entry?.[1].state ?? "loading");
+  setCleanReadFailed(entry?.[1].cleanReadFailed ?? false);
 }
 
 export type TerminalBindingState = "pending" | "bound" | "unavailable";
@@ -91,6 +94,7 @@ function clearLiveMetadata(): void {
   activeTaskRoot = null;
   setActiveTaskSnapshot(null);
   setTaskReadState("loading");
+  setCleanReadFailed(false);
   setActiveSessionId(null);
   setActiveSessionName("");
   setActiveShell("");
@@ -164,6 +168,7 @@ export const terminalStore = {
   get taskReadState() { return taskReadState(); },
   get taskInvalidation() { return taskInvalidation(); },
   get taskRequestGeneration() { return taskRequestGeneration; },
+  get cleanReadFailed() { return cleanReadFailed(); },
   get cleanPending() {
     return taskReadState() === "committedCleanPending";
   },
@@ -187,10 +192,11 @@ export const terminalStore = {
   },
 
   acceptTaskSnapshot(snapshot: TaskSnapshot, generation: number, expectedTaskSeq: number): boolean {
-    if (generation !== taskRequestGeneration || expectedTaskSeq !== taskWriteSeq ||
+    if (generation !== taskRequestGeneration || localTaskWriteWins(snapshot.workgroupRoot, expectedTaskSeq) ||
         !cwdUnderWorkgroupRoot(activeWorkingDirectory(), snapshot.workgroupRoot)) return false;
     const root = normalizeTaskPath(snapshot.workgroupRoot);
-    taskCache.set(root, { snapshot, state: "ready", cleanPending: false });
+    taskCache.set(root, { snapshot, state: "ready", cleanPending: false, cleanReadFailed: false });
+    setCleanReadFailed(false);
     activeTaskRoot = root;
     setActiveTaskSnapshot(snapshot);
     setActiveWorkgroupTask(snapshot.task);
@@ -203,8 +209,9 @@ export const terminalStore = {
     const state = this.cleanPending ? "committedCleanPending" : "error";
     if (activeTaskRoot) {
       const entry = taskCache.get(activeTaskRoot);
-      if (entry) taskCache.set(activeTaskRoot, { ...entry, state });
+      if (entry) taskCache.set(activeTaskRoot, { ...entry, state, cleanReadFailed: this.cleanPending });
     }
+    if (this.cleanPending) setCleanReadFailed(true);
     setTaskReadState(state);
   },
 
@@ -222,10 +229,11 @@ export const terminalStore = {
     taskWriteSeq += 1;
     lastLocalTaskWrite = { workgroupRoot, seq: taskWriteSeq };
     const root = normalizeTaskPath(workgroupRoot);
-    if (committedClean) taskCache.set(root, { snapshot: null, state: "committedCleanPending", cleanPending: true });
+    if (committedClean) taskCache.set(root, { snapshot: null, state: "committedCleanPending", cleanPending: true, cleanReadFailed: false });
     if (cwdUnderWorkgroupRoot(activeWorkingDirectory(), root)) {
       activeTaskRoot = root;
       if (committedClean) {
+        setCleanReadFailed(false);
         setActiveTaskSnapshot(null);
         setActiveWorkgroupTask(null);
         setTaskReadState("committedCleanPending");
@@ -322,6 +330,7 @@ export const terminalStore = {
     ) {
       return false;
     }
+    return batch(() => {
     setActiveSessionId(session.id);
     setActiveSessionName(session.name);
     setActiveShell(session.shell);
@@ -337,6 +346,7 @@ export const terminalStore = {
     setBindingState("bound");
     setTaskInvalidation(value => value + 1);
     return true;
+    });
   },
 
   markUnavailable(selection: SessionSelection, generation: number): void {
@@ -362,6 +372,7 @@ export const terminalStore = {
   },
 
   bindLockedSession(session: Session, expectedTaskSeq: number): void {
+    batch(() => {
     setSelectionId(session.id);
     setSelectionMode("live");
     setActiveSessionId(session.id);
@@ -377,6 +388,7 @@ export const terminalStore = {
     setActiveIsRootAgent(session.isRootAgent);
     setBindingState("bound");
     setTaskInvalidation(value => value + 1);
+    });
   },
 
   clearLockedSession(): void {

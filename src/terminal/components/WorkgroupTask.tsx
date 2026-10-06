@@ -98,7 +98,9 @@ const WorkgroupTask: Component = () => {
   const readable = createMemo(() => snapshot() !== null && !terminalStore.cleanPending);
   const tooltipStatus = createMemo(() => terminalStore.taskReadState === "ready" ? snapshot()?.status ?? null : null);
   const readMessage = createMemo(() => {
-    if (terminalStore.cleanPending) return "Clean was saved, but the updated task could not be read. Clean is disabled until the task can be read.";
+    if (terminalStore.cleanPending) return terminalStore.cleanReadFailed
+      ? "Clean was saved, but the updated task could not be read. Clean is disabled until the task can be read."
+      : "Loading task…";
     if (terminalStore.taskReadState === "loading") return "Loading task…";
     if (terminalStore.taskReadState === "refreshing") return "Refreshing task…";
     if (terminalStore.taskReadState === "error") return readable() ? "Could not refresh the task." : "Could not read the task.";
@@ -164,12 +166,14 @@ const WorkgroupTask: Component = () => {
     frame = requestAnimationFrame(() => { frame = undefined; positionTooltip(); });
   };
   const dismissTooltip = (event: KeyboardEvent) => {
-    if (event.key !== "Escape" || !(titleFocused || titlePointer || tooltipPointer)) return;
+    if (event.key !== "Escape" || !tooltipOpen() || !(titleFocused || titlePointer || tooltipPointer)) return;
     escaped = true;
     cancelLeave();
     setTooltipOpen(false);
-    event.preventDefault();
-    event.stopPropagation();
+    if (event.target === titleAnchor) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
   };
   const tooltipKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape") { dismissTooltip(event); return; }
@@ -223,7 +227,7 @@ const WorkgroupTask: Component = () => {
     const root = snapshot()?.workgroupRoot;
     if (root) return root;
     const parts = cwd().split(String.fromCharCode(92)).join("/").split("/");
-    const index = parts.findIndex(part => part.startsWith("room-") || part.startsWith("wg-"));
+    const index = parts.map(part => part.startsWith("room-") || part.startsWith("wg-")).lastIndexOf(true);
     return parts.slice(0, index < 0 ? parts.length : index + 1).join("/");
   };
   const sessionId = createMemo(() => terminalStore.activeSessionId);
@@ -285,7 +289,7 @@ const WorkgroupTask: Component = () => {
       setError("Session changed; cancel and retry.");
       return;
     }
-    const workgroupRoot = mutationRoot();
+    let workgroupRoot = mutationRoot();
     const title = titleDraft().trim();
     if (!title) {
       setError("Title cannot be empty.");
@@ -295,7 +299,8 @@ const WorkgroupTask: Component = () => {
     setError(null);
     terminalStore.beginTaskMutation(workgroupRoot);
     try {
-      await TaskAPI.setTitle(id, title);
+      const result = await TaskAPI.setTitle(id, title);
+      workgroupRoot = result.workgroupRoot;
       setEditing(false);
       setTitleDraft("");
       setCapturedSessionId(null);
@@ -340,13 +345,14 @@ const WorkgroupTask: Component = () => {
       setError("Session changed; cancel and retry.");
       return;
     }
-    const workgroupRoot = mutationRoot();
+    let workgroupRoot = mutationRoot();
     let committed = false;
     setBusy(true);
     setError(null);
     terminalStore.beginTaskMutation(workgroupRoot);
     try {
-      await TaskAPI.clean(id);
+      const result = await TaskAPI.clean(id);
+      workgroupRoot = result.workgroupRoot;
       committed = true;
       setEditing(false);
       setTitleDraft("");
@@ -405,7 +411,7 @@ const WorkgroupTask: Component = () => {
         </div>
       </div>
       <Show when={readMessage()}>
-        <div class="workgroup-task-error" classList={{ "workgroup-task-loading": terminalStore.taskReadState === "loading" || terminalStore.taskReadState === "refreshing" }}>{readMessage()}</div>
+        <div class="workgroup-task-error" classList={{ "workgroup-task-loading": terminalStore.taskReadState === "loading" || terminalStore.taskReadState === "refreshing" || (terminalStore.cleanPending && !terminalStore.cleanReadFailed) }}>{readMessage()}</div>
       </Show>
       <Show when={readable()}><div class="workgroup-task-text">{snapshot()?.description}</div></Show>
       <Show when={snapshot()?.tailIncomplete && readable()}><div class="workgroup-task-error">Task history is incomplete.</div></Show>
