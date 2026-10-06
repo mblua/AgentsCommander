@@ -54,10 +54,7 @@ const TaskCleanConfirmModal: Component<TaskCleanConfirmModalProps> = (props) => 
       <div class="quit-confirm-modal">
         <h2 id="task-clean-title" class="quit-confirm-title">Clean TASK?</h2>
         <p id="task-clean-body" class="quit-confirm-body">
-          This <strong>resets</strong> the room TASK.md — all frontmatter fields
-          and body content are replaced with <code>title: 'Clean'</code> and body
-          <code>Ready to start a new topic</code>. If a TASK.md exists, a timestamped
-          backup is saved alongside it. Continue?
+          Back up the task and its history with the same timestamp, then start a new topic?
         </p>
         <div class="quit-confirm-actions">
           <button

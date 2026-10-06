@@ -18,6 +18,7 @@ describe("TaskCleanConfirmModal content", () => {
     );
     try {
       expect(document.body.textContent).toContain("Clean TASK?");
+      expect(document.querySelector("#task-clean-body")?.textContent?.trim()).toBe("Back up the task and its history with the same timestamp, then start a new topic?");
       const buttons = document.querySelectorAll("button");
       expect(buttons[0].textContent).toContain("Cancel");
       expect(document.activeElement).toBe(buttons[0]);

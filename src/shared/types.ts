@@ -2053,12 +2053,39 @@ export interface BlockerReport {
 }
 
 
+export interface StatusRecord {
+  schemaVersion: 1;
+  kind: "status" | "topic_started";
+  topicId: string;
+  sequence: number;
+  requestId: string | null;
+  baseRevision: string | null;
+  recordedAt: string;
+  author: string | null;
+  status: string | null;
+}
+
+export interface TaskSnapshot {
+  workgroupRoot: string;
+  task: string | null;
+  taskTitle: string | null;
+  description: string;
+  status: string | null;
+  revision: string;
+  statusRecord: StatusRecord | null;
+  tailIncomplete: boolean;
+}
+
 export interface TaskUpdateResult {
+  taskTitle?: string | null;
+  status?: string | null;
+  revision?: string;
+  tailIncomplete?: boolean;
   workgroupRoot: string;
   task: string | null;
 }
 
-export type WorkgroupTaskUpdatedEvent =
+export type WorkgroupTaskUpdatedEvent = Pick<TaskUpdateResult, "status" | "revision" | "tailIncomplete"> & (
   | {
       source: "manual";
       workgroupRoot: string;
