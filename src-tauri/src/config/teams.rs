@@ -1840,6 +1840,15 @@ pub fn discover_teams() -> Vec<DiscoveredTeam> {
 
 /// Discover teams in a single project directory.
 fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>) {
+    discover_teams_in_project_filtered(project_dir, teams, |_| true);
+}
+
+/// Predicate runs before any followed team-directory or config read.
+pub(crate) fn discover_teams_in_project_filtered(
+    project_dir: &Path,
+    teams: &mut Vec<DiscoveredTeam>,
+    accept_team: impl Fn(&Path) -> bool,
+) {
     let Some(ac_root) = existing_ac_root(project_dir) else {
         return;
     };
@@ -1862,6 +1871,9 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
             entry.file_name().to_string_lossy()
         );
         let team_dir = entry.path();
+        if !accept_team(&team_dir) {
+            continue;
+        }
         if !team_dir.is_dir() {
             continue;
         }
@@ -1984,9 +1996,54 @@ fn discover_teams_in_project(project_dir: &Path, teams: &mut Vec<DiscoveredTeam>
     }
 }
 
+/// Reuse the existing classified test-only junction spawn site.
+#[cfg(all(test, windows))]
+pub(crate) fn create_test_junction(link: &Path, target: &Path) {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("mklink /J must run");
+    assert!(
+        output.status.success(),
+        "mklink /J must create junction {} -> {}: stdout={} stderr={}",
+        link.display(),
+        target.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn issue_2868_global_discovery_keeps_junction_team_and_filter_runs_before_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let ac = project.join(".ac");
+        let target = temp.path().join("external-team");
+        std::fs::create_dir_all(&ac).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("config.json"), "{\"agents\":[]}").unwrap();
+        let link = ac.join("_team_linked");
+        create_test_junction(&link, &target);
+        let mut global = Vec::new();
+        discover_teams_in_project(&project, &mut global);
+        assert_eq!(global.len(), 1);
+        assert_eq!(global[0].name, "linked");
+        let mut filtered = Vec::new();
+        discover_teams_in_project_filtered(&project, &mut filtered, |_| false);
+        assert!(filtered.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(target.join("config.json")).unwrap(),
+            "{\"agents\":[]}"
+        );
+        std::fs::remove_dir(&link).unwrap();
+    }
 
     // ── Helper-function tests (AR2-tests 1-7) ──
 
@@ -3529,19 +3586,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&real, &linked).unwrap();
         #[cfg(windows)]
-        {
-            let status = std::process::Command::new("cmd")
-                .args([
-                    "/C",
-                    "mklink",
-                    "/J",
-                    &linked.to_string_lossy(),
-                    &real.to_string_lossy(),
-                ])
-                .status()
-                .expect("mklink /J must run");
-            assert!(status.success(), "mklink /J must create the junction");
-        }
+        create_test_junction(&linked, &real);
         let discovered = discover_verified_terminal_snapshot_targets_counted(&paths)
             .expect("scan must not abort on a linked room");
         assert_eq!(discovered.targets.len(), 2);
