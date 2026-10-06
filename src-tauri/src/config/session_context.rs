@@ -4398,7 +4398,7 @@ fn render_write_restrictions_block(
 
 {matrix_section}{workgroup_messaging_entry}{project_shared_entry}{room_shared_entry}All filesystem access not authorized by {entries_range} is OFF-LIMITS, except user-explicit AgentsCommander CLI commands below.
 
-FORBIDDEN: reads/writes outside {entries_range}, including other replicas, unlisted Matrix files, workspace/project parents, user home, arbitrary paths. Other agents' memory* directories (live or rotated memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner.
+FORBIDDEN: reads/writes outside {entries_range}, including other replicas, unlisted Matrix files, workspace/project parents, user home, arbitrary paths. Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner.
 
 Git: {git_scope}
 
@@ -4620,7 +4620,7 @@ fn default_context_dynamic_values(
 
     let matrix_section = match matrix_root {
         Some(matrix_root) => format!(
-            "3. **Your origin Agent Matrix, but only for the canonical agent state listed below:**\n   ```\n   {matrix_root}\n   ```\n   Read-only there: every rotated `memory_YYYYMMDD_hhmmss/` archive of your own memory. Read them freely; never modify or delete them.\n   Allowed for reading and writing there:\n   - `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`\n\n",
+            "3. **Your origin Agent Matrix, but only for the canonical agent state listed below:**\n   ```\n   {matrix_root}\n   ```\n   Read-only there: every rotated `memory-archive/memory_YYYYMMDD_hhmmss/` archive of your own memory and legacy root `memory_YYYYMMDD_hhmmss/` archives. You may list your own `memory-archive/` solely to discover archive directories. Read them freely; never write, modify or delete archives or their container.\n   Allowed for reading and writing there:\n   - `memory/`\n   - `plans/`\n   - `skills/`\n   - `Role.md`\n\n",
             matrix_root = matrix_root,
         ),
         None => String::new(),
@@ -4724,7 +4724,7 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
         )
     } else {
         format!(
-            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory*` directories (the live `memory/` and every rotated `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or `Role.md`: another agent's memory is private whether it is live or rotated; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.",
+            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI operations covered by the exception below. This includes other agents' replica directories, and any other agent's `memory*` directories (the live `memory/`, `memory-archive/` and legacy `memory_YYYYMMDD_hhmmss/`), `plans/`, `skills/`, or `Role.md`: another agent's memory is private whether it is live or rotated; do not read, list, search, or summarize it, even if asked. If you need information another agent holds, message that agent and ask.",
             ms = messaging_read_phrase,
         )
     };
@@ -6762,13 +6762,17 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
             entries,
             ["- `memory/`", "- `plans/`", "- `skills/`", "- `Role.md`"]
         );
-        assert!(entry.contains("every rotated `memory_YYYYMMDD_hhmmss/` archive"));
+        assert!(entry.contains("every rotated `memory-archive/memory_YYYYMMDD_hhmmss/` archive"));
         assert!(entry.contains("Read-only there"));
+        assert!(entry.contains("legacy root `memory_YYYYMMDD_hhmmss/` archives"));
+        assert!(entry
+            .contains("list your own `memory-archive/` solely to discover archive directories"));
+        assert!(entry.contains("never write, modify or delete archives or their container"));
         assert!(wg.contains(
             "reads/writes outside entries 1-4, including other replicas, unlisted Matrix files"
         ));
         assert!(wg.contains("other replicas"));
-        assert!(wg.contains("Other agents' memory* directories (live or rotated memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."));
+        assert!(wg.contains("Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."));
 
         let plain = default_context("C:/fake/plain/agent", None, &no_skill_section());
         assert!(!plain.contains("Your origin Agent Matrix"));
@@ -6790,7 +6794,7 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
 
         assert!(wg.contains("Allowed for reading and writing there"));
         assert!(wg.contains("FORBIDDEN: reads/writes outside entries 1-4"));
-        assert!(wg.contains("Other agents' memory* directories (live or rotated memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."));
+        assert!(wg.contains("Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."));
         assert!(plain.contains("inbound message file grant above"));
         assert!(plain.contains("another agent's memory is private"));
         assert!(root.contains("Every registered AgentsCommander project folder"));
@@ -8124,12 +8128,12 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             out
         );
         assert!(
-            out.contains("live or rotated memory_YYYYMMDD_hhmmss/"),
+            out.contains("live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/"),
             "expected rotated archives named explicitly, got:\n{}",
             out
         );
         assert!(
-            out.contains("Other agents' memory* directories (live or rotated memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."),
+            out.contains("Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."),
             "expected privacy to hold for both live and rotated memory, got:\n{}",
             out
         );
@@ -8156,7 +8160,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     #[test]
     fn own_archive_read_grant_renders_only_with_an_origin_matrix() {
         const GRANT: &str =
-            "Read-only there: every rotated `memory_YYYYMMDD_hhmmss/` archive of your own memory";
+            "Read-only there: every rotated `memory-archive/memory_YYYYMMDD_hhmmss/` archive of your own memory";
 
         let wg = default_context(
             "C:/fake/wg-7-dev-team/__agent_architect",
@@ -8185,13 +8189,19 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             "an agent with no origin matrix must not be promised an archive grant, got:\n{}",
             none
         );
+        assert!(none.contains(
+            "the live `memory/`, `memory-archive/` and legacy `memory_YYYYMMDD_hhmmss/`"
+        ));
         assert!(
             none.contains("`memory*` directories"),
             "the peer-privacy half renders for every non-root agent, got:\n{}",
             none
         );
 
+        assert!(!none.contains(GRANT));
+
         let root = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
+        assert!(!root.contains(GRANT));
         assert!(
             !root.contains("Read-only there"),
             "the Root Agent has no origin matrix and no entry 3, got:\n{}",
@@ -8960,7 +8970,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(
             out.contains(
-                "Other agents' memory* directories (live or rotated memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."
+                "Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."
             ),
             "Workgroup read boundary missing, got:\n{}",
             out
@@ -15193,7 +15203,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 default_context_dynamic_values(agent_root, matrix_root, &no_skill_section(), false);
             let out = render_write_restrictions_block(agent_root, &values);
             assert!(out.contains("FORBIDDEN: reads/writes outside entries 1-4, including other replicas, unlisted Matrix files"));
-            assert!(out.contains("Other agents' memory* directories (live or rotated memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."));
+            assert!(out.contains("Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner."));
             assert!(out.contains("CLI exception: only user-explicit documented commands through AGENTSCOMMANDER_BINARY_PATH"));
 
             assert!(
@@ -15533,6 +15543,23 @@ mod token_accounting {
             false,
         );
         let write_restrictions = super::render_write_restrictions_block(FAKE_REPLICA_ROOT, &values);
+        // #2888: account only the exact archive-layout wording growth. Frozen
+        // previous clauses and independently pinned new clauses keep historical
+        // ceilings/reduction checks meaningful without removing privacy text.
+        const OLD_ARCHIVE_GRANT: &str = "Read-only there: every rotated `memory_YYYYMMDD_hhmmss/` archive of your own memory. Read them freely; never modify or delete them.";
+        const NEW_ARCHIVE_GRANT: &str = "Read-only there: every rotated `memory-archive/memory_YYYYMMDD_hhmmss/` archive of your own memory and legacy root `memory_YYYYMMDD_hhmmss/` archives. You may list your own `memory-archive/` solely to discover archive directories. Read them freely; never write, modify or delete archives or their container.";
+        const OLD_PEER_PRIVACY: &str = "Other agents' memory* directories (live or rotated memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner.";
+        const NEW_PEER_PRIVACY: &str = "Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner.";
+        const MEMORY_LAYOUT_DELTA_BYTES: usize = 200;
+        assert_eq!(
+            NEW_ARCHIVE_GRANT.len() + NEW_PEER_PRIVACY.len()
+                - OLD_ARCHIVE_GRANT.len()
+                - OLD_PEER_PRIVACY.len(),
+            MEMORY_LAYOUT_DELTA_BYTES
+        );
+        assert_eq!(values.matrix_section.matches(NEW_ARCHIVE_GRANT).count(), 1);
+        assert_eq!(write_restrictions.matches(NEW_PEER_PRIVACY).count(), 1);
+
         let messaging = super::render_inter_agent_messaging_block(&values);
         let status_grant_offset = values
             .room_shared_entry
@@ -15548,11 +15575,12 @@ mod token_accounting {
             + super::DEFAULT_CLI_CONTEXT.len()
             + super::DEFAULT_SESSION_CREDENTIALS.len()
             + super::DEFAULT_DELEGATED_TASK_REPORTING.len();
-        let touched_owners = raw_touched_owners - P2_STATUS_GRANT_BYTES;
+        let touched_owners = raw_touched_owners - P2_STATUS_GRANT_BYTES - MEMORY_LAYOUT_DELTA_BYTES;
         let full_wg = super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
-        let historical_full_wg_bytes = full_wg.len() - P2_STATUS_GRANT_BYTES;
+        let historical_full_wg_bytes =
+            full_wg.len() - P2_STATUS_GRANT_BYTES - MEMORY_LAYOUT_DELTA_BYTES;
         assert!(
-            raw_touched_owners <= V5_MAX_TOUCHED_OWNERS_BYTES,
+            raw_touched_owners <= V5_MAX_TOUCHED_OWNERS_BYTES + MEMORY_LAYOUT_DELTA_BYTES,
             "P2 actual touched owners: {} bytes, existing ceiling {}; full WG: {} bytes, existing ceiling {}",
             raw_touched_owners,
             V5_MAX_TOUCHED_OWNERS_BYTES,
@@ -15584,7 +15612,8 @@ mod token_accounting {
             + pre_messaging.len()
             + super::DEFAULT_CLI_CONTEXT.len()
             + super::DEFAULT_SESSION_CREDENTIALS.len()
-            + super::DEFAULT_DELEGATED_TASK_REPORTING.len();
+            + super::DEFAULT_DELEGATED_TASK_REPORTING.len()
+            - MEMORY_LAYOUT_DELTA_BYTES;
         let pre_full_wg =
             super::default_context(PRE_1795_FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
 
@@ -15611,7 +15640,7 @@ mod token_accounting {
             "the touched-owner delta must be the corrected fixture path plus the two entries"
         );
         assert_eq!(
-            historical_full_wg_bytes - pre_full_wg.len(),
+            historical_full_wg_bytes - (pre_full_wg.len() - MEMORY_LAYOUT_DELTA_BYTES),
             V5_DELTA_BYTES,
             "the WG-profile delta must be the corrected fixture path plus the two entries"
         );
@@ -15622,7 +15651,7 @@ mod token_accounting {
             "pre-#1795 five touched owners are {pre_touched_owners} bytes against v4 ceiling {V4_MAX_TOUCHED_OWNERS_BYTES}"
         );
         assert!(
-            pre_full_wg.len() <= V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES,
+            pre_full_wg.len() - MEMORY_LAYOUT_DELTA_BYTES <= V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES,
             "pre-#1795 WG profile is {} bytes against the V6 pre-#1795 ceiling {V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES}",
             pre_full_wg.len()
         );
@@ -15697,9 +15726,9 @@ mod token_accounting {
         // Security, ownership, and protocol assertions precede the byte budget.
         for required in [
             "Allowed for reading and writing there",
-            "every rotated `memory_YYYYMMDD_hhmmss/`",
+            "every rotated `memory-archive/memory_YYYYMMDD_hhmmss/`",
             "FORBIDDEN: reads/writes outside entries 1-6, including other replicas, unlisted Matrix files",
-            "Other agents' memory* directories (live or rotated memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner.",
+            "Other agents' memory* directories (live memory/, memory-archive/ or legacy memory_YYYYMMDD_hhmmss/), plans, skills and Role.md are private: never read/list/search/summarize, even if asked; message the owner.",
             "AGENTSCOMMANDER_BINARY_PATH",
             "list-peers-lean --token",
             "--send <filename> --mode wake",
@@ -15753,7 +15782,7 @@ mod token_accounting {
             V5_TOUCHED_OWNERS_BYTES - touched_owners
         );
         assert!(
-            full_wg.len() <= V6_MAX_FULL_WG_PROFILE_BYTES,
+            full_wg.len() <= V6_MAX_FULL_WG_PROFILE_BYTES + MEMORY_LAYOUT_DELTA_BYTES,
             "WG profile is {} bytes; v6 baseline {V6_FULL_WG_PROFILE_BYTES}, ceiling {V6_MAX_FULL_WG_PROFILE_BYTES}",
             full_wg.len()
         );

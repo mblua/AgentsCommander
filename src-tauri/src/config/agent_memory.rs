@@ -1,5 +1,6 @@
-//! #1172 - rotate an origin Agent Matrix's `memory/` to a timestamped sibling at
-//! session spawn, so a fresh agent starts with a clean write target and the
+//! #1172 - rotate an origin Agent Matrix's `memory/` to a timestamped archive under
+//! `memory-archive/` at session spawn, so a fresh agent starts with a clean write
+//! target and the
 //! previous session's memory is preserved rather than deleted.
 
 use std::path::{Path, PathBuf};
@@ -144,7 +145,21 @@ fn rotate_memory_dir(matrix_root: &Path, timestamp: &str) -> std::io::Result<Opt
     if std::fs::read_dir(&src)?.next().is_none() {
         return Ok(None);
     }
-    let dst = matrix_root.join(format!("{}_{}", MEMORY_DIR_NAME, timestamp));
+    let parent = matrix_root.join("memory-archive");
+    ensure_dir(&parent)?;
+    // Revalidate even after AlreadyExists: the parent must never be a link.
+    // This check then rename remains best effort on the trusted host; a
+    // concurrent junction swap is not prevented atomically.
+    let metadata = std::fs::symlink_metadata(&parent)?;
+    if !metadata.is_dir()
+        || crate::commands::entity_creation::metadata_is_link_or_reparse(&metadata)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "memory archive parent is not a real directory",
+        ));
+    }
+    let dst = parent.join(format!("{}_{}", MEMORY_DIR_NAME, timestamp));
     // Refuse to clobber (`mailbox.rs:1606-1613`). `symlink_metadata` rather
     // than `exists()`, so a dangling link at the destination also blocks. This
     // is a best-effort fast path, NOT an atomic guarantee; see section 7 for
@@ -176,10 +191,14 @@ fn rotate_memory_dir(matrix_root: &Path, timestamp: &str) -> std::io::Result<Opt
 mod tests {
     use super::*;
 
-    /// Every rotated sibling of `memory/`, sorted, as directory names.
+    /// Every nested rotation, sorted, as directory names.
     fn rotated_entries(matrix_root: &Path) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(matrix_root)
-            .expect("read matrix root")
+        let entries = match std::fs::read_dir(matrix_root.join("memory-archive")) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(err) => panic!("read memory archive: {err}"),
+        };
+        let mut names: Vec<String> = entries
             .map(|entry| entry.expect("dir entry").file_name())
             .filter_map(|name| name.to_str().map(str::to_string))
             .filter(|name| name.starts_with("memory_"))
@@ -215,6 +234,7 @@ mod tests {
         let memory = matrix_root.join("memory");
         assert!(memory.is_dir(), "D9: an absent memory/ is created empty");
         assert_eq!(entry_count(&memory), 0, "the restored memory/ starts empty");
+        assert!(!matrix_root.join("memory-archive").exists());
         assert!(
             rotated_entries(matrix_root).is_empty(),
             "nothing is rotated when there was no memory/"
@@ -234,6 +254,7 @@ mod tests {
         assert!(got.is_none(), "D2: an empty memory/ is not rotated");
         assert!(memory.is_dir(), "the empty memory/ stays where it is");
         assert_eq!(entry_count(&memory), 0);
+        assert!(!matrix_root.join("memory-archive").exists());
         assert!(
             rotated_entries(matrix_root).is_empty(),
             "D2: no empty rotation directory is created"
@@ -248,20 +269,23 @@ mod tests {
         let memory = matrix_root.join("memory");
         write_file(&memory.join("MEMORY.md"), "remembered bytes");
         // `std::fs::rename` moves the whole subtree in one call: source and
-        // destination are siblings and therefore always on one volume.
+        // destination share the Matrix filesystem.
         write_file(&memory.join("notes").join("deep.md"), "nested");
 
         let got = rotate_memory_dir(matrix_root, "20260102_030405").expect("rotation succeeds");
 
-        let expected_dst = matrix_root.join("memory_20260102_030405");
+        let expected_dst = matrix_root
+            .join("memory-archive")
+            .join("memory_20260102_030405");
         assert_eq!(got, Some(expected_dst.clone()));
+        assert!(!matrix_root.join("memory_20260102_030405").exists());
         assert_eq!(
             std::fs::read_to_string(expected_dst.join("MEMORY.md")).unwrap(),
             "remembered bytes",
             "the archive keeps the original bytes"
         );
         assert!(
-            expected_dst.join("notes").join("deep.md").is_file(),
+            std::fs::read(expected_dst.join("notes/deep.md")).unwrap() == b"nested",
             "the whole subtree moves with the rename"
         );
         assert!(memory.is_dir(), "D1: memory/ is recreated");
@@ -277,7 +301,9 @@ mod tests {
     fn rotate_memory_dir_refuses_existing_target_without_clobber() {
         let tmp = tempfile::tempdir().unwrap();
         let matrix_root = tmp.path();
-        let existing = matrix_root.join("memory_20260102_030405");
+        let existing = matrix_root
+            .join("memory-archive")
+            .join("memory_20260102_030405");
         write_file(&existing.join("sentinel.md"), "earlier archive");
         write_file(&matrix_root.join("memory").join("MEMORY.md"), "live memory");
 
@@ -295,6 +321,127 @@ mod tests {
             "earlier archive",
             "the pre-existing archive is never clobbered"
         );
+    }
+
+    #[test]
+    fn nested_rotation_leaves_same_timestamp_legacy_archive_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = tmp.path();
+        let legacy = matrix.join("memory_20260102_030405");
+        write_file(&legacy.join("sentinel.md"), "legacy bytes");
+        write_file(&matrix.join("memory/MEMORY.md"), "live bytes");
+        let dst = rotate_memory_dir(matrix, "20260102_030405")
+            .unwrap()
+            .unwrap();
+        assert_eq!(dst, matrix.join("memory-archive/memory_20260102_030405"));
+        assert_eq!(
+            std::fs::read(legacy.join("sentinel.md")).unwrap(),
+            b"legacy bytes"
+        );
+        assert_eq!(std::fs::read(dst.join("MEMORY.md")).unwrap(), b"live bytes");
+        assert_eq!(entry_count(&matrix.join("memory")), 0);
+    }
+
+    #[test]
+    fn nested_rotation_refuses_an_occupied_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = tmp.path();
+        let dst = matrix.join("memory-archive/memory_20260102_030405");
+        write_file(&dst, "occupied bytes");
+        write_file(&matrix.join("memory/MEMORY.md"), "live bytes");
+        let err = rotate_memory_dir(matrix, "20260102_030405").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"occupied bytes");
+        assert_eq!(
+            std::fs::read(matrix.join("memory/MEMORY.md")).unwrap(),
+            b"live bytes"
+        );
+    }
+
+    #[test]
+    fn nested_rotation_refuses_a_file_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = tmp.path();
+        write_file(&matrix.join("memory-archive"), "parent bytes");
+        write_file(&matrix.join("memory/MEMORY.md"), "live bytes");
+        let err = rotate_memory_dir(matrix, "20260102_030405").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            std::fs::read(matrix.join("memory-archive")).unwrap(),
+            b"parent bytes"
+        );
+        assert_eq!(
+            std::fs::read(matrix.join("memory/MEMORY.md")).unwrap(),
+            b"live bytes"
+        );
+    }
+
+    #[test]
+    fn nested_rotation_accepts_an_existing_directory_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = tmp.path();
+        write_file(&matrix.join("memory-archive/sentinel.md"), "parent bytes");
+        write_file(&matrix.join("memory/MEMORY.md"), "live bytes");
+        let dst = rotate_memory_dir(matrix, "20260102_030405")
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(dst.join("MEMORY.md")).unwrap(), b"live bytes");
+        assert_eq!(
+            std::fs::read(matrix.join("memory-archive/sentinel.md")).unwrap(),
+            b"parent bytes"
+        );
+        assert!(!matrix.join("memory_20260102_030405").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn nested_rotation_refuses_parent_and_destination_junctions() {
+        for parent_link in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let matrix = tmp.path();
+            let target = matrix.join("real_target");
+            write_file(&target.join("sentinel.md"), "linked bytes");
+            write_file(&matrix.join("memory/MEMORY.md"), "live bytes");
+            let parent = matrix.join("memory-archive");
+            let link = if parent_link {
+                parent
+            } else {
+                std::fs::create_dir(&parent).unwrap();
+                parent.join("memory_20260102_030405")
+            };
+            let output = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(&link)
+                .arg(&target)
+                .output()
+                .expect("invoke mklink");
+            assert!(
+                output.status.success(),
+                "junction setup failed: {:?}",
+                output
+            );
+            let err = rotate_memory_dir(matrix, "20260102_030405").unwrap_err();
+            assert_eq!(
+                err.kind(),
+                if parent_link {
+                    std::io::ErrorKind::InvalidInput
+                } else {
+                    std::io::ErrorKind::AlreadyExists
+                }
+            );
+            assert!(std::fs::symlink_metadata(&link).is_ok());
+            assert_eq!(
+                std::fs::read(target.join("sentinel.md")).unwrap(),
+                b"linked bytes"
+            );
+            assert_eq!(
+                std::fs::read(matrix.join("memory/MEMORY.md")).unwrap(),
+                b"live bytes"
+            );
+            assert!(!matrix.join("memory_20260102_030405").exists());
+        }
     }
 
     // T5 - this exercises the `!metadata.is_dir()` half of the condition ONLY.
@@ -357,6 +504,7 @@ mod tests {
             rotated_entries(&replica).is_empty(),
             "no rotation directory is created inside a replica"
         );
+        assert!(!replica.join("memory-archive").exists());
     }
 
     // T8.
@@ -379,6 +527,11 @@ mod tests {
         rotate_origin_memory_at_spawn(matrix.to_str().unwrap());
 
         let rotated = rotated_entries(&matrix);
+        assert!(std::fs::read_dir(&matrix).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("memory_")));
         assert_eq!(rotated.len(), 1, "exactly one rotation directory");
         let suffix = rotated[0]
             .strip_prefix("memory_")
@@ -394,7 +547,13 @@ mod tests {
         );
         assert!(bytes[9..].iter().all(u8::is_ascii_digit), "time is digits");
         assert_eq!(
-            std::fs::read_to_string(matrix.join(&rotated[0]).join("MEMORY.md")).unwrap(),
+            std::fs::read_to_string(
+                matrix
+                    .join("memory-archive")
+                    .join(&rotated[0])
+                    .join("MEMORY.md")
+            )
+            .unwrap(),
             "direct matrix"
         );
         let memory = matrix.join("memory");
@@ -422,16 +581,29 @@ mod tests {
         rotate_origin_memory_at_spawn(replica.to_str().unwrap());
 
         let rotated = rotated_entries(&matrix);
+        assert!(std::fs::read_dir(&matrix).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("memory_")));
         assert_eq!(rotated.len(), 1, "the rotation landed in the origin matrix");
         assert_eq!(
-            std::fs::read_to_string(matrix.join(&rotated[0]).join("MEMORY.md")).unwrap(),
+            std::fs::read_to_string(
+                matrix
+                    .join("memory-archive")
+                    .join(&rotated[0])
+                    .join("MEMORY.md")
+            )
+            .unwrap(),
             "origin memory"
         );
         let memory = matrix.join("memory");
         assert!(memory.is_dir(), "the matrix keeps an empty memory/");
         assert_eq!(entry_count(&memory), 0);
         assert!(
-            !replica.join("memory").exists() && rotated_entries(&replica).is_empty(),
+            !replica.join("memory").exists()
+                && !replica.join("memory-archive").exists()
+                && rotated_entries(&replica).is_empty(),
             "the replica itself gains no memory* entry"
         );
     }
@@ -451,6 +623,7 @@ mod tests {
             "root memory",
             "D6: the Root Agent is never rotated"
         );
+        assert!(!root_agent.join("memory-archive").exists());
         assert!(rotated_entries(&root_agent).is_empty());
     }
 
