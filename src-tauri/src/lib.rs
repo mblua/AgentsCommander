@@ -5498,6 +5498,8 @@ pub fn run(
                 commands::config::fetch_home_markdown,
                 commands::agent_creator::pick_folder,
                 commands::agent_creator::create_agent_folder,
+                commands::ac_discovery::task_get_snapshot,
+                commands::ac_discovery::task_get_snapshot_at,
                 commands::ac_discovery::discover_ac_agents,
                 commands::ac_discovery::check_project_path,
                 commands::ac_discovery::create_ac_project,

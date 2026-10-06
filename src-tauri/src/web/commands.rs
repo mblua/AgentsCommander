@@ -314,6 +314,14 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
     }
 
     match cmd {
+        "task_get_snapshot" => {
+            let id = require_str(args, "sessionId")?;
+            crate::commands::ac_discovery::task_snapshot_inner(&state.session_mgr, &state.settings, Some(&id), None).await
+        }
+        "task_get_snapshot_at" => {
+            let root = require_str(args, "workgroupRoot")?;
+            crate::commands::ac_discovery::task_snapshot_inner(&state.session_mgr, &state.settings, None, Some(&root)).await
+        }
         // --- Session commands ---
         "list_sessions" => {
             let mgr = state.session_mgr.read().await;
@@ -1653,6 +1661,82 @@ mod tests {
         )
         .unwrap();
         crate::config::settings::load_settings_from_path(&dir.join("settings.json"))
+    }
+
+    #[tokio::test]
+    async fn task_snapshot_web_route_matches_shared_inner_and_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".ac/room-1");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("TASK.md"),
+            "---
+title: 'USER: café'
+---
+日本語 🦀
+",
+        )
+        .unwrap();
+        let (state, _) = ws_state_for(AppSettings {
+            project_paths: vec![dir.path().to_string_lossy().into_owned()],
+            ..Default::default()
+        });
+        let path = root.to_string_lossy().into_owned();
+        let direct = crate::commands::ac_discovery::task_snapshot_inner(
+            &state.session_mgr,
+            &state.settings,
+            None,
+            Some(&path),
+        )
+        .await
+        .unwrap();
+        let response = dispatch(
+            &state,
+            2841,
+            "task_get_snapshot_at",
+            &json!({"workgroupRoot":path}),
+        )
+        .await;
+        assert_eq!(response, json!({"id":2841,"result":direct}));
+        for args in [
+            json!({}),
+            json!({"workgroupRoot":42}),
+            json!({"workgroupRoot":dir.path().to_string_lossy()}),
+        ] {
+            assert!(dispatch(&state, 1, "task_get_snapshot_at", &args)
+                .await
+                .get("error")
+                .is_some());
+        }
+        for id in ["invalid".to_owned(), Uuid::new_v4().to_string()] {
+            let direct = crate::commands::ac_discovery::task_snapshot_inner(
+                &state.session_mgr,
+                &state.settings,
+                Some(&id),
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                dispatch(&state, 2, "task_get_snapshot", &json!({"sessionId":id})).await,
+                json!({"id":2,"error":direct})
+            );
+        }
+        std::fs::write(
+            root.join("TASK-status.jsonl"),
+            "[]
+",
+        )
+        .unwrap();
+        assert!(dispatch(
+            &state,
+            3,
+            "task_get_snapshot_at",
+            &json!({"workgroupRoot":path})
+        )
+        .await
+        .get("error")
+        .is_some());
     }
 
     #[tokio::test]
