@@ -466,10 +466,7 @@ const SidebarTaskLabel: Component<{ room: string; text: string; class: string; t
       else tooltip.openIfActive();
     });
   });
-  createEffect(() => {
-    props.room;
-    untrack(tooltip.resetIdentity);
-  });
+  createEffect(on(() => props.room, () => tooltip.resetIdentity()));
   createEffect(() => {
     if (!tooltipOpen()) return;
     tooltipStatus();

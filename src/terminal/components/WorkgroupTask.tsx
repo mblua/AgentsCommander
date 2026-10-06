@@ -1,5 +1,5 @@
 import { createTaskStatusTooltip } from "../../shared/task-status-tooltip";
-import { Component, createEffect, createMemo, createSignal, createUniqueId, onCleanup, untrack, Show } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, untrack, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { terminalStore } from "../stores/terminal";
 import { TaskAPI } from "../../shared/ipc";
@@ -122,10 +122,7 @@ const WorkgroupTask: Component = () => {
   createEffect(() => {
     if (tooltipStatus() === null) untrack(tooltip.hideUnavailable);
   });
-  createEffect(() => {
-    terminalStore.activeSessionId;
-    untrack(tooltip.resetIdentity);
-  });
+  createEffect(on(() => terminalStore.activeSessionId, () => tooltip.resetIdentity()));
   createEffect(() => {
     if (!tooltipOpen()) return;
     document.addEventListener("keydown", dismissTooltip, true);
