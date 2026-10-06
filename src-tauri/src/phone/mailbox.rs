@@ -14668,7 +14668,10 @@ mod tests {
     }
 
     fn make_mailbox_fixture() -> MailboxFixture {
-        let temp = tempfile::TempDir::new().unwrap();
+        make_mailbox_fixture_in(tempfile::TempDir::new().unwrap())
+    }
+
+    fn make_mailbox_fixture_in(temp: tempfile::TempDir) -> MailboxFixture {
         // (#1399 CI regression) Build every fixture path from the canonical
         // spelling. `dedup_outbox_dirs_by_object_id` rewrites each scanned
         // outbox dir to `verify_directory(...).canonical_path`, so the retry
@@ -16119,11 +16122,39 @@ mod tests {
 
     #[tokio::test]
     async fn host_terminal_artifact_is_source_correlated_and_idempotently_repairable() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+
+            let outer = tempfile::TempDir::new().unwrap();
+            let mut parent = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &std::fs::canonicalize(outer.path()).unwrap(),
+            );
+            let suffix = PathBuf::from(".tmpXXXXXX/proj-a/.ac/wg-1-dev-team/__agent_tech-lead")
+                .join(crate::config::agent_local_dir_name())
+                .join("outbox/rejected")
+                .join(format!("{}.json", Uuid::nil()));
+            while parent.join(&suffix).as_os_str().encode_wide().count() <= 260 {
+                let remaining = 261 - parent.join(&suffix).as_os_str().encode_wide().count();
+                parent = parent.join("p".repeat(remaining.saturating_sub(1).clamp(1, 60)));
+            }
+            std::fs::create_dir_all(&parent).unwrap();
+            let fixture = make_mailbox_fixture_in(tempfile::TempDir::new_in(parent).unwrap());
+            assert_host_terminal_artifact_repair(&fixture, outer.path(), true).await;
+        }
+        let fixture = make_mailbox_fixture();
+        assert_host_terminal_artifact_repair(&fixture, fixture._temp.path(), false).await;
+    }
+
+    async fn assert_host_terminal_artifact_repair(
+        fixture: &MailboxFixture,
+        database_root: &Path,
+        expect_long_path: bool,
+    ) {
         use crate::phone::types::{
             canonical_pty_timestamp, PtyInputPublicStatus, PtyInputReasonCode, PtyInputSourcePlane,
         };
 
-        let fixture = make_mailbox_fixture();
         let outbox = fixture
             .sender_cwd
             .join(crate::config::agent_local_dir_name())
@@ -16138,7 +16169,7 @@ mod tests {
         )
         .unwrap();
         let store = crate::api::message_store::MessageStore::open(
-            fixture._temp.path().join("host-artifact.sqlite3"),
+            database_root.join("host-artifact.sqlite3"),
         )
         .unwrap();
         let injection_id = Uuid::new_v4().to_string();
@@ -16178,6 +16209,26 @@ mod tests {
 
         let poller = MailboxPoller::new();
         let marker_path = outbox.join(format!("{injection_id}.json"));
+        let artifact_path = outbox.join("rejected").join(format!("{injection_id}.json"));
+        #[cfg(windows)]
+        let marker_setup_path = std::fs::canonicalize(marker_path.parent().unwrap())
+            .unwrap()
+            .join(marker_path.file_name().unwrap());
+        #[cfg(not(windows))]
+        let marker_setup_path = marker_path.clone();
+        #[cfg(windows)]
+        if expect_long_path {
+            use std::os::windows::ffi::OsStrExt;
+            assert!(!marker_path.to_string_lossy().starts_with(r"\\?\"));
+            assert!(!artifact_path.to_string_lossy().starts_with(r"\\?\"));
+            assert!(artifact_path.as_os_str().encode_wide().count() > 260);
+            eprintln!(
+                "marker={}, setup={}, artifact={} UTF-16 units",
+                marker_path.as_os_str().encode_wide().count(),
+                marker_setup_path.as_os_str().encode_wide().count(),
+                artifact_path.as_os_str().encode_wide().count()
+            );
+        }
         std::fs::write(&marker_path, b"source envelope").unwrap();
         let source_identity = crate::path_identity::read_bounded_regular(
             &marker_path,
@@ -16187,7 +16238,7 @@ mod tests {
         .1;
         poller
             .replace_host_request_with_marker(
-                &marker_path,
+                &marker_setup_path,
                 &source_identity,
                 &injection_id,
                 &injection_id,
@@ -16198,7 +16249,16 @@ mod tests {
             .await
             .unwrap();
         assert!(!marker_path.exists());
-        let artifact_path = outbox.join("rejected").join(format!("{injection_id}.json"));
+        eprintln!("first materialization completed; marker removed");
+        #[cfg(windows)]
+        if expect_long_path {
+            use std::os::windows::ffi::OsStrExt;
+            let length = artifact_path.as_os_str().encode_wide().count();
+            eprintln!("forced-long ordinary artifact UTF-16 length: {length}");
+            assert!(length > 260, "artifact must exceed MAX_PATH");
+        }
+        #[cfg(not(windows))]
+        let _ = expect_long_path;
         let artifact: crate::phone::types::PtyInputHostArtifact = serde_json::from_slice(
             &crate::path_identity::read_bounded_regular(
                 &artifact_path,
@@ -16209,6 +16269,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(artifact.confirmation_tag, confirmation_tag);
+        assert_eq!(artifact.result.injection_id, injection_id);
 
         // Simulate a crash after artifact publication but before marker cleanup.
         std::fs::write(&marker_path, b"retained source envelope").unwrap();
@@ -16220,17 +16281,35 @@ mod tests {
         .1;
         poller
             .replace_host_request_with_marker(
-                &marker_path,
+                &marker_setup_path,
                 &source_identity,
                 &injection_id,
                 &injection_id,
             )
             .unwrap();
+        #[cfg(windows)]
+        if expect_long_path {
+            use std::os::windows::ffi::OsStrExt;
+            assert!(artifact_path.as_os_str().encode_wide().count() > 260);
+        }
+        eprintln!("second marker preparation completed; starting repair");
         poller
             .materialize_host_terminal_artifact(&marker_path, &store, &injection_id)
             .await
             .unwrap();
         assert!(!marker_path.exists());
+
+        let repaired: crate::phone::types::PtyInputHostArtifact = serde_json::from_slice(
+            &crate::path_identity::read_bounded_regular(
+                &artifact_path,
+                crate::phone::types::PTY_INPUT_METADATA_MAX_BYTES,
+            )
+            .unwrap()
+            .0,
+        )
+        .unwrap();
+        assert_eq!(repaired.result.injection_id, injection_id);
+        assert_eq!(repaired.confirmation_tag, confirmation_tag);
 
         std::fs::write(&marker_path, b"tampered source envelope").unwrap();
         let source_identity = crate::path_identity::read_bounded_regular(
@@ -16241,7 +16320,7 @@ mod tests {
         .1;
         poller
             .replace_host_request_with_marker(
-                &marker_path,
+                &marker_setup_path,
                 &source_identity,
                 &injection_id,
                 &injection_id,
