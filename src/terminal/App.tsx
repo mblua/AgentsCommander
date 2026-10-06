@@ -361,11 +361,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
       await register(onSessionDestroyed(handleSessionDestroyed));
       if (disposed) return;
 
-      if (isCentral()) {
-        applyConnectionState(getTransportConnectionState());
-      } else {
-        applyConnectionState(getTransportConnectionState());
-      }
+      applyConnectionState(getTransportConnectionState());
 
       if (!(await attachDetachedCloseHandler())) return;
       if (!(await initWindowChrome())) return;
