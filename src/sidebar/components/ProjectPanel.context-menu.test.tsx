@@ -16,7 +16,7 @@ import {
 } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
-import type { AcDiscoveryResult, Session } from "../../shared/types";
+import type { AcDiscoveryResult, Session, TaskSnapshot } from "../../shared/types";
 import { toastStore } from "../../shared/stores/toasts";
 import { automationIdPart } from "./replica-repo-badges";
 
@@ -46,7 +46,12 @@ const otherRowTestId = "replica.row.workgroups.wg-3-other-team.dev-rust";
 const coordQuickRowTestId = "replica.row.quick.wg-2-dev-team.dev-webpage-ui";
 
 // #545: taskTitle/task are parametrized so tests can drive the broom's
-// title-only disable predicate (isTaskClean) across Clean/empty/real titles.
+// snapshot-aware disable predicate across Clean/empty/real titles.
+function sidebarSnapshot(root: string, overrides: Partial<TaskSnapshot> = {}): TaskSnapshot {
+  return { workgroupRoot: root, task: "description", taskTitle: "USER title", description: "description",
+    status: null, revision: "topic:0", statusRecord: null, tailIncomplete: false, ...overrides };
+}
+
 function projectDiscovery(
   taskTitle: string | null = "Context menu states",
   task: string | null = null
@@ -358,42 +363,81 @@ function findExactMenuButton(menu: HTMLElement, label: string): HTMLButtonElemen
   );
 }
 
-describe("ProjectPanel replica context menu — gray/red (#545)", () => {
+function registerTaskPanelTransport({ fake, discoveryResult }: { fake: FakeTransport; discoveryResult: AcDiscoveryResult }): void {
+  fake.resolve("new_project", { path: projectPath, registered: true, created: false });
+  fake.resolve("discover_project", discoveryResult);
+  fake.onInvoke("task_get_snapshot_at", ({ workgroupRoot }) => {
+    const wg = discoveryResult.workgroups.find(wg => wg.path === workgroupRoot);
+    return sidebarSnapshot(String(workgroupRoot), {
+      taskTitle: wg?.taskTitle ?? null,
+      description: wg?.task?.includes("stale body") ? "stale body text" : "Ready to start a new topic\n",
+    });
+  });
+  fake.resolve("task_clean", { workgroupRoot: workgroupPath, task: null });
+  fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
+  fake.resolve("open_in_explorer", null);
+}
+
+async function renderTaskPanel({ fake, sessions, expectedText }: { fake: FakeTransport; sessions: Session[]; expectedText: string }) {
+  sessionsStore.setSessions(sessions);
+  const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
+  await projectStore.createAndLoad(projectPath);
+  await waitFor(() => expect(rendered.root.textContent).toContain(expectedText));
+  return rendered;
+}
+
+function registerTaskPanelLifecycle({ cleanupRendered }: { cleanupRendered: () => void }): void {
   let cleanupDom: (() => void) | null = null;
-  let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
-
-  async function setupPanel(
-    sessions: Session[] = [],
-    discoveryResult: AcDiscoveryResult = projectDiscovery(),
-    expectedText = "dev-rust"
-  ): Promise<FakeTransport> {
-    const fake = new FakeTransport();
-    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
-    fake.resolve("discover_project", discoveryResult);
-    fake.resolve("task_clean", { workgroupRoot: workgroupPath, task: null });
-    // #545: cold-workgroup broom routes here when no session resolves the root.
-    fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
-    fake.resolve("open_in_explorer", null);
-    if (sessions.length > 0) sessionsStore.setSessions(sessions);
-    rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
-    await projectStore.createAndLoad(projectPath);
-    await waitFor(() => expect(rendered!.root.textContent).toContain(expectedText));
-    return fake;
-  }
-
   beforeEach(() => {
     cleanupDom = installBrowserDomStubs();
     resetUiStoresForTests();
   });
-
   afterEach(() => {
-    rendered?.cleanup();
-    rendered = null;
+    cleanupRendered();
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
     document.body.replaceChildren();
   });
+}
+
+function registerTaskPanelFixture({ onRendered }: { onRendered: (next: ReturnType<typeof renderWithFakeTransport> | null) => void }) {
+  let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
+  registerTaskPanelLifecycle({ cleanupRendered: () => {
+    rendered?.cleanup();
+    rendered = null;
+    onRendered(null);
+  } });
+  return async function setupPanel(
+    sessions: Session[] = [],
+    discoveryResult: AcDiscoveryResult = projectDiscovery(),
+    expectedText = "dev-rust"
+  ): Promise<FakeTransport> {
+    const fake = new FakeTransport();
+    registerTaskPanelTransport({ fake, discoveryResult });
+    rendered = await renderTaskPanel({ fake, sessions, expectedText });
+    onRendered(rendered);
+    return fake;
+  };
+}
+
+async function assertBroomState({ root, disabled, title }: { root: ParentNode; disabled: boolean; title: string }): Promise<void> {
+  contextMenu(findRow(root, memberRowTestId));
+  let broom: HTMLButtonElement | null = null;
+  await waitFor(() => {
+    const menu = replicaMenu();
+    expect(menu).not.toBeNull();
+    broom = findBroom(menu!);
+    expect(broom).not.toBeNull();
+  });
+  expect(broom!.disabled).toBe(disabled);
+  expect(broom!.title).toBe(title);
+}
+
+describe("ProjectPanel replica context menu — gray/red (#545)", () => {
+  let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
+
+  const setupPanel = registerTaskPanelFixture({ onRendered: next => { rendered = next; } });
 
   it("opens a Coding Agent + Matrix folder + broom menu on a gray replica", async () => {
     const fake = await setupPanel([coordSession()]);
@@ -413,6 +457,176 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     expect(menu.textContent).not.toContain("Detach session");
     // #2528: gray menu Coding Agent carries the static inactive testid.
     await expectClickOpensPicker(expectCodingAgentTestId(menu, INACTIVE_CODING_AGENT, LIVE_CODING_AGENT));
+  });
+
+  for (const active of [false, true]) {
+    it.each([
+      ["canonical LF", "Ready to start a new topic\n", true],
+      ["CRLF", "Ready to start a new topic\r\n", true],
+      ["no framing LF", "Ready to start a new topic", true],
+      ["extra blank", "Ready to start a new topic\n\n", false],
+      ["extra space", "Ready to start a new topic \n", false],
+      ["case change", "ready to start a new topic\n", false],
+      ["custom multiline", "human\nnotes", false],
+      ["empty body", "", false],
+    ])(`Clean description %s in ${active ? "active" : "inactive"} menu`, async (_label, description, disabled) => {
+      const fake = await setupPanel(active ? [coordSession(), memberSession()] : [], projectDiscovery("Clean"));
+      fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { taskTitle: "Clean", description }));
+      await projectStore.refreshTaskSnapshot(workgroupPath);
+      contextMenu(findRow(rendered!.root, memberRowTestId));
+      const broom = findBroom(replicaMenu()!)!;
+      expect(broom.disabled).toBe(disabled);
+      expect(broom.title).toBe(disabled ? "Nothing to clear" : "Clear task title");
+    });
+
+    it(`allows status and unknown snapshots in ${active ? "active" : "inactive"} menu`, async () => {
+      const fake = await setupPanel(active ? [coordSession(), memberSession()] : [], projectDiscovery("Clean"));
+      fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, {
+        taskTitle: "Clean", description: "Ready to start a new topic\n", status: "complete status",
+        statusRecord: { schemaVersion: 1, kind: "status", topicId: "topic", sequence: 1,
+          requestId: null, baseRevision: null, recordedAt: "now", author: null, status: "complete status" },
+      }));
+      await projectStore.refreshTaskSnapshot(workgroupPath);
+      contextMenu(findRow(rendered!.root, memberRowTestId));
+      expect(findBroom(replicaMenu()!)!.disabled).toBe(false);
+      projectStore.invalidateTaskSnapshots();
+      expect(findBroom(replicaMenu()!)!.disabled).toBe(false);
+    });
+  }
+
+  function taskLabels(): HTMLElement[] {
+    return [...rendered!.root.querySelectorAll<HTMLElement>(".sidebar-task-label")];
+  }
+  function tooltipFor(label: HTMLElement): HTMLElement {
+    return document.getElementById(label.getAttribute("aria-describedby")!)!;
+  }
+  function anchorInViewport(label: HTMLElement): void {
+    label.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
+  }
+  async function statusPanel(status = "full status\n<b>escaped</b>") {
+    const fake = await setupPanel([], projectDiscovery("USER title", "human description"));
+    fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status, description: "never a tooltip" }));
+    await projectStore.refreshTaskSnapshot(workgroupPath);
+    return fake;
+  }
+
+  it("shares newest escaped status across header and quick rows, preserving USER labels", async () => {
+    await statusPanel();
+    const labels = taskLabels();
+    expect(labels.some(label => label.classList.contains("ac-wg-task"))).toBe(true);
+    expect(labels.some(label => label.classList.contains("coord-task-title"))).toBe(true);
+    expect(new Set(labels.map(label => tooltipFor(label).id)).size).toBe(labels.length);
+    for (const label of labels) {
+      expect(label.textContent).toBe("USER title");
+      expect(label.tabIndex).toBe(0);
+      const tooltip = tooltipFor(label);
+      expect(tooltip.getAttribute("role")).toBe("tooltip");
+      expect(tooltip.textContent).toBe("full status\n<b>escaped</b>");
+      expect(tooltip.querySelector("b")).toBeNull();
+      expect(tooltip.querySelector("button, input, [tabindex]")).toBeNull();
+    }
+  });
+
+  it("keeps repeated label owners independent and removes viewport listeners on disposal", async () => {
+    await statusPanel();
+    const [first, second] = taskLabels();
+    anchorInViewport(first); anchorInViewport(second);
+    const remove = vi.spyOn(window, "removeEventListener");
+    first.dispatchEvent(new Event("pointerenter"));
+    second.dispatchEvent(new Event("pointerenter"));
+    await waitFor(() => {
+      expect(tooltipFor(first).style.display).toBe("block");
+      expect(tooltipFor(second).style.display).toBe("block");
+    });
+    first.dispatchEvent(new Event("pointerleave"));
+    await waitFor(() => expect(tooltipFor(first).style.display).toBe("none"));
+    expect(tooltipFor(second).style.display).toBe("block");
+    second.dispatchEvent(new Event("pointerleave"));
+    rendered!.cleanup(); rendered = null;
+    expect(document.querySelector(".sidebar-task-tooltip")).toBeNull();
+    expect(remove.mock.calls.some(([event, , capture]) => event === "scroll" && capture === true)).toBe(true);
+    expect(remove.mock.calls.some(([event]) => event === "resize")).toBe(true);
+    remove.mockRestore();
+  });
+
+  it("keeps Escape dismissed through refresh and error until reentry or refocus", async () => {
+    const fake = await statusPanel();
+    const title = taskLabels()[0]; anchorInViewport(title); title.focus();
+    await waitFor(() => expect(tooltipFor(title).style.display).toBe("block"));
+    title.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(tooltipFor(title).style.display).toBe("none");
+    tooltipFor(title).dispatchEvent(new Event("pointerenter"));
+    fake.reject("task_get_snapshot_at", "unreadable");
+    await projectStore.refreshTaskSnapshot(workgroupPath);
+    expect(title.hasAttribute("aria-describedby")).toBe(false);
+    expect(title.textContent).toBe("USER title");
+    fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status: "new status" }));
+    await projectStore.refreshTaskSnapshot(workgroupPath);
+    expect(tooltipFor(title).style.display).toBe("none");
+    window.dispatchEvent(new Event("resize")); title.dispatchEvent(new Event("pointermove"));
+    expect(tooltipFor(title).style.display).toBe("none");
+    title.blur(); title.focus();
+    await waitFor(() => expect(tooltipFor(title).style.display).toBe("block"));
+    title.dispatchEvent(new Event("pointerenter"));
+    title.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    title.dispatchEvent(new Event("pointerleave")); title.dispatchEvent(new Event("pointerenter"));
+    await waitFor(() => expect(tooltipFor(title).style.display).toBe("block"));
+    title.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status: null }));
+    await projectStore.refreshTaskSnapshot(workgroupPath);
+    expect(title.hasAttribute("aria-describedby")).toBe(false);
+    fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status: "after confirmed null" }));
+    await projectStore.refreshTaskSnapshot(workgroupPath);
+    await waitFor(() => expect(tooltipFor(title).style.display).toBe("block"));
+  });
+
+  it("supports gap grace, focus priority, viewport bounds and overflow keys", async () => {
+    await statusPanel("long status\n".repeat(200));
+    const title = taskLabels()[0]; anchorInViewport(title);
+    vi.useFakeTimers();
+    try {
+      title.dispatchEvent(new Event("pointerenter")); vi.advanceTimersByTime(20);
+      const tooltip = tooltipFor(title);
+      title.dispatchEvent(new Event("pointerleave")); vi.advanceTimersByTime(149);
+      expect(tooltip.style.display).toBe("block");
+      tooltip.dispatchEvent(new Event("pointerenter")); vi.advanceTimersByTime(200);
+      expect(tooltip.style.display).toBe("block");
+      title.focus(); tooltip.dispatchEvent(new Event("pointerleave")); vi.advanceTimersByTime(200);
+      expect(tooltip.style.display).toBe("block");
+      expect(parseFloat(tooltip.style.left)).toBeGreaterThanOrEqual(16);
+      expect(parseFloat(tooltip.style.top)).toBeGreaterThanOrEqual(16);
+      expect(parseFloat(tooltip.style.maxWidth)).toBeLessThanOrEqual(window.innerWidth - 32);
+      expect(parseFloat(tooltip.style.maxHeight)).toBeLessThanOrEqual(window.innerHeight - 32);
+      Object.defineProperties(tooltip, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { value: 100 } });
+      for (const [key, expected] of [["ArrowDown", 32], ["PageDown", 132], ["ArrowUp", 100], ["PageUp", 0], ["End", 500], ["Home", 0]] as const) {
+        const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+        title.dispatchEvent(event); expect(event.defaultPrevented).toBe(true); expect(tooltip.scrollTop).toBe(expected);
+        expect(document.activeElement).toBe(title);
+      }
+      const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      title.dispatchEvent(tab); expect(tab.defaultPrevented).toBe(false);
+      Object.defineProperty(tooltip, "scrollHeight", { value: 100 });
+      const arrow = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+      title.dispatchEvent(arrow); expect(arrow.defaultPrevented).toBe(false);
+      title.blur(); vi.advanceTimersByTime(149); expect(tooltip.style.display).toBe("block");
+      vi.advanceTimersByTime(1); expect(tooltip.style.display).toBe("none");
+      rendered!.cleanup(); vi.runAllTimers(); expect(document.querySelector(".sidebar-task-tooltip")).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("refreshes every repeated label after successful Clean and preserves status on failure", async () => {
+    const fake = await statusPanel();
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    fake.reject("task_clean_at", "failed Clean");
+    click(findBroom(replicaMenu()!)!);
+    await Promise.resolve();
+    expect(taskLabels().every(label => label.hasAttribute("aria-describedby"))).toBe(true);
+    fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
+    fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { taskTitle: "Clean", status: null }));
+    contextMenu(findRow(rendered!.root, memberRowTestId));
+    click(findBroom(replicaMenu()!)!);
+    await waitFor(() => expect(taskLabels().every(label => !label.hasAttribute("aria-describedby"))).toBe(true));
+    expect(document.querySelector(".sidebar-task-tooltip")).toBeNull();
   });
 
   it("preserves the native context menu inside the project regex filter row", async () => {
@@ -1273,38 +1487,17 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
   it("disables the broom when the task title is the Clean sentinel (active menu)", async () => {
     await setupPanel([coordSession(), memberSession()], projectDiscovery("Clean"));
 
-    contextMenu(findRow(rendered!.root, memberRowTestId));
-
-    let broom: HTMLButtonElement | null = null;
-    await waitFor(() => {
-      const menu = replicaMenu();
-      expect(menu).not.toBeNull();
-      broom = findBroom(menu!);
-      expect(broom).not.toBeNull();
-    });
-    expect(broom!.disabled).toBe(true);
-    expect(broom!.title).toBe("Nothing to clear");
+    await assertBroomState({ root: rendered!.root, disabled: true, title: "Nothing to clear" });
   });
 
   it("disables the broom when the task title is empty/missing (gray menu)", async () => {
     await setupPanel([coordSession()], projectDiscovery(null));
 
-    contextMenu(findRow(rendered!.root, memberRowTestId));
-
-    let broom: HTMLButtonElement | null = null;
-    await waitFor(() => {
-      const menu = replicaMenu();
-      expect(menu).not.toBeNull();
-      broom = findBroom(menu!);
-      expect(broom).not.toBeNull();
-    });
-    expect(broom!.disabled).toBe(true);
-    expect(broom!.title).toBe("Nothing to clear");
+    await assertBroomState({ root: rendered!.root, disabled: true, title: "Nothing to clear" });
   });
 
-  // F1 (ties to G2): the disable predicate is TITLE-ONLY. A "Clean" title with a
-  // non-empty body still disables the broom; the body bytes are never consulted.
-  it("disables the broom on a Clean title even with a non-empty task body (F1)", async () => {
+  // A Clean title with a remaining description is actionable.
+  it("enables the broom on a Clean title with a differing description", async () => {
     await setupPanel(
       [coordSession(), memberSession()],
       projectDiscovery("Clean", "Clean\n\nstale body text")
@@ -1319,7 +1512,7 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       broom = findBroom(menu!);
       expect(broom).not.toBeNull();
     });
-    expect(broom!.disabled).toBe(true);
+    expect(broom!.disabled).toBe(false);
   });
 
   it("clears a cold workgroup via task_clean_at when no session resolves the root", async () => {
@@ -1402,11 +1595,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
     discoveryResult: AcDiscoveryResult = projectDiscovery(),
   ): Promise<FakeTransport> {
     const fake = new FakeTransport();
-    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
-    fake.resolve("discover_project", discoveryResult);
-    fake.resolve("task_clean", { workgroupRoot: workgroupPath, task: null });
-    fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
-    fake.resolve("open_in_explorer", null);
+    registerTaskPanelTransport({ fake, discoveryResult });
     fake.resolve("get_settings", { telegramBots: [] });
     fake.resolve("telegram_attach", null);
     fake.resolve("telegram_detach", null);
@@ -2166,40 +2355,9 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
 });
 
 describe("ProjectPanel replica context menu — Edit TASK title (#1536)", () => {
-  let cleanupDom: (() => void) | null = null;
   let rendered: ReturnType<typeof renderWithFakeTransport> | null = null;
 
-  async function setupPanel(
-    sessions: Session[] = [],
-    discoveryResult: AcDiscoveryResult = projectDiscovery(),
-    expectedText = "dev-rust"
-  ): Promise<FakeTransport> {
-    const fake = new FakeTransport();
-    fake.resolve("new_project", { path: projectPath, registered: true, created: false });
-    fake.resolve("discover_project", discoveryResult);
-    fake.resolve("task_clean", { workgroupRoot: workgroupPath, task: null });
-    fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
-    fake.resolve("open_in_explorer", null);
-    if (sessions.length > 0) sessionsStore.setSessions(sessions);
-    rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
-    await projectStore.createAndLoad(projectPath);
-    await waitFor(() => expect(rendered!.root.textContent).toContain(expectedText));
-    return fake;
-  }
-
-  beforeEach(() => {
-    cleanupDom = installBrowserDomStubs();
-    resetUiStoresForTests();
-  });
-
-  afterEach(() => {
-    rendered?.cleanup();
-    rendered = null;
-    cleanupDom?.();
-    cleanupDom = null;
-    resetUiStoresForTests();
-    document.body.replaceChildren();
-  });
+  const setupPanel = registerTaskPanelFixture({ onRendered: next => { rendered = next; } });
 
   // 9.2.1 - the item renders in BOTH menus, between Add to Group and the broom
   // on coordinator rows (which own the Add to Group entry), directly above the

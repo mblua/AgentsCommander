@@ -638,6 +638,8 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
     const generationChanged = connection.generation !== observedConnection.generation;
     observedConnection = { ...connection };
     sessionsStore.observeConnection(connection);
+    projectStore.invalidateTaskSnapshots();
+    if (connection.state === "connected") projectStore.refreshTaskSnapshots();
     cancelHydrationRetry();
     hydrationRetryAttempt = 0;
     if (connection.state === "disconnected" || generationChanged) {
@@ -1030,6 +1032,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         const wgPath = data.workgroupRoot;
         if (wgPath) {
           projectStore.updateWorkgroupTask(wgPath, taskFirstLine(data.task), data.taskTitle);
+          void projectStore.refreshTaskSnapshot(wgPath);
         }
       })
     );
@@ -1085,6 +1088,7 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
 
   onCleanup(() => {
     disposed = true;
+    projectStore.invalidateTaskSnapshots();
     cancelHydrationRetry();
     sessionsStore.cancelHydration();
     unlisteners.forEach((unlisten) => unlisten());

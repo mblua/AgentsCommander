@@ -1,4 +1,5 @@
-import { Component, createEffect, createMemo, createSignal, createUniqueId, onCleanup, Show } from "solid-js";
+import { createTaskStatusTooltip } from "../../shared/task-status-tooltip";
+import { Component, createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, untrack, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { terminalStore } from "../stores/terminal";
 import { TaskAPI } from "../../shared/ipc";
@@ -109,119 +110,24 @@ const WorkgroupTask: Component = () => {
   const tooltipId = createUniqueId();
   let titleAnchor: HTMLSpanElement | undefined;
   let tooltipElement: HTMLDivElement | undefined;
-  let titlePointer = false;
-  let tooltipPointer = false;
-  let titleFocused = false;
-  let escaped = false;
-  let leaveTimer: ReturnType<typeof setTimeout> | undefined;
-  let frame: number | undefined;
-  const [tooltipOpen, setTooltipOpen] = createSignal(false);
-  const [tooltipVisible, setTooltipVisible] = createSignal(false);
-  const [tooltipPosition, setTooltipPosition] = createSignal({ left: 16, top: 16, width: 640, height: 384 });
-  const cancelLeave = () => { clearTimeout(leaveTimer); leaveTimer = undefined; };
-  const openTooltip = () => {
-    cancelLeave();
-    if (!escaped && tooltipStatus() !== null) setTooltipOpen(true);
-  };
-  const enterTooltip = (region: "title" | "tooltip") => {
-    if (region === "title") { if (!titlePointer) escaped = false; titlePointer = true; }
-    else tooltipPointer = true;
-    openTooltip();
-  };
-  const leaveTooltip = (region: "title" | "tooltip" | "focus") => {
-    if (region === "title") titlePointer = false;
-    if (region === "tooltip") tooltipPointer = false;
-    cancelLeave();
-    if (titleFocused || titlePointer || tooltipPointer) return;
-    leaveTimer = setTimeout(() => { leaveTimer = undefined; setTooltipOpen(false); }, 150);
-  };
-  const positionTooltip = () => {
-    if (!titleAnchor || !tooltipElement) return;
-    const viewport = window.visualViewport;
-    const leftEdge = viewport?.offsetLeft ?? 0;
-    const topEdge = viewport?.offsetTop ?? 0;
-    const width = viewport?.width ?? window.innerWidth;
-    const height = viewport?.height ?? window.innerHeight;
-    const anchor = titleAnchor.getBoundingClientRect();
-    const visible = anchor.right > leftEdge && anchor.left < leftEdge + width &&
-      anchor.bottom > topEdge && anchor.top < topEdge + height;
-    setTooltipVisible(visible);
-    if (!visible) return;
-    const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const maxWidth = Math.max(0, Math.min(40 * rem, width - 32));
-    const maxHeight = Math.max(0, Math.min(24 * rem, height - 32));
-    tooltipElement.style.maxWidth = maxWidth + "px";
-    tooltipElement.style.maxHeight = maxHeight + "px";
-    const rect = tooltipElement.getBoundingClientRect();
-    const below = anchor.bottom + 6;
-    const preferred = below + rect.height <= topEdge + height - 16 ? below : anchor.top - 6 - rect.height;
-    setTooltipPosition({
-      left: Math.max(leftEdge + 16, Math.min(anchor.left, leftEdge + width - 16 - rect.width)),
-      top: Math.max(topEdge + 16, Math.min(preferred, topEdge + height - 16 - rect.height)),
-      width: maxWidth, height: maxHeight,
-    });
-  };
-  const scheduleTooltipPosition = () => {
-    if (frame !== undefined) cancelAnimationFrame(frame);
-    frame = requestAnimationFrame(() => { frame = undefined; positionTooltip(); });
-  };
+  const tooltip = createTaskStatusTooltip({
+    status: tooltipStatus, titleAnchor: () => titleAnchor, tooltipElement: () => tooltipElement,
+  });
+  const { open: tooltipOpen, visible: tooltipVisible, position: tooltipPosition,
+    enter: enterTooltip, leave: leaveTooltip } = tooltip;
   const dismissTooltip = (event: KeyboardEvent) => {
-    if (event.key !== "Escape" || !tooltipOpen() || !(titleFocused || titlePointer || tooltipPointer)) return;
-    escaped = true;
-    cancelLeave();
-    setTooltipOpen(false);
-    if (event.target === titleAnchor) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
+    if (tooltipOpen()) tooltip.dismiss(event);
   };
-  const tooltipKeyDown = (event: KeyboardEvent) => {
-    if (event.key === "Escape") { dismissTooltip(event); return; }
-    const element = tooltipElement;
-    if (!tooltipOpen() || !element || element.scrollHeight <= element.clientHeight) return;
-    const targets: Record<string, number> = {
-      ArrowUp: element.scrollTop - 32, ArrowDown: element.scrollTop + 32,
-      PageUp: element.scrollTop - element.clientHeight, PageDown: element.scrollTop + element.clientHeight,
-      Home: 0, End: element.scrollHeight,
-    };
-    if (!(event.key in targets)) return;
-    element.scrollTop = targets[event.key];
-    event.preventDefault();
-    event.stopPropagation();
-  };
+  const tooltipKeyDown = (event: KeyboardEvent) => tooltip.keyDown(event, tooltipOpen());
   createEffect(() => {
-    // Invalidation hides the overlay immediately, retaining Escape's latch.
-    if (tooltipStatus() === null) { cancelLeave(); tooltipPointer = false; setTooltipOpen(false); }
+    if (tooltipStatus() === null) untrack(tooltip.hideUnavailable);
   });
-  createEffect(() => {
-    const session = terminalStore.activeSessionId;
-    void session;
-    escaped = false;
-    titlePointer = false;
-    tooltipPointer = false;
-    titleFocused = false;
-    cancelLeave();
-    setTooltipOpen(false);
-  });
+  createEffect(on(() => terminalStore.activeSessionId, () => tooltip.resetIdentity()));
   createEffect(() => {
     if (!tooltipOpen()) return;
-    scheduleTooltipPosition();
-    window.addEventListener("scroll", scheduleTooltipPosition, true);
-    window.addEventListener("resize", scheduleTooltipPosition);
     document.addEventListener("keydown", dismissTooltip, true);
-    window.visualViewport?.addEventListener("scroll", scheduleTooltipPosition);
-    window.visualViewport?.addEventListener("resize", scheduleTooltipPosition);
-    onCleanup(() => {
-      window.removeEventListener("scroll", scheduleTooltipPosition, true);
-      window.removeEventListener("resize", scheduleTooltipPosition);
-      document.removeEventListener("keydown", dismissTooltip, true);
-      window.visualViewport?.removeEventListener("scroll", scheduleTooltipPosition);
-      window.visualViewport?.removeEventListener("resize", scheduleTooltipPosition);
-      if (frame !== undefined) cancelAnimationFrame(frame);
-      frame = undefined;
-    });
+    onCleanup(() => document.removeEventListener("keydown", dismissTooltip, true));
   });
-  onCleanup(() => { cancelLeave(); if (frame !== undefined) cancelAnimationFrame(frame); });
 
   const mutationRoot = () => {
     const root = snapshot()?.workgroupRoot;
@@ -384,8 +290,8 @@ const WorkgroupTask: Component = () => {
             <span data-ac-testid="workgroupTask.title" data-ac-role="surface" ref={titleAnchor} class="workgroup-task-title" tabIndex={0}
               aria-describedby={tooltipStatus() !== null ? tooltipId : undefined}
               onPointerEnter={() => enterTooltip("title")} onPointerLeave={() => leaveTooltip("title")}
-              onFocus={() => { titleFocused = true; escaped = false; openTooltip(); }}
-              onBlur={() => { titleFocused = false; leaveTooltip("focus"); }}
+              onFocus={tooltip.focus}
+              onBlur={tooltip.blur}
               onKeyDown={tooltipKeyDown}>{taskTitle()}</span>
           </Show>
         </div>

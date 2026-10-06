@@ -1,27 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const m = vi.hoisted(() => ({
-  open: vi.fn(),
-  newProject: vi.fn(),
-  discover: vi.fn(),
-  remove: vi.fn(),
-  archive: vi.fn(),
-  unarchive: vi.fn(),
-}));
-
-vi.mock("../../shared/ipc", () => ({
-  ProjectAPI: {
-    open: m.open,
-    new: m.newProject,
-    discover: m.discover,
-    remove: m.remove,
-    archive: m.archive,
-    unarchive: m.unarchive,
-  },
-  AgentCreatorAPI: {
-    pickFolder: vi.fn(),
-  },
-}));
+const { projectMethods: m, ipcMock } = await vi.hoisted(async () =>
+  (await import("./project-archive-test-helpers")).createArchiveTestFixture({})
+);
+vi.mock("../../shared/ipc", () => ipcMock);
 
 import { projectStore } from "./project";
 
