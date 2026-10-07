@@ -1379,6 +1379,19 @@ pub fn publish_new_file_atomic(_source: &Path, _destination: &Path) -> Result<()
 fn atomic_replace_existing(source: &Path, destination: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
+    fn canonical_leaf(path: &Path) -> Result<PathBuf, String> {
+        let leaf = path
+            .file_name()
+            .ok_or_else(|| "atomic_replace_failed".to_string())?;
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let parent =
+            std::fs::canonicalize(parent).map_err(|_| "atomic_replace_failed".to_string())?;
+        Ok(parent.join(leaf))
+    }
+
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn ReplaceFileW(
@@ -1390,6 +1403,10 @@ fn atomic_replace_existing(source: &Path, destination: &Path) -> Result<(), Stri
             reserved: *mut std::ffi::c_void,
         ) -> i32;
     }
+    // Normalize only existing parents to support long Windows paths without
+    // following either leaf before the atomic replacement.
+    let source = canonical_leaf(source)?;
+    let destination = canonical_leaf(destination)?;
     let replaced: Vec<u16> = destination
         .as_os_str()
         .encode_wide()
@@ -2088,6 +2105,71 @@ mod tests {
         std::fs::write(&path, b"other value").unwrap();
         assert!(replace_regular_file_atomic(&path, &expected, b"marker", 32).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"other value");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_regular_replacement_supports_long_windows_paths() {
+        use std::os::windows::ffi::OsStrExt;
+
+        let directory = tempfile::TempDir::new().unwrap();
+        let absolute = std::fs::canonicalize(directory.path()).unwrap();
+        let spelling = absolute.to_str().unwrap();
+        let mut parent = if let Some(unc) = spelling.strip_prefix(r"\\?\UNC\") {
+            PathBuf::from(format!(r"\\{unc}"))
+        } else {
+            PathBuf::from(spelling.strip_prefix(r"\\?\").unwrap_or(spelling))
+        };
+        assert!(parent.is_absolute());
+        while parent.as_os_str().encode_wide().count() <= 260 {
+            parent.push("long-path-component-abcdefghijklmnopqrstuvwxyz-0123456789");
+        }
+        std::fs::create_dir_all(&parent).unwrap();
+        let source = parent.join(".ac-pty-input-0123456789abcdef0123456789abcdef.tmp");
+        let destination = parent.join("marker.json");
+        for (name, path) in [("source", &source), ("destination", &destination)] {
+            let length = path.as_os_str().encode_wide().count();
+            assert!(length > 260);
+            assert!(!path.to_str().unwrap().starts_with(r"\\?\"));
+            eprintln!(
+                "{name}: UTF16 length={length}, ordinary input={}",
+                path.display()
+            );
+        }
+        std::fs::write(&source, b"direct replacement").unwrap();
+        std::fs::write(&destination, b"old marker").unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), b"direct replacement");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"old marker");
+        verify_regular_file(&source).unwrap();
+        verify_regular_file(&destination).unwrap();
+        eprintln!("setup and ordinary-input assertions passed; calling atomic_replace_existing");
+        atomic_replace_existing(&source, &destination)
+            .expect("direct atomic_replace_existing must support ordinary long paths");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"direct replacement");
+        assert!(!source.exists());
+
+        let (_, expected) = read_bounded_regular(&destination, 64).unwrap();
+        let after = replace_regular_file_atomic(&destination, &expected, b"public replacement", 64)
+            .unwrap();
+        let (bytes, fresh) = read_bounded_regular(&destination, 64).unwrap();
+        assert_eq!(bytes, b"public replacement");
+        assert!(!same_object(&expected, &after));
+        assert_eq!(after.content_sha256, fresh.content_sha256);
+        assert!(after.content_sha256.is_some());
+        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 1);
+        assert_eq!(
+            replace_regular_file_atomic(&destination, &after, &[b'x'; 65], 64).unwrap_err(),
+            "capacity_exceeded"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"public replacement");
+        let (_, expected) = read_bounded_regular(&destination, 64).unwrap();
+        std::fs::write(&destination, b"tamper replacement").unwrap();
+        assert_eq!(
+            replace_regular_file_atomic(&destination, &expected, b"new marker", 64).unwrap_err(),
+            "unsafe_path"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"tamper replacement");
+        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 1);
     }
 
     #[test]
