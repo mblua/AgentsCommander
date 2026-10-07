@@ -297,7 +297,24 @@ impl LocalSettingsOverlay {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             Err(e) => return Self::rejected(OverlayRejection::Unreadable(e.to_string())),
         };
-        let value: Value = match serde_json::from_str(&contents) {
+        Self::from_overlay_bytes(
+            base,
+            contents.as_bytes(),
+            ineligible_disk,
+            ineligible_legacy,
+            derived,
+        )
+    }
+
+    /// The same loader over captured physical bytes, without a second IO read.
+    pub(crate) fn from_overlay_bytes(
+        base: &mut Value,
+        contents: &[u8],
+        ineligible_disk: &[&str],
+        ineligible_legacy: &[&str],
+        derived: &[DerivedIdClosure],
+    ) -> Self {
+        let value: Value = match serde_json::from_slice(contents) {
             Ok(value) => value,
             Err(e) => return Self::rejected(OverlayRejection::InvalidJson(e.to_string())),
         };

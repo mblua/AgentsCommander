@@ -471,6 +471,2260 @@ pub struct SourceSnapshot<Agent> {
     pub context_revision: String,
 }
 
+// #2893 P02: internal readers and pure preparations. No caller publishes these
+// plans yet; the existing whole-settings save remains the production boundary.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) enum SourcePreparationError {
+    #[error("contextUnavailable")]
+    ContextUnavailable,
+    #[error("contextChanged")]
+    ContextChanged,
+    #[error("originUnavailable")]
+    OriginUnavailable,
+    #[error("legacyOriginUnresolved")]
+    LegacyOriginUnresolved,
+    #[error("staleRevision")]
+    StaleRevision,
+    #[error("sourceReadOnly")]
+    ReadOnly,
+    #[error("independentFormatRequired")]
+    IndependentFormatRequired,
+    #[error("invalidSourceCandidate")]
+    InvalidCandidate,
+    #[error("protectedSettingsField")]
+    ProtectedSettingsField,
+    #[error("{0}")]
+    Identity(IdentityValidationError),
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+fn source_bytes_revision(bytes: &[u8]) -> SourceRevision {
+    use sha2::{Digest, Sha256};
+    SourceRevision::Bytes {
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    }
+}
+
+/// Unknown evidence is not physical absence and is never a CAS precondition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) enum OriginPhysicalInput {
+    Absent,
+    Bytes(Vec<u8>),
+    Unknown,
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+impl OriginPhysicalInput {
+    fn read(path: &Path) -> Self {
+        match std::fs::read(path) {
+            Ok(bytes) => Self::Bytes(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::Absent,
+            Err(_) => Self::Unknown,
+        }
+    }
+
+    fn revision(&self) -> Option<SourceRevision> {
+        match self {
+            Self::Absent => Some(SourceRevision::Absent {}),
+            Self::Bytes(bytes) => Some(source_bytes_revision(bytes)),
+            Self::Unknown => None,
+        }
+    }
+
+    fn value(&self) -> Option<Value> {
+        match self {
+            Self::Bytes(bytes) => serde_json::from_slice(bytes).ok(),
+            Self::Absent | Self::Unknown => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) struct SourceReadContext {
+    settings_path: PathBuf,
+    catalog_root: PathBuf,
+    project: bool,
+    revision: String,
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+impl SourceReadContext {
+    /// Backend-only context: P comes from the current registry, never the
+    /// assignment target Q or a deserialized SourceRef.
+    pub(crate) fn from_settings(
+        settings: &AppSettings,
+        settings_path: &Path,
+    ) -> Result<Self, SourcePreparationError> {
+        let config = settings_path
+            .parent()
+            .ok_or(SourcePreparationError::ContextUnavailable)?;
+        let config = std::fs::canonicalize(config)
+            .map_err(|_| SourcePreparationError::ContextUnavailable)?;
+        let primary = crate::config::coding_agents_catalog::primary_project_root(settings);
+        let catalog_root = match &primary {
+            Some(root) => std::fs::canonicalize(root)
+                .map_err(|_| SourcePreparationError::ContextUnavailable)?,
+            None => config.clone(),
+        };
+        let bytes = serde_json::to_vec(&(
+            config.to_string_lossy(),
+            catalog_root.to_string_lossy(),
+            primary.is_some(),
+        ))
+        .map_err(|_| SourcePreparationError::ContextUnavailable)?;
+        let SourceRevision::Bytes { sha256 } = source_bytes_revision(&bytes) else {
+            unreachable!()
+        };
+        Ok(Self {
+            settings_path: config.join(SETTINGS_FILE_NAME),
+            catalog_root,
+            project: primary.is_some(),
+            revision: sha256,
+        })
+    }
+
+    fn source(&self, kind: SourceKind) -> SourceRef {
+        let registered = kind == SourceKind::RegisteredInstance;
+        SourceRef {
+            family: SourceFamily::Agents,
+            role: if registered {
+                SourceRole::Registered
+            } else {
+                SourceRole::Catalog
+            },
+            scope: if self.project && !registered {
+                SourceScope::Project
+            } else {
+                SourceScope::Instance
+            },
+            kind,
+            context_root: if registered {
+                self.settings_path
+                    .parent()
+                    .expect("constructed with parent")
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                self.catalog_root.to_string_lossy().into_owned()
+            },
+        }
+    }
+
+    fn locator(&self, source: &SourceRef) -> Result<PathBuf, SourcePreparationError> {
+        if source != &self.source(source.kind)
+            || (!self.project && source.kind == SourceKind::CatalogProject)
+        {
+            return Err(SourcePreparationError::ContextUnavailable);
+        }
+        if source.kind == SourceKind::RegisteredInstance {
+            return Ok(agents_instance_path(&self.settings_path));
+        }
+        let ac = if self.project {
+            self.catalog_root.join(".ac")
+        } else {
+            self.catalog_root.clone()
+        };
+        crate::config::coding_agents_catalog::independent_catalog_path(&ac, source.kind)
+            .ok_or(SourcePreparationError::ContextUnavailable)
+    }
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) fn list_active_sources(context: &SourceReadContext) -> Vec<SourceRef> {
+    [
+        SourceKind::CatalogBase,
+        SourceKind::CatalogProject,
+        SourceKind::CatalogPersonal,
+        SourceKind::RegisteredInstance,
+    ]
+    .into_iter()
+    .filter(|kind| context.project || *kind != SourceKind::CatalogProject)
+    .map(|kind| context.source(kind))
+    .collect()
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) struct RawSourceSnapshot {
+    pub(crate) snapshot: SourceSnapshot<Value>,
+    pub(crate) candidate_template: Option<Value>,
+    raw: OriginPhysicalInput,
+    context: SourceReadContext,
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+fn source_diagnostic(code: &str) -> SourceDiagnostic {
+    SourceDiagnostic {
+        code: code.into(),
+        entry_hint: None,
+        existing_name: None,
+        requested_profile: None,
+    }
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+fn decode_registered_raw(
+    value: &Value,
+) -> Result<(Vec<AgentConfig>, CodingAgentProfilesConfig), SourcePreparationError> {
+    let map = value
+        .as_object()
+        .ok_or(SourcePreparationError::InvalidCandidate)?;
+    let agents: Vec<AgentConfig> = map
+        .get("agents")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?
+        .unwrap_or_default();
+    let profiles: CodingAgentProfilesConfig = map
+        .get("codingAgentProfiles")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?
+        .unwrap_or_default();
+    let mut keys = HashSet::new();
+    if agents.iter().any(|agent| {
+        agent.id.is_empty() || agent.command.trim().is_empty() || !keys.insert(&agent.id)
+    }) {
+        return Err(SourcePreparationError::InvalidCandidate);
+    }
+    if profiles
+        .profiles_by_agent
+        .values()
+        .any(|cells| cells.keys().any(|letter| !is_valid_profile_letter(letter)))
+    {
+        return Err(SourcePreparationError::InvalidCandidate);
+    }
+    Ok((agents, profiles))
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) fn read_source_snapshot(
+    context: &SourceReadContext,
+    source: &SourceRef,
+) -> Result<RawSourceSnapshot, SourcePreparationError> {
+    let path = context.locator(source)?;
+    let raw = OriginPhysicalInput::read(&path);
+    let revision = raw
+        .revision()
+        .ok_or(SourcePreparationError::OriginUnavailable)?;
+    let mut snapshot = SourceSnapshot {
+        source: source.clone(),
+        revision,
+        availability: SourceAvailability::Absent,
+        capabilities: SourceCapabilities::default(),
+        agents: Vec::new(),
+        profiles: BTreeMap::new(),
+        diagnostics: Vec::new(),
+        context_revision: context.revision.clone(),
+    };
+    let mut candidate_template = None;
+    match &raw {
+        OriginPhysicalInput::Absent => {
+            if source.kind == SourceKind::CatalogPersonal {
+                snapshot.capabilities.editable_create = true;
+                candidate_template = serde_json::to_value(
+                    crate::config::coding_agents_catalog::CodingAgentCatalogSchema2::empty(),
+                )
+                .ok();
+            }
+        }
+        OriginPhysicalInput::Bytes(bytes) => {
+            let decoded = if source.kind == SourceKind::RegisteredInstance {
+                raw.value()
+                    .ok_or(SourcePreparationError::InvalidCandidate)
+                    .and_then(|value| {
+                        let (agents, profiles) = decode_registered_raw(&value)?;
+                        snapshot.profiles = profiles.profiles_by_agent;
+                        snapshot.agents = value
+                            .get("agents")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let entries: Vec<_> = agents
+                            .iter()
+                            .map(|agent| IdentitySnapshotEntry {
+                                key: &agent.id,
+                                name: &agent.label,
+                                command: &agent.command,
+                                envs: &agent.envs,
+                                profiles: snapshot.profiles.get(&agent.id),
+                            })
+                            .collect();
+                        if let Err(error) = validate_identity_snapshot(&entries) {
+                            snapshot.diagnostics.push(SourceDiagnostic {
+                                code: format!("{:?}", error.code),
+                                entry_hint: Some(error.entry_hint),
+                                existing_name: Some(error.existing_name),
+                                requested_profile: error.requested_profile,
+                            });
+                        }
+                        Ok(())
+                    })
+            } else {
+                crate::config::coding_agents_catalog::parse_independent_catalog(bytes, source.kind == SourceKind::CatalogBase)
+                    .map_err(|error| match error {
+                        crate::config::coding_agents_catalog::IdentityCatalogError::IndependentFormatRequired => SourcePreparationError::IndependentFormatRequired,
+                        _ => SourcePreparationError::InvalidCandidate,
+                    }).and_then(|catalog| {
+                        if let Err(error) = catalog.validate_identities() {
+                            snapshot.diagnostics.push(SourceDiagnostic { code: format!("{:?}", error.code), entry_hint: Some(error.entry_hint), existing_name: Some(error.existing_name), requested_profile: error.requested_profile });
+                        }
+                        snapshot.profiles = catalog.coding_agent_profiles;
+                        snapshot.agents = catalog.agents.iter().map(serde_json::to_value).collect::<Result<_, _>>().map_err(|_| SourcePreparationError::InvalidCandidate)?;
+                        Ok(())
+                    })
+            };
+            match decoded {
+                Ok(()) => {
+                    snapshot.availability = SourceAvailability::Available;
+                    snapshot.capabilities.available_read = true;
+                    snapshot.capabilities.editable_save = matches!(
+                        source.kind,
+                        SourceKind::RegisteredInstance | SourceKind::CatalogPersonal
+                    );
+                    snapshot.capabilities.repair_by_owner =
+                        source.kind == SourceKind::CatalogProject;
+                }
+                Err(SourcePreparationError::IndependentFormatRequired) => {
+                    snapshot.availability = SourceAvailability::IndependentFormatRequired;
+                    snapshot
+                        .diagnostics
+                        .push(source_diagnostic("independentFormatRequired"));
+                }
+                Err(_) => {
+                    snapshot.availability = SourceAvailability::Invalid;
+                    snapshot
+                        .diagnostics
+                        .push(source_diagnostic("invalidSource"));
+                }
+            }
+        }
+        OriginPhysicalInput::Unknown => return Err(SourcePreparationError::OriginUnavailable),
+    }
+    Ok(RawSourceSnapshot {
+        snapshot,
+        candidate_template,
+        raw,
+        context: context.clone(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) enum LegacyOriginUnit {
+    Entry(String),
+    Profile(String, String),
+    Default(String),
+    Presentation(String, String),
+    Slot(String),
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+impl LegacyOriginUnit {
+    fn paths(&self) -> Vec<Vec<String>> {
+        let p = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect();
+        match self {
+            Self::Entry(_) => vec![p(&["agents"])],
+            Self::Profile(key, letter) => vec![
+                p(&["agents"]),
+                p(&["codingAgentProfiles", "profilesByAgent", key, letter]),
+                p(&["codingAgentProfiles", "identityByAgent", key]),
+            ],
+            Self::Default(matrix) => {
+                vec![p(&["codingAgentProfiles", "defaultProfileByAgent", matrix])]
+            }
+            Self::Presentation(key, letter) => vec![p(&[
+                "codingAgentProfiles",
+                "profileLabelsByAgent",
+                key,
+                letter,
+            ])],
+            Self::Slot(letter) => vec![p(&["codingAgentProfiles", "profileSlots", letter])],
+        }
+    }
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+fn origin_paths_overlap(a: &[String], b: &[String]) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+struct OriginBinding {
+    registered: Option<SourceRevision>,
+    settings: Option<SourceRevision>,
+    overlay: Option<SourceRevision>,
+    context: SourceReadContext,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) struct OriginInputs {
+    registered: OriginPhysicalInput,
+    settings: OriginPhysicalInput,
+    overlay: OriginPhysicalInput,
+    binding: OriginBinding,
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+impl OriginInputs {
+    fn read(context: &SourceReadContext) -> Self {
+        let registered = OriginPhysicalInput::read(&agents_instance_path(&context.settings_path));
+        let settings = OriginPhysicalInput::read(&context.settings_path);
+        let overlay = OriginPhysicalInput::read(
+            &context
+                .settings_path
+                .with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+        );
+        Self {
+            binding: OriginBinding {
+                registered: registered.revision(),
+                settings: settings.revision(),
+                overlay: overlay.revision(),
+                context: context.clone(),
+            },
+            registered,
+            settings,
+            overlay,
+        }
+    }
+
+    /// At most two retries of read-only preparation; callers must supply a fresh
+    /// backend context on revalidation, not rely on the registered30 revision.
+    pub(crate) fn capture(context: &SourceReadContext) -> Result<Self, SourcePreparationError> {
+        for _ in 0..=2 {
+            let first = Self::read(context);
+            let second = Self::read(context);
+            if first.binding == second.binding {
+                return Ok(first);
+            }
+        }
+        Err(SourcePreparationError::StaleRevision)
+    }
+
+    pub(crate) fn revalidate(
+        &self,
+        context: &SourceReadContext,
+    ) -> Result<(), SourcePreparationError> {
+        if context != &self.binding.context {
+            return Err(SourcePreparationError::ContextChanged);
+        }
+        let fresh = Self::read(context);
+        if fresh.binding != self.binding {
+            return Err(SourcePreparationError::StaleRevision);
+        }
+        if [
+            self.binding.registered.as_ref(),
+            self.binding.settings.as_ref(),
+            self.binding.overlay.as_ref(),
+        ]
+        .iter()
+        .any(|revision| revision.is_none())
+        {
+            return Err(SourcePreparationError::OriginUnavailable);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) struct LegacyCompatibilityOrigin {
+    applied_paths: Vec<Vec<String>>,
+    unknown_paths: Vec<Vec<String>>,
+    represented: std::collections::BTreeSet<LegacyOriginUnit>,
+    binding: OriginBinding,
+    pub(crate) base: Value,
+    pub(crate) effective: Value,
+    pub(crate) overlay_diagnostics: Vec<crate::config::local_overlay::OverlayDiagnostic>,
+}
+
+/// Evidence issued by the backend that owns the original selection. No serde
+/// implementation: source save payloads cannot claim an authorization or link.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) struct LegacyOriginLinkProof {
+    binding: OriginBinding,
+    units: std::collections::BTreeSet<LegacyOriginUnit>,
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+impl LegacyCompatibilityOrigin {
+    pub(crate) fn classify(inputs: &OriginInputs) -> Self {
+        let mut unknown_paths = Vec::new();
+        let mut base = match inputs.settings.value() {
+            Some(value @ Value::Object(_)) => value,
+            _ if inputs.settings == OriginPhysicalInput::Absent => {
+                serde_json::to_value(AppSettings::default()).unwrap_or(Value::Null)
+            }
+            _ => {
+                unknown_paths.push(Vec::new());
+                Value::Null
+            }
+        };
+        let settings_base = base.clone();
+        let raw30 = inputs.registered.value();
+        if let Some(raw) = &raw30 {
+            if decode_registered_raw(raw).is_err() {
+                unknown_paths.push(vec!["agents".into()]);
+                unknown_paths.push(vec!["codingAgentProfiles".into()]);
+            } else if let (Some(dst), Some(src)) = (base.as_object_mut(), raw.as_object()) {
+                dst.extend(agents_instance_groups(src));
+            }
+        } else if inputs.registered != OriginPhysicalInput::Absent {
+            unknown_paths.push(vec!["agents".into()]);
+            unknown_paths.push(vec!["codingAgentProfiles".into()]);
+        }
+        let before = base.clone();
+        let mut effective = base.clone();
+        let mut overlay = match &inputs.overlay {
+            OriginPhysicalInput::Absent => LocalSettingsOverlay::default(),
+            OriginPhysicalInput::Bytes(bytes) => LocalSettingsOverlay::from_overlay_bytes(
+                &mut effective,
+                bytes,
+                OVERLAY_INELIGIBLE_DISK_KEYS,
+                OVERLAY_INELIGIBLE_LEGACY_KEYS,
+                OVERLAY_DERIVED_ID_CLOSURES,
+            ),
+            OriginPhysicalInput::Unknown => {
+                unknown_paths.push(Vec::new());
+                LocalSettingsOverlay::default()
+            }
+        };
+        // Same project decoder and AppSettings decoder as the ordinary loader,
+        // before its order finalization/repair/adoption and without publication.
+        let decode = |raw: &Value| {
+            let mut probe = raw.clone();
+            if let Some(root) = probe.as_object_mut() {
+                root.entry("agents")
+                    .or_insert_with(|| Value::Array(Vec::new()));
+            }
+            let instance_base = production_instance_base();
+            apply_project_decode_to_value(
+                &mut probe,
+                instance_base.as_deref(),
+                &projects::FsCandidateResolver,
+            );
+            serde_json::from_value::<AppSettings>(probe)
+        };
+        if let Err(error) = decode(&effective) {
+            if !overlay.is_empty() && decode(&before).is_ok() {
+                overlay = overlay.into_undecodable(error.to_string());
+                effective = before;
+            } else {
+                unknown_paths.push(Vec::new());
+            }
+        }
+        let mut represented = std::collections::BTreeSet::new();
+        for value in inputs
+            .settings
+            .value()
+            .iter()
+            .chain(raw30.iter())
+            .chain(std::iter::once(&effective))
+        {
+            collect_origin_units(value, &mut represented, &mut unknown_paths);
+        }
+        Self {
+            applied_paths: overlay.owned_paths().to_vec(),
+            unknown_paths,
+            represented,
+            binding: inputs.binding.clone(),
+            base: settings_base,
+            effective,
+            overlay_diagnostics: overlay.diagnostics("settings overlay"),
+        }
+    }
+
+    pub(crate) fn require_disjoint(
+        &self,
+        units: impl IntoIterator<Item = LegacyOriginUnit>,
+    ) -> Result<(), SourcePreparationError> {
+        for unit in units {
+            for path in unit.paths() {
+                if self
+                    .unknown_paths
+                    .iter()
+                    .any(|unknown| origin_paths_overlap(unknown, &path))
+                {
+                    return Err(SourcePreparationError::OriginUnavailable);
+                }
+                if self
+                    .applied_paths
+                    .iter()
+                    .any(|owned| origin_paths_overlap(owned, &path))
+                {
+                    return Err(SourcePreparationError::LegacyOriginUnresolved);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Only original source-aware selection evidence binds a default N to K/L.
+    /// The future inventory owner supplies authorization and full target CAS;
+    /// this pure seam verifies that evidence against the captured source and
+    /// complete origin binding, without scanning or mutating any matrix.
+    #[allow(clippy::too_many_arguments)] // Complete original source and target CAS evidence.
+    pub(crate) fn bind_original_selection(
+        &self,
+        snapshot: &RawSourceSnapshot,
+        selection: &ConfigurationRef,
+        original_source_revision: &SourceRevision,
+        original_context_revision: &str,
+        original_target: &[u8],
+        current_target: &[u8],
+        matrix: Option<&str>,
+    ) -> Result<LegacyOriginLinkProof, SourcePreparationError> {
+        if original_target != current_target
+            || selection.version != 1
+            || selection.source != snapshot.snapshot.source
+            || original_source_revision != &snapshot.snapshot.revision
+            || original_context_revision != snapshot.snapshot.context_revision
+            || self.binding.context != snapshot.context
+            || self.binding.registered.as_ref() != Some(original_source_revision)
+        {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let target: Value = serde_json::from_slice(current_target)
+            .map_err(|_| SourcePreparationError::OriginUnavailable)?;
+        let stored = if matrix.is_some() {
+            target.pointer("/tooling/replicaSelectionDefault/configurationRef")
+        } else {
+            target.pointer("/tooling/configurationRef")
+        };
+        let stored: ConfigurationRef = serde_json::from_value(
+            stored
+                .cloned()
+                .ok_or(SourcePreparationError::LegacyOriginUnresolved)?,
+        )
+        .map_err(|_| SourcePreparationError::LegacyOriginUnresolved)?;
+        if &stored != selection {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let key = selection
+            .legacy_entry_hint
+            .as_deref()
+            .ok_or(SourcePreparationError::LegacyOriginUnresolved)?;
+        let raw = snapshot
+            .raw
+            .value()
+            .ok_or(SourcePreparationError::OriginUnavailable)?;
+        let (agents, profiles) = decode_registered_raw(&raw)?;
+        let agent = agents
+            .iter()
+            .find(|agent| agent.id == key)
+            .ok_or(SourcePreparationError::LegacyOriginUnresolved)?;
+        if configuration_identity(&agent.command, &agent.envs) != selection.calculated_id {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let mut units = std::collections::BTreeSet::from([LegacyOriginUnit::Entry(key.into())]);
+        if let Some(letter) = &selection.requested_profile {
+            let cell = profiles
+                .profiles_by_agent
+                .get(key)
+                .and_then(|cells| cells.get(letter))
+                .ok_or(SourcePreparationError::LegacyOriginUnresolved)?;
+            if selection.profile_calculated_id.as_deref() != Some(profile_identity(cell).as_str()) {
+                return Err(SourcePreparationError::LegacyOriginUnresolved);
+            }
+            units.insert(LegacyOriginUnit::Profile(key.into(), letter.clone()));
+        }
+        if let Some(matrix) = matrix {
+            units.insert(LegacyOriginUnit::Default(matrix.into()));
+        }
+        Ok(LegacyOriginLinkProof {
+            binding: self.binding.clone(),
+            units,
+        })
+    }
+
+    pub(crate) fn require_legacy_units(
+        &self,
+        units: impl IntoIterator<Item = LegacyOriginUnit>,
+        proof: Option<&LegacyOriginLinkProof>,
+    ) -> Result<(), SourcePreparationError> {
+        for unit in units {
+            match self.require_disjoint([unit.clone()]) {
+                Ok(()) => {}
+                Err(SourcePreparationError::LegacyOriginUnresolved)
+                    if proof.is_some_and(|proof| {
+                        proof.binding == self.binding && proof.units.contains(&unit)
+                    }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+fn collect_origin_units(
+    value: &Value,
+    out: &mut std::collections::BTreeSet<LegacyOriginUnit>,
+    unknown: &mut Vec<Vec<String>>,
+) {
+    if let Some(agents) = value.get("agents") {
+        let mut keys = HashSet::new();
+        match agents.as_array() {
+            Some(agents) => {
+                for agent in agents {
+                    match agent.get("id").and_then(Value::as_str) {
+                        Some(key) if !key.is_empty() && keys.insert(key) => {
+                            out.insert(LegacyOriginUnit::Entry(key.into()));
+                        }
+                        _ => unknown.push(vec!["agents".into()]),
+                    }
+                }
+            }
+            None => unknown.push(vec!["agents".into()]),
+        }
+    }
+    let Some(profiles) = value.get("codingAgentProfiles") else {
+        return;
+    };
+    if !profiles.is_object() {
+        unknown.push(vec!["codingAgentProfiles".into()]);
+        return;
+    }
+    for name in [
+        "profilesByAgent",
+        "profileLabelsByAgent",
+        "identityByAgent",
+        "defaultProfileByAgent",
+        "profileSlots",
+    ] {
+        let Some(map) = profiles.get(name) else {
+            continue;
+        };
+        let Some(map) = map.as_object() else {
+            unknown.push(vec!["codingAgentProfiles".into(), name.into()]);
+            continue;
+        };
+        for (key, value) in map {
+            match name {
+                "defaultProfileByAgent" => {
+                    out.insert(LegacyOriginUnit::Default(key.clone()));
+                }
+                "profileSlots" => {
+                    out.insert(LegacyOriginUnit::Slot(key.clone()));
+                }
+                "identityByAgent" => {
+                    out.insert(LegacyOriginUnit::Entry(key.clone()));
+                }
+                _ => {
+                    if let Some(cells) = value.as_object() {
+                        for letter in cells.keys() {
+                            out.insert(if name == "profilesByAgent" {
+                                LegacyOriginUnit::Profile(key.clone(), letter.clone())
+                            } else {
+                                LegacyOriginUnit::Presentation(key.clone(), letter.clone())
+                            });
+                        }
+                    } else {
+                        unknown.push(vec!["codingAgentProfiles".into(), name.into(), key.clone()]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) struct PreparedSourceCandidate {
+    pub(crate) source: SourceRef,
+    pub(crate) expected_revision: SourceRevision,
+    pub(crate) context_revision: String,
+    pub(crate) before_bytes: Option<Vec<u8>>,
+    pub(crate) serialized_after: Vec<u8>,
+    pub(crate) persisted_names: Vec<(String, String)>,
+    origin_binding: Option<OriginBinding>,
+}
+
+#[allow(dead_code)] // The later writer calls this while holding its proofs.
+impl PreparedSourceCandidate {
+    pub(crate) fn revalidate_before_write(
+        &self,
+        context: &SourceReadContext,
+    ) -> Result<(), SourcePreparationError> {
+        if self.context_revision != context.revision {
+            return Err(SourcePreparationError::ContextChanged);
+        }
+        let observed = OriginPhysicalInput::read(&context.locator(&self.source)?)
+            .revision()
+            .ok_or(SourcePreparationError::OriginUnavailable)?;
+        if observed != self.expected_revision {
+            return Err(SourcePreparationError::StaleRevision);
+        }
+        if let Some(binding) = &self.origin_binding {
+            if binding.registered.is_none()
+                || binding.settings.is_none()
+                || binding.overlay.is_none()
+            {
+                return Err(SourcePreparationError::OriginUnavailable);
+            }
+            let observed = OriginInputs::read(context);
+            if &observed.binding != binding {
+                return Err(SourcePreparationError::StaleRevision);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+fn raw_entries(value: &Value, key_name: &str) -> BTreeMap<String, Value> {
+    value
+        .get("agents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .get(key_name)
+                .and_then(Value::as_str)
+                .map(|key| (key.into(), entry.clone()))
+        })
+        .collect()
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+fn changed_origin_units(
+    before: &Value,
+    after: &Value,
+    origin: &LegacyCompatibilityOrigin,
+) -> std::collections::BTreeSet<LegacyOriginUnit> {
+    let mut affected = std::collections::BTreeSet::new();
+    let old = raw_entries(before, "id");
+    let new = raw_entries(after, "id");
+    for key in old.keys().chain(new.keys()) {
+        if old.get(key) != new.get(key) {
+            affected.insert(LegacyOriginUnit::Entry(key.clone()));
+            affected.extend(
+                origin
+                    .represented
+                    .iter()
+                    .filter(|unit| matches!(unit, LegacyOriginUnit::Profile(k, _) if k == key))
+                    .cloned(),
+            );
+        }
+    }
+    // Include complete raw units, including removals, unknown fields within a
+    // cell and absent/null changes. Labels stay a separate presentation domain.
+    for map_name in [
+        "profilesByAgent",
+        "profileLabelsByAgent",
+        "identityByAgent",
+        "defaultProfileByAgent",
+        "profileSlots",
+    ] {
+        let root = |v: &Value| {
+            v.get("codingAgentProfiles")
+                .and_then(|v| v.get(map_name))
+                .cloned()
+        };
+        let old = root(before);
+        let new = root(after);
+        if old == new {
+            continue;
+        }
+        let keys: std::collections::BTreeSet<_> = old
+            .as_ref()
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|m| m.keys())
+            .chain(
+                new.as_ref()
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|m| m.keys()),
+            )
+            .cloned()
+            .collect();
+        for key in keys {
+            let a = old.as_ref().and_then(|v| v.get(&key));
+            let b = new.as_ref().and_then(|v| v.get(&key));
+            if a == b {
+                continue;
+            }
+            match map_name {
+                "defaultProfileByAgent" => {
+                    affected.insert(LegacyOriginUnit::Default(key));
+                }
+                "profileSlots" => {
+                    affected.insert(LegacyOriginUnit::Slot(key));
+                }
+                "identityByAgent" => {
+                    affected.extend(
+                        origin
+                            .represented
+                            .iter()
+                            .filter(|u| matches!(u, LegacyOriginUnit::Profile(k, _) if k == &key))
+                            .cloned(),
+                    );
+                    // A missing/orphan profile container still needs its own
+                    // identity ownership checked, not equality of the stamp.
+                    if origin.applied_paths.iter().any(|p| {
+                        origin_paths_overlap(
+                            p,
+                            &[
+                                "codingAgentProfiles".into(),
+                                "identityByAgent".into(),
+                                key.clone(),
+                            ],
+                        )
+                    }) {
+                        affected.insert(LegacyOriginUnit::Profile(key, String::new()));
+                    }
+                }
+                _ => {
+                    let letters: std::collections::BTreeSet<_> = a
+                        .and_then(Value::as_object)
+                        .into_iter()
+                        .flat_map(|m| m.keys())
+                        .chain(
+                            b.and_then(Value::as_object)
+                                .into_iter()
+                                .flat_map(|m| m.keys()),
+                        )
+                        .cloned()
+                        .collect();
+                    for letter in letters {
+                        if a.and_then(|v| v.get(&letter)) != b.and_then(|v| v.get(&letter)) {
+                            affected.insert(if map_name == "profilesByAgent" {
+                                LegacyOriginUnit::Profile(key.clone(), letter)
+                            } else {
+                                LegacyOriginUnit::Presentation(key.clone(), letter)
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    affected
+}
+
+#[allow(dead_code)] // Dependency inventory is owned by the later coordinator.
+fn unresolved_default_dependency(
+    origin: &LegacyCompatibilityOrigin,
+    units: &std::collections::BTreeSet<LegacyOriginUnit>,
+) -> bool {
+    units.iter().any(|unit| {
+        matches!(
+            unit,
+            LegacyOriginUnit::Entry(_) | LegacyOriginUnit::Profile(_, _)
+        )
+    }) && origin.represented.iter().any(|unit| {
+        matches!(unit, LegacyOriginUnit::Default(_))
+            && origin.require_disjoint([unit.clone()]).is_err()
+    })
+}
+
+/// Unknown persisted fields are not discarded by the typed validation view.
+/// Schema keys derive from the concrete model; raw absence/null remains raw.
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+fn preserve_unknown_fields(before: &Value, after: &Value, model: &Value) -> bool {
+    match (before, after, model) {
+        (Value::Object(old), Value::Object(new), Value::Object(known)) => {
+            old.iter().all(|(key, value)| match known.get(key) {
+                Some(shape) => new
+                    .get(key)
+                    .is_none_or(|next| preserve_unknown_fields(value, next, shape)),
+                None => new.get(key) == Some(value),
+            })
+        }
+        (Value::Array(old), Value::Array(new), Value::Array(known)) => {
+            let key = if old.first().is_some_and(|v| v.get("id").is_some()) {
+                "id"
+            } else {
+                "key"
+            };
+            old.iter().all(|entry| {
+                let id = entry.get(key);
+                match id {
+                    Some(id) => match new.iter().find(|entry| entry.get(key) == Some(id)) {
+                        Some(next) => known
+                            .iter()
+                            .find(|entry| entry.get(key) == Some(id))
+                            .is_some_and(|shape| preserve_unknown_fields(entry, next, shape)),
+                        None => true, // Explicit removal is checked by OperationAffected.
+                    },
+                    None => true,
+                }
+            })
+        }
+        _ => true,
+    }
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+fn validate_source_identity_groups(
+    before: &Value,
+    after: &Value,
+    registered: bool,
+) -> Result<(), SourcePreparationError> {
+    let groups = |value: &Value| -> Result<
+        BTreeMap<String, std::collections::BTreeSet<String>>,
+        SourcePreparationError,
+    > {
+        let mut groups = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+        let (agents, profiles) = if registered {
+            let (agents, profiles) = decode_registered_raw(value)?;
+            (
+                agents
+                    .into_iter()
+                    .map(|a| (a.id, a.command, a.envs))
+                    .collect::<Vec<_>>(),
+                profiles.profiles_by_agent,
+            )
+        } else {
+            let catalog = crate::config::coding_agents_catalog::parse_catalog_schema2(
+                &serde_json::to_vec(value).map_err(|_| SourcePreparationError::InvalidCandidate)?,
+            )
+            .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+            (
+                catalog
+                    .agents
+                    .into_iter()
+                    .map(|a| (a.key, a.command, a.envs))
+                    .collect::<Vec<_>>(),
+                catalog.coding_agent_profiles,
+            )
+        };
+        for (key, command, envs) in agents {
+            groups
+                .entry(configuration_identity(&command, &envs))
+                .or_default()
+                .insert(key.clone());
+            for (letter, profile) in profiles
+                .get(&key)
+                .into_iter()
+                .flat_map(|cells| cells.iter())
+            {
+                groups
+                    .entry(format!("{key}/{}", profile_identity(profile)))
+                    .or_default()
+                    .insert(letter.clone());
+            }
+        }
+        Ok(groups)
+    };
+    let old = groups(before)?;
+    let new = groups(after)?;
+    if let Some((id, members)) = new.iter().find(|(id, members)| {
+        members.len() > 1 && old.get(*id).is_none_or(|prior| !members.is_subset(prior))
+    }) {
+        let entries = raw_entries(after, if registered { "id" } else { "key" });
+        let profile_key = id.rsplit_once("/pid1:").map(|(key, _)| key);
+        let incumbent = profile_key.unwrap_or_else(|| {
+            old.get(id)
+                .and_then(|prior| prior.iter().find(|key| members.contains(*key)))
+                .or_else(|| members.first())
+                .expect("duplicate group")
+                .as_str()
+        });
+        return Err(SourcePreparationError::Identity(IdentityValidationError {
+            code: if profile_key.is_some() {
+                IdentityValidationCode::DuplicateProfileIdentity
+            } else {
+                IdentityValidationCode::DuplicateConfigurationIdentity
+            },
+            existing_name: entries
+                .get(incumbent)
+                .and_then(|entry| entry.get("label"))
+                .and_then(Value::as_str)
+                .unwrap_or(incumbent)
+                .into(),
+            entry_hint: incumbent.into(),
+            requested_profile: profile_key.and_then(|_| members.last().cloned()),
+        }));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) fn prepare_source_candidate(
+    snapshot: &RawSourceSnapshot,
+    expected: &SourceRevision,
+    candidate: &Value,
+    origin: Option<&LegacyCompatibilityOrigin>,
+) -> Result<PreparedSourceCandidate, SourcePreparationError> {
+    if expected != &snapshot.snapshot.revision {
+        return Err(SourcePreparationError::StaleRevision);
+    }
+    if !snapshot.snapshot.capabilities.editable_save
+        && !snapshot.snapshot.capabilities.editable_create
+    {
+        return Err(SourcePreparationError::ReadOnly);
+    }
+    let registered = snapshot.snapshot.source.kind == SourceKind::RegisteredInstance;
+    let before = snapshot
+        .raw
+        .value()
+        .or_else(|| snapshot.candidate_template.clone())
+        .ok_or(SourcePreparationError::InvalidCandidate)?;
+    let model = if registered {
+        let (agents, profiles) = decode_registered_raw(candidate)?;
+        serde_json::json!({"agents":agents, "codingAgentProfiles":profiles})
+    } else {
+        let catalog = crate::config::coding_agents_catalog::parse_catalog_schema2(&serde_json::to_vec(candidate).map_err(|_| SourcePreparationError::InvalidCandidate)?)
+            .map_err(|error| match error { crate::config::coding_agents_catalog::IdentityCatalogError::IndependentFormatRequired => SourcePreparationError::IndependentFormatRequired, _ => SourcePreparationError::InvalidCandidate })?;
+        serde_json::to_value(catalog).map_err(|_| SourcePreparationError::InvalidCandidate)?
+    };
+    if !preserve_unknown_fields(&before, candidate, &model) {
+        return Err(SourcePreparationError::InvalidCandidate);
+    }
+    validate_source_identity_groups(&before, candidate, registered)?;
+    if registered {
+        let origin = origin.ok_or(SourcePreparationError::OriginUnavailable)?;
+        if origin.unknown_paths.iter().any(Vec::is_empty) {
+            return Err(SourcePreparationError::OriginUnavailable);
+        }
+        if origin.binding.registered.is_none()
+            || origin.binding.settings.is_none()
+            || origin.binding.overlay.is_none()
+        {
+            return Err(SourcePreparationError::OriginUnavailable);
+        }
+        if origin.binding.context != snapshot.context
+            || origin.binding.registered.as_ref() != Some(expected)
+        {
+            return Err(SourcePreparationError::StaleRevision);
+        }
+        let units = changed_origin_units(&before, candidate, origin);
+        if unresolved_default_dependency(origin, &units) {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        origin.require_disjoint(units)?;
+    }
+    let mut candidate = candidate.clone();
+    let key_name = if registered { "id" } else { "key" };
+    let label_name = "label";
+    let incumbents = raw_entries(&before, key_name);
+    let mut used = std::collections::BTreeSet::new();
+    let mut names = Vec::new();
+    if let Some(agents) = candidate.get_mut("agents").and_then(Value::as_array_mut) {
+        // Retained unchanged names are the incumbents even when a newly added
+        // row appears earlier in the candidate's order.
+        for agent in agents.iter() {
+            let key = agent
+                .get(key_name)
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if incumbents.get(key).and_then(|a| a.get(label_name)) == agent.get(label_name) {
+                if let Some(label) = agent.get(label_name).and_then(Value::as_str) {
+                    used.insert(label.trim().to_lowercase());
+                }
+            }
+        }
+        for agent in agents {
+            let key = agent
+                .get(key_name)
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let label = agent
+                .get(label_name)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if incumbents.get(key).and_then(|a| a.get(label_name)) == agent.get(label_name) {
+                continue;
+            }
+            let mut persisted = label.clone();
+            let mut suffix = 1;
+            while !used.insert(persisted.trim().to_lowercase()) {
+                persisted = format!("{label} ({suffix})");
+                suffix += 1;
+            }
+            if persisted != label {
+                names.push((label, persisted.clone()));
+                agent
+                    .as_object_mut()
+                    .ok_or(SourcePreparationError::InvalidCandidate)?
+                    .insert(label_name.into(), Value::String(persisted));
+            }
+        }
+    }
+    // Naming is also part of the full diff. Recheck it before serialization.
+    if registered {
+        let origin = origin.ok_or(SourcePreparationError::OriginUnavailable)?;
+        let units = changed_origin_units(&before, &candidate, origin);
+        if unresolved_default_dependency(origin, &units) {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        origin.require_disjoint(units)?;
+    }
+    let mut serialized_after = serde_json::to_vec_pretty(&candidate)
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    serialized_after.push(b'\n');
+    Ok(PreparedSourceCandidate {
+        source: snapshot.snapshot.source.clone(),
+        expected_revision: expected.clone(),
+        context_revision: snapshot.context.revision.clone(),
+        before_bytes: match &snapshot.raw {
+            OriginPhysicalInput::Bytes(bytes) => Some(bytes.clone()),
+            _ => None,
+        },
+        serialized_after,
+        persisted_names: names,
+        origin_binding: origin.map(|origin| origin.binding.clone()),
+    })
+}
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+const SOURCE_GENERAL_PROTECTED: &[&str] = &[
+    "agents",
+    "codingAgentProfiles",
+    "profileLabels",
+    "rootToken",
+    "projectPaths",
+    "projectPath",
+    "archivedProjectPaths",
+    "railCollapsedProjects",
+    "railFavoritesCollapsed",
+    "terminalSnapshotsEnabled",
+    "mainGeometry",
+    "mainWindowDisplayState",
+    "projectPathState",
+    "localOverlayState",
+];
+
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) struct PreparedSettingsWithoutSourceWrite {
+    pub(crate) serialized_after: Vec<u8>,
+    pub(crate) redecoded_settings: AppSettings,
+}
+
+#[allow(dead_code)] // Serde's field table also includes omitted optional fields.
+fn source_general_field_names() -> Vec<&'static str> {
+    struct Fields<'a>(&'a mut Vec<&'static str>);
+    impl<'de> serde::Deserializer<'de> for Fields<'_> {
+        type Error = serde::de::value::Error;
+        fn deserialize_any<V: serde::de::Visitor<'de>>(
+            self,
+            _: V,
+        ) -> Result<V::Value, Self::Error> {
+            Err(serde::de::Error::custom("field table only"))
+        }
+        fn deserialize_struct<V: serde::de::Visitor<'de>>(
+            self,
+            _: &'static str,
+            fields: &'static [&'static str],
+            _: V,
+        ) -> Result<V::Value, Self::Error> {
+            self.0.extend_from_slice(fields);
+            Err(serde::de::Error::custom("field table captured"))
+        }
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct
+            map enum identifier ignored_any
+        }
+    }
+    let mut names = Vec::new();
+    let _ = AppSettings::deserialize(Fields(&mut names));
+    names
+}
+
+/// General-only pure preparation over the captured settings base. Never calls
+/// a saver, migration, export, order/adoption/repair helper, or source writer.
+#[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) fn prepare_settings_without_source_write(
+    inputs: &OriginInputs,
+    candidate_general: &Value,
+) -> Result<PreparedSettingsWithoutSourceWrite, SourcePreparationError> {
+    let origin = LegacyCompatibilityOrigin::classify(inputs);
+    let mut out = match &inputs.settings {
+        OriginPhysicalInput::Absent => Value::Object(Map::new()),
+        OriginPhysicalInput::Bytes(_) => inputs
+            .settings
+            .value()
+            .ok_or(SourcePreparationError::OriginUnavailable)?,
+        OriginPhysicalInput::Unknown => return Err(SourcePreparationError::OriginUnavailable),
+    };
+    // Capture disk restoration before applying the draft. In particular, an
+    // overlay-owned general key must retain its raw absent/null/value state,
+    // rather than capturing the effective value echoed by the caller.
+    let mut restoration_base = out.clone();
+    let restoration = match &inputs.overlay {
+        OriginPhysicalInput::Bytes(bytes) => LocalSettingsOverlay::from_overlay_bytes(
+            &mut restoration_base,
+            bytes,
+            OVERLAY_INELIGIBLE_DISK_KEYS,
+            OVERLAY_INELIGIBLE_LEGACY_KEYS,
+            OVERLAY_DERIVED_ID_CLOSURES,
+        ),
+        _ => LocalSettingsOverlay::default(),
+    };
+    let map = out
+        .as_object_mut()
+        .ok_or(SourcePreparationError::InvalidCandidate)?;
+    let general = candidate_general
+        .as_object()
+        .ok_or(SourcePreparationError::InvalidCandidate)?;
+    let public = serde_json::to_value(AppSettings::default())
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    let fields = source_general_field_names();
+    if general.keys().any(|key| {
+        SOURCE_GENERAL_PROTECTED.contains(&key.as_str()) || !fields.contains(&key.as_str())
+    }) {
+        return Err(SourcePreparationError::ProtectedSettingsField);
+    }
+    if public
+        .as_object()
+        .ok_or(SourcePreparationError::InvalidCandidate)?
+        .keys()
+        .any(|key| !SOURCE_GENERAL_PROTECTED.contains(&key.as_str()) && !general.contains_key(key))
+    {
+        return Err(SourcePreparationError::InvalidCandidate);
+    }
+    // Only caller-owned general keys are updated. Unknown/source/placement keys
+    // retain exact raw absence, null or value, even when the typed view differs.
+    for key in fields {
+        if !SOURCE_GENERAL_PROTECTED.contains(&key) && !general.contains_key(key) {
+            map.remove(key);
+        }
+    }
+    for (key, value) in general {
+        map.insert(key.clone(), value.clone());
+    }
+    let mut effective = out.clone();
+    if let (Some(dst), Some(raw)) = (
+        effective.as_object_mut(),
+        inputs
+            .registered
+            .value()
+            .filter(|raw| decode_registered_raw(raw).is_ok())
+            .and_then(|v| v.as_object().cloned()),
+    ) {
+        dst.extend(agents_instance_groups(&raw));
+    }
+    let unmerged = effective.clone();
+    if let OriginPhysicalInput::Bytes(bytes) = &inputs.overlay {
+        let overlay = LocalSettingsOverlay::from_overlay_bytes(
+            &mut effective,
+            bytes,
+            OVERLAY_INELIGIBLE_DISK_KEYS,
+            OVERLAY_INELIGIBLE_LEGACY_KEYS,
+            OVERLAY_DERIVED_ID_CLOSURES,
+        );
+        let mut probe = effective.clone();
+        if let Some(root) = probe.as_object_mut() {
+            root.entry("agents")
+                .or_insert_with(|| Value::Array(Vec::new()));
+        }
+        if !overlay.is_empty() && serde_json::from_value::<AppSettings>(probe).is_err() {
+            effective = unmerged;
+        } else {
+            restoration.restore_base(out.as_object_mut().expect("object checked"));
+        }
+    }
+    if origin.unknown_paths.iter().any(Vec::is_empty) {
+        return Err(SourcePreparationError::OriginUnavailable);
+    }
+    if let Some(root) = effective.as_object_mut() {
+        root.entry("agents")
+            .or_insert_with(|| Value::Array(Vec::new()));
+    }
+    let base = production_instance_base();
+    apply_project_decode_to_value(
+        &mut effective,
+        base.as_deref(),
+        &projects::FsCandidateResolver,
+    );
+    let redecoded_settings =
+        serde_json::from_value(effective).map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    let mut serialized_after =
+        serde_json::to_vec_pretty(&out).map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    serialized_after.push(b'\n');
+    Ok(PreparedSettingsWithoutSourceWrite {
+        serialized_after,
+        redecoded_settings,
+    })
+}
+
+#[cfg(test)]
+mod independent_source_tests {
+    use super::*;
+    use serde_json::json;
+
+    struct Fixture {
+        root: tempfile::TempDir,
+        context: SourceReadContext,
+        registered: Value,
+        settings: Value,
+    }
+
+    impl Fixture {
+        fn general_candidate(level: &str) -> Value {
+            let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+            for key in SOURCE_GENERAL_PROTECTED {
+                value.as_object_mut().unwrap().remove(*key);
+            }
+            value["logLevel"] = json!(level);
+            value
+        }
+        fn new() -> Self {
+            let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/i2893");
+            std::fs::create_dir_all(&scratch).unwrap();
+            let root = tempfile::Builder::new()
+                .prefix("source-")
+                .tempdir_in(scratch)
+                .unwrap();
+            let settings = serde_json::to_value(AppSettings::default()).unwrap();
+            let mut registered = json!({"agents":[
+                {"id":"K", "label":"Own", "color":"#123456", "command":"own-base"},
+                {"id":"J", "label":"Other", "color":"#123456", "command":"other-base"}
+            ], "codingAgentProfiles":{"schemaVersion":2,"profilesByAgent":{"K":{
+                "A":{"command":"--alpha", "env":{"MODE":"alpha"}},
+                "B":{"command":"--beta", "env":{"MODE":"beta"}}
+            }, "J":{"A":{"command":"--other"}}}}, "foreign":{"null":null,"array":[false,1,{"deep":"keep"}]}});
+            registered["codingAgentProfiles"]["profileLabelsByAgent"] =
+                json!({"K":{"B":"Original"}});
+            let mut settings = settings;
+            settings["codingAgentProfiles"]["defaultProfileByAgent"] =
+                json!({"N":"B","N-prime":"A"});
+            // Disjunction requires existing map containers in the actual
+            // pre-overlay view, not just leaf keys in the overlay payload.
+            registered["codingAgentProfiles"]["defaultProfileByAgent"] =
+                json!({"N":"B","N-prime":"A"});
+            registered["codingAgentProfiles"]["identityByAgent"] =
+                json!({"K":"legacy-k","J":"legacy-j"});
+            std::fs::write(
+                root.path().join(SETTINGS_FILE_NAME),
+                serde_json::to_vec(&settings).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                root.path().join(AGENTS_INSTANCE_FILE_NAME),
+                serde_json::to_vec(&registered).unwrap(),
+            )
+            .unwrap();
+            let target = root.path().join("_agent_N");
+            std::fs::create_dir(&target).unwrap();
+            std::fs::write(
+                target.join("config.json"),
+                serde_json::to_vec(&json!({"tooling":{
+                    "currentCodingAgent":"K", "profile":"B", "keep":"legacy"
+                }}))
+                .unwrap(),
+            )
+            .unwrap();
+            let context = SourceReadContext::from_settings(
+                &AppSettings::default(),
+                &root.path().join(SETTINGS_FILE_NAME),
+            )
+            .unwrap();
+            Self {
+                root,
+                context,
+                registered,
+                settings,
+            }
+        }
+
+        fn overlay(&self, value: &Value) {
+            std::fs::write(
+                self.root.path().join(SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+                serde_json::to_vec(value).unwrap(),
+            )
+            .unwrap();
+        }
+
+        fn origin(&self) -> (OriginInputs, LegacyCompatibilityOrigin) {
+            let inputs = OriginInputs::capture(&self.context).unwrap();
+            let origin = LegacyCompatibilityOrigin::classify(&inputs);
+            (inputs, origin)
+        }
+
+        fn snapshot(&self) -> RawSourceSnapshot {
+            read_source_snapshot(
+                &self.context,
+                &self.context.source(SourceKind::RegisteredInstance),
+            )
+            .unwrap()
+        }
+
+        // Test-only instrumentation of the settings-base default consumer. The
+        // counter records an actual default lookup handed to the existing pure
+        // profile resolver, not a launch or a new production source consumer.
+        fn consume_legacy_default(
+            &self,
+            origin: &LegacyCompatibilityOrigin,
+            snapshot: &RawSourceSnapshot,
+            expected_target: &[u8],
+            consumed: &mut usize,
+        ) -> Result<crate::config::coding_agent_profiles::ProfileResolution, SourcePreparationError>
+        {
+            use crate::config::coding_agent_profiles::{
+                agent_name_from_dir, resolve_profile, ProfileResolutionRequest,
+            };
+            let target = std::fs::canonicalize(self.root.path().join("_agent_N/config.json"))
+                .map_err(|_| SourcePreparationError::OriginUnavailable)?;
+            let root = std::fs::canonicalize(self.root.path())
+                .map_err(|_| SourcePreparationError::OriginUnavailable)?;
+            if !target.starts_with(root)
+                || std::fs::read(&target).ok().as_deref() != Some(expected_target)
+            {
+                return Err(SourcePreparationError::StaleRevision);
+            }
+            let matrix = agent_name_from_dir(target.parent().unwrap())
+                .ok_or(SourcePreparationError::InvalidCandidate)?;
+            let pair: Value = serde_json::from_slice(expected_target)
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+            let key = pair
+                .pointer("/tooling/currentCodingAgent")
+                .and_then(Value::as_str)
+                .ok_or(SourcePreparationError::InvalidCandidate)?;
+            if origin.binding.context != snapshot.context
+                || origin.binding.registered.as_ref() != Some(&snapshot.snapshot.revision)
+            {
+                return Err(SourcePreparationError::StaleRevision);
+            }
+            origin.require_legacy_units(
+                [
+                    LegacyOriginUnit::Entry(key.into()),
+                    LegacyOriginUnit::Default(matrix.clone()),
+                ],
+                None,
+            )?;
+            let default = origin.base["codingAgentProfiles"]["defaultProfileByAgent"]
+                .get(&matrix)
+                .and_then(Value::as_str)
+                .and_then(normalize_profile_letter);
+            let letter = match default {
+                Some(letter) => {
+                    *consumed += 1; // Only a real valid Default(N) read is counted.
+                    letter
+                }
+                None => "A".into(),
+            };
+            origin.require_legacy_units(
+                [LegacyOriginUnit::Profile(key.into(), letter.clone())],
+                None,
+            )?;
+            let mut settings: AppSettings = serde_json::from_value(origin.base.clone())
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+            settings.agents = serde_json::from_value(json!(snapshot.snapshot.agents))
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+            settings.coding_agent_profiles.profiles_by_agent = snapshot.snapshot.profiles.clone();
+            Ok(resolve_profile(
+                &settings,
+                ProfileResolutionRequest {
+                    coding_agent_id: key,
+                    launch_path: None,
+                    agent_matrix_name: Some(&matrix),
+                    requested_profile: Some(&letter),
+                    requested_profile_authoritative: false,
+                },
+            ))
+        }
+
+        fn assert_positive_default(&self) {
+            let (inputs, origin) = self.origin();
+            let snapshot = self.snapshot();
+            let target = self.root.path().join("_agent_N/config.json");
+            let before_target = std::fs::read(&target).unwrap();
+            inputs.revalidate(&self.context).unwrap();
+            let mut consumed_default = 0;
+            let resolution = self
+                .consume_legacy_default(&origin, &snapshot, &before_target, &mut consumed_default)
+                .unwrap();
+            assert!(is_positive_default_b(&resolution));
+            assert_eq!(consumed_default, 1);
+            let mut all_unresolved = origin.clone();
+            all_unresolved.applied_paths.push(Vec::new());
+            let mut rejected_consumptions = 0;
+            assert!(self
+                .consume_legacy_default(
+                    &all_unresolved,
+                    &snapshot,
+                    &before_target,
+                    &mut rejected_consumptions
+                )
+                .is_err());
+            assert_eq!(rejected_consumptions, 0);
+            assert_ne!(
+                resolution.cell.command,
+                snapshot.snapshot.profiles["K"]["A"].command
+            );
+            assert_eq!(snapshot.snapshot.agents[0]["command"], "own-base");
+            let after_target = std::fs::read(&target).unwrap();
+            assert_eq!(after_target, before_target);
+            let pair: Value = serde_json::from_slice(&after_target).unwrap();
+            assert_eq!(pair["tooling"]["currentCodingAgent"], "K");
+            assert_eq!(pair["tooling"]["profile"], "B");
+            assert!(pair["tooling"].get("configurationRef").is_none());
+            assert!(pair.get("configurationRef").is_none());
+            assert_eq!(
+                snapshot.snapshot.source.kind,
+                SourceKind::RegisteredInstance
+            );
+            assert!(!snapshot.snapshot.diagnostics.iter().any(|d| matches!(
+                d.code.as_str(),
+                "legacyOriginUnresolved" | "originUnavailable"
+            )));
+            inputs.revalidate(&self.context).unwrap();
+        }
+    }
+
+    fn is_positive_default_b(
+        resolution: &crate::config::coding_agent_profiles::ProfileResolution,
+    ) -> bool {
+        resolution.requested_profile == "B"
+            && resolution.effective_profile == "B"
+            && !resolution.fallback_applied
+            && resolution.cell.command == "--beta"
+            && resolution.cell.env == BTreeMap::from([("MODE".into(), "beta".into())])
+            && resolution.warnings.is_empty()
+    }
+
+    #[test]
+    fn legacy_origin_contract_positive_oracle_detects_fallback_and_missing_default() {
+        let fixture = Fixture::new();
+        let target = std::fs::read(fixture.root.path().join("_agent_N/config.json")).unwrap();
+        let mut raw = fixture.registered.clone();
+        raw["codingAgentProfiles"]["profilesByAgent"]["K"]["B"]["enabled"] = json!(false);
+        std::fs::write(
+            fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME),
+            serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        let mut consumed = 0;
+        let fallback = fixture
+            .consume_legacy_default(
+                &fixture.origin().1,
+                &fixture.snapshot(),
+                &target,
+                &mut consumed,
+            )
+            .unwrap();
+        assert_eq!(consumed, 1);
+        assert_eq!(fallback.requested_profile, "B");
+        assert_eq!(fallback.effective_profile, "A");
+        assert!(fallback.fallback_applied);
+        assert!(!is_positive_default_b(&fallback));
+        let mut base = fixture.settings.clone();
+        base["codingAgentProfiles"]["defaultProfileByAgent"]
+            .as_object_mut()
+            .unwrap()
+            .remove("N");
+        std::fs::write(
+            &fixture.context.settings_path,
+            serde_json::to_vec(&base).unwrap(),
+        )
+        .unwrap();
+        consumed = 0;
+        let missing = fixture
+            .consume_legacy_default(
+                &fixture.origin().1,
+                &fixture.snapshot(),
+                &target,
+                &mut consumed,
+            )
+            .unwrap();
+        assert_eq!(consumed, 0);
+        assert_eq!(missing.requested_profile, "A");
+        assert!(!is_positive_default_b(&missing));
+        crate::config::local_config_io::update_config_json_object(
+            &fixture.root.path().join("_agent_N/config.json"),
+            false,
+            |object| {
+                object.clear();
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fixture.consume_legacy_default(
+                &fixture.origin().1,
+                &fixture.snapshot(),
+                &target,
+                &mut consumed
+            ),
+            Err(SourcePreparationError::StaleRevision)
+        );
+    }
+
+    #[test]
+    fn legacy_origin_contract_base_default_no_overlay() {
+        Fixture::new().assert_positive_default();
+    }
+
+    #[test]
+    fn legacy_origin_contract_base_default_other_matrix_overlay() {
+        let fixture = Fixture::new();
+        fixture.overlay(&json!({"codingAgentProfiles":{"defaultProfileByAgent":{"N-prime":"B"}}}));
+        fixture.assert_positive_default();
+        assert_eq!(
+            fixture
+                .origin()
+                .1
+                .require_disjoint([LegacyOriginUnit::Default("N-prime".into())]),
+            Err(SourcePreparationError::LegacyOriginUnresolved)
+        );
+    }
+
+    #[test]
+    fn legacy_origin_contract_labels_only_runtime_unchanged() {
+        let fixture = Fixture::new();
+        fixture.overlay(
+            &json!({"codingAgentProfiles":{"profileLabelsByAgent":{"K":{"B":"Personal"}}}}),
+        );
+        fixture.assert_positive_default();
+        assert_eq!(
+            fixture
+                .origin()
+                .1
+                .require_disjoint([LegacyOriginUnit::Presentation("K".into(), "B".into())]),
+            Err(SourcePreparationError::LegacyOriginUnresolved)
+        );
+    }
+
+    #[test]
+    fn legacy_origin_contract_leaf_sibling_disjoint_and_base_delete_expansion() {
+        let fixture = Fixture::new();
+        fixture.overlay(
+            &json!({"codingAgentProfiles":{"profilesByAgent":{"K":{"B":{"command":"--overlay"}}}}}),
+        );
+        let (_, origin) = fixture.origin();
+        origin
+            .require_disjoint([
+                LegacyOriginUnit::Profile("K".into(), "A".into()),
+                LegacyOriginUnit::Entry("J".into()),
+            ])
+            .unwrap();
+        assert_eq!(
+            origin.require_disjoint([LegacyOriginUnit::Profile("K".into(), "B".into())]),
+            Err(SourcePreparationError::LegacyOriginUnresolved)
+        );
+        let snapshot = fixture.snapshot();
+        let mut candidate = fixture.registered.clone();
+        candidate["agents"][1]["command"] = json!("other-new");
+        let plan = prepare_source_candidate(
+            &snapshot,
+            &snapshot.snapshot.revision,
+            &candidate,
+            Some(&origin),
+        )
+        .unwrap();
+        let saved: Value = serde_json::from_slice(&plan.serialized_after).unwrap();
+        assert_eq!(saved["foreign"], fixture.registered["foreign"]);
+        assert_eq!(
+            saved["codingAgentProfiles"]["profilesByAgent"]["K"],
+            fixture.registered["codingAgentProfiles"]["profilesByAgent"]["K"]
+        );
+        candidate = fixture.registered.clone();
+        candidate["agents"][0]["command"] = json!("own-new");
+        assert!(matches!(
+            prepare_source_candidate(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &candidate,
+                Some(&origin)
+            ),
+            Err(SourcePreparationError::LegacyOriginUnresolved)
+        ));
+        candidate["agents"].as_array_mut().unwrap().remove(0);
+        assert!(matches!(
+            prepare_source_candidate(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &candidate,
+                Some(&origin)
+            ),
+            Err(SourcePreparationError::LegacyOriginUnresolved)
+        ));
+    }
+
+    #[test]
+    fn legacy_origin_contract_agents_equal_replacement_and_omitted_new_union() {
+        let fixture = Fixture::new();
+        for agents in [
+            fixture.registered["agents"].clone(),
+            json!([]),
+            json!([{"id":"new", "label":"New", "color":"red", "command":"new"}]),
+        ] {
+            fixture.overlay(&json!({"agents":agents}));
+            let (_, origin) = fixture.origin();
+            for key in ["K", "J"] {
+                assert_eq!(
+                    origin.require_disjoint([LegacyOriginUnit::Entry(key.into())]),
+                    Err(SourcePreparationError::LegacyOriginUnresolved)
+                );
+                assert_eq!(
+                    origin.require_disjoint([LegacyOriginUnit::Profile(key.into(), "A".into())]),
+                    Err(SourcePreparationError::LegacyOriginUnresolved)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_origin_contract_missing_duplicate_nonstring_ids_unknown() {
+        let fixture = Fixture::new();
+        for agents in [
+            json!([{"label":"Missing", "command":"own", "color":"red"}]),
+            json!([{"id":1}]),
+            json!([{"id":"K"},{"id":"K"}]),
+        ] {
+            let mut inputs = fixture.origin().0;
+            inputs.registered =
+                OriginPhysicalInput::Bytes(serde_json::to_vec(&json!({"agents":agents})).unwrap());
+            let origin = LegacyCompatibilityOrigin::classify(&inputs);
+            assert_eq!(
+                origin.require_disjoint([LegacyOriginUnit::Entry("J".into())]),
+                Err(SourcePreparationError::OriginUnavailable)
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_origin_contract_identity_orphan_and_ancestor_nonobject() {
+        let fixture = Fixture::new();
+        fixture.overlay(&json!({"codingAgentProfiles":{"identityByAgent":{"K":"not-a-proof"},"profilesByAgent":{"orphan":{"B":{"command":"x"}}}}}));
+        let (_, origin) = fixture.origin();
+        assert_eq!(
+            origin.require_disjoint([LegacyOriginUnit::Profile("K".into(), "A".into())]),
+            Err(SourcePreparationError::LegacyOriginUnresolved)
+        );
+        assert_eq!(
+            origin.require_disjoint([LegacyOriginUnit::Profile("orphan".into(), "B".into())]),
+            Err(SourcePreparationError::LegacyOriginUnresolved)
+        );
+        origin
+            .require_disjoint([LegacyOriginUnit::Profile("J".into(), "A".into())])
+            .unwrap();
+        let mut inputs = fixture.origin().0;
+        inputs.registered = OriginPhysicalInput::Absent;
+        let mut base = fixture.settings.clone();
+        base["codingAgentProfiles"] = Value::Null;
+        inputs.settings = OriginPhysicalInput::Bytes(serde_json::to_vec(&base).unwrap());
+        inputs.overlay = OriginPhysicalInput::Bytes(
+            serde_json::to_vec(
+                &json!({"codingAgentProfiles":{"profilesByAgent":{"K":{"A":{"command":"x"}}}}}),
+            )
+            .unwrap(),
+        );
+        let origin = LegacyCompatibilityOrigin::classify(&inputs);
+        assert!(origin
+            .applied_paths
+            .iter()
+            .any(|p| p == &vec!["codingAgentProfiles".to_string()]));
+    }
+
+    #[test]
+    fn legacy_origin_contract_absent_map_ancestor_is_not_disjoint() {
+        let fixture = Fixture::new();
+        let mut raw = fixture.registered.clone();
+        raw["codingAgentProfiles"]
+            .as_object_mut()
+            .unwrap()
+            .remove("defaultProfileByAgent");
+        raw["codingAgentProfiles"]
+            .as_object_mut()
+            .unwrap()
+            .remove("identityByAgent");
+        std::fs::write(
+            fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME),
+            serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        fixture.overlay(&json!({"codingAgentProfiles":{"defaultProfileByAgent":{"N-prime":"B"}, "identityByAgent":{"K":"personal"}}}));
+        let (_, origin) = fixture.origin();
+        assert!(origin.applied_paths.contains(&vec![
+            "codingAgentProfiles".into(),
+            "defaultProfileByAgent".into()
+        ]));
+        assert!(origin.applied_paths.contains(&vec![
+            "codingAgentProfiles".into(),
+            "identityByAgent".into()
+        ]));
+        assert_eq!(
+            origin.require_disjoint([LegacyOriginUnit::Default("N".into())]),
+            Err(SourcePreparationError::LegacyOriginUnresolved)
+        );
+        assert_eq!(
+            origin.require_disjoint([LegacyOriginUnit::Profile("J".into(), "A".into())]),
+            Err(SourcePreparationError::LegacyOriginUnresolved)
+        );
+    }
+
+    #[test]
+    fn legacy_origin_contract_absent_empty_rejected_known_and_unknown() {
+        let fixture = Fixture::new();
+        for bytes in [b"{}".as_slice(), b"not JSON", b"[]", b"{\"agents\":null}"] {
+            std::fs::write(
+                fixture.root.path().join(SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+                bytes,
+            )
+            .unwrap();
+            fixture.assert_positive_default();
+            let (_, origin) = fixture.origin();
+            assert!(origin.applied_paths.is_empty());
+        }
+        let mut inputs = fixture.origin().0;
+        inputs.overlay = OriginPhysicalInput::Unknown;
+        inputs.binding.overlay = None;
+        assert_eq!(
+            LegacyCompatibilityOrigin::classify(&inputs)
+                .require_disjoint([LegacyOriginUnit::Default("N".into())]),
+            Err(SourcePreparationError::OriginUnavailable)
+        );
+    }
+
+    #[test]
+    fn legacy_origin_contract_default_matrix_domain_requires_original_link() {
+        let fixture = Fixture::new();
+        for matrix in ["N", "K"] {
+            fixture.overlay(&json!({"codingAgentProfiles":{"defaultProfileByAgent":{matrix:"B"}}}));
+            let (_, origin) = fixture.origin();
+            assert_eq!(
+                origin.require_legacy_units([LegacyOriginUnit::Default(matrix.into())], None),
+                Err(SourcePreparationError::LegacyOriginUnresolved)
+            );
+            let snapshot = fixture.snapshot();
+            let (agents, profiles) = decode_registered_raw(&fixture.registered).unwrap();
+            let selection = ConfigurationRef {
+                version: 1,
+                source: snapshot.snapshot.source.clone(),
+                calculated_id: configuration_identity(&agents[0].command, &agents[0].envs),
+                requested_profile: Some("B".into()),
+                profile_calculated_id: Some(profile_identity(
+                    &profiles.profiles_by_agent["K"]["B"],
+                )),
+                legacy_entry_hint: Some("K".into()),
+            };
+            let bytes = serde_json::to_vec(
+                &json!({"tooling":{"replicaSelectionDefault":{"configurationRef":selection}}}),
+            )
+            .unwrap();
+            let proof = origin
+                .bind_original_selection(
+                    &snapshot,
+                    &selection,
+                    &snapshot.snapshot.revision,
+                    &snapshot.snapshot.context_revision,
+                    &bytes,
+                    &bytes,
+                    Some(matrix),
+                )
+                .unwrap();
+            origin
+                .require_legacy_units([LegacyOriginUnit::Default(matrix.into())], Some(&proof))
+                .unwrap();
+            assert!(origin
+                .bind_original_selection(
+                    &snapshot,
+                    &selection,
+                    &snapshot.snapshot.revision,
+                    &snapshot.snapshot.context_revision,
+                    b"{}",
+                    &bytes,
+                    Some(matrix)
+                )
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_origin_contract_complete_binding_drift_with_stable_raw30() {
+        let fixture = Fixture::new();
+        let (inputs, _) = fixture.origin();
+        inputs.revalidate(&fixture.context).unwrap();
+        fixture.overlay(&json!({"logLevel":"debug"}));
+        assert_eq!(
+            inputs.revalidate(&fixture.context),
+            Err(SourcePreparationError::StaleRevision)
+        );
+        let (inputs, _) = fixture.origin();
+        let mut base = fixture.settings.clone();
+        base["logLevel"] = json!("trace");
+        std::fs::write(
+            fixture.root.path().join(SETTINGS_FILE_NAME),
+            serde_json::to_vec(&base).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            inputs.revalidate(&fixture.context),
+            Err(SourcePreparationError::StaleRevision)
+        );
+        let mut changed = fixture.context.clone();
+        changed.revision.push('x');
+        assert_eq!(
+            inputs.revalidate(&changed),
+            Err(SourcePreparationError::ContextChanged)
+        );
+    }
+
+    #[test]
+    fn legacy_origin_contract_general_only_preserves_absent_null_value_and_source() {
+        let fixture = Fixture::new();
+        fixture.overlay(
+            &json!({"codingAgentProfiles":{"profilesByAgent":{"K":{"B":{"command":"personal"}}}}}),
+        );
+        for placement in [
+            None,
+            Some(Value::Null),
+            Some(json!({"x":1,"y":2,"width":800,"height":600})),
+        ] {
+            let mut base = fixture.settings.clone();
+            base.as_object_mut().unwrap().remove("mainGeometry");
+            if let Some(value) = &placement {
+                base["mainGeometry"] = value.clone();
+            }
+            base["foreign"] = json!({"absentSibling":null, "value":[1,2]});
+            std::fs::write(
+                fixture.root.path().join(SETTINGS_FILE_NAME),
+                serde_json::to_vec(&base).unwrap(),
+            )
+            .unwrap();
+            let before =
+                std::fs::read(fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME)).unwrap();
+            let inputs = fixture.origin().0;
+            let plan = prepare_settings_without_source_write(
+                &inputs,
+                &Fixture::general_candidate("debug"),
+            )
+            .unwrap();
+            let after: Value = serde_json::from_slice(&plan.serialized_after).unwrap();
+            assert_eq!(after.get("mainGeometry"), placement.as_ref());
+            assert_eq!(after["foreign"], base["foreign"]);
+            assert_eq!(after["codingAgentProfiles"], base["codingAgentProfiles"]);
+            assert_eq!(plan.redecoded_settings.agents[0].command, "own-base");
+            assert_eq!(
+                std::fs::read(fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME)).unwrap(),
+                before
+            );
+            assert_eq!(
+                std::fs::read(fixture.root.path().join(SETTINGS_FILE_NAME)).unwrap(),
+                serde_json::to_vec(&base).unwrap()
+            );
+        }
+    }
+
+    fn assert_general_overlay_keeps_disk_value(disk_value: Option<Value>) {
+        let fixture = Fixture::new();
+        let mut base = fixture.settings.clone();
+        base.as_object_mut().unwrap().remove("logLevel");
+        if let Some(value) = &disk_value {
+            base["logLevel"] = value.clone();
+        }
+        std::fs::write(
+            fixture.context.settings_path.clone(),
+            serde_json::to_vec(&base).unwrap(),
+        )
+        .unwrap();
+        fixture.overlay(&json!({"logLevel":"debug"}));
+        let inputs = fixture.origin().0;
+        let plan =
+            prepare_settings_without_source_write(&inputs, &Fixture::general_candidate("debug"))
+                .unwrap();
+        let after: Value = serde_json::from_slice(&plan.serialized_after).unwrap();
+        assert_eq!(after.get("logLevel"), disk_value.as_ref());
+        assert_eq!(plan.redecoded_settings.log_level.as_deref(), Some("debug"));
+        assert_eq!(after["codingAgentProfiles"], base["codingAgentProfiles"]);
+        // All three physical inputs, including the source, remain byte-identical.
+        inputs.revalidate(&fixture.context).unwrap();
+    }
+
+    #[test]
+    fn legacy_origin_contract_general_overlay_base_present() {
+        assert_general_overlay_keeps_disk_value(Some(json!("info")));
+    }
+
+    #[test]
+    fn legacy_origin_contract_general_overlay_base_absent() {
+        assert_general_overlay_keeps_disk_value(None);
+    }
+
+    #[test]
+    fn legacy_origin_contract_general_overlay_base_null() {
+        assert_general_overlay_keeps_disk_value(Some(Value::Null));
+    }
+
+    #[test]
+    fn source_personal_absent_template_and_no_clobber_precondition() {
+        let fixture = Fixture::new();
+        let source = fixture.context.source(SourceKind::CatalogPersonal);
+        let snapshot = read_source_snapshot(&fixture.context, &source).unwrap();
+        assert_eq!(snapshot.snapshot.availability, SourceAvailability::Absent);
+        assert_eq!(snapshot.snapshot.revision, SourceRevision::Absent {});
+        assert!(snapshot.snapshot.capabilities.editable_create);
+        assert!(!snapshot.snapshot.capabilities.available_read);
+        let template = snapshot.candidate_template.as_ref().unwrap();
+        let plan = prepare_source_candidate(&snapshot, &SourceRevision::Absent {}, template, None)
+            .unwrap();
+        assert!(plan.before_bytes.is_none());
+        assert!(!fixture.context.locator(&source).unwrap().exists());
+        plan.revalidate_before_write(&fixture.context).unwrap();
+        let path = fixture.context.locator(&source).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"third party").unwrap();
+        assert_eq!(
+            plan.revalidate_before_write(&fixture.context),
+            Err(SourcePreparationError::StaleRevision)
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"third party");
+        assert!(matches!(
+            prepare_source_candidate(&snapshot, &source_bytes_revision(b""), template, None),
+            Err(SourcePreparationError::StaleRevision)
+        ));
+    }
+
+    #[test]
+    fn source_p_q_separation_fallback_c_and_stale_context() {
+        let fixture = Fixture::new();
+        assert_eq!(list_active_sources(&fixture.context).len(), 3);
+        let p = fixture.root.path().join("P");
+        let q = fixture.root.path().join("Q");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::create_dir_all(&q).unwrap();
+        let mut settings = AppSettings {
+            project_paths: vec![
+                p.to_string_lossy().into_owned(),
+                q.to_string_lossy().into_owned(),
+            ],
+            ..AppSettings::default()
+        };
+        let context =
+            SourceReadContext::from_settings(&settings, &fixture.context.settings_path).unwrap();
+        assert_eq!(list_active_sources(&context).len(), 4);
+        let source = context.source(SourceKind::CatalogPersonal);
+        assert!(context
+            .locator(&source)
+            .unwrap()
+            .starts_with(std::fs::canonicalize(&p).unwrap()));
+        settings.project_paths.swap(0, 1);
+        let newer =
+            SourceReadContext::from_settings(&settings, &fixture.context.settings_path).unwrap();
+        assert!(matches!(
+            read_source_snapshot(&newer, &source),
+            Err(SourcePreparationError::ContextUnavailable)
+        ));
+    }
+
+    #[test]
+    fn source_invalid_bytes_are_not_absent_and_schema1_patch_not_composed() {
+        let fixture = Fixture::new();
+        for kind in [SourceKind::CatalogBase, SourceKind::CatalogPersonal] {
+            let source = fixture.context.source(kind);
+            let path = fixture.context.locator(&source).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"broken").unwrap();
+            let snapshot = read_source_snapshot(&fixture.context, &source).unwrap();
+            assert_eq!(snapshot.snapshot.availability, SourceAvailability::Invalid);
+            assert_eq!(snapshot.snapshot.revision, source_bytes_revision(b"broken"));
+            assert!(snapshot.candidate_template.is_none());
+            std::fs::write(&path, br#"{"schemaVersion":1,"agents":[{"key":"own","label":"Own","description":"","color":"red","command":"own"}]}"#).unwrap();
+            let snapshot = read_source_snapshot(&fixture.context, &source).unwrap();
+            if kind == SourceKind::CatalogBase {
+                assert!(snapshot.snapshot.capabilities.available_read);
+                assert!(!snapshot.snapshot.capabilities.editable_save);
+                assert!(!snapshot.snapshot.capabilities.publish_managed);
+                assert!(snapshot.snapshot.profiles.is_empty());
+            } else {
+                assert_eq!(
+                    snapshot.snapshot.availability,
+                    SourceAvailability::IndependentFormatRequired
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_raw30_not_effective50_unknown_fields_and_duplicate_new_group() {
+        let fixture = Fixture::new();
+        fixture.overlay(&json!({"agents":[{"id":"K","label":"Personal","color":"red","command":"personal-only"}]}));
+        let snapshot = fixture.snapshot();
+        assert_eq!(snapshot.snapshot.agents[0]["command"], "own-base");
+        let fixture = Fixture::new();
+        let (_, origin) = fixture.origin();
+        let snapshot = fixture.snapshot();
+        let mut candidate = fixture.registered.clone();
+        candidate["agents"][1]["command"] = candidate["agents"][0]["command"].clone();
+        assert!(prepare_source_candidate(
+            &snapshot,
+            &snapshot.snapshot.revision,
+            &candidate,
+            Some(&origin)
+        )
+        .is_err());
+        candidate = fixture.registered.clone();
+        candidate.as_object_mut().unwrap().remove("foreign");
+        assert!(prepare_source_candidate(
+            &snapshot,
+            &snapshot.snapshot.revision,
+            &candidate,
+            Some(&origin)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn source_project40_is_owner_only_and_general_rejects_protected_keys() {
+        let fixture = Fixture::new();
+        let settings = AppSettings {
+            project_paths: vec![fixture.root.path().to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
+        let context =
+            SourceReadContext::from_settings(&settings, &fixture.context.settings_path).unwrap();
+        let source = context.source(SourceKind::CatalogProject);
+        let path = context.locator(&source).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let candidate = json!({"schemaVersion":2,"agents":[]});
+        std::fs::write(&path, serde_json::to_vec(&candidate).unwrap()).unwrap();
+        let snapshot = read_source_snapshot(&context, &source).unwrap();
+        assert!(snapshot.snapshot.capabilities.available_read);
+        assert!(snapshot.snapshot.capabilities.repair_by_owner);
+        assert!(!snapshot.snapshot.capabilities.editable_save);
+        assert!(matches!(
+            prepare_source_candidate(&snapshot, &snapshot.snapshot.revision, &candidate, None),
+            Err(SourcePreparationError::ReadOnly)
+        ));
+        let inputs = fixture.origin().0;
+        for key in [
+            "agents",
+            "codingAgentProfiles",
+            "rootToken",
+            "mainGeometry",
+            "projectPaths",
+            "unknownClientKey",
+        ] {
+            assert!(matches!(
+                prepare_settings_without_source_write(&inputs, &json!({key:null})),
+                Err(SourcePreparationError::ProtectedSettingsField)
+            ));
+        }
+    }
+
+    #[test]
+    fn source_general_absent_prepares_without_materializing_protected_groups() {
+        let fixture = Fixture::new();
+        std::fs::remove_file(fixture.root.path().join(SETTINGS_FILE_NAME)).unwrap();
+        let inputs = fixture.origin().0;
+        let plan =
+            prepare_settings_without_source_write(&inputs, &Fixture::general_candidate("debug"))
+                .unwrap();
+        let value: Value = serde_json::from_slice(&plan.serialized_after).unwrap();
+        for key in SOURCE_GENERAL_PROTECTED {
+            assert!(value.get(*key).is_none(), "{key}");
+        }
+        assert!(!fixture.root.path().join(SETTINGS_FILE_NAME).exists());
+        assert_eq!(plan.redecoded_settings.agents[0].command, "own-base");
+    }
+}
+
 fn identity_preimage(parts: impl IntoIterator<Item = impl AsRef<str>>) -> String {
     let mut scalars = Vec::new();
     for part in parts {
