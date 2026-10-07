@@ -50,7 +50,7 @@ Around the terminal itself:
 
 **The room task** strip shows the title from the room's `TASK.md`, parsed from the file's frontmatter. You can edit the title in place: `Enter` saves it, `Escape` cancels. The control refuses an empty title with `Title cannot be empty.`, and it stops if the session changed underneath the edit, with `Session changed; cancel and retry.` Both the edit and the clean control are disabled when there is no session or the session is not inside a room.
 
-**Cleaning the task** asks first. The confirmation is titled `Clean TASK?` and states what it will do: it resets the room `TASK.md`, replacing all frontmatter fields and body content with `title: 'Clean'` and the body `Ready to start a new topic`. If a `TASK.md` exists, a timestamped backup is saved alongside it before the reset. The buttons are `Cancel`, which has focus when the dialog opens, and `Clean`. `Escape` cancels, and `Enter` cleans only when `Clean` already has focus.
+**Cleaning the task** asks first. The confirmation is titled `Clean TASK?` and states what it will do: it resets the room `TASK.md`, replacing all frontmatter fields and body content with `title: 'Clean'` and an empty body. If a `TASK.md` exists, a timestamped backup is saved alongside it before the reset. The buttons are `Cancel`, which has focus when the dialog opens, and `Clean`. `Escape` cancels, and `Enter` cleans only when `Clean` already has focus.
 
 ## Other windows
 

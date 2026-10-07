@@ -13,7 +13,7 @@ import {
 } from "../shared/testing/ui-harness";
 import { initialSelection } from "../shared/testing/session-selection";
 import { toastStore } from "../shared/stores/toasts";
-import type { Session, SessionCommunication } from "../shared/types";
+import type { Session, SessionCommunication, TaskSnapshot } from "../shared/types";
 import { requestTaskbarAttention } from "./attention";
 
 vi.mock("./attention", () => ({ requestTaskbarAttention: vi.fn() }));
@@ -76,6 +76,16 @@ function setupMenuGuardTransport(fake: FakeTransport, sessions: Session[]): void
       ],
     })
   );
+  fake.resolve("task_get_snapshot_at", {
+    workgroupRoot: workgroupPath,
+    task: null,
+    taskTitle: "Menu guard",
+    description: "",
+    status: null,
+    revision: "topic:0",
+    statusRecord: null,
+    tailIncomplete: false,
+  } satisfies TaskSnapshot);
   fake.resolve("get_project_groups", { groups: [], showAll: true, showUngrouped: true });
   fake.resolve("search_repos", []);
   fake.resolve("list_sessions", sessions);

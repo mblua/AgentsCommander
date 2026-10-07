@@ -7960,11 +7960,7 @@ mod snapshot_null_tests {
         assert!(partial.status.is_none());
         assert!(partial.tail_incomplete);
         assert_eq!(partial.revision, "legacy:0");
-        std::fs::write(
-            root.join("TASK.md"),
-            "---\ntitle: 'Clean'\n---\nReady to start a new topic\n",
-        )
-        .unwrap();
+        std::fs::write(root.join("TASK.md"), "---\ntitle: 'Clean'\n---\n").unwrap();
         std::fs::write(root.join("TASK-status.jsonl"), serde_json::json!({
             "schemaVersion":1,"kind":"topic_started","topicId":"12345678-1234-4234-8234-123456789abc","sequence":0,
             "requestId":null,"baseRevision":null,"recordedAt":"2026-10-05T18:00:00Z","author":null,"status":null
