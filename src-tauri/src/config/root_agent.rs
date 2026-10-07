@@ -2035,16 +2035,35 @@ fn replace_existing_file_windows(temp_path: &Path, role_path: &Path) -> Result<(
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
 
-    let role_wide: Vec<u16> = role_path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let temp_wide: Vec<u16> = temp_path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    // Normalize the parent for extended-length Windows APIs without following
+    // the leaf that is about to be replaced.
+    let canonical_leaf = |path: &Path| -> Result<Vec<u16>, String> {
+        let leaf = path.file_name().ok_or_else(|| {
+            format!(
+                "Failed to normalize replacement path {}: missing file name",
+                path.display()
+            )
+        })?;
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let canonical_parent = std::fs::canonicalize(parent).map_err(|error| {
+            format!(
+                "Failed to normalize replacement parent for {}: {}",
+                path.display(),
+                error
+            )
+        })?;
+        Ok(canonical_parent
+            .join(leaf)
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect())
+    };
+    let role_wide = canonical_leaf(role_path)?;
+    let temp_wide = canonical_leaf(temp_path)?;
     let ok = unsafe {
         ReplaceFileW(
             role_wide.as_ptr(),
