@@ -9,8 +9,8 @@
 //!
 //! Per transition: read the notify dials, apply the rolling hourly cap, resolve
 //! the room's orchestrator, build the notice and deliver it. Every failure is a
-//! dropped notice plus a log line, never a retry: the sweeper emits a fresh
-//! transition on the next state change.
+//! dropped notice plus a log line, except menu/typing deferrals: those retain
+//! the admitted notice and retry before receiving another transition.
 //!
 //! The only FQN ever constructed is the one the coordinator field of the room's
 //! team config resolves to. No code path here enumerates replicas, so a
@@ -39,6 +39,13 @@ use crate::pty::remote_watcher::{base_branch_display, RemoteTransition, Transiti
 /// delayed to make room for them.
 const NOTICE_CAP: usize = 12;
 const NOTICE_WINDOW: Duration = Duration::from_secs(60 * 60);
+const PENDING_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+type NowSource = Arc<dyn Fn() -> Instant + Send + Sync>;
+type RetryWait = Arc<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>;
+
+fn production_retry_wait() -> RetryWait {
+    Arc::new(|delay| Box::pin(tokio::time::sleep(delay)))
+}
 
 /// Below this the blindness is normal operation and saying so would be noise.
 /// The value is strictly above twice, and at most three times, the default
@@ -76,9 +83,7 @@ pub(crate) trait RemoteAlertPorts: Send + Sync {
     fn notify_dials(&self) -> BoxFuture<'static, RemoteNotifyDials>;
 }
 
-/// The production loop is only this `select!` plus one `handle` call per
-/// transition, so the tests below drive `handle` directly with their own clock
-/// and their own ports.
+/// One owner retains the active notice through terminal mailbox completion.
 pub(crate) fn start(
     app: tauri::AppHandle,
     transitions: mpsc::Receiver<RemoteTransition>,
@@ -90,23 +95,39 @@ pub(crate) fn start(
 
 fn start_with_ports(
     ports: Arc<dyn RemoteAlertPorts>,
-    mut transitions: mpsc::Receiver<RemoteTransition>,
+    transitions: mpsc::Receiver<RemoteTransition>,
     shutdown: CancellationToken,
 ) -> tauri::async_runtime::JoinHandle<()> {
-    tauri::async_runtime::spawn(async move {
-        let mut state = RemoteAlertState::new(ports);
-        loop {
-            tokio::select! {
-                biased;
-                _ = shutdown.cancelled() => break,
-                received = transitions.recv() => match received {
-                    Some(transition) => state.handle(transition, Instant::now()).await,
-                    // The sweeper is gone, so nothing can arrive again.
-                    None => break,
-                },
-            }
+    tauri::async_runtime::spawn(run_with_ports(
+        ports,
+        transitions,
+        shutdown,
+        Arc::new(Instant::now),
+        production_retry_wait(),
+    ))
+}
+
+async fn run_with_ports(
+    ports: Arc<dyn RemoteAlertPorts>,
+    mut transitions: mpsc::Receiver<RemoteTransition>,
+    shutdown: CancellationToken,
+    now_source: NowSource,
+    retry_wait: RetryWait,
+) {
+    let mut state = RemoteAlertState::with_controls(ports, shutdown.clone(), retry_wait);
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => break,
+            received = transitions.recv() => match received {
+                Some(transition) => {
+                    let now = now_source();
+                    if !state.handle(transition, now).await { break; }
+                }
+                None => break,
+            },
         }
-    })
+    }
 }
 
 struct RemoteAlertState {
@@ -116,6 +137,10 @@ struct RemoteAlertState {
     /// rather than one per round.
     windows: HashMap<(String, String), Vec<Instant>>,
     cap_warned: HashSet<(String, String)>,
+    shutdown: CancellationToken,
+    retry_wait: RetryWait,
+    #[cfg(test)]
+    admission_snapshots: Option<Arc<Mutex<Vec<usize>>>>,
 }
 
 impl RemoteAlertState {
@@ -124,10 +149,25 @@ impl RemoteAlertState {
             ports,
             windows: HashMap::new(),
             cap_warned: HashSet::new(),
+            shutdown: CancellationToken::new(),
+            retry_wait: production_retry_wait(),
+            #[cfg(test)]
+            admission_snapshots: None,
         }
     }
 
-    async fn handle(&mut self, transition: RemoteTransition, now: Instant) {
+    fn with_controls(
+        ports: Arc<dyn RemoteAlertPorts>,
+        shutdown: CancellationToken,
+        retry_wait: RetryWait,
+    ) -> Self {
+        let mut state = Self::new(ports);
+        state.shutdown = shutdown;
+        state.retry_wait = retry_wait;
+        state
+    }
+
+    async fn handle(&mut self, transition: RemoteTransition, now: Instant) -> bool {
         let dials = self.ports.notify_dials().await;
         let enabled = match transition.kind {
             TransitionKind::CiStarted | TransitionKind::CiFinished => dials.ci,
@@ -135,12 +175,12 @@ impl RemoteAlertState {
         };
         if !enabled {
             // Dropped before any resolution, so a disabled axis costs nothing.
-            return;
+            return true;
         }
 
         let key = (transition.room_dir.clone(), transition.repo_path.clone());
         if !self.admit(&key, now) {
-            return;
+            return true;
         }
 
         let Some(target) = self
@@ -148,7 +188,7 @@ impl RemoteAlertState {
             .resolve_orchestrator(transition.room_dir.clone())
             .await
         else {
-            return;
+            return true;
         };
         let notice = match notice_for(&transition) {
             Ok(notice) => notice,
@@ -158,15 +198,51 @@ impl RemoteAlertState {
                     transition.room_dir,
                     reason
                 );
-                return;
+                return true;
             }
         };
-        if let Err(reason) = self.ports.deliver(target, notice).await {
-            log::warn!(
-                "[remote-alerts] delivery failed for {}: {}",
-                transition.room_dir,
-                reason
-            );
+        self.deliver_notice_until_terminal(target, notice, &transition.room_dir)
+            .await
+    }
+
+    async fn deliver_notice_until_terminal(
+        &self,
+        target: InternalSystemTarget,
+        notice: InternalSystemNotice,
+        room_dir: &str,
+    ) -> bool {
+        loop {
+            // Never drop an in-progress payload/Enter future from outside mailbox.
+            match self.ports.deliver(target.clone(), notice.clone()).await {
+                Ok(()) => return true,
+                Err(reason)
+                    if crate::phone::mailbox::is_deferred_internal_delivery_error(&reason) =>
+                {
+                    #[cfg(test)]
+                    if let Some(snapshots) = &self.admission_snapshots {
+                        snapshots
+                            .lock()
+                            .unwrap()
+                            .push(self.windows.values().map(Vec::len).sum());
+                    }
+                }
+                Err(reason) => {
+                    log::warn!(
+                        "[remote-alerts] delivery failed for {}: {}",
+                        room_dir,
+                        reason
+                    );
+                    return true;
+                }
+            }
+            tokio::select! {
+                biased;
+                _ = self.shutdown.cancelled() => return false,
+                _ = (self.retry_wait)(PENDING_RETRY_INTERVAL) => {}
+            }
+            if self.shutdown.is_cancelled() {
+                return false;
+            }
         }
     }
 
@@ -646,11 +722,21 @@ mod tests {
         }
     }
 
+    type ScriptedAttempt = (
+        Result<(), String>,
+        Option<tokio::sync::oneshot::Receiver<()>>,
+    );
+
     struct RecordingPorts {
         dials: Mutex<RemoteNotifyDials>,
         target: Mutex<Option<InternalSystemTarget>>,
         resolutions: AtomicUsize,
         deliveries: Mutex<Vec<Delivery>>,
+        originals: Mutex<Vec<(InternalSystemTarget, InternalSystemNotice)>>,
+        attempts: Mutex<std::collections::VecDeque<ScriptedAttempt>>,
+        delivery_started: tokio::sync::Notify,
+        completed: Arc<AtomicUsize>,
+        dial_reads: AtomicUsize,
     }
 
     impl RecordingPorts {
@@ -660,6 +746,11 @@ mod tests {
                 target: Mutex::new(target),
                 resolutions: AtomicUsize::new(0),
                 deliveries: Mutex::new(Vec::new()),
+                originals: Mutex::new(Vec::new()),
+                attempts: Mutex::new(std::collections::VecDeque::new()),
+                delivery_started: tokio::sync::Notify::new(),
+                completed: Arc::new(AtomicUsize::new(0)),
+                dial_reads: AtomicUsize::new(0),
             }
         }
 
@@ -702,10 +793,28 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .push(delivery_of(&target, &notice));
-            Box::pin(async move { Ok(()) })
+            self.originals.lock().unwrap().push((target, notice));
+            let (result, gate) = self
+                .attempts
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or((Ok(()), None));
+            self.delivery_started.notify_one();
+            let completed = self.completed.clone();
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    gate.await.expect("release delivery completion");
+                }
+                if result.is_ok() {
+                    completed.fetch_add(1, Ordering::SeqCst);
+                }
+                result
+            })
         }
 
         fn notify_dials(&self) -> BoxFuture<'static, RemoteNotifyDials> {
+            self.dial_reads.fetch_add(1, Ordering::SeqCst);
             let dials = *self.dials.lock().unwrap_or_else(|error| error.into_inner());
             Box::pin(async move { dials })
         }
@@ -1333,5 +1442,326 @@ mod tests {
                 InternalSystemNotice::ContextAlert { .. } => panic!("a remote activity notice"),
             }
         }
+    }
+
+    fn controlled_retry_wait() -> (
+        RetryWait,
+        mpsc::UnboundedReceiver<tokio::sync::oneshot::Sender<()>>,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let wait: RetryWait = Arc::new(move |delay| {
+            assert_eq!(delay, Duration::from_secs(2));
+            let (release, gate) = tokio::sync::oneshot::channel();
+            tx.send(release).unwrap();
+            Box::pin(async move {
+                gate.await.expect("release retry wait");
+            })
+        });
+        (wait, rx)
+    }
+
+    async fn next_retry(
+        rx: &mut mpsc::UnboundedReceiver<tokio::sync::oneshot::Sender<()>>,
+    ) -> tokio::sync::oneshot::Sender<()> {
+        tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    fn held_ports(fixture: &RoomFixture) -> Arc<RecordingPorts> {
+        let ports = Arc::new(RecordingPorts::new(
+            dials(true, true),
+            Some(production_target(&fixture.room)),
+        ));
+        ports
+            .attempts
+            .lock()
+            .unwrap()
+            .push_back((Err("typing_hold_deferred: held".into()), None));
+        ports
+    }
+
+    #[tokio::test]
+    async fn serial_hold_can_fill_the_existing_transition_channel() {
+        let fixture = room_fixture();
+        let ports = held_ports(&fixture);
+        let (wait, mut waits) = controlled_retry_wait();
+        let (tx, rx) = mpsc::channel(1024);
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(run_with_ports(
+            ports.clone(),
+            rx,
+            shutdown,
+            Arc::new(Instant::now),
+            wait,
+        ));
+        tx.send(transition(TransitionKind::CiStarted, &fixture.room, "A"))
+            .await
+            .unwrap();
+        let release = next_retry(&mut waits).await;
+        for i in 0..1024 {
+            tx.try_send(transition(
+                TransitionKind::CiStarted,
+                &fixture.room,
+                &format!("B-{i}"),
+            ))
+            .unwrap();
+        }
+        let x = transition(TransitionKind::CiStarted, &fixture.room, "X-1025");
+        let dropped = match tx.try_send(x) {
+            Err(mpsc::error::TrySendError::Full(t)) => t,
+            result => panic!("expected Full for X: {result:?}"),
+        };
+        assert_eq!(dropped.repo_path, "X-1025");
+        assert_eq!(ports.deliveries().len(), 1);
+        assert_eq!(ports.dial_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.completed.load(Ordering::SeqCst), 0);
+        // A remains admitted even when its preference is turned off in the wait.
+        ports.set_dials(dials(false, false));
+        drop(tx);
+        release.send(()).unwrap();
+        task.await.unwrap();
+        assert_eq!(ports.resolutions(), 1);
+        assert_eq!(ports.completed.load(Ordering::SeqCst), 1);
+        {
+            let originals = ports.originals.lock().unwrap();
+            assert_eq!(originals.len(), 2);
+            assert_eq!(originals[0], originals[1]);
+        }
+        // Queue-only BASE control: consuming one item makes this same ID fit.
+        let (base_tx, mut base_rx) = mpsc::channel(1024);
+        for _ in 0..1024 {
+            base_tx
+                .try_send(transition(
+                    TransitionKind::CiStarted,
+                    &fixture.room,
+                    "queued",
+                ))
+                .unwrap();
+        }
+        base_rx.recv().await.unwrap();
+        base_tx.try_send(dropped).unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_a_full_hold_wait_keeps_no_delivery_success() {
+        let fixture = room_fixture();
+        let ports = held_ports(&fixture);
+        let (wait, mut waits) = controlled_retry_wait();
+        let (tx, rx) = mpsc::channel(1024);
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(run_with_ports(
+            ports.clone(),
+            rx,
+            shutdown.clone(),
+            Arc::new(Instant::now),
+            wait,
+        ));
+        tx.send(transition(TransitionKind::CiStarted, &fixture.room, "A"))
+            .await
+            .unwrap();
+        let release = next_retry(&mut waits).await;
+        for _ in 0..1024 {
+            tx.try_send(transition(TransitionKind::CiStarted, &fixture.room, "B"))
+                .unwrap();
+        }
+        shutdown.cancel();
+        task.await.unwrap();
+        assert!(release.send(()).is_err());
+        assert_eq!(ports.deliveries().len(), 1);
+        assert_eq!(ports.dial_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.completed.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn closed_sender_does_not_drop_the_active_deferred_notice() {
+        let fixture = room_fixture();
+        let ports = held_ports(&fixture);
+        let (wait, mut waits) = controlled_retry_wait();
+        let (tx, rx) = mpsc::channel(1);
+        let task = tokio::spawn(run_with_ports(
+            ports.clone(),
+            rx,
+            CancellationToken::new(),
+            Arc::new(Instant::now),
+            wait,
+        ));
+        tx.send(transition(TransitionKind::CiStarted, &fixture.room, "A"))
+            .await
+            .unwrap();
+        let release = next_retry(&mut waits).await;
+        drop(tx);
+        assert_eq!(ports.completed.load(Ordering::SeqCst), 0);
+        release.send(()).unwrap();
+        task.await.unwrap();
+        assert_eq!(ports.deliveries().len(), 2);
+        assert_eq!(ports.completed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn runner_takes_stamp_and_b_preference_after_previous_real_completion() {
+        for b_enabled in [false, true] {
+            let fixture = room_fixture();
+            let ports = held_ports(&fixture);
+            let (completion_release, completion_gate) = tokio::sync::oneshot::channel();
+            ports
+                .attempts
+                .lock()
+                .unwrap()
+                .push_back((Ok(()), Some(completion_gate)));
+            let (wait, mut waits) = controlled_retry_wait();
+            let t0 = Instant::now();
+            let clock = Arc::new(Mutex::new(t0));
+            let reads = Arc::new(Mutex::new(Vec::new()));
+            let read_clock = clock.clone();
+            let read_log = reads.clone();
+            let now: NowSource = Arc::new(move || {
+                let value = *read_clock.lock().unwrap();
+                read_log.lock().unwrap().push(value);
+                value
+            });
+            let (tx, rx) = mpsc::channel(2);
+            let task = tokio::spawn(run_with_ports(
+                ports.clone(),
+                rx,
+                CancellationToken::new(),
+                now,
+                wait,
+            ));
+            tx.send(transition(TransitionKind::CiStarted, &fixture.room, "A"))
+                .await
+                .unwrap();
+            let release = next_retry(&mut waits).await;
+            ports.set_dials(dials(!b_enabled, true));
+            tx.send(transition(TransitionKind::CiStarted, &fixture.room, "B"))
+                .await
+                .unwrap();
+            assert_eq!(reads.lock().unwrap().as_slice(), &[t0]);
+            assert_eq!(ports.dial_reads.load(Ordering::SeqCst), 1);
+            // Clear the first notification so the next one is the retry call.
+            ports.delivery_started.notified().await;
+            release.send(()).unwrap();
+            ports.delivery_started.notified().await;
+            assert_eq!(ports.dial_reads.load(Ordering::SeqCst), 1);
+            assert_eq!(ports.completed.load(Ordering::SeqCst), 0);
+            ports.set_dials(dials(b_enabled, true));
+            *clock.lock().unwrap() = t0 + Duration::from_secs(6);
+            completion_release.send(()).unwrap();
+            drop(tx);
+            task.await.unwrap();
+            assert_eq!(
+                reads.lock().unwrap().as_slice(),
+                &[t0, t0 + Duration::from_secs(6)]
+            );
+            assert_eq!(ports.resolutions(), if b_enabled { 2 } else { 1 });
+            assert_eq!(
+                ports.completed.load(Ordering::SeqCst),
+                if b_enabled { 2 } else { 1 }
+            );
+        }
+    }
+
+    #[test]
+    fn serial_recv_stamp_preserves_the_accepted_cap_shift() {
+        let ports = Arc::new(RecordingPorts::new(dials(true, true), None));
+        let mut base = RemoteAlertState::new(ports.clone());
+        let mut candidate = RemoteAlertState::new(ports);
+        let t0 = Instant::now();
+        let key = ("room".into(), "B".into());
+        assert!(base.admit(&key, t0 + Duration::from_secs(3)));
+        assert!(candidate.admit(&key, t0 + Duration::from_secs(6)));
+        for _ in 0..11 {
+            assert!(base.admit(&key, t0 + Duration::from_secs(100)));
+            assert!(candidate.admit(&key, t0 + Duration::from_secs(100)));
+        }
+        assert!(base.admit(&key, t0 + Duration::from_secs(3604)));
+        assert!(!candidate.admit(&key, t0 + Duration::from_secs(3604)));
+        assert!(!base.cap_warned.contains(&key));
+        assert!(candidate.cap_warned.contains(&key));
+        assert_eq!(base.windows[&key][0], t0 + Duration::from_secs(100));
+        assert_eq!(candidate.windows[&key][0], t0 + Duration::from_secs(6));
+    }
+
+    #[tokio::test]
+    async fn deferral_consumes_exactly_one_admission_slot() {
+        for terminal in [Ok(()), Err("pipe closed".to_string())] {
+            let fixture = room_fixture();
+            let ports = held_ports(&fixture);
+            ports.attempts.lock().unwrap().extend([
+                (Err("menu_guard_deferred: held".into()), None),
+                (Err("typing_hold_deferred: held".into()), None),
+                (terminal, None),
+            ]);
+            let (wait, mut waits) = controlled_retry_wait();
+            let snapshots = Arc::new(Mutex::new(Vec::new()));
+            let mut state =
+                RemoteAlertState::with_controls(ports.clone(), CancellationToken::new(), wait);
+            state.admission_snapshots = Some(snapshots.clone());
+            let input = transition(TransitionKind::CiStarted, &fixture.room, "A");
+            let key = (input.room_dir.clone(), input.repo_path.clone());
+            let controller = tokio::spawn(async move {
+                for _ in 0..3 {
+                    next_retry(&mut waits).await.send(()).unwrap();
+                }
+            });
+            assert!(state.handle(input, Instant::now()).await);
+            controller.await.unwrap();
+            assert_eq!(*snapshots.lock().unwrap(), vec![1, 1, 1]);
+            assert_eq!(state.windows[&key].len(), 1);
+            assert_eq!(ports.dial_reads.load(Ordering::SeqCst), 1);
+            assert_eq!(ports.resolutions(), 1);
+            let originals = ports.originals.lock().unwrap();
+            assert_eq!(originals.len(), 4);
+            assert!(originals.iter().all(|attempt| attempt == &originals[0]));
+        }
+    }
+
+    #[tokio::test]
+    async fn simultaneous_shutdown_and_ready_timer_selects_stop() {
+        let fixture = room_fixture();
+        let ports = held_ports(&fixture);
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.clone();
+        let ready: RetryWait = Arc::new(move |delay| {
+            assert_eq!(delay, PENDING_RETRY_INTERVAL);
+            cancel.cancel();
+            Box::pin(async {})
+        });
+        let (tx, rx) = mpsc::channel(2);
+        tx.send(transition(TransitionKind::CiStarted, &fixture.room, "A"))
+            .await
+            .unwrap();
+        tx.send(transition(TransitionKind::CiStarted, &fixture.room, "B"))
+            .await
+            .unwrap();
+        run_with_ports(ports.clone(), rx, shutdown, Arc::new(Instant::now), ready).await;
+        assert_eq!(ports.deliveries().len(), 1);
+        assert_eq!(ports.dial_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.completed.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn production_constructor_uses_the_supplied_shutdown_token_during_hold() {
+        let fixture = room_fixture();
+        let ports = held_ports(&fixture);
+        let (tx, rx) = mpsc::channel(2);
+        let shutdown = CancellationToken::new();
+        let task = start_with_ports(ports.clone(), rx, shutdown.clone());
+        tx.send(transition(TransitionKind::CiStarted, &fixture.room, "A"))
+            .await
+            .unwrap();
+        ports.delivery_started.notified().await;
+        tx.send(transition(TransitionKind::CiStarted, &fixture.room, "B"))
+            .await
+            .unwrap();
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ports.deliveries().len(), 1);
+        assert_eq!(ports.dial_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.completed.load(Ordering::SeqCst), 0);
     }
 }

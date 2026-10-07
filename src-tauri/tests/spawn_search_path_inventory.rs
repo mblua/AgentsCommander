@@ -252,7 +252,7 @@ const INVENTORY: &[Row] = &[
     ("src-tauri/src/config/teams.rs", 1, 0, &[(TestOnly, 1)]),
     ("src-tauri/src/lib.rs", 1, 0, &[(TestOnly, 1)]),
     ("src-tauri/src/loops/scheduler.rs", 1, 0, &[(TestOnly, 1)]),
-    ("src-tauri/src/path_identity.rs", 2, 0, &[(TestOnly, 2)]),
+    ("src-tauri/src/path_identity.rs", 1, 0, &[(TestOnly, 1)]),
     ("src-tauri/src/pty/credentials.rs", 4, 0, &[(TestOnly, 4)]),
     ("src-tauri/src/pty/docker_runtime.rs", 1, 1, &[]),
     ("src-tauri/src/pty/git_watcher.rs", 2, 1, &[(TestOnly, 1)]),

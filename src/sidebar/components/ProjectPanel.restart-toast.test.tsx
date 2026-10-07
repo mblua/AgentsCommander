@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel, { RESTART_TIMEOUT_MS } from "./ProjectPanel";
 import ToastHost from "../../shared/components/ToastHost";
-import type { AgentConfig, AppSettings } from "../../shared/types";
+import type { AgentConfig, AppSettings, TaskSnapshot } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
@@ -70,6 +70,16 @@ function discoveryResult() {
 function setupTransport(fake: FakeTransport): void {
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
   fake.resolve("discover_project", discoveryResult());
+  fake.resolve("task_get_snapshot_at", {
+    workgroupRoot: workgroupPath,
+    task: null,
+    taskTitle: "Restart toast",
+    description: "",
+    status: null,
+    revision: "topic:0",
+    statusRecord: null,
+    tailIncomplete: false,
+  } satisfies TaskSnapshot);
   fake.resolve("get_settings", baseSettings({ agents: [codexAgent()] }) satisfies AppSettings);
 }
 

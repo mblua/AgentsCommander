@@ -557,39 +557,43 @@ The peer name comes from `list-peers` output. Use `--mode wake` for fire-and-for
 
 ## 11. Agent memory rotation at spawn
 
-Every agent starts a fresh session with an empty `memory/`. AC does that for you: when it spawns a session for an agent, it rotates that agent's `memory/` directory in the **origin Agent Matrix** to `memory_YYYYMMDD_hhmmss/` and recreates an empty `memory/` next to it. The timestamp is local time.
+At a fresh session launch, AC renames non-empty `memory/` in the **origin Agent Matrix** to `memory-archive/memory_YYYYMMDD_hhmmss/` and recreates an empty `memory/`. The timestamp uses local time. Resuming a session does not rotate memory. The Root Agent is excluded.
 
-Rotation always happens in the origin Agent Matrix, never in a room replica. If you launch the session from a replica (`room-*/__agent_<name>/`), AC reads the replica's own configuration to find the matrix it came from and rotates there. If that lookup lands on anything that is not a canonical Agent Matrix directory, AC rotates nothing and the session still launches.
+Rotation always happens in the origin Agent Matrix, never in a room replica. From a replica (`room-*/__agent_<name>/`), AC reads its configuration to resolve the origin. If resolution fails or the result is not a canonical Agent Matrix, AC rotates nothing and the session still launches.
 
 ### What happens in each case
 
-| State of `memory/` | What AC does |
+| State | What AC does |
 |---|---|
-| Present and non-empty | Renames it to `memory_YYYYMMDD_hhmmss/`, then recreates an empty `memory/` |
-| Present and empty | Nothing. An empty directory has no history to archive |
-| Absent | Recreates it empty. Nothing is rotated, because there was nothing to move |
-| A junction, a symlink, or any other reparse point | Refuses, with `memory is not a real directory`. Renaming the link would move the link entry itself and hand you a real directory in place of your link |
-| Not a directory at all (a file named `memory`) | Refuses, with the same `memory is not a real directory` |
-| A `memory_<timestamp>/` of the same name already exists | Refuses, with `memory rotation target already exists`. AC never overwrites an archive |
+| `memory/` present and non-empty | Creates `memory-archive/` if needed, renames the whole directory to `memory-archive/memory_YYYYMMDD_hhmmss/`, then recreates an empty `memory/` |
+| `memory/` present and empty | Nothing; creates no archive container |
+| `memory/` absent | Tries to recreate it empty; creates no archive container |
+| `memory/` is a file, junction, symlink, or other reparse point | Refuses with `memory is not a real directory`; leaves the source untouched |
+| `memory-archive/` is a file, junction, symlink, or other reparse point | Refuses with `memory archive parent is not a real directory`; leaves live memory untouched |
+| Nested destination `memory-archive/memory_<timestamp>` already exists, including a link | Refuses with `memory rotation target already exists`; leaves live memory untouched |
 
-A refusal is not fatal. The session launches either way, and AC records the reason:
+Container preparation failures also leave live memory untouched. The destination check is best effort: it does not reserve the name atomically against another launch using the same timestamp.
+
+A rotation failure is nonfatal: the session still launches, and AC logs:
 
 ```text
 [memory] #1172: memory rotation failed for <matrix root> (non-fatal; the session still launches): <error>
 ```
 
-A successful rotation records:
+A successful rotation logs:
 
 ```text
-[memory] #1172: rotated <matrix>/memory -> <matrix>/memory_YYYYMMDD_hhmmss at fresh session spawn
+[memory] #1172: rotated <matrix>/memory -> <matrix>/memory-archive/memory_YYYYMMDD_hhmmss at fresh session spawn
 ```
 
-The no-op cases (empty and absent) log nothing at this level, so silence in the log means "there was nothing to rotate", not "rotation broke".
+Empty memory logs nothing at this level. Missing memory also logs no rotation; if repair fails, AC warns `could not restore a missing memory/`. If rotation succeeds but live-directory recreation fails, AC warns `failed to recreate an empty memory/` and tries to restore it on the next fresh launch. The archive remains available.
 
 ### What this means for you as an agent
 
-The `memory_YYYYMMDD_hhmmss/` directories are **read-only history**. Read them whenever you need what a previous session knew. Never edit one, never delete one, and never move files back out of one into `memory/`: your current `memory/` is the only directory you write to, and the archives are the record of how you got here.
+Your own `memory-archive/memory_YYYYMMDD_hhmmss/` archives and **legacy root** `memory_YYYYMMDD_hhmmss/` archives are read-only history. Existing root archives stay where they are; AC does not migrate them. List your own `memory-archive/` only to discover archives, then read the history you need. Never write, modify, or delete archives or their container, or move archived files into live `memory/`. Write current memory only in `memory/`.
 
-If you find your `memory/` still holding the previous session's files, rotation refused. Check the log for the `[memory] #1172` line, and check whether `memory/` is a junction rather than a real directory.
+Other agents' live memory, archive containers, and legacy archives remain private. Never read, list, search, or summarize them; message the owner instead. Updated generated context states these rules; customized templates and already-running contexts are not retroactively rewritten.
+
+If live memory still contains the previous session's files, check the `[memory] #1172` warning for a refused or failed rotation: inspect the source, archive parent, and nested destination as applicable. If live `memory/` is missing after a successful rotation, check the recreation warning; the next fresh launch retries repair.
 
 See [Directory layout](reference/directory-layout.md) for where the Agent Matrix and its archives sit on disk.
