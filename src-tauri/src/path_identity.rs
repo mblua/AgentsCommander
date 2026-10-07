@@ -705,20 +705,20 @@ impl RetainedDirectory {
     }
 }
 
+fn link_flags_indicate_link_or_reparse(is_symlink: bool, attributes: u32) -> bool {
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    is_symlink || attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
 fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
     #[cfg(windows)]
-    {
+    let attributes = {
         use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
+        metadata.file_attributes()
+    };
     #[cfg(not(windows))]
-    {
-        false
-    }
+    let attributes = 0;
+    link_flags_indicate_link_or_reparse(metadata.file_type().is_symlink(), attributes)
 }
 
 #[cfg(unix)]
@@ -819,6 +819,18 @@ pub fn verify_component_chain(path: &Path) -> Result<(), String> {
 /// Same checks as [`verify_component_chain`], reporting which rule rejected the
 /// path instead of collapsing every rejection to `unsafe_path`.
 pub fn verify_component_chain_reason(path: &Path) -> Result<(), PathRule> {
+    verify_component_chain_with_inspector(path, inspect_component_link)
+}
+
+fn inspect_component_link(path: &Path) -> Result<bool, PathRule> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| PathRule::ComponentUnreadable)?;
+    Ok(is_link_or_reparse(&metadata))
+}
+
+fn verify_component_chain_with_inspector(
+    path: &Path,
+    mut inspect: impl FnMut(&Path) -> Result<bool, PathRule>,
+) -> Result<(), PathRule> {
     let mut current = PathBuf::new();
     for component in path.components() {
         match component {
@@ -832,9 +844,7 @@ pub fn verify_component_chain_reason(path: &Path) -> Result<(), PathRule> {
             }
             Component::Normal(part) => current.push(part),
         }
-        let metadata =
-            std::fs::symlink_metadata(&current).map_err(|_| PathRule::ComponentUnreadable)?;
-        if is_link_or_reparse(&metadata) {
+        if inspect(&current)? {
             return Err(PathRule::ComponentIsLink);
         }
     }
@@ -848,7 +858,14 @@ pub fn verify_directory(path: &Path) -> Result<VerifiedPathIdentity, String> {
 /// Same checks as [`verify_directory`], reporting which rule rejected the path
 /// instead of collapsing every rejection to `unsafe_path`.
 pub fn verify_directory_reason(path: &Path) -> Result<VerifiedPathIdentity, PathRule> {
-    verify_component_chain_reason(path)?;
+    verify_directory_with_inspector(path, inspect_component_link)
+}
+
+fn verify_directory_with_inspector(
+    path: &Path,
+    inspect: impl FnMut(&Path) -> Result<bool, PathRule>,
+) -> Result<VerifiedPathIdentity, PathRule> {
+    verify_component_chain_with_inspector(path, inspect)?;
     let entry_before =
         std::fs::symlink_metadata(path).map_err(|_| PathRule::ComponentUnreadable)?;
     if !entry_before.is_dir() || is_link_or_reparse(&entry_before) {
@@ -2810,54 +2827,103 @@ mod tests {
         );
     }
 
-    /// Windows reparse points are not POSIX symlinks: assert the rule name for
-    /// BOTH a symlink and a real directory junction. A silent skip of the
-    /// symlink half is a job failure when `AC_REQUIRE_WINDOWS_LINK_TESTS` is
-    /// set, which CI does.
-    #[cfg(windows)]
+    // Simulated flags exercise the shared rejection algorithm without creating
+    // links. This does not cover real Windows reparse metadata or no-follow opens.
+    fn simulated_reparse_inspector(marked: &Path, path: &Path) -> Result<bool, PathRule> {
+        let metadata =
+            std::fs::symlink_metadata(path).map_err(|_| PathRule::ComponentUnreadable)?;
+        Ok(link_flags_indicate_link_or_reparse(
+            metadata.file_type().is_symlink(),
+            if path == marked { 0x0400 } else { 0 },
+        ))
+    }
+
     #[test]
-    fn verify_directory_reason_rejects_reparse_component() {
+    fn verify_directory_reason_rejects_simulated_reparse_component() {
         let temp = tempfile::TempDir::new().unwrap();
-        let real = temp.path().join("real");
-        std::fs::create_dir_all(&real).unwrap();
-
-        let symlink = temp.path().join("symlinked");
-        match std::os::windows::fs::symlink_dir(&real, &symlink) {
-            Ok(()) => assert_eq!(
-                verify_directory_reason(&symlink),
+        let ancestor = temp.path().join("ancestor");
+        let descendant = ancestor.join("descendant");
+        std::fs::create_dir_all(&descendant).unwrap();
+        for marked in [&ancestor, &descendant] {
+            assert_eq!(
+                verify_directory_with_inspector(&descendant, |path| {
+                    simulated_reparse_inspector(marked, path)
+                }),
                 Err(PathRule::ComponentIsLink)
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                if std::env::var_os("AC_REQUIRE_WINDOWS_LINK_TESTS").is_some() {
-                    panic!(
-                        "symlink_dir needs Developer Mode or SeCreateSymbolicLinkPrivilege; \
-                         AC_REQUIRE_WINDOWS_LINK_TESTS forbids skipping this half"
-                    );
-                }
-                eprintln!(
-                    "SKIPPED symlink half: symlink_dir needs Developer Mode or \
-                     SeCreateSymbolicLinkPrivilege"
-                );
-            }
-            Err(error) => panic!("symlink_dir failed unexpectedly: {error}"),
+            );
         }
+    }
 
-        // A junction needs no privilege and therefore always runs.
-        let junction = temp.path().join("junctioned");
-        let status = std::process::Command::new("cmd")
-            .args([
-                "/C",
-                "mklink",
-                "/J",
-                &junction.to_string_lossy(),
-                &real.to_string_lossy(),
-            ])
-            .status()
-            .expect("mklink /J must run");
-        assert!(status.success(), "mklink /J must create the junction");
+    #[test]
+    fn component_chain_stops_at_simulated_reparse() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let ancestor = temp.path().join("ancestor");
+        let descendant = ancestor.join("descendant");
+        std::fs::create_dir_all(&descendant).unwrap();
+        for marked in [&ancestor, &descendant] {
+            let mut expected: Vec<_> = marked
+                .ancestors()
+                .filter(|path| path.file_name().is_some())
+                .map(Path::to_path_buf)
+                .collect();
+            expected.reverse();
+            let mut visited = Vec::new();
+            assert_eq!(
+                verify_component_chain_with_inspector(&descendant, |path| {
+                    visited.push(path.to_path_buf());
+                    simulated_reparse_inspector(marked, path)
+                }),
+                Err(PathRule::ComponentIsLink)
+            );
+            assert_eq!(visited, expected);
+        }
+    }
+
+    #[test]
+    fn link_flags_classify_simulated_reparse() {
+        assert!(!link_flags_indicate_link_or_reparse(false, 0));
+        assert!(!link_flags_indicate_link_or_reparse(false, 0x0080));
+        assert!(link_flags_indicate_link_or_reparse(false, 0x0400));
+        assert!(link_flags_indicate_link_or_reparse(false, 0x0480));
+        assert!(link_flags_indicate_link_or_reparse(true, 0));
+    }
+
+    #[test]
+    fn verify_directory_reason_accepts_ordinary_directory_simulated_reparse() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let ordinary = temp.path().join("ordinary");
+        std::fs::create_dir(&ordinary).unwrap();
+        let absent_marker = temp.path().join("unmarked");
+        let identity = verify_directory_with_inspector(&ordinary, |path| {
+            simulated_reparse_inspector(&absent_marker, path)
+        })
+        .unwrap();
+        assert!(identity.metadata.is_dir);
+        assert_eq!(identity, verify_directory_reason(&ordinary).unwrap());
+    }
+
+    #[test]
+    fn component_chain_preserves_unreadable_simulated_reparse() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = temp.path().join("missing");
         assert_eq!(
-            verify_directory_reason(&junction),
-            Err(PathRule::ComponentIsLink)
+            verify_component_chain_with_inspector(&missing, |path| {
+                simulated_reparse_inspector(&missing, path)
+            }),
+            Err(PathRule::ComponentUnreadable)
+        );
+    }
+
+    #[test]
+    fn component_chain_preserves_parent_component_simulated_reparse() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let parent = temp.path().join("..");
+        let absent_marker = temp.path().join("unmarked");
+        assert_eq!(
+            verify_component_chain_with_inspector(&parent, |path| {
+                simulated_reparse_inspector(&absent_marker, path)
+            }),
+            Err(PathRule::ParentComponent)
         );
     }
 }
