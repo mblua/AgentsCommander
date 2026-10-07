@@ -86,7 +86,15 @@ A separate window holding one Mermaid file: the source on one side, the rendered
 
 The plain-language description of the room's goal. Lives at `.ac/room-<N>-<team>/TASK.md` with YAML frontmatter for the title and a freeform body for context, links, and constraints.
 
-The orchestrator is the only agent that should be writing to the brief directly. Workers reference it and update their own outboxes.
+The orchestrator changes the brief through `task-set-title` and `task-append-body`; workers read it. Agents do not write `TASK.md` directly.
+
+## Task status
+
+The current work state: remaining tickets, follow-up (FUP), and where to continue. It lives separately in `TASK-status.jsonl` as complete snapshots. An orchestrator's `task-status-set` replaces the current status without changing the brief; AC does not infer status from the brief's body. Hover over or focus the task title in the terminal or sidebar to read the complete status. Null status has no tooltip.
+
+Use Clean to archive the description and history as a pair and start a new topic with null status. Interrupted Clean operations recover through task reads and writes; conflicts preserve evidence for reconciliation. Do not edit history, backups, journals or lockfiles manually.
+
+See [room tasks and recovery](agents/teams-and-workgroups.md#current-task-status) and the [task CLI](reference/cli.md#task-get) for revisions, retry and access rules.
 
 ## Messaging
 
