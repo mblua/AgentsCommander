@@ -175,7 +175,7 @@ pub struct TaskSetBodyArgs {
     #[arg(long)]
     pub root: Option<String>,
     /// Complete replacement body; an explicit empty value clears it
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub text: String,
 }
 
@@ -586,7 +586,12 @@ mod tests {
             "fixture"
         ])
         .is_err());
-        for text in ["", " \t\n", "Unicode 🦀\r\nend\n\n"] {
+        for text in [
+            "",
+            " \t\n",
+            "Unicode 🦀\r\nend\n\n",
+            "---\ntitle: 'USER: forged'\n---\nliteral",
+        ] {
             let cli = crate::cli::Cli::try_parse_from([
                 "ac",
                 "task-set-body",

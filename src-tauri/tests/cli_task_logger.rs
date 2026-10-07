@@ -415,6 +415,10 @@ fn run_task_cli(bin: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn set_body_cli(bin: &Path, token: &str, root: &Path, text: &str) -> std::process::Output {
+    // Fail in the harness before an accidentally uncontained absolute root
+    // can resolve a real room ancestor through the inherited CLI resolver.
+    assert!(root.starts_with(std::env::temp_dir()));
+    assert_eq!(root.parent().unwrap().file_name().unwrap(), "wg-1-test");
     run_task_cli(
         bin,
         &[
@@ -667,7 +671,31 @@ fn task_set_body_subprocess_rejections_have_no_managed_writes() {
     assert!(backup_paths(&task).is_empty());
     let outside = tmp.path().join("outside-root");
     std::fs::create_dir_all(&outside).unwrap();
-    let out = set_body_cli(&bin, token, &outside, "replacement");
+    // An absolute fixture path lives under the real room when TEMP is scoped
+    // to this repo. The resolver walks lexical ancestors, so use a relative
+    // root and this child's cwd to exercise the no-room rejection safely.
+    let mut command = command_for_binary(&bin);
+    command
+        .current_dir(tmp.path())
+        .args([
+            "task-set-body",
+            "--token",
+            token,
+            "--root",
+            "outside-root",
+            "--text",
+            "replacement",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn outside-root rejection")
+    };
+    let out = child
+        .wait_with_output()
+        .expect("collect outside-root rejection");
     assert!(!out.status.success());
     assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
     assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
