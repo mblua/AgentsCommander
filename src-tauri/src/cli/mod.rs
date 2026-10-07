@@ -171,6 +171,8 @@ pub enum Commands {
     TaskSetTitle(task_set_title::TaskSetTitleArgs),
     /// Append text to the body of the room TASK.md (orchestrator-only)
     TaskAppendBody(task_append_body::TaskAppendBodyArgs),
+    /// Replace or clear the body of the room TASK.md (orchestrator-only)
+    TaskSetBody(task_append_body::TaskSetBodyArgs),
     /// Read the caller's room task and current status (orchestrator-only)
     TaskGet(task_append_body::TaskGetArgs),
     /// Replace the complete room status using a revision and request UUID
@@ -445,6 +447,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::PurgeWg(args) => purge_wg::execute(args),
         Commands::TaskSetTitle(args) => task_set_title::execute(args),
         Commands::TaskAppendBody(args) => task_append_body::execute(args),
+        Commands::TaskSetBody(args) => task_append_body::execute_set_body(args),
         Commands::TaskGet(args) => task_append_body::execute_get(args),
         Commands::TaskStatusSet(args) => task_append_body::execute_status_set(args),
         Commands::OpenProject(args) => open_project::execute(args),
