@@ -449,6 +449,62 @@ pub fn parse_catalog_schema2(
     Ok(catalog)
 }
 
+/// #2893: source-local decoding. Schema1 is a complete base only; project and
+/// personal patches cannot donate commands or inherit another source's fields.
+#[allow(dead_code)] // P02 reader; production activation is a later cut.
+pub(crate) fn parse_independent_catalog(
+    bytes: &[u8],
+    base: bool,
+) -> Result<CodingAgentCatalogSchema2, IdentityCatalogError> {
+    let value = parse_strict_json(bytes).map_err(IdentityCatalogError::InvalidFormat)?;
+    if value
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        == Some(2)
+    {
+        return parse_catalog_schema2(bytes);
+    }
+    if !base
+        || value
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+    {
+        return Err(IdentityCatalogError::IndependentFormatRequired);
+    }
+    let catalog: CodingAgentCatalog = serde_json::from_value(value)
+        .map_err(|e| IdentityCatalogError::InvalidFormat(e.to_string()))?;
+    let mut keys = HashSet::new();
+    for agent in &catalog.agents {
+        if agent.command.trim().is_empty() || !keys.insert(&agent.key) {
+            return Err(IdentityCatalogError::InvalidFormat(
+                "incomplete or duplicate base entry".into(),
+            ));
+        }
+        validate_definition(agent).map_err(IdentityCatalogError::InvalidFormat)?;
+    }
+    Ok(CodingAgentCatalogSchema2 {
+        schema_version: 2,
+        agents: catalog.agents,
+        coding_agent_profiles: Default::default(),
+        profile_labels: Default::default(),
+    })
+}
+
+#[allow(dead_code)] // P02 reader; production activation is a later cut.
+pub(crate) fn independent_catalog_path(
+    ac_dir: &Path,
+    kind: crate::config::settings::SourceKind,
+) -> Option<PathBuf> {
+    use crate::config::settings::SourceKind;
+    match kind {
+        SourceKind::CatalogBase => Some(catalog_dir(ac_dir).join(CATALOG_MANIFEST_FILENAME)),
+        SourceKind::CatalogProject => Some(project_catalog_path(ac_dir)),
+        SourceKind::CatalogPersonal => Some(local_catalog_path(ac_dir)),
+        SourceKind::RegisteredInstance => None,
+    }
+}
+
 #[cfg(test)]
 mod identity_schema2_tests {
     use super::*;
