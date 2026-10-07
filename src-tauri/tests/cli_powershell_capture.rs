@@ -593,7 +593,10 @@ fn issue_1867_isolation_source_contract() {
                     1,
                 ),
                 ("run_task_cli", 1),
-                ("task_set_body_subprocess_rejections_have_no_managed_writes", 1),
+                (
+                    "task_set_body_subprocess_rejections_have_no_managed_writes",
+                    1,
+                ),
             ],
             &[],
         ),
