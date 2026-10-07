@@ -581,7 +581,7 @@ fn issue_1867_isolation_source_contract() {
         (
             "cli_task_logger.rs",
             include_str!("cli_task_logger.rs"),
-            3,
+            5,
             &[
                 ("task_set_title_audit_line_reaches_file_sink", 1),
                 (
@@ -590,6 +590,11 @@ fn issue_1867_isolation_source_contract() {
                 ),
                 (
                     "task_snapshot_write_replay_emit_real_audit_without_secrets",
+                    1,
+                ),
+                ("run_task_cli", 1),
+                (
+                    "task_set_body_subprocess_rejections_have_no_managed_writes",
                     1,
                 ),
             ],
