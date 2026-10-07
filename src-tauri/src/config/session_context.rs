@@ -15564,6 +15564,21 @@ mod token_accounting {
         assert_eq!(values.matrix_section.matches(NEW_ARCHIVE_GRANT).count(), 1);
         assert_eq!(write_restrictions.matches(NEW_PEER_PRIVACY).count(), 1);
 
+        // #2931 changes only the TASK verb list. Pin both literal clauses and
+        // measure their exact delta independently of the generated output;
+        // historical accounting excludes it, while actual ceilings stay fixed.
+        const OLD_TASK_VERBS: &str =
+            "only through the `task-set-title` and `task-append-body` CLI verbs";
+        const NEW_TASK_VERBS: &str =
+            "only through the `task-set-title`, `task-append-body` and `task-set-body` CLI verbs";
+        const TASK_SET_BODY_RULE_DELTA_BYTES: usize = 17;
+        assert_eq!(
+            NEW_TASK_VERBS.len() - OLD_TASK_VERBS.len(),
+            TASK_SET_BODY_RULE_DELTA_BYTES
+        );
+        assert_eq!(values.room_shared_entry.matches(NEW_TASK_VERBS).count(), 1);
+        assert!(!values.room_shared_entry.contains(OLD_TASK_VERBS));
+
         let messaging = super::render_inter_agent_messaging_block(&values);
         let status_grant_offset = values
             .room_shared_entry
@@ -15579,10 +15594,15 @@ mod token_accounting {
             + super::DEFAULT_CLI_CONTEXT.len()
             + super::DEFAULT_SESSION_CREDENTIALS.len()
             + super::DEFAULT_DELEGATED_TASK_REPORTING.len();
-        let touched_owners = raw_touched_owners - P2_STATUS_GRANT_BYTES - MEMORY_LAYOUT_DELTA_BYTES;
+        let touched_owners = raw_touched_owners
+            - P2_STATUS_GRANT_BYTES
+            - MEMORY_LAYOUT_DELTA_BYTES
+            - TASK_SET_BODY_RULE_DELTA_BYTES;
         let full_wg = super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
-        let historical_full_wg_bytes =
-            full_wg.len() - P2_STATUS_GRANT_BYTES - MEMORY_LAYOUT_DELTA_BYTES;
+        let historical_full_wg_bytes = full_wg.len()
+            - P2_STATUS_GRANT_BYTES
+            - MEMORY_LAYOUT_DELTA_BYTES
+            - TASK_SET_BODY_RULE_DELTA_BYTES;
         assert!(
             raw_touched_owners <= V5_MAX_TOUCHED_OWNERS_BYTES + MEMORY_LAYOUT_DELTA_BYTES,
             "P2 actual touched owners: {} bytes, existing ceiling {}; full WG: {} bytes, existing ceiling {}",
@@ -15631,7 +15651,8 @@ mod token_accounting {
         assert_eq!(
             SHARED_LOCATIONS_ENTRY_DELTA_BYTES,
             values.project_shared_entry.len() + values.room_shared_entry.len()
-                - P2_STATUS_GRANT_BYTES,
+                - P2_STATUS_GRANT_BYTES
+                - TASK_SET_BODY_RULE_DELTA_BYTES,
             "the entry half of the V5 delta must be exactly the two new entries"
         );
         assert!(
