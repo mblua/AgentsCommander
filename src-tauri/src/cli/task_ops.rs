@@ -43,9 +43,8 @@ pub enum TaskOp {
     /// Append a body paragraph (frontmatter untouched).
     AppendBody(String),
     /// Replace BOTH frontmatter title AND body with the canonical Clean form
-    /// (title: 'Clean', body: "Ready to start a new topic\n"). Preserves the
-    /// file's existing BOM and frontmatter line ending; body is always LF
-    /// canonical. NoOp when the file is already in canonical Clean form.
+    /// (title: 'Clean', empty body). Preserves the
+    /// file's existing BOM and frontmatter line ending; body has no bytes. NoOp when the file is already in canonical Clean form.
     Clean,
 }
 
@@ -405,7 +404,7 @@ fn apply_append_body(parsed: &ParsedTask, text: &str) -> ParsedTask {
 
 /// Replace frontmatter title and body with the canonical Clean form.
 /// Preserves the file's BOM and dominant line ending for the frontmatter;
-/// the body is always LF canonical (`"Ready to start a new topic\n"`). For
+/// the body contains no bytes. For
 /// an empty input (`parse_task("")`), `parsed.bom == false` and
 /// `parsed.line_ending == "\n"`, so the output is the canonical LF/no-BOM
 /// Clean form — no special case needed.
@@ -415,7 +414,7 @@ fn apply_clean(parsed: &ParsedTask) -> ParsedTask {
         line_ending: parsed.line_ending,
         has_frontmatter: true,
         frontmatter: vec!["title: 'Clean'".to_string()],
-        body: "Ready to start a new topic\n".to_string(),
+        body: String::new(),
     }
 }
 
@@ -1815,6 +1814,12 @@ mod tests {
         let p = apply_set_title(&parsed, "new");
         assert_eq!(p.frontmatter, vec!["title: 'new'".to_string()]);
         assert_eq!(p.body, "body\n");
+        let legacy = parse_task("Ready to start a new topic\n");
+        assert_eq!(apply_set_title(&legacy, "new").body, legacy.body);
+        assert_eq!(
+            apply_edit(&legacy, &TaskOp::SetUserTitle("new".into())).body,
+            legacy.body
+        );
     }
 
     #[test]
@@ -1891,6 +1896,11 @@ mod tests {
         let p = apply_append_body(&parsed, "new");
         let out = render(&p);
         assert_eq!(out, "---\ntitle: x\n---\nold\n\nnew\n");
+        let legacy = parse_task("Ready to start a new topic\n");
+        assert_eq!(
+            apply_append_body(&legacy, "summary").body,
+            "Ready to start a new topic\n\nsummary\n"
+        );
     }
 
     #[test]
@@ -2283,10 +2293,7 @@ mod tests {
         let parsed = parse_task("");
         let p = apply_clean(&parsed);
         let out = render(&p);
-        assert_eq!(
-            out,
-            "---\ntitle: 'Clean'\n---\nReady to start a new topic\n"
-        );
+        assert_eq!(out, "---\ntitle: 'Clean'\n---\n");
     }
 
     #[test]
@@ -2300,25 +2307,38 @@ mod tests {
         // Frontmatter is REPLACED entirely (foo: bar is dropped — Clean
         // is a hard reset, not a merge).
         assert_eq!(p.frontmatter, vec!["title: 'Clean'".to_string()]);
-        assert_eq!(p.body, "Ready to start a new topic\n");
+        assert_eq!(p.body, "");
     }
 
     #[test]
     fn apply_clean_preserves_crlf_and_bom() {
-        // Round 2 (dev-rust R1.3): on a Notepad-saved Clean file with
-        // body `"Ready to start a new topic\r\n"`, repeated Clean is NOT
-        // idempotent — the CRLF→LF body conversion is treated as a
-        // write-worthy diff. This matches `apply_append_body`'s pinned
-        // trade-off (test U34).
+        // Clean preserves BOM/CRLF frontmatter; a second Clean is NoOp.
         let input = "\u{FEFF}---\r\ntitle: old\r\nx: 1\r\n---\r\nbody\r\n";
         let parsed = parse_task(input);
         let p = apply_clean(&parsed);
         assert!(p.bom);
         assert_eq!(p.line_ending, "\r\n");
         let out = render(&p);
-        // Frontmatter lines use CRLF; body uses LF (see §3.1.3 rationale).
-        assert!(out.starts_with("\u{FEFF}---\r\ntitle: 'Clean'\r\n---\r\n"));
-        assert!(out.ends_with("Ready to start a new topic\n"));
+        assert_eq!(out, "\u{FEFF}---\r\ntitle: 'Clean'\r\n---\r\n");
+        assert!(p.body.is_empty());
+        let fix = FixtureRoot::new("task-clean-crlf");
+        let wg = fix.path().join("wg-1");
+        std::fs::create_dir_all(&wg).unwrap();
+        std::fs::write(wg.join("TASK.md"), input).unwrap();
+        let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
+        assert!(matches!(
+            perform_inner(&wg, TaskOp::Clean, now).unwrap(),
+            EditOutcome::Wrote { .. }
+        ));
+        let log = std::fs::read(wg.join("TASK-status.jsonl")).unwrap();
+        let entries = std::fs::read_dir(&wg).unwrap().count();
+        assert!(matches!(
+            perform_inner(&wg, TaskOp::Clean, now).unwrap(),
+            EditOutcome::NoOp { .. }
+        ));
+        assert_eq!(std::fs::read(wg.join("TASK.md")).unwrap(), out.as_bytes());
+        assert_eq!(std::fs::read(wg.join("TASK-status.jsonl")).unwrap(), log);
+        assert_eq!(std::fs::read_dir(&wg).unwrap().count(), entries);
     }
 
     #[test]
@@ -2326,11 +2346,7 @@ mod tests {
         let fix = FixtureRoot::new("task-u39");
         let wg = fix.path().join("wg-1");
         std::fs::create_dir_all(&wg).unwrap();
-        std::fs::write(
-            wg.join("TASK.md"),
-            "---\ntitle: 'Clean'\n---\nReady to start a new topic\n",
-        )
-        .unwrap();
+        std::fs::write(wg.join("TASK.md"), "---\ntitle: 'Clean'\n---\n").unwrap();
         let now = || fixed_now_at(2026, 1, 1, 0, 0, 0);
         let r = perform_inner(&wg, TaskOp::Clean, now).unwrap();
         match r {
@@ -2344,6 +2360,8 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".bak.md"))
             .count();
         assert_eq!(bak_count, 0);
+        perform_inner(&wg, TaskOp::AppendBody("human summary".into()), now).unwrap();
+        assert_eq!(read_snapshot(&wg).unwrap().description, "human summary\n");
     }
 
     #[test]
@@ -2370,10 +2388,7 @@ mod tests {
         let backup_content = std::fs::read_to_string(&backup_path).unwrap();
         assert_eq!(backup_content, pre_clean);
         let final_content = std::fs::read_to_string(wg.join("TASK.md")).unwrap();
-        assert_eq!(
-            final_content,
-            "---\ntitle: 'Clean'\n---\nReady to start a new topic\n"
-        );
+        assert_eq!(final_content, "---\ntitle: 'Clean'\n---\n");
     }
 
     #[test]
@@ -2391,7 +2406,7 @@ mod tests {
         assert!(matches!(r, EditOutcome::Wrote { backup: None, .. }));
         assert_eq!(
             std::fs::read_to_string(wg.join("TASK.md")).unwrap(),
-            "---\ntitle: 'Clean'\n---\nReady to start a new topic\n"
+            "---\ntitle: 'Clean'\n---\n"
         );
         let bak_count = std::fs::read_dir(&wg)
             .unwrap()
@@ -3693,7 +3708,7 @@ mod tests {
         }
         let snapshot = read_snapshot(root).unwrap();
         assert_eq!(snapshot.task_title.as_deref(), Some("Clean"));
-        assert_eq!(snapshot.description, "Ready to start a new topic\n");
+        assert_eq!(snapshot.description, "");
         let seed = snapshot.status_record.unwrap();
         assert_eq!(seed.kind, "topic_started");
         assert_eq!(seed.sequence, 0);
