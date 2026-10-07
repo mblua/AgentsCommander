@@ -370,7 +370,7 @@ function registerTaskPanelTransport({ fake, discoveryResult }: { fake: FakeTrans
     const wg = discoveryResult.workgroups.find(wg => wg.path === workgroupRoot);
     return sidebarSnapshot(String(workgroupRoot), {
       taskTitle: wg?.taskTitle ?? null,
-      description: wg?.task?.includes("stale body") ? "stale body text" : "Ready to start a new topic\n",
+      description: wg?.task?.includes("stale body") ? "stale body text" : "",
     });
   });
   fake.resolve("task_clean", { workgroupRoot: workgroupPath, task: null });
@@ -471,13 +471,9 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       ["empty body", "", true],
       ["space", " ", false],
       ["tab", "	", false],
-      ["LF", "
-", false],
-      ["CRLF whitespace", "
-", false],
-      ["multiple LF", "
-
-", false],
+      ["LF", "\n", false],
+      ["CRLF whitespace", "\r\n", false],
+      ["multiple LF", "\n\n", false],
     ])(`Clean description %s in ${active ? "active" : "inactive"} menu`, async (_label, description, disabled) => {
       const fake = await setupPanel(active ? [coordSession(), memberSession()] : [], projectDiscovery("Clean"));
       fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { taskTitle: "Clean", description }));
@@ -488,11 +484,12 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(broom.title).toBe(disabled ? "Nothing to clear" : "Clear task title");
     });
 
-    it.each(["title", "status", "status record"])(`allows %s and unknown snapshots in ${active ? "active" : "inactive"} menu`, async () => {
+    it.each(["title", "status", "status record"])(`allows %s and unknown snapshots in ${active ? "active" : "inactive"} menu`, async (guard) => {
       const fake = await setupPanel(active ? [coordSession(), memberSession()] : [], projectDiscovery("Clean"));
       fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, {
-        taskTitle: "Clean", description: "Ready to start a new topic\n", status: "complete status",
-        statusRecord: { schemaVersion: 1, kind: "status", topicId: "topic", sequence: 1,
+        taskTitle: guard === "title" ? "USER title" : "Clean", description: "",
+        status: guard === "status" ? "complete status" : null,
+        statusRecord: guard === "status record" ? { schemaVersion: 1, kind: "status", topicId: "topic", sequence: 1,
           requestId: null, baseRevision: null, recordedAt: "now", author: null, status: "complete status" } : null,
       }));
       await projectStore.refreshTaskSnapshot(workgroupPath);

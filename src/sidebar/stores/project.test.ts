@@ -156,7 +156,7 @@ describe("projectStore", () => {
     const old = deferred<TaskSnapshot>();
     m.getSnapshot.mockReturnValueOnce(old.promise);
     const pending = projectStore.refreshTaskSnapshot(wg.path);
-    m.getSnapshot.mockResolvedValueOnce(taskSnapshot(wg.path, { taskTitle: "Clean", description: "Ready to start a new topic\n", status: null }));
+    m.getSnapshot.mockResolvedValueOnce(taskSnapshot(wg.path, { taskTitle: "Clean", description: "", status: null }));
     await projectStore.refreshTaskSnapshot(wg.path);
     old.resolve(taskSnapshot(wg.path, { status: "before Clean" }));
     await pending;
