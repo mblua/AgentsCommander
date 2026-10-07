@@ -344,7 +344,7 @@ pub(crate) fn parse_task_title(content: &str) -> Option<String> {
 /// Empty titles start Clean; explicit titles use the title editor's frontmatter.
 fn build_task_content(task_title: &str) -> String {
     if task_title.trim().is_empty() {
-        return "---\ntitle: 'Clean'\n---\nReady to start a new topic\n".to_string();
+        return "---\ntitle: 'Clean'\n---\n".to_string();
     }
     // #738: the workgroup-creation title is a human decision, so store it as
     // user-owned (`USER:`). This locks it against coordinator auto-retitle until
@@ -7486,10 +7486,7 @@ mod tests {
     fn prepare_new_room_task_content_starts_clean_only_for_empty_titles() {
         for input in ["", "   "] {
             let content = prepare_new_room_task_content(input).unwrap();
-            assert_eq!(
-                content.as_bytes(),
-                b"---\ntitle: 'Clean'\n---\nReady to start a new topic\n"
-            );
+            assert_eq!(content.as_bytes(), b"---\ntitle: 'Clean'\n---\n");
             assert!(!content.contains("USER:"));
             assert_eq!(build_task_content(input), content);
         }
@@ -8771,6 +8768,7 @@ mod task_snapshot_tests {
         assert!(clean["revision"].as_str().unwrap().ends_with(":0"));
         assert_ne!(clean["revision"], "legacy:0");
         assert_eq!(clean["taskTitle"], "Clean");
+        assert_eq!(clean["description"], "");
     }
 
     #[test]
