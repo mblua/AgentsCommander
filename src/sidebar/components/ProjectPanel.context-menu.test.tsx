@@ -503,12 +503,6 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
   function taskLabels(): HTMLElement[] {
     return [...rendered!.root.querySelectorAll<HTMLElement>(".sidebar-task-label")];
   }
-  function tooltipFor(label: HTMLElement): HTMLElement {
-    return document.getElementById(label.getAttribute("aria-describedby")!)!;
-  }
-  function anchorInViewport(label: HTMLElement): void {
-    label.getBoundingClientRect = () => ({ left: 20, right: 120, top: 20, bottom: 40, width: 100, height: 20, x: 20, y: 20, toJSON: () => ({}) });
-  }
   async function statusPanel(status = "full status\n<b>escaped</b>") {
     const fake = await setupPanel([], projectDiscovery("USER title", "human description"));
     fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status, description: "never a tooltip" }));
@@ -516,123 +510,89 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
     return fake;
   }
 
-  it("shares newest escaped status across header and quick rows, preserving USER labels", async () => {
-    await statusPanel();
+  function expectTaskLabelsWithoutTooltips(title = "USER title"): void {
     const labels = taskLabels();
     expect(labels.some(label => label.classList.contains("ac-wg-task"))).toBe(true);
     expect(labels.some(label => label.classList.contains("coord-task-title"))).toBe(true);
-    expect(new Set(labels.map(label => tooltipFor(label).id)).size).toBe(labels.length);
     for (const label of labels) {
-      expect(label.textContent).toBe("USER title");
+      expect(label.textContent).toBe(title);
       expect(label.tabIndex).toBe(0);
-      const tooltip = tooltipFor(label);
-      expect(tooltip.getAttribute("role")).toBe("tooltip");
-      expect(tooltip.textContent).toBe("full status\n<b>escaped</b>");
-      expect(tooltip.querySelector("b")).toBeNull();
-      expect(tooltip.querySelector("button, input, [tabindex]")).toBeNull();
+      expect(label.hasAttribute("aria-describedby")).toBe(false);
+      expect(label.hasAttribute("title")).toBe(false);
+      if (label.classList.contains("ac-wg-task")) {
+        expect(label.getAttribute("data-ac-testid")).toBe(
+          "workgroup.taskTitle." + automationIdPart(projectPath) + ".workgroups.wg-2-dev-team"
+        );
+        expect(label.getAttribute("data-ac-role")).toBe("text");
+        expect(label.getAttribute("data-ac-state")).toBe(title === "Clean" ? "clean" : "task");
+      }
     }
-  });
+    expect(document.querySelector(".sidebar-task-tooltip, [role='tooltip']")).toBeNull();
+  }
 
-  it("keeps repeated label owners independent and removes viewport listeners on disposal", async () => {
-    await statusPanel();
-    const [first, second] = taskLabels();
-    anchorInViewport(first); anchorInViewport(second);
-    const remove = vi.spyOn(window, "removeEventListener");
-    first.dispatchEvent(new Event("pointerenter"));
-    second.dispatchEvent(new Event("pointerenter"));
-    await waitFor(() => {
-      expect(tooltipFor(first).style.display).toBe("block");
-      expect(tooltipFor(second).style.display).toBe("block");
-    });
-    first.dispatchEvent(new Event("pointerleave"));
-    await waitFor(() => expect(tooltipFor(first).style.display).toBe("none"));
-    expect(tooltipFor(second).style.display).toBe("block");
-    second.dispatchEvent(new Event("pointerleave"));
-    rendered!.cleanup(); rendered = null;
-    expect(document.querySelector(".sidebar-task-tooltip")).toBeNull();
-    expect(remove.mock.calls.some(([event, , capture]) => event === "scroll" && capture === true)).toBe(true);
-    expect(remove.mock.calls.some(([event]) => event === "resize")).toBe(true);
-    remove.mockRestore();
-  });
-
-  it("keeps Escape dismissed through refresh and error until reentry or refocus", async () => {
-    const fake = await statusPanel();
-    const title = taskLabels()[0]; anchorInViewport(title); title.focus();
-    await waitFor(() => expect(tooltipFor(title).style.display).toBe("block"));
-    title.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    expect(tooltipFor(title).style.display).toBe("none");
-    tooltipFor(title).dispatchEvent(new Event("pointerenter"));
-    fake.reject("task_get_snapshot_at", "unreadable");
-    await projectStore.refreshTaskSnapshot(workgroupPath);
-    expect(title.hasAttribute("aria-describedby")).toBe(false);
-    expect(title.textContent).toBe("USER title");
-    fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status: "new status" }));
-    await projectStore.refreshTaskSnapshot(workgroupPath);
-    expect(tooltipFor(title).style.display).toBe("none");
-    window.dispatchEvent(new Event("resize")); title.dispatchEvent(new Event("pointermove"));
-    expect(tooltipFor(title).style.display).toBe("none");
-    title.blur(); title.focus();
-    await waitFor(() => expect(tooltipFor(title).style.display).toBe("block"));
-    title.dispatchEvent(new Event("pointerenter"));
-    title.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    title.dispatchEvent(new Event("pointerleave")); title.dispatchEvent(new Event("pointerenter"));
-    await waitFor(() => expect(tooltipFor(title).style.display).toBe("block"));
-    title.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status: null }));
-    await projectStore.refreshTaskSnapshot(workgroupPath);
-    expect(title.hasAttribute("aria-describedby")).toBe(false);
-    fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status: "after confirmed null" }));
-    await projectStore.refreshTaskSnapshot(workgroupPath);
-    await waitFor(() => expect(tooltipFor(title).style.display).toBe("block"));
-  });
-
-  it("supports gap grace, focus priority, viewport bounds and overflow keys", async () => {
-    await statusPanel("long status\n".repeat(200));
-    const title = taskLabels()[0]; anchorInViewport(title);
+  function exerciseTaskLabelsWithoutTooltips(): void {
     vi.useFakeTimers();
     try {
-      title.dispatchEvent(new Event("pointerenter")); vi.advanceTimersByTime(20);
-      const tooltip = tooltipFor(title);
-      title.dispatchEvent(new Event("pointerleave")); vi.advanceTimersByTime(149);
-      expect(tooltip.style.display).toBe("block");
-      tooltip.dispatchEvent(new Event("pointerenter")); vi.advanceTimersByTime(200);
-      expect(tooltip.style.display).toBe("block");
-      title.focus(); tooltip.dispatchEvent(new Event("pointerleave")); vi.advanceTimersByTime(200);
-      expect(tooltip.style.display).toBe("block");
-      expect(parseFloat(tooltip.style.left)).toBeGreaterThanOrEqual(16);
-      expect(parseFloat(tooltip.style.top)).toBeGreaterThanOrEqual(16);
-      expect(parseFloat(tooltip.style.maxWidth)).toBeLessThanOrEqual(window.innerWidth - 32);
-      expect(parseFloat(tooltip.style.maxHeight)).toBeLessThanOrEqual(window.innerHeight - 32);
-      Object.defineProperties(tooltip, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { value: 100 } });
-      for (const [key, expected] of [["ArrowDown", 32], ["PageDown", 132], ["ArrowUp", 100], ["PageUp", 0], ["End", 500], ["Home", 0]] as const) {
-        const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
-        title.dispatchEvent(event); expect(event.defaultPrevented).toBe(true); expect(tooltip.scrollTop).toBe(expected);
-        expect(document.activeElement).toBe(title);
+      for (const label of taskLabels()) {
+        label.dispatchEvent(new Event("pointerenter"));
+        label.focus();
+        expect(document.activeElement).toBe(label);
+        vi.advanceTimersByTime(500);
+        expectTaskLabelsWithoutTooltips();
+        label.blur();
+        label.focus();
+        vi.advanceTimersByTime(500);
+        expectTaskLabelsWithoutTooltips();
+        label.blur();
+        label.dispatchEvent(new Event("pointerleave"));
+        vi.advanceTimersByTime(500);
+        expectTaskLabelsWithoutTooltips();
       }
-      const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
-      title.dispatchEvent(tab); expect(tab.defaultPrevented).toBe(false);
-      Object.defineProperty(tooltip, "scrollHeight", { value: 100 });
-      const arrow = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
-      title.dispatchEvent(arrow); expect(arrow.defaultPrevented).toBe(false);
-      title.blur(); vi.advanceTimersByTime(149); expect(tooltip.style.display).toBe("block");
-      vi.advanceTimersByTime(1); expect(tooltip.style.display).toBe("none");
-      rendered!.cleanup(); vi.runAllTimers(); expect(document.querySelector(".sidebar-task-tooltip")).toBeNull();
     } finally { vi.useRealTimers(); }
+  }
+
+  it("keeps header and quick-row titles focusable without tooltips on hover or refocus", async () => {
+    await statusPanel();
+    expectTaskLabelsWithoutTooltips();
+    exerciseTaskLabelsWithoutTooltips();
   });
 
-  it("refreshes every repeated label after successful Clean and preserves status on failure", async () => {
+  it("keeps titles without tooltips after status refresh, null and failed reads", async () => {
     const fake = await statusPanel();
+    for (const status of ["new status", null]) {
+      fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { status }));
+      await projectStore.refreshTaskSnapshot(workgroupPath);
+      expect(projectStore.taskSnapshot(workgroupPath)?.status).toBe(status);
+      exerciseTaskLabelsWithoutTooltips();
+    }
+    fake.reject("task_get_snapshot_at", "unreadable");
+    await projectStore.refreshTaskSnapshot(workgroupPath);
+    expectTaskLabelsWithoutTooltips();
+    exerciseTaskLabelsWithoutTooltips();
+  });
+
+  it("refreshes repeated titles after successful Clean and preserves snapshot on failure", async () => {
+    const fake = await statusPanel();
+    const snapshot = projectStore.taskSnapshot(workgroupPath);
     contextMenu(findRow(rendered!.root, memberRowTestId));
+    const error = vi.spyOn(console, "error");
     fake.reject("task_clean_at", "failed Clean");
     click(findBroom(replicaMenu()!)!);
-    await Promise.resolve();
-    expect(taskLabels().every(label => label.hasAttribute("aria-describedby"))).toBe(true);
+    try {
+      await waitFor(() => expect(error).toHaveBeenCalledWith("Failed to clear task title:", "failed Clean"));
+    } finally { error.mockRestore(); }
+    expect(projectStore.taskSnapshot(workgroupPath)).toEqual(snapshot);
+    expectTaskLabelsWithoutTooltips();
     fake.resolve("task_clean_at", { workgroupRoot: workgroupPath, task: null });
     fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { taskTitle: "Clean", status: null }));
     contextMenu(findRow(rendered!.root, memberRowTestId));
     click(findBroom(replicaMenu()!)!);
-    await waitFor(() => expect(taskLabels().every(label => !label.hasAttribute("aria-describedby"))).toBe(true));
-    expect(document.querySelector(".sidebar-task-tooltip")).toBeNull();
+    await waitFor(() => expect(projectStore.taskSnapshot(workgroupPath)?.taskTitle).toBe("Clean"));
+    // Titles follow discovery; snapshot refresh owns status independently.
+    fake.resolve("discover_project", projectDiscovery("Clean"));
+    await projectStore.reloadProject(projectPath);
+    await waitFor(() => expectTaskLabelsWithoutTooltips("Clean"));
+    expect(projectStore.taskSnapshot(workgroupPath)?.status).toBeNull();
   });
 
   it("preserves the native context menu inside the project regex filter row", async () => {
