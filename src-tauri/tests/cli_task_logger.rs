@@ -452,6 +452,26 @@ fn task_snapshot_cli(bin: &Path, token: &str, root: &Path) -> serde_json::Value 
     serde_json::from_slice(&out.stdout).expect("task-get JSON")
 }
 
+fn assert_set_body_audit(cfg: &Path, token: &str) {
+    let log = std::fs::read_to_string(cfg.join("app.log")).unwrap();
+    let lines: Vec<_> = log
+        .lines()
+        .filter(|l| l.contains("[task] set-body:"))
+        .collect();
+    assert_eq!(lines.len(), 4);
+    for result in ["replaced", "cleared", "unchanged"] {
+        assert!(lines
+            .iter()
+            .any(|l| l.contains(&format!("result={result}"))));
+    }
+    for line in lines {
+        assert!(line.contains("sender=") && line.contains("wg=") && line.contains("pid="));
+        assert!(!line.contains(token));
+        assert!(!line.contains("set-body-sensitive-content"));
+    }
+    assert!(!log.contains(token) && !log.contains("set-body-sensitive-content"));
+}
+
 #[test]
 fn task_set_body_replace_clear_preserves_title_status_and_secret_free_audit() {
     let tmp = Tmp::new("task-set-body-status");
@@ -542,23 +562,52 @@ fn task_set_body_replace_clear_preserves_title_status_and_secret_free_audit() {
         status_bytes
     );
     assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
-    let log = std::fs::read_to_string(cfg.join("app.log")).unwrap();
-    let lines: Vec<_> = log
-        .lines()
-        .filter(|l| l.contains("[task] set-body:"))
-        .collect();
-    assert_eq!(lines.len(), 4);
-    for result in ["replaced", "cleared", "unchanged"] {
-        assert!(lines
-            .iter()
-            .any(|l| l.contains(&format!("result={result}"))));
-    }
-    for line in lines {
-        assert!(line.contains("sender=") && line.contains("wg=") && line.contains("pid="));
-        assert!(!line.contains(token));
-        assert!(!line.contains("set-body-sensitive-content"));
-    }
-    assert!(!log.contains(token) && !log.contains("set-body-sensitive-content"));
+    assert_set_body_audit(&cfg, token);
+}
+
+fn assert_legacy_body_roundtrip(bin: &Path, token: &str, root: &Path, text: &str) {
+    let room = root.parent().unwrap();
+    let task = room.join("TASK.md");
+    let previous = std::fs::read(&task).unwrap();
+    let count = backup_paths(&task).len();
+    let out = set_body_cli(bin, token, root, text);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let snapshot = task_snapshot_cli(bin, token, root);
+    assert_eq!(snapshot["description"], text);
+    assert!(snapshot["taskTitle"].is_null());
+    assert_eq!(snapshot["revision"], "legacy:0");
+    assert_eq!(
+        std::fs::read_to_string(&task).unwrap(),
+        format!("---\r\n---\r\n{text}")
+    );
+    let backups = backup_paths(&task);
+    assert_eq!(backups.len(), count + 1);
+    assert!(backups
+        .iter()
+        .any(|p| std::fs::read(p).unwrap() == previous));
+    let bytes = std::fs::read(&task).unwrap();
+    let out = set_body_cli(bin, token, root, text);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("unchanged"));
+    assert_eq!(std::fs::read(&task).unwrap(), bytes);
+    assert_eq!(backup_paths(&task), backups);
+    let out = set_body_cli(bin, token, root, "");
+    assert!(out.status.success());
+    let clear = task_snapshot_cli(bin, token, root);
+    assert_eq!(clear["description"], "");
+    assert!(clear["taskTitle"].is_null());
+    let count = backup_paths(&task).len();
+    let bytes = std::fs::read(&task).unwrap();
+    let out = set_body_cli(bin, token, root, "");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("unchanged"));
+    assert_eq!(backup_paths(&task).len(), count);
+    assert_eq!(std::fs::read(&task).unwrap(), bytes);
+    assert!(!room.join("TASK-status.jsonl").exists());
 }
 
 #[test]
@@ -577,46 +626,7 @@ fn task_set_body_legacy_delimiter_bom_roundtrip_without_forged_title() {
         "\u{feff}literal",
         "\u{feff}---\ntitle: 'USER: forged'\n---\nliteral",
     ] {
-        let previous = std::fs::read(&task).unwrap();
-        let count = backup_paths(&task).len();
-        let out = set_body_cli(&bin, token, &root, text);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let snapshot = task_snapshot_cli(&bin, token, &root);
-        assert_eq!(snapshot["description"], text);
-        assert!(snapshot["taskTitle"].is_null());
-        assert_eq!(snapshot["revision"], "legacy:0");
-        assert_eq!(
-            std::fs::read_to_string(&task).unwrap(),
-            format!("---\r\n---\r\n{text}")
-        );
-        let backups = backup_paths(&task);
-        assert_eq!(backups.len(), count + 1);
-        assert!(backups
-            .iter()
-            .any(|p| std::fs::read(p).unwrap() == previous));
-        let bytes = std::fs::read(&task).unwrap();
-        let out = set_body_cli(&bin, token, &root, text);
-        assert!(out.status.success());
-        assert!(String::from_utf8_lossy(&out.stdout).contains("unchanged"));
-        assert_eq!(std::fs::read(&task).unwrap(), bytes);
-        assert_eq!(backup_paths(&task), backups);
-        let out = set_body_cli(&bin, token, &root, "");
-        assert!(out.status.success());
-        let clear = task_snapshot_cli(&bin, token, &root);
-        assert_eq!(clear["description"], "");
-        assert!(clear["taskTitle"].is_null());
-        let count = backup_paths(&task).len();
-        let bytes = std::fs::read(&task).unwrap();
-        let out = set_body_cli(&bin, token, &root, "");
-        assert!(out.status.success());
-        assert!(String::from_utf8_lossy(&out.stdout).contains("unchanged"));
-        assert_eq!(backup_paths(&task).len(), count);
-        assert_eq!(std::fs::read(&task).unwrap(), bytes);
-        assert!(!room.join("TASK-status.jsonl").exists());
+        assert_legacy_body_roundtrip(&bin, token, &root, text);
     }
     std::fs::remove_file(&task).unwrap();
     let count = backup_paths(&task).len();

@@ -2700,6 +2700,87 @@ mod tests {
             .to_string_lossy()
             .starts_with("TASK.md.tmp.")));
     }
+    fn assert_set_body_case(previous: Option<&str>, text: &str, with_status: bool) {
+        let fixture = FixtureRoot::new("task-set-body-matrix");
+        let root = fixture.path();
+        let task_path = root.join("TASK.md");
+        if let Some(previous) = previous {
+            std::fs::write(&task_path, previous).unwrap();
+        }
+        if with_status {
+            issue_2837_append(root, "legacy:0", "Tickets/FUP/continuation 🦀");
+        }
+        let status_bytes = std::fs::read(root.join(STATUS_NAME)).ok();
+        let before = read_snapshot(root).unwrap();
+        let parsed = parse_task(previous.unwrap_or(""));
+        let noop = parsed.body == text;
+        let result = set_body(root, text).unwrap();
+        assert_eq!(matches!(result, EditOutcome::NoOp { .. }), noop);
+        let backups = set_body_backups(root);
+        assert_eq!(backups.len(), usize::from(!noop && previous.is_some()));
+        if let Some(backup) = backups.first() {
+            assert_eq!(std::fs::read(backup).unwrap(), previous.unwrap().as_bytes());
+        }
+        if noop {
+            assert_eq!(
+                std::fs::read(&task_path).ok(),
+                previous.map(|p| p.as_bytes().to_vec())
+            );
+        } else {
+            let written = std::fs::read_to_string(&task_path).unwrap();
+            let after = parse_task(&written);
+            assert!(after.has_frontmatter);
+            assert_eq!(after.frontmatter, parsed.frontmatter);
+            assert_eq!(after.bom, parsed.bom);
+            assert_eq!(after.line_ending, parsed.line_ending);
+            assert_eq!(after.body, text);
+            assert_eq!(
+                crate::commands::entity_creation::parse_task_title(&written),
+                before.task_title
+            );
+            if previous.is_none() {
+                assert_eq!(written, format!("---\n---\n{text}"));
+                assert!(matches!(result, EditOutcome::Wrote { backup: None, .. }));
+            }
+        }
+        let after = read_snapshot(root).unwrap();
+        assert_eq!(after.description, text);
+        assert_eq!(after.task_title, before.task_title);
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(
+            serde_json::to_value(after.status_record).unwrap(),
+            serde_json::to_value(before.status_record).unwrap()
+        );
+        assert_eq!(std::fs::read(root.join(STATUS_NAME)).ok(), status_bytes);
+        if !with_status {
+            assert_eq!(after.revision, "legacy:0");
+        }
+        let current_bytes = std::fs::read(&task_path).ok();
+        let count = set_body_backups(root).len();
+        assert!(matches!(
+            set_body(root, text).unwrap(),
+            EditOutcome::NoOp { .. }
+        ));
+        assert_eq!(std::fs::read(&task_path).ok(), current_bytes);
+        assert_eq!(set_body_backups(root).len(), count);
+        set_body(root, "").unwrap();
+        let cleared = read_snapshot(root).unwrap();
+        assert_eq!(cleared.description, "");
+        assert_eq!(cleared.task_title, after.task_title);
+        assert_eq!(cleared.revision, after.revision);
+        assert_eq!(std::fs::read(root.join(STATUS_NAME)).ok(), status_bytes);
+        let clear_bytes = std::fs::read(&task_path).ok();
+        let count = set_body_backups(root).len();
+        assert!(matches!(
+            set_body(root, "").unwrap(),
+            EditOutcome::NoOp { .. }
+        ));
+        assert_eq!(std::fs::read(&task_path).ok(), clear_bytes);
+        assert_eq!(set_body_backups(root).len(), count);
+        set_body_no_litter(root);
+    }
+
     #[test]
     fn set_body_literal_representation_title_status_matrix() {
         let _guard = SetBodyIoGuard::new(None);
@@ -2723,84 +2804,7 @@ mod tests {
         for with_status in [false, true] {
             for previous in states {
                 for text in payloads {
-                    let fixture = FixtureRoot::new("task-set-body-matrix");
-                    let root = fixture.path();
-                    let task_path = root.join("TASK.md");
-                    if let Some(previous) = previous {
-                        std::fs::write(&task_path, previous).unwrap();
-                    }
-                    if with_status {
-                        issue_2837_append(root, "legacy:0", "Tickets/FUP/continuation 🦀");
-                    }
-                    let status_bytes = std::fs::read(root.join(STATUS_NAME)).ok();
-                    let before = read_snapshot(root).unwrap();
-                    let parsed = parse_task(previous.unwrap_or(""));
-                    let noop = parsed.body == text;
-                    let result = set_body(root, text).unwrap();
-                    assert_eq!(matches!(result, EditOutcome::NoOp { .. }), noop);
-                    let backups = set_body_backups(root);
-                    assert_eq!(backups.len(), usize::from(!noop && previous.is_some()));
-                    if let Some(backup) = backups.first() {
-                        assert_eq!(std::fs::read(backup).unwrap(), previous.unwrap().as_bytes());
-                    }
-                    if noop {
-                        assert_eq!(
-                            std::fs::read(&task_path).ok(),
-                            previous.map(|p| p.as_bytes().to_vec())
-                        );
-                    } else {
-                        let written = std::fs::read_to_string(&task_path).unwrap();
-                        let after = parse_task(&written);
-                        assert!(after.has_frontmatter);
-                        assert_eq!(after.frontmatter, parsed.frontmatter);
-                        assert_eq!(after.bom, parsed.bom);
-                        assert_eq!(after.line_ending, parsed.line_ending);
-                        assert_eq!(after.body, text);
-                        assert_eq!(
-                            crate::commands::entity_creation::parse_task_title(&written),
-                            before.task_title
-                        );
-                        if previous.is_none() {
-                            assert_eq!(written, format!("---\n---\n{text}"));
-                            assert!(matches!(result, EditOutcome::Wrote { backup: None, .. }));
-                        }
-                    }
-                    let after = read_snapshot(root).unwrap();
-                    assert_eq!(after.description, text);
-                    assert_eq!(after.task_title, before.task_title);
-                    assert_eq!(after.status, before.status);
-                    assert_eq!(after.revision, before.revision);
-                    assert_eq!(
-                        serde_json::to_value(after.status_record).unwrap(),
-                        serde_json::to_value(before.status_record).unwrap()
-                    );
-                    assert_eq!(std::fs::read(root.join(STATUS_NAME)).ok(), status_bytes);
-                    if !with_status {
-                        assert_eq!(after.revision, "legacy:0");
-                    }
-                    let current_bytes = std::fs::read(&task_path).ok();
-                    let count = set_body_backups(root).len();
-                    assert!(matches!(
-                        set_body(root, text).unwrap(),
-                        EditOutcome::NoOp { .. }
-                    ));
-                    assert_eq!(std::fs::read(&task_path).ok(), current_bytes);
-                    assert_eq!(set_body_backups(root).len(), count);
-                    set_body(root, "").unwrap();
-                    let cleared = read_snapshot(root).unwrap();
-                    assert_eq!(cleared.description, "");
-                    assert_eq!(cleared.task_title, after.task_title);
-                    assert_eq!(cleared.revision, after.revision);
-                    assert_eq!(std::fs::read(root.join(STATUS_NAME)).ok(), status_bytes);
-                    let clear_bytes = std::fs::read(&task_path).ok();
-                    let count = set_body_backups(root).len();
-                    assert!(matches!(
-                        set_body(root, "").unwrap(),
-                        EditOutcome::NoOp { .. }
-                    ));
-                    assert_eq!(std::fs::read(&task_path).ok(), clear_bytes);
-                    assert_eq!(set_body_backups(root).len(), count);
-                    set_body_no_litter(root);
+                    assert_set_body_case(previous, text, with_status);
                 }
             }
         }
