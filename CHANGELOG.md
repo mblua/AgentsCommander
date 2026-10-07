@@ -6,6 +6,28 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- Room tasks expose complete snapshots and revision-checked status updates through `task-get` and `task-status-set`, including safe idempotent retries. (#2840, #2841)
+- The terminal shows task descriptions and an accessible status tooltip; the sidebar also shows the complete current status. Clean backs up the task and its history together. (#2842, #2843, #2844)
+- Session context lists project skills and team skills. Room replicas receive their room team's skills; origin agents receive skills from their same-project teams. Skill bodies remain loaded on demand. (#2872, #2873)
+- Antigravity settings offer opt-in suggestions for context and weekly quota patterns, preserving custom patterns until the suggestion is selected. (#2836)
+
+### Changed
+
+- New memory rotations live under `memory-archive/`. Existing root-level archives stay untouched and readable. (#2888, #2889)
+- Clean and newly created rooms have an empty task description; existing human and legacy descriptions remain until an explicit Clean. (#2935, #2936, #2937)
+
+### Fixed
+
+- CI alerts wait while typing hold is active; subsequent alerts wait for the preceding delivery to finish. (#2770)
+- Windows atomic replacement supports long paths during terminal artifact repair and other path-identity operations. (#2923, #2926)
+- Regression fixtures cover task snapshots and Windows reparse rejection without requiring link creation in that specific fixture. The simulated reparse fixture does not verify real symlink or junction integration. (#2932, #2924)
+
+### Notes
+
+- Task UI changes have automated coverage; physical keyboard, wheel, contrast and small-window tooltip checks remain incomplete. (#2842, #2843)
+
 ## 0.43.0
 
 ### Added
