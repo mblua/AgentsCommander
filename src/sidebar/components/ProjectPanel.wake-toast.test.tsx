@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect } from "vitest";
 import ProjectPanel from "./ProjectPanel";
+import type { TaskSnapshot } from "../../shared/types";
 import { baseSettings, click, discovery, session, waitFor } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
@@ -36,6 +37,16 @@ describe("ProjectPanel wake-a-stopped-replica toast (#2573)", () => {
           ],
         }),
       );
+      fake.resolve("task_get_snapshot_at", {
+        workgroupRoot: workgroupPath,
+        task: null,
+        taskTitle: "Wake toast",
+        description: "",
+        status: null,
+        revision: "topic:0",
+        statusRecord: null,
+        tailIncomplete: false,
+      } satisfies TaskSnapshot);
       fake.resolve("get_settings", baseSettings());
     },
     ui: () => <ProjectPanel />,
