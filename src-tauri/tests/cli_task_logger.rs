@@ -472,6 +472,12 @@ fn assert_set_body_audit(cfg: &Path, token: &str) {
     assert!(!log.contains(token) && !log.contains("set-body-sensitive-content"));
 }
 
+fn assert_cleared_task_fields(clear: &serde_json::Value, before: &serde_json::Value) {
+    for key in ["taskTitle", "revision", "status", "statusRecord"] {
+        assert_eq!(clear[key], before[key]);
+    }
+}
+
 #[test]
 fn task_set_body_replace_clear_preserves_title_status_and_secret_free_audit() {
     let tmp = Tmp::new("task-set-body-status");
@@ -548,9 +554,7 @@ fn task_set_body_replace_clear_preserves_title_status_and_secret_free_audit() {
     assert_eq!(std::fs::read(clear_backup).unwrap(), replaced_bytes);
     let clear = task_snapshot_cli(&bin, token, &root);
     assert_eq!(clear["description"], "");
-    for key in ["taskTitle", "revision", "status", "statusRecord"] {
-        assert_eq!(clear[key], before[key]);
-    }
+    assert_cleared_task_fields(&clear, &before);
     let bytes = std::fs::read(&task).unwrap();
     let out = set_body_cli(&bin, token, &root, "");
     assert!(out.status.success());

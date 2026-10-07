@@ -2700,18 +2700,13 @@ mod tests {
             .to_string_lossy()
             .starts_with("TASK.md.tmp.")));
     }
-    fn assert_set_body_case(previous: Option<&str>, text: &str, with_status: bool) {
-        let fixture = FixtureRoot::new("task-set-body-matrix");
-        let root = fixture.path();
+    fn assert_set_body_write(
+        root: &Path,
+        previous: Option<&str>,
+        text: &str,
+        before: &TaskSnapshot,
+    ) {
         let task_path = root.join("TASK.md");
-        if let Some(previous) = previous {
-            std::fs::write(&task_path, previous).unwrap();
-        }
-        if with_status {
-            issue_2837_append(root, "legacy:0", "Tickets/FUP/continuation 🦀");
-        }
-        let status_bytes = std::fs::read(root.join(STATUS_NAME)).ok();
-        let before = read_snapshot(root).unwrap();
         let parsed = parse_task(previous.unwrap_or(""));
         let noop = parsed.body == text;
         let result = set_body(root, text).unwrap();
@@ -2743,6 +2738,21 @@ mod tests {
                 assert!(matches!(result, EditOutcome::Wrote { backup: None, .. }));
             }
         }
+    }
+
+    fn assert_set_body_case(previous: Option<&str>, text: &str, with_status: bool) {
+        let fixture = FixtureRoot::new("task-set-body-matrix");
+        let root = fixture.path();
+        let task_path = root.join("TASK.md");
+        if let Some(previous) = previous {
+            std::fs::write(&task_path, previous).unwrap();
+        }
+        if with_status {
+            issue_2837_append(root, "legacy:0", "Tickets/FUP/continuation 🦀");
+        }
+        let status_bytes = std::fs::read(root.join(STATUS_NAME)).ok();
+        let before = read_snapshot(root).unwrap();
+        assert_set_body_write(root, previous, text, &before);
         let after = read_snapshot(root).unwrap();
         assert_eq!(after.description, text);
         assert_eq!(after.task_title, before.task_title);
