@@ -159,6 +159,155 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
     }
 }
 
+#[derive(Args)]
+#[command(
+    after_help = "AUTHORIZATION: Only project team orchestrators can edit TASK.md; the master/root token bypasses this check.
+
+TEXT INPUT: --text replaces the complete body literally, including multi-line content, Unicode and trailing newlines. Use --text '' to clear the body. Whitespace is preserved and does not mean empty. Newline, carriage return and tab are permitted; NUL and other controls are rejected.
+
+INVARIANTS: Preserves the title (including USER:), topic, revision and status. An effective change to legacy content without closed frontmatter adds an empty frontmatter block without a title. Identical body text leaves the original bytes unchanged without a backup. Effective changes to an existing file create a timestamped exact backup, with an advisory lock (5s timeout) and external-edit detection. An already pending Clean operation is recovered first; these guarantees apply to that recovered baseline. Frontmatter delimiters/line endings may be normalized by the existing renderer."
+)]
+pub struct TaskSetBodyArgs {
+    /// Session token from AGENTSCOMMANDER_TOKEN (existing trusted-session model)
+    #[arg(long)]
+    pub token: Option<String>,
+    /// Agent root directory (required)
+    #[arg(long)]
+    pub root: Option<String>,
+    /// Complete replacement body; an explicit empty value clears it
+    #[arg(long)]
+    pub text: String,
+}
+
+pub fn execute_set_body(args: TaskSetBodyArgs) -> i32 {
+    let root = match args.root {
+        Some(ref r) => r.clone(),
+        None => {
+            eprintln!("Error: --root is required. Specify your agent's root directory.");
+            return 1;
+        }
+    };
+
+    let is_root = match crate::cli::validate_cli_token(&args.token) {
+        Ok((_token, root)) => root,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return 1;
+        }
+    };
+
+    let sender = agent_name_from_root(&root);
+
+    if args
+        .text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+    {
+        eprintln!(
+            "Error: --text contains a control character that is not allowed \
+             (only newline, carriage return, and tab are permitted)."
+        );
+        return 1;
+    }
+
+    // Coordinator gate (skipped for root/master token).
+    let is_master = is_root || {
+        if let Some(ref token_str) = args.token {
+            crate::config::config_dir()
+                .map(|d| d.join("master-token.txt"))
+                .and_then(|p| std::fs::read_to_string(&p).ok())
+                .map(|m| m.trim() == token_str)
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    };
+
+    if !is_master {
+        let teams = crate::config::teams::discover_teams();
+        if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
+            eprintln!(
+                "Error: authorization denied — '{}' is not an orchestrator of any team. \
+                 Only orchestrators can edit TASK.md.",
+                sender
+            );
+            return 1;
+        }
+    }
+
+    let wg_root = match crate::phone::messaging::workgroup_root(Path::new(&root)) {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!(
+                "Error: --root is not under a `room-*` or legacy `wg-*` Room directory; \
+                 cannot locate the room TASK.md."
+            );
+            return 1;
+        }
+    };
+
+    // NIT-2: include `pid={}` so an auditor can cross-reference the AC process
+    // tree. `sender=` and `wg=` are both caller-derived (--root) and a forged
+    // --root produces a forged-but-consistent line; pid disambiguates.
+    match task_ops::perform(&wg_root, TaskOp::SetBody(args.text.clone())) {
+        Ok(EditOutcome::Wrote {
+            backup: Some(bp), ..
+        }) => {
+            log::info!(
+                "[task] set-body: sender={} wg={} pid={} result={} backup={}",
+                sender,
+                wg_root.display(),
+                std::process::id(),
+                if args.text.is_empty() {
+                    "cleared"
+                } else {
+                    "replaced"
+                },
+                bp.display()
+            );
+            crate::cli_println!(
+                "TASK.md body {}; backup: {}",
+                if args.text.is_empty() {
+                    "cleared"
+                } else {
+                    "replaced"
+                },
+                bp.display()
+            );
+            0
+        }
+        Ok(EditOutcome::Wrote { backup: None, .. }) => {
+            log::info!(
+                "[task] set-body: sender={} wg={} pid={} result=created backup=<no prior file>",
+                sender,
+                wg_root.display(),
+                std::process::id()
+            );
+            crate::cli_println!("TASK.md created; no prior content to back up");
+            0
+        }
+        Ok(EditOutcome::NoOp { .. }) => {
+            log::info!(
+                "[task] set-body: sender={} wg={} pid={} result=unchanged",
+                sender,
+                wg_root.display(),
+                std::process::id()
+            );
+            crate::cli_println!("TASK.md unchanged");
+            0
+        }
+        Ok(EditOutcome::RejectedUserTitle { .. }) => {
+            // Defensive: SetBody does not apply the title ownership guard.
+            crate::cli_println!("TASK.md unchanged");
+            0
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            1
+        }
+    }
+}
+
 /// Credentials are explicit flags, preserving the existing trusted-local-session model.
 #[derive(Args)]
 pub struct TaskGetArgs {
@@ -423,6 +572,108 @@ mod tests {
         args.expected_revision = "legacy:0".into();
         args.request_id = "invalid".into();
         assert!(!valid_status_args(&args));
+    }
+
+    #[test]
+    fn set_body_clap_requires_text_accepts_empty_whitespace_and_multiline() {
+        use clap::Parser;
+        assert!(crate::cli::Cli::try_parse_from([
+            "ac",
+            "task-set-body",
+            "--root",
+            "fixture",
+            "--token",
+            "fixture"
+        ])
+        .is_err());
+        for text in ["", " \t\n", "Unicode 🦀\r\nend\n\n"] {
+            let cli = crate::cli::Cli::try_parse_from([
+                "ac",
+                "task-set-body",
+                "--root",
+                "fixture",
+                "--token",
+                "fixture",
+                "--text",
+                text,
+            ])
+            .unwrap();
+            match cli.command {
+                Some(crate::cli::Commands::TaskSetBody(args)) => assert_eq!(args.text, text),
+                _ => panic!("wrong command"),
+            }
+        }
+    }
+    #[test]
+    fn set_body_help_documents_literal_clear_and_preservation() {
+        use clap::CommandFactory;
+        let mut command = crate::cli::Cli::command();
+        assert!(command.render_help().to_string().contains("task-set-body"));
+        let help = command
+            .find_subcommand_mut("task-set-body")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for literal in [
+            "multi-line",
+            "--text ''",
+            "Whitespace",
+            "title",
+            "topic",
+            "revision",
+            "status",
+            "empty frontmatter",
+            "pending Clean",
+            "backup",
+            "5s timeout",
+            "external-edit",
+        ] {
+            assert!(help.contains(literal), "missing {literal}: {help}");
+        }
+    }
+    #[test]
+    fn set_body_rejects_invalid_token_noncoordinator_and_controls_without_writes() {
+        for (token, text) in [
+            (Some("not-a-uuid".to_owned()), "valid"),
+            (None, "valid"),
+            (Some(uuid::Uuid::new_v4().to_string()), "valid"),
+            (Some(uuid::Uuid::new_v4().to_string()), ""),
+            (Some(uuid::Uuid::new_v4().to_string()), "bad\u{0}"),
+            (Some(uuid::Uuid::new_v4().to_string()), "bad\u{7}"),
+            (Some(uuid::Uuid::new_v4().to_string()), "bad\u{7f}"),
+        ] {
+            let fixture = FixtureRoot::new("task-set-body-reject");
+            let root = make_wg_fixture(fixture.path());
+            let room = root.parent().unwrap();
+            let original = "---\ntitle: 'Real'\n---\nkeep";
+            std::fs::write(room.join("TASK.md"), original).unwrap();
+            std::fs::write(room.join("TASK-status.jsonl"), "sentinel status").unwrap();
+            assert_eq!(
+                execute_set_body(TaskSetBodyArgs {
+                    token,
+                    root: Some(root.to_string_lossy().into_owned()),
+                    text: text.into()
+                }),
+                1
+            );
+            assert_eq!(
+                std::fs::read_to_string(room.join("TASK.md")).unwrap(),
+                original
+            );
+            assert_eq!(
+                std::fs::read_to_string(room.join("TASK-status.jsonl")).unwrap(),
+                "sentinel status"
+            );
+            assert_eq!(std::fs::read_dir(room).unwrap().count(), 3);
+        }
+        assert_eq!(
+            execute_set_body(TaskSetBodyArgs {
+                token: Some(uuid::Uuid::new_v4().to_string()),
+                root: None,
+                text: "valid".into()
+            }),
+            1
+        );
     }
 
     // ── I4: non-coordinator rejected ────────────────────────────────────

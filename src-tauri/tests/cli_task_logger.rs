@@ -398,3 +398,277 @@ fn task_snapshot_write_replay_emit_real_audit_without_secrets() {
         }
     }
 }
+
+fn run_task_cli(bin: &Path, args: &[&str]) -> std::process::Output {
+    let mut command = command_for_binary(bin);
+    command
+        .args(args)
+        .env("RUST_LOG", "agentscommander=info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = {
+        let _guard = spawn_lock();
+        command.spawn().expect("spawn task CLI")
+    };
+    child.wait_with_output().expect("collect task CLI output")
+}
+
+fn set_body_cli(bin: &Path, token: &str, root: &Path, text: &str) -> std::process::Output {
+    run_task_cli(
+        bin,
+        &[
+            "task-set-body",
+            "--token",
+            token,
+            "--root",
+            &root.to_string_lossy(),
+            "--text",
+            text,
+        ],
+    )
+}
+
+fn task_snapshot_cli(bin: &Path, token: &str, root: &Path) -> serde_json::Value {
+    let out = run_task_cli(
+        bin,
+        &[
+            "task-get",
+            "--token",
+            token,
+            "--root",
+            &root.to_string_lossy(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "task-get: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("task-get JSON")
+}
+
+#[test]
+fn task_set_body_replace_clear_preserves_title_status_and_secret_free_audit() {
+    let tmp = Tmp::new("task-set-body-status");
+    let bin = copy_binary_into(tmp.path());
+    let cfg = config_dir_for_bin(&bin);
+    let token = "master-set-body-sensitive-token";
+    seed_master_token(&cfg, token);
+    let root = make_wg_fixture(tmp.path());
+    let room = root.parent().unwrap();
+    let task = room.join("TASK.md");
+    let original = "\u{feff}---\r\ntitle: 'USER: Real'\r\nextra: kept\r\n---\r\nold body\r\n";
+    std::fs::write(&task, original).unwrap();
+    let sentinel = tmp.path().join("outside-sentinel.txt");
+    std::fs::write(&sentinel, "keep").unwrap();
+    let request = uuid::Uuid::new_v4().to_string();
+    let status_out = run_task_cli(
+        &bin,
+        &[
+            "task-status-set",
+            "--token",
+            token,
+            "--root",
+            &root.to_string_lossy(),
+            "--expected-revision",
+            "legacy:0",
+            "--request-id",
+            &request,
+            "--text",
+            "Tickets/FUP/continuation",
+        ],
+    );
+    assert!(
+        status_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    let status_bytes = std::fs::read(room.join("TASK-status.jsonl")).unwrap();
+    let before = task_snapshot_cli(&bin, token, &root);
+    let text = "set-body-sensitive-content 🦀\n \tline\r\nend\n\n";
+    let out = set_body_cli(&bin, token, &root, text);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("body replaced; backup:"));
+    assert_eq!(
+        std::fs::read_to_string(&task).unwrap(),
+        format!("\u{feff}---\r\ntitle: 'USER: Real'\r\nextra: kept\r\n---\r\n{text}")
+    );
+    let first_backup = backup_paths(&task);
+    assert_eq!(first_backup.len(), 1);
+    assert_eq!(
+        std::fs::read(&first_backup[0]).unwrap(),
+        original.as_bytes()
+    );
+    let after = task_snapshot_cli(&bin, token, &root);
+    assert_eq!(after["description"], text);
+    for key in ["taskTitle", "revision", "status", "statusRecord"] {
+        assert_eq!(after[key], before[key]);
+    }
+    let replaced_bytes = std::fs::read(&task).unwrap();
+    let out = set_body_cli(&bin, token, &root, text);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("unchanged"));
+    assert_eq!(backup_paths(&task), first_backup);
+    assert_eq!(std::fs::read(&task).unwrap(), replaced_bytes);
+    let out = set_body_cli(&bin, token, &root, "");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("body cleared; backup:"));
+    let backups = backup_paths(&task);
+    assert_eq!(backups.len(), 2);
+    let clear_backup = backups.iter().find(|p| !first_backup.contains(p)).unwrap();
+    assert_eq!(std::fs::read(clear_backup).unwrap(), replaced_bytes);
+    let clear = task_snapshot_cli(&bin, token, &root);
+    assert_eq!(clear["description"], "");
+    for key in ["taskTitle", "revision", "status", "statusRecord"] {
+        assert_eq!(clear[key], before[key]);
+    }
+    let bytes = std::fs::read(&task).unwrap();
+    let out = set_body_cli(&bin, token, &root, "");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("unchanged"));
+    assert_eq!(std::fs::read(&task).unwrap(), bytes);
+    assert_eq!(backup_paths(&task), backups);
+    assert_eq!(
+        std::fs::read(room.join("TASK-status.jsonl")).unwrap(),
+        status_bytes
+    );
+    assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
+    let log = std::fs::read_to_string(cfg.join("app.log")).unwrap();
+    let lines: Vec<_> = log
+        .lines()
+        .filter(|l| l.contains("[task] set-body:"))
+        .collect();
+    assert_eq!(lines.len(), 4);
+    for result in ["replaced", "cleared", "unchanged"] {
+        assert!(lines
+            .iter()
+            .any(|l| l.contains(&format!("result={result}"))));
+    }
+    for line in lines {
+        assert!(line.contains("sender=") && line.contains("wg=") && line.contains("pid="));
+        assert!(!line.contains(token));
+        assert!(!line.contains("set-body-sensitive-content"));
+    }
+    assert!(!log.contains(token) && !log.contains("set-body-sensitive-content"));
+}
+
+#[test]
+fn task_set_body_legacy_delimiter_bom_roundtrip_without_forged_title() {
+    let tmp = Tmp::new("task-set-body-legacy");
+    let bin = copy_binary_into(tmp.path());
+    let cfg = config_dir_for_bin(&bin);
+    let token = "master-set-body-legacy";
+    seed_master_token(&cfg, token);
+    let root = make_wg_fixture(tmp.path());
+    let room = root.parent().unwrap();
+    let task = room.join("TASK.md");
+    std::fs::write(&task, "# Legacy heading\r\nold").unwrap();
+    for text in [
+        "---\ntitle: 'USER: forged'\n---\nliteral",
+        "\u{feff}literal",
+        "\u{feff}---\ntitle: 'USER: forged'\n---\nliteral",
+    ] {
+        let previous = std::fs::read(&task).unwrap();
+        let count = backup_paths(&task).len();
+        let out = set_body_cli(&bin, token, &root, text);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let snapshot = task_snapshot_cli(&bin, token, &root);
+        assert_eq!(snapshot["description"], text);
+        assert!(snapshot["taskTitle"].is_null());
+        assert_eq!(snapshot["revision"], "legacy:0");
+        assert_eq!(
+            std::fs::read_to_string(&task).unwrap(),
+            format!("---\r\n---\r\n{text}")
+        );
+        let backups = backup_paths(&task);
+        assert_eq!(backups.len(), count + 1);
+        assert!(backups
+            .iter()
+            .any(|p| std::fs::read(p).unwrap() == previous));
+        let bytes = std::fs::read(&task).unwrap();
+        let out = set_body_cli(&bin, token, &root, text);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("unchanged"));
+        assert_eq!(std::fs::read(&task).unwrap(), bytes);
+        assert_eq!(backup_paths(&task), backups);
+        let out = set_body_cli(&bin, token, &root, "");
+        assert!(out.status.success());
+        let clear = task_snapshot_cli(&bin, token, &root);
+        assert_eq!(clear["description"], "");
+        assert!(clear["taskTitle"].is_null());
+        let count = backup_paths(&task).len();
+        let bytes = std::fs::read(&task).unwrap();
+        let out = set_body_cli(&bin, token, &root, "");
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("unchanged"));
+        assert_eq!(backup_paths(&task).len(), count);
+        assert_eq!(std::fs::read(&task).unwrap(), bytes);
+        assert!(!room.join("TASK-status.jsonl").exists());
+    }
+    std::fs::remove_file(&task).unwrap();
+    let count = backup_paths(&task).len();
+    let out = set_body_cli(&bin, token, &root, "");
+    assert!(out.status.success());
+    assert!(!task.exists());
+    assert_eq!(backup_paths(&task).len(), count);
+    let out = set_body_cli(&bin, token, &root, "new literal");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("created"));
+    assert_eq!(
+        std::fs::read_to_string(&task).unwrap(),
+        "---\n---\nnew literal"
+    );
+    assert_eq!(backup_paths(&task).len(), count);
+    let log = std::fs::read_to_string(cfg.join("app.log")).unwrap();
+    assert!(log.contains("result=created"));
+}
+
+#[test]
+fn task_set_body_subprocess_rejections_have_no_managed_writes() {
+    let tmp = Tmp::new("task-set-body-reject");
+    let bin = copy_binary_into(tmp.path());
+    let token = "master-set-body-reject";
+    seed_master_token(&config_dir_for_bin(&bin), token);
+    let root = make_wg_fixture(tmp.path());
+    let room = root.parent().unwrap();
+    let task = room.join("TASK.md");
+    std::fs::write(&task, "keep TASK").unwrap();
+    std::fs::write(room.join("TASK-status.jsonl"), "keep status").unwrap();
+    let sentinel = tmp.path().join("outside-sentinel.txt");
+    std::fs::write(&sentinel, "keep").unwrap();
+    let invalid = set_body_cli(&bin, "not-a-token", &root, "replacement");
+    assert!(!invalid.status.success());
+    let unprivileged = set_body_cli(
+        &bin,
+        &uuid::Uuid::new_v4().to_string(),
+        &root,
+        "replacement",
+    );
+    assert!(!unprivileged.status.success());
+    assert!(String::from_utf8_lossy(&unprivileged.stderr).contains("authorization denied"));
+    for text in ["bad\u{7}", "bad\u{7f}"] {
+        assert!(!set_body_cli(&bin, token, &root, text).status.success());
+    }
+    assert_eq!(std::fs::read_to_string(&task).unwrap(), "keep TASK");
+    assert_eq!(
+        std::fs::read_to_string(room.join("TASK-status.jsonl")).unwrap(),
+        "keep status"
+    );
+    assert_eq!(std::fs::read_dir(room).unwrap().count(), 3);
+    assert!(backup_paths(&task).is_empty());
+    let outside = tmp.path().join("outside-root");
+    std::fs::create_dir_all(&outside).unwrap();
+    let out = set_body_cli(&bin, token, &outside, "replacement");
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
+    assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "keep");
+}

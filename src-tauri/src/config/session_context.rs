@@ -4350,7 +4350,7 @@ You MAY READ this file, which states your room's task:
 {task}
 ```
 
-Reading `TASK.md` is granted; writing it is NOT. Never create, edit, move, delete or overwrite `TASK.md` or any `TASK.md.*` sibling with filesystem tools. Only a room orchestrator may change it, and only through the `task-set-title` and `task-append-body` CLI verbs, which enforce the authorization check, an advisory lock, external-modification detection and a timestamped backup. A direct write bypasses all four.
+Reading `TASK.md` is granted; writing it is NOT. Never create, edit, move, delete or overwrite `TASK.md` or any `TASK.md.*` sibling with filesystem tools. Only a room orchestrator may change it, and only through the `task-set-title`, `task-append-body` and `task-set-body` CLI verbs, which enforce the authorization check, an advisory lock, external-modification detection and a timestamped backup. A direct write bypasses all four.
 
 Room status is at `{status}`. Only a room orchestrator may read/update it, using these configured CLI commands:
 
@@ -15040,6 +15040,10 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         assert!(
             out.contains("task-append-body"),
+            "entry six must name the verb"
+        );
+        assert!(
+            out.contains("task-set-body"),
             "entry six must name the verb"
         );
         for literal in [
