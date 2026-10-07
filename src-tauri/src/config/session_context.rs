@@ -22,13 +22,11 @@ pub const HOST_PLATFORM_RULES_FILENAME_LINUX: &str = "Context.platform.linux.md"
 pub const HOST_PLATFORM_RULES_FILENAME_MACOS: &str = "Context.platform.macos.md";
 
 /// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
-/// Windows host sessions (277 bytes; sha256
-/// 5fd5dd5f7d3d097f90e58cee6e6a210e2b2a6070c24e4164a7ac06d3854286a7 at
-/// 047248bc). Single source for both the `.ac/Context.platform.windows.md` seed
+/// Windows host sessions. Single source for both the `.ac/Context.platform.windows.md` seed
 /// and the render fallback.
 pub(crate) const DEFAULT_HOST_PLATFORM_RULES_WINDOWS: &str = r#"## Host Platform Rules
 
-Windows host session: use `C:\Program Files\Git\bin\bash.exe` for all shell work and every AgentsCommander CLI invocation; from PowerShell wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'`; never capture CLI output without `2>&1 | Out-String`."#;
+Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for all shell work and every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | Out-String`."#;
 
 /// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
 /// Linux host sessions (106 bytes; sha256
@@ -7332,7 +7330,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             None,
             &no_skill_section(),
         );
-        assert!(out.contains("## Host Platform Rules"));
+        assert!(out.contains(r#"## Host Platform Rules
+
+Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for all shell work and every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | Out-String`."#));
         assert!(out.contains("bash.exe"));
         assert!(out.contains("2>&1 | Out-String"));
         assert!(out.contains("**Windows:** see **Host Platform Rules** above."));
@@ -7509,7 +7509,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // seeds the missing platform files absent-only through the seeder
         // lifecycle before reading: the host file and all three platform files
         // exist byte-equal to their embedded defaults, the state records
-        // `platform.<os>` v1 with `lastSeededSha256 == hash(default)`, the
+        // current platform versions with `lastSeededSha256 == hash(default)`, the
         // rendered block carries the default, and a second render is
         // idempotent (same output, same files, same state).
         use sha2::{Digest, Sha256};
@@ -7572,7 +7572,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 "{file} must be seeded byte-equal to its embedded default"
             );
         }
-        // (c) state records platform.<os> v1 with lastSeededSha256 == hash(default).
+        // (c) state records current platform versions with lastSeededSha256 == hash(default).
         let state = std::fs::read_to_string(&state_path).expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         for (id, expected) in [
@@ -7590,8 +7590,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             ),
         ] {
             assert_eq!(
-                parsed["templates"][id]["currentVersion"], 1,
-                "{id} state entry must be v1"
+                parsed["templates"][id]["currentVersion"],
+                if id == "platform.windows" { 2 } else { 1 },
+                "{id} state entry must carry the current version"
             );
             assert_eq!(
                 parsed["templates"][id]["lastSeededSha256"],
@@ -7705,7 +7706,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn deleted_platform_file_is_reseeded_absent_only() {
         // #1625 T-5: after a render-triggered seed, deleting the host platform
         // file re-seeds it absent-only on the next render (file byte-equal to
-        // the default again) and the state keeps `platform.<os>` v1 seeded.
+        // the default again) and the state keeps the current platform versions.
         let temp = tempfile::tempdir().expect("tempdir");
         let ac = temp.path().join(".ac");
         let replica = ac.join("wg-1-team").join("__agent_dev");
@@ -7753,8 +7754,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         let parsed: serde_json::Value = serde_json::from_str(&state_before).expect("parse state");
         assert_eq!(
-            parsed["templates"]["platform.windows"]["currentVersion"], 1,
-            "the platform state entry must stay v1 seeded"
+            parsed["templates"]["platform.windows"]["currentVersion"], 2,
+            "the Windows platform state entry must stay v2 seeded"
         );
     }
 
