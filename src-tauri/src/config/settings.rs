@@ -1751,6 +1751,20 @@ pub(crate) fn prepare_settings_without_source_write(
             .ok_or(SourcePreparationError::OriginUnavailable)?,
         OriginPhysicalInput::Unknown => return Err(SourcePreparationError::OriginUnavailable),
     };
+    // Capture disk restoration before applying the draft. In particular, an
+    // overlay-owned general key must retain its raw absent/null/value state,
+    // rather than capturing the effective value echoed by the caller.
+    let mut restoration_base = out.clone();
+    let restoration = match &inputs.overlay {
+        OriginPhysicalInput::Bytes(bytes) => LocalSettingsOverlay::from_overlay_bytes(
+            &mut restoration_base,
+            bytes,
+            OVERLAY_INELIGIBLE_DISK_KEYS,
+            OVERLAY_INELIGIBLE_LEGACY_KEYS,
+            OVERLAY_DERIVED_ID_CLOSURES,
+        ),
+        _ => LocalSettingsOverlay::default(),
+    };
     let map = out
         .as_object_mut()
         .ok_or(SourcePreparationError::InvalidCandidate)?;
@@ -1811,7 +1825,7 @@ pub(crate) fn prepare_settings_without_source_write(
         if !overlay.is_empty() && serde_json::from_value::<AppSettings>(probe).is_err() {
             effective = unmerged;
         } else {
-            overlay.restore_base(out.as_object_mut().expect("object checked"));
+            restoration.restore_base(out.as_object_mut().expect("object checked"));
         }
     }
     if origin.unknown_paths.iter().any(Vec::is_empty) {
@@ -1895,6 +1909,16 @@ mod independent_source_tests {
                 serde_json::to_vec(&registered).unwrap(),
             )
             .unwrap();
+            let target = root.path().join("_agent_N");
+            std::fs::create_dir(&target).unwrap();
+            std::fs::write(
+                target.join("config.json"),
+                serde_json::to_vec(&json!({"tooling":{
+                    "currentCodingAgent":"K", "profile":"B", "keep":"legacy"
+                }}))
+                .unwrap(),
+            )
+            .unwrap();
             let context = SourceReadContext::from_settings(
                 &AppSettings::default(),
                 &root.path().join(SETTINGS_FILE_NAME),
@@ -1930,40 +1954,116 @@ mod independent_source_tests {
             .unwrap()
         }
 
+        // Test-only instrumentation of the settings-base default consumer. The
+        // counter records an actual default lookup handed to the existing pure
+        // profile resolver, not a launch or a new production source consumer.
+        fn consume_legacy_default(
+            &self,
+            origin: &LegacyCompatibilityOrigin,
+            snapshot: &RawSourceSnapshot,
+            expected_target: &[u8],
+            consumed: &mut usize,
+        ) -> Result<crate::config::coding_agent_profiles::ProfileResolution, SourcePreparationError>
+        {
+            use crate::config::coding_agent_profiles::{
+                agent_name_from_dir, resolve_profile, ProfileResolutionRequest,
+            };
+            let target = std::fs::canonicalize(self.root.path().join("_agent_N/config.json"))
+                .map_err(|_| SourcePreparationError::OriginUnavailable)?;
+            let root = std::fs::canonicalize(self.root.path())
+                .map_err(|_| SourcePreparationError::OriginUnavailable)?;
+            if !target.starts_with(root)
+                || std::fs::read(&target).ok().as_deref() != Some(expected_target)
+            {
+                return Err(SourcePreparationError::StaleRevision);
+            }
+            let matrix = agent_name_from_dir(target.parent().unwrap())
+                .ok_or(SourcePreparationError::InvalidCandidate)?;
+            let pair: Value = serde_json::from_slice(expected_target)
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+            let key = pair
+                .pointer("/tooling/currentCodingAgent")
+                .and_then(Value::as_str)
+                .ok_or(SourcePreparationError::InvalidCandidate)?;
+            if origin.binding.context != snapshot.context
+                || origin.binding.registered.as_ref() != Some(&snapshot.snapshot.revision)
+            {
+                return Err(SourcePreparationError::StaleRevision);
+            }
+            origin.require_legacy_units(
+                [
+                    LegacyOriginUnit::Entry(key.into()),
+                    LegacyOriginUnit::Default(matrix.clone()),
+                ],
+                None,
+            )?;
+            let default = origin.base["codingAgentProfiles"]["defaultProfileByAgent"]
+                .get(&matrix)
+                .and_then(Value::as_str)
+                .and_then(normalize_profile_letter);
+            let letter = match default {
+                Some(letter) => {
+                    *consumed += 1; // Only a real valid Default(N) read is counted.
+                    letter
+                }
+                None => "A".into(),
+            };
+            origin.require_legacy_units(
+                [LegacyOriginUnit::Profile(key.into(), letter.clone())],
+                None,
+            )?;
+            let mut settings: AppSettings = serde_json::from_value(origin.base.clone())
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+            settings.agents = serde_json::from_value(json!(snapshot.snapshot.agents))
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+            settings.coding_agent_profiles.profiles_by_agent = snapshot.snapshot.profiles.clone();
+            Ok(resolve_profile(
+                &settings,
+                ProfileResolutionRequest {
+                    coding_agent_id: key,
+                    launch_path: None,
+                    agent_matrix_name: Some(&matrix),
+                    requested_profile: Some(&letter),
+                    requested_profile_authoritative: false,
+                },
+            ))
+        }
+
         fn assert_positive_default(&self) {
-            let (_, origin) = self.origin();
+            let (inputs, origin) = self.origin();
             let snapshot = self.snapshot();
-            let pair = json!({"currentCodingAgent":"K", "profile":"B"});
-            let pair_before = pair.clone();
-            let before30 = std::fs::read(self.root.path().join(AGENTS_INSTANCE_FILE_NAME)).unwrap();
-            let before_settings = std::fs::read(self.root.path().join(SETTINGS_FILE_NAME)).unwrap();
-            let units = [
-                LegacyOriginUnit::Entry("K".into()),
-                LegacyOriginUnit::Profile("K".into(), "B".into()),
-                LegacyOriginUnit::Default("N".into()),
-            ];
-            origin.require_legacy_units(units, None).unwrap();
+            let target = self.root.path().join("_agent_N/config.json");
+            let before_target = std::fs::read(&target).unwrap();
+            inputs.revalidate(&self.context).unwrap();
+            let mut consumed_default = 0;
+            let resolution = self
+                .consume_legacy_default(&origin, &snapshot, &before_target, &mut consumed_default)
+                .unwrap();
+            assert!(is_positive_default_b(&resolution));
+            assert_eq!(consumed_default, 1);
             let mut all_unresolved = origin.clone();
             all_unresolved.applied_paths.push(Vec::new());
-            assert!(all_unresolved
-                .require_legacy_units([LegacyOriginUnit::Default("N".into())], None)
+            let mut rejected_consumptions = 0;
+            assert!(self
+                .consume_legacy_default(
+                    &all_unresolved,
+                    &snapshot,
+                    &before_target,
+                    &mut rejected_consumptions
+                )
                 .is_err());
-            let letter = origin
-                .base
-                .pointer("/codingAgentProfiles/defaultProfileByAgent/N")
-                .unwrap()
-                .as_str()
-                .unwrap();
-            let mut consumed_default = 0;
-            let cell = snapshot.snapshot.profiles["K"].get(letter).unwrap();
-            consumed_default += 1;
-            assert_eq!(letter, "B");
-            assert_eq!(cell.command, "--beta");
-            assert_eq!(cell.env, BTreeMap::from([("MODE".into(), "beta".into())]));
-            assert_ne!(cell.command, snapshot.snapshot.profiles["K"]["A"].command);
+            assert_eq!(rejected_consumptions, 0);
+            assert_ne!(
+                resolution.cell.command,
+                snapshot.snapshot.profiles["K"]["A"].command
+            );
             assert_eq!(snapshot.snapshot.agents[0]["command"], "own-base");
-            assert_eq!(pair, pair_before);
-            assert_eq!(consumed_default, 1);
+            let after_target = std::fs::read(&target).unwrap();
+            assert_eq!(after_target, before_target);
+            let pair: Value = serde_json::from_slice(&after_target).unwrap();
+            assert_eq!(pair["tooling"]["currentCodingAgent"], "K");
+            assert_eq!(pair["tooling"]["profile"], "B");
+            assert!(pair["tooling"].get("configurationRef").is_none());
             assert!(pair.get("configurationRef").is_none());
             assert_eq!(
                 snapshot.snapshot.source.kind,
@@ -1973,15 +2073,78 @@ mod independent_source_tests {
                 d.code.as_str(),
                 "legacyOriginUnresolved" | "originUnavailable"
             )));
-            assert_eq!(
-                std::fs::read(self.root.path().join(AGENTS_INSTANCE_FILE_NAME)).unwrap(),
-                before30
-            );
-            assert_eq!(
-                std::fs::read(self.root.path().join(SETTINGS_FILE_NAME)).unwrap(),
-                before_settings
-            );
+            inputs.revalidate(&self.context).unwrap();
         }
+    }
+
+    fn is_positive_default_b(
+        resolution: &crate::config::coding_agent_profiles::ProfileResolution,
+    ) -> bool {
+        resolution.requested_profile == "B"
+            && resolution.effective_profile == "B"
+            && !resolution.fallback_applied
+            && resolution.cell.command == "--beta"
+            && resolution.cell.env == BTreeMap::from([("MODE".into(), "beta".into())])
+            && resolution.warnings.is_empty()
+    }
+
+    #[test]
+    fn legacy_origin_contract_positive_oracle_detects_fallback_and_missing_default() {
+        let fixture = Fixture::new();
+        let target = std::fs::read(fixture.root.path().join("_agent_N/config.json")).unwrap();
+        let mut raw = fixture.registered.clone();
+        raw["codingAgentProfiles"]["profilesByAgent"]["K"]["B"]["enabled"] = json!(false);
+        std::fs::write(
+            fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME),
+            serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        let mut consumed = 0;
+        let fallback = fixture
+            .consume_legacy_default(
+                &fixture.origin().1,
+                &fixture.snapshot(),
+                &target,
+                &mut consumed,
+            )
+            .unwrap();
+        assert_eq!(consumed, 1);
+        assert_eq!(fallback.requested_profile, "B");
+        assert_eq!(fallback.effective_profile, "A");
+        assert!(fallback.fallback_applied);
+        assert!(!is_positive_default_b(&fallback));
+        let mut base = fixture.settings.clone();
+        base["codingAgentProfiles"]["defaultProfileByAgent"]
+            .as_object_mut()
+            .unwrap()
+            .remove("N");
+        std::fs::write(
+            &fixture.context.settings_path,
+            serde_json::to_vec(&base).unwrap(),
+        )
+        .unwrap();
+        consumed = 0;
+        let missing = fixture
+            .consume_legacy_default(
+                &fixture.origin().1,
+                &fixture.snapshot(),
+                &target,
+                &mut consumed,
+            )
+            .unwrap();
+        assert_eq!(consumed, 0);
+        assert_eq!(missing.requested_profile, "A");
+        assert!(!is_positive_default_b(&missing));
+        std::fs::write(fixture.root.path().join("_agent_N/config.json"), b"{}").unwrap();
+        assert_eq!(
+            fixture.consume_legacy_default(
+                &fixture.origin().1,
+                &fixture.snapshot(),
+                &target,
+                &mut consumed
+            ),
+            Err(SourcePreparationError::StaleRevision)
+        );
     }
 
     #[test]
@@ -2339,6 +2502,46 @@ mod independent_source_tests {
                 serde_json::to_vec(&base).unwrap()
             );
         }
+    }
+
+    fn assert_general_overlay_keeps_disk_value(disk_value: Option<Value>) {
+        let fixture = Fixture::new();
+        let mut base = fixture.settings.clone();
+        base.as_object_mut().unwrap().remove("logLevel");
+        if let Some(value) = &disk_value {
+            base["logLevel"] = value.clone();
+        }
+        std::fs::write(
+            fixture.context.settings_path.clone(),
+            serde_json::to_vec(&base).unwrap(),
+        )
+        .unwrap();
+        fixture.overlay(&json!({"logLevel":"debug"}));
+        let inputs = fixture.origin().0;
+        let plan =
+            prepare_settings_without_source_write(&inputs, &Fixture::general_candidate("debug"))
+                .unwrap();
+        let after: Value = serde_json::from_slice(&plan.serialized_after).unwrap();
+        assert_eq!(after.get("logLevel"), disk_value.as_ref());
+        assert_eq!(plan.redecoded_settings.log_level.as_deref(), Some("debug"));
+        assert_eq!(after["codingAgentProfiles"], base["codingAgentProfiles"]);
+        // All three physical inputs, including the source, remain byte-identical.
+        inputs.revalidate(&fixture.context).unwrap();
+    }
+
+    #[test]
+    fn legacy_origin_contract_general_overlay_base_present() {
+        assert_general_overlay_keeps_disk_value(Some(json!("info")));
+    }
+
+    #[test]
+    fn legacy_origin_contract_general_overlay_base_absent() {
+        assert_general_overlay_keeps_disk_value(None);
+    }
+
+    #[test]
+    fn legacy_origin_contract_general_overlay_base_null() {
+        assert_general_overlay_keeps_disk_value(Some(Value::Null));
     }
 
     #[test]
