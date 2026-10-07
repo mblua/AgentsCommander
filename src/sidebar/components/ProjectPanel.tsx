@@ -496,6 +496,7 @@ function taskCleanDisabled(room: string): boolean {
   const snapshot = projectStore.taskSnapshot(room);
   if (!snapshot || snapshot.statusRecord?.kind === "status" || !isTaskClean(snapshot.taskTitle)) return false;
   if (snapshot.status !== null) return false;
+  if (snapshot.description === "") return true;
   const description = snapshot.description.replace(/\r\n/g, "\n").replace(/\n$/, "");
   return description === "Ready to start a new topic";
 }

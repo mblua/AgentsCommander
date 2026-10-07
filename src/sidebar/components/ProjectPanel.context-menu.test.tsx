@@ -461,14 +461,23 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
 
   for (const active of [false, true]) {
     it.each([
-      ["canonical LF", "Ready to start a new topic\n", true],
+      ["legacy LF", "Ready to start a new topic\n", true],
       ["CRLF", "Ready to start a new topic\r\n", true],
       ["no framing LF", "Ready to start a new topic", true],
       ["extra blank", "Ready to start a new topic\n\n", false],
       ["extra space", "Ready to start a new topic \n", false],
       ["case change", "ready to start a new topic\n", false],
       ["custom multiline", "human\nnotes", false],
-      ["empty body", "", false],
+      ["empty body", "", true],
+      ["space", " ", false],
+      ["tab", "	", false],
+      ["LF", "
+", false],
+      ["CRLF whitespace", "
+", false],
+      ["multiple LF", "
+
+", false],
     ])(`Clean description %s in ${active ? "active" : "inactive"} menu`, async (_label, description, disabled) => {
       const fake = await setupPanel(active ? [coordSession(), memberSession()] : [], projectDiscovery("Clean"));
       fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, { taskTitle: "Clean", description }));
@@ -479,12 +488,12 @@ describe("ProjectPanel replica context menu — gray/red (#545)", () => {
       expect(broom.title).toBe(disabled ? "Nothing to clear" : "Clear task title");
     });
 
-    it(`allows status and unknown snapshots in ${active ? "active" : "inactive"} menu`, async () => {
+    it.each(["title", "status", "status record"])(`allows %s and unknown snapshots in ${active ? "active" : "inactive"} menu`, async () => {
       const fake = await setupPanel(active ? [coordSession(), memberSession()] : [], projectDiscovery("Clean"));
       fake.resolve("task_get_snapshot_at", sidebarSnapshot(workgroupPath, {
         taskTitle: "Clean", description: "Ready to start a new topic\n", status: "complete status",
         statusRecord: { schemaVersion: 1, kind: "status", topicId: "topic", sequence: 1,
-          requestId: null, baseRevision: null, recordedAt: "now", author: null, status: "complete status" },
+          requestId: null, baseRevision: null, recordedAt: "now", author: null, status: "complete status" } : null,
       }));
       await projectStore.refreshTaskSnapshot(workgroupPath);
       contextMenu(findRow(rendered!.root, memberRowTestId));

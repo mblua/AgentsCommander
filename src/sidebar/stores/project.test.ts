@@ -160,6 +160,7 @@ describe("projectStore", () => {
     await projectStore.refreshTaskSnapshot(wg.path);
     old.resolve(taskSnapshot(wg.path, { status: "before Clean" }));
     await pending;
+    expect(projectStore.taskSnapshot(wg.path)?.description).toBe("");
     expect(projectStore.taskSnapshot(wg.path)?.taskTitle).toBe("Clean");
     expect(projectStore.taskSnapshot(wg.path)?.status).toBeNull();
   });
