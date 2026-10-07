@@ -160,7 +160,7 @@ TASK-status.<YYYYMMDD-HHMMSS>[.n].bak.jsonl
 
 The history backup preserves the entire file, including an unfinished tail. If only one source file exists, its missing partner gets an empty backup; if both are absent, there is no prior pair to archive.
 
-Clean resets the title to `Clean` and the body to `Ready to start a new topic`. It replaces the active history with one `topic_started` record: a new topic UUID, sequence `0`, and null status. The revision becomes that UUID plus `:0`. Repeating Clean on the canonical reset is a no-op when history is empty or contains only the complete `topic_started` seed.
+Clean resets the title to `Clean` and leaves the body empty. It replaces the active history with one `topic_started` record: a new topic UUID, sequence `0`, and null status. The revision becomes that UUID plus `:0`. Repeating Clean on the canonical reset is a no-op when history is empty or contains only the complete `topic_started` seed.
 
 The **sidebar broom** is disabled only when a snapshot is available, its title is empty or trims to `Clean`, status is null, the latest record is not `status`, and its description is canonical. That comparison normalizes CRLF and removes one final LF. A different description or a `status` record keeps the action available even with a `Clean` title; a missing snapshot does not prove the room is already clean. This rule describes the sidebar action, not the terminal button.
 
