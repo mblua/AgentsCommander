@@ -2135,7 +2135,15 @@ mod independent_source_tests {
         assert_eq!(consumed, 0);
         assert_eq!(missing.requested_profile, "A");
         assert!(!is_positive_default_b(&missing));
-        std::fs::write(fixture.root.path().join("_agent_N/config.json"), b"{}").unwrap();
+        crate::config::local_config_io::update_config_json_object(
+            &fixture.root.path().join("_agent_N/config.json"),
+            false,
+            |object| {
+                object.clear();
+                Ok(())
+            },
+        )
+        .unwrap();
         assert_eq!(
             fixture.consume_legacy_default(
                 &fixture.origin().1,
