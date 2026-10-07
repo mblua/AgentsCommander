@@ -1477,16 +1477,13 @@ fn validate_source_identity_groups(
         SourcePreparationError,
     > {
         let mut groups = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
-        let (agents, profiles): (
-            Vec<(String, String, Vec<CodingAgentEnv>)>,
-            BTreeMap<String, BTreeMap<String, ProfileCellConfig>>,
-        ) = if registered {
+        let (agents, profiles) = if registered {
             let (agents, profiles) = decode_registered_raw(value)?;
             (
                 agents
                     .into_iter()
                     .map(|a| (a.id, a.command, a.envs))
-                    .collect(),
+                    .collect::<Vec<_>>(),
                 profiles.profiles_by_agent,
             )
         } else {
@@ -1499,7 +1496,7 @@ fn validate_source_identity_groups(
                     .agents
                     .into_iter()
                     .map(|a| (a.key, a.command, a.envs))
-                    .collect(),
+                    .collect::<Vec<_>>(),
                 catalog.coding_agent_profiles,
             )
         };
@@ -2381,11 +2378,13 @@ mod independent_source_tests {
         let q = fixture.root.path().join("Q");
         std::fs::create_dir_all(&p).unwrap();
         std::fs::create_dir_all(&q).unwrap();
-        let mut settings = AppSettings::default();
-        settings.project_paths = vec![
-            p.to_string_lossy().into_owned(),
-            q.to_string_lossy().into_owned(),
-        ];
+        let mut settings = AppSettings {
+            project_paths: vec![
+                p.to_string_lossy().into_owned(),
+                q.to_string_lossy().into_owned(),
+            ],
+            ..AppSettings::default()
+        };
         let context =
             SourceReadContext::from_settings(&settings, &fixture.context.settings_path).unwrap();
         assert_eq!(list_active_sources(&context).len(), 4);
@@ -2463,8 +2462,10 @@ mod independent_source_tests {
     #[test]
     fn source_project40_is_owner_only_and_general_rejects_protected_keys() {
         let fixture = Fixture::new();
-        let mut settings = AppSettings::default();
-        settings.project_paths = vec![fixture.root.path().to_string_lossy().into_owned()];
+        let settings = AppSettings {
+            project_paths: vec![fixture.root.path().to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
         let context =
             SourceReadContext::from_settings(&settings, &fixture.context.settings_path).unwrap();
         let source = context.source(SourceKind::CatalogProject);
