@@ -1642,12 +1642,12 @@ where
     };
 
     // ── 7. Atomic write: tmp + sentinel-check + rename ────────────────────
-    let tmp_write = (|| {
+    let write_tmp = || {
         #[cfg(test)]
         io_boundary("nonclean_tmp_write")?;
         std::fs::write(&tmp_path, &new_content)
-    })();
-    if let Err(e) = tmp_write {
+    };
+    if let Err(e) = write_tmp() {
         // MED-6 cleanup
         let _ = std::fs::remove_file(&tmp_path);
         return Err(TaskOpError::TmpWriteFailed(tmp_path, e));
@@ -1694,12 +1694,12 @@ where
     // 7b. Rename with retry on Windows AV/Explorer transient holds (MED-4).
     let do_rename = || -> Result<(), std::io::Error> {
         for attempt in 0..=2u32 {
-            let rename = (|| {
+            let rename = || {
                 #[cfg(test)]
                 io_boundary("nonclean_rename")?;
                 std::fs::rename(&tmp_path, &task_path)
-            })();
-            match rename {
+            };
+            match rename() {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     let retry = e.kind() == std::io::ErrorKind::PermissionDenied
@@ -2893,7 +2893,10 @@ mod tests {
         assert!(IO_MUTATION.with(|v| v.borrow().is_none()));
         assert_eq!(std::fs::read(root.join("TASK.md")).unwrap(), external);
         assert_eq!(issue_2837_log(root), status);
-        assert_eq!(set_body_backups(root), [backup.clone()]);
+        assert_eq!(
+            set_body_backups(root).as_slice(),
+            std::slice::from_ref(&backup)
+        );
         assert_eq!(std::fs::read(backup).unwrap(), original);
         set_body_no_litter(root);
     }
@@ -2918,7 +2921,10 @@ mod tests {
         );
         assert_eq!(std::fs::read(root.join("TASK.md")).unwrap(), original);
         assert_eq!(issue_2837_log(root), status);
-        assert_eq!(set_body_backups(root), [backup.clone()]);
+        assert_eq!(
+            set_body_backups(root).as_slice(),
+            std::slice::from_ref(&backup)
+        );
         assert_eq!(std::fs::read(backup).unwrap(), original);
         set_body_no_litter(root);
     }
