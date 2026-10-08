@@ -12089,8 +12089,10 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let _lock =
             super::SettingsFileLock::acquire(&path, std::time::Duration::from_secs(1)).unwrap();
-        let mut current = super::AppSettings::default();
-        current.project_paths = vec!["cached".into()];
+        let mut current = super::AppSettings {
+            project_paths: vec!["cached".into()],
+            ..super::AppSettings::default()
+        };
         let result = super::repair_fresh_project_paths_at_path(&mut current, &path);
         assert!(matches!(
             result,
