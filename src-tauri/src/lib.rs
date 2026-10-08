@@ -2284,6 +2284,14 @@ impl Drop for RestoreCompletionGuard {
         }
     }
 }
+fn load_startup_sessions(
+    settings: &config::settings::AppSettings,
+    load: impl FnOnce(&[String]) -> Vec<sessions_persistence::PersistedSession>,
+) -> Result<Vec<sessions_persistence::PersistedSession>, String> {
+    let paths = sessions_persistence::session_retention_project_paths(settings)?;
+    Ok(load(&paths))
+}
+
 /// #1341 - the ONLY sanctioned way to launch the startup restore: as a spawned
 /// runtime task, never inside a main-thread `block_on`. A `block_on` here
 /// freezes the main thread while any session open awaits the #1327 update
@@ -2302,7 +2310,7 @@ pub(crate) fn spawn_restore_startup(
     pty_mgr: Arc<Mutex<PtyManager>>,
     settings_state: SettingsState,
     settings_snapshot: config::settings::AppSettings,
-    persisted: Vec<sessions_persistence::PersistedSession>,
+    persisted: Result<Vec<sessions_persistence::PersistedSession>, String>,
     teams: Vec<crate::config::teams::DiscoveredTeam>,
     setting_on: bool,
     idle_detector: Arc<IdleDetector>,
@@ -2358,6 +2366,16 @@ pub(crate) fn spawn_restore_startup(
         // skipping the startup continuation. Mirrors the FinishGuard "never
         // wedge" rule from #1327.
         let body = std::panic::AssertUnwindSafe(async move {
+            let persisted = match persisted {
+                Ok(persisted) => persisted,
+                Err(error) => {
+                    log::error!(
+                        "[restore] Project state unavailable; automatic restore skipped: {}",
+                        error
+                    );
+                    return;
+                }
+            };
             let mut active_id = None;
             let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
 
@@ -4911,29 +4929,32 @@ pub fn run(
             // run-event handler. The lock is uncontended at this point (the
             // mailbox poller and other writers start below), so it returns
             // immediately.
-            let restore_session_paths =
-                sessions_persistence::session_retention_project_paths(&restore_settings_snapshot);
-            let mut persisted = tauri::async_runtime::block_on(
-                sessions_persistence::load_sessions_purging_outside_project_paths(
-                    &restore_session_paths,
-                ),
-            );
-            match normalize_persisted_active_flags(&mut persisted) {
-                PersistedActiveFlagNormalization::Zero => {
-                    log::debug!("[restore] persisted selection flags normalized: zero");
-                }
-                PersistedActiveFlagNormalization::One { index } => {
-                    log::debug!(
-                        "[restore] persisted selection flags normalized: exactly one rowIndex={}",
-                        index
-                    );
-                }
-                PersistedActiveFlagNormalization::Multiple { identities } => {
-                    log::warn!(
-                        "[restore] inconsistent was_active flags count={} rows=[{}]; exact target cleared for eligible-live fallback",
-                        identities.len(),
-                        identities.join(", ")
-                    );
+            let mut persisted = load_startup_sessions(&restore_settings_snapshot, |paths| {
+                tauri::async_runtime::block_on(
+                    sessions_persistence::load_sessions_purging_outside_project_paths(paths),
+                )
+            });
+            if let Err(error) = &persisted {
+                log::error!("[restore] Project state unavailable; session load/purge skipped: {}", error);
+            }
+            if let Ok(persisted) = &mut persisted {
+                match normalize_persisted_active_flags(persisted) {
+                    PersistedActiveFlagNormalization::Zero => {
+                        log::debug!("[restore] persisted selection flags normalized: zero");
+                    }
+                    PersistedActiveFlagNormalization::One { index } => {
+                        log::debug!(
+                            "[restore] persisted selection flags normalized: exactly one rowIndex={}",
+                            index
+                        );
+                    }
+                    PersistedActiveFlagNormalization::Multiple { identities } => {
+                        log::warn!(
+                            "[restore] inconsistent was_active flags count={} rows=[{}]; exact target cleared for eligible-live fallback",
+                            identities.len(),
+                            identities.join(", ")
+                        );
+                    }
                 }
             }
             let restore_flag = app
@@ -5295,7 +5316,7 @@ pub fn run(
                     teams.len(),
                     settings_snapshot.project_paths.len(),
                     setting_on,
-                    persisted.len()
+                    persisted.as_ref().map(Vec::len).unwrap_or(0)
                 );
 
                 // §224 A.2.5 — RAII guard inside the closure clears the flag
@@ -7501,6 +7522,33 @@ async fn watch_capture_slots<R: tauri::Runtime>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn startup_unavailable_project_state_never_enters_session_load_or_purge() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("sessions.json");
+        let bytes = b"[{\"name\":\"retained\"}]";
+        std::fs::write(&file, bytes).unwrap();
+        let settings = crate::config::settings::AppSettings {
+            project_paths_persistence_error: Some("unavailable".into()),
+            ..Default::default()
+        };
+        let result = super::load_startup_sessions(&settings, |_| {
+            std::fs::write(&file, b"[]").unwrap();
+            Vec::new()
+        });
+        assert_eq!(result.unwrap_err(), "unavailable");
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        // Valid empty is a real source and still reaches the loader.
+        let mut called = false;
+        let result = super::load_startup_sessions(&Default::default(), |paths| {
+            assert!(paths.is_empty());
+            called = true;
+            Vec::new()
+        });
+        assert!(called);
+        assert!(result.unwrap().is_empty());
+    }
+
     use super::{
         apply_main_display_state, centered_default_main_geometry, effective_main_display_state,
         is_visible_on_monitors, normalize_persisted_active_flags, physical_to_logical,
