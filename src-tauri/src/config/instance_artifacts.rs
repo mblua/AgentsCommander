@@ -445,10 +445,14 @@ pub(crate) const IDENTITY_TRANSITION_TMP_GLOB: &str = concat!(
 pub(crate) const CONFIG_IDENTITY_RESERVATION_NAME: &str =
     layered_name!("config-identity-reservation", state, no_git, "json");
 pub(crate) const CONFIG_IDENTITY_RESERVATION_LOCK: &str = concat!(
-    ".", layered_name!("config-identity-reservation", state, no_git, "json"), ".lock"
+    ".",
+    layered_name!("config-identity-reservation", state, no_git, "json"),
+    ".lock"
 );
 pub(crate) const CONFIG_IDENTITY_RESERVATION_TMP: &str = concat!(
-    ".", layered_name!("config-identity-reservation", state, no_git, "json"), ".*.tmp"
+    ".",
+    layered_name!("config-identity-reservation", state, no_git, "json"),
+    ".*.tmp"
 );
 
 /// #2713 - the naming-migration journal, which is also its completion marker:
@@ -1064,11 +1068,30 @@ mod tests {
     #[test]
     fn pair_activity_artifact_names_and_ignore_registry() {
         ignore_rows_are_unique_and_byte_sorted_by_name();
-        assert_eq!(CONFIG_IDENTITY_RESERVATION_NAME, "config-identity-reservation.state.no-git.json");
-        assert_eq!(CONFIG_IDENTITY_RESERVATION_LOCK, format!(".{CONFIG_IDENTITY_RESERVATION_NAME}.lock"));
-        assert_eq!(CONFIG_IDENTITY_RESERVATION_TMP, format!(".{CONFIG_IDENTITY_RESERVATION_NAME}.*.tmp"));
-        for name in [CONFIG_IDENTITY_RESERVATION_NAME, CONFIG_IDENTITY_RESERVATION_LOCK, CONFIG_IDENTITY_RESERVATION_TMP] {
-            assert_eq!(INSTANCE_ARTIFACTS.iter().filter(|row| row.name == name && row.disposition == Disposition::Ignore).count(), 1);
+        assert_eq!(
+            CONFIG_IDENTITY_RESERVATION_NAME,
+            "config-identity-reservation.state.no-git.json"
+        );
+        assert_eq!(
+            CONFIG_IDENTITY_RESERVATION_LOCK,
+            format!(".{CONFIG_IDENTITY_RESERVATION_NAME}.lock")
+        );
+        assert_eq!(
+            CONFIG_IDENTITY_RESERVATION_TMP,
+            format!(".{CONFIG_IDENTITY_RESERVATION_NAME}.*.tmp")
+        );
+        for name in [
+            CONFIG_IDENTITY_RESERVATION_NAME,
+            CONFIG_IDENTITY_RESERVATION_LOCK,
+            CONFIG_IDENTITY_RESERVATION_TMP,
+        ] {
+            assert_eq!(
+                INSTANCE_ARTIFACTS
+                    .iter()
+                    .filter(|row| row.name == name && row.disposition == Disposition::Ignore)
+                    .count(),
+                1
+            );
         }
         // Per-target any-depth rows are appended by the PAIR owner. The
         // generated instance registry keeps its existing anchored policy.
