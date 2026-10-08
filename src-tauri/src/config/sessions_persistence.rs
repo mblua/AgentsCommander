@@ -4146,26 +4146,83 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_project_state_refuses_creation_and_blocked_menu_mutation() {
-        // The runner provisions both overrides before process startup: the
-        // resolved instance location is cached and cannot be changed in-test.
-        let public_override = std::env::var("AGENTSCOMMANDER_CONFIG_DIR")
-            .expect("runner must provide an isolated public config-dir override");
-        let test_override = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR")
-            .expect("runner must provide an isolated test config-dir override");
-        assert!(!public_override.trim().is_empty());
-        assert!(!test_override.trim().is_empty());
-        let expected = std::path::PathBuf::from(public_override.trim());
+        const CHILD_MARKER: &str = "AGENTSCOMMANDER_F1_CHILD_CONFIG_DIR";
+        let marker = std::env::var_os(CHILD_MARKER);
+        if marker.is_none() {
+            // Keep location overrides in the child: parallel parent tests may
+            // already have cached a different location.
+            let temp = tempfile::tempdir().expect("parent-owned F1 config directory");
+            assert!(temp.path().is_absolute());
+            let stdout_path = temp.path().join("child-stdout.log");
+            let stderr_path = temp.path().join("child-stderr.log");
+            let mut child = std::process::Command::new(
+                std::env::current_exe().expect("compiled test executable"),
+            )
+            .args([
+                "--exact",
+                "config::sessions_persistence::tests::unavailable_project_state_refuses_creation_and_blocked_menu_mutation",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("AGENTSCOMMANDER_CONFIG_DIR", temp.path())
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", temp.path())
+            .env(CHILD_MARKER, temp.path())
+            .stdout(std::fs::File::create(&stdout_path).expect("child stdout file"))
+            .stderr(std::fs::File::create(&stderr_path).expect("child stderr file"))
+            .spawn()
+            .expect("spawn isolated F1 child");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let result = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status),
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    pending_or_error => {
+                        let reason = match pending_or_error {
+                            Err(error) => format!("F1 child wait failed: {error}"),
+                            _ => "F1 child exceeded 60 seconds".to_string(),
+                        };
+                        child.kill().expect("kill unfinished F1 child");
+                        child.wait().expect("reap unfinished F1 child");
+                        break Err(reason);
+                    }
+                }
+            };
+            // Files avoid pipe backpressure while preserving child assertions.
+            print!(
+                "{}",
+                std::fs::read_to_string(&stdout_path).expect("read child stdout")
+            );
+            eprint!(
+                "{}",
+                std::fs::read_to_string(&stderr_path).expect("read child stderr")
+            );
+            let status = result.expect("isolated F1 child must finish within its deadline");
+            assert!(status.success(), "isolated F1 child failed: {status}");
+            return;
+        }
+        let expected = std::path::PathBuf::from(marker.expect("F1 child marker"));
         assert!(
             expected.is_absolute(),
-            "runner config directory must be absolute"
+            "child config directory must be absolute"
         );
-        assert_eq!(expected, std::path::PathBuf::from(test_override.trim()));
+        for override_name in [
+            "AGENTSCOMMANDER_CONFIG_DIR",
+            "AGENTSCOMMANDER_TEST_CONFIG_DIR",
+        ] {
+            assert_eq!(
+                std::env::var_os(override_name).map(std::path::PathBuf::from),
+                Some(expected.clone()),
+                "child override must match its recursion marker: {override_name}"
+            );
+        }
         let dir = crate::config::config_dir().expect("resolved isolated config directory");
         assert_eq!(
             dir, expected,
-            "cached location must match the runner overrides"
+            "cached child location must match its overrides"
         );
-        assert!(dir.is_dir(), "runner must create the disposable directory");
+        assert!(dir.is_dir(), "parent must retain the disposable directory");
         let file = dir.join("sessions.json");
         let fixture = [PersistedSession {
             name: "retained".into(),
