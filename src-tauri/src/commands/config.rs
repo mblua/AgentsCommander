@@ -493,64 +493,58 @@ pub(crate) async fn settings_snapshot_helper(
     settings: &SettingsState,
     settings_path: Option<PathBuf>,
 ) -> SettingsSnapshot {
-    let mut reconciliation_error = None;
-    {
-        // Reconciliation transaction under the write guard; no lock across await.
-        let mut guard = settings.write().await;
-        let pending = {
-            let state = &guard.project_path_state;
-            !state.has_structural()
-                && (state.active_reconcile_eligible || state.archived_reconcile_eligible)
-        };
-        if pending {
-            if let Some(path) = settings_path
-                .clone()
-                .or_else(|| crate::config::config_dir().map(|d| d.join(SETTINGS_FILE_NAME)))
-            {
-                // §4.3 step 2: re-decode all six project fields from disk and
-                // re-resolve BEFORE reconciling, so a CLI registration that
-                // happened after startup is authoritative and not clobbered. On a
-                // disk read/parse failure, retain the previously validated state,
-                // perform no write, and report stage `read`.
-                match crate::config::settings::refresh_and_decode_project_paths_from_path(
-                    &mut guard, &path,
-                ) {
-                    Err(message) => {
-                        reconciliation_error = Some(ProjectPathReconciliationError {
-                            stage: ReconciliationStage::Read,
-                            message,
-                            retryable: true,
-                        });
-                    }
-                    Ok(()) => {
-                        let fresh = guard.project_path_state.clone();
-                        let still_eligible = !fresh.has_structural()
-                            && (fresh.active_reconcile_eligible
-                                || fresh.archived_reconcile_eligible);
-                        if still_eligible {
-                            match crate::config::settings::reconcile_project_state_to_path(
-                                &guard,
-                                &path,
-                                fresh.active_reconcile_eligible,
-                                fresh.archived_reconcile_eligible,
-                            ) {
-                                Ok(written) => *guard = written,
-                                Err(message) => {
-                                    reconciliation_error = Some(ProjectPathReconciliationError {
-                                        stage: ReconciliationStage::Write,
-                                        message,
-                                        retryable: true,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+    let path =
+        settings_path.or_else(|| crate::config::config_dir().map(|d| d.join(SETTINGS_FILE_NAME)));
+    // State precedes the file lock. Disk work runs off the runtime worker;
+    // no file lock or transaction survives an await.
+    let mut guard = settings.clone().write_owned().await;
+    let task = tokio::task::spawn_blocking(move || {
+        let result = match path {
+            Some(path) => {
+                crate::config::settings::repair_fresh_project_paths_at_path(&mut guard, &path)
             }
+            None => {
+                let message = "Could not determine project settings path".to_string();
+                guard.project_paths_persistence_error = Some(message.clone());
+                Err((
+                    crate::config::settings::ProjectPathsRepairStage::Read,
+                    message,
+                ))
+            }
+        };
+        let reconciliation_error =
+            result
+                .err()
+                .map(|(stage, message)| ProjectPathReconciliationError {
+                    stage: match stage {
+                        crate::config::settings::ProjectPathsRepairStage::Read => {
+                            ReconciliationStage::Read
+                        }
+                        crate::config::settings::ProjectPathsRepairStage::Write => {
+                            ReconciliationStage::Write
+                        }
+                    },
+                    message,
+                    retryable: true,
+                });
+        settings_snapshot_from(&guard, reconciliation_error)
+    });
+    match task.await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let mut guard = settings.write().await;
+            let message = format!("Project-path snapshot task failed: {error}");
+            guard.project_paths_persistence_error = Some(message.clone());
+            settings_snapshot_from(
+                &guard,
+                Some(ProjectPathReconciliationError {
+                    stage: ReconciliationStage::Read,
+                    message,
+                    retryable: true,
+                }),
+            )
         }
     }
-    let guard = settings.read().await;
-    settings_snapshot_from(&guard, reconciliation_error)
 }
 
 #[tauri::command]
@@ -1005,7 +999,7 @@ async fn purge_sessions_after_settings_update_in_dir(
     dir: &Path,
 ) -> Result<(), String> {
     let retention_paths =
-        crate::config::sessions_persistence::session_retention_project_paths(saved);
+        crate::config::sessions_persistence::session_retention_project_paths(saved)?;
     crate::config::sessions_persistence::purge_sessions_outside_project_paths_in_dir(
         dir,
         &retention_paths,
@@ -7628,7 +7622,9 @@ mod tests {
             saved.archived_project_paths,
             vec![archived_project.to_string()]
         );
-        assert!(session_retention_project_paths(&saved).contains(&archived_project.to_string()));
+        assert!(session_retention_project_paths(&saved)
+            .unwrap()
+            .contains(&archived_project.to_string()));
         {
             let live = state.read().await;
             assert_eq!(
@@ -7681,7 +7677,9 @@ mod tests {
             saved.archived_project_paths,
             vec![archived_project.to_string()]
         );
-        assert!(session_retention_project_paths(&saved).contains(&archived_project.to_string()));
+        assert!(session_retention_project_paths(&saved)
+            .unwrap()
+            .contains(&archived_project.to_string()));
         {
             let live = state.read().await;
             assert_eq!(
@@ -7719,7 +7717,9 @@ mod tests {
         .unwrap();
 
         assert_single_project(&saved, &live_project);
-        assert!(session_retention_project_paths(&saved).contains(&live_project));
+        assert!(session_retention_project_paths(&saved)
+            .unwrap()
+            .contains(&live_project));
         {
             let live = state.read().await;
             assert_single_project(&live, &live_project);
@@ -7752,7 +7752,9 @@ mod tests {
             .unwrap();
 
         assert_single_project(&saved, &live_project);
-        assert!(session_retention_project_paths(&saved).contains(&live_project));
+        assert!(session_retention_project_paths(&saved)
+            .unwrap()
+            .contains(&live_project));
         {
             let live = state.read().await;
             assert_single_project(&live, &live_project);
@@ -7901,6 +7903,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unavailable_snapshot_blocks_purge_even_without_cached_repair() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let state = state_for(AppSettings::default());
+        std::fs::write(&settings_path, b"invalid").unwrap();
+        write_sessions_file(
+            temp.path(),
+            &[PersistedSession {
+                name: "retained".into(),
+                shell: "codex".into(),
+                working_directory: temp.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            }],
+        );
+        let session_path = temp.path().join("sessions.json");
+        let original = std::fs::read(&session_path).unwrap();
+        let snapshot = super::settings_snapshot_helper(&state, Some(settings_path.clone())).await;
+        let error = snapshot
+            .project_path_resolution
+            .reconciliation_error
+            .unwrap();
+        assert!(matches!(error.stage, super::ReconciliationStage::Read));
+        let saved = state.read().await.clone();
+        assert!(saved.project_paths_persistence_error.is_some());
+        assert!(
+            purge_sessions_after_settings_update_in_dir(&saved, temp.path())
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&session_path).unwrap(), original);
+        assert_eq!(std::fs::read(&settings_path).unwrap(), b"invalid");
+    }
+
+    #[tokio::test]
     async fn settings_update_returns_written_project_lists_for_session_purge() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
@@ -7993,6 +8029,17 @@ mod tests {
         current.project_path = Some(project_path.clone());
         let state = state_for(current.clone());
 
+        // Seed legacy persisted authority before Preserve, independent of renderer fields.
+        std::fs::write(
+            &settings_path,
+            serde_json::json!({
+                "projectPaths": [project_path.clone()],
+                "projectPath": project_path.clone(),
+                "agents": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
         let mut incoming = current.clone();
         incoming.sidebar_style = "deep-space".to_string();
         let saved = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
@@ -8010,8 +8057,32 @@ mod tests {
             assert_single_project(&live, &project_path);
         }
         assert!(settings_path.exists(), "writer must create settings.json");
+        let sidecar = settings_path.with_file_name("project-paths.json");
+        let sidecar_present = sidecar.try_exists().expect("inspect project authority");
+        let authority = if sidecar_present {
+            &sidecar
+        } else {
+            &settings_path
+        };
         let disk: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(authority).unwrap()).unwrap();
+        if sidecar_present {
+            let legacy: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+            for key in [
+                "projectPath",
+                "projectPaths",
+                "archivedProjectPaths",
+                "projectPathRelativeToInstance",
+                "projectPathsRelativeToInstance",
+                "archivedProjectPathsRelativeToInstance",
+            ] {
+                assert!(
+                    legacy.get(key).is_none(),
+                    "legacy project key remains: {key}"
+                );
+            }
+        }
         assert_eq!(
             disk["projectPaths"],
             serde_json::json!([project_path.clone()])

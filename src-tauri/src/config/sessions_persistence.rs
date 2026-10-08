@@ -553,10 +553,13 @@ fn working_directory_under_any_normalized_root(cwd: &str, roots: &[String]) -> b
 /// active projects should be used for discovery and background project work.
 pub(crate) fn session_retention_project_paths(
     settings: &crate::config::settings::AppSettings,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
+    if let Some(message) = &settings.project_paths_persistence_error {
+        return Err(message.clone());
+    }
     let mut paths = settings.project_paths.clone();
     paths.extend(settings.archived_project_paths.iter().cloned());
-    paths
+    Ok(paths)
 }
 
 /// #881: true when `path` lives under one of `normalized_archived_roots`,
@@ -1158,7 +1161,7 @@ pub(crate) async fn enforce_creation_gate<R: tauri::Runtime>(
         CreationGateEnforcement::Enforce => {
             let settings = app.state::<crate::config::settings::SettingsState>();
             let cfg = settings.read().await;
-            let retained = session_retention_project_paths(&cfg);
+            let retained = session_retention_project_paths(&cfg)?;
             let archived = cfg.archived_project_paths.clone();
             drop(cfg);
             let cwd = cwd.to_string();
@@ -1978,7 +1981,7 @@ pub async fn persist_merging_failed_result(
 ) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let settings = crate::config::settings::load_settings_for_cli();
-    let project_paths = session_retention_project_paths(&settings);
+    let project_paths = session_retention_project_paths(&settings)?;
     persist_merging_failed_to_dir_for_project_paths_result(mgr, failed, &dir, Some(&project_paths))
         .await
 }
@@ -2034,7 +2037,7 @@ pub async fn persist_merging_failed(mgr: &SessionManager, failed: &[PersistedSes
 pub async fn persist_current_state_result(mgr: &SessionManager) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let settings = crate::config::settings::load_settings_for_cli();
-    let project_paths = session_retention_project_paths(&settings);
+    let project_paths = session_retention_project_paths(&settings)?;
     persist_current_state_to_dir_for_project_paths_result(
         mgr,
         &dir,
@@ -2128,7 +2131,13 @@ pub async fn persist_current_state_prune_dormant(mgr: &SessionManager) {
         }
     };
     let settings = crate::config::settings::load_settings_for_cli();
-    let project_paths = session_retention_project_paths(&settings);
+    let project_paths = match session_retention_project_paths(&settings) {
+        Ok(paths) => paths,
+        Err(error) => {
+            log::error!("Session persistence blocked: {}", error);
+            return;
+        }
+    };
     if let Err(e) = persist_current_state_to_dir_for_project_paths_result(
         mgr,
         &dir,
@@ -2177,7 +2186,7 @@ pub async fn raise_hand_and_persist_result(
 ) -> Result<RaiseHandPersistOutcome, String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let settings = crate::config::settings::load_settings_for_cli();
-    let project_paths = session_retention_project_paths(&settings);
+    let project_paths = session_retention_project_paths(&settings)?;
     raise_hand_and_persist_to_dir_result(mgr, session_id, now, &dir, Some(&project_paths)).await
 }
 
@@ -2254,7 +2263,13 @@ pub async fn set_blocked_menu_and_persist(
     settings: &crate::config::settings::AppSettings,
 ) -> BlockedMenuPersistOutcome {
     let dir = super::config_dir();
-    let project_paths = session_retention_project_paths(settings);
+    let project_paths = match session_retention_project_paths(settings) {
+        Ok(paths) => paths,
+        Err(error) => {
+            log::error!("Blocked-menu persistence blocked: {}", error);
+            return BlockedMenuPersistOutcome::NotApplicable;
+        }
+    };
     let (outcome, error) = set_blocked_menu_and_persist_to_dir(
         mgr,
         session_id,
@@ -2319,7 +2334,13 @@ async fn set_blocked_menu_and_persist_to_dir(
 pub async fn clear_blocked_menu_and_persist(mgr: &SessionManager, session_id: Uuid) -> bool {
     let dir = super::config_dir();
     let settings = crate::config::settings::load_settings_for_cli();
-    let project_paths = session_retention_project_paths(&settings);
+    let project_paths = match session_retention_project_paths(&settings) {
+        Ok(paths) => paths,
+        Err(error) => {
+            log::error!("Session persistence blocked: {}", error);
+            return false;
+        }
+    };
     let (cleared, error) = clear_blocked_menu_and_persist_to_dir(
         mgr,
         session_id,
@@ -2392,7 +2413,7 @@ pub async fn clear_user_input_transitions_and_persist_result(
 ) -> Result<ClearedUserInputTransitions, String> {
     let dir = super::config_dir();
     let settings = crate::config::settings::load_settings_for_cli();
-    let project_paths = session_retention_project_paths(&settings);
+    let project_paths = session_retention_project_paths(&settings)?;
     clear_user_input_transitions_and_persist_to_dir_result(
         mgr,
         session_id,
@@ -2444,7 +2465,7 @@ pub async fn set_start_fresh_and_persist_result(
 ) -> Result<bool, String> {
     let dir = super::config_dir();
     let settings = crate::config::settings::load_settings_for_cli();
-    let project_paths = session_retention_project_paths(&settings);
+    let project_paths = session_retention_project_paths(&settings)?;
     write_start_fresh_and_persist_to_dir_result(
         mgr,
         session_id,
@@ -2465,7 +2486,7 @@ pub async fn clear_start_fresh_and_persist_result(
 ) -> Result<bool, String> {
     let dir = super::config_dir();
     let settings = crate::config::settings::load_settings_for_cli();
-    let project_paths = session_retention_project_paths(&settings);
+    let project_paths = session_retention_project_paths(&settings)?;
     write_start_fresh_and_persist_to_dir_result(
         mgr,
         session_id,
@@ -4106,9 +4127,73 @@ mod tests {
         };
 
         assert_eq!(
-            session_retention_project_paths(&settings),
+            session_retention_project_paths(&settings).unwrap(),
             vec!["A".to_string(), "B".to_string()]
         );
+    }
+
+    #[test]
+    fn session_retention_distinguishes_valid_empty_from_unavailable() {
+        let mut settings = AppSettings::default();
+        assert_eq!(session_retention_project_paths(&settings), Ok(Vec::new()));
+        settings.project_paths = vec!["cached".into()];
+        settings.project_paths_persistence_error = Some("project source unavailable".into());
+        assert_eq!(
+            session_retention_project_paths(&settings),
+            Err("project source unavailable".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_project_state_refuses_creation_and_blocked_menu_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("sessions.json");
+        let original = b"[{\"name\":\"retained\",\"working_directory\":\"cached\"}]";
+        std::fs::write(&file, original).unwrap();
+        let settings = AppSettings {
+            project_paths_persistence_error: Some("unavailable".into()),
+            ..AppSettings::default()
+        };
+        let state: crate::config::settings::SettingsState =
+            Arc::new(tokio::sync::RwLock::new(settings.clone()));
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        assert_eq!(
+            super::enforce_creation_gate(
+                app.handle(),
+                &temp.path().to_string_lossy(),
+                super::CreationGateEnforcement::Enforce,
+            )
+            .await,
+            Err("unavailable".into())
+        );
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "powershell.exe".into(),
+                Vec::new(),
+                temp.path().to_string_lossy().into_owned(),
+                None,
+                None,
+                Vec::new(),
+                true,
+                crate::pty::backend::SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        let outcome = super::set_blocked_menu_and_persist(
+            &mgr,
+            session.id,
+            "blocked".into(),
+            chrono::Utc::now(),
+            &settings,
+        )
+        .await;
+        assert!(matches!(outcome, BlockedMenuPersistOutcome::NotApplicable));
+        assert!(mgr.list_sessions().await[0].communication.is_none());
+        assert_eq!(std::fs::read(&file).unwrap(), original);
     }
 
     #[test]
