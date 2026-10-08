@@ -268,7 +268,7 @@ fn p4_is_frozen() {
     let pin = Pin {
         total: 14,
         distinct: 12,
-        sha256: "74A8A2AB911692937624C80AC3710418FBD91ACA7247D9F024D8EC2F0B026FE3",
+        sha256: "F7D990ECFAB6053D12E954AB4E0ED7E57F3B713FDDD6A6299078F40B92A324CE",
         per_file: &[
             ("cli/list_peers.rs", 4),
             ("config/agent_config.rs", 5),
@@ -283,7 +283,7 @@ fn p5_is_frozen() {
     let pin = Pin {
         total: 20,
         distinct: 18,
-        sha256: "A7C6E9FFE89853CF96918EDE52A3CD919CA9DF9F8AD7D154E56F908D529F3204",
+        sha256: "75087424486AC6B16AA2C091F654BCB76535CD285F089790C270B3035BE9C406",
         per_file: &[
             ("cli/list_peers.rs", 4),
             ("config/agent_config.rs", 8),
@@ -320,12 +320,12 @@ fn p6_is_frozen() {
 #[test]
 fn p7_is_frozen() {
     let pin = Pin {
-        total: 56,
-        distinct: 42,
-        sha256: "CD23C8540D512D63508151619F86BA80297EC671CC7B04C0E7D8A3FED488530B",
+        total: 61,
+        distinct: 47,
+        sha256: "36749D1FEDEA30FD30A2F55A1F95DFB7712F7DE4FFE9581CAC4181C641E1AF8B",
         per_file: &[
-            ("config/agent_config.rs", 30),
-            ("config/local_config_io.rs", 26),
+            ("config/agent_config.rs", 34),
+            ("config/local_config_io.rs", 27),
         ],
     };
     assert_frozen("P7", &line_census(P7, Scope::Owners), &pin);
@@ -334,12 +334,12 @@ fn p7_is_frozen() {
 #[test]
 fn p8_is_frozen() {
     let pin = Pin {
-        total: 180,
-        distinct: 135,
-        sha256: "407ACC3D7D1FB0E5DCCD3C6DF50DCE65642B1D1BF850021603344BE660F92D5C",
+        total: 203,
+        distinct: 156,
+        sha256: "2A3878CD17E4B0A414D7520057E316ECD929865B588DB352524330C671B265C0",
         per_file: &[
-            ("config/agent_config.rs", 163),
-            ("config/local_config_io.rs", 17),
+            ("config/agent_config.rs", 168),
+            ("config/local_config_io.rs", 35),
         ],
     };
     assert_frozen("P8", &line_census(QUOTED_KEY, Scope::Owners), &pin);

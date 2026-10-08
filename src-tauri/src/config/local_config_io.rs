@@ -357,6 +357,8 @@ where
 pub(crate) type ConfigPairCleanup<'a> =
     &'a dyn Fn(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>;
 
+pub(crate) type ConfigPairFinish<'a> = &'a dyn Fn(&mut Map<String, Value>) -> Result<(), String>;
+
 /// #2786 (C1) - write the decisions file and the state file as one guarded
 /// pair. `state` is the state file's path, `state_keys` the keys that live in
 /// it, and `on_stage` a named pause point (a no-op in production); all three
@@ -375,13 +377,76 @@ pub(crate) type ConfigPairCleanup<'a> =
 ///
 /// Neither closure may call a config writer: a nested call on the same thread
 /// returns an error, and one waited on from another thread would deadlock.
-pub(crate) fn update_config_pair<F>(
+#[cfg(test)]
+fn update_config_pair<F>(
     decisions: &Path,
     state: &Path,
     state_keys: &[&str],
     cleanup: Option<ConfigPairCleanup<'_>>,
     on_stage: &dyn Fn(&str),
     mutate: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
+{
+    update_config_pair_inner(
+        decisions,
+        state,
+        None,
+        state_keys,
+        cleanup,
+        on_stage,
+        mutate,
+        &|_| Ok(()),
+        None,
+        None,
+    )
+}
+
+/// The production PAIR boundary. Pending deltas are computed on private maps
+/// before cleanup or the caller's split-marker policy can change either file.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_config_pair_guarded<F>(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    state_keys: &[&str],
+    nonpending_preflight: Option<&dyn Fn() -> Result<(), String>>,
+    cleanup: Option<ConfigPairCleanup<'_>>,
+    on_stage: &dyn Fn(&str),
+    mutate: F,
+    finish: ConfigPairFinish<'_>,
+    activity: Option<(&str, &Cell<bool>)>,
+) -> Result<(), String>
+where
+    F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
+{
+    update_config_pair_inner(
+        decisions,
+        state,
+        Some(reservation),
+        state_keys,
+        cleanup,
+        on_stage,
+        mutate,
+        finish,
+        activity,
+        nonpending_preflight,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_config_pair_inner<F>(
+    decisions: &Path,
+    state: &Path,
+    reservation: Option<&Path>,
+    state_keys: &[&str],
+    cleanup: Option<ConfigPairCleanup<'_>>,
+    on_stage: &dyn Fn(&str),
+    mutate: F,
+    finish: ConfigPairFinish<'_>,
+    activity: Option<(&str, &Cell<bool>)>,
+    nonpending_preflight: Option<&dyn Fn() -> Result<(), String>>,
 ) -> Result<(), String>
 where
     F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
@@ -398,8 +463,110 @@ where
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
     }
+    if let Some(path) = reservation {
+        validate_pair_paths(decisions, state, path).map_err(|e| e.to_string())?;
+    }
     let _decisions_lock = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)?;
+    // Every reservation publisher takes decisions first. Keep this lease while
+    // classifying presence, so a packet cannot appear during ignore preflight.
+    // Protect state/reservation artifacts before creating their sidecars, even
+    // when a later read fails. Pending or unreadable packets never preflight.
+    if let Some(path) = reservation {
+        if read_pair_reservation(path)
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            if let Some(preflight) = nonpending_preflight {
+                preflight()?;
+            }
+        }
+    }
     let _state_lock = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)?;
+
+    let _reservation_lock = reservation
+        .map(|path| acquire_config_file_write_lock(path, CONFIG_LOCK_TIMEOUT))
+        .transpose()?;
+    if let Some(path) = reservation {
+        if let Some((mut packet, mut physical)) =
+            read_pair_reservation(path).map_err(|e| e.to_string())?
+        {
+            validate_pair_binding(decisions, state, &packet).map_err(|e| e.to_string())?;
+            if let Some((input, landed)) = activity {
+                landed.set(
+                    land_pair_activity(
+                        decisions,
+                        state,
+                        path,
+                        &mut packet,
+                        &mut physical,
+                        input,
+                        &|_| Ok(()),
+                    )
+                    .map_err(|e| e.to_string())?,
+                );
+                return Ok(());
+            }
+            let current = read_pair_tuple(decisions, state).map_err(|e| e.to_string())?;
+            packet.recognize(&current).map_err(|e| e.to_string())?;
+            let mut d = current[0].map().map_err(|e| e.to_string())?;
+            let mut s = current[1].map().map_err(|e| e.to_string())?;
+            mutate(&mut d, &mut s)?;
+            let proposed = [
+                prepared_pair_image(
+                    &current[0],
+                    &current[0].map().map_err(|e| e.to_string())?,
+                    &d,
+                )
+                .map_err(|e| e.to_string())?,
+                prepared_pair_image(
+                    &current[1],
+                    &current[1].map().map_err(|e| e.to_string())?,
+                    &s,
+                )
+                .map_err(|e| e.to_string())?,
+            ];
+            if proposed == current {
+                return Ok(());
+            }
+            // Structural changes, history, selection and unknown fields all
+            // remain frozen. Only the exact timestamp leaf may move forward.
+            if proposed[0] != current[0]
+                || protected_revision(&proposed[1], true).map_err(|e| e.to_string())?
+                    != protected_revision(&current[1], true).map_err(|e| e.to_string())?
+            {
+                // Absent state permits only its timestamp-only overlay.
+                if proposed[0] != current[0]
+                    || current[1] != PhysicalState::Absent
+                    || !timestamp_only_overlay(&proposed[1]).map_err(|e| e.to_string())?
+                {
+                    return Err("targetTransitionPending: PAIR is reserved".into());
+                }
+            }
+            let input = timestamp_value(&proposed[1])
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| {
+                    "targetTransitionPending: timestamp cannot be deleted".to_string()
+                })?;
+            if timestamp_value(&current[1])
+                .map_err(|e| e.to_string())?
+                .as_deref()
+                .is_some_and(|old| timestamp_cmp(&input, old).is_ok_and(|order| order.is_lt()))
+            {
+                return Err("targetTransitionPending: timestamp cannot decrease".into());
+            }
+            land_pair_activity(
+                decisions,
+                state,
+                path,
+                &mut packet,
+                &mut physical,
+                &input,
+                &|_| Ok(()),
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
 
     let both = || format!("{} and {}", decisions.display(), state.display());
     let read = |path: &Path| {
@@ -424,6 +591,7 @@ where
     let decisions_before = decisions_map.clone();
     let state_before = state_map.clone();
     mutate(&mut decisions_map, &mut state_map)?;
+    finish(&mut state_map)?;
     publish_pair_sides(
         (decisions, &decisions_before, &decisions_map),
         (state, &state_before, &state_map),
@@ -531,6 +699,7 @@ pub(crate) enum PreparedPairError {
     InvalidPlan(&'static str),
     Preparation(String),
     Conflict,
+    Pending,
     Io(String),
 }
 
@@ -541,6 +710,9 @@ impl std::fmt::Display for PreparedPairError {
             Self::Preparation(reason) => write!(f, "preparedPairRejected: {reason}"),
             Self::Conflict => {
                 f.write_str("preparedPairConflict: current tuple is not an authorized stage")
+            }
+            Self::Pending => {
+                f.write_str("targetTransitionPending: reserved target is not finalized")
             }
             Self::Io(reason) => write!(f, "preparedPairIo: {reason}"),
         }
@@ -578,6 +750,17 @@ where
 {
     let _writer = ConfigWriterActive::enter("prepare_config_pair_plan")
         .map_err(PreparedPairError::Preparation)?;
+    prepare_config_pair_plan_inner(before, cleanup, mutate)
+}
+
+fn prepare_config_pair_plan_inner<F>(
+    before: [PhysicalState; 2],
+    cleanup: Option<ConfigPairCleanup<'_>>,
+    mutate: F,
+) -> Result<PreparedConfigPairPlan, PreparedPairError>
+where
+    F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
+{
     let mut decisions = before[0].map()?;
     let mut state = before[1].map()?;
     let original_decisions = decisions.clone();
@@ -603,7 +786,7 @@ where
     })
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+#[cfg(test)]
 pub(crate) fn execute_prepared_config_pair(
     decisions: &Path,
     state: &Path,
@@ -614,10 +797,32 @@ pub(crate) fn execute_prepared_config_pair(
 
 /// One lock acquisition per side, for the whole execution. The stage seam is
 /// private and exercises partial failure in the production execution body.
-#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+#[cfg(test)]
 fn execute_prepared_config_pair_with_stage(
     decisions: &Path,
     state: &Path,
+    plan: &PreparedConfigPairPlan,
+    on_stage: &dyn Fn(usize) -> Result<(), PreparedPairError>,
+) -> Result<(), PreparedPairError> {
+    execute_unreserved_config_pair_inner(decisions, state, None, plan, on_stage)
+}
+
+/// Retained full-physical P10 execution refuses a durable reservation under
+/// the same PAIR locks; it cannot bypass the owner/protected-activity protocol.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn execute_unreserved_config_pair(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    plan: &PreparedConfigPairPlan,
+) -> Result<(), PreparedPairError> {
+    execute_unreserved_config_pair_inner(decisions, state, Some(reservation), plan, &|_| Ok(()))
+}
+
+fn execute_unreserved_config_pair_inner(
+    decisions: &Path,
+    state: &Path,
+    reservation: Option<&Path>,
     plan: &PreparedConfigPairPlan,
     on_stage: &dyn Fn(usize) -> Result<(), PreparedPairError>,
 ) -> Result<(), PreparedPairError> {
@@ -646,11 +851,23 @@ fn execute_prepared_config_pair_with_stage(
             "PAIR targets must be distinct",
         ));
     }
+    if let Some(path) = reservation {
+        validate_pair_paths(&decisions, &state, path)?;
+    }
     let _guard = lock_local_config_writes();
     let _decisions_lock = acquire_config_file_write_lock(&decisions, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
     let _state_lock = acquire_config_file_write_lock(&state, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    let _reservation_lock = reservation
+        .map(|path| acquire_config_file_write_lock(path, CONFIG_LOCK_TIMEOUT))
+        .transpose()
+        .map_err(PreparedPairError::Io)?;
+    if let Some(path) = reservation {
+        if read_pair_reservation(path)?.is_some() {
+            return Err(PreparedPairError::Pending);
+        }
+    }
     let read = || -> Result<[PhysicalState; 2], PreparedPairError> {
         Ok([
             read_config_pair_physical(&decisions)?,
@@ -738,6 +955,936 @@ fn publish_prepared_pair_image(
         }
     }
     result
+}
+
+/// Canonical JSON with structural presence retained. Only the state timestamp
+/// is removed; decisions, nulls, empty objects and unknown values remain data.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum ProtectedRevision {
+    Absent,
+    Json(Value),
+}
+
+fn protected_revision(
+    image: &PhysicalState,
+    state: bool,
+) -> Result<ProtectedRevision, PreparedPairError> {
+    if *image == PhysicalState::Absent {
+        return Ok(ProtectedRevision::Absent);
+    }
+    let mut map = image.map()?;
+    if state {
+        timestamp_value(image)?;
+        if let Some(tooling) = map.get_mut("tooling") {
+            tooling
+                .as_object_mut()
+                .ok_or(PreparedPairError::Conflict)?
+                .remove("lastAgentMessageAt");
+        }
+    }
+    Ok(ProtectedRevision::Json(canonical_json(Value::Object(map))))
+}
+
+fn canonical_json(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut rows: Vec<_> = map.into_iter().collect();
+            rows.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(
+                rows.into_iter()
+                    .map(|(key, value)| (key, canonical_json(value)))
+                    .collect(),
+            )
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonical_json).collect()),
+        value => value,
+    }
+}
+
+fn changed_pair_sides(plan: &PreparedConfigPairPlan) -> [bool; 2] {
+    [0, 1].map(|side| {
+        plan.stages
+            .windows(2)
+            .any(|images| images[0][side] != images[1][side])
+    })
+}
+
+fn timestamp_value(image: &PhysicalState) -> Result<Option<String>, PreparedPairError> {
+    let map = image.map()?;
+    let Some(tooling) = map.get("tooling") else {
+        return Ok(None);
+    };
+    let tooling = tooling.as_object().ok_or(PreparedPairError::Conflict)?;
+    let Some(value) = tooling.get("lastAgentMessageAt") else {
+        return Ok(None);
+    };
+    let text = value.as_str().ok_or(PreparedPairError::Conflict)?;
+    chrono::DateTime::parse_from_rfc3339(text).map_err(|_| PreparedPairError::Conflict)?;
+    Ok(Some(text.to_string()))
+}
+
+fn timestamp_cmp(a: &str, b: &str) -> Result<std::cmp::Ordering, PreparedPairError> {
+    let a = chrono::DateTime::parse_from_rfc3339(a).map_err(|_| PreparedPairError::Conflict)?;
+    let b = chrono::DateTime::parse_from_rfc3339(b).map_err(|_| PreparedPairError::Conflict)?;
+    Ok(a.cmp(&b))
+}
+
+pub(crate) fn merge_monotonic_activity(
+    values: &[Option<String>],
+) -> Result<Option<String>, PreparedPairError> {
+    let mut maximum: Option<String> = None;
+    for value in values.iter().flatten() {
+        timestamp_cmp(value, value)?;
+        if maximum
+            .as_deref()
+            .map(|old| timestamp_cmp(value, old))
+            .transpose()?
+            .is_none_or(|order| order.is_gt())
+        {
+            maximum = Some(value.clone());
+        }
+    }
+    Ok(maximum)
+}
+
+fn timestamp_only_overlay(image: &PhysicalState) -> Result<bool, PreparedPairError> {
+    let map = image.map()?;
+    Ok(map.len() == 1
+        && map
+            .get("tooling")
+            .and_then(Value::as_object)
+            .is_some_and(|tooling| {
+                tooling.len() == 1 && tooling.contains_key("lastAgentMessageAt")
+            })
+        && timestamp_value(image)?.is_some())
+}
+
+fn protected_matches(
+    expected: &PhysicalState,
+    observed: &PhysicalState,
+    state: bool,
+) -> Result<bool, PreparedPairError> {
+    if state && *expected == PhysicalState::Absent && *observed != PhysicalState::Absent {
+        return timestamp_only_overlay(observed);
+    }
+    Ok(protected_revision(expected, state)? == protected_revision(observed, state)?)
+}
+
+/// Private caller data; authorization and C/source proofs belong above IO.
+/// Mappings are bound by their canonical digest, never copied source commands.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct PairReservationRequest {
+    pub(crate) operation_id: String,
+    pub(crate) source_physical_key: String,
+    pub(crate) owner_instance_id: String,
+    pub(crate) mappings_digest: String,
+    pub(crate) before_protected: [ProtectedRevision; 2],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+enum TimestampPhysical {
+    AbsentState,
+    AbsentField,
+    Value(String),
+}
+
+fn timestamp_physical(image: &PhysicalState) -> Result<TimestampPhysical, PreparedPairError> {
+    if *image == PhysicalState::Absent {
+        return Ok(TimestampPhysical::AbsentState);
+    }
+    Ok(match timestamp_value(image)? {
+        Some(value) => TimestampPhysical::Value(value),
+        None => TimestampPhysical::AbsentField,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PairActivityIntent {
+    before_timestamp_physical: TimestampPhysical,
+    after_timestamp: String,
+    floor_before: Option<String>,
+}
+
+/// The single physical recovery authority: presence means complete images and
+/// floor are durable. Owner and floor are deliberately outside planDigest.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PairReservation {
+    version: u32,
+    pub(crate) operation_id: String,
+    pub(crate) source_physical_key: String,
+    pub(crate) owner_instance_id: String,
+    pub(crate) plan_digest: String,
+    pub(crate) physical_target_identity: String,
+    protected_policy_version: u32,
+    mappings_digest: String,
+    before_tuple: [PhysicalState; 2],
+    protected_images: [[ProtectedRevision; 2]; 5],
+    changed_sides: [bool; 2],
+    timestamp_floor: Option<String>,
+    activity_intent: Option<PairActivityIntent>,
+    plan_images: PreparedConfigPairPlan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum PairReservationRole {
+    Owner,
+    Observer,
+}
+
+fn protected_plan(
+    plan: &PreparedConfigPairPlan,
+) -> Result<[[ProtectedRevision; 2]; 5], PreparedPairError> {
+    let mut images = Vec::new();
+    for tuple in plan.stages() {
+        images.push([
+            protected_revision(&tuple[0], false)?,
+            protected_revision(&tuple[1], true)?,
+        ]);
+    }
+    images
+        .try_into()
+        .map_err(|_| PreparedPairError::InvalidPlan("PAIR stage count"))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn protected_config_pair_revision(
+    before: &[PhysicalState; 2],
+) -> Result<[ProtectedRevision; 2], PreparedPairError> {
+    Ok([
+        protected_revision(&before[0], false)?,
+        protected_revision(&before[1], true)?,
+    ])
+}
+
+fn pair_plan_digest(
+    plan: &PreparedConfigPairPlan,
+    mappings_digest: &str,
+) -> Result<String, PreparedPairError> {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(&(1u32, protected_plan(plan)?, mappings_digest))
+        .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+impl PairReservation {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn protected_revision_digests(&self) -> Result<[String; 2], PreparedPairError> {
+        use sha2::{Digest, Sha256};
+        let digest = |tuple: &[ProtectedRevision; 2]| -> Result<String, PreparedPairError> {
+            Ok(format!(
+                "{:x}",
+                Sha256::digest(
+                    serde_json::to_vec(tuple).map_err(|e| PreparedPairError::Io(e.to_string()))?
+                )
+            ))
+        };
+        Ok([
+            digest(&self.protected_images[0])?,
+            digest(&self.protected_images[4])?,
+        ])
+    }
+
+    fn validate(&self) -> Result<(), PreparedPairError> {
+        self.plan_images.validate()?;
+        if self.version != 1
+            || self.protected_policy_version != 1
+            || self.operation_id.is_empty()
+            || self.source_physical_key.is_empty()
+            || self.owner_instance_id.is_empty()
+            || self.physical_target_identity.is_empty()
+            || self.mappings_digest.is_empty()
+            || self.plan_digest != pair_plan_digest(&self.plan_images, &self.mappings_digest)?
+            || self.protected_images != protected_plan(&self.plan_images)?
+            || self.before_tuple != self.plan_images.stages[0]
+            || self.changed_sides != changed_pair_sides(&self.plan_images)
+        {
+            return Err(PreparedPairError::InvalidPlan("invalid reservation packet"));
+        }
+        merge_monotonic_activity(std::slice::from_ref(&self.timestamp_floor))?;
+        if let Some(intent) = &self.activity_intent {
+            if intent.floor_before != self.timestamp_floor
+                || merge_monotonic_activity(&[
+                    intent.floor_before.clone(),
+                    Some(intent.after_timestamp.clone()),
+                ])? != Some(intent.after_timestamp.clone())
+            {
+                return Err(PreparedPairError::Conflict);
+            }
+        }
+        Ok(())
+    }
+
+    fn recognize(&self, current: &[PhysicalState; 2]) -> Result<usize, PreparedPairError> {
+        let timestamp = timestamp_value(&current[1])?;
+        if let Some(floor) = &self.timestamp_floor {
+            if timestamp
+                .as_deref()
+                .map(|value| timestamp_cmp(value, floor))
+                .transpose()?
+                .is_none_or(|order| order.is_lt())
+            {
+                return Err(PreparedPairError::Conflict);
+            }
+        }
+        for stage in (0..5).rev() {
+            let expected = &self.plan_images.stages[stage];
+            if protected_matches(&expected[0], &current[0], false)?
+                && protected_matches(&expected[1], &current[1], true)?
+            {
+                let planned = if stage == 0 {
+                    timestamp_value(&expected[1])?
+                } else {
+                    self.planned_activity_max()?
+                };
+                if let Some(planned) = planned {
+                    if timestamp
+                        .as_deref()
+                        .map(|value| timestamp_cmp(value, &planned))
+                        .transpose()?
+                        .is_none_or(|order| order.is_lt())
+                    {
+                        continue;
+                    }
+                }
+                return Ok(stage);
+            }
+        }
+        Err(PreparedPairError::Conflict)
+    }
+
+    fn activity_max(
+        &self,
+        current: &[PhysicalState; 2],
+        input: Option<String>,
+    ) -> Result<Option<String>, PreparedPairError> {
+        let mut values = vec![
+            self.timestamp_floor.clone(),
+            timestamp_value(&current[0])?,
+            timestamp_value(&current[1])?,
+            self.planned_activity_max()?,
+            input,
+        ];
+        if let Some(intent) = &self.activity_intent {
+            values.push(Some(intent.after_timestamp.clone()));
+        }
+        merge_monotonic_activity(&values)
+    }
+
+    fn planned_activity_max(&self) -> Result<Option<String>, PreparedPairError> {
+        let mut values = vec![timestamp_value(&self.plan_images.stages[0][0])?];
+        for tuple in &self.plan_images.stages {
+            values.push(timestamp_value(&tuple[1])?);
+        }
+        merge_monotonic_activity(&values)
+    }
+}
+
+fn read_pair_tuple(
+    decisions: &Path,
+    state: &Path,
+) -> Result<[PhysicalState; 2], PreparedPairError> {
+    Ok([
+        read_config_pair_physical(decisions)?,
+        read_config_pair_physical(state)?,
+    ])
+}
+
+fn pair_target_identity(decisions: &Path, state: &Path) -> Result<String, PreparedPairError> {
+    let resolve = |path: &Path| -> Result<String, PreparedPairError> {
+        let parent = path
+            .parent()
+            .ok_or(PreparedPairError::InvalidPlan("PAIR parent"))?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(PreparedPairError::InvalidPlan("PAIR name"))?;
+        let parent =
+            std::fs::canonicalize(parent).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        let path = parent.join(name).to_string_lossy().into_owned();
+        Ok(if cfg!(windows) {
+            path.to_lowercase()
+        } else {
+            path
+        })
+    };
+    let d = resolve(decisions)?;
+    let s = resolve(state)?;
+    if d == s {
+        return Err(PreparedPairError::InvalidPlan(
+            "PAIR targets must be distinct",
+        ));
+    }
+    use sha2::{Digest, Sha256};
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&(d, s)).map_err(|e| PreparedPairError::Io(e.to_string()))?
+        )
+    ))
+}
+
+fn validate_pair_binding(
+    decisions: &Path,
+    state: &Path,
+    packet: &PairReservation,
+) -> Result<(), PreparedPairError> {
+    packet.validate()?;
+    if packet.physical_target_identity != pair_target_identity(decisions, state)? {
+        return Err(PreparedPairError::Conflict);
+    }
+    Ok(())
+}
+
+fn validate_pair_paths(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+) -> Result<(), PreparedPairError> {
+    pair_target_identity(decisions, state)?;
+    let resolve = |path: &Path| -> Result<PathBuf, PreparedPairError> {
+        let parent = std::fs::canonicalize(
+            path.parent()
+                .ok_or(PreparedPairError::InvalidPlan("PAIR parent"))?,
+        )
+        .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        Ok(parent.join(
+            path.file_name()
+                .ok_or(PreparedPairError::InvalidPlan("PAIR name"))?,
+        ))
+    };
+    let paths = [resolve(decisions)?, resolve(state)?, resolve(reservation)?];
+    if paths.iter().any(|path| path.parent() != paths[0].parent())
+        || paths[..2].iter().any(|path| {
+            path == &paths[2]
+                || (cfg!(windows)
+                    && path.to_string_lossy().to_lowercase()
+                        == paths[2].to_string_lossy().to_lowercase())
+        })
+    {
+        return Err(PreparedPairError::InvalidPlan(
+            "reservation must be a distinct PAIR sibling",
+        ));
+    }
+    Ok(())
+}
+
+fn read_pair_reservation(
+    path: &Path,
+) -> Result<Option<(PairReservation, PhysicalState)>, PreparedPairError> {
+    let physical = read_config_pair_physical(path)?;
+    let PhysicalState::Bytes { bytes, .. } = &physical else {
+        return Ok(None);
+    };
+    let packet: PairReservation = serde_json::from_slice(bytes)
+        .map_err(|_| PreparedPairError::InvalidPlan("invalid reservation packet"))?;
+    packet.validate()?;
+    Ok(Some((packet, physical)))
+}
+
+fn publish_pair_reservation(
+    path: &Path,
+    physical: &mut PhysicalState,
+    packet: &PairReservation,
+) -> Result<(), PreparedPairError> {
+    packet.validate()?;
+    let mut bytes =
+        serde_json::to_vec_pretty(packet).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    bytes.push(b'\n');
+    publish_coordination_bytes(path, physical, &bytes)?;
+    *physical = PhysicalState::from_bytes(bytes);
+    Ok(())
+}
+
+/// Source/C proofs and inventory are acquired by the caller before entry.
+/// Snapshot, planning and the one complete packet publication never unlock.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn prepare_and_reserve_config_pair<F>(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    request: &PairReservationRequest,
+    cleanup: Option<ConfigPairCleanup<'_>>,
+    mutate: F,
+) -> Result<(PairReservation, PairReservationRole), PreparedPairError>
+where
+    F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
+{
+    let _writer = ConfigWriterActive::enter("prepare_and_reserve_config_pair")
+        .map_err(PreparedPairError::Preparation)?;
+    validate_pair_paths(decisions, state, reservation)?;
+    let _guard = lock_local_config_writes();
+    let _decisions = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let _state = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let existing = read_pair_reservation(reservation)?;
+    let current = read_pair_tuple(decisions, state)?;
+    let before = existing
+        .as_ref()
+        .map(|(packet, _)| packet.plan_images.stages[0].clone())
+        .unwrap_or(current.clone());
+    if request.before_protected
+        != [
+            protected_revision(&before[0], false)?,
+            protected_revision(&before[1], true)?,
+        ]
+    {
+        return Err(PreparedPairError::Conflict);
+    }
+    let plan = prepare_config_pair_plan_inner(before, cleanup, mutate)?;
+    let images = protected_plan(&plan)?;
+    let candidate = PairReservation {
+        version: 1,
+        operation_id: request.operation_id.clone(),
+        source_physical_key: request.source_physical_key.clone(),
+        owner_instance_id: request.owner_instance_id.clone(),
+        plan_digest: pair_plan_digest(&plan, &request.mappings_digest)?,
+        physical_target_identity: pair_target_identity(decisions, state)?,
+        protected_policy_version: 1,
+        mappings_digest: request.mappings_digest.clone(),
+        before_tuple: plan.stages[0].clone(),
+        protected_images: images,
+        changed_sides: changed_pair_sides(&plan),
+        timestamp_floor: timestamp_value(&current[1])?,
+        activity_intent: None,
+        plan_images: plan,
+    };
+    candidate.validate()?;
+    candidate.activity_max(&current, None)?;
+    if let Some((mut packet, mut physical)) = existing {
+        validate_pair_binding(decisions, state, &packet)?;
+        if packet.operation_id != candidate.operation_id
+            || packet.source_physical_key != candidate.source_physical_key
+            || packet.plan_digest != candidate.plan_digest
+            || packet.before_tuple != candidate.before_tuple
+        {
+            return Err(PreparedPairError::Conflict);
+        }
+        let role = if packet.owner_instance_id == request.owner_instance_id {
+            PairReservationRole::Owner
+        } else {
+            PairReservationRole::Observer
+        };
+        if role == PairReservationRole::Owner {
+            reconcile_pair_activity(decisions, state, reservation, &mut packet, &mut physical)?;
+        }
+        packet.recognize(&read_pair_tuple(decisions, state)?)?;
+        return Ok((packet, role));
+    }
+    candidate.recognize(&current)?;
+    let mut physical = PhysicalState::Absent;
+    publish_pair_reservation(reservation, &mut physical, &candidate)?;
+    Ok((candidate, PairReservationRole::Owner))
+}
+
+fn image_with_timestamp(
+    image: &PhysicalState,
+    timestamp: Option<String>,
+) -> Result<PhysicalState, PreparedPairError> {
+    let before = image.map()?;
+    let mut after = before.clone();
+    if let Some(timestamp) = timestamp {
+        let tooling = after
+            .entry("tooling")
+            .or_insert_with(|| serde_json::json!({}));
+        tooling
+            .as_object_mut()
+            .ok_or(PreparedPairError::Conflict)?
+            .insert("lastAgentMessageAt".into(), Value::String(timestamp));
+    }
+    prepared_pair_image(image, &before, &after)
+}
+
+fn reconcile_pair_activity(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    packet: &mut PairReservation,
+    physical: &mut PhysicalState,
+) -> Result<(), PreparedPairError> {
+    let Some(intent) = packet.activity_intent.clone() else {
+        return Ok(());
+    };
+    let current = read_pair_tuple(decisions, state)?;
+    packet.recognize(&current)?;
+    let actual = timestamp_physical(&current[1])?;
+    if actual == intent.before_timestamp_physical {
+        let after = image_with_timestamp(&current[1], Some(intent.after_timestamp.clone()))?;
+        publish_prepared_pair_image(state, &current[1], &after)?;
+    } else if actual != TimestampPhysical::Value(intent.after_timestamp.clone()) {
+        return Err(PreparedPairError::Conflict);
+    }
+    packet.timestamp_floor = Some(intent.after_timestamp);
+    packet.activity_intent = None;
+    packet.recognize(&read_pair_tuple(decisions, state)?)?;
+    publish_pair_reservation(reservation, physical, packet)
+}
+
+fn land_pair_activity(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    packet: &mut PairReservation,
+    physical: &mut PhysicalState,
+    input: &str,
+    on_stage: &dyn Fn(&str) -> Result<(), PreparedPairError>,
+) -> Result<bool, PreparedPairError> {
+    reconcile_pair_activity(decisions, state, reservation, packet, physical)?;
+    let current = read_pair_tuple(decisions, state)?;
+    packet.recognize(&current)?;
+    let maximum = packet
+        .activity_max(&current, Some(input.to_string()))?
+        .ok_or(PreparedPairError::Conflict)?;
+    if timestamp_value(&current[1])? == Some(maximum.clone()) {
+        return Ok(false);
+    }
+    let after = image_with_timestamp(&current[1], Some(maximum.clone()))?;
+    if !protected_matches(&current[1], &after, true)? {
+        return Err(PreparedPairError::Conflict);
+    }
+    packet.activity_intent = Some(PairActivityIntent {
+        before_timestamp_physical: timestamp_physical(&current[1])?,
+        after_timestamp: maximum.clone(),
+        floor_before: packet.timestamp_floor.clone(),
+    });
+    publish_pair_reservation(reservation, physical, packet)?;
+    on_stage("activity_intent_durable")?;
+    publish_prepared_pair_image(state, &current[1], &after)?;
+    on_stage("activity_state_durable")?;
+    reconcile_pair_activity(decisions, state, reservation, packet, physical)?;
+    on_stage("activity_floor_durable")?;
+    Ok(true)
+}
+
+/// Only the durable owner executes. Observer verification does not consolidate
+/// the owner's activity intent, publish refs or take over a missing owner.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn execute_reserved_config_pair(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    instance_id: &str,
+) -> Result<(), PreparedPairError> {
+    execute_reserved_config_pair_with_stage(
+        decisions,
+        state,
+        reservation,
+        operation_id,
+        instance_id,
+        &|_| Ok(()),
+    )
+}
+
+/// Observer acknowledgment is based on its own authorized target only. It
+/// cannot finalize another owner's packet or recover an activity intent.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn verify_reserved_config_pair(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    plan_digest: &str,
+) -> Result<[PhysicalState; 2], PreparedPairError> {
+    let _writer = ConfigWriterActive::enter("verify_reserved_config_pair")
+        .map_err(PreparedPairError::Preparation)?;
+    validate_pair_paths(decisions, state, reservation)?;
+    let _guard = lock_local_config_writes();
+    let _decisions = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let _state = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let (packet, _) = read_pair_reservation(reservation)?.ok_or(PreparedPairError::Conflict)?;
+    validate_pair_binding(decisions, state, &packet)?;
+    if packet.operation_id != operation_id || packet.plan_digest != plan_digest {
+        return Err(PreparedPairError::Conflict);
+    }
+    let current = read_pair_tuple(decisions, state)?;
+    if packet.recognize(&current)? != 4 || packet.activity_intent.is_some() {
+        return Err(PreparedPairError::Pending);
+    }
+    Ok(current)
+}
+
+fn execute_reserved_config_pair_with_stage(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    instance_id: &str,
+    on_stage: &dyn Fn(usize) -> Result<(), PreparedPairError>,
+) -> Result<(), PreparedPairError> {
+    let _writer = ConfigWriterActive::enter("execute_reserved_config_pair")
+        .map_err(PreparedPairError::Preparation)?;
+    validate_pair_paths(decisions, state, reservation)?;
+    let _guard = lock_local_config_writes();
+    let _decisions = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let _state = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let (mut packet, mut physical) =
+        read_pair_reservation(reservation)?.ok_or(PreparedPairError::Conflict)?;
+    validate_pair_binding(decisions, state, &packet)?;
+    if packet.operation_id != operation_id || packet.owner_instance_id != instance_id {
+        return Err(PreparedPairError::Conflict);
+    }
+    reconcile_pair_activity(decisions, state, reservation, &mut packet, &mut physical)?;
+    let start = packet.recognize(&read_pair_tuple(decisions, state)?)?;
+    confirm_pair_activity_floor(state, reservation, &mut packet, &mut physical)?;
+    for stage in start + 1..5 {
+        let current = read_pair_tuple(decisions, state)?;
+        let observed = packet.recognize(&current)?;
+        if observed >= stage {
+            continue;
+        }
+        if observed != stage - 1 {
+            return Err(PreparedPairError::Conflict);
+        }
+        let side = if stage == 1 || stage == 3 { 1 } else { 0 };
+        let planned = &packet.plan_images.stages[stage][side];
+        let after = if side == 1 {
+            image_with_timestamp(planned, packet.activity_max(&current, None)?)?
+        } else {
+            planned.clone()
+        };
+        if after != current[side] {
+            let mut proposed = current.clone();
+            proposed[side] = after.clone();
+            if packet.recognize(&proposed)? < stage {
+                return Err(PreparedPairError::Conflict);
+            }
+            let path = if side == 0 { decisions } else { state };
+            // Absence plus an activity overlay is already the planned absent
+            // side; it must never be removed to reproduce the original bytes.
+            if after == PhysicalState::Absent {
+                return Err(PreparedPairError::Conflict);
+            }
+            publish_prepared_pair_image(path, &current[side], &after)?;
+            if packet.recognize(&read_pair_tuple(decisions, state)?)? < stage {
+                return Err(PreparedPairError::Conflict);
+            }
+            confirm_pair_activity_floor(state, reservation, &mut packet, &mut physical)?;
+            on_stage(stage)?;
+        }
+    }
+    confirm_pair_activity_floor(state, reservation, &mut packet, &mut physical)?;
+    if packet.recognize(&read_pair_tuple(decisions, state)?)? != 4 {
+        return Err(PreparedPairError::Conflict);
+    }
+    Ok(())
+}
+
+fn confirm_pair_activity_floor(
+    state: &Path,
+    reservation: &Path,
+    packet: &mut PairReservation,
+    physical: &mut PhysicalState,
+) -> Result<(), PreparedPairError> {
+    let floor = merge_monotonic_activity(&[
+        packet.timestamp_floor.clone(),
+        timestamp_value(&read_config_pair_physical(state)?)?,
+    ])?;
+    if floor != packet.timestamp_floor {
+        packet.timestamp_floor = floor;
+        publish_pair_reservation(reservation, physical, packet)?;
+    }
+    Ok(())
+}
+
+/// IO consumes a proof assembled above PAIR from an authenticated, validated
+/// shared ledger under the source lease. It never reads another instance's C.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct PairCompleteProof {
+    operation_id: String,
+    source_physical_key: String,
+    target_id: String,
+    plan_digest: String,
+    owner_instance_id: String,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl PairCompleteProof {
+    pub(crate) fn from_shared_complete(
+        ledger: &Value,
+        operation_id: &str,
+        target_id: &str,
+        current_source_revision: &Value,
+    ) -> Result<Self, PreparedPairError> {
+        let op = ledger
+            .get("operations")
+            .and_then(|ops| ops.get(operation_id))
+            .ok_or(PreparedPairError::Conflict)?;
+        let receipt = op
+            .get("receipt")
+            .filter(|value| value.is_object())
+            .ok_or(PreparedPairError::Conflict)?;
+        let participants = op
+            .get("participantSet")
+            .and_then(Value::as_object)
+            .ok_or(PreparedPairError::Conflict)?;
+        let commitments = op
+            .get("commitments")
+            .and_then(Value::as_object)
+            .ok_or(PreparedPairError::Conflict)?;
+        let acks = op
+            .get("acks")
+            .and_then(Value::as_object)
+            .ok_or(PreparedPairError::Conflict)?;
+        let receipt_ids = receipt
+            .get("participantIds")
+            .and_then(Value::as_array)
+            .ok_or(PreparedPairError::Conflict)?;
+        let after = op
+            .get("afterSourceRevision")
+            .filter(|revision| {
+                revision.get("kind").and_then(Value::as_str) == Some("bytes")
+                    && revision
+                        .get("sha256")
+                        .and_then(Value::as_str)
+                        .is_some_and(|hash| {
+                            hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+            })
+            .ok_or(PreparedPairError::Conflict)?;
+        if op.get("operationId").and_then(Value::as_str) != Some(operation_id)
+            || op.get("phase").and_then(Value::as_str) != Some("complete")
+            || receipt.get("operationId").and_then(Value::as_str) != Some(operation_id)
+            || receipt.get("sourceRevision") != Some(after)
+            || current_source_revision != after
+            || participants.len() != commitments.len()
+            || participants.len() != acks.len()
+            || participants.len() != receipt_ids.len()
+        {
+            return Err(PreparedPairError::Conflict);
+        }
+        let mut target: Option<&Value> = None;
+        for id in participants.keys() {
+            if acks.get(id) != Some(after)
+                || receipt_ids
+                    .iter()
+                    .filter(|value| value.as_str() == Some(id.as_str()))
+                    .count()
+                    != 1
+            {
+                return Err(PreparedPairError::Conflict);
+            }
+            let commitment = commitments.get(id).ok_or(PreparedPairError::Conflict)?;
+            if commitment.get("participantId").and_then(Value::as_str) != Some(id.as_str()) {
+                return Err(PreparedPairError::Conflict);
+            }
+            for row in commitment
+                .get("targets")
+                .and_then(Value::as_array)
+                .ok_or(PreparedPairError::Conflict)?
+            {
+                if row.get("targetId").and_then(Value::as_str) == Some(target_id) {
+                    if let Some(previous) = target {
+                        if previous != row {
+                            return Err(PreparedPairError::Conflict);
+                        }
+                    }
+                    target = Some(row);
+                }
+            }
+        }
+        let target = target.ok_or(PreparedPairError::Conflict)?;
+        let text = |value: &Value, field: &str| -> Result<String, PreparedPairError> {
+            value
+                .get(field)
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+                .ok_or(PreparedPairError::Conflict)
+        };
+        let owner_instance_id = text(target, "ownerInstanceId")?;
+        if !participants.contains_key(&owner_instance_id) {
+            return Err(PreparedPairError::Conflict);
+        }
+        Ok(Self {
+            operation_id: operation_id.to_string(),
+            source_physical_key: text(ledger, "physicalSourceKey")?,
+            target_id: target_id.to_string(),
+            plan_digest: text(target, "planDigest")?,
+            owner_instance_id,
+        })
+    }
+}
+
+/// Complete receipt is necessary but insufficient: the owner also verifies its
+/// own final protected tuple and confirmed floor before removing this packet.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn release_reserved_config_pair(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    instance_id: &str,
+    proof: &PairCompleteProof,
+) -> Result<[PhysicalState; 2], PreparedPairError> {
+    let _writer = ConfigWriterActive::enter("release_reserved_config_pair")
+        .map_err(PreparedPairError::Preparation)?;
+    validate_pair_paths(decisions, state, reservation)?;
+    let _guard = lock_local_config_writes();
+    let _decisions = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let _state = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    if proof.owner_instance_id != instance_id
+        || proof.target_id != pair_target_identity(decisions, state)?
+    {
+        return Err(PreparedPairError::Conflict);
+    }
+    let Some((mut packet, mut physical)) = read_pair_reservation(reservation)? else {
+        return read_pair_tuple(decisions, state);
+    };
+    validate_pair_binding(decisions, state, &packet)?;
+    if packet.operation_id != proof.operation_id
+        || packet.source_physical_key != proof.source_physical_key
+        || packet.owner_instance_id != proof.owner_instance_id
+        || packet.plan_digest != proof.plan_digest
+    {
+        return Err(PreparedPairError::Conflict);
+    }
+    reconcile_pair_activity(decisions, state, reservation, &mut packet, &mut physical)?;
+    let current = read_pair_tuple(decisions, state)?;
+    if packet.recognize(&current)? != 4 {
+        return Err(PreparedPairError::Conflict);
+    }
+    std::fs::remove_file(reservation).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    #[cfg(not(windows))]
+    std::fs::File::open(
+        reservation
+            .parent()
+            .ok_or(PreparedPairError::InvalidPlan("reservation parent"))?,
+    )
+    .and_then(|directory| directory.sync_all())
+    .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    Ok(current)
 }
 
 /// P14 single-file private/shared metadata publish. Caller holds the stable
@@ -2967,5 +4114,694 @@ stderr:
                 "{label} is missing its marker: {report}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod pair_activity_tests {
+    use super::*;
+    use serde_json::json;
+
+    const T1: &str = "2026-10-08T01:00:00Z";
+    const T2: &str = "2026-10-08T02:00:00Z";
+    const T3: &str = "2026-10-08T03:00:00Z";
+
+    struct Fixture {
+        root: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new(absent_state: bool) -> Self {
+            let fixture = Self {
+                root: tempfile::tempdir().unwrap(),
+            };
+            fixture.write(
+                &fixture.d(),
+                json!({"decision":0,"cleanup":0,
+                "tooling":{"lastAgentMessageAt":T1},"opaque":null}),
+            );
+            if !absent_state {
+                fixture.write(&fixture.s(), json!({"cleanup":0,
+                    "tooling":{"lastAgentMessageAt":T1,"codingAgents":{"legacy":{"opaque":true}}},"opaque":[1,2]}));
+            }
+            fixture
+        }
+        fn d(&self) -> PathBuf {
+            self.root.path().join("config.json")
+        }
+        fn s(&self) -> PathBuf {
+            self.root.path().join("config.state.no-git.json")
+        }
+        fn r(&self) -> PathBuf {
+            self.root
+                .path()
+                .join("config-identity-reservation.state.no-git.json")
+        }
+        fn write(&self, path: &Path, value: Value) {
+            std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+        fn tuple(&self) -> [PhysicalState; 2] {
+            read_pair_tuple(&self.d(), &self.s()).unwrap()
+        }
+        fn packet(&self) -> PairReservation {
+            read_pair_reservation(&self.r()).unwrap().unwrap().0
+        }
+        fn request(&self, owner: &str) -> PairReservationRequest {
+            PairReservationRequest {
+                operation_id: "operation-1".into(),
+                source_physical_key: "source-key".into(),
+                owner_instance_id: owner.into(),
+                mappings_digest: "a".repeat(64),
+                before_protected: protected_config_pair_revision(&self.tuple()).unwrap(),
+            }
+        }
+        fn reserve(
+            &self,
+            request: &PairReservationRequest,
+        ) -> Result<(PairReservation, PairReservationRole), PreparedPairError> {
+            let cleanup = |d: &mut Map<String, Value>, s: &mut Map<String, Value>| {
+                d.remove("cleanup");
+                s.insert("cleanup".into(), json!(1));
+                let old = d
+                    .get_mut("tooling")
+                    .and_then(Value::as_object_mut)
+                    .unwrap()
+                    .remove("lastAgentMessageAt");
+                let tooling = s
+                    .entry("tooling")
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .unwrap();
+                if let Some(value) = old {
+                    tooling.entry("lastAgentMessageAt").or_insert(value);
+                }
+                Ok(())
+            };
+            prepare_and_reserve_config_pair(
+                &self.d(),
+                &self.s(),
+                &self.r(),
+                request,
+                Some(&cleanup),
+                |d, s| {
+                    d.insert("decision".into(), json!(1));
+                    s.insert("caller".into(), json!(1));
+                    Ok(())
+                },
+            )
+        }
+        fn activity(&self, input: &str) -> Result<bool, String> {
+            let landed = Cell::new(false);
+            update_config_pair_guarded(
+                &self.d(),
+                &self.s(),
+                &self.r(),
+                &[],
+                None,
+                Some(&|_, _| panic!("pending activity cannot cleanup")),
+                &|_| panic!("no ordinary stages"),
+                |_, _| panic!("pending activity uses the exact leaf primitive"),
+                &|_| panic!("pending activity cannot stamp"),
+                Some((input, &landed)),
+            )?;
+            Ok(landed.get())
+        }
+        fn interrupted_activity(&self, input: &str, stop: &str) -> Result<bool, PreparedPairError> {
+            let _writer = ConfigWriterActive::enter("pair_activity_fixture").unwrap();
+            let _guard = lock_local_config_writes();
+            let _d = acquire_config_file_write_lock(&self.d(), CONFIG_LOCK_TIMEOUT).unwrap();
+            let _s = acquire_config_file_write_lock(&self.s(), CONFIG_LOCK_TIMEOUT).unwrap();
+            let _r = acquire_config_file_write_lock(&self.r(), CONFIG_LOCK_TIMEOUT).unwrap();
+            let (mut packet, mut physical) = read_pair_reservation(&self.r())?.unwrap();
+            land_pair_activity(
+                &self.d(),
+                &self.s(),
+                &self.r(),
+                &mut packet,
+                &mut physical,
+                input,
+                &|stage| {
+                    if stage == stop {
+                        Err(PreparedPairError::Io("lost activity response".into()))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+        }
+        fn ledger(&self) -> Value {
+            let packet = self.packet();
+            let hashes = packet.protected_revision_digests().unwrap();
+            let target = json!({"targetId":packet.physical_target_identity,
+                "beforeProtectedRevision":{"kind":"bytes","sha256":hashes[0]},
+                "afterProtectedRevision":{"kind":"bytes","sha256":hashes[1]},
+                "planDigest":packet.plan_digest,"ownerInstanceId":"C1"});
+            let revision = json!({"kind":"bytes","sha256":"b".repeat(64)});
+            json!({"physicalSourceKey":"source-key","operations":{"operation-1":{
+                "operationId":"operation-1","phase":"complete","afterSourceRevision":revision,
+                "participantSet":{"C1":{},"C2":{}},
+                "commitments":{"C1":{"participantId":"C1","targets":[target]},
+                    "C2":{"participantId":"C2","targets":[target]}},
+                "acks":{"C1":revision,"C2":revision},
+                "receipt":{"operationId":"operation-1","sourceRevision":revision,"participantIds":["C1","C2"]}}}})
+        }
+    }
+
+    #[test]
+    fn pair_activity_atomic_packet_floor_and_locks_before_presence() {
+        let f = Fixture::new(false);
+        let request = f.request("C1");
+        let before = f.tuple();
+        let (packet, role) =
+            prepare_and_reserve_config_pair(&f.d(), &f.s(), &f.r(), &request, None, |d, _| {
+                assert!(!f.r().exists(), "no reservation before complete plan");
+                for path in [f.d(), f.s(), f.r()] {
+                    assert!(acquire_config_file_write_lock(&path, Duration::ZERO).is_err());
+                }
+                assert!(write_file_atomic(&f.d(), b"{}")
+                    .unwrap_err()
+                    .contains("Nested config write"));
+                d.insert("decision".into(), json!(1));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(role, PairReservationRole::Owner);
+        assert_eq!(f.tuple(), before);
+        assert_eq!(f.packet(), packet);
+        assert_eq!(packet.timestamp_floor.as_deref(), Some(T1));
+        assert_eq!(packet.plan_images.stages.len(), 5);
+        assert!(packet.activity_intent.is_none());
+    }
+
+    #[test]
+    fn pair_activity_packet_publication_failure_has_no_marker_or_target_write() {
+        let f = Fixture::new(false);
+        let before = f.tuple();
+        std::fs::create_dir(temp_config_path(&f.r())).unwrap();
+        assert!(matches!(
+            f.reserve(&f.request("C1")),
+            Err(PreparedPairError::Io(_))
+        ));
+        assert!(!f.r().exists());
+        assert_eq!(f.tuple(), before);
+        for path in [f.d(), f.s(), f.r()] {
+            drop(acquire_config_file_write_lock(&path, Duration::ZERO).unwrap());
+        }
+    }
+
+    #[test]
+    fn pair_activity_first_owner_matching_observer_and_no_takeover() {
+        let f = Fixture::new(false);
+        let request = f.request("C1");
+        let (owner, _) = f.reserve(&request).unwrap();
+        let bytes = std::fs::read(f.r()).unwrap();
+        let mut observer = request.clone();
+        observer.owner_instance_id = "C2".into();
+        assert_eq!(
+            f.reserve(&observer).unwrap(),
+            (owner.clone(), PairReservationRole::Observer)
+        );
+        assert_eq!(std::fs::read(f.r()).unwrap(), bytes);
+        assert_eq!(
+            verify_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", &owner.plan_digest),
+            Err(PreparedPairError::Pending)
+        );
+        assert_eq!(
+            execute_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", "C2"),
+            Err(PreparedPairError::Conflict)
+        );
+        let mut foreign = observer.clone();
+        foreign.operation_id = "operation-2".into();
+        assert_eq!(f.reserve(&foreign), Err(PreparedPairError::Conflict));
+        let divergent =
+            prepare_and_reserve_config_pair(&f.d(), &f.s(), &f.r(), &observer, None, |d, _| {
+                d.insert("decision".into(), json!(9));
+                Ok(())
+            });
+        assert_eq!(divergent, Err(PreparedPairError::Conflict));
+        assert_eq!(std::fs::read(f.r()).unwrap(), bytes);
+        execute_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", "C1").unwrap();
+        assert_eq!(
+            verify_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", &owner.plan_digest)
+                .unwrap(),
+            f.tuple()
+        );
+    }
+
+    #[test]
+    fn pair_activity_generic_noop_zero_write_and_history_selection_unknown_rejected() {
+        let f = Fixture::new(false);
+        f.reserve(&f.request("C1")).unwrap();
+        let before = f.tuple();
+        let packet = std::fs::read(f.r()).unwrap();
+        update_config_pair_guarded(
+            &f.d(),
+            &f.s(),
+            &f.r(),
+            &[],
+            None,
+            Some(&|_, _| panic!("no cleanup")),
+            &|_| panic!("no publish"),
+            |_, _| Ok(()),
+            &|_| panic!("no stamp"),
+            None,
+        )
+        .unwrap();
+        for key in ["codingAgents", "configurationRef", "unknown"] {
+            let error = update_config_pair_guarded(
+                &f.d(),
+                &f.s(),
+                &f.r(),
+                &[],
+                None,
+                None,
+                &|_| {},
+                |d, s| {
+                    if key == "configurationRef" {
+                        d.insert(key.into(), json!({"changed":true}));
+                    } else {
+                        s.insert(key.into(), json!({"changed":true}));
+                    }
+                    Ok(())
+                },
+                &|_| panic!("no stamp"),
+                None,
+            )
+            .unwrap_err();
+            assert!(error.contains("targetTransitionPending"), "{error}");
+        }
+        assert_eq!(f.tuple(), before);
+        assert_eq!(std::fs::read(f.r()).unwrap(), packet);
+        assert_eq!(
+            execute_unreserved_config_pair(&f.d(), &f.s(), &f.r(), &f.packet().plan_images),
+            Err(PreparedPairError::Pending)
+        );
+    }
+
+    #[test]
+    fn pair_activity_two_edges_and_older_edge_keep_digest_and_maximum() {
+        let f = Fixture::new(false);
+        let (original, _) = f.reserve(&f.request("C1")).unwrap();
+        let d = read_config_pair_physical(&f.d()).unwrap();
+        assert_eq!(f.activity(T2), Ok(true));
+        assert_eq!(f.activity(T3), Ok(true));
+        assert_eq!(f.activity(T1), Ok(false));
+        let packet = f.packet();
+        assert_eq!(packet.timestamp_floor.as_deref(), Some(T3));
+        assert_eq!(packet.plan_digest, original.plan_digest);
+        assert_eq!(
+            packet.protected_revision_digests().unwrap(),
+            original.protected_revision_digests().unwrap()
+        );
+        assert_eq!(read_config_pair_physical(&f.d()).unwrap(), d);
+        execute_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", "C1").unwrap();
+        assert_eq!(timestamp_value(&f.tuple()[1]).unwrap().as_deref(), Some(T3));
+    }
+
+    #[test]
+    fn pair_activity_every_t0_t4_cut_recovers_with_monotonic_stamp() {
+        for absent in [false, true] {
+            for cut in 0..=4 {
+                let f = Fixture::new(absent);
+                f.reserve(&f.request("C1")).unwrap();
+                if cut != 0 {
+                    let result = execute_reserved_config_pair_with_stage(
+                        &f.d(),
+                        &f.s(),
+                        &f.r(),
+                        "operation-1",
+                        "C1",
+                        &|stage| {
+                            if stage == cut {
+                                Err(PreparedPairError::Io("lost progress".into()))
+                            } else {
+                                Ok(())
+                            }
+                        },
+                    );
+                    assert_eq!(result, Err(PreparedPairError::Io("lost progress".into())));
+                }
+                assert_eq!(f.activity(T2), Ok(true));
+                assert_eq!(f.activity(T3), Ok(true));
+                assert_eq!(f.activity(T1), Ok(false));
+                // Re-read durable packet: no in-memory plan or progress authority.
+                let packet = f.packet();
+                assert_eq!(packet.timestamp_floor.as_deref(), Some(T3));
+                execute_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", "C1").unwrap();
+                assert_eq!(f.packet().recognize(&f.tuple()).unwrap(), 4);
+                assert_eq!(timestamp_value(&f.tuple()[1]).unwrap().as_deref(), Some(T3));
+                assert_eq!(f.tuple()[0].map().unwrap()["decision"], json!(1));
+                assert_eq!(f.tuple()[0].map().unwrap()["opaque"], Value::Null);
+                if !absent {
+                    assert_eq!(f.tuple()[1].map().unwrap()["opaque"], json!([1, 2]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pair_activity_intent_state_floor_crashes_never_report_false_success() {
+        for stop in [
+            "activity_intent_durable",
+            "activity_state_durable",
+            "activity_floor_durable",
+        ] {
+            let f = Fixture::new(false);
+            f.reserve(&f.request("C1")).unwrap();
+            assert_eq!(
+                f.interrupted_activity(T3, stop),
+                Err(PreparedPairError::Io("lost activity response".into()))
+            );
+            let packet = f.packet();
+            if stop == "activity_intent_durable" {
+                assert_eq!(timestamp_value(&f.tuple()[1]).unwrap().as_deref(), Some(T1));
+                assert!(packet.activity_intent.is_some());
+                // A generic no-op cannot consolidate a pending activity.
+                let bytes = std::fs::read(f.r()).unwrap();
+                let tuple = f.tuple();
+                update_config_pair_guarded(
+                    &f.d(),
+                    &f.s(),
+                    &f.r(),
+                    &[],
+                    None,
+                    None,
+                    &|_| panic!("no publish"),
+                    |_, _| Ok(()),
+                    &|_| panic!("no stamp"),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(std::fs::read(f.r()).unwrap(), bytes);
+                assert_eq!(f.tuple(), tuple);
+            } else {
+                assert_eq!(timestamp_value(&f.tuple()[1]).unwrap().as_deref(), Some(T3));
+            }
+            assert_eq!(f.activity(T2), Ok(false));
+            assert_eq!(timestamp_value(&f.tuple()[1]).unwrap().as_deref(), Some(T3));
+            assert_eq!(f.packet().timestamp_floor.as_deref(), Some(T3));
+            assert!(f.packet().activity_intent.is_none());
+        }
+    }
+
+    #[test]
+    fn pair_activity_absent_overlay_structural_presence_and_legacy_floor() {
+        let f = Fixture::new(true);
+        f.reserve(&f.request("C1")).unwrap();
+        assert_eq!(f.activity(T2), Ok(true));
+        let state = f.tuple()[1].map().unwrap();
+        assert_eq!(
+            state,
+            json!({"tooling":{"lastAgentMessageAt":T2}})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        assert!(protected_matches(&PhysicalState::Absent, &f.tuple()[1], true).unwrap());
+        let empty = PhysicalState::from_bytes(b"{}".to_vec());
+        assert_ne!(
+            protected_revision(&f.tuple()[1], true).unwrap(),
+            protected_revision(&empty, true).unwrap()
+        );
+        execute_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", "C1").unwrap();
+        assert_eq!(timestamp_value(&f.tuple()[1]).unwrap().as_deref(), Some(T2));
+        assert_eq!(f.tuple()[0].map().unwrap()["opaque"], Value::Null);
+    }
+
+    #[test]
+    fn pair_activity_external_unknown_deleted_malformed_or_lower_timestamp_conflicts() {
+        for kind in [
+            "unknown",
+            "deleted",
+            "malformed",
+            "lower",
+            "tooling",
+            "stateGone",
+        ] {
+            let f = Fixture::new(false);
+            f.reserve(&f.request("C1")).unwrap();
+            f.activity(T3).unwrap();
+            let mut map = f.tuple()[1].map().unwrap();
+            match kind {
+                "unknown" => {
+                    map.insert("outside".into(), json!(7));
+                }
+                "deleted" => {
+                    map.get_mut("tooling")
+                        .unwrap()
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("lastAgentMessageAt");
+                }
+                "malformed" => {
+                    map.get_mut("tooling").unwrap()["lastAgentMessageAt"] = json!("bad");
+                }
+                "lower" => {
+                    map.get_mut("tooling").unwrap()["lastAgentMessageAt"] = json!(T1);
+                }
+                "tooling" => {
+                    map.insert("tooling".into(), Value::Null);
+                }
+                _ => {}
+            }
+            if kind == "stateGone" {
+                std::fs::remove_file(f.s()).unwrap();
+            } else {
+                f.write(&f.s(), Value::Object(map));
+            }
+            let tuple = f.tuple();
+            let packet = std::fs::read(f.r()).unwrap();
+            assert!(f.activity(T2).is_err());
+            assert_eq!(
+                execute_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", "C1"),
+                Err(PreparedPairError::Conflict)
+            );
+            assert_eq!(f.tuple(), tuple);
+            assert_eq!(std::fs::read(f.r()).unwrap(), packet);
+        }
+    }
+
+    #[test]
+    fn pair_activity_corrupt_packet_wrong_target_and_before_cas_preserve_evidence() {
+        let f = Fixture::new(false);
+        let mut wrong = f.request("C1");
+        wrong.before_protected[0] = ProtectedRevision::Absent;
+        assert_eq!(f.reserve(&wrong), Err(PreparedPairError::Conflict));
+        assert!(!f.r().exists());
+        f.reserve(&f.request("C1")).unwrap();
+        let other = Fixture::new(false);
+        std::fs::write(other.r(), std::fs::read(f.r()).unwrap()).unwrap();
+        assert!(other.activity(T2).is_err());
+        let tuple = f.tuple();
+        f.write(&f.r(), json!({"version":1,"operationId":"operation-1"}));
+        let bytes = std::fs::read(f.r()).unwrap();
+        assert!(f.activity(T2).is_err());
+        assert_eq!(f.tuple(), tuple);
+        assert_eq!(std::fs::read(f.r()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn pair_activity_initial_null_parse_error_incompatible_tooling_zero_write() {
+        for bytes in [
+            b"null".as_slice(),
+            b"[]",
+            b"not json",
+            br#"{"tooling":null}"#,
+            br#"{"tooling":{"lastAgentMessageAt":null}}"#,
+            br#"{"tooling":{"lastAgentMessageAt":"bad"}}"#,
+        ] {
+            let f = Fixture::new(false);
+            let request = f.request("C1");
+            std::fs::write(f.s(), bytes).unwrap();
+            let d = std::fs::read(f.d()).unwrap();
+            assert!(f.reserve(&request).is_err());
+            assert!(!f.r().exists());
+            assert_eq!(std::fs::read(f.s()).unwrap(), bytes);
+            assert_eq!(std::fs::read(f.d()).unwrap(), d);
+        }
+    }
+
+    #[test]
+    fn pair_activity_collapsed_absent_stages_choose_greatest_and_keep_overlay() {
+        let f = Fixture {
+            root: tempfile::tempdir().unwrap(),
+        };
+        let request = f.request("C1");
+        let (packet, _) =
+            prepare_and_reserve_config_pair(&f.d(), &f.s(), &f.r(), &request, None, |_, _| Ok(()))
+                .unwrap();
+        assert_eq!(packet.recognize(&f.tuple()).unwrap(), 4);
+        execute_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", "C1").unwrap();
+        assert!(!f.d().exists());
+        assert!(!f.s().exists());
+        assert_eq!(f.activity(T2), Ok(true));
+        execute_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", "C1").unwrap();
+        assert!(!f.d().exists());
+        assert_eq!(timestamp_value(&f.tuple()[1]).unwrap().as_deref(), Some(T2));
+        assert_eq!(f.packet().recognize(&f.tuple()).unwrap(), 4);
+    }
+
+    #[test]
+    fn pair_activity_intent_unknown_timestamp_and_exact_generic_delta() {
+        let f = Fixture::new(false);
+        f.reserve(&f.request("C1")).unwrap();
+        let tuple = f.tuple();
+        update_config_pair_guarded(
+            &f.d(),
+            &f.s(),
+            &f.r(),
+            &[],
+            None,
+            None,
+            &|_| panic!("no cleanup stages"),
+            |_, s| {
+                s.get_mut("tooling").unwrap()["lastAgentMessageAt"] = json!(T2);
+                Ok(())
+            },
+            &|_| panic!("no split stamp"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(f.tuple()[0], tuple[0]);
+        assert_eq!(f.packet().timestamp_floor.as_deref(), Some(T2));
+        let before = f.tuple();
+        let packet = std::fs::read(f.r()).unwrap();
+        let error = update_config_pair_guarded(
+            &f.d(),
+            &f.s(),
+            &f.r(),
+            &[],
+            None,
+            None,
+            &|_| {},
+            |_, s| {
+                s.get_mut("tooling").unwrap()["lastAgentMessageAt"] = json!(T1);
+                Ok(())
+            },
+            &|_| panic!("no stamp"),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("targetTransitionPending"));
+        assert_eq!(f.tuple(), before);
+        assert_eq!(std::fs::read(f.r()).unwrap(), packet);
+        assert!(f
+            .interrupted_activity(T3, "activity_intent_durable")
+            .is_err());
+        let mut state = f.tuple()[1].map().unwrap();
+        state.get_mut("tooling").unwrap()["lastAgentMessageAt"] = json!("2026-10-08T02:30:00Z");
+        f.write(&f.s(), Value::Object(state));
+        let tuple = f.tuple();
+        let packet = std::fs::read(f.r()).unwrap();
+        assert!(f.activity(T3).is_err());
+        assert_eq!(f.tuple(), tuple);
+        assert_eq!(std::fs::read(f.r()).unwrap(), packet);
+    }
+
+    #[test]
+    fn pair_activity_preflight_precedes_state_sidecars_and_holds_decisions_lease() {
+        let f = Fixture::new(false);
+        let parent = f.root.path().canonicalize().unwrap();
+        let state_lock = config_lock_path(&parent, &f.s()).unwrap();
+        let reservation_lock = config_lock_path(&parent, &f.r()).unwrap();
+        let called = Cell::new(false);
+        let preflight = || {
+            assert!(!state_lock.exists());
+            assert!(!reservation_lock.exists());
+            assert!(acquire_config_file_write_lock(&f.d(), Duration::from_millis(20)).is_err());
+            called.set(true);
+            Err("ignore preflight refused".to_string())
+        };
+        let before = f.tuple();
+        let error = update_config_pair_guarded(
+            &f.d(),
+            &f.s(),
+            &f.r(),
+            &[],
+            Some(&preflight),
+            None,
+            &|_| panic!("no publish"),
+            |_, _| panic!("no mutation"),
+            &|_| Ok(()),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error, "ignore preflight refused");
+        assert!(called.get());
+        assert_eq!(f.tuple(), before);
+        assert!(!f.r().exists());
+        assert!(!state_lock.exists());
+        assert!(!reservation_lock.exists());
+        std::fs::write(f.r(), b"{invalid").unwrap();
+        called.set(false);
+        assert!(update_config_pair_guarded(
+            &f.d(),
+            &f.s(),
+            &f.r(),
+            &[],
+            Some(&preflight),
+            None,
+            &|_| panic!("no publish"),
+            |_, _| panic!("no mutation"),
+            &|_| Ok(()),
+            None
+        )
+        .is_err());
+        assert!(!called.get());
+        assert_eq!(std::fs::read(f.r()).unwrap(), b"{invalid");
+        assert!(!state_lock.exists());
+        assert!(!reservation_lock.exists());
+    }
+
+    #[test]
+    fn pair_activity_release_requires_shared_complete_current_source_owner_and_final_target() {
+        let f = Fixture::new(false);
+        f.reserve(&f.request("C1")).unwrap();
+        let target = f.packet().physical_target_identity;
+        let ledger = f.ledger();
+        let revision = &ledger["operations"]["operation-1"]["afterSourceRevision"];
+        let proof =
+            PairCompleteProof::from_shared_complete(&ledger, "operation-1", &target, revision)
+                .unwrap();
+        assert_eq!(
+            release_reserved_config_pair(&f.d(), &f.s(), &f.r(), "C1", &proof),
+            Err(PreparedPairError::Conflict)
+        );
+        assert!(PairCompleteProof::from_shared_complete(
+            &ledger,
+            "operation-1",
+            &target,
+            &json!({"kind":"absent"})
+        )
+        .is_err());
+        for key in ["phase", "acks", "receipt"] {
+            let mut invalid = ledger.clone();
+            invalid["operations"]["operation-1"][key] = Value::Null;
+            assert!(PairCompleteProof::from_shared_complete(
+                &invalid,
+                "operation-1",
+                &target,
+                revision
+            )
+            .is_err());
+        }
+        execute_reserved_config_pair(&f.d(), &f.s(), &f.r(), "operation-1", "C1").unwrap();
+        f.activity(T3).unwrap();
+        assert_eq!(
+            release_reserved_config_pair(&f.d(), &f.s(), &f.r(), "C2", &proof),
+            Err(PreparedPairError::Conflict)
+        );
+        let before = f.tuple();
+        assert_eq!(
+            release_reserved_config_pair(&f.d(), &f.s(), &f.r(), "C1", &proof).unwrap(),
+            before
+        );
+        assert!(!f.r().exists());
+        assert!(config_lock_path(f.root.path(), &f.r()).unwrap().exists());
+        assert_eq!(
+            release_reserved_config_pair(&f.d(), &f.s(), &f.r(), "C1", &proof).unwrap(),
+            before
+        );
+        assert_eq!(timestamp_value(&before[1]).unwrap().as_deref(), Some(T3));
     }
 }
