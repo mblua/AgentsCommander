@@ -10375,7 +10375,7 @@ mod tests {
         for project in [&a, &b] {
             std::fs::create_dir_all(project.join(".ac")).unwrap();
         }
-        let raw = serde_json::json!({"agents": [], "projectPaths": [a], "projectPath": a});
+        let raw = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [a], "projectPath": a});
         std::fs::write(&path, raw.to_string()).unwrap();
         let mut stale = super::AppSettings::default();
         super::refresh_and_decode_project_paths_from_path(&mut stale, &path).unwrap();
@@ -10393,7 +10393,7 @@ mod tests {
         });
         barrier.wait();
         // This writer owns the file lock before the repair can acquire it.
-        let fresh = serde_json::json!({"agents": [], "projectPaths": [a, b], "projectPath": a});
+        let fresh = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [a, b], "projectPath": a});
         super::write_value_atomic(&fresh, &path).unwrap();
         drop(lock);
         let repaired = worker.join().unwrap();
@@ -10408,7 +10408,7 @@ mod tests {
     fn project_transaction_timeout_preserves_bytes_and_live_paths() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
-        let bytes = b"{\"agents\":[],\"projectPaths\":[]}";
+        let bytes = b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[]}";
         std::fs::write(&path, bytes).unwrap();
         let _lock =
             super::SettingsFileLock::acquire(&path, std::time::Duration::from_secs(1)).unwrap();
@@ -10431,7 +10431,7 @@ mod tests {
         let active = temp.path().join("active");
         let missing = temp.path().join("missing").to_string_lossy().into_owned();
         std::fs::create_dir_all(active.join(".ac")).unwrap();
-        let raw = serde_json::json!({"agents": [], "projectPaths": [active, missing], "projectPath": active});
+        let raw = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [active, missing], "projectPath": active});
         std::fs::write(&path, raw.to_string()).unwrap();
         let mut current = super::AppSettings::default();
         super::repair_fresh_project_paths_at_path(&mut current, &path).unwrap();
@@ -10446,7 +10446,7 @@ mod tests {
     fn project_transaction_keeps_candidate_separate_on_precommit_failure() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
-        std::fs::write(&path, b"{\"agents\":[],\"projectPaths\":[]}").unwrap();
+        std::fs::write(&path, b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[]}").unwrap();
         let current = super::AppSettings::default();
         let mut transaction =
             super::begin_project_paths_transaction_at_path(&current, &path).unwrap();
@@ -10467,7 +10467,7 @@ mod tests {
     fn project_transaction_uncertain_commit_adopts_only_revalidated_disk() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
-        std::fs::write(&path, b"{\"agents\":[],\"projectPaths\":[]}").unwrap();
+        std::fs::write(&path, b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[]}").unwrap();
         let mut transaction =
             super::begin_project_paths_transaction_at_path(&super::AppSettings::default(), &path)
                 .unwrap();
@@ -10481,8 +10481,7 @@ mod tests {
             )
         };
         // Model a completed publication followed by uncertain readback.
-        let published =
-            serde_json::json!({"agents": [], "projectPaths": [], "sidebarStyle": "published"});
+        let published = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [], "sidebarStyle": "published"});
         super::write_value_atomic(&published, &path).unwrap();
         assert!(transaction.handle_commit_result(Err(error())).is_err());
         assert_eq!(transaction.fresh_settings().sidebar_style, "published");
@@ -10511,7 +10510,7 @@ mod tests {
         assert!(current.project_paths_persistence_error.is_some());
         std::fs::write(
             &path,
-            b"{\"agents\":[],\"projectPaths\":[],\"archivedProjectPaths\":[]}",
+            b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[],\"archivedProjectPaths\":[]}",
         )
         .unwrap();
         super::repair_fresh_project_paths_at_path(&mut current, &path).unwrap();

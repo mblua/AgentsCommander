@@ -4146,10 +4146,35 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_project_state_refuses_creation_and_blocked_menu_mutation() {
-        let temp = tempfile::tempdir().unwrap();
-        let file = temp.path().join("sessions.json");
-        let original = b"[{\"name\":\"retained\",\"working_directory\":\"cached\"}]";
-        std::fs::write(&file, original).unwrap();
+        // The runner provisions both overrides before process startup: the
+        // resolved instance location is cached and cannot be changed in-test.
+        let public_override = std::env::var("AGENTSCOMMANDER_CONFIG_DIR")
+            .expect("runner must provide an isolated public config-dir override");
+        let test_override = std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR")
+            .expect("runner must provide an isolated test config-dir override");
+        assert!(!public_override.trim().is_empty());
+        assert!(!test_override.trim().is_empty());
+        let expected = std::path::PathBuf::from(public_override.trim());
+        assert!(
+            expected.is_absolute(),
+            "runner config directory must be absolute"
+        );
+        assert_eq!(expected, std::path::PathBuf::from(test_override.trim()));
+        let dir = crate::config::config_dir().expect("resolved isolated config directory");
+        assert_eq!(
+            dir, expected,
+            "cached location must match the runner overrides"
+        );
+        assert!(dir.is_dir(), "runner must create the disposable directory");
+        let file = dir.join("sessions.json");
+        let fixture = [PersistedSession {
+            name: "retained".into(),
+            shell: "powershell.exe".into(),
+            working_directory: dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        }];
+        std::fs::write(&file, serde_json::to_vec(&fixture).unwrap()).unwrap();
+        let original = std::fs::read(&file).unwrap();
         let settings = AppSettings {
             project_paths_persistence_error: Some("unavailable".into()),
             ..AppSettings::default()
@@ -4160,21 +4185,18 @@ mod tests {
             .manage(state)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        assert_eq!(
-            super::enforce_creation_gate(
-                app.handle(),
-                &temp.path().to_string_lossy(),
-                super::CreationGateEnforcement::Enforce,
-            )
-            .await,
-            Err("unavailable".into())
-        );
+        let creation_result = super::enforce_creation_gate(
+            app.handle(),
+            &dir.to_string_lossy(),
+            super::CreationGateEnforcement::Enforce,
+        )
+        .await;
         let mgr = SessionManager::new();
         let session = mgr
             .create_session(
                 "powershell.exe".into(),
                 Vec::new(),
-                temp.path().to_string_lossy().into_owned(),
+                dir.to_string_lossy().into_owned(),
                 None,
                 None,
                 Vec::new(),
@@ -4191,9 +4213,20 @@ mod tests {
             &settings,
         )
         .await;
+        // Capture the actual persistence target before a bypass-triggered
+        // creation/outcome/runtime panic can hide evidence of its write.
+        let after = std::fs::read(&file).unwrap();
+        eprintln!(
+            "F1 authoritative sessions path={} changed={} before={:?} after={:?}",
+            file.display(),
+            after != original,
+            String::from_utf8_lossy(&original),
+            String::from_utf8_lossy(&after),
+        );
+        assert_eq!(creation_result, Err("unavailable".into()));
         assert!(matches!(outcome, BlockedMenuPersistOutcome::NotApplicable));
         assert!(mgr.list_sessions().await[0].communication.is_none());
-        assert_eq!(std::fs::read(&file).unwrap(), original);
+        assert_eq!(after, original);
     }
 
     #[test]

@@ -8035,6 +8035,8 @@ mod tests {
             serde_json::json!({
                 "projectPaths": [project_path.clone()],
                 "projectPath": project_path.clone(),
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
                 "agents": [],
             })
             .to_string(),
