@@ -9443,55 +9443,63 @@ mod tests {
 
     #[test]
     fn managed_catalog_existing_local_entries_are_never_clobbered() {
-        fn inventory(
-            root: &std::path::Path,
-        ) -> Vec<(
-            std::path::PathBuf,
-            bool,
-            u64,
-            bool,
-            std::time::SystemTime,
-            Vec<u8>,
-        )> {
-            #[cfg(test)]
-            type TreeInventoryRows = Vec<(
-                std::path::PathBuf,
-                bool,
-                u64,
-                bool,
-                std::time::SystemTime,
-                Vec<u8>,
-            )>;
-            fn visit(root: &std::path::Path, path: &std::path::Path, rows: &mut TreeInventoryRows) {
-                let metadata = std::fs::symlink_metadata(path).unwrap();
-                assert!(!metadata.file_type().is_symlink());
-                rows.push((
-                    path.strip_prefix(root).unwrap().to_path_buf(),
-                    metadata.is_dir(),
-                    metadata.len(),
-                    metadata.permissions().readonly(),
-                    metadata.modified().unwrap(),
-                    if metadata.is_file() {
-                        std::fs::read(path).unwrap()
-                    } else {
-                        Vec::new()
-                    },
-                ));
-                if metadata.is_dir() {
-                    let mut entries: Vec<_> = std::fs::read_dir(path)
-                        .unwrap()
-                        .map(|entry| entry.unwrap().path())
-                        .collect();
-                    entries.sort();
-                    for entry in entries {
-                        visit(root, &entry, rows);
-                    }
-                }
+        test09_directory_local_preserved();
+        test09_regular_local_and_read_denied_preserved();
+    }
+
+    #[cfg(test)]
+    type TreeInventoryRows = Vec<(
+        std::path::PathBuf,
+        bool,
+        u64,
+        bool,
+        std::time::SystemTime,
+        Vec<u8>,
+    )>;
+
+    fn test09_visit(root: &std::path::Path, path: &std::path::Path, rows: &mut TreeInventoryRows) {
+        let metadata = std::fs::symlink_metadata(path).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        rows.push((
+            path.strip_prefix(root).unwrap().to_path_buf(),
+            metadata.is_dir(),
+            metadata.len(),
+            metadata.permissions().readonly(),
+            metadata.modified().unwrap(),
+            if metadata.is_file() {
+                std::fs::read(path).unwrap()
+            } else {
+                Vec::new()
+            },
+        ));
+        if metadata.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            entries.sort();
+            for entry in entries {
+                test09_visit(root, &entry, rows);
             }
-            let mut rows = Vec::new();
-            visit(root, root, &mut rows);
-            rows
         }
+    }
+
+    fn test09_inventory(
+        root: &std::path::Path,
+    ) -> Vec<(
+        std::path::PathBuf,
+        bool,
+        u64,
+        bool,
+        std::time::SystemTime,
+        Vec<u8>,
+    )> {
+        let mut rows = Vec::new();
+        test09_visit(root, root, &mut rows);
+        rows
+    }
+
+    fn test09_directory_local_preserved() {
         // A directory at the local path is preserved and disables the layer.
         let dir = seed_dir();
         let local = local_catalog_path(dir.path());
@@ -9500,7 +9508,7 @@ mod tests {
         assert!(ensure_seeded(dir.path(), None).is_some());
         assert!(local.is_dir());
         assert_eq!(std::fs::read(local.join("keep.txt")).unwrap(), b"keep");
-        let before = inventory(dir.path());
+        let before = test09_inventory(dir.path());
         let report = load_catalog_report(dir.path());
         assert_eq!(report.catalog.len(), 8, "the valid base stays usable");
         assert!(
@@ -9519,8 +9527,10 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(load_catalog_report(dir.path()), report);
         }
-        assert_eq!(inventory(dir.path()), before);
+        assert_eq!(test09_inventory(dir.path()), before);
+    }
 
+    fn test09_regular_local_and_read_denied_preserved() {
         // A user-authored regular local file is preserved byte-for-byte and
         // composes onto the fresh managed base.
         let dir = seed_dir();
@@ -9528,7 +9538,7 @@ mod tests {
         write_local(dir.path(), user);
         assert!(ensure_seeded(dir.path(), None).is_some());
         assert_eq!(read_text(&local_catalog_path(dir.path())), user);
-        let before = inventory(dir.path());
+        let before = test09_inventory(dir.path());
         let loaded = load_catalog(dir.path()).unwrap();
         assert_eq!(loaded.len(), 9);
         assert_eq!(loaded.last().unwrap().key, "mine");
@@ -9575,7 +9585,7 @@ mod tests {
             }
             denied = Some(degraded);
         }
-        assert_eq!(inventory(dir.path()), before);
+        assert_eq!(test09_inventory(dir.path()), before);
     }
 
     #[test]
