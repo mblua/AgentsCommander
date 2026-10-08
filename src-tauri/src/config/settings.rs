@@ -5229,6 +5229,9 @@ pub struct AppSettings {
     /// `AppSettings::clone()` stays cheap and copy-on-write mutation is explicit.
     #[serde(skip, default)]
     pub(crate) project_path_state: Arc<crate::config::projects::ProjectPathPersistenceState>,
+    /// An unavailable source must never become an empty retention list.
+    #[serde(skip, default)]
+    pub(crate) project_paths_persistence_error: Option<String>,
     /// #1737 - the `settings.local.json` overlay in force for this load, and the base
     /// values it displaces. Never serialized; behind an `Arc` so `AppSettings::clone()`
     /// stays cheap. Like `project_path_state`, a value that arrives from the renderer
@@ -5921,6 +5924,7 @@ impl Default for AppSettings {
             project_paths: vec![],
             archived_project_paths: vec![],
             project_path_state: Arc::default(),
+            project_paths_persistence_error: None,
             local_overlay_state: Arc::default(),
             agents_layer: AgentsLayerState::default(),
             sidebar_style: default_sidebar_style(),
@@ -10396,6 +10400,166 @@ pub(crate) fn reconcile_project_state_to_path(
     .map_err(|error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings))
 }
 
+/// Owns the shared file lock throughout a synchronous project operation.
+/// Never carry this token across an await.
+pub(crate) struct ProjectPathsWriteTransaction {
+    _lock: SettingsFileLock,
+    path: PathBuf,
+    fresh: AppSettings,
+    revalidated_after_failure: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectPathsRepairStage {
+    Read,
+    Write,
+}
+
+pub(crate) fn begin_project_paths_transaction_at_path(
+    current: &AppSettings,
+    settings_path: &Path,
+) -> Result<ProjectPathsWriteTransaction, String> {
+    let lock = SettingsFileLock::acquire(settings_path, std::time::Duration::from_secs(2))
+        .map_err(|error| {
+            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+        })?;
+    let mut fresh = current.clone();
+    refresh_and_decode_project_paths_from_path(&mut fresh, settings_path)?;
+    fresh.project_paths_persistence_error = None;
+    Ok(ProjectPathsWriteTransaction {
+        _lock: lock,
+        path: settings_path.to_path_buf(),
+        fresh,
+        revalidated_after_failure: false,
+    })
+}
+
+impl ProjectPathsWriteTransaction {
+    pub(crate) fn fresh_settings(&self) -> &AppSettings {
+        &self.fresh
+    }
+
+    pub(crate) fn commit_project_groups(
+        &mut self,
+        candidate: &AppSettings,
+        active: bool,
+        archived: bool,
+    ) -> Result<AppSettings, String> {
+        if let Some(message) = &candidate.project_paths_persistence_error {
+            return Err(message.clone());
+        }
+        self.revalidated_after_failure = false;
+        let result = save_settings_value_locked(
+            candidate,
+            &self.path,
+            ProjectWriteMode::Reconcile { active, archived },
+            TerminalSnapshotGateWriteMode::Preserve,
+            MainWindowPlacementWriteMode::Preserve,
+        );
+        self.handle_commit_result(result)
+    }
+
+    fn handle_commit_result(
+        &mut self,
+        result: Result<AppSettings, SettingsSaveError>,
+    ) -> Result<AppSettings, String> {
+        match result {
+            Ok(mut written) => {
+                written.project_paths_persistence_error = None;
+                self.fresh = written.clone();
+                Ok(written)
+            }
+            Err(error) => {
+                let uncertain = match error.stage {
+                    SettingsSaveStage::AtomicReplace
+                    | SettingsSaveStage::PostWriteRead
+                    | SettingsSaveStage::PostWriteVerify
+                    | SettingsSaveStage::ReDecode => true,
+                    #[cfg(unix)]
+                    SettingsSaveStage::TargetPermissions
+                    | SettingsSaveStage::ParentDirectorySync => true,
+                    _ => false,
+                };
+                let message =
+                    report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings);
+                if uncertain {
+                    // Re-read under this same lock; never roll back a write
+                    // whose outcome cannot be established.
+                    let validated = read_disk_object_for_write(&self.path).and_then(|map| {
+                        let map =
+                            map.ok_or_else(|| "committed settings file is absent".to_string())?;
+                        let effective =
+                            match serde_json::to_value(&self.fresh).map_err(|error| {
+                                format!("project state serialization failed: {error}")
+                            })? {
+                                Value::Object(map) => map,
+                                _ => {
+                                    return Err(
+                                        "project state did not serialize as an object".to_string()
+                                    )
+                                }
+                            };
+                        decode_disk_settings_for_terminal_snapshot_cas(
+                            map,
+                            &self.path,
+                            &self.fresh.local_overlay_state,
+                            &effective,
+                        )
+                    });
+                    match validated {
+                        Ok(mut settings) => {
+                            settings.local_overlay_state = self.fresh.local_overlay_state.clone();
+                            settings.project_paths_persistence_error = None;
+                            self.fresh = settings;
+                        }
+                        Err(reason) => {
+                            self.fresh.project_paths_persistence_error = Some(format!(
+                                "{message}; project state revalidation failed: {reason}"
+                            ))
+                        }
+                    }
+                    self.revalidated_after_failure = true;
+                }
+                Err(message)
+            }
+        }
+    }
+}
+
+/// Validate fresh authority even if the cached state reports no repair.
+pub(crate) fn repair_fresh_project_paths_at_path(
+    current: &mut AppSettings,
+    path: &Path,
+) -> Result<(), (ProjectPathsRepairStage, String)> {
+    let mut transaction = match begin_project_paths_transaction_at_path(current, path) {
+        Ok(transaction) => transaction,
+        Err(message) => {
+            current.project_paths_persistence_error = Some(message.clone());
+            return Err((ProjectPathsRepairStage::Read, message));
+        }
+    };
+    let candidate = transaction.fresh_settings().clone();
+    let state = &candidate.project_path_state;
+    let active = state.active_reconcile_eligible;
+    let archived = state.archived_reconcile_eligible;
+    if state.has_structural() || !(active || archived) {
+        *current = candidate;
+        return Ok(());
+    }
+    match transaction.commit_project_groups(&candidate, active, archived) {
+        Ok(written) => {
+            *current = written;
+            Ok(())
+        }
+        Err(message) => {
+            if transaction.revalidated_after_failure {
+                *current = transaction.fresh_settings().clone();
+            }
+            Err((ProjectPathsRepairStage::Write, message))
+        }
+    }
+}
+
 struct SettingsFileLock {
     file: std::fs::File,
 }
@@ -11484,7 +11648,8 @@ pub(crate) fn refresh_and_decode_project_paths_from_path(
 /// Whether the current hidden project state carries structural corruption, which
 /// must block any explicit project-list mutation (§4.2).
 pub(crate) fn project_state_has_structural(settings: &AppSettings) -> bool {
-    settings.project_path_state.has_structural()
+    settings.project_paths_persistence_error.is_some()
+        || settings.project_path_state.has_structural()
 }
 
 /// Save settings to the app config directory (see config_dir()).
@@ -11877,6 +12042,167 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn project_transaction_refreshes_after_barrier_controlled_second_writer() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = temp.path().join("A");
+        let b = temp.path().join("B");
+        for project in [&a, &b] {
+            std::fs::create_dir_all(project.join(".ac")).unwrap();
+        }
+        let raw = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [a], "projectPath": a});
+        std::fs::write(&path, raw.to_string()).unwrap();
+        let mut stale = super::AppSettings::default();
+        super::refresh_and_decode_project_paths_from_path(&mut stale, &path).unwrap();
+        // Also exercise a cached object that claims no pending repair.
+        stale.project_path_state = std::sync::Arc::default();
+        let lock =
+            super::SettingsFileLock::acquire(&path, std::time::Duration::from_secs(1)).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_barrier = barrier.clone();
+        let worker_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            worker_barrier.wait();
+            super::repair_fresh_project_paths_at_path(&mut stale, &worker_path).unwrap();
+            stale
+        });
+        barrier.wait();
+        // This writer owns the file lock before the repair can acquire it.
+        let fresh = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [a, b], "projectPath": a});
+        super::write_value_atomic(&fresh, &path).unwrap();
+        drop(lock);
+        let repaired = worker.join().unwrap();
+        assert_eq!(repaired.project_paths.len(), 2);
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk["projectPaths"].as_array().unwrap().len(), 2);
+        assert!(repaired.project_paths_persistence_error.is_none());
+    }
+
+    #[test]
+    fn project_transaction_timeout_preserves_bytes_and_live_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let bytes = b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[]}";
+        std::fs::write(&path, bytes).unwrap();
+        let _lock =
+            super::SettingsFileLock::acquire(&path, std::time::Duration::from_secs(1)).unwrap();
+        let mut current = super::AppSettings {
+            project_paths: vec!["cached".into()],
+            ..super::AppSettings::default()
+        };
+        let result = super::repair_fresh_project_paths_at_path(&mut current, &path);
+        assert!(matches!(
+            result,
+            Err((super::ProjectPathsRepairStage::Read, _))
+        ));
+        assert_eq!(current.project_paths, vec!["cached"]);
+        assert!(super::project_state_has_structural(&current));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn project_fresh_repair_retains_missing_raw_registration() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let active = temp.path().join("active");
+        let missing = temp.path().join("missing").to_string_lossy().into_owned();
+        std::fs::create_dir_all(active.join(".ac")).unwrap();
+        let raw = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [active, missing], "projectPath": active});
+        std::fs::write(&path, raw.to_string()).unwrap();
+        let mut current = super::AppSettings::default();
+        super::repair_fresh_project_paths_at_path(&mut current, &path).unwrap();
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk["projectPaths"].as_array().unwrap().len(), 2);
+        assert_eq!(disk["projectPaths"][1], missing);
+        assert_eq!(current.project_paths.len(), 1);
+    }
+
+    #[test]
+    fn project_transaction_keeps_candidate_separate_on_precommit_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[]}").unwrap();
+        let current = super::AppSettings::default();
+        let mut transaction =
+            super::begin_project_paths_transaction_at_path(&current, &path).unwrap();
+        let mut candidate = transaction.fresh_settings().clone();
+        candidate.project_paths = vec!["candidate".into()];
+        super::resync_project_state_from_runtime(&mut candidate);
+        // Simulate a noncooperating fault, not a second cooperating writer.
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(transaction
+            .commit_project_groups(&candidate, true, true)
+            .is_err());
+        assert!(transaction.fresh_settings().project_paths.is_empty());
+        assert!(current.project_paths.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid");
+    }
+
+    #[test]
+    fn project_transaction_uncertain_commit_adopts_only_revalidated_disk() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[]}").unwrap();
+        let mut transaction =
+            super::begin_project_paths_transaction_at_path(&super::AppSettings::default(), &path)
+                .unwrap();
+        let error = || {
+            super::SettingsSaveError::semantic(
+                super::SettingsSaveStage::PostWriteRead,
+                &path,
+                None,
+                super::SettingsSaveReason::PostWriteReadRejected,
+                super::SettingsSaveLegacyOutward::SettingsSaveFailed,
+            )
+        };
+        // Model a completed publication followed by uncertain readback.
+        let published = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [], "sidebarStyle": "published"});
+        super::write_value_atomic(&published, &path).unwrap();
+        assert!(transaction.handle_commit_result(Err(error())).is_err());
+        assert_eq!(transaction.fresh_settings().sidebar_style, "published");
+        assert!(transaction
+            .fresh_settings()
+            .project_paths_persistence_error
+            .is_none());
+        assert!(transaction.revalidated_after_failure);
+        // Failure to revalidate must block rather than publish guessed state.
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(transaction.handle_commit_result(Err(error())).is_err());
+        assert!(transaction
+            .fresh_settings()
+            .project_paths_persistence_error
+            .is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid");
+    }
+
+    #[test]
+    fn project_fresh_repair_clears_unavailable_only_after_valid_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let mut current = super::AppSettings::default();
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(super::repair_fresh_project_paths_at_path(&mut current, &path).is_err());
+        assert!(current.project_paths_persistence_error.is_some());
+        std::fs::write(
+            &path,
+            b"{\"defaultShell\":\"test-shell\",\"defaultShellArgs\":[],\"agents\":[],\"projectPaths\":[],\"archivedProjectPaths\":[]}",
+        )
+        .unwrap();
+        super::repair_fresh_project_paths_at_path(&mut current, &path).unwrap();
+        assert!(current.project_paths_persistence_error.is_none());
+        assert!(current.project_paths.is_empty());
+        assert!(!super::project_state_has_structural(&current));
+        let mut hidden = current.clone();
+        hidden.project_paths_persistence_error = Some("unavailable".into());
+        assert_eq!(
+            serde_json::to_value(&hidden).unwrap(),
+            serde_json::to_value(&current).unwrap()
+        );
+    }
 
     fn assert_no_issue_1330_temp_files(directory: &std::path::Path) {
         let entries = std::fs::read_dir(directory).unwrap();
