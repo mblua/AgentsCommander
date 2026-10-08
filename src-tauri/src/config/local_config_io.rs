@@ -357,6 +357,8 @@ where
 pub(crate) type ConfigPairCleanup<'a> =
     &'a dyn Fn(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>;
 
+pub(crate) type ConfigPairFinish<'a> = &'a dyn Fn(&mut Map<String, Value>) -> Result<(), String>;
+
 /// #2786 (C1) - write the decisions file and the state file as one guarded
 /// pair. `state` is the state file's path, `state_keys` the keys that live in
 /// it, and `on_stage` a named pause point (a no-op in production); all three
@@ -413,7 +415,7 @@ pub(crate) fn update_config_pair_guarded<F>(
     cleanup: Option<ConfigPairCleanup<'_>>,
     on_stage: &dyn Fn(&str),
     mutate: F,
-    finish: &dyn Fn(&mut Map<String, Value>) -> Result<(), String>,
+    finish: ConfigPairFinish<'_>,
     activity: Option<(&str, &Cell<bool>)>,
 ) -> Result<(), String>
 where
@@ -442,7 +444,7 @@ fn update_config_pair_inner<F>(
     cleanup: Option<ConfigPairCleanup<'_>>,
     on_stage: &dyn Fn(&str),
     mutate: F,
-    finish: &dyn Fn(&mut Map<String, Value>) -> Result<(), String>,
+    finish: ConfigPairFinish<'_>,
     activity: Option<(&str, &Cell<bool>)>,
     nonpending_preflight: Option<&dyn Fn() -> Result<(), String>>,
 ) -> Result<(), String>
@@ -1215,7 +1217,7 @@ impl PairReservation {
         {
             return Err(PreparedPairError::InvalidPlan("invalid reservation packet"));
         }
-        merge_monotonic_activity(&[self.timestamp_floor.clone()])?;
+        merge_monotonic_activity(std::slice::from_ref(&self.timestamp_floor))?;
         if let Some(intent) = &self.activity_intent {
             if intent.floor_before != self.timestamp_floor
                 || merge_monotonic_activity(&[

@@ -241,7 +241,7 @@ fn activity_only_update(path: &Path, at_rfc3339: &str) -> Result<bool, String> {
         production_journal_dir().as_deref(),
         &|_| {},
         |_decisions, state| {
-            let tooling = ensure_object(state, "tooling", &path);
+            let tooling = ensure_object(state, "tooling", path);
             let stored_is_not_older = tooling
                 .get("lastAgentMessageAt")
                 .and_then(|v| v.as_str())
