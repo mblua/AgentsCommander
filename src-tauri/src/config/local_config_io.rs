@@ -5588,9 +5588,9 @@ mod pair_activity_tests {
         )
     }
 
-    fn p22_artifacts(
-        fixture: &Fixture,
-    ) -> (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<(String, Vec<u8>)>) {
+    type P22Artifacts = (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<(String, Vec<u8>)>);
+
+    fn p22_artifacts(fixture: &Fixture) -> P22Artifacts {
         let mut stages = std::fs::read_dir(fixture.root.path())
             .unwrap()
             .map(|entry| entry.unwrap().path())
