@@ -22,13 +22,11 @@ pub const HOST_PLATFORM_RULES_FILENAME_LINUX: &str = "Context.platform.linux.md"
 pub const HOST_PLATFORM_RULES_FILENAME_MACOS: &str = "Context.platform.macos.md";
 
 /// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
-/// Windows host sessions (277 bytes; sha256
-/// 5fd5dd5f7d3d097f90e58cee6e6a210e2b2a6070c24e4164a7ac06d3854286a7 at
-/// 047248bc). Single source for both the `.ac/Context.platform.windows.md` seed
+/// Windows host sessions. Single source for both the `.ac/Context.platform.windows.md` seed
 /// and the render fallback.
 pub(crate) const DEFAULT_HOST_PLATFORM_RULES_WINDOWS: &str = r#"## Host Platform Rules
 
-Windows host session: use `C:\Program Files\Git\bin\bash.exe` for all shell work and every AgentsCommander CLI invocation; from PowerShell wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'`; never capture CLI output without `2>&1 | Out-String`."#;
+Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for all shell work and every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | Out-String`."#;
 
 /// #1605: embedded default content for the `{{HOST_PLATFORM_RULES}}` block on
 /// Linux host sessions (106 bytes; sha256
@@ -7332,7 +7330,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             None,
             &no_skill_section(),
         );
-        assert!(out.contains("## Host Platform Rules"));
+        assert!(out.contains(r#"## Host Platform Rules
+
+Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for all shell work and every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | Out-String`."#));
         assert!(out.contains("bash.exe"));
         assert!(out.contains("2>&1 | Out-String"));
         assert!(out.contains("**Windows:** see **Host Platform Rules** above."));
@@ -7509,7 +7509,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         // seeds the missing platform files absent-only through the seeder
         // lifecycle before reading: the host file and all three platform files
         // exist byte-equal to their embedded defaults, the state records
-        // `platform.<os>` v1 with `lastSeededSha256 == hash(default)`, the
+        // current platform versions with `lastSeededSha256 == hash(default)`, the
         // rendered block carries the default, and a second render is
         // idempotent (same output, same files, same state).
         use sha2::{Digest, Sha256};
@@ -7572,7 +7572,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
                 "{file} must be seeded byte-equal to its embedded default"
             );
         }
-        // (c) state records platform.<os> v1 with lastSeededSha256 == hash(default).
+        // (c) state records current platform versions with lastSeededSha256 == hash(default).
         let state = std::fs::read_to_string(&state_path).expect("read seeded state");
         let parsed: serde_json::Value = serde_json::from_str(&state).expect("parse seeded state");
         for (id, expected) in [
@@ -7590,8 +7590,9 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
             ),
         ] {
             assert_eq!(
-                parsed["templates"][id]["currentVersion"], 1,
-                "{id} state entry must be v1"
+                parsed["templates"][id]["currentVersion"],
+                if id == "platform.windows" { 2 } else { 1 },
+                "{id} state entry must carry the current version"
             );
             assert_eq!(
                 parsed["templates"][id]["lastSeededSha256"],
@@ -7705,7 +7706,7 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
     fn deleted_platform_file_is_reseeded_absent_only() {
         // #1625 T-5: after a render-triggered seed, deleting the host platform
         // file re-seeds it absent-only on the next render (file byte-equal to
-        // the default again) and the state keeps `platform.<os>` v1 seeded.
+        // the default again) and the state keeps the current platform versions.
         let temp = tempfile::tempdir().expect("tempdir");
         let ac = temp.path().join(".ac");
         let replica = ac.join("wg-1-team").join("__agent_dev");
@@ -7753,8 +7754,8 @@ You may ONLY modify files in your own replica root:\n   C:/OLD/__agent_other\n\n
         );
         let parsed: serde_json::Value = serde_json::from_str(&state_before).expect("parse state");
         assert_eq!(
-            parsed["templates"]["platform.windows"]["currentVersion"], 1,
-            "the platform state entry must stay v1 seeded"
+            parsed["templates"]["platform.windows"]["currentVersion"], 2,
+            "the Windows platform state entry must stay v2 seeded"
         );
     }
 
@@ -15539,6 +15540,31 @@ mod token_accounting {
         // addition separately so unrelated growth still fails the old ladder.
         const P2_STATUS_GRANT_BYTES: usize = 1_145;
 
+        // #2871: explicit human approval permits only the independently measured
+        // Windows host wording addition; other hosts retain their existing gates.
+        const OLD_WINDOWS_HOST_RULES: &str = r#"## Host Platform Rules
+
+Windows host session: use `C:\Program Files\Git\bin\bash.exe` for all shell work and every AgentsCommander CLI invocation; from PowerShell wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'`; never capture CLI output without `2>&1 | Out-String`."#;
+        const NEW_WINDOWS_HOST_RULES: &str = r#"## Host Platform Rules
+
+Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for all shell work and every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | Out-String`."#;
+        const WINDOWS_HOST_RULES_DELTA_BYTES: usize = 74;
+        assert_eq!(OLD_WINDOWS_HOST_RULES.len(), 277);
+        assert_eq!(NEW_WINDOWS_HOST_RULES.len(), 351);
+        assert_eq!(
+            NEW_WINDOWS_HOST_RULES.len() - OLD_WINDOWS_HOST_RULES.len(),
+            WINDOWS_HOST_RULES_DELTA_BYTES
+        );
+        assert_eq!(
+            super::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+            NEW_WINDOWS_HOST_RULES
+        );
+        let host_allowance = if cfg!(target_os = "windows") {
+            WINDOWS_HOST_RULES_DELTA_BYTES
+        } else {
+            0
+        };
+
         let skills = synthetic_replica_skills_section();
         let values = super::default_context_dynamic_values(
             FAKE_REPLICA_ROOT,
@@ -15599,10 +15625,16 @@ mod token_accounting {
             - MEMORY_LAYOUT_DELTA_BYTES
             - TASK_SET_BODY_RULE_DELTA_BYTES;
         let full_wg = super::default_context(FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
+        let selected_host_rules = super::host_platform_rules_default();
+        assert_eq!(full_wg.matches(selected_host_rules).count(), 1);
+        if cfg!(target_os = "windows") {
+            assert_eq!(selected_host_rules, NEW_WINDOWS_HOST_RULES);
+        }
         let historical_full_wg_bytes = full_wg.len()
             - P2_STATUS_GRANT_BYTES
             - MEMORY_LAYOUT_DELTA_BYTES
-            - TASK_SET_BODY_RULE_DELTA_BYTES;
+            - TASK_SET_BODY_RULE_DELTA_BYTES
+            - host_allowance;
         assert!(
             raw_touched_owners <= V5_MAX_TOUCHED_OWNERS_BYTES + MEMORY_LAYOUT_DELTA_BYTES,
             "P2 actual touched owners: {} bytes, existing ceiling {}; full WG: {} bytes, existing ceiling {}",
@@ -15640,6 +15672,12 @@ mod token_accounting {
             - MEMORY_LAYOUT_DELTA_BYTES;
         let pre_full_wg =
             super::default_context(PRE_1795_FAKE_REPLICA_ROOT, Some(FAKE_MATRIX_ROOT), &skills);
+        assert_eq!(pre_full_wg.matches(selected_host_rules).count(), 1);
+        if cfg!(target_os = "windows") {
+            assert_eq!(selected_host_rules, NEW_WINDOWS_HOST_RULES);
+        }
+        let historical_pre_full_wg_bytes =
+            pre_full_wg.len() - MEMORY_LAYOUT_DELTA_BYTES - host_allowance;
 
         // #1795 6.1: an oracle that depends on NO measured number. Equal deltas across
         // the two rows would otherwise certify any wrong common text, because V5 is
@@ -15665,7 +15703,7 @@ mod token_accounting {
             "the touched-owner delta must be the corrected fixture path plus the two entries"
         );
         assert_eq!(
-            historical_full_wg_bytes - (pre_full_wg.len() - MEMORY_LAYOUT_DELTA_BYTES),
+            historical_full_wg_bytes - historical_pre_full_wg_bytes,
             V5_DELTA_BYTES,
             "the WG-profile delta must be the corrected fixture path plus the two entries"
         );
@@ -15676,7 +15714,7 @@ mod token_accounting {
             "pre-#1795 five touched owners are {pre_touched_owners} bytes against v4 ceiling {V4_MAX_TOUCHED_OWNERS_BYTES}"
         );
         assert!(
-            pre_full_wg.len() - MEMORY_LAYOUT_DELTA_BYTES <= V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES,
+            historical_pre_full_wg_bytes <= V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES,
             "pre-#1795 WG profile is {} bytes against the V6 pre-#1795 ceiling {V6_PRE_1795_MAX_FULL_WG_PROFILE_BYTES}",
             pre_full_wg.len()
         );
@@ -15807,9 +15845,10 @@ mod token_accounting {
             V5_TOUCHED_OWNERS_BYTES - touched_owners
         );
         assert!(
-            full_wg.len() <= V6_MAX_FULL_WG_PROFILE_BYTES + MEMORY_LAYOUT_DELTA_BYTES,
-            "WG profile is {} bytes; v6 baseline {V6_FULL_WG_PROFILE_BYTES}, ceiling {V6_MAX_FULL_WG_PROFILE_BYTES}",
-            full_wg.len()
+            full_wg.len() <= V6_MAX_FULL_WG_PROFILE_BYTES + MEMORY_LAYOUT_DELTA_BYTES + host_allowance,
+            "WG profile is {} bytes; v6 baseline {V6_FULL_WG_PROFILE_BYTES}, effective ceiling {}, host allowance {host_allowance}",
+            full_wg.len(),
+            V6_MAX_FULL_WG_PROFILE_BYTES + MEMORY_LAYOUT_DELTA_BYTES + host_allowance
         );
         assert!(
             V6_FULL_WG_PROFILE_BYTES - historical_full_wg_bytes >= REQUIRED_REDUCTION_BYTES,
