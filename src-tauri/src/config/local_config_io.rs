@@ -952,6 +952,9 @@ fn publish_prepared_pair_image_with_report(
     )
 }
 
+type PreparedPairStageWrite<'a> =
+    dyn Fn(&mut std::fs::File, &[u8]) -> Result<(), PreparedPairError> + 'a;
+
 fn publish_prepared_pair_image_with_io(
     path: &Path,
     before: &PhysicalState,
@@ -959,7 +962,7 @@ fn publish_prepared_pair_image_with_io(
     guard: &PairTargetGuard<'_>,
     report_cleanup_refusal: &dyn Fn(&PreparedPairError, &PreparedPairError),
     next: &mut dyn FnMut() -> Result<u64, PreparedPairError>,
-    write: &dyn Fn(&mut std::fs::File, &[u8]) -> Result<(), PreparedPairError>,
+    write: &PreparedPairStageWrite<'_>,
 ) -> Result<(), PreparedPairError> {
     let PhysicalState::Bytes { bytes, .. } = after else {
         return Err(PreparedPairError::InvalidPlan("PAIR never deletes a side"));
@@ -1913,21 +1916,6 @@ fn execute_reserved_config_pair_with_validation(
     }
     guard.check()?;
     Ok(())
-}
-
-fn confirm_pair_activity_floor(
-    state: &Path,
-    reservation: &Path,
-    packet: &mut PairReservation,
-    physical: &mut PhysicalState,
-) -> Result<(), PreparedPairError> {
-    confirm_pair_activity_floor_guarded(
-        state,
-        reservation,
-        packet,
-        physical,
-        &PairTargetGuard::new(&|| Ok(())),
-    )
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -5854,7 +5842,7 @@ mod pair_activity_tests {
                 );
                 assert_eq!(
                     (std::fs::read(&target).ok(), p22_stages(root.path())),
-                    observed.into_inner().unwrap()
+                    observed.borrow_mut().take().unwrap()
                 );
                 assert_eq!(guard.check(), Err(PreparedPairError::Conflict));
                 assert_eq!(calls.get(), cut);
