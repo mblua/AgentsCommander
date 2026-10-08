@@ -13098,6 +13098,15 @@ mod tests {
                     assert_eq!(std::fs::read(&path).unwrap(), bytes);
                 } else {
                     assert!(!destination.exists());
+                    // A present valid destination cannot hide an invalid source:
+                    // conflict/remnant evaluation requires both readable objects.
+                    std::fs::write(&destination, b"{\"projectPaths\":[]}").unwrap();
+                    assert!(super::ensure_project_paths_migrated_locked(&transaction).is_err());
+                    assert_eq!(std::fs::read(&path).unwrap(), bad);
+                    assert_eq!(
+                        std::fs::read(&destination).unwrap(),
+                        b"{\"projectPaths\":[]}"
+                    );
                 }
             }
         }
