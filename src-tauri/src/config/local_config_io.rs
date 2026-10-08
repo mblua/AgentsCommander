@@ -436,12 +436,14 @@ where
 /// Bytes are recovery authority; the digest is checked when a plan is executed.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) enum PhysicalState {
     Absent,
     Bytes { sha256: String, bytes: Vec<u8> },
 }
 
 impl PhysicalState {
+    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
     pub(crate) fn from_bytes(bytes: Vec<u8>) -> Self {
         use sha2::{Digest, Sha256};
         Self::Bytes {
@@ -450,6 +452,7 @@ impl PhysicalState {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
     fn map(&self) -> Result<Map<String, Value>, PreparedPairError> {
         match self {
             Self::Absent => Ok(Map::new()),
@@ -468,6 +471,7 @@ impl PhysicalState {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) fn read_config_pair_physical(path: &Path) -> Result<PhysicalState, PreparedPairError> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
@@ -489,15 +493,18 @@ pub(crate) fn read_config_pair_physical(path: &Path) -> Result<PhysicalState, Pr
 /// supplies the target and persists this private plan in its own protocol.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) struct PreparedConfigPairPlan {
     stages: [[PhysicalState; 2]; 5],
 }
 
 impl PreparedConfigPairPlan {
+    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
     pub(crate) fn stages(&self) -> &[[PhysicalState; 2]; 5] {
         &self.stages
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
     fn validate(&self) -> Result<(), PreparedPairError> {
         for tuple in &self.stages {
             for image in tuple {
@@ -519,6 +526,7 @@ impl PreparedConfigPairPlan {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) enum PreparedPairError {
     InvalidPlan(&'static str),
     Preparation(String),
@@ -541,6 +549,7 @@ impl std::fmt::Display for PreparedPairError {
 
 impl std::error::Error for PreparedPairError {}
 
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 fn prepared_pair_image(
     previous: &PhysicalState,
     before: &Map<String, Value>,
@@ -558,6 +567,7 @@ fn prepared_pair_image(
 /// Pure preparation. Both closures finish before any publish. Reuses the
 /// writer's map equality and pretty+newline serializer; untouched bytes survive.
 /// Closures must only edit the supplied maps, never enter another writer.
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) fn prepare_config_pair_plan<F>(
     before: [PhysicalState; 2],
     cleanup: Option<ConfigPairCleanup<'_>>,
@@ -593,6 +603,7 @@ where
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) fn execute_prepared_config_pair(
     decisions: &Path,
     state: &Path,
@@ -603,6 +614,7 @@ pub(crate) fn execute_prepared_config_pair(
 
 /// One lock acquisition per side, for the whole execution. The stage seam is
 /// private and exercises partial failure in the production execution body.
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 fn execute_prepared_config_pair_with_stage(
     decisions: &Path,
     state: &Path,
@@ -675,6 +687,7 @@ fn execute_prepared_config_pair_with_stage(
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 fn publish_prepared_pair_image(
     path: &Path,
     before: &PhysicalState,
@@ -2555,13 +2568,13 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
         let s_steps = [0, 1, 1, 2, 2];
         let mut reached = 0;
         let mut conflicts = 0;
-        for i in 0..5 {
-            for j in 0..5 {
+        for (i, &d_step) in d_steps.iter().enumerate() {
+            for (j, &s_step) in s_steps.iter().enumerate() {
                 let (_temp, d, s) = pair_fixture(None, None);
                 prepared_install(&d, &plan.stages[i][0]);
                 prepared_install(&s, &plan.stages[j][1]);
                 let before = [std::fs::read(&d).unwrap(), std::fs::read(&s).unwrap()];
-                let reachable = s_steps[j] == d_steps[i] || s_steps[j] == d_steps[i] + 1;
+                let reachable = s_step == d_step || s_step == d_step + 1;
                 let result = execute_prepared_config_pair(&d, &s, &plan);
                 if reachable {
                     result.unwrap();

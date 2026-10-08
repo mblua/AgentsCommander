@@ -1262,6 +1262,7 @@ where
 /// Pure source-reference PAIR preparation using the same cleanup and split
 /// policy as the ordinary writer. No ignores, journal, locks or files are
 /// changed here; the coordinator owns authorization and durable plan storage.
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) fn prepare_identity_reference_pair<F>(
     before: [crate::config::local_config_io::PhysicalState; 2],
     mutate: F,
@@ -1284,6 +1285,7 @@ where
 
 /// Internal only until P11. Executes original images, never re-runs policy or
 /// a mutation callback during recovery. The caller supplies authorized targets.
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
 pub(crate) fn execute_identity_reference_pair(
     decisions: &Path,
     plan: &crate::config::local_config_io::PreparedConfigPairPlan,
