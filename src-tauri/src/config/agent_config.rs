@@ -4272,11 +4272,12 @@ mod tests {
         assert_eq!(
             names,
             [
+                crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_LOCK.to_string(),
                 ".config.json.lock".to_string(),
                 format!(".{state_name}.lock"),
                 state_name.to_string(),
             ],
-            "only the state file and the two lock sidecars exist"
+            "only the state file and the three lock sidecars exist"
         );
         assert!(!dir.join("config.json").exists());
 
