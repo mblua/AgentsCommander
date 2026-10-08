@@ -127,6 +127,22 @@ pub(crate) const MESSAGE_BUS_DB_FILENAME: &str = "api-message-bus.sqlite3";
 /// test derives it from `MESSAGE_BUS_DB_FILENAME`.
 pub(crate) const MESSAGE_BUS_DB_GLOB: &str = "api-message-bus.sqlite3*";
 pub(crate) const CODEX_HOME_DIR_NAME: &str = "codex-home";
+// P14 source coordination is metadata, independent of source content layers.
+pub(crate) const SOURCE_CATALOG_BASE_LEDGER_NAME: &str =
+    "coding-agent-source-catalogBase.state.no-git.json";
+pub(crate) const SOURCE_CATALOG_PROJECT_LEDGER_NAME: &str =
+    "coding-agent-source-catalogProject.state.no-git.json";
+pub(crate) const SOURCE_CATALOG_PERSONAL_LEDGER_NAME: &str =
+    "coding-agent-source-catalogPersonal.state.no-git.json";
+pub(crate) const SOURCE_REGISTERED_INSTANCE_LEDGER_NAME: &str =
+    "coding-agent-source-registeredInstance.state.no-git.json";
+pub(crate) const SOURCE_REGISTERED_INSTANCE_LOCK: &str =
+    ".coding-agent-source-registeredInstance.state.no-git.json.lock";
+pub(crate) const SOURCE_CATALOG_LEDGER_ARTIFACT: &str =
+    "coding-agents/coding-agent-source-*.state.no-git.json";
+pub(crate) const SOURCE_CATALOG_LOCK_ARTIFACT: &str =
+    "coding-agents/.coding-agent-source-*.state.no-git.json.lock";
+
 /// The CLI-to-app coding-agent mutation request queue. Its `results/`
 /// subdirectory stays owner-side: the `Dir` row covers the whole subtree in one
 /// rule, the same stance `harness.log` gets under the `logs` row.
@@ -515,6 +531,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: private identity intent journal lock; created once and never deleted",
     },
+    InstanceArtifact { name: SOURCE_REGISTERED_INSTANCE_LOCK, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
     InstanceArtifact {
         name: NAMING_MIGRATION_LOCK_NAME,
         kind: ArtifactKind::File,
@@ -669,6 +686,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: CLI-to-app coding-agent mutation request queue, including its results/ subdirectory",
     },
+    InstanceArtifact { name: SOURCE_REGISTERED_INSTANCE_LEDGER_NAME, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
     InstanceArtifact {
         name: CODING_AGENTS_SET_ASIDE_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
@@ -717,6 +735,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: coding-agent migration journal; immutable AC recovery state, never user content",
     },
+    InstanceArtifact { name: SOURCE_CATALOG_LOCK_ARTIFACT, kind: ArtifactKind::RootRelativeGlob, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
     InstanceArtifact {
         name: CODING_AGENTS_LOCAL_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
@@ -729,6 +748,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: immutable byte-exact backup of the pre-migration coding-agent source",
     },
+    InstanceArtifact { name: SOURCE_CATALOG_LEDGER_ARTIFACT, kind: ArtifactKind::RootRelativeGlob, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
     InstanceArtifact {
         name: CONTEXT_CACHE_DIR_NAME,
         kind: ArtifactKind::Dir,
@@ -987,7 +1007,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
 /// may carry. A registry test pins the table to this set, so widening the kind
 /// to another directory is a policy change rather than a table tweak.
 #[cfg(test)]
-pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 10] = [
+pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 12] = [
     CODING_AGENTS_SET_ASIDE_ARTIFACT,
     CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
     CODING_AGENTS_BASE_TMP_ARTIFACT,
@@ -996,8 +1016,10 @@ pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 10] = [
     CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
     CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
     CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+    SOURCE_CATALOG_LOCK_ARTIFACT,
     CODING_AGENTS_LOCAL_ARTIFACT,
     CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+    SOURCE_CATALOG_LEDGER_ARTIFACT,
 ];
 
 /// Whether `file_name` is matched by `ATOMIC_WRITE_TMP_GLOB`.

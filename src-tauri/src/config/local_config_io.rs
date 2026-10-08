@@ -740,6 +740,25 @@ fn publish_prepared_pair_image(
     result
 }
 
+/// P14 single-file private/shared metadata publish. Caller holds the stable
+/// coordination sidecar for this entire CAS/fsync segment; no nested writer.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn publish_coordination_bytes(
+    path: &Path,
+    before: &PhysicalState,
+    bytes: &[u8],
+) -> Result<(), PreparedPairError> {
+    let after = PhysicalState::from_bytes(bytes.to_vec());
+    after.map()?;
+    if read_config_pair_physical(path)? != *before {
+        return Err(PreparedPairError::Conflict);
+    }
+    if before == &after {
+        return Ok(());
+    }
+    publish_prepared_pair_image(path, before, &after)
+}
+
 /// #2786 (C1) - one side of the pair as a map: absent is empty, anything that
 /// is not a readable JSON object is an error.
 fn read_pair_side(path: &Path) -> Result<Map<String, Value>, String> {
