@@ -286,11 +286,11 @@ where
         .map_err(|e| format!("Failed to serialize {}: {}", path.display(), e))?;
     json.push('\n');
 
-    let tmp_path = temp_config_path(path);
+    let guard = PairTargetGuard::new(&|| Ok(()));
+    let (tmp_path, mut file) =
+        acquire_fresh_config_stage(path, &guard).map_err(ordinary_staging_error)?;
 
     let write_result = (|| -> Result<(), String> {
-        let mut file = std::fs::File::create(&tmp_path)
-            .map_err(|e| format!("Failed to create temp config {}: {}", tmp_path.display(), e))?;
         file.write_all(json.as_bytes())
             .map_err(|e| format!("Failed to write temp config {}: {}", tmp_path.display(), e))?;
         file.flush()
@@ -298,6 +298,7 @@ where
         file.sync_all()
             .map_err(|e| format!("Failed to sync temp config {}: {}", tmp_path.display(), e))
     })();
+    drop(file);
     if let Err(e) = write_result {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
@@ -327,11 +328,11 @@ where
         .ok_or_else(|| format!("Local config {} has no parent directory", path.display()))?;
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
-    let tmp_path = temp_config_path(path);
+    let guard = PairTargetGuard::new(&|| Ok(()));
+    let (tmp_path, mut file) =
+        acquire_fresh_config_stage(path, &guard).map_err(ordinary_staging_error)?;
 
     let write_result = (|| -> Result<(), String> {
-        let mut file = std::fs::File::create(&tmp_path)
-            .map_err(|e| format!("Failed to create temp config {}: {}", tmp_path.display(), e))?;
         file.write_all(bytes)
             .map_err(|e| format!("Failed to write temp config {}: {}", tmp_path.display(), e))?;
         file.flush()
@@ -339,6 +340,7 @@ where
         file.sync_all()
             .map_err(|e| format!("Failed to sync temp config {}: {}", tmp_path.display(), e))
     })();
+    drop(file);
     if let Err(e) = write_result {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
@@ -910,23 +912,81 @@ fn publish_prepared_pair_image(
     before: &PhysicalState,
     after: &PhysicalState,
 ) -> Result<(), PreparedPairError> {
+    publish_prepared_pair_image_guarded(path, before, after, &PairTargetGuard::new(&|| Ok(())))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn publish_prepared_pair_image_guarded(
+    path: &Path,
+    before: &PhysicalState,
+    after: &PhysicalState,
+    guard: &PairTargetGuard<'_>,
+) -> Result<(), PreparedPairError> {
+    publish_prepared_pair_image_with_report(
+        path,
+        before,
+        after,
+        guard,
+        &log_unverified_cleanup_refusal,
+    )
+}
+
+fn publish_prepared_pair_image_with_report(
+    path: &Path,
+    before: &PhysicalState,
+    after: &PhysicalState,
+    guard: &PairTargetGuard<'_>,
+    report_cleanup_refusal: &dyn Fn(&PreparedPairError, &PreparedPairError),
+) -> Result<(), PreparedPairError> {
+    publish_prepared_pair_image_with_io(
+        path,
+        before,
+        after,
+        guard,
+        report_cleanup_refusal,
+        &mut || next_staging_sequence(&STAGING_SEQUENCE),
+        &|file, bytes| {
+            file.write_all(bytes)
+                .map_err(|e| PreparedPairError::Io(e.to_string()))
+        },
+    )
+}
+
+fn publish_prepared_pair_image_with_io(
+    path: &Path,
+    before: &PhysicalState,
+    after: &PhysicalState,
+    guard: &PairTargetGuard<'_>,
+    report_cleanup_refusal: &dyn Fn(&PreparedPairError, &PreparedPairError),
+    next: &mut dyn FnMut() -> Result<u64, PreparedPairError>,
+    write: &dyn Fn(&mut std::fs::File, &[u8]) -> Result<(), PreparedPairError>,
+) -> Result<(), PreparedPairError> {
     let PhysicalState::Bytes { bytes, .. } = after else {
         return Err(PreparedPairError::InvalidPlan("PAIR never deletes a side"));
     };
-    let tmp = temp_config_path(path);
+    guard.check()?;
+    // Cleanup ownership begins only after exclusive acquisition succeeds.
+    let (tmp, mut file) = acquire_fresh_config_stage_with_sequence(path, guard, next)?;
     let result = (|| {
-        let mut file =
-            std::fs::File::create(&tmp).map_err(|e| PreparedPairError::Io(e.to_string()))?;
-        file.write_all(bytes)
-            .and_then(|_| file.flush())
-            .and_then(|_| file.sync_all())
+        guard.check()?;
+        write(&mut file, bytes)?;
+        guard.check()?;
+        file.flush()
             .map_err(|e| PreparedPairError::Io(e.to_string()))?;
-        drop(file);
+        guard.check()?;
+        file.sync_all()
+            .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        Ok(())
+    })();
+    drop(file);
+    let result = result.and_then(|_| {
+        guard.check()?;
         if read_config_pair_physical(path)? != *before {
             return Err(PreparedPairError::Conflict);
         }
         if *before == PhysicalState::Absent {
             // Atomic create-if-absent; rename would clobber a racing Unix creator.
+            guard.check()?;
             std::fs::hard_link(&tmp, path).map_err(|e| {
                 if e.kind() == std::io::ErrorKind::AlreadyExists {
                     PreparedPairError::Conflict
@@ -934,10 +994,12 @@ fn publish_prepared_pair_image(
                     PreparedPairError::Io(e.to_string())
                 }
             })?;
+            guard.check()?;
             std::fs::remove_file(&tmp).map_err(|e| PreparedPairError::Io(e.to_string()))?;
         } else {
-            publish_temp_config(&tmp, path).map_err(PreparedPairError::Io)?;
+            publish_temp_config_guarded(&tmp, path, guard)?;
         }
+        guard.check()?;
         #[cfg(not(windows))]
         std::fs::File::open(
             path.parent()
@@ -946,13 +1008,22 @@ fn publish_prepared_pair_image(
         .and_then(|dir| dir.sync_all())
         .map_err(|e| PreparedPairError::Io(e.to_string()))?;
         Ok(())
-    })();
-    if result.is_err() {
-        if let Err(e) = std::fs::remove_file(&tmp) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                log::warn!("[prepared-pair] temporary cleanup failed: {e}");
+    });
+    if let Err(primary) = &result {
+        if !guard.failed.get() {
+            if let Err(refusal) = guard.check() {
+                report_cleanup_refusal(primary, &refusal);
+                return Err(refusal);
+            }
+            if let Err(e) = std::fs::remove_file(&tmp) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!("[prepared-pair] temporary cleanup failed: {e}");
+                }
             }
         }
+    }
+    if result.is_ok() {
+        guard.check()?;
     }
     result
 }
@@ -1403,12 +1474,24 @@ fn publish_pair_reservation(
     physical: &mut PhysicalState,
     packet: &PairReservation,
 ) -> Result<(), PreparedPairError> {
+    publish_pair_reservation_guarded(path, physical, packet, &PairTargetGuard::new(&|| Ok(())))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn publish_pair_reservation_guarded(
+    path: &Path,
+    physical: &mut PhysicalState,
+    packet: &PairReservation,
+    guard: &PairTargetGuard<'_>,
+) -> Result<(), PreparedPairError> {
+    guard.check()?;
     packet.validate()?;
     let mut bytes =
         serde_json::to_vec_pretty(packet).map_err(|e| PreparedPairError::Io(e.to_string()))?;
     bytes.push(b'\n');
-    publish_coordination_bytes(path, physical, &bytes)?;
+    publish_coordination_bytes_guarded(path, physical, &bytes, guard)?;
     *physical = PhysicalState::from_bytes(bytes);
+    guard.check()?;
     Ok(())
 }
 
@@ -1426,17 +1509,48 @@ pub(crate) fn prepare_and_reserve_config_pair<F>(
 where
     F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
 {
+    prepare_and_reserve_config_pair_guarded(
+        decisions,
+        state,
+        reservation,
+        request,
+        cleanup,
+        mutate,
+        &|| Ok(()),
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn prepare_and_reserve_config_pair_guarded<F>(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    request: &PairReservationRequest,
+    cleanup: Option<ConfigPairCleanup<'_>>,
+    mutate: F,
+    validate: &dyn Fn() -> Result<(), PreparedPairError>,
+) -> Result<(PairReservation, PairReservationRole), PreparedPairError>
+where
+    F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
+{
+    let guard = PairTargetGuard::new(validate);
+    guard.check()?;
     let _writer = ConfigWriterActive::enter("prepare_and_reserve_config_pair")
         .map_err(PreparedPairError::Preparation)?;
     validate_pair_paths(decisions, state, reservation)?;
     let _guard = lock_local_config_writes();
+    guard.check()?;
     let _decisions = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let _state = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let existing = read_pair_reservation(reservation)?;
+    guard.check()?;
     let current = read_pair_tuple(decisions, state)?;
     let before = existing
         .as_ref()
@@ -1451,6 +1565,7 @@ where
         return Err(PreparedPairError::Conflict);
     }
     let plan = prepare_config_pair_plan_inner(before, cleanup, mutate)?;
+    guard.check()?;
     let images = protected_plan(&plan)?;
     let candidate = PairReservation {
         version: 1,
@@ -1485,14 +1600,24 @@ where
             PairReservationRole::Observer
         };
         if role == PairReservationRole::Owner {
-            reconcile_pair_activity(decisions, state, reservation, &mut packet, &mut physical)?;
+            reconcile_pair_activity_guarded(
+                decisions,
+                state,
+                reservation,
+                &mut packet,
+                &mut physical,
+                &guard,
+            )?;
         }
+        guard.check()?;
         packet.recognize(&read_pair_tuple(decisions, state)?)?;
+        guard.check()?;
         return Ok((packet, role));
     }
     candidate.recognize(&current)?;
     let mut physical = PhysicalState::Absent;
-    publish_pair_reservation(reservation, &mut physical, &candidate)?;
+    publish_pair_reservation_guarded(reservation, &mut physical, &candidate, &guard)?;
+    guard.check()?;
     Ok((candidate, PairReservationRole::Owner))
 }
 
@@ -1521,6 +1646,26 @@ fn reconcile_pair_activity(
     packet: &mut PairReservation,
     physical: &mut PhysicalState,
 ) -> Result<(), PreparedPairError> {
+    reconcile_pair_activity_guarded(
+        decisions,
+        state,
+        reservation,
+        packet,
+        physical,
+        &PairTargetGuard::new(&|| Ok(())),
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn reconcile_pair_activity_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    packet: &mut PairReservation,
+    physical: &mut PhysicalState,
+    guard: &PairTargetGuard<'_>,
+) -> Result<(), PreparedPairError> {
+    guard.check()?;
     let Some(intent) = packet.activity_intent.clone() else {
         return Ok(());
     };
@@ -1529,14 +1674,15 @@ fn reconcile_pair_activity(
     let actual = timestamp_physical(&current[1])?;
     if actual == intent.before_timestamp_physical {
         let after = image_with_timestamp(&current[1], Some(intent.after_timestamp.clone()))?;
-        publish_prepared_pair_image(state, &current[1], &after)?;
+        publish_prepared_pair_image_guarded(state, &current[1], &after, guard)?;
     } else if actual != TimestampPhysical::Value(intent.after_timestamp.clone()) {
         return Err(PreparedPairError::Conflict);
     }
     packet.timestamp_floor = Some(intent.after_timestamp);
     packet.activity_intent = None;
+    guard.check()?;
     packet.recognize(&read_pair_tuple(decisions, state)?)?;
-    publish_pair_reservation(reservation, physical, packet)
+    publish_pair_reservation_guarded(reservation, physical, packet, guard)
 }
 
 fn land_pair_activity(
@@ -1605,25 +1751,52 @@ pub(crate) fn verify_reserved_config_pair(
     operation_id: &str,
     plan_digest: &str,
 ) -> Result<[PhysicalState; 2], PreparedPairError> {
+    verify_reserved_config_pair_guarded(
+        decisions,
+        state,
+        reservation,
+        operation_id,
+        plan_digest,
+        &|| Ok(()),
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn verify_reserved_config_pair_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    plan_digest: &str,
+    validate: &dyn Fn() -> Result<(), PreparedPairError>,
+) -> Result<[PhysicalState; 2], PreparedPairError> {
+    let guard = PairTargetGuard::new(validate);
+    guard.check()?;
     let _writer = ConfigWriterActive::enter("verify_reserved_config_pair")
         .map_err(PreparedPairError::Preparation)?;
     validate_pair_paths(decisions, state, reservation)?;
     let _guard = lock_local_config_writes();
+    guard.check()?;
     let _decisions = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let _state = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let (packet, _) = read_pair_reservation(reservation)?.ok_or(PreparedPairError::Conflict)?;
     validate_pair_binding(decisions, state, &packet)?;
     if packet.operation_id != operation_id || packet.plan_digest != plan_digest {
         return Err(PreparedPairError::Conflict);
     }
+    guard.check()?;
     let current = read_pair_tuple(decisions, state)?;
     if packet.recognize(&current)? != 4 || packet.activity_intent.is_some() {
         return Err(PreparedPairError::Pending);
     }
+    guard.check()?;
     Ok(current)
 }
 
@@ -1635,26 +1808,62 @@ fn execute_reserved_config_pair_with_stage(
     instance_id: &str,
     on_stage: &dyn Fn(usize) -> Result<(), PreparedPairError>,
 ) -> Result<(), PreparedPairError> {
+    execute_reserved_config_pair_with_validation(
+        decisions,
+        state,
+        reservation,
+        operation_id,
+        instance_id,
+        on_stage,
+        &|| Ok(()),
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn execute_reserved_config_pair_with_validation(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    instance_id: &str,
+    on_stage: &dyn Fn(usize) -> Result<(), PreparedPairError>,
+    validate: &dyn Fn() -> Result<(), PreparedPairError>,
+) -> Result<(), PreparedPairError> {
+    let guard = PairTargetGuard::new(validate);
+    guard.check()?;
     let _writer = ConfigWriterActive::enter("execute_reserved_config_pair")
         .map_err(PreparedPairError::Preparation)?;
     validate_pair_paths(decisions, state, reservation)?;
     let _guard = lock_local_config_writes();
+    guard.check()?;
     let _decisions = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let _state = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let (mut packet, mut physical) =
         read_pair_reservation(reservation)?.ok_or(PreparedPairError::Conflict)?;
     validate_pair_binding(decisions, state, &packet)?;
     if packet.operation_id != operation_id || packet.owner_instance_id != instance_id {
         return Err(PreparedPairError::Conflict);
     }
-    reconcile_pair_activity(decisions, state, reservation, &mut packet, &mut physical)?;
+    reconcile_pair_activity_guarded(
+        decisions,
+        state,
+        reservation,
+        &mut packet,
+        &mut physical,
+        &guard,
+    )?;
+    guard.check()?;
     let start = packet.recognize(&read_pair_tuple(decisions, state)?)?;
-    confirm_pair_activity_floor(state, reservation, &mut packet, &mut physical)?;
+    confirm_pair_activity_floor_guarded(state, reservation, &mut packet, &mut physical, &guard)?;
     for stage in start + 1..5 {
+        guard.check()?;
         let current = read_pair_tuple(decisions, state)?;
         let observed = packet.recognize(&current)?;
         if observed >= stage {
@@ -1682,18 +1891,27 @@ fn execute_reserved_config_pair_with_stage(
             if after == PhysicalState::Absent {
                 return Err(PreparedPairError::Conflict);
             }
-            publish_prepared_pair_image(path, &current[side], &after)?;
+            publish_prepared_pair_image_guarded(path, &current[side], &after, &guard)?;
+            guard.check()?;
             if packet.recognize(&read_pair_tuple(decisions, state)?)? < stage {
                 return Err(PreparedPairError::Conflict);
             }
-            confirm_pair_activity_floor(state, reservation, &mut packet, &mut physical)?;
+            confirm_pair_activity_floor_guarded(
+                state,
+                reservation,
+                &mut packet,
+                &mut physical,
+                &guard,
+            )?;
             on_stage(stage)?;
         }
     }
-    confirm_pair_activity_floor(state, reservation, &mut packet, &mut physical)?;
+    confirm_pair_activity_floor_guarded(state, reservation, &mut packet, &mut physical, &guard)?;
+    guard.check()?;
     if packet.recognize(&read_pair_tuple(decisions, state)?)? != 4 {
         return Err(PreparedPairError::Conflict);
     }
+    guard.check()?;
     Ok(())
 }
 
@@ -1703,13 +1921,31 @@ fn confirm_pair_activity_floor(
     packet: &mut PairReservation,
     physical: &mut PhysicalState,
 ) -> Result<(), PreparedPairError> {
+    confirm_pair_activity_floor_guarded(
+        state,
+        reservation,
+        packet,
+        physical,
+        &PairTargetGuard::new(&|| Ok(())),
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn confirm_pair_activity_floor_guarded(
+    state: &Path,
+    reservation: &Path,
+    packet: &mut PairReservation,
+    physical: &mut PhysicalState,
+    guard: &PairTargetGuard<'_>,
+) -> Result<(), PreparedPairError> {
+    guard.check()?;
     let floor = merge_monotonic_activity(&[
         packet.timestamp_floor.clone(),
         timestamp_value(&read_config_pair_physical(state)?)?,
     ])?;
     if floor != packet.timestamp_floor {
         packet.timestamp_floor = floor;
-        publish_pair_reservation(reservation, physical, packet)?;
+        publish_pair_reservation_guarded(reservation, physical, packet, guard)?;
     }
     Ok(())
 }
@@ -1844,23 +2080,45 @@ pub(crate) fn release_reserved_config_pair(
     instance_id: &str,
     proof: &PairCompleteProof,
 ) -> Result<[PhysicalState; 2], PreparedPairError> {
+    release_reserved_config_pair_guarded(decisions, state, reservation, instance_id, proof, &|| {
+        Ok(())
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn release_reserved_config_pair_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    instance_id: &str,
+    proof: &PairCompleteProof,
+    validate: &dyn Fn() -> Result<(), PreparedPairError>,
+) -> Result<[PhysicalState; 2], PreparedPairError> {
+    let guard = PairTargetGuard::new(validate);
+    guard.check()?;
     let _writer = ConfigWriterActive::enter("release_reserved_config_pair")
         .map_err(PreparedPairError::Preparation)?;
     validate_pair_paths(decisions, state, reservation)?;
     let _guard = lock_local_config_writes();
+    guard.check()?;
     let _decisions = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let _state = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     let _reservation = acquire_config_file_write_lock(reservation, CONFIG_LOCK_TIMEOUT)
         .map_err(PreparedPairError::Io)?;
+    guard.check()?;
     if proof.owner_instance_id != instance_id
         || proof.target_id != pair_target_identity(decisions, state)?
     {
         return Err(PreparedPairError::Conflict);
     }
     let Some((mut packet, mut physical)) = read_pair_reservation(reservation)? else {
-        return read_pair_tuple(decisions, state);
+        let current = read_pair_tuple(decisions, state)?;
+        guard.check()?;
+        return Ok(current);
     };
     validate_pair_binding(decisions, state, &packet)?;
     if packet.operation_id != proof.operation_id
@@ -1870,12 +2128,22 @@ pub(crate) fn release_reserved_config_pair(
     {
         return Err(PreparedPairError::Conflict);
     }
-    reconcile_pair_activity(decisions, state, reservation, &mut packet, &mut physical)?;
+    reconcile_pair_activity_guarded(
+        decisions,
+        state,
+        reservation,
+        &mut packet,
+        &mut physical,
+        &guard,
+    )?;
+    guard.check()?;
     let current = read_pair_tuple(decisions, state)?;
     if packet.recognize(&current)? != 4 {
         return Err(PreparedPairError::Conflict);
     }
+    guard.check()?;
     std::fs::remove_file(reservation).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    guard.check()?;
     #[cfg(not(windows))]
     std::fs::File::open(
         reservation
@@ -1884,6 +2152,7 @@ pub(crate) fn release_reserved_config_pair(
     )
     .and_then(|directory| directory.sync_all())
     .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+    guard.check()?;
     Ok(current)
 }
 
@@ -1895,6 +2164,17 @@ pub(crate) fn publish_coordination_bytes(
     before: &PhysicalState,
     bytes: &[u8],
 ) -> Result<(), PreparedPairError> {
+    publish_coordination_bytes_guarded(path, before, bytes, &PairTargetGuard::new(&|| Ok(())))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn publish_coordination_bytes_guarded(
+    path: &Path,
+    before: &PhysicalState,
+    bytes: &[u8],
+    guard: &PairTargetGuard<'_>,
+) -> Result<(), PreparedPairError> {
+    guard.check()?;
     let after = PhysicalState::from_bytes(bytes.to_vec());
     after.map()?;
     if read_config_pair_physical(path)? != *before {
@@ -1903,7 +2183,7 @@ pub(crate) fn publish_coordination_bytes(
     if before == &after {
         return Ok(());
     }
-    publish_prepared_pair_image(path, before, &after)
+    publish_prepared_pair_image_guarded(path, before, &after, guard)
 }
 
 /// #2786 (C1) - one side of the pair as a map: absent is empty, anything that
@@ -1948,10 +2228,10 @@ fn publish_pair_side(path: &Path, map: &Map<String, Value>) -> Result<(), String
         .map_err(|e| format!("Failed to serialize {}: {}", path.display(), e))?;
     json.push('\n');
 
-    let tmp_path = temp_config_path(path);
+    let guard = PairTargetGuard::new(&|| Ok(()));
+    let (tmp_path, mut file) =
+        acquire_fresh_config_stage(path, &guard).map_err(ordinary_staging_error)?;
     let write_result = (|| -> Result<(), String> {
-        let mut file = std::fs::File::create(&tmp_path)
-            .map_err(|e| format!("Failed to create temp config {}: {}", tmp_path.display(), e))?;
         file.write_all(json.as_bytes())
             .map_err(|e| format!("Failed to write temp config {}: {}", tmp_path.display(), e))?;
         file.flush()
@@ -1959,6 +2239,7 @@ fn publish_pair_side(path: &Path, map: &Map<String, Value>) -> Result<(), String
         file.sync_all()
             .map_err(|e| format!("Failed to sync temp config {}: {}", tmp_path.display(), e))
     })();
+    drop(file);
     if let Err(e) = write_result {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
@@ -1970,6 +2251,81 @@ fn publish_pair_side(path: &Path, map: &Map<String, Value>) -> Result<(), String
     Ok(())
 }
 
+const MAX_STAGING_ATTEMPTS: usize = 64;
+static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_staging_sequence(
+    sequence: &std::sync::atomic::AtomicU64,
+) -> Result<u64, PreparedPairError> {
+    sequence
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |value| value.checked_add(1),
+        )
+        .map_err(|_| PreparedPairError::Io("temporary staging sequence exhausted".into()))
+}
+
+fn fresh_config_stage_path(path: &Path, sequence: u64) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.json");
+    path.with_file_name(format!(".{}.{}.{}.tmp", name, std::process::id(), sequence))
+}
+
+fn acquire_fresh_config_stage(
+    path: &Path,
+    guard: &PairTargetGuard<'_>,
+) -> Result<(PathBuf, std::fs::File), PreparedPairError> {
+    acquire_fresh_config_stage_with_sequence(path, guard, &mut || {
+        next_staging_sequence(&STAGING_SEQUENCE)
+    })
+}
+
+// The private seam selects only a sequence; it cannot supply another path or
+// relax validation, exclusivity, collision handling or the attempt bound.
+fn acquire_fresh_config_stage_with_sequence(
+    path: &Path,
+    guard: &PairTargetGuard<'_>,
+    next: &mut dyn FnMut() -> Result<u64, PreparedPairError>,
+) -> Result<(PathBuf, std::fs::File), PreparedPairError> {
+    for _ in 0..MAX_STAGING_ATTEMPTS {
+        guard.check()?;
+        let candidate = fresh_config_stage_path(path, next()?);
+        guard.check()?;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(PreparedPairError::Io(format!(
+                    "Failed to acquire fresh temp config {}: {}",
+                    candidate.display(),
+                    error,
+                )))
+            }
+        }
+    }
+    Err(PreparedPairError::Io(format!(
+        "Fresh temp config allocation exhausted {} attempts for {}",
+        MAX_STAGING_ATTEMPTS,
+        path.display(),
+    )))
+}
+
+fn ordinary_staging_error(error: PreparedPairError) -> String {
+    match error {
+        PreparedPairError::Io(reason) => reason,
+        other => other.to_string(),
+    }
+}
+
+// Legacy names exist only as detached-debris regression fixture inputs.
+#[cfg(test)]
 fn temp_config_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
@@ -2047,10 +2403,42 @@ fn format_publish_error(path: &Path, tmp_path: &Path, err: &std::io::Error) -> S
 
 #[cfg(not(windows))]
 fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
+    ordinary_publish_result(publish_temp_config_guarded(
+        tmp_path,
+        path,
+        &PairTargetGuard::new(&|| Ok(())),
+    ))
+}
+
+#[cfg(not(windows))]
+fn publish_temp_config_guarded(
+    tmp_path: &Path,
+    path: &Path,
+    guard: &PairTargetGuard<'_>,
+) -> Result<(), PreparedPairError> {
+    publish_temp_config_retry_with_attempt(
+        tmp_path,
+        path,
+        guard,
+        &mut || std::fs::rename(tmp_path, path),
+        &|duration| std::thread::sleep(duration),
+    )
+}
+
+#[cfg(not(windows))]
+fn publish_temp_config_retry_with_attempt(
+    tmp_path: &Path,
+    path: &Path,
+    guard: &PairTargetGuard<'_>,
+    publish_attempt: &mut dyn FnMut() -> Result<(), std::io::Error>,
+    backoff: &dyn Fn(std::time::Duration),
+) -> Result<(), PreparedPairError> {
+    guard.check()?;
     let start = std::time::Instant::now();
     let mut last_err: Option<std::io::Error> = None;
     for attempt in 0..PUBLISH_ATTEMPTS {
-        match std::fs::rename(tmp_path, path) {
+        guard.check()?;
+        match publish_attempt() {
             Ok(()) => {
                 if attempt > 0 {
                     log::info!(
@@ -2065,7 +2453,9 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
             }
             Err(e) => {
                 if !is_transient_publish_error(&e) {
-                    return Err(format_publish_error(path, tmp_path, &e));
+                    return Err(PreparedPairError::Io(format_publish_error(
+                        path, tmp_path, &e,
+                    )));
                 }
                 log::debug!(
                     "[config] publish attempt {}/{} failed: path={} os_error={:?} kind={:?}",
@@ -2076,8 +2466,8 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
                     e.kind()
                 );
                 last_err = Some(e);
-                if let Some(backoff) = PUBLISH_BACKOFFS_MS.get(attempt as usize) {
-                    std::thread::sleep(std::time::Duration::from_millis(*backoff));
+                if let Some(delay) = PUBLISH_BACKOFFS_MS.get(attempt as usize) {
+                    backoff(std::time::Duration::from_millis(*delay));
                 }
             }
         }
@@ -2091,7 +2481,9 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
         e.raw_os_error(),
         start.elapsed()
     );
-    Err(format_publish_error(path, tmp_path, &e))
+    Err(PreparedPairError::Io(format_publish_error(
+        path, tmp_path, &e,
+    )))
 }
 
 /// #2378 - NUL-terminated UTF-16 for a `ReplaceFileW` argument. Raw Win32
@@ -2172,22 +2564,55 @@ fn publish_path_wide(path: &Path) -> Vec<u16> {
 
 #[cfg(windows)]
 fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
-    if !path.exists() {
-        return std::fs::rename(tmp_path, path).map_err(|e| {
-            format!(
-                "Failed to publish {} as {}: {}",
-                tmp_path.display(),
-                path.display(),
-                e
-            )
-        });
-    }
+    ordinary_publish_result(publish_temp_config_guarded(
+        tmp_path,
+        path,
+        &PairTargetGuard::new(&|| Ok(())),
+    ))
+}
 
-    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+#[cfg(windows)]
+fn publish_temp_config_guarded(
+    tmp_path: &Path,
+    path: &Path,
+    guard: &PairTargetGuard<'_>,
+) -> Result<(), PreparedPairError> {
+    guard.check()?;
+    if !path.exists() {
+        guard.check()?;
+        return std::fs::rename(tmp_path, path)
+            .map_err(|e| {
+                format!(
+                    "Failed to publish {} as {}: {}",
+                    tmp_path.display(),
+                    path.display(),
+                    e
+                )
+            })
+            .map_err(PreparedPairError::Io);
+    }
 
     let path_wide = publish_path_wide(path);
     let tmp_wide = publish_path_wide(tmp_path);
 
+    publish_temp_config_retry_with_attempt(
+        tmp_path,
+        path,
+        guard,
+        &mut || replace_temp_config_once(&path_wide, &tmp_wide),
+        &|duration| std::thread::sleep(duration),
+    )
+}
+
+#[cfg(windows)]
+fn publish_temp_config_retry_with_attempt(
+    tmp_path: &Path,
+    path: &Path,
+    guard: &PairTargetGuard<'_>,
+    publish_attempt: &mut dyn FnMut() -> Result<(), std::io::Error>,
+    backoff: &dyn Fn(std::time::Duration),
+) -> Result<(), PreparedPairError> {
+    guard.check()?;
     // #537 - ReplaceFileW publishes the temp file over the existing
     // config.json. It returns ERROR_UNABLE_TO_REMOVE_REPLACED (1175) and
     // friends whenever another handle holds the destination for even an
@@ -2196,17 +2621,9 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
     let start = std::time::Instant::now();
     let mut last_err: Option<std::io::Error> = None;
     for attempt in 0..PUBLISH_ATTEMPTS {
-        let ok = unsafe {
-            ReplaceFileW(
-                path_wide.as_ptr(),
-                tmp_wide.as_ptr(),
-                std::ptr::null(),
-                REPLACEFILE_WRITE_THROUGH,
-                std::ptr::null(),
-                std::ptr::null(),
-            )
-        };
-        if ok != 0 {
+        guard.check()?;
+        let outcome = publish_attempt();
+        if outcome.is_ok() {
             if attempt > 0 {
                 log::info!(
                     "[config] ReplaceFileW succeeded after retry: path={} attempt={}/{} duration={:?}",
@@ -2219,9 +2636,11 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
             return Ok(());
         }
 
-        let e = std::io::Error::last_os_error();
+        let e = outcome.expect_err("successful attempt returned above");
         if !is_transient_publish_error(&e) {
-            return Err(format_publish_error(path, tmp_path, &e));
+            return Err(PreparedPairError::Io(format_publish_error(
+                path, tmp_path, &e,
+            )));
         }
         log::debug!(
             "[config] ReplaceFileW attempt {}/{} failed: path={} os_error={:?}",
@@ -2231,8 +2650,8 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
             e.raw_os_error()
         );
         last_err = Some(e);
-        if let Some(backoff) = PUBLISH_BACKOFFS_MS.get(attempt as usize) {
-            std::thread::sleep(std::time::Duration::from_millis(*backoff));
+        if let Some(delay) = PUBLISH_BACKOFFS_MS.get(attempt as usize) {
+            backoff(std::time::Duration::from_millis(*delay));
         }
     }
 
@@ -2244,7 +2663,9 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
         e.raw_os_error(),
         start.elapsed()
     );
-    Err(format_publish_error(path, tmp_path, &e))
+    Err(PreparedPairError::Io(format_publish_error(
+        path, tmp_path, &e,
+    )))
 }
 
 #[cfg(test)]
@@ -2624,30 +3045,41 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
     /// which would leave the tie this test is named for untied; the predicate
     /// lives next to the pattern and a registry test pins their agreement.
     ///
-    /// `temp_config_path` stays private and `write_file_atomic` is untouched:
-    /// this reads what the writer would produce, it does not widen anything.
+    /// The private allocator actually creates the stage; this fixture
+    /// verifies the returned name against the existing artifact policy.
     #[test]
     fn atomic_temp_names_stay_inside_the_ignored_glob() {
         use crate::config::instance_artifacts::matches_atomic_write_tmp_glob;
-
-        let mut targets: Vec<PathBuf> = ["settings.json", "sessions", "a.b.c.json"]
-            .iter()
-            .map(|name| Path::new("instance").join(name))
-            .collect();
-        // The `config.json` fallback branch of `temp_config_path`.
-        targets.push(Path::new("instance").join(non_utf8_file_name()));
-
+        let root = tempfile::tempdir().unwrap();
+        let mut targets: Vec<PathBuf> = [
+            "settings.json",
+            "sessions",
+            "a.b.c.json",
+            crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME,
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME,
+        ]
+        .iter()
+        .map(|name| root.path().join(name))
+        .collect();
+        targets.push(root.path().join(non_utf8_file_name()));
         for target in targets {
-            let temp = super::temp_config_path(&target);
-            let produced = temp
-                .file_name()
-                .and_then(|name| name.to_str())
-                .expect("the temp name is composed by this module and is always UTF-8");
+            let guard = super::PairTargetGuard::new(&|| Ok(()));
+            let (temp, file) = super::acquire_fresh_config_stage(&target, &guard).unwrap();
+            drop(file);
+            let produced = temp.file_name().unwrap().to_str().unwrap();
             assert!(
                 matches_atomic_write_tmp_glob(produced),
-                "temp_config_path produced {produced:?} for {target:?}, and the instance \
-                 policy would leave it visible in git status"
+                "{produced:?} for {target:?}"
             );
+            if target.file_name().unwrap()
+                == crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME
+                || target.file_name().unwrap()
+                    == crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME
+            {
+                let prefix = format!(".{}.", target.file_name().unwrap().to_str().unwrap());
+                assert!(produced.starts_with(&prefix) && produced.ends_with(".tmp"));
+            }
+            assert!(temp.is_file());
         }
     }
 
@@ -3258,9 +3690,14 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
         }
         std::fs::create_dir_all(&dir).expect("create long dir");
         let dest = dir.join("config.json");
-        let tmp = dir.join(".config.json.1.tmp");
+        use std::io::Write;
         std::fs::write(&dest, b"old content").expect("write dest");
-        std::fs::write(&tmp, b"new content").expect("write tmp");
+        let guard = super::PairTargetGuard::new(&|| Ok(()));
+        let (tmp, mut file) = super::acquire_fresh_config_stage(&dest, &guard).unwrap();
+        file.write_all(b"new content").unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+        drop(file);
 
         for p in [&dest, &tmp] {
             match p.components().next() {
@@ -3379,30 +3816,29 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
     #[test]
     fn the_state_file_is_written_before_the_decisions_file() {
         let (_temp, decisions, state) = pair_fixture(Some(r#"{"a":1}"#), None);
-        // The decisions write fails: its temp path is occupied by a directory.
-        std::fs::create_dir(temp_config_path(&decisions)).expect("occupy decisions temp");
-
-        let err = update_config_pair(
+        let debris = temp_config_path(&decisions);
+        std::fs::create_dir(&debris).unwrap();
+        let stages = std::cell::RefCell::new(Vec::new());
+        update_config_pair(
             &decisions,
             &state,
             &PAIR_STATE_KEYS,
             None,
-            &no_stage,
+            &|stage| stages.borrow_mut().push(stage.to_string()),
             |d, s| {
                 d.insert("a".to_string(), json!(2));
                 s.insert("tooling".to_string(), json!({"lastCodingAgent": "claude"}));
                 Ok(())
             },
         )
-        .expect_err("the decisions write must fail");
-
-        assert!(err.contains("temp config"), "{err}");
-        assert!(
-            state.is_file(),
-            "the state file must already be written: {err}"
-        );
+        .unwrap();
         assert_eq!(read_value(&state)["tooling"]["lastCodingAgent"], "claude");
-        assert_eq!(std::fs::read_to_string(&decisions).unwrap(), r#"{"a":1}"#);
+        assert_eq!(read_value(&decisions)["a"], 2);
+        assert_eq!(
+            stages.into_inner(),
+            vec!["after_caller_state_publish", "after_caller_decisions_write"]
+        );
+        assert!(debris.is_dir());
     }
 
     #[test]
@@ -3943,28 +4379,26 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
     }
 
     #[test]
-    fn prepared_publish_failure_retains_reachable_stage_and_releases_locks() {
+    fn prepared_occupied_legacy_stage_does_not_block_and_releases_locks() {
+        // Occupied legacy staging is debris, no longer an injected IO failure.
         let plan = prepared_fixture_plan();
         let (_temp, d, s) = pair_fixture(None, None);
         prepared_install(&d, &plan.stages[0][0]);
         prepared_install(&s, &plan.stages[0][1]);
-        std::fs::create_dir(temp_config_path(&d)).unwrap();
-        assert!(matches!(
-            execute_prepared_config_pair(&d, &s, &plan),
-            Err(PreparedPairError::Io(_))
-        ));
+        let debris = temp_config_path(&d);
+        std::fs::create_dir(&debris).unwrap();
+        execute_prepared_config_pair(&d, &s, &plan).unwrap();
         assert_eq!(
             [
                 read_config_pair_physical(&d).unwrap(),
                 read_config_pair_physical(&s).unwrap()
             ],
-            plan.stages[1]
+            plan.stages[4]
         );
+        assert!(debris.is_dir());
         for path in [&d, &s] {
             drop(acquire_config_file_write_lock(path, Duration::ZERO).unwrap());
         }
-        std::fs::remove_dir(temp_config_path(&d)).unwrap();
-        execute_prepared_config_pair(&d, &s, &plan).unwrap();
     }
 
     #[test]
@@ -3976,7 +4410,13 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
             Err(PreparedPairError::Conflict)
         );
         assert_eq!(std::fs::read(&d).unwrap(), b"{\"other\":1}");
-        assert!(!temp_config_path(&d).exists());
+        assert!(std::fs::read_dir(d.parent().unwrap())
+            .unwrap()
+            .all(|entry| entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_none_or(|extension| extension != "tmp")));
     }
 
     #[test]
@@ -4120,6 +4560,336 @@ stderr:
 #[cfg(test)]
 mod pair_activity_tests {
     use super::*;
+    // Each fixture owns its temporary directory. Production never scans debris.
+    fn p22_stages(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut stages: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension().is_some_and(|extension| extension == "tmp") && path.is_file()
+            })
+            .map(|path| {
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        stages.sort_by(|left, right| left.0.cmp(&right.0));
+        stages
+    }
+
+    fn p22_filled_stage(target: &Path, bytes: &[u8]) -> PathBuf {
+        let guard = PairTargetGuard::new(&|| Ok(()));
+        let (stage, mut file) = acquire_fresh_config_stage(target, &guard).unwrap();
+        file.write_all(bytes).unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        stage
+    }
+
+    fn p22_next_writer(mode: usize, target: &Path) {
+        match mode {
+            0 => {
+                update_config_json_object(target, true, |map| {
+                    map.insert("value".into(), json!(2));
+                    Ok(())
+                })
+                .unwrap();
+            }
+            1 => write_file_atomic(target, b"{\"value\":2}").unwrap(),
+            2 => publish_pair_side(target, json!({"value":2}).as_object().unwrap()).unwrap(),
+            3 => publish_prepared_pair_image(
+                target,
+                &read_config_pair_physical(target).unwrap(),
+                &PhysicalState::from_bytes(b"{\"value\":2}".to_vec()),
+            )
+            .unwrap(),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(target).unwrap()).unwrap(),
+            json!({"value":2})
+        );
+    }
+
+    #[test]
+    fn p22_all_four_next_writers_leave_detached_legacy_debris_unchanged() {
+        for mode in 0..4 {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("config.json");
+            let debris = temp_config_path(&target);
+            std::fs::write(&debris, b"detached stale bytes").unwrap();
+            std::fs::write(&target, b"{\"value\":1}").unwrap();
+            p22_next_writer(mode, &target);
+            assert_eq!(std::fs::read(&debris).unwrap(), b"detached stale bytes");
+            assert_eq!(
+                p22_stages(root.path()),
+                vec![(debris, b"detached stale bytes".to_vec())]
+            );
+        }
+    }
+
+    #[test]
+    fn p22_all_four_next_writers_preserve_refused_absent_publish_hardlink_alias() {
+        for mode in 0..4 {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("config.json");
+            let validate = || {
+                if target.exists() {
+                    Err(PreparedPairError::Conflict)
+                } else {
+                    Ok(())
+                }
+            };
+            let guard = PairTargetGuard::new(&validate);
+            let first = PhysicalState::from_bytes(b"{\"value\":1}".to_vec());
+            assert_eq!(
+                publish_prepared_pair_image_guarded(
+                    &target,
+                    &PhysicalState::Absent,
+                    &first,
+                    &guard
+                ),
+                Err(PreparedPairError::Conflict)
+            );
+            let stages = p22_stages(root.path());
+            assert_eq!(stages.len(), 1);
+            let alias = stages[0].0.clone();
+            assert_eq!(std::fs::read(&target).unwrap(), stages[0].1);
+            p22_next_writer(mode, &target);
+            assert_eq!(std::fs::read(&alias).unwrap(), b"{\"value\":1}");
+            assert_eq!(p22_stages(root.path()), stages);
+        }
+    }
+
+    #[test]
+    fn p22_atomic_candidate_collisions_regular_directory_hardlink_and_race() {
+        for kind in 0..4 {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("config.json");
+            let occupied = fresh_config_stage_path(&target, 0);
+            let linked = root.path().join("linked-original");
+            match kind {
+                0 => std::fs::write(&occupied, b"occupied").unwrap(),
+                1 => std::fs::create_dir(&occupied).unwrap(),
+                2 => {
+                    std::fs::write(&linked, b"occupied").unwrap();
+                    std::fs::hard_link(&linked, &occupied).unwrap();
+                }
+                3 => {}
+                _ => unreachable!(),
+            }
+            let mut calls = 0;
+            let mut next = || {
+                let value = calls;
+                calls += 1;
+                if kind == 3 && value == 0 {
+                    // Competitor creates the candidate before our atomic open.
+                    std::fs::write(&occupied, b"occupied").unwrap();
+                }
+                Ok(value)
+            };
+            let guard = PairTargetGuard::new(&|| Ok(()));
+            match acquire_fresh_config_stage_with_sequence(&target, &guard, &mut next) {
+                Ok((stage, mut file)) => {
+                    assert_eq!(stage, fresh_config_stage_path(&target, 1));
+                    assert_eq!(calls, 2);
+                    file.write_all(b"owned").unwrap();
+                    drop(file);
+                }
+                Err(PreparedPairError::Io(reason)) if kind == 1 => {
+                    // Some hosts report a directory as a non-AlreadyExists
+                    // open error; that precise error must surface immediately.
+                    assert!(reason.contains(&occupied.display().to_string()));
+                    assert_eq!(calls, 1);
+                }
+                other => panic!("unexpected collision result: {other:?}"),
+            }
+            if kind == 1 {
+                assert!(occupied.is_dir());
+            } else {
+                assert_eq!(std::fs::read(&occupied).unwrap(), b"occupied");
+            }
+            if kind == 2 {
+                assert_eq!(std::fs::read(linked).unwrap(), b"occupied");
+            }
+        }
+    }
+
+    #[test]
+    fn p22_exact_64_attempt_exhaustion_never_cleans_unacquired_candidates() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("config.json");
+        for sequence in 0..MAX_STAGING_ATTEMPTS as u64 {
+            std::fs::write(fresh_config_stage_path(&target, sequence), b"occupied").unwrap();
+        }
+        let original = p22_stages(root.path());
+        let mut calls = 0;
+        let mut next = || {
+            let value = calls;
+            calls += 1;
+            Ok(value)
+        };
+        let guard = PairTargetGuard::new(&|| Ok(()));
+        let result = publish_prepared_pair_image_with_io(
+            &target,
+            &PhysicalState::Absent,
+            &PhysicalState::from_bytes(b"{}".to_vec()),
+            &guard,
+            &|_, _| panic!("no cleanup diagnostic without acquisition"),
+            &mut next,
+            &|_, _| panic!("no write without acquisition"),
+        );
+        assert!(
+            matches!(result, Err(PreparedPairError::Io(reason)) if reason.contains("64 attempts"))
+        );
+        assert_eq!(calls, 64);
+        assert_eq!(p22_stages(root.path()), original);
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn p22_sequence_overflow_never_wraps_or_creates_a_candidate() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let sequence = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(next_staging_sequence(&sequence), Ok(u64::MAX - 1));
+        assert_eq!(sequence.load(Ordering::Relaxed), u64::MAX);
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("config.json");
+        let guard = PairTargetGuard::new(&|| Ok(()));
+        assert!(matches!(
+            acquire_fresh_config_stage_with_sequence(&target, &guard, &mut || {
+                next_staging_sequence(&sequence)
+            }),
+            Err(PreparedPairError::Io(_))
+        ));
+        assert_eq!(sequence.load(Ordering::Relaxed), u64::MAX);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn p22_allocator_refusal_before_each_candidate_is_sticky() {
+        for cut in 1..=4 {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("config.json");
+            let occupied = fresh_config_stage_path(&target, 0);
+            std::fs::write(&occupied, b"occupied").unwrap();
+            let calls = Cell::new(0);
+            let validate = || {
+                calls.set(calls.get() + 1);
+                if calls.get() == cut {
+                    Err(PreparedPairError::Conflict)
+                } else {
+                    Ok(())
+                }
+            };
+            let guard = PairTargetGuard::new(&validate);
+            let mut sequence = 0;
+            let mut next = || {
+                let value = sequence;
+                sequence += 1;
+                Ok(value)
+            };
+            assert!(matches!(
+                acquire_fresh_config_stage_with_sequence(&target, &guard, &mut next),
+                Err(PreparedPairError::Conflict)
+            ));
+            assert_eq!(guard.check(), Err(PreparedPairError::Conflict));
+            assert_eq!(calls.get(), cut);
+            assert_eq!(
+                p22_stages(root.path()),
+                vec![(occupied, b"occupied".to_vec())]
+            );
+        }
+    }
+
+    #[test]
+    fn p22_fresh_staging_long_paths_all_four_writers() {
+        let root = tempfile::tempdir().unwrap();
+        let mut directory = root.path().to_path_buf();
+        while directory.as_os_str().to_string_lossy().len() <= 300 {
+            directory.push("long-path-component-0123456789");
+        }
+        std::fs::create_dir_all(&directory).unwrap();
+        for mode in 0..4 {
+            let target = directory.join(format!("config-{mode}.json"));
+            std::fs::write(&target, b"{\"value\":1}").unwrap();
+            p22_next_writer(mode, &target);
+        }
+        assert!(p22_stages(&directory).is_empty());
+    }
+
+    #[test]
+    fn p22_noncollision_acquisition_error_is_immediate_and_precise() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("missing-parent").join("config.json");
+        let guard = PairTargetGuard::new(&|| Ok(()));
+        let mut calls = 0;
+        let mut next = || {
+            calls += 1;
+            Ok(0)
+        };
+        let result = publish_prepared_pair_image_with_io(
+            &target,
+            &PhysicalState::Absent,
+            &PhysicalState::from_bytes(b"{}".to_vec()),
+            &guard,
+            &|_, _| panic!("no cleanup without acquisition"),
+            &mut next,
+            &|_, _| panic!("no write without acquisition"),
+        );
+        assert!(matches!(result, Err(PreparedPairError::Io(reason))
+            if reason.contains(&fresh_config_stage_path(&target, 0).display().to_string())));
+        assert_eq!(calls, 1);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn p22_observed_directory_witness_change_after_acquisition_preserves_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("parent");
+        std::fs::create_dir(&directory).unwrap();
+        let witness = directory.join("fixture-directory-witness");
+        std::fs::write(&witness, b"original witness").unwrap();
+        let target = directory.join("config.json");
+        std::fs::write(&target, b"{\"value\":0}").unwrap();
+        let before = read_config_pair_physical(&target).unwrap();
+        let validate = || {
+            if std::fs::read(&witness).unwrap() == b"original witness" {
+                Ok(())
+            } else {
+                Err(PreparedPairError::Conflict)
+            }
+        };
+        let guard = PairTargetGuard::new(&validate);
+        let mut next = || next_staging_sequence(&STAGING_SEQUENCE);
+        let write = |file: &mut std::fs::File, bytes: &[u8]| {
+            file.write_all(bytes).unwrap();
+            // A fixture marker models an observed directory witness. It is
+            // neither production identity proof nor a hostile-host claim.
+            std::fs::write(&witness, b"changed witness").unwrap();
+            Ok(())
+        };
+        assert_eq!(
+            publish_prepared_pair_image_with_io(
+                &target,
+                &before,
+                &PhysicalState::from_bytes(b"{\"value\":1}".to_vec()),
+                &guard,
+                &|_, _| panic!("sticky refusal skips cleanup"),
+                &mut next,
+                &write
+            ),
+            Err(PreparedPairError::Conflict)
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"{\"value\":0}");
+        let stages = p22_stages(&directory);
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].1, b"{\"value\":1}");
+        assert_eq!(guard.check(), Err(PreparedPairError::Conflict));
+        assert_eq!(p22_stages(&directory), stages);
+    }
+
     use serde_json::json;
 
     const T1: &str = "2026-10-08T01:00:00Z";
@@ -4294,15 +5064,15 @@ mod pair_activity_tests {
     }
 
     #[test]
-    fn pair_activity_packet_publication_failure_has_no_marker_or_target_write() {
+    fn pair_activity_occupied_legacy_stage_allows_packet_without_target_write() {
         let f = Fixture::new(false);
         let before = f.tuple();
-        std::fs::create_dir(temp_config_path(&f.r())).unwrap();
-        assert!(matches!(
-            f.reserve(&f.request("C1")),
-            Err(PreparedPairError::Io(_))
-        ));
-        assert!(!f.r().exists());
+        let debris = temp_config_path(&f.r());
+        std::fs::create_dir(&debris).unwrap();
+        let (_, role) = f.reserve(&f.request("C1")).unwrap();
+        assert_eq!(role, PairReservationRole::Owner);
+        assert!(f.r().is_file());
+        assert!(debris.is_dir());
         assert_eq!(f.tuple(), before);
         for path in [f.d(), f.s(), f.r()] {
             drop(acquire_config_file_write_lock(&path, Duration::ZERO).unwrap());
@@ -4804,4 +5574,656 @@ mod pair_activity_tests {
         );
         assert_eq!(timestamp_value(&before[1]).unwrap().as_deref(), Some(T3));
     }
+    // P22: deterministic failure at each reached validation boundary.
+    fn p22_prepare(
+        fixture: &Fixture,
+        request: &PairReservationRequest,
+        validate: &dyn Fn() -> Result<(), PreparedPairError>,
+    ) -> Result<(PairReservation, PairReservationRole), PreparedPairError> {
+        let cleanup = |decisions: &mut Map<String, Value>, state: &mut Map<String, Value>| {
+            decisions.insert("cleanup".into(), json!(1));
+            state.insert("cleanup".into(), json!(1));
+            Ok(())
+        };
+        prepare_and_reserve_config_pair_guarded(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            request,
+            Some(&cleanup),
+            |decisions, state| {
+                decisions.insert("decision".into(), json!(2));
+                state.insert("caller".into(), json!(2));
+                Ok(())
+            },
+            validate,
+        )
+    }
+
+    fn p22_artifacts(
+        fixture: &Fixture,
+    ) -> (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<(String, Vec<u8>)>) {
+        let mut stages = std::fs::read_dir(fixture.root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "tmp"))
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        stages.sort();
+        (
+            std::fs::read(fixture.d()).unwrap(),
+            std::fs::read(fixture.s()).unwrap(),
+            std::fs::read(fixture.r()).ok(),
+            stages,
+        )
+    }
+
+    fn p22_case(mode: usize, stop: Option<usize>) -> (usize, Result<(), PreparedPairError>) {
+        let fixture = Fixture::new(false);
+        let original_request = fixture.request("C1");
+        let mut proof = None;
+        if mode != 0 {
+            p22_prepare(&fixture, &original_request, &|| Ok(())).unwrap();
+        }
+        if [2, 4, 9, 10].contains(&mode) {
+            assert!(fixture
+                .interrupted_activity(T2, "activity_intent_durable")
+                .is_err());
+        }
+        if mode == 5 {
+            let mut state: Value =
+                serde_json::from_slice(&std::fs::read(fixture.s()).unwrap()).unwrap();
+            state["tooling"]["lastAgentMessageAt"] = json!(T3);
+            fixture.write(&fixture.s(), state);
+        }
+        if [6, 7, 8].contains(&mode) {
+            execute_reserved_config_pair(
+                &fixture.d(),
+                &fixture.s(),
+                &fixture.r(),
+                "operation-1",
+                "C1",
+            )
+            .unwrap();
+            if mode == 7 {
+                assert!(fixture
+                    .interrupted_activity(T3, "activity_intent_durable")
+                    .is_err());
+            }
+            proof = Some(
+                PairCompleteProof::from_shared_complete(
+                    &fixture.ledger(),
+                    "operation-1",
+                    &fixture.packet().physical_target_identity,
+                    &json!({"kind":"bytes", "sha256":"b".repeat(64)}),
+                )
+                .unwrap(),
+            );
+            if mode == 8 {
+                release_reserved_config_pair(
+                    &fixture.d(),
+                    &fixture.s(),
+                    &fixture.r(),
+                    "C1",
+                    proof.as_ref().unwrap(),
+                )
+                .unwrap();
+            }
+        }
+        let calls = Cell::new(0);
+        let before_action = p22_artifacts(&fixture);
+        let at_failure = std::cell::RefCell::new(None);
+        let validate = || {
+            calls.set(calls.get() + 1);
+            if stop == Some(calls.get()) {
+                *at_failure.borrow_mut() = Some(p22_artifacts(&fixture));
+                Err(PreparedPairError::Conflict)
+            } else {
+                Ok(())
+            }
+        };
+        let result = match mode {
+            0..=3 | 10 => {
+                let mut request = original_request.clone();
+                if mode == 3 || mode == 10 {
+                    request.owner_instance_id = "C2".into();
+                }
+                p22_prepare(&fixture, &request, &validate).map(|(_, role)| {
+                    assert_eq!(
+                        role,
+                        if mode == 3 || mode == 10 {
+                            PairReservationRole::Observer
+                        } else {
+                            PairReservationRole::Owner
+                        }
+                    );
+                })
+            }
+            4..=5 => execute_reserved_config_pair_guarded(
+                &fixture.d(),
+                &fixture.s(),
+                &fixture.r(),
+                "operation-1",
+                "C1",
+                &validate,
+            ),
+            6 | 9 => verify_reserved_config_pair_guarded(
+                &fixture.d(),
+                &fixture.s(),
+                &fixture.r(),
+                "operation-1",
+                &fixture.packet().plan_digest,
+                &validate,
+            )
+            .map(|_| ()),
+            7..=8 => release_reserved_config_pair_guarded(
+                &fixture.d(),
+                &fixture.s(),
+                &fixture.r(),
+                "C1",
+                proof.as_ref().unwrap(),
+                &validate,
+            )
+            .map(|_| ()),
+            _ => unreachable!(),
+        };
+        if let Some(expected) = at_failure.borrow().as_ref() {
+            assert_eq!(
+                &p22_artifacts(&fixture),
+                expected,
+                "no target, packet or staging mutation after failed validation"
+            );
+            assert_eq!(result, Err(PreparedPairError::Conflict));
+            assert_eq!(Some(calls.get()), stop, "failed guard remains failed");
+        }
+        if [3, 10].contains(&mode) && result.is_ok() {
+            assert_eq!(
+                p22_artifacts(&fixture),
+                before_action,
+                "observer never recovers the owner's packet or activity"
+            );
+        }
+        (calls.get(), result)
+    }
+
+    #[test]
+    fn p22_every_reached_reservation_execution_observer_release_cut() {
+        let mut total_cuts = 0;
+        for mode in 0..11 {
+            let (count, result) = p22_case(mode, None);
+            if mode == 9 {
+                assert_eq!(result, Err(PreparedPairError::Pending));
+            } else {
+                result.unwrap();
+            }
+            assert!(count > 0);
+            for cut in 1..=count {
+                assert_eq!(
+                    p22_case(mode, Some(cut)).1,
+                    Err(PreparedPairError::Conflict)
+                );
+                total_cuts += 1;
+            }
+        }
+        assert!(
+            total_cuts >= 11,
+            "all eleven independently prepared paths ran"
+        );
+    }
+
+    #[test]
+    fn p22_validation_after_mutation_before_first_packet_preserves_original_tuple() {
+        let fixture = Fixture::new(false);
+        let request = fixture.request("C1");
+        let before = fixture.tuple();
+        let mutated = Cell::new(false);
+        let result = prepare_and_reserve_config_pair_guarded(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            &request,
+            None,
+            |decisions, _| {
+                decisions.insert("decision".into(), json!(2));
+                mutated.set(true);
+                Ok(())
+            },
+            &|| {
+                if mutated.get() {
+                    Err(PreparedPairError::Conflict)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(result, Err(PreparedPairError::Conflict));
+        assert_eq!(fixture.tuple(), before);
+        assert!(!fixture.r().exists());
+    }
+
+    #[test]
+    fn p22_publisher_failure_cuts_preserve_staging_and_no_false_rollback() {
+        for absent in [false, true] {
+            let setup = |root: &Path| {
+                let target = root.join("pair-side.json");
+                if !absent {
+                    std::fs::write(&target, b"{\"value\":0}").unwrap();
+                }
+                let before = read_config_pair_physical(&target).unwrap();
+                (target, before)
+            };
+            let root = tempfile::tempdir().unwrap();
+            let (target, before) = setup(root.path());
+            let after = PhysicalState::from_bytes(b"{\"value\":1}".to_vec());
+            let count = Cell::new(0);
+            let allow = || {
+                count.set(count.get() + 1);
+                Ok(())
+            };
+            publish_prepared_pair_image_guarded(
+                &target,
+                &before,
+                &after,
+                &PairTargetGuard::new(&allow),
+            )
+            .unwrap();
+            for cut in 1..=count.get() {
+                let root = tempfile::tempdir().unwrap();
+                let (target, before) = setup(root.path());
+                let calls = Cell::new(0);
+                let observed = std::cell::RefCell::new(None);
+                let reject = || {
+                    calls.set(calls.get() + 1);
+                    if calls.get() == cut {
+                        *observed.borrow_mut() =
+                            Some((std::fs::read(&target).ok(), p22_stages(root.path())));
+                        Err(PreparedPairError::Conflict)
+                    } else {
+                        Ok(())
+                    }
+                };
+                let guard = PairTargetGuard::new(&reject);
+                assert_eq!(
+                    publish_prepared_pair_image_guarded(&target, &before, &after, &guard),
+                    Err(PreparedPairError::Conflict)
+                );
+                assert_eq!(
+                    (std::fs::read(&target).ok(), p22_stages(root.path())),
+                    observed.into_inner().unwrap()
+                );
+                assert_eq!(guard.check(), Err(PreparedPairError::Conflict));
+                assert_eq!(calls.get(), cut);
+            }
+        }
+    }
+
+    #[test]
+    fn p22_cleanup_rejection_retains_diagnostic_stage_and_observed_drift() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("pair-side.json");
+        std::fs::write(&target, b"{\"value\":0}").unwrap();
+        let before = read_config_pair_physical(&target).unwrap();
+        let after = PhysicalState::from_bytes(b"{\"value\":1}".to_vec());
+        let drifted = Cell::new(false);
+        let validate = || {
+            if drifted.get() {
+                Err(PreparedPairError::Conflict)
+            } else {
+                Ok(())
+            }
+        };
+        let guard = PairTargetGuard::new(&validate);
+        let mut next = || next_staging_sequence(&STAGING_SEQUENCE);
+        let write = |file: &mut std::fs::File, bytes: &[u8]| {
+            file.write_all(bytes).unwrap();
+            std::fs::write(&target, b"{\"value\":2}").unwrap();
+            drifted.set(true);
+            Ok(())
+        };
+        assert_eq!(
+            publish_prepared_pair_image_with_io(
+                &target,
+                &before,
+                &after,
+                &guard,
+                &|_, _| panic!("validation failure is already sticky"),
+                &mut next,
+                &write
+            ),
+            Err(PreparedPairError::Conflict)
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"{\"value\":2}");
+        assert_eq!(p22_stages(root.path()).len(), 1);
+        assert_eq!(p22_stages(root.path())[0].1, b"{\"value\":1}");
+    }
+
+    #[test]
+    fn p22_allowing_guard_ordinary_adapter_packet_and_floor_parity() {
+        // Same physical target avoids comparing path-dependent packet identities.
+        let fixture = Fixture::new(false);
+        let request = fixture.request("C1");
+        let first = p22_prepare(&fixture, &request, &|| Ok(())).unwrap().0;
+        let observed = p22_prepare(&fixture, &request, &|| Ok(())).unwrap().0;
+        assert_eq!(first, observed);
+        execute_reserved_config_pair_guarded(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            "operation-1",
+            "C1",
+            &|| Ok(()),
+        )
+        .unwrap();
+        let guarded_after = fixture.tuple();
+        execute_reserved_config_pair(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            "operation-1",
+            "C1",
+        )
+        .unwrap();
+        assert_eq!(fixture.tuple(), guarded_after);
+        assert_eq!(fixture.packet().timestamp_floor.as_deref(), Some(T1));
+    }
+
+    #[test]
+    fn p22_ordinary_and_guarded_reservation_same_packet_and_tuples() {
+        let fixture = Fixture::new(false);
+        let request = fixture.request("C1");
+        let ordinary = prepare_and_reserve_config_pair(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            &request,
+            None,
+            |decisions, _| {
+                decisions.insert("decision".into(), json!(1));
+                Ok(())
+            },
+        )
+        .unwrap();
+        let packet_bytes = std::fs::read(fixture.r()).unwrap();
+        let before = fixture.tuple();
+        let guarded = prepare_and_reserve_config_pair_guarded(
+            &fixture.d(),
+            &fixture.s(),
+            &fixture.r(),
+            &request,
+            None,
+            |decisions, _| {
+                decisions.insert("decision".into(), json!(1));
+                Ok(())
+            },
+            &|| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(ordinary, guarded);
+        assert_eq!(std::fs::read(fixture.r()).unwrap(), packet_bytes);
+        assert_eq!(fixture.tuple(), before);
+    }
+
+    #[test]
+    fn p22_primary_io_diagnostic_and_cleanup_refusal_both_retained() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("pair-side.json");
+        std::fs::write(&target, b"{\"value\":0}").unwrap();
+        let before = read_config_pair_physical(&target).unwrap();
+        let after = PhysicalState::from_bytes(b"{\"value\":1}".to_vec());
+        let io_failed = Cell::new(false);
+        let validations = Cell::new(0);
+        let validate = || {
+            validations.set(validations.get() + 1);
+            if io_failed.get() {
+                Err(PreparedPairError::Conflict)
+            } else {
+                Ok(())
+            }
+        };
+        let guard = PairTargetGuard::new(&validate);
+        let diagnostics = std::cell::RefCell::new(Vec::new());
+        let owned = std::cell::RefCell::new(None);
+        let mut next = || next_staging_sequence(&STAGING_SEQUENCE);
+        let write = |_: &mut std::fs::File, _: &[u8]| {
+            let stages = p22_stages(root.path());
+            assert_eq!(stages.len(), 1);
+            *owned.borrow_mut() = Some(stages[0].0.clone());
+            io_failed.set(true);
+            Err(PreparedPairError::Io(
+                "injected write failure after exclusive acquisition".into(),
+            ))
+        };
+        let report = |primary: &PreparedPairError, refusal: &PreparedPairError| {
+            assert!(matches!(primary, PreparedPairError::Io(_)));
+            assert_eq!(refusal, &PreparedPairError::Conflict);
+            diagnostics
+                .borrow_mut()
+                .push((primary.to_string(), refusal.to_string()));
+        };
+        assert_eq!(
+            publish_prepared_pair_image_with_io(
+                &target, &before, &after, &guard, &report, &mut next, &write
+            ),
+            Err(PreparedPairError::Conflict)
+        );
+        let calls = validations.get();
+        assert_eq!(guard.check(), Err(PreparedPairError::Conflict));
+        assert_eq!(validations.get(), calls);
+        let observed = diagnostics.into_inner();
+        assert_eq!(observed.len(), 1);
+        assert!(observed[0].0.starts_with("preparedPairIo:"));
+        assert!(observed[0].1.starts_with("preparedPairConflict:"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"{\"value\":0}");
+        assert_eq!(std::fs::read(owned.into_inner().unwrap()).unwrap(), b"");
+    }
+
+    #[cfg(not(windows))]
+    fn p22_os_publish_attempt(stage: &Path, target: &Path) -> Result<(), std::io::Error> {
+        std::fs::rename(stage, target)
+    }
+
+    #[cfg(windows)]
+    fn p22_os_publish_attempt(stage: &Path, target: &Path) -> Result<(), std::io::Error> {
+        replace_temp_config_once(&publish_path_wide(target), &publish_path_wide(stage))
+    }
+
+    #[test]
+    fn p22_transient_error_then_guard_refusal_has_no_second_os_attempt() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("pair-side.json");
+        std::fs::write(&target, b"before").unwrap();
+        let stage = p22_filled_stage(&target, b"after");
+        let attempts = Cell::new(0);
+        let validations = Cell::new(0);
+        let delays = std::cell::RefCell::new(Vec::new());
+        let validate = || {
+            validations.set(validations.get() + 1);
+            if attempts.get() > 0 {
+                Err(PreparedPairError::Conflict)
+            } else {
+                Ok(())
+            }
+        };
+        let guard = PairTargetGuard::new(&validate);
+        let mut attempt = || {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                Err(std::io::Error::from_raw_os_error(
+                    TRANSIENT_PUBLISH_OS_ERRORS[1],
+                ))
+            } else {
+                p22_os_publish_attempt(&stage, &target)
+            }
+        };
+        let backoff = |duration| delays.borrow_mut().push(duration);
+        assert_eq!(
+            publish_temp_config_retry_with_attempt(&stage, &target, &guard, &mut attempt, &backoff,),
+            Err(PreparedPairError::Conflict)
+        );
+        assert_eq!(attempts.get(), 1, "second OS primitive forbidden");
+        assert_eq!(validations.get(), 3);
+        assert_eq!(guard.check(), Err(PreparedPairError::Conflict));
+        assert_eq!(validations.get(), 3);
+        assert_eq!(
+            delays.into_inner(),
+            vec![std::time::Duration::from_millis(PUBLISH_BACKOFFS_MS[0])]
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"before");
+        assert_eq!(std::fs::read(&stage).unwrap(), b"after");
+    }
+
+    #[test]
+    fn p22_accepting_retry_and_ordinary_adapter_have_exact_success_parity() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("pair-side.json");
+        for ordinary in [false, true] {
+            std::fs::write(&target, b"before").unwrap();
+            let stage = p22_filled_stage(&target, b"after");
+            let attempts = Cell::new(0);
+            let delays = std::cell::RefCell::new(Vec::new());
+            let mut attempt = || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    Err(std::io::Error::from_raw_os_error(
+                        TRANSIENT_PUBLISH_OS_ERRORS[1],
+                    ))
+                } else {
+                    p22_os_publish_attempt(&stage, &target)
+                }
+            };
+            let backoff = |duration| delays.borrow_mut().push(duration);
+            if ordinary {
+                assert_eq!(
+                    publish_temp_config_with_attempt(&stage, &target, &mut attempt, &backoff,),
+                    Ok(())
+                );
+            } else {
+                assert_eq!(
+                    publish_temp_config_retry_with_attempt(
+                        &stage,
+                        &target,
+                        &PairTargetGuard::new(&|| Ok(())),
+                        &mut attempt,
+                        &backoff,
+                    ),
+                    Ok(())
+                );
+            }
+            assert_eq!(attempts.get(), 2);
+            assert_eq!(
+                delays.into_inner(),
+                vec![std::time::Duration::from_millis(PUBLISH_BACKOFFS_MS[0])]
+            );
+            assert_eq!(std::fs::read(&target).unwrap(), b"after");
+            assert!(!stage.exists());
+        }
+        // Ordinary production adapter still chooses the same host OS primitive.
+        std::fs::write(&target, b"before").unwrap();
+        let stage = p22_filled_stage(&target, b"after");
+        assert_eq!(publish_temp_config(&stage, &target), Ok(()));
+        assert_eq!(std::fs::read(&target).unwrap(), b"after");
+        assert!(!stage.exists());
+    }
+}
+
+// Synchronous borrowed validation only; no filesystem authority is constructed here.
+struct PairTargetGuard<'a> {
+    validate: &'a dyn Fn() -> Result<(), PreparedPairError>,
+    failed: Cell<bool>,
+}
+
+impl<'a> PairTargetGuard<'a> {
+    fn new(validate: &'a dyn Fn() -> Result<(), PreparedPairError>) -> Self {
+        Self {
+            validate,
+            failed: Cell::new(false),
+        }
+    }
+
+    fn check(&self) -> Result<(), PreparedPairError> {
+        if self.failed.get() {
+            return Err(PreparedPairError::Conflict);
+        }
+        match (self.validate)() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.failed.set(true);
+                Err(error)
+            }
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn execute_reserved_config_pair_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    instance_id: &str,
+    validate: &dyn Fn() -> Result<(), PreparedPairError>,
+) -> Result<(), PreparedPairError> {
+    execute_reserved_config_pair_with_validation(
+        decisions,
+        state,
+        reservation,
+        operation_id,
+        instance_id,
+        &|_| Ok(()),
+        validate,
+    )
+}
+
+fn log_unverified_cleanup_refusal(primary: &PreparedPairError, refusal: &PreparedPairError) {
+    log::warn!(
+        "[prepared-pair] cleanup refused; primary={primary}; refusal={refusal}; staging retained"
+    );
+}
+
+fn ordinary_publish_result(result: Result<(), PreparedPairError>) -> Result<(), String> {
+    result.map_err(|error| match error {
+        PreparedPairError::Io(reason) => reason,
+        other => other.to_string(),
+    })
+}
+
+#[cfg(windows)]
+fn replace_temp_config_once(path_wide: &[u16], tmp_wide: &[u16]) -> Result<(), std::io::Error> {
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+    let ok = unsafe {
+        ReplaceFileW(
+            path_wide.as_ptr(),
+            tmp_wide.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if ok != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(test)]
+fn publish_temp_config_with_attempt(
+    tmp_path: &Path,
+    path: &Path,
+    publish_attempt: &mut dyn FnMut() -> Result<(), std::io::Error>,
+    backoff: &dyn Fn(std::time::Duration),
+) -> Result<(), String> {
+    ordinary_publish_result(publish_temp_config_retry_with_attempt(
+        tmp_path,
+        path,
+        &PairTargetGuard::new(&|| Ok(())),
+        publish_attempt,
+        backoff,
+    ))
 }

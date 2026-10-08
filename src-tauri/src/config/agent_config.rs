@@ -1375,6 +1375,26 @@ pub(crate) fn prepare_and_reserve_identity_reference_pair<F>(
 where
     F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
 {
+    prepare_and_reserve_identity_reference_pair_guarded(decisions, request, mutate, &|| Ok(()))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn prepare_and_reserve_identity_reference_pair_guarded<F>(
+    decisions: &Path,
+    request: &crate::config::local_config_io::PairReservationRequest,
+    mutate: F,
+    validate: &dyn Fn() -> Result<(), crate::config::local_config_io::PreparedPairError>,
+) -> Result<
+    (
+        crate::config::local_config_io::PairReservation,
+        crate::config::local_config_io::PairReservationRole,
+    ),
+    crate::config::local_config_io::PreparedPairError,
+>
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
+    validate()?;
     use crate::config::local_config_io::PreparedPairError;
     let parent = decisions
         .parent()
@@ -1385,7 +1405,7 @@ where
     let moved = std::cell::RefCell::new(Vec::new());
     let overridden = std::cell::RefCell::new(Vec::new());
     let cleanup = |d: &mut JsonMap, s: &mut JsonMap| absorb_state_keys(d, s, &moved, &overridden);
-    crate::config::local_config_io::prepare_and_reserve_config_pair(
+    crate::config::local_config_io::prepare_and_reserve_config_pair_guarded(
         decisions,
         &state_file_path(parent),
         &parent.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME),
@@ -1396,6 +1416,7 @@ where
             stamp_split_marker(s);
             Ok(())
         },
+        validate,
     )
 }
 
@@ -4795,5 +4816,109 @@ mod pair_activity_tests {
         .unwrap();
         assert_eq!(read_last_agent_message_at(repo).as_deref(), Some(T3));
         assert_ne!(std::fs::read(&d).unwrap(), d_before);
+    }
+    #[test]
+    fn p22_agent_guard_preflight_refuses_before_ignore_or_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let ac = root.path().join(".ac");
+        let matrix = ac.join("_agent-test");
+        std::fs::create_dir_all(&matrix).unwrap();
+        let decisions = matrix.join("config.json");
+        std::fs::write(&decisions, b"{}").unwrap();
+        let before = [
+            read_config_pair_physical(&decisions).unwrap(),
+            read_config_pair_physical(&state_file_path(&matrix)).unwrap(),
+        ];
+        let request = PairReservationRequest {
+            operation_id: "operation-guard".into(),
+            source_physical_key: "source-key".into(),
+            owner_instance_id: "C1".into(),
+            mappings_digest: "a".repeat(64),
+            before_protected: protected_config_pair_revision(&before).unwrap(),
+        };
+        assert_eq!(
+            prepare_and_reserve_identity_reference_pair_guarded(
+                &decisions,
+                &request,
+                |_, _| panic!("no mutation after failed preflight"),
+                &|| Err(crate::config::local_config_io::PreparedPairError::Conflict),
+            ),
+            Err(crate::config::local_config_io::PreparedPairError::Conflict)
+        );
+        assert!(!ac.join(".gitignore").exists());
+        assert_eq!(std::fs::read(decisions).unwrap(), b"{}");
+        assert!(!state_file_path(&matrix).exists());
+    }
+
+    #[test]
+    fn p22_agent_allowing_guard_reuses_policy_and_adapter_packet() {
+        let root = tempfile::tempdir().unwrap();
+        let ac = root.path().join(".ac");
+        let matrix = ac.join("_agent-test");
+        std::fs::create_dir_all(&matrix).unwrap();
+        let decisions = matrix.join("config.json");
+        let state = state_file_path(&matrix);
+        let reservation =
+            matrix.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME);
+        std::fs::write(&decisions, b"{\"name\":\"before\"}").unwrap();
+        let user_rows = "# user rows\nkeep-me/\n!keep-me/allowed\n";
+        std::fs::write(ac.join(".gitignore"), user_rows).unwrap();
+        assert_eq!(nearest_ac_root(&decisions), Some(ac.as_path()));
+        let before = [
+            read_config_pair_physical(&decisions).unwrap(),
+            read_config_pair_physical(&state).unwrap(),
+        ];
+        let request = PairReservationRequest {
+            operation_id: "operation-1".into(),
+            source_physical_key: "source-key".into(),
+            owner_instance_id: "C1".into(),
+            mappings_digest: "a".repeat(64),
+            before_protected: protected_config_pair_revision(&before).unwrap(),
+        };
+        prepare_and_reserve_identity_reference_pair(&decisions, &request, |d, _| {
+            d.insert("name".into(), json!("after"));
+            Ok(())
+        })
+        .unwrap();
+        let packet = std::fs::read(&reservation).unwrap();
+        let ignore = std::fs::read_to_string(ac.join(".gitignore")).unwrap();
+        let mut expected = user_rows.to_string();
+        expected.push_str(&crate::config::naming_migration::missing_ignore_rows(
+            user_rows,
+            &crate::config::naming_migration::config_state_ignore_rows(),
+        ));
+        for name in [
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME,
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_LOCK,
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_TMP,
+        ] {
+            expected.push_str(&format!(
+                "# AgentsCommander: private PAIR reservation state\n**/{name}\n"
+            ));
+        }
+        assert_eq!(ignore, expected);
+        assert!(ignore.starts_with(user_rows));
+        prepare_and_reserve_identity_reference_pair_guarded(
+            &decisions,
+            &request,
+            |d, _| {
+                d.insert("name".into(), json!("after"));
+                Ok(())
+            },
+            &|| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(reservation).unwrap(), packet);
+        assert_eq!(
+            std::fs::read_to_string(ac.join(".gitignore")).unwrap(),
+            ignore
+        );
+        assert_eq!(
+            [
+                read_config_pair_physical(&decisions).unwrap(),
+                read_config_pair_physical(&state).unwrap()
+            ],
+            before
+        );
     }
 }

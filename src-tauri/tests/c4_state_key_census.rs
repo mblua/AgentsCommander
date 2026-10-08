@@ -297,9 +297,9 @@ fn p5_is_frozen() {
 #[test]
 fn p6_is_frozen() {
     let pin = Pin {
-        total: 35,
-        distinct: 31,
-        sha256: "26377139EA84314CB1815708E1B2017153A82052FFFA3E25F69F443AB1A9978A",
+        total: 37,
+        distinct: 33,
+        sha256: "A9BD430047365EFA3F749AFEC88BAD9F2CEA8E553E806F7E2D4644C76DE02619",
         per_file: &[
             ("commands/ac_discovery.rs", 1),
             ("commands/config.rs", 2),
@@ -308,6 +308,7 @@ fn p6_is_frozen() {
             ("config/agent_config.rs", 8),
             ("config/coding_agent_profiles.rs", 3),
             ("config/instance_artifacts.rs", 2),
+            ("config/local_config_io.rs", 2),
             ("config/naming_migration.rs", 4),
             ("config/replica_identity.rs", 3),
             ("config/root_agent.rs", 2),
@@ -320,12 +321,12 @@ fn p6_is_frozen() {
 #[test]
 fn p7_is_frozen() {
     let pin = Pin {
-        total: 61,
-        distinct: 47,
-        sha256: "36749D1FEDEA30FD30A2F55A1F95DFB7712F7DE4FFE9581CAC4181C641E1AF8B",
+        total: 72,
+        distinct: 51,
+        sha256: "011F7555603963CFD29FB98CDCA609B758E7556FE57ADB4EBAF98BA986D9006A",
         per_file: &[
-            ("config/agent_config.rs", 34),
-            ("config/local_config_io.rs", 27),
+            ("config/agent_config.rs", 36),
+            ("config/local_config_io.rs", 36),
         ],
     };
     assert_frozen("P7", &line_census(P7, Scope::Owners), &pin);
@@ -334,12 +335,12 @@ fn p7_is_frozen() {
 #[test]
 fn p8_is_frozen() {
     let pin = Pin {
-        total: 203,
-        distinct: 156,
-        sha256: "2A3878CD17E4B0A414D7520057E316ECD929865B588DB352524330C671B265C0",
+        total: 204,
+        distinct: 157,
+        sha256: "A3B4CC23C5FF59F62A9345299396BA5A8C16B0728947CD3AA40799B8AD06A1F3",
         per_file: &[
             ("config/agent_config.rs", 168),
-            ("config/local_config_io.rs", 35),
+            ("config/local_config_io.rs", 36),
         ],
     };
     assert_frozen("P8", &line_census(QUOTED_KEY, Scope::Owners), &pin);
