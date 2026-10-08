@@ -387,7 +387,7 @@ fn update_config_pair<F>(
 where
     F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
 {
-    update_config_pair_inner(decisions, state, None, state_keys, cleanup, on_stage, mutate, &|_| Ok(()), None)
+    update_config_pair_inner(decisions, state, None, state_keys, cleanup, on_stage, mutate, &|_| Ok(()), None, None)
 }
 
 /// The production PAIR boundary. Pending deltas are computed on private maps
@@ -398,6 +398,7 @@ pub(crate) fn update_config_pair_guarded<F>(
     state: &Path,
     reservation: &Path,
     state_keys: &[&str],
+    nonpending_preflight: Option<&dyn Fn() -> Result<(), String>>,
     cleanup: Option<ConfigPairCleanup<'_>>,
     on_stage: &dyn Fn(&str),
     mutate: F,
@@ -407,7 +408,7 @@ pub(crate) fn update_config_pair_guarded<F>(
 where
     F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
 {
-    update_config_pair_inner(decisions, state, Some(reservation), state_keys, cleanup, on_stage, mutate, finish, activity)
+    update_config_pair_inner(decisions, state, Some(reservation), state_keys, cleanup, on_stage, mutate, finish, activity, nonpending_preflight)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -415,6 +416,7 @@ fn update_config_pair_inner<F>(
     decisions: &Path, state: &Path, reservation: Option<&Path>, state_keys: &[&str],
     cleanup: Option<ConfigPairCleanup<'_>>, on_stage: &dyn Fn(&str), mutate: F,
     finish: &dyn Fn(&mut Map<String, Value>) -> Result<(), String>, activity: Option<(&str, &Cell<bool>)>,
+    nonpending_preflight: Option<&dyn Fn() -> Result<(), String>>,
 ) -> Result<(), String>
 where F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
 {
@@ -434,6 +436,17 @@ where F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), 
         validate_pair_paths(decisions, state, path).map_err(|e| e.to_string())?;
     }
     let _decisions_lock = acquire_config_file_write_lock(decisions, CONFIG_LOCK_TIMEOUT)?;
+    // Every reservation publisher takes decisions first. Keep this lease while
+    // classifying presence, so a packet cannot appear during ignore preflight.
+    // Protect state/reservation artifacts before creating their sidecars, even
+    // when a later read fails. Pending or unreadable packets never preflight.
+    if let Some(path) = reservation {
+        if read_pair_reservation(path).map_err(|e| e.to_string())?.is_none() {
+            if let Some(preflight) = nonpending_preflight {
+                preflight()?;
+            }
+        }
+    }
     let _state_lock = acquire_config_file_write_lock(state, CONFIG_LOCK_TIMEOUT)?;
 
     let _reservation_lock = reservation
@@ -3716,7 +3729,7 @@ mod pair_activity_tests {
         }
         fn activity(&self, input: &str) -> Result<bool, String> {
             let landed = Cell::new(false);
-            update_config_pair_guarded(&self.d(), &self.s(), &self.r(), &[],
+            update_config_pair_guarded(&self.d(), &self.s(), &self.r(), &[], None,
                 Some(&|_, _| panic!("pending activity cannot cleanup")), &|_| panic!("no ordinary stages"),
                 |_, _| panic!("pending activity uses the exact leaf primitive"),
                 &|_| panic!("pending activity cannot stamp"), Some((input, &landed)))?;
@@ -3810,10 +3823,10 @@ mod pair_activity_tests {
         let f = Fixture::new(false);
         f.reserve(&f.request("C1")).unwrap();
         let before = f.tuple(); let packet = std::fs::read(f.r()).unwrap();
-        update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], Some(&|_, _| panic!("no cleanup")),
+        update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], None, Some(&|_, _| panic!("no cleanup")),
             &|_| panic!("no publish"), |_, _| Ok(()), &|_| panic!("no stamp"), None).unwrap();
         for key in ["codingAgents", "configurationRef", "unknown"] {
-            let error = update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], None, &|_| {}, |d, s| {
+            let error = update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], None, None, &|_| {}, |d, s| {
                 if key == "configurationRef" { d.insert(key.into(), json!({"changed":true})); }
                 else { s.insert(key.into(), json!({"changed":true})); } Ok(())
             }, &|_| panic!("no stamp"), None).unwrap_err();
@@ -3876,7 +3889,7 @@ mod pair_activity_tests {
                 assert!(packet.activity_intent.is_some());
                 // A generic no-op cannot consolidate a pending activity.
                 let bytes = std::fs::read(f.r()).unwrap(); let tuple = f.tuple();
-                update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], None, &|_| panic!("no publish"),
+                update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], None, None, &|_| panic!("no publish"),
                     |_, _| Ok(()), &|_| panic!("no stamp"), None).unwrap();
                 assert_eq!(std::fs::read(f.r()).unwrap(), bytes); assert_eq!(f.tuple(), tuple);
             } else { assert_eq!(timestamp_value(&f.tuple()[1]).unwrap().as_deref(), Some(T3)); }
@@ -3967,12 +3980,12 @@ mod pair_activity_tests {
     fn pair_activity_intent_unknown_timestamp_and_exact_generic_delta() {
         let f = Fixture::new(false); f.reserve(&f.request("C1")).unwrap();
         let tuple = f.tuple();
-        update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], None, &|_| panic!("no cleanup stages"), |_, s| {
+        update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], None, None, &|_| panic!("no cleanup stages"), |_, s| {
             s.get_mut("tooling").unwrap()["lastAgentMessageAt"] = json!(T2); Ok(())
         }, &|_| panic!("no split stamp"), None).unwrap();
         assert_eq!(f.tuple()[0], tuple[0]); assert_eq!(f.packet().timestamp_floor.as_deref(), Some(T2));
         let before = f.tuple(); let packet = std::fs::read(f.r()).unwrap();
-        let error = update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], None, &|_| {}, |_, s| {
+        let error = update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], None, None, &|_| {}, |_, s| {
             s.get_mut("tooling").unwrap()["lastAgentMessageAt"] = json!(T1); Ok(())
         }, &|_| panic!("no stamp"), None).unwrap_err();
         assert!(error.contains("targetTransitionPending")); assert_eq!(f.tuple(), before); assert_eq!(std::fs::read(f.r()).unwrap(), packet);
@@ -3980,6 +3993,30 @@ mod pair_activity_tests {
         let mut state = f.tuple()[1].map().unwrap(); state.get_mut("tooling").unwrap()["lastAgentMessageAt"] = json!("2026-10-08T02:30:00Z");
         f.write(&f.s(), Value::Object(state)); let tuple = f.tuple(); let packet = std::fs::read(f.r()).unwrap();
         assert!(f.activity(T3).is_err()); assert_eq!(f.tuple(), tuple); assert_eq!(std::fs::read(f.r()).unwrap(), packet);
+    }
+
+    #[test]
+    fn pair_activity_preflight_precedes_state_sidecars_and_holds_decisions_lease() {
+        let f = Fixture::new(false);
+        let called = Cell::new(false);
+        let preflight = || {
+            assert!(!lock_sidecar_path(&f.s()).exists());
+            assert!(!lock_sidecar_path(&f.r()).exists());
+            assert!(acquire_config_file_write_lock(&f.d(), Duration::from_millis(20)).is_err());
+            called.set(true);
+            Err("ignore preflight refused".to_string())
+        };
+        let before = f.tuple();
+        let error = update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], Some(&preflight), None,
+            &|_| panic!("no publish"), |_, _| panic!("no mutation"), &|_| Ok(()), None).unwrap_err();
+        assert_eq!(error, "ignore preflight refused"); assert!(called.get());
+        assert_eq!(f.tuple(), before); assert!(!f.r().exists());
+        assert!(!lock_sidecar_path(&f.s()).exists()); assert!(!lock_sidecar_path(&f.r()).exists());
+        std::fs::write(f.r(), b"{invalid").unwrap(); called.set(false);
+        assert!(update_config_pair_guarded(&f.d(), &f.s(), &f.r(), &[], Some(&preflight), None,
+            &|_| panic!("no publish"), |_, _| panic!("no mutation"), &|_| Ok(()), None).is_err());
+        assert!(!called.get()); assert_eq!(std::fs::read(f.r()).unwrap(), b"{invalid");
+        assert!(!lock_sidecar_path(&f.s()).exists()); assert!(!lock_sidecar_path(&f.r()).exists());
     }
 
     #[test]

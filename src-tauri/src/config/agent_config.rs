@@ -1251,13 +1251,13 @@ where F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
     let state = state_file_path(parent);
     let moved = std::cell::RefCell::new(Vec::new());
     let overridden = std::cell::RefCell::new(Vec::new());
-    let cleanup = |d: &mut JsonMap, s: &mut JsonMap| {
-        // Pending writers never enter cleanup or change ignore/journal files.
+    let nonpending_preflight = || {
         if let Some(ac_root) = nearest_ac_root(decisions) {
             ensure_config_state_ignore_rows(ac_root)?;
         }
-        absorb_state_keys(d, s, &moved, &overridden)
+        Ok(())
     };
+    let cleanup = |d: &mut JsonMap, s: &mut JsonMap| absorb_state_keys(d, s, &moved, &overridden);
     // The marker is stamped here and nowhere else: the cleanup has published
     // the clean tracked file before `mutate` runs.
     let finish = |s: &mut JsonMap| {
@@ -1270,6 +1270,7 @@ where F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
         &state,
         &reservation,
         &STATE_KEYS,
+        Some(&nonpending_preflight),
         Some(&cleanup),
         on_stage,
         mutate,
@@ -4560,6 +4561,55 @@ mod pair_activity_tests {
     const T1: &str = "2026-10-08T01:00:00Z";
     const T2: &str = "2026-10-08T02:00:00Z";
     const T3: &str = "2026-10-08T03:00:00Z";
+
+    #[test]
+    fn pair_activity_nonpending_ignore_preflight_survives_read_error_and_blocks_on_failure() {
+        use crate::config::instance_artifacts::{CONFIG_IDENTITY_RESERVATION_NAME, CONFIG_IDENTITY_RESERVATION_LOCK};
+        for ignore_failure in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let ac = root.path().join(".ac"); let matrix = ac.join("_agent-test");
+            std::fs::create_dir_all(&matrix).unwrap();
+            let d = matrix.join("config.json"); let s = state_file_path(&matrix);
+            let r = matrix.join(CONFIG_IDENTITY_RESERVATION_NAME);
+            std::fs::write(&d, b"{invalid").unwrap();
+            let ignore = ac.join(".gitignore");
+            if ignore_failure { std::fs::create_dir(&ignore).unwrap(); }
+            let error = update_agent_config_in(&d, None, |_, _| panic!("must fail before mutation")).unwrap_err();
+            let state_lock = matrix.join(format!(".{}.lock", s.file_name().unwrap().to_str().unwrap()));
+            if ignore_failure {
+                assert!(error.contains("failed to read"));
+                assert!(!state_lock.exists()); assert!(!matrix.join(CONFIG_IDENTITY_RESERVATION_LOCK).exists());
+            } else {
+                assert!(error.contains("blocked"));
+                let content = std::fs::read_to_string(ignore).unwrap();
+                for (row, _) in crate::config::naming_migration::config_state_ignore_rows() {
+                    assert!(content.lines().any(|line| line == row));
+                }
+                assert!(content.lines().any(|line| line == format!("**/{CONFIG_IDENTITY_RESERVATION_LOCK}")));
+                assert!(state_lock.is_file()); assert!(matrix.join(CONFIG_IDENTITY_RESERVATION_LOCK).is_file());
+            }
+            assert_eq!(std::fs::read(d).unwrap(), b"{invalid"); assert!(!s.exists()); assert!(!r.exists());
+        }
+    }
+
+    #[test]
+    fn pair_activity_pending_ignore_bytes_and_absence_are_preserved() {
+        for existing_ignore in [false, true] {
+            let root = tempfile::tempdir().unwrap(); let ac = root.path().join(".ac");
+            let matrix = ac.join("_agent-test"); std::fs::create_dir_all(&matrix).unwrap();
+            let (d, _, _) = prepare(&matrix);
+            let ignore = ac.join(".gitignore");
+            if ignore.exists() { std::fs::remove_file(&ignore).unwrap(); }
+            let original = b"# unrelated bytes without trailing newline";
+            if existing_ignore { std::fs::write(&ignore, original).unwrap(); }
+            assert_eq!(set_last_agent_message_at(matrix.to_str().unwrap(), T2), Ok(true));
+            update_agent_config_in(&d, None, |_, _| Ok(())).unwrap();
+            let error = update_agent_config_in(&d, None, |d, _| { d.insert("history".into(), json!([])); Ok(()) }).unwrap_err();
+            assert!(error.contains("targetTransitionPending"));
+            if existing_ignore { assert_eq!(std::fs::read(ignore).unwrap(), original); }
+            else { assert!(!ignore.exists()); }
+        }
+    }
 
     fn prepare(root: &Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
         let instance = root.join(crate::config::agent_local_dir_name());
