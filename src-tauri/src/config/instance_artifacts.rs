@@ -531,6 +531,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: private identity intent journal lock; created once and never deleted",
     },
+    InstanceArtifact { name: SOURCE_REGISTERED_INSTANCE_LOCK, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
     InstanceArtifact {
         name: NAMING_MIGRATION_LOCK_NAME,
         kind: ArtifactKind::File,
@@ -679,16 +680,13 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: private identity intent journal and original recovery images; never user content",
     },
-    InstanceArtifact { name: SOURCE_REGISTERED_INSTANCE_LEDGER_NAME, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
-    InstanceArtifact { name: SOURCE_REGISTERED_INSTANCE_LOCK, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
-    InstanceArtifact { name: SOURCE_CATALOG_LEDGER_ARTIFACT, kind: ArtifactKind::RootRelativeGlob, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
-    InstanceArtifact { name: SOURCE_CATALOG_LOCK_ARTIFACT, kind: ArtifactKind::RootRelativeGlob, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
     InstanceArtifact {
         name: CODING_AGENT_REQUESTS_DIR_NAME,
         kind: ArtifactKind::Dir,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: CLI-to-app coding-agent mutation request queue, including its results/ subdirectory",
     },
+    InstanceArtifact { name: SOURCE_REGISTERED_INSTANCE_LEDGER_NAME, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
     InstanceArtifact {
         name: CODING_AGENTS_SET_ASIDE_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
@@ -737,6 +735,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: coding-agent migration journal; immutable AC recovery state, never user content",
     },
+    InstanceArtifact { name: SOURCE_CATALOG_LOCK_ARTIFACT, kind: ArtifactKind::RootRelativeGlob, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
     InstanceArtifact {
         name: CODING_AGENTS_LOCAL_ARTIFACT,
         kind: ArtifactKind::RootRelativeGlob,
@@ -749,6 +748,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: immutable byte-exact backup of the pre-migration coding-agent source",
     },
+    InstanceArtifact { name: SOURCE_CATALOG_LEDGER_ARTIFACT, kind: ArtifactKind::RootRelativeGlob, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
     InstanceArtifact {
         name: CONTEXT_CACHE_DIR_NAME,
         kind: ArtifactKind::Dir,
@@ -1008,8 +1008,6 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
 /// to another directory is a policy change rather than a table tweak.
 #[cfg(test)]
 pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 12] = [
-    SOURCE_CATALOG_LEDGER_ARTIFACT,
-    SOURCE_CATALOG_LOCK_ARTIFACT,
     CODING_AGENTS_SET_ASIDE_ARTIFACT,
     CODING_AGENTS_MIGRATION_JOURNAL_TMP_ARTIFACT,
     CODING_AGENTS_BASE_TMP_ARTIFACT,
@@ -1018,8 +1016,10 @@ pub(crate) const ROOT_RELATIVE_GLOB_ALLOWLIST: [&str; 12] = [
     CODING_AGENTS_RETIRED_LOCK_ARTIFACT,
     CODING_AGENTS_MIGRATION_BACKUP_TMP_ARTIFACT,
     CODING_AGENTS_MIGRATION_JOURNAL_ARTIFACT,
+    SOURCE_CATALOG_LOCK_ARTIFACT,
     CODING_AGENTS_LOCAL_ARTIFACT,
     CODING_AGENTS_MIGRATION_BACKUP_ARTIFACT,
+    SOURCE_CATALOG_LEDGER_ARTIFACT,
 ];
 
 /// Whether `file_name` is matched by `ATOMIC_WRITE_TMP_GLOB`.
