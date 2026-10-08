@@ -471,6 +471,1683 @@ pub struct SourceSnapshot<Agent> {
     pub context_revision: String,
 }
 
+// #2895 P14: dormant source coordination primitives. The orchestrator owns
+// authorization, C-before-source acquisition and local inventory/PAIR work.
+// No legacy loader, Save endpoint or transport invokes these primitives yet.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum SourceCoordinationError {
+    #[error("sourceIdentityUncertain")]
+    IdentityUncertain,
+    #[error("sourceBusy")]
+    Busy,
+    #[error("sourceTransitionPending")]
+    Pending,
+    #[error("staleRevision")]
+    Stale,
+    #[error("journalInvalid")]
+    Invalid,
+    #[error("unauthorized")]
+    Unauthorized,
+    #[error("sourceCoordinationIo: {0}")]
+    Io(String),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+pub(crate) struct SourceParticipant {
+    pub(crate) membership_revision: u64,
+    pub(crate) inventory_digest: String,
+    pub(crate) capability_version: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub(crate) enum SharedSourcePhase {
+    Preparing,
+    ParticipantsReady,
+    SourcePublished,
+    Complete,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+pub(crate) struct SourceTargetCommitment {
+    pub(crate) target_id: String,
+    pub(crate) before_protected_revision: SourceRevision,
+    pub(crate) after_protected_revision: SourceRevision,
+    pub(crate) plan_digest: String,
+    pub(crate) owner_instance_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+pub(crate) struct SourceParticipantCommitment {
+    pub(crate) participant_id: String,
+    pub(crate) context_revision: String,
+    pub(crate) inventory_digest: String,
+    pub(crate) targets: Vec<SourceTargetCommitment>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+pub(crate) struct SharedSourceOperation {
+    pub(crate) operation_id: String,
+    pub(crate) request_id: String,
+    pub(crate) payload_digest: String,
+    pub(crate) source: SourceRef,
+    pub(crate) expected_source_revision: SourceRevision,
+    pub(crate) after_source_revision: SourceRevision,
+    pub(crate) initiator_id: String,
+    pub(crate) initiator_intent_digest: String,
+    pub(crate) mappings: Vec<SourceIdentityMapping>,
+    pub(crate) participant_set: BTreeMap<String, SourceParticipant>,
+    pub(crate) commitments: BTreeMap<String, SourceParticipantCommitment>,
+    pub(crate) acks: BTreeMap<String, SourceRevision>,
+    pub(crate) phase: SharedSourcePhase,
+    pub(crate) receipt: Option<SharedSourceReceipt>,
+}
+
+// This is metadata only; original candidate bytes stay in the private Intent.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+pub(crate) struct SourceIdentityMapping {
+    pub(crate) entry_hint: String,
+    pub(crate) old_calculated_id: Option<String>,
+    pub(crate) new_calculated_id: Option<String>,
+    pub(crate) profiles: BTreeMap<String, (Option<String>, Option<String>)>,
+    pub(crate) unavailable: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+pub(crate) struct SharedSourceReceipt {
+    pub(crate) operation_id: String,
+    pub(crate) source_revision: SourceRevision,
+    pub(crate) participant_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+pub(crate) struct SharedSourceLedger {
+    pub(crate) schema_version: u32,
+    pub(crate) generation: u64,
+    pub(crate) physical_source_key: String,
+    pub(crate) participants: BTreeMap<String, SourceParticipant>,
+    pub(crate) operations: BTreeMap<String, SharedSourceOperation>,
+}
+
+#[allow(dead_code)]
+impl SharedSourceLedger {
+    fn empty(key: String) -> Self {
+        Self {
+            schema_version: 1,
+            generation: 0,
+            physical_source_key: key,
+            participants: BTreeMap::new(),
+            operations: BTreeMap::new(),
+        }
+    }
+
+    fn pending(&self) -> bool {
+        self.operations
+            .values()
+            .any(|op| op.phase != SharedSourcePhase::Complete)
+    }
+
+    fn validate(&self, key: &str) -> Result<(), SourceCoordinationError> {
+        if self.schema_version != 1 || self.physical_source_key != key {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        if self.participants.iter().any(|(id, p)| {
+            !coordination_digest(id)
+                || !coordination_digest(&p.inventory_digest)
+                || p.membership_revision == 0
+                || p.capability_version != 1
+        }) {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let mut requests = HashSet::new();
+        let mut pending = 0;
+        for (id, op) in &self.operations {
+            if id != &op.operation_id
+                || !coordination_id(id)
+                || !coordination_id(&op.request_id)
+                || !requests.insert(&op.request_id)
+                || !coordination_digest(&op.payload_digest)
+                || !coordination_digest(&op.initiator_intent_digest)
+                || !valid_coordination_revision(&op.expected_source_revision)
+                || !matches!(op.after_source_revision, SourceRevision::Bytes { .. })
+                || !valid_coordination_revision(&op.after_source_revision)
+                || op.participant_set.iter().any(|(id, p)| {
+                    !coordination_digest(id)
+                        || !coordination_digest(&p.inventory_digest)
+                        || p.capability_version != 1
+                        || p.membership_revision == 0
+                })
+                || !op.participant_set.contains_key(&op.initiator_id)
+                || op.participant_set != self.participants
+                    && op.phase != SharedSourcePhase::Complete
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            for (participant, commitment) in &op.commitments {
+                let member = op
+                    .participant_set
+                    .get(participant)
+                    .ok_or(SourceCoordinationError::Invalid)?;
+                if &commitment.participant_id != participant
+                    || !coordination_digest(&commitment.context_revision)
+                    || commitment.inventory_digest != member.inventory_digest
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+                let mut targets = HashSet::new();
+                for target in &commitment.targets {
+                    if !coordination_digest(&target.target_id)
+                        || !coordination_digest(&target.plan_digest)
+                        || !targets.insert(&target.target_id)
+                        || !op.participant_set.contains_key(&target.owner_instance_id)
+                        || !valid_coordination_revision(&target.before_protected_revision)
+                        || !valid_coordination_revision(&target.after_protected_revision)
+                    {
+                        return Err(SourceCoordinationError::Invalid);
+                    }
+                }
+            }
+            // Overlapping target plans must be equivalent, including the first
+            // durable packet's owner. No takeover or offline-owner expiry.
+            let mut targets = BTreeMap::new();
+            for commitment in op.commitments.values() {
+                for target in &commitment.targets {
+                    if let Some(prior) = targets.insert(&target.target_id, target) {
+                        if prior != target {
+                            return Err(SourceCoordinationError::Invalid);
+                        }
+                    }
+                }
+            }
+            if op.acks.iter().any(|(participant, revision)| {
+                !op.commitments.contains_key(participant) || revision != &op.after_source_revision
+            }) {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            let ready = op.commitments.len() == op.participant_set.len();
+            if ready
+                && targets.values().any(|target| {
+                    op.commitments
+                        .get(&target.owner_instance_id)
+                        .is_none_or(|owner| !owner.targets.contains(target))
+                })
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            match op.phase {
+                SharedSourcePhase::Preparing if !op.acks.is_empty() || op.receipt.is_some() => {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+                SharedSourcePhase::ParticipantsReady
+                    if !ready || !op.acks.is_empty() || op.receipt.is_some() =>
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+                SharedSourcePhase::SourcePublished if !ready || op.receipt.is_some() => {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+                SharedSourcePhase::Complete => {
+                    let expected = SharedSourceReceipt {
+                        operation_id: id.clone(),
+                        source_revision: op.after_source_revision.clone(),
+                        participant_ids: op.participant_set.keys().cloned().collect(),
+                    };
+                    if !ready
+                        || op.acks.len() != op.participant_set.len()
+                        || op.receipt.as_ref() != Some(&expected)
+                    {
+                        return Err(SourceCoordinationError::Invalid);
+                    }
+                }
+                _ => {}
+            }
+            pending += usize::from(op.phase != SharedSourcePhase::Complete);
+        }
+        if pending > 1 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        Ok(())
+    }
+}
+
+fn coordination_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+fn coordination_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+fn valid_coordination_revision(revision: &SourceRevision) -> bool {
+    match revision {
+        SourceRevision::Absent {} => true,
+        SourceRevision::Bytes { sha256 } => coordination_digest(sha256),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct IdentityWriteLease {
+    _lock: crate::config::local_config_io::SidecarWriteLock,
+    parent: crate::path_identity::RetainedDirectory,
+    instance_id: String,
+}
+#[allow(dead_code)]
+impl IdentityWriteLease {
+    pub(crate) fn acquire(
+        context: &SourceReadContext,
+        timeout: std::time::Duration,
+    ) -> Result<Self, SourceCoordinationError> {
+        let parent = coordination_parent(&context.settings_path)?;
+        let canonical = &parent.identity().canonical_path;
+        let spelling = canonical
+            .to_str()
+            .ok_or(SourceCoordinationError::IdentityUncertain)?;
+        let spelling = if cfg!(windows) {
+            spelling.to_lowercase()
+        } else {
+            spelling.into()
+        };
+        let SourceRevision::Bytes {
+            sha256: instance_id,
+        } = source_bytes_revision(spelling.as_bytes())
+        else {
+            unreachable!()
+        };
+        let lock = crate::config::local_config_io::acquire_sidecar_write_lock(
+            &canonical.join(crate::config::instance_artifacts::IDENTITY_TRANSITION_LOCK_NAME),
+            timeout,
+            "identityWriteTimeout",
+            "identity write lock",
+        )
+        .map_err(SourceCoordinationError::Io)?;
+        parent
+            .verify_current()
+            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        Ok(Self {
+            _lock: lock,
+            parent,
+            instance_id,
+        })
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct SourceCoordinationLease<'a> {
+    identity: &'a IdentityWriteLease,
+    _lock: crate::config::local_config_io::SidecarWriteLock,
+    parent: crate::path_identity::RetainedDirectory,
+    source_path: PathBuf,
+    ledger_path: PathBuf,
+    source: SourceRef,
+    context_revision: String,
+    physical_source_key: String,
+}
+
+#[allow(dead_code)]
+impl<'a> SourceCoordinationLease<'a> {
+    /// Internal only: caller acquires C first and supplies backend context.
+    /// Parent object + normalized basename stays stable over atomic replace.
+    pub(crate) fn acquire(
+        context: &SourceReadContext,
+        source: &SourceRef,
+        identity: &'a IdentityWriteLease,
+        timeout: std::time::Duration,
+    ) -> Result<Self, SourceCoordinationError> {
+        let own = coordination_parent(&context.settings_path)?;
+        if !crate::path_identity::same_object(own.identity(), identity.parent.identity()) {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+        identity
+            .parent
+            .verify_current()
+            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        let locator = context
+            .locator(source)
+            .map_err(|_| SourceCoordinationError::Unauthorized)?;
+        let parent = coordination_parent(&locator)?;
+        let canonical = parent.identity().canonical_path.clone();
+        let name = locator
+            .file_name()
+            .ok_or(SourceCoordinationError::IdentityUncertain)?;
+        let key = coordination_key(&parent.identity().object_id, name)?;
+        let ledger_name = source_ledger_name(source.kind);
+        let ledger_path = canonical.join(ledger_name);
+        let lock = crate::config::local_config_io::acquire_sidecar_write_lock(
+            &canonical.join(format!(".{ledger_name}.lock")),
+            timeout,
+            "sourceCoordinationTimeout",
+            "source coordination lock",
+        )
+        .map_err(SourceCoordinationError::Io)?;
+        let lease = Self {
+            identity,
+            _lock: lock,
+            parent,
+            source_path: canonical.join(name),
+            ledger_path,
+            source: source.clone(),
+            context_revision: context.revision.clone(),
+            physical_source_key: key,
+        };
+        lease.revalidate(context)?;
+        lease.read_ledger()?;
+        Ok(lease)
+    }
+
+    pub(crate) fn revalidate(
+        &self,
+        context: &SourceReadContext,
+    ) -> Result<(), SourceCoordinationError> {
+        if context.revision != self.context_revision {
+            return Err(SourceCoordinationError::Stale);
+        }
+        let locator = context
+            .locator(&self.source)
+            .map_err(|_| SourceCoordinationError::Unauthorized)?;
+        let current = coordination_parent(&locator)?;
+        if !crate::path_identity::same_object(current.identity(), self.parent.identity()) {
+            return Err(SourceCoordinationError::IdentityUncertain);
+        }
+        self.parent
+            .verify_current()
+            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        coordination_read(&self.source_path)?;
+        Ok(())
+    }
+
+    pub(crate) fn source_revision(&self) -> Result<SourceRevision, SourceCoordinationError> {
+        self.identity
+            .parent
+            .verify_current()
+            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        self.parent
+            .verify_current()
+            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        Ok(coordination_read(&self.source_path)?.0)
+    }
+
+    pub(crate) fn read_ledger(
+        &self,
+    ) -> Result<(SourceRevision, SharedSourceLedger), SourceCoordinationError> {
+        self.parent
+            .verify_current()
+            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        let (revision, bytes) = coordination_read(&self.ledger_path)?;
+        let ledger = match bytes {
+            Some(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?
+            }
+            None => SharedSourceLedger::empty(self.physical_source_key.clone()),
+        };
+        ledger.validate(&self.physical_source_key)?;
+        if ledger
+            .operations
+            .values()
+            .any(|op| op.source != self.source)
+        {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        Ok((revision, ledger))
+    }
+
+    fn update<F>(
+        &self,
+        expected: &SourceRevision,
+        change: F,
+    ) -> Result<SourceRevision, SourceCoordinationError>
+    where
+        F: FnOnce(&mut SharedSourceLedger) -> Result<(), SourceCoordinationError>,
+    {
+        let (revision, mut ledger) = self.read_ledger()?;
+        if &revision != expected {
+            return Err(SourceCoordinationError::Stale);
+        }
+        let before = ledger.clone();
+        change(&mut ledger)?;
+        if ledger == before {
+            return Ok(revision);
+        }
+        ledger.generation = ledger
+            .generation
+            .checked_add(1)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        ledger.validate(&self.physical_source_key)?;
+        let mut bytes =
+            serde_json::to_vec_pretty(&ledger).map_err(|_| SourceCoordinationError::Invalid)?;
+        bytes.push(b'\n');
+        self.parent
+            .verify_current()
+            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        let (observed, old) = coordination_read(&self.ledger_path)?;
+        if observed != revision {
+            return Err(SourceCoordinationError::Stale);
+        }
+        let physical = match old {
+            Some(old) => crate::config::local_config_io::PhysicalState::from_bytes(old),
+            None => crate::config::local_config_io::PhysicalState::Absent,
+        };
+        crate::config::local_config_io::publish_coordination_bytes(
+            &self.ledger_path,
+            &physical,
+            &bytes,
+        )
+        .map_err(|e| match e {
+            crate::config::local_config_io::PreparedPairError::Conflict => {
+                SourceCoordinationError::Stale
+            }
+            crate::config::local_config_io::PreparedPairError::InvalidPlan(_) => {
+                SourceCoordinationError::Invalid
+            }
+            other => SourceCoordinationError::Io(other.to_string()),
+        })?;
+        Ok(source_bytes_revision(&bytes))
+    }
+}
+
+fn coordination_parent(
+    path: &Path,
+) -> Result<crate::path_identity::RetainedDirectory, SourceCoordinationError> {
+    let parent = std::fs::canonicalize(
+        path.parent()
+            .ok_or(SourceCoordinationError::IdentityUncertain)?,
+    )
+    .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+    crate::path_identity::retain_directory(&parent)
+        .map_err(|_| SourceCoordinationError::IdentityUncertain)
+}
+fn coordination_key(
+    object: &crate::path_identity::FileObjectId,
+    name: &std::ffi::OsStr,
+) -> Result<String, SourceCoordinationError> {
+    let name = name
+        .to_str()
+        .ok_or(SourceCoordinationError::IdentityUncertain)?;
+    let name = if cfg!(windows) {
+        name.to_lowercase()
+    } else {
+        name.into()
+    };
+    let bytes = serde_json::to_vec(&(object.volume, object.file, name))
+        .map_err(|_| SourceCoordinationError::Invalid)?;
+    let SourceRevision::Bytes { sha256 } = source_bytes_revision(&bytes) else {
+        unreachable!()
+    };
+    Ok(sha256)
+}
+fn source_ledger_name(kind: SourceKind) -> &'static str {
+    use crate::config::instance_artifacts::*;
+    match kind {
+        SourceKind::CatalogBase => SOURCE_CATALOG_BASE_LEDGER_NAME,
+        SourceKind::CatalogProject => SOURCE_CATALOG_PROJECT_LEDGER_NAME,
+        SourceKind::CatalogPersonal => SOURCE_CATALOG_PERSONAL_LEDGER_NAME,
+        SourceKind::RegisteredInstance => SOURCE_REGISTERED_INSTANCE_LEDGER_NAME,
+    }
+}
+fn coordination_read(
+    path: &Path,
+) -> Result<(SourceRevision, Option<Vec<u8>>), SourceCoordinationError> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((SourceRevision::Absent {}, None)),
+        Err(e) => Err(SourceCoordinationError::Io(e.to_string())),
+        Ok(_) => {
+            let (bytes, _) = crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024)
+                .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+            Ok((source_bytes_revision(&bytes), Some(bytes)))
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn enroll_source_participant(
+    lease: &SourceCoordinationLease,
+    expected: &SourceRevision,
+    instance_id: &str,
+    participant: SourceParticipant,
+) -> Result<SourceRevision, SourceCoordinationError> {
+    if instance_id != lease.identity.instance_id {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    lease.update(expected, |ledger| {
+        if ledger.pending() {
+            return Err(SourceCoordinationError::Pending);
+        }
+        if let Some(old) = ledger.participants.get(instance_id) {
+            if old == &participant {
+                return Ok(());
+            }
+            if participant.membership_revision
+                != old
+                    .membership_revision
+                    .checked_add(1)
+                    .ok_or(SourceCoordinationError::Invalid)?
+            {
+                return Err(SourceCoordinationError::Stale);
+            }
+        } else if participant.membership_revision != 1 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        ledger.participants.insert(instance_id.into(), participant);
+        Ok(())
+    })
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) struct IdentityTransitionSummary {
+    pub(crate) operation_id: String,
+    pub(crate) phase: SharedSourcePhase,
+    pub(crate) source: SourceRef,
+    pub(crate) source_revision_observed: SourceRevision,
+    pub(crate) journal_revision: SourceRevision,
+    pub(crate) pending_participants: Vec<String>,
+    pub(crate) mappings: Vec<SourceIdentityMapping>,
+    pub(crate) receipt: Option<SharedSourceReceipt>,
+}
+
+/// Stable revisions are retained even before a fence or for an unknown operation.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct SharedTransitionStatus {
+    pub(crate) journal_revision: SourceRevision,
+    pub(crate) source_revision_observed: SourceRevision,
+    pub(crate) summary: Option<IdentityTransitionSummary>,
+}
+
+/// Read-only: no sidecar creation, enrollment, consolidation or recovery.
+#[allow(dead_code)]
+pub(crate) fn read_shared_transition(
+    context: &SourceReadContext,
+    source: &SourceRef,
+    operation_id: &str,
+) -> Result<SharedTransitionStatus, SourceCoordinationError> {
+    read_shared_transition_with_reader(context, source, operation_id, coordination_read)
+}
+
+fn read_shared_transition_with_reader(
+    context: &SourceReadContext,
+    source: &SourceRef,
+    operation_id: &str,
+    mut read: impl FnMut(
+        &std::path::Path,
+    ) -> Result<(SourceRevision, Option<Vec<u8>>), SourceCoordinationError>,
+) -> Result<SharedTransitionStatus, SourceCoordinationError> {
+    let locator = context
+        .locator(source)
+        .map_err(|_| SourceCoordinationError::Unauthorized)?;
+    let parent = coordination_parent(&locator)?;
+    let canonical = &parent.identity().canonical_path;
+    let name = locator
+        .file_name()
+        .ok_or(SourceCoordinationError::IdentityUncertain)?;
+    let key = coordination_key(&parent.identity().object_id, name)?;
+    let ledger_path = canonical.join(source_ledger_name(source.kind));
+    for _ in 0..=2 {
+        let (revision, before) = read(&ledger_path)?;
+        let observed = read(&canonical.join(name))?.0;
+        if read(&ledger_path)?.0 != revision {
+            continue;
+        }
+        parent
+            .verify_current()
+            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        let Some(bytes) = before else {
+            return Ok(SharedTransitionStatus {
+                journal_revision: revision,
+                source_revision_observed: observed,
+                summary: None,
+            });
+        };
+        let ledger: SharedSourceLedger =
+            serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?;
+        ledger.validate(&key)?;
+        let Some(op) = ledger.operations.get(operation_id) else {
+            return Ok(SharedTransitionStatus {
+                journal_revision: revision,
+                source_revision_observed: observed,
+                summary: None,
+            });
+        };
+        if &op.source != source {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let pending_participants = op
+            .participant_set
+            .keys()
+            .filter(|id| {
+                if matches!(
+                    op.phase,
+                    SharedSourcePhase::Preparing | SharedSourcePhase::ParticipantsReady
+                ) {
+                    !op.commitments.contains_key(*id)
+                } else {
+                    !op.acks.contains_key(*id)
+                }
+            })
+            .cloned()
+            .collect();
+        return Ok(SharedTransitionStatus {
+            journal_revision: revision.clone(),
+            source_revision_observed: observed.clone(),
+            summary: Some(IdentityTransitionSummary {
+                operation_id: operation_id.into(),
+                phase: op.phase.clone(),
+                source: op.source.clone(),
+                source_revision_observed: observed,
+                journal_revision: revision,
+                pending_participants,
+                mappings: op.mappings.clone(),
+                receipt: op.receipt.clone(),
+            }),
+        });
+    }
+    Err(SourceCoordinationError::Busy)
+}
+
+/// Private durable Intent. Stored by the later coordinator before fence. No
+/// shared metadata contains candidate bytes, authorized paths or credentials.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+pub(crate) struct SourceStoredIntent {
+    pub(crate) schema_version: u32,
+    pub(crate) operation_id: String,
+    pub(crate) request_id: String,
+    pub(crate) payload_digest: String,
+    pub(crate) source: SourceRef,
+    pub(crate) expected_revision: SourceRevision,
+    pub(crate) before_bytes: Option<Vec<u8>>,
+    pub(crate) serialized_after: Vec<u8>,
+    pub(crate) mappings: Vec<SourceIdentityMapping>,
+    pub(crate) initiator_id: String,
+    pub(crate) context_revision: String,
+    pub(crate) authorization_revision: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+pub(crate) struct SourcePrivateJournal {
+    pub(crate) schema_version: u32,
+    pub(crate) intents: BTreeMap<String, SourceStoredIntent>,
+}
+
+/// Lookup is restricted to the own C path derived from backend context. Status
+/// can expose the original ID and CAS before a shared fence exists.
+#[allow(dead_code)]
+pub(crate) fn read_own_source_intent(
+    context: &SourceReadContext,
+    operation_id: &str,
+) -> Result<(SourceRevision, Option<SourceStoredIntent>), SourceCoordinationError> {
+    let path = context
+        .settings_path
+        .parent()
+        .ok_or(SourceCoordinationError::Unauthorized)?
+        .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
+    let (revision, bytes) = coordination_read(&path)?;
+    let Some(bytes) = bytes else {
+        return Ok((revision, None));
+    };
+    let journal: SourcePrivateJournal =
+        serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?;
+    if journal.schema_version != 1 {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    for (id, intent) in &journal.intents {
+        if id != &intent.operation_id || !coordination_id(id) || intent.schema_version != 1 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    Ok((revision, journal.intents.get(operation_id).cloned()))
+}
+
+#[allow(dead_code)]
+pub(crate) fn install_source_fence(
+    lease: &SourceCoordinationLease,
+    context: &SourceReadContext,
+    expected_shared: &SourceRevision,
+    expected_intent: &SourceRevision,
+    operation_id: &str,
+    current_authorization_revision: &str,
+) -> Result<SourceRevision, SourceCoordinationError> {
+    lease.revalidate(context)?;
+    let (revision, intent) = read_own_source_intent(context, operation_id)?;
+    if &revision != expected_intent {
+        return Err(SourceCoordinationError::Stale);
+    }
+    let intent = intent.ok_or(SourceCoordinationError::Invalid)?;
+    if intent.initiator_id != lease.identity.instance_id
+        || intent.source != lease.source
+        || intent.context_revision != lease.context_revision
+        || intent.authorization_revision != current_authorization_revision
+        || !coordination_digest(current_authorization_revision)
+        || intent.serialized_after.is_empty()
+        || intent
+            .before_bytes
+            .as_ref()
+            .map(|b| source_bytes_revision(b))
+            .unwrap_or(SourceRevision::Absent {})
+            != intent.expected_revision
+        || lease.source_revision()? != intent.expected_revision
+    {
+        return Err(SourceCoordinationError::Stale);
+    }
+    let bytes = serde_json::to_vec(&intent).map_err(|_| SourceCoordinationError::Invalid)?;
+    let SourceRevision::Bytes { sha256: digest } = source_bytes_revision(&bytes) else {
+        unreachable!()
+    };
+    lease.update(expected_shared, |ledger| {
+        if let Some(existing) = ledger.operations.get(operation_id) {
+            if existing.initiator_intent_digest == digest {
+                return Ok(());
+            }
+            return Err(SourceCoordinationError::Invalid);
+        }
+        if ledger.pending() {
+            return Err(SourceCoordinationError::Pending);
+        }
+        if !ledger.participants.contains_key(&intent.initiator_id) {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+        ledger.operations.insert(
+            operation_id.into(),
+            SharedSourceOperation {
+                operation_id: intent.operation_id.clone(),
+                request_id: intent.request_id.clone(),
+                payload_digest: intent.payload_digest.clone(),
+                source: intent.source.clone(),
+                expected_source_revision: intent.expected_revision.clone(),
+                after_source_revision: source_bytes_revision(&intent.serialized_after),
+                initiator_id: intent.initiator_id.clone(),
+                initiator_intent_digest: digest,
+                mappings: intent.mappings.clone(),
+                participant_set: ledger.participants.clone(),
+                commitments: BTreeMap::new(),
+                acks: BTreeMap::new(),
+                phase: SharedSourcePhase::Preparing,
+                receipt: None,
+            },
+        );
+        Ok(())
+    })
+}
+
+/// Called only after own inventory + all own packets + aggregate are durable;
+/// P15/P03 supply verified local evidence, never a transport DTO.
+#[allow(dead_code)]
+pub(crate) fn commit_source_participant(
+    lease: &SourceCoordinationLease,
+    expected: &SourceRevision,
+    operation_id: &str,
+    commitment: SourceParticipantCommitment,
+) -> Result<SourceRevision, SourceCoordinationError> {
+    if commitment.participant_id != lease.identity.instance_id {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    if commitment.context_revision != lease.context_revision {
+        return Err(SourceCoordinationError::Stale);
+    }
+    if lease.source_revision()?
+        != lease
+            .read_ledger()?
+            .1
+            .operations
+            .get(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?
+            .expected_source_revision
+    {
+        return Err(SourceCoordinationError::Stale);
+    }
+    lease.update(expected, |ledger| {
+        let op = ledger
+            .operations
+            .get_mut(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if let Some(old) = op.commitments.get(&commitment.participant_id) {
+            return if old == &commitment {
+                Ok(())
+            } else {
+                Err(SourceCoordinationError::Invalid)
+            };
+        }
+        if op.phase != SharedSourcePhase::Preparing {
+            return Err(SourceCoordinationError::Pending);
+        }
+        op.commitments
+            .insert(commitment.participant_id.clone(), commitment);
+        if op.commitments.len() == op.participant_set.len() {
+            op.phase = SharedSourcePhase::ParticipantsReady;
+        }
+        Ok(())
+    })
+}
+
+/// Reconciles the original source after publication (including lost progress).
+/// It does not publish source bytes or execute any PAIR writer itself.
+#[allow(dead_code)]
+pub(crate) fn recognize_source_published(
+    lease: &SourceCoordinationLease,
+    expected: &SourceRevision,
+    operation_id: &str,
+    initiator: &str,
+) -> Result<SourceRevision, SourceCoordinationError> {
+    let observed = lease.source_revision()?;
+    lease.update(expected, |ledger| {
+        let op = ledger
+            .operations
+            .get_mut(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if op.initiator_id != initiator || initiator != lease.identity.instance_id {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+        if observed != op.after_source_revision {
+            return Err(SourceCoordinationError::Stale);
+        }
+        if op.phase == SharedSourcePhase::Preparing {
+            return Err(SourceCoordinationError::Pending);
+        }
+        if op.phase == SharedSourcePhase::ParticipantsReady {
+            op.phase = SharedSourcePhase::SourcePublished;
+        }
+        Ok(())
+    })
+}
+
+/// P03 calls this after verifying/reloading all own owner and observer targets.
+#[allow(dead_code)]
+pub(crate) fn ack_source_participant(
+    lease: &SourceCoordinationLease,
+    expected: &SourceRevision,
+    operation_id: &str,
+    participant: &str,
+) -> Result<SourceRevision, SourceCoordinationError> {
+    let observed = lease.source_revision()?;
+    lease.update(expected, |ledger| {
+        let op = ledger
+            .operations
+            .get_mut(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if !matches!(
+            op.phase,
+            SharedSourcePhase::SourcePublished | SharedSourcePhase::Complete
+        ) {
+            return Err(SourceCoordinationError::Pending);
+        }
+        if participant != lease.identity.instance_id || !op.commitments.contains_key(participant) {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+        if observed != op.after_source_revision {
+            return Err(SourceCoordinationError::Stale);
+        }
+        op.acks.insert(participant.into(), observed);
+        Ok(())
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn complete_shared_source(
+    lease: &SourceCoordinationLease,
+    expected: &SourceRevision,
+    operation_id: &str,
+    initiator: &str,
+) -> Result<SourceRevision, SourceCoordinationError> {
+    let observed = lease.source_revision()?;
+    lease.update(expected, |ledger| {
+        let op = ledger
+            .operations
+            .get_mut(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if op.initiator_id != initiator || initiator != lease.identity.instance_id {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+        if observed != op.after_source_revision {
+            return Err(SourceCoordinationError::Stale);
+        }
+        if op.phase == SharedSourcePhase::Complete {
+            return Ok(());
+        }
+        if op.phase != SharedSourcePhase::SourcePublished
+            || op.acks.len() != op.participant_set.len()
+        {
+            return Err(SourceCoordinationError::Pending);
+        }
+        op.receipt = Some(SharedSourceReceipt {
+            operation_id: operation_id.into(),
+            source_revision: observed,
+            participant_ids: op.participant_set.keys().cloned().collect(),
+        });
+        op.phase = SharedSourcePhase::Complete;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod source_coordination_tests {
+    use super::*;
+    use std::time::Duration;
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        contexts: [SourceReadContext; 2],
+        source: SourceRef,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let project = root.path().join("project");
+            std::fs::create_dir_all(project.join(".ac/coding-agents")).unwrap();
+            let contexts = ["C1", "C2"].map(|name| {
+                let config = root.path().join(name);
+                std::fs::create_dir(&config).unwrap();
+                let settings = AppSettings {
+                    project_paths: vec![project.to_string_lossy().into_owned()],
+                    ..AppSettings::default()
+                };
+                SourceReadContext::from_settings(&settings, &config.join(SETTINGS_FILE_NAME))
+                    .unwrap()
+            });
+            let source = contexts[0].source(SourceKind::CatalogPersonal);
+            Self {
+                _root: root,
+                contexts,
+                source,
+            }
+        }
+        fn member() -> SourceParticipant {
+            SourceParticipant {
+                membership_revision: 1,
+                inventory_digest: "b".repeat(64),
+                capability_version: 1,
+            }
+        }
+        fn intent(&self, identity: &IdentityWriteLease) -> SourceStoredIntent {
+            SourceStoredIntent {
+                schema_version: 1,
+                operation_id: "operation-1".into(),
+                request_id: "request-1".into(),
+                payload_digest: "c".repeat(64),
+                source: self.source.clone(),
+                expected_revision: SourceRevision::Absent {},
+                before_bytes: None,
+                serialized_after: b"{\"schemaVersion\":2,\"agents\":[]}".to_vec(),
+                mappings: vec![],
+                initiator_id: identity.instance_id.clone(),
+                context_revision: self.contexts[0].revision.clone(),
+                authorization_revision: "d".repeat(64),
+            }
+        }
+        fn store(&self, intent: SourceStoredIntent) -> SourceRevision {
+            let journal = SourcePrivateJournal {
+                schema_version: 1,
+                intents: BTreeMap::from([(intent.operation_id.clone(), intent)]),
+            };
+            let bytes = serde_json::to_vec(&journal).unwrap();
+            let path = self.contexts[0]
+                .settings_path
+                .parent()
+                .unwrap()
+                .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
+            crate::config::local_config_io::publish_coordination_bytes(
+                &path,
+                &crate::config::local_config_io::PhysicalState::Absent,
+                &bytes,
+            )
+            .unwrap();
+            source_bytes_revision(&bytes)
+        }
+        fn enroll(&self, index: usize) -> String {
+            let identity =
+                IdentityWriteLease::acquire(&self.contexts[index], Duration::ZERO).unwrap();
+            let lease = SourceCoordinationLease::acquire(
+                &self.contexts[index],
+                &self.source,
+                &identity,
+                Duration::ZERO,
+            )
+            .unwrap();
+            let revision = lease.read_ledger().unwrap().0;
+            enroll_source_participant(&lease, &revision, &identity.instance_id, Self::member())
+                .unwrap();
+            identity.instance_id.clone()
+        }
+        fn commitment(id: &str, context: &SourceReadContext) -> SourceParticipantCommitment {
+            SourceParticipantCommitment {
+                participant_id: id.into(),
+                context_revision: context.revision.clone(),
+                inventory_digest: "b".repeat(64),
+                targets: vec![],
+            }
+        }
+    }
+
+    #[test]
+    fn source_coordination_completion_rejects_other_instance_initiator_string() {
+        let f = Fixture::new();
+        let id = f.enroll(0);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let intent = f.intent(&identity);
+        let intent_revision = f.store(intent.clone());
+        let shared = lease.read_ledger().unwrap().0;
+        let shared = install_source_fence(
+            &lease,
+            &f.contexts[0],
+            &shared,
+            &intent_revision,
+            "operation-1",
+            &"d".repeat(64),
+        )
+        .unwrap();
+        let shared = commit_source_participant(
+            &lease,
+            &shared,
+            "operation-1",
+            Fixture::commitment(&id, &f.contexts[0]),
+        )
+        .unwrap();
+        crate::config::local_config_io::publish_coordination_bytes(
+            &lease.source_path,
+            &crate::config::local_config_io::PhysicalState::Absent,
+            &intent.serialized_after,
+        )
+        .unwrap();
+        let shared = recognize_source_published(&lease, &shared, "operation-1", &id).unwrap();
+        let shared = ack_source_participant(&lease, &shared, "operation-1", &id).unwrap();
+        let before = std::fs::read(&lease.ledger_path).unwrap();
+        drop(lease);
+        drop(identity);
+        let identity = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        assert_eq!(
+            complete_shared_source(&lease, &shared, "operation-1", &id),
+            Err(SourceCoordinationError::Unauthorized)
+        );
+        assert_eq!(std::fs::read(&lease.ledger_path).unwrap(), before);
+        assert!(lease.read_ledger().unwrap().1.operations["operation-1"]
+            .receipt
+            .is_none());
+        drop(lease);
+        drop(identity);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        complete_shared_source(&lease, &shared, "operation-1", &id).unwrap();
+    }
+
+    #[test]
+    fn source_coordination_commitment_rejects_foreign_context_without_write() {
+        let f = Fixture::new();
+        let id = f.enroll(0);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let intent_revision = f.store(f.intent(&identity));
+        let shared = lease.read_ledger().unwrap().0;
+        let shared = install_source_fence(
+            &lease,
+            &f.contexts[0],
+            &shared,
+            &intent_revision,
+            "operation-1",
+            &"d".repeat(64),
+        )
+        .unwrap();
+        let before = std::fs::read(&lease.ledger_path).unwrap();
+        let mut commitment = Fixture::commitment(&id, &f.contexts[0]);
+        commitment.context_revision = f.contexts[1].revision.clone();
+        assert_ne!(commitment.context_revision, lease.context_revision);
+        assert_eq!(
+            commit_source_participant(&lease, &shared, "operation-1", commitment),
+            Err(SourceCoordinationError::Stale)
+        );
+        assert_eq!(std::fs::read(&lease.ledger_path).unwrap(), before);
+        commit_source_participant(
+            &lease,
+            &shared,
+            "operation-1",
+            Fixture::commitment(&id, &f.contexts[0]),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn source_coordination_alias_uncertainty_rejects_hardlinked_source() {
+        let f = Fixture::new();
+        let path = f.contexts[0].locator(&f.source).unwrap();
+        std::fs::write(&path, b"{}").unwrap();
+        std::fs::hard_link(&path, path.with_extension("alias")).unwrap();
+        assert_eq!(
+            read_shared_transition(&f.contexts[0], &f.source, "operation-1").unwrap_err(),
+            SourceCoordinationError::IdentityUncertain
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+    }
+    fn disk_image(
+        root: &std::path::Path,
+    ) -> BTreeMap<std::path::PathBuf, (Vec<u8>, std::time::SystemTime)> {
+        let mut image = BTreeMap::new();
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                image.extend(disk_image(&path));
+            } else {
+                image.insert(
+                    path.clone(),
+                    (
+                        std::fs::read(&path).unwrap_or_else(|error| {
+                            panic!("snapshot read {}: {error}", path.display())
+                        }),
+                        std::fs::metadata(&path).unwrap().modified().unwrap(),
+                    ),
+                );
+            }
+        }
+        image
+    }
+
+    #[test]
+    fn source_coordination_readonly_present_ledger_pending_and_missing_operation() {
+        let f = Fixture::new();
+        let id = f.enroll(0);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let intent_revision = f.store(f.intent(&identity));
+        let shared = lease.read_ledger().unwrap().0;
+        drop(lease);
+        drop(identity);
+        // Snapshot every file, including sidecars, after releasing Windows byte-range locks.
+        // The prefence lookup retains the present ledger CAS without acquiring a lock.
+        let prefence_image = disk_image(f._root.path());
+        let prefence = read_shared_transition(&f.contexts[1], &f.source, "operation-1").unwrap();
+        assert_eq!(prefence.journal_revision, shared);
+        assert_eq!(prefence.source_revision_observed, SourceRevision::Absent {});
+        assert!(prefence.summary.is_none());
+        assert_eq!(disk_image(f._root.path()), prefence_image);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        assert_eq!(lease.read_ledger().unwrap().0, shared);
+        let shared = install_source_fence(
+            &lease,
+            &f.contexts[0],
+            &shared,
+            &intent_revision,
+            "operation-1",
+            &"d".repeat(64),
+        )
+        .unwrap();
+        let members = lease.read_ledger().unwrap().1.participants;
+        drop(lease);
+        drop(identity);
+        let before = disk_image(f._root.path());
+        for _ in 0..3 {
+            let status = read_shared_transition(&f.contexts[1], &f.source, "operation-1").unwrap();
+            assert_eq!(status.journal_revision, shared);
+            assert_eq!(
+                status.summary.unwrap().pending_participants,
+                vec![id.clone()]
+            );
+            let absent = read_shared_transition(&f.contexts[1], &f.source, "missing").unwrap();
+            assert_eq!(absent.journal_revision, shared);
+            assert!(absent.summary.is_none());
+        }
+        assert_eq!(disk_image(f._root.path()), before);
+        // Offline/drop and repeated status do not expire/unregister membership or the fence.
+        let identity = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let (revision, ledger) = lease.read_ledger().unwrap();
+        assert_eq!(revision, shared);
+        assert_eq!(ledger.participants, members);
+        assert_eq!(
+            ledger.operations["operation-1"].phase,
+            SharedSourcePhase::Preparing
+        );
+        assert_eq!(
+            enroll_source_participant(&lease, &shared, &identity.instance_id, Fixture::member()),
+            Err(SourceCoordinationError::Pending)
+        );
+    }
+
+    #[test]
+    fn source_coordination_readonly_churn_reports_busy_after_two_retries() {
+        let f = Fixture::new();
+        let mut reads = 0;
+        let result =
+            read_shared_transition_with_reader(&f.contexts[0], &f.source, "operation-1", |path| {
+                if path.file_name().unwrap() == source_ledger_name(f.source.kind) {
+                    reads += 1;
+                    let revision = if reads % 2 == 1 {
+                        SourceRevision::Absent {}
+                    } else {
+                        source_bytes_revision(b"{}")
+                    };
+                    Ok((revision, None))
+                } else {
+                    coordination_read(path)
+                }
+            });
+        assert_eq!(result.unwrap_err(), SourceCoordinationError::Busy);
+        assert_eq!(reads, 6);
+        assert_eq!(SourceCoordinationError::Busy.to_string(), "sourceBusy");
+        assert!(disk_image(f._root.path()).is_empty());
+    }
+
+    #[test]
+    fn source_coordination_readonly_navigation_zero_write() {
+        let f = Fixture::new();
+        let status = read_shared_transition(&f.contexts[0], &f.source, "operation-1").unwrap();
+        assert!(status.summary.is_none());
+        assert_eq!(status.journal_revision, SourceRevision::Absent {});
+        assert_eq!(status.source_revision_observed, SourceRevision::Absent {});
+        assert_eq!(
+            std::fs::read_dir(f.contexts[0].locator(&f.source).unwrap().parent().unwrap())
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            std::fs::read_dir(f.contexts[0].settings_path.parent().unwrap())
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn source_coordination_same_source_distinct_instances_one_sidecar() {
+        let f = Fixture::new();
+        let c1 = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let c2 = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
+        assert_ne!(c1.instance_id, c2.instance_id);
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &c1, Duration::ZERO)
+                .unwrap();
+        assert!(
+            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &c2, Duration::ZERO)
+                .is_err()
+        );
+        let key = lease.physical_source_key.clone();
+        drop(lease);
+        let lease2 =
+            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &c2, Duration::ZERO)
+                .unwrap();
+        assert_eq!(key, lease2.physical_source_key);
+        assert!(
+            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &c1, Duration::ZERO)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn source_coordination_intent_stored_prefence_requires_original_cas() {
+        let f = Fixture::new();
+        f.enroll(0);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let shared = lease.read_ledger().unwrap().0;
+        assert!(install_source_fence(
+            &lease,
+            &f.contexts[0],
+            &shared,
+            &SourceRevision::Absent {},
+            "operation-1",
+            &"d".repeat(64)
+        )
+        .is_err());
+        let intent = f.intent(&identity);
+        let revision = f.store(intent.clone());
+        assert_eq!(
+            read_own_source_intent(&f.contexts[0], "operation-1")
+                .unwrap()
+                .1,
+            Some(intent)
+        );
+        assert!(
+            read_shared_transition(&f.contexts[0], &f.source, "operation-1")
+                .unwrap()
+                .summary
+                .is_none()
+        );
+        assert!(install_source_fence(
+            &lease,
+            &f.contexts[0],
+            &shared,
+            &SourceRevision::Absent {},
+            "operation-1",
+            &"d".repeat(64)
+        )
+        .is_err());
+        install_source_fence(
+            &lease,
+            &f.contexts[0],
+            &shared,
+            &revision,
+            "operation-1",
+            &"d".repeat(64),
+        )
+        .unwrap();
+        assert_eq!(lease.source_revision().unwrap(), SourceRevision::Absent {});
+        assert_eq!(
+            lease.read_ledger().unwrap().1.operations["operation-1"].phase,
+            SharedSourcePhase::Preparing
+        );
+    }
+
+    #[test]
+    fn source_coordination_offline_fence_survives_drop_and_late_enrollment() {
+        let f = Fixture::new();
+        let id1 = f.enroll(0);
+        let id2 = f.enroll(1);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let intent_revision = f.store(f.intent(&identity));
+        let shared = lease.read_ledger().unwrap().0;
+        let shared = install_source_fence(
+            &lease,
+            &f.contexts[0],
+            &shared,
+            &intent_revision,
+            "operation-1",
+            &"d".repeat(64),
+        )
+        .unwrap();
+        let shared = commit_source_participant(
+            &lease,
+            &shared,
+            "operation-1",
+            Fixture::commitment(&id1, &f.contexts[0]),
+        )
+        .unwrap();
+        assert_eq!(
+            complete_shared_source(&lease, &shared, "operation-1", &id1),
+            Err(SourceCoordinationError::Stale)
+        );
+        assert_eq!(
+            enroll_source_participant(&lease, &shared, &id1, Fixture::member()),
+            Err(SourceCoordinationError::Pending)
+        );
+        drop(lease);
+        drop(identity);
+        let identity = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let summary = read_shared_transition(&f.contexts[1], &f.source, "operation-1")
+            .unwrap()
+            .summary
+            .unwrap();
+        assert_eq!(summary.pending_participants, vec![id2.clone()]);
+        assert_eq!(summary.phase, SharedSourcePhase::Preparing);
+        let shared = commit_source_participant(
+            &lease,
+            &shared,
+            "operation-1",
+            Fixture::commitment(&id2, &f.contexts[1]),
+        )
+        .unwrap();
+        assert_eq!(
+            lease.read_ledger().unwrap().1.operations["operation-1"].phase,
+            SharedSourcePhase::ParticipantsReady
+        );
+        assert_eq!(
+            recognize_source_published(&lease, &shared, "operation-1", &id2),
+            Err(SourceCoordinationError::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn source_coordination_global_complete_requires_all_acks_and_current_source() {
+        let f = Fixture::new();
+        let id = f.enroll(0);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let intent = f.intent(&identity);
+        let intent_revision = f.store(intent.clone());
+        let shared = lease.read_ledger().unwrap().0;
+        let shared = install_source_fence(
+            &lease,
+            &f.contexts[0],
+            &shared,
+            &intent_revision,
+            "operation-1",
+            &"d".repeat(64),
+        )
+        .unwrap();
+        let shared = commit_source_participant(
+            &lease,
+            &shared,
+            "operation-1",
+            Fixture::commitment(&id, &f.contexts[0]),
+        )
+        .unwrap();
+        crate::config::local_config_io::publish_coordination_bytes(
+            &lease.source_path,
+            &crate::config::local_config_io::PhysicalState::Absent,
+            &intent.serialized_after,
+        )
+        .unwrap();
+        let shared = recognize_source_published(&lease, &shared, "operation-1", &id).unwrap();
+        assert_eq!(
+            complete_shared_source(&lease, &shared, "operation-1", &id),
+            Err(SourceCoordinationError::Pending)
+        );
+        let shared = ack_source_participant(&lease, &shared, "operation-1", &id).unwrap();
+        let shared = complete_shared_source(&lease, &shared, "operation-1", &id).unwrap();
+        assert_eq!(
+            complete_shared_source(&lease, &shared, "operation-1", &id).unwrap(),
+            shared
+        );
+        assert!(lease.read_ledger().unwrap().1.operations["operation-1"]
+            .receipt
+            .is_some());
+        std::fs::write(&lease.source_path, b"{\"later\":true}").unwrap();
+        assert_eq!(
+            complete_shared_source(&lease, &shared, "operation-1", &id),
+            Err(SourceCoordinationError::Stale)
+        );
+    }
+
+    #[test]
+    fn source_coordination_invalid_ledger_preserved_and_stale_cas_no_write() {
+        let f = Fixture::new();
+        f.enroll(0);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let before = std::fs::read(&lease.ledger_path).unwrap();
+        assert_eq!(
+            enroll_source_participant(
+                &lease,
+                &SourceRevision::Absent {},
+                &identity.instance_id,
+                Fixture::member()
+            ),
+            Err(SourceCoordinationError::Stale)
+        );
+        assert_eq!(std::fs::read(&lease.ledger_path).unwrap(), before);
+        std::fs::write(&lease.ledger_path, b"{\"schemaVersion\":99}").unwrap();
+        assert_eq!(
+            read_shared_transition(&f.contexts[0], &f.source, "operation-1").unwrap_err(),
+            SourceCoordinationError::Invalid
+        );
+        drop(lease);
+        assert!(SourceCoordinationLease::acquire(
+            &f.contexts[0],
+            &f.source,
+            &identity,
+            Duration::ZERO
+        )
+        .is_err());
+        let path = f.contexts[0]
+            .locator(&f.source)
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(source_ledger_name(f.source.kind));
+        assert_eq!(std::fs::read(path).unwrap(), b"{\"schemaVersion\":99}");
+    }
+
+    #[test]
+    fn source_coordination_alias_dot_and_absent_existing_replacement_key() {
+        let f = Fixture::new();
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let key = lease.physical_source_key.clone();
+        let source_path = lease.source_path.clone();
+        std::fs::write(&source_path, b"{}").unwrap();
+        let alias = coordination_parent(
+            &source_path
+                .parent()
+                .unwrap()
+                .join(".")
+                .join(source_path.file_name().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(
+            key,
+            coordination_key(
+                &alias.identity().object_id,
+                source_path.file_name().unwrap()
+            )
+            .unwrap()
+        );
+        drop(lease);
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let before = crate::config::local_config_io::PhysicalState::from_bytes(b"{}".to_vec());
+        crate::config::local_config_io::publish_coordination_bytes(
+            &source_path,
+            &before,
+            b"{\"changed\":true}",
+        )
+        .unwrap();
+        assert_eq!(key, lease.physical_source_key);
+        lease.revalidate(&f.contexts[0]).unwrap();
+    }
+
+    #[test]
+    fn source_coordination_multiple_targets_observer_divergence_no_takeover() {
+        let f = Fixture::new();
+        let id1 = f.enroll(0);
+        let id2 = f.enroll(1);
+        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
+        let lease =
+            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
+                .unwrap();
+        let intent_revision = f.store(f.intent(&identity));
+        let shared = lease.read_ledger().unwrap().0;
+        install_source_fence(
+            &lease,
+            &f.contexts[0],
+            &shared,
+            &intent_revision,
+            "operation-1",
+            &"d".repeat(64),
+        )
+        .unwrap();
+        let mut ledger = lease.read_ledger().unwrap().1;
+        let targets = ["e", "f"].map(|name| SourceTargetCommitment {
+            target_id: name.repeat(64),
+            before_protected_revision: SourceRevision::Absent {},
+            after_protected_revision: source_bytes_revision(b"{}"),
+            plan_digest: "a".repeat(64),
+            owner_instance_id: id1.clone(),
+        });
+        let op = ledger.operations.get_mut("operation-1").unwrap();
+        for (id, context) in [(&id1, &f.contexts[0]), (&id2, &f.contexts[1])] {
+            let mut commitment = Fixture::commitment(id, context);
+            commitment.targets = targets.to_vec();
+            op.commitments.insert(id.clone(), commitment);
+        }
+        op.phase = SharedSourcePhase::ParticipantsReady;
+        ledger.validate(&lease.physical_source_key).unwrap();
+        let valid = ledger.clone();
+        ledger
+            .operations
+            .get_mut("operation-1")
+            .unwrap()
+            .commitments
+            .get_mut(&id2)
+            .unwrap()
+            .targets[1]
+            .plan_digest = "b".repeat(64);
+        assert_eq!(
+            ledger.validate(&lease.physical_source_key),
+            Err(SourceCoordinationError::Invalid)
+        );
+        let mut ledger = valid.clone();
+        ledger
+            .operations
+            .get_mut("operation-1")
+            .unwrap()
+            .commitments
+            .get_mut(&id2)
+            .unwrap()
+            .targets[0]
+            .owner_instance_id = id2.clone();
+        assert_eq!(
+            ledger.validate(&lease.physical_source_key),
+            Err(SourceCoordinationError::Invalid)
+        );
+        let mut ledger = valid;
+        ledger
+            .operations
+            .get_mut("operation-1")
+            .unwrap()
+            .commitments
+            .get_mut(&id1)
+            .unwrap()
+            .targets
+            .clear();
+        assert_eq!(
+            ledger.validate(&lease.physical_source_key),
+            Err(SourceCoordinationError::Invalid)
+        );
+        assert_eq!(lease.source_revision().unwrap(), SourceRevision::Absent {});
+    }
+}
+
 // #2893 P02: internal readers and pure preparations. No caller publishes these
 // plans yet; the existing whole-settings save remains the production boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -320,11 +320,11 @@ fn p6_is_frozen() {
 #[test]
 fn p7_is_frozen() {
     let pin = Pin {
-        total: 53,
-        distinct: 39,
-        sha256: "95E98325E044EADE7CFE55C2291D6EC942EB42FBFDF4A74CB65657C392F7E37D",
+        total: 56,
+        distinct: 42,
+        sha256: "CD23C8540D512D63508151619F86BA80297EC671CC7B04C0E7D8A3FED488530B",
         per_file: &[
-            ("config/agent_config.rs", 27),
+            ("config/agent_config.rs", 30),
             ("config/local_config_io.rs", 26),
         ],
     };
@@ -334,11 +334,11 @@ fn p7_is_frozen() {
 #[test]
 fn p8_is_frozen() {
     let pin = Pin {
-        total: 176,
-        distinct: 131,
-        sha256: "0F0223D9FB0AC7B64422F53EEBA9E9DDE22768373E40834C94B2AED056FF637C",
+        total: 180,
+        distinct: 135,
+        sha256: "407ACC3D7D1FB0E5DCCD3C6DF50DCE65642B1D1BF850021603344BE660F92D5C",
         per_file: &[
-            ("config/agent_config.rs", 159),
+            ("config/agent_config.rs", 163),
             ("config/local_config_io.rs", 17),
         ],
     };

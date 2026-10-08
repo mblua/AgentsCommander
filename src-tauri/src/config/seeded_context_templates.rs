@@ -685,6 +685,11 @@ fn project_specs() -> [SeededContextTemplateSpec; 5] {
     ]
 }
 
+/// Frozen Windows v1 bytes for exact generated-file migration.
+const HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT: &str = r#"## Host Platform Rules
+
+Windows host session: use `C:\Program Files\Git\bin\bash.exe` for all shell work and every AgentsCommander CLI invocation; from PowerShell wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'`; never capture CLI output without `2>&1 | Out-String`."#;
+
 /// #1605: the three per-EXECUTION-platform `{{HOST_PLATFORM_RULES}}` files
 /// (`Context.platform.<os>.md`), seeded absent-only in project `.ac` roots and
 /// carried through `sync_one_template` with seeded/observed state, edit
@@ -697,7 +702,7 @@ fn platform_specs() -> [SeededContextTemplateSpec; 3] {
             id: "platform.windows",
             filename: crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS,
             label: "Windows host platform rules",
-            current_version: 1,
+            current_version: 2,
             current_content: || crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
             is_known_generated: Some(is_known_generated_platform_windows),
             project_actionable: true,
@@ -795,12 +800,13 @@ fn is_known_generated_standalone_global_template(content: &str) -> bool {
 }
 
 /// #1605: per-platform generated recognizers — equality with the current
-/// platform default const only. A future default change MUST first freeze the
+/// platform default or a frozen historical snapshot. A future default change MUST first freeze the
 /// previous default as a snapshot const and extend the recognizer, so seeded
 /// files auto-update and edited files are preserved with the pending-update
 /// offer.
 fn is_known_generated_platform_windows(content: &str) -> bool {
     content == crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS
+        || content == HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT
 }
 
 fn is_known_generated_platform_linux(content: &str) -> bool {
@@ -3056,7 +3062,10 @@ mod tests {
         ] {
             assert_eq!(spec.id, id);
             assert_eq!(spec.filename, filename);
-            assert_eq!(spec.current_version, 1);
+            assert_eq!(
+                spec.current_version,
+                if id == "platform.windows" { 2 } else { 1 }
+            );
             assert_eq!((spec.current_content)(), default);
             assert!(spec
                 .is_known_generated
@@ -3071,6 +3080,135 @@ mod tests {
 
     fn hash_text(content: &str) -> String {
         sha256_hex(content.as_bytes())
+    }
+
+    #[test]
+    fn windows_platform_defaults_and_historical_recognition_are_byte_exact() {
+        let approved = r#"## Host Platform Rules
+
+Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for all shell work and every AgentsCommander CLI invocation; avoid PowerShell whenever Git Bash is available. Only if PowerShell is unavoidable, wrap with `& 'C:\Program Files\Git\bin\bash.exe' -lc '...'` and capture CLI output with `2>&1 | Out-String`."#;
+        assert_eq!(
+            crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS,
+            approved
+        );
+        assert_eq!(
+            HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT.len(),
+            277
+        );
+        assert_eq!(
+            hash_text(HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT),
+            "5fd5dd5f7d3d097f90e58cee6e6a210e2b2a6070c24e4164a7ac06d3854286a7"
+        );
+        assert_eq!(crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_LINUX,
+            "## Host Platform Rules\n\nThis session runs on a Linux host; no platform-specific shell routing rules apply.");
+        assert_eq!(crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_MACOS,
+            "## Host Platform Rules\n\nThis session runs on a macOS host; no platform-specific shell routing rules apply.");
+        for content in [approved, HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT] {
+            assert!(is_known_generated_platform_windows(content));
+            assert!(!is_known_generated_platform_windows(
+                &content.replacen("Windows", "windows", 1)
+            ));
+            assert!(!is_known_generated_platform_windows(
+                &content.replace('\n', "\r\n")
+            ));
+        }
+    }
+
+    fn write_historical_windows_platform_state(ac_root: &Path) {
+        let state = serde_json::json!({
+            "schemaVersion": 1,
+            "templates": {
+                "platform.windows": {
+                    "templateId": "platform.windows",
+                    "currentVersion": 1,
+                    "lastSeededSha256": hash_text(HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT)
+                }
+            }
+        });
+        std::fs::write(
+            ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME),
+            state.to_string(),
+        )
+        .expect("write historical seeded state");
+    }
+
+    #[test]
+    fn historical_windows_platform_migrates_with_and_without_state() {
+        for trusted in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let ac_root = temp.path().join(".ac");
+            std::fs::create_dir(&ac_root).unwrap();
+            let filename = crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS;
+            std::fs::write(
+                ac_root.join(filename),
+                HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT,
+            )
+            .unwrap();
+            if trusted {
+                write_historical_windows_platform_state(&ac_root);
+            }
+            assert_eq!(
+                sync_for_read_at(&ac_root, filename, fixed_publication_time()).len(),
+                1
+            );
+            let current = crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS;
+            assert_eq!(
+                std::fs::read_to_string(ac_root.join(filename)).unwrap(),
+                current
+            );
+            let state: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(state["templates"]["platform.windows"]["currentVersion"], 2);
+            assert_eq!(
+                state["templates"]["platform.windows"]["lastSeededSha256"],
+                hash_text(current)
+            );
+            assert!(scan_project_context_template_updates(temp.path(), &ac_root)
+                .unwrap()
+                .is_empty());
+            assert!(sync_for_read_at(&ac_root, filename, fixed_publication_time()).is_empty());
+        }
+    }
+
+    #[test]
+    fn historical_windows_customization_is_preserved_with_and_without_state() {
+        for trusted in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let ac_root = temp.path().join(".ac");
+            std::fs::create_dir(&ac_root).unwrap();
+            let filename = crate::config::session_context::HOST_PLATFORM_RULES_FILENAME_WINDOWS;
+            let custom = format!(
+                "{}\nCustom rules",
+                HOST_PLATFORM_RULES_WINDOWS_BEFORE_GIT_BASH_DIRECT
+            );
+            std::fs::write(ac_root.join(filename), &custom).unwrap();
+            if trusted {
+                write_historical_windows_platform_state(&ac_root);
+            }
+            assert!(sync_for_read_at(&ac_root, filename, fixed_publication_time()).is_empty());
+            let updates = scan_project_context_template_updates(temp.path(), &ac_root).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(ac_root.join(filename)).unwrap(),
+                custom
+            );
+            if trusted {
+                assert_eq!(updates.len(), 1);
+                assert_eq!(updates[0].filename, filename);
+                assert_eq!(updates[0].current_default_version, 2);
+            } else {
+                assert!(updates.is_empty());
+                let state_path = ac_root.join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME);
+                if state_path.exists() {
+                    let state: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(state_path).unwrap())
+                            .unwrap();
+                    assert!(state["templates"]["platform.windows"].is_null());
+                }
+            }
+        }
     }
 
     /// #1748: until phase 02 returns the replacements from the public scan, the
@@ -4537,8 +4675,9 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                parsed["templates"][id]["currentVersion"], 1,
-                "{id} state entry must be v1"
+                parsed["templates"][id]["currentVersion"],
+                if id == "platform.windows" { 2 } else { 1 },
+                "{id} state entry must carry the current version"
             );
             assert_eq!(
                 parsed["templates"][id]["lastSeededSha256"],
@@ -4555,7 +4694,7 @@ mod tests {
 
     /// #1625 T-3: `ensure_platform_context_templates` seeds ONLY the missing
     /// platform files, byte-equal to their embedded defaults, with `platform.*`
-    /// state entries v1 carrying the default sha; global/coordinator templates
+    /// state entries at current versions carrying the default sha; global/coordinator templates
     /// are never touched (scope is platform-only). A pre-existing custom
     /// platform file is preserved and stays unowned (silent preservation via
     /// `suppress_unknown_without_state`).
@@ -4587,7 +4726,7 @@ mod tests {
         };
 
         // Fresh `.ac`: all three platform files are created byte-equal to their
-        // embedded defaults and the state records three `platform.*` entries v1
+        // embedded defaults and the state records Windows v2 and Linux/macOS v1
         // with `lastSeededSha256` = hash of the default.
         let temp = tempfile::tempdir().expect("tempdir");
         let fresh = temp.path().join(".ac");
@@ -4618,8 +4757,9 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                parsed["templates"][id]["currentVersion"], 1,
-                "{id} state entry must be v1"
+                parsed["templates"][id]["currentVersion"],
+                if id == "platform.windows" { 2 } else { 1 },
+                "{id} state entry must carry the current version"
             );
             assert_eq!(
                 parsed["templates"][id]["lastSeededSha256"],
@@ -4732,7 +4872,7 @@ mod tests {
             updates[0].current_default_sha256,
             hash_text(crate::config::session_context::DEFAULT_HOST_PLATFORM_RULES_WINDOWS)
         );
-        assert_eq!(updates[0].current_default_version, 1);
+        assert_eq!(updates[0].current_default_version, 2);
         assert_eq!(
             std::fs::read_to_string(ac_root.join(filename)).expect("re-read edited platform file"),
             edited,
