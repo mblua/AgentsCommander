@@ -4699,10 +4699,13 @@ mod pair_activity_tests {
     #[test]
     fn pair_activity_preflight_precedes_state_sidecars_and_holds_decisions_lease() {
         let f = Fixture::new(false);
+        let parent = f.root.path().canonicalize().unwrap();
+        let state_lock = config_lock_path(&parent, &f.s()).unwrap();
+        let reservation_lock = config_lock_path(&parent, &f.r()).unwrap();
         let called = Cell::new(false);
         let preflight = || {
-            assert!(!lock_sidecar_path(&f.s()).exists());
-            assert!(!lock_sidecar_path(&f.r()).exists());
+            assert!(!state_lock.exists());
+            assert!(!reservation_lock.exists());
             assert!(acquire_config_file_write_lock(&f.d(), Duration::from_millis(20)).is_err());
             called.set(true);
             Err("ignore preflight refused".to_string())
@@ -4725,8 +4728,8 @@ mod pair_activity_tests {
         assert!(called.get());
         assert_eq!(f.tuple(), before);
         assert!(!f.r().exists());
-        assert!(!lock_sidecar_path(&f.s()).exists());
-        assert!(!lock_sidecar_path(&f.r()).exists());
+        assert!(!state_lock.exists());
+        assert!(!reservation_lock.exists());
         std::fs::write(f.r(), b"{invalid").unwrap();
         called.set(false);
         assert!(update_config_pair_guarded(
@@ -4744,8 +4747,8 @@ mod pair_activity_tests {
         .is_err());
         assert!(!called.get());
         assert_eq!(std::fs::read(f.r()).unwrap(), b"{invalid");
-        assert!(!lock_sidecar_path(&f.s()).exists());
-        assert!(!lock_sidecar_path(&f.r()).exists());
+        assert!(!state_lock.exists());
+        assert!(!reservation_lock.exists());
     }
 
     #[test]
