@@ -213,14 +213,25 @@ pub fn set_last_coding_agent(
 /// D2). Monotonic: a stored value that is already at or after `at_rfc3339` is
 /// kept. Returns whether the file now carries `at_rfc3339`.
 pub fn set_last_agent_message_at(repo_path: &str, at_rfc3339: &str) -> Result<bool, String> {
+    chrono::DateTime::parse_from_rfc3339(at_rfc3339)
+        .map_err(|_| "invalidActivityTimestamp: expected RFC3339".to_string())?;
     let local_dir_name = crate::config::agent_local_dir_name();
     let instance_dir = Path::new(repo_path).join(local_dir_name.as_str());
     std::fs::create_dir_all(&instance_dir)
         .map_err(|e| format!("Failed to create {} dir: {}", local_dir_name, e))?;
     let path = instance_dir.join("config.json");
 
+    let inserted = activity_only_update(&path, at_rfc3339)?;
+
+    log::debug!("lastAgentMessageAt for {}: {} (inserted: {})", repo_path, at_rfc3339, inserted);
+    Ok(inserted)
+}
+
+/// Activity has a distinct pending path: PAIR locks only, no cleanup, split
+/// marker or journal. Outside a reservation the ordinary legacy policy stays.
+fn activity_only_update(path: &Path, at_rfc3339: &str) -> Result<bool, String> {
     let inserted = std::cell::Cell::new(false);
-    update_agent_config(&path, |_decisions, state| {
+    update_agent_config_with_activity(path, production_journal_dir().as_deref(), &|_| {}, |_decisions, state| {
         let tooling = ensure_object(state, "tooling", &path);
         let stored_is_not_older = tooling
             .get("lastAgentMessageAt")
@@ -237,23 +248,32 @@ pub fn set_last_agent_message_at(repo_path: &str, at_rfc3339: &str) -> Result<bo
         );
         inserted.set(true);
         Ok(())
-    })?;
-
-    log::debug!(
-        "lastAgentMessageAt for {}: {} (inserted: {})",
-        repo_path,
-        at_rfc3339,
-        inserted.get()
-    );
+    }, Some((at_rfc3339, &inserted)))?;
     Ok(inserted.get())
 }
 
 /// #1682 - the stored stamp for `repo_path`, or `None` when the file is absent,
-/// unparseable, or carries no `tooling.lastAgentMessageAt`. Never validates the
-/// string: rendering owns that.
+/// unparseable, or carries no `tooling.lastAgentMessageAt`. Reads the greatest
+/// landed valid state/legacy timestamp; invalid legacy-only data stays visible.
 pub fn read_last_agent_message_at(repo_path: &str) -> Option<String> {
     let dir = Path::new(repo_path).join(crate::config::agent_local_dir_name().as_str());
-    read_agent_local_config(&dir).and_then(|cfg| cfg.tooling.last_agent_message_at)
+    // Read only landed state and tracked legacy stamps. A pending activity
+    // intent must never be advertised before its state publish.
+    let mut maximum: Option<(chrono::DateTime<chrono::FixedOffset>, String)> = None;
+    for path in [dir.join("config.json"), state_file_path(&dir)] {
+        let value = std::fs::read(&path).ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| value.get("tooling")?.get("lastAgentMessageAt")?.as_str().map(str::to_string));
+        if let Some(value) = value {
+            if let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(&value) {
+                if maximum.as_ref().is_none_or(|(old, _)| timestamp > *old) {
+                    maximum = Some((timestamp, value));
+                }
+            }
+        }
+    }
+    maximum.map(|(_, value)| value)
+        .or_else(|| read_agent_local_config(&dir).and_then(|cfg| cfg.tooling.last_agent_message_at))
 }
 
 // ── State file loader (#2786, C1) ───────────────────────────────────────────
@@ -1210,12 +1230,18 @@ fn update_agent_config_with_stage<F>(
 where
     F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
 {
-    // The state file must be ignored before anything can write one. A file
-    // outside an `.ac` tree has no `.gitignore` of ours.
-    if let Some(ac_root) = nearest_ac_root(decisions) {
-        ensure_config_state_ignore_rows(ac_root)?;
-    }
+    update_agent_config_with_activity(decisions, journal_dir, on_stage, mutate, None)
+}
 
+fn update_agent_config_with_activity<F>(
+    decisions: &Path,
+    journal_dir: Option<&Path>,
+    on_stage: &dyn Fn(&str),
+    mutate: F,
+    activity: Option<(&str, &std::cell::Cell<bool>)>,
+) -> Result<(), String>
+where F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
     let parent = decisions.parent().ok_or_else(|| {
         format!(
             "Local config {} has no parent directory",
@@ -1225,21 +1251,30 @@ where
     let state = state_file_path(parent);
     let moved = std::cell::RefCell::new(Vec::new());
     let overridden = std::cell::RefCell::new(Vec::new());
-    let cleanup = |d: &mut JsonMap, s: &mut JsonMap| absorb_state_keys(d, s, &moved, &overridden);
+    let cleanup = |d: &mut JsonMap, s: &mut JsonMap| {
+        // Pending writers never enter cleanup or change ignore/journal files.
+        if let Some(ac_root) = nearest_ac_root(decisions) {
+            ensure_config_state_ignore_rows(ac_root)?;
+        }
+        absorb_state_keys(d, s, &moved, &overridden)
+    };
     // The marker is stamped here and nowhere else: the cleanup has published
     // the clean tracked file before `mutate` runs.
-    let wrapped = |d: &mut JsonMap, s: &mut JsonMap| {
-        mutate(d, s)?;
+    let finish = |s: &mut JsonMap| {
         stamp_split_marker(s);
         Ok(())
     };
-    crate::config::local_config_io::update_config_pair(
+    let reservation = parent.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME);
+    crate::config::local_config_io::update_config_pair_guarded(
         decisions,
         &state,
+        &reservation,
         &STATE_KEYS,
         Some(&cleanup),
         on_stage,
-        wrapped,
+        mutate,
+        &finish,
+        activity,
     )?;
 
     for (key, state_value, tracked_value) in overridden.into_inner() {
@@ -1293,10 +1328,37 @@ pub(crate) fn execute_identity_reference_pair(
     let parent = decisions.parent().ok_or(
         crate::config::local_config_io::PreparedPairError::InvalidPlan("PAIR target has no parent"),
     )?;
-    crate::config::local_config_io::execute_prepared_config_pair(
+    crate::config::local_config_io::execute_unreserved_config_pair(
         decisions,
         &state_file_path(parent),
+        &parent.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME),
         plan,
+    )
+}
+
+/// Inventory/C/source authorization precedes this boundary. Pure cleanup and
+/// caller preparation run inside the same PAIR segment as packet publication.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn prepare_and_reserve_identity_reference_pair<F>(
+    decisions: &Path,
+    request: &crate::config::local_config_io::PairReservationRequest,
+    mutate: F,
+) -> Result<(crate::config::local_config_io::PairReservation,
+    crate::config::local_config_io::PairReservationRole), crate::config::local_config_io::PreparedPairError>
+where F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
+    use crate::config::local_config_io::PreparedPairError;
+    let parent = decisions.parent().ok_or(PreparedPairError::InvalidPlan("PAIR target has no parent"))?;
+    if let Some(ac_root) = nearest_ac_root(decisions) {
+        ensure_config_state_ignore_rows(ac_root).map_err(PreparedPairError::Preparation)?;
+    }
+    let moved = std::cell::RefCell::new(Vec::new());
+    let overridden = std::cell::RefCell::new(Vec::new());
+    let cleanup = |d: &mut JsonMap, s: &mut JsonMap| absorb_state_keys(d, s, &moved, &overridden);
+    crate::config::local_config_io::prepare_and_reserve_config_pair(
+        decisions, &state_file_path(parent),
+        &parent.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME),
+        request, Some(&cleanup), |d, s| { mutate(d, s)?; stamp_split_marker(s); Ok(()) },
     )
 }
 
@@ -1319,10 +1381,18 @@ fn ensure_config_state_ignore_rows(ac_root: &Path) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(io("read", e)),
     };
-    let blocks = crate::config::naming_migration::missing_ignore_rows(
+    let mut blocks = crate::config::naming_migration::missing_ignore_rows(
         &content,
         &crate::config::naming_migration::config_state_ignore_rows(),
     );
+    use crate::config::instance_artifacts::{CONFIG_IDENTITY_RESERVATION_NAME,
+        CONFIG_IDENTITY_RESERVATION_LOCK, CONFIG_IDENTITY_RESERVATION_TMP};
+    for name in [CONFIG_IDENTITY_RESERVATION_NAME, CONFIG_IDENTITY_RESERVATION_LOCK, CONFIG_IDENTITY_RESERVATION_TMP] {
+        let row = format!("**/{name}");
+        if !content.lines().any(|line| line == row) {
+            blocks.push_str(&format!("# AgentsCommander: private PAIR reservation state\n{row}\n"));
+        }
+    }
     if blocks.is_empty() {
         return Ok(());
     }
@@ -4477,5 +4547,78 @@ mod tests {
         c4_tracked_is_clean(&tracked, "site 2");
         c4_state_is(&c4_state_path(&tracked), C4_STATE_AFTER_SITE_2, "site 2");
         assert_eq!(stored(&dir2)["repos"], json!(["repo-a"]));
+    }
+}
+
+#[cfg(test)]
+mod pair_activity_tests {
+    use super::*;
+    use crate::config::local_config_io::{execute_reserved_config_pair, protected_config_pair_revision,
+        read_config_pair_physical, PairReservationRequest};
+    use serde_json::json;
+
+    const T1: &str = "2026-10-08T01:00:00Z";
+    const T2: &str = "2026-10-08T02:00:00Z";
+    const T3: &str = "2026-10-08T03:00:00Z";
+
+    fn prepare(root: &Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let instance = root.join(crate::config::agent_local_dir_name());
+        std::fs::create_dir_all(&instance).unwrap();
+        let d = instance.join("config.json"); let s = state_file_path(&instance);
+        std::fs::write(&d, serde_json::to_vec(&json!({"name":"before","tooling":{"lastAgentMessageAt":T1}})).unwrap()).unwrap();
+        assert_eq!(set_last_agent_message_at(root.to_str().unwrap(), T1), Ok(false));
+        let before = [read_config_pair_physical(&d).unwrap(), read_config_pair_physical(&s).unwrap()];
+        let request = PairReservationRequest { operation_id: "operation-1".into(), source_physical_key: "source-key".into(),
+            owner_instance_id: "C1".into(), mappings_digest: "a".repeat(64), before_protected: protected_config_pair_revision(&before).unwrap() };
+        prepare_and_reserve_identity_reference_pair(&d, &request, |d, _| { d.insert("name".into(), json!("after")); Ok(()) }).unwrap();
+        let r = instance.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME);
+        (d, s, r)
+    }
+
+    #[test]
+    fn pair_activity_public_setter_history_selection_noop_and_root_unchanged() {
+        let root = tempfile::tempdir().unwrap(); let repo = root.path().to_str().unwrap();
+        let root_config = root.path().join("config.json");
+        std::fs::write(&root_config, br#"{"tooling":{"lastAgentMessageAt":"2026-10-08T00:00:00Z"},"unknown":null}"#).unwrap();
+        let root_bytes = std::fs::read(&root_config).unwrap();
+        let (d, s, r) = prepare(root.path()); let d_bytes = std::fs::read(&d).unwrap();
+        assert_eq!(set_last_agent_message_at(repo, T2), Ok(true));
+        assert_eq!(set_last_agent_message_at(repo, T3), Ok(true));
+        assert_eq!(set_last_agent_message_at(repo, T1), Ok(false));
+        assert_eq!(read_last_agent_message_at(repo).as_deref(), Some(T3));
+        let s_bytes = std::fs::read(&s).unwrap(); let r_bytes = std::fs::read(&r).unwrap();
+        update_agent_config(&d, |_, _| Ok(())).unwrap();
+        let error = set_last_coding_agent(repo, "claude", "Claude Code", Some("sid"), None).unwrap_err();
+        assert!(error.contains("targetTransitionPending"));
+        let error = update_existing_agent_config(&d, |d, _| {
+            d.get_mut("tooling").unwrap().as_object_mut().unwrap().insert("selectionLocked".into(), json!(true)); Ok(())
+        }).unwrap_err(); assert!(error.contains("targetTransitionPending"));
+        assert!(set_last_agent_message_at(repo, "invalid").is_err());
+        assert_eq!(std::fs::read(&d).unwrap(), d_bytes); assert_eq!(std::fs::read(&s).unwrap(), s_bytes);
+        assert_eq!(std::fs::read(&r).unwrap(), r_bytes); assert_eq!(std::fs::read(&root_config).unwrap(), root_bytes);
+        execute_reserved_config_pair(&d, &s, &r, "operation-1", "C1").unwrap();
+        assert_eq!(read_last_agent_message_at(repo).as_deref(), Some(T3));
+        assert_eq!(std::fs::read(root_config).unwrap(), root_bytes);
+    }
+
+    #[test]
+    fn pair_activity_reader_landed_max_never_announces_intent_only_stamp() {
+        let root = tempfile::tempdir().unwrap(); let repo = root.path().to_str().unwrap();
+        let (d, s, r) = prepare(root.path());
+        let mut packet: serde_json::Value = serde_json::from_slice(&std::fs::read(&r).unwrap()).unwrap();
+        packet["activityIntent"] = json!({"beforeTimestampPhysical":{"kind":"value","value":T1},
+            "afterTimestamp":T3,"floorBefore":T1});
+        std::fs::write(&r, serde_json::to_vec(&packet).unwrap()).unwrap();
+        assert_eq!(read_last_agent_message_at(repo).as_deref(), Some(T1));
+        assert_eq!(set_last_agent_message_at(repo, T2), Ok(false));
+        assert_eq!(read_last_agent_message_at(repo).as_deref(), Some(T3));
+        let landed: serde_json::Value = serde_json::from_slice(&std::fs::read(&s).unwrap()).unwrap();
+        assert_eq!(landed["tooling"]["lastAgentMessageAt"], json!(T3));
+        let d_before = std::fs::read(&d).unwrap();
+        // The reader chooses max even when the legacy split marker would have
+        // caused the old merged projection to prefer the tracked timestamp.
+        std::fs::write(&d, serde_json::to_vec(&json!({"tooling":{"lastAgentMessageAt":T1}})).unwrap()).unwrap();
+        assert_eq!(read_last_agent_message_at(repo).as_deref(), Some(T3));
+        assert_ne!(std::fs::read(&d).unwrap(), d_before);
     }
 }

@@ -441,6 +441,16 @@ pub(crate) const IDENTITY_TRANSITION_TMP_GLOB: &str = concat!(
     ".*.tmp"
 );
 
+/// Private PAIR packet and stable lock; a complete packet is the reservation.
+pub(crate) const CONFIG_IDENTITY_RESERVATION_NAME: &str =
+    layered_name!("config-identity-reservation", state, no_git, "json");
+pub(crate) const CONFIG_IDENTITY_RESERVATION_LOCK: &str = concat!(
+    ".", layered_name!("config-identity-reservation", state, no_git, "json"), ".lock"
+);
+pub(crate) const CONFIG_IDENTITY_RESERVATION_TMP: &str = concat!(
+    ".", layered_name!("config-identity-reservation", state, no_git, "json"), ".*.tmp"
+);
+
 /// #2713 - the naming-migration journal, which is also its completion marker:
 /// one file, so there is one source of truth. `config::naming_migration` owns it.
 pub(crate) const NAMING_MIGRATION_STATE_NAME: &str =
@@ -532,6 +542,8 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: private identity intent journal lock; created once and never deleted",
     },
     InstanceArtifact { name: SOURCE_REGISTERED_INSTANCE_LOCK, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
+    InstanceArtifact { name: CONFIG_IDENTITY_RESERVATION_TMP, kind: ArtifactKind::Glob, disposition: Disposition::Ignore, comment: "# AgentsCommander: PAIR reservation packet write temporaries" },
+    InstanceArtifact { name: CONFIG_IDENTITY_RESERVATION_LOCK, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: stable PAIR reservation locks; never deleted" },
     InstanceArtifact {
         name: NAMING_MIGRATION_LOCK_NAME,
         kind: ArtifactKind::File,
@@ -749,6 +761,7 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: immutable byte-exact backup of the pre-migration coding-agent source",
     },
     InstanceArtifact { name: SOURCE_CATALOG_LEDGER_ARTIFACT, kind: ArtifactKind::RootRelativeGlob, disposition: Disposition::Ignore, comment: "# AgentsCommander: source coordination metadata and stable locks" },
+    InstanceArtifact { name: CONFIG_IDENTITY_RESERVATION_NAME, kind: ArtifactKind::File, disposition: Disposition::Ignore, comment: "# AgentsCommander: private PAIR reservation and original recovery images" },
     InstanceArtifact {
         name: CONTEXT_CACHE_DIR_NAME,
         kind: ArtifactKind::Dir,
@@ -1047,6 +1060,20 @@ pub(crate) fn matches_atomic_write_tmp_glob(file_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pair_activity_artifact_names_and_ignore_registry() {
+        ignore_rows_are_unique_and_byte_sorted_by_name();
+        assert_eq!(CONFIG_IDENTITY_RESERVATION_NAME, "config-identity-reservation.state.no-git.json");
+        assert_eq!(CONFIG_IDENTITY_RESERVATION_LOCK, format!(".{CONFIG_IDENTITY_RESERVATION_NAME}.lock"));
+        assert_eq!(CONFIG_IDENTITY_RESERVATION_TMP, format!(".{CONFIG_IDENTITY_RESERVATION_NAME}.*.tmp"));
+        for name in [CONFIG_IDENTITY_RESERVATION_NAME, CONFIG_IDENTITY_RESERVATION_LOCK, CONFIG_IDENTITY_RESERVATION_TMP] {
+            assert_eq!(INSTANCE_ARTIFACTS.iter().filter(|row| row.name == name && row.disposition == Disposition::Ignore).count(), 1);
+        }
+        // Per-target any-depth rows are appended by the PAIR owner. The
+        // generated instance registry keeps its existing anchored policy.
+        exactly_one_any_depth_row_exists();
+    }
 
     #[test]
     fn prepared_identity_journal_names_and_ignore_registry() {
