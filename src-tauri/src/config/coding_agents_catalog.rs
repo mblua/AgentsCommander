@@ -5727,18 +5727,16 @@ mod tests {
             std::time::SystemTime,
             Vec<u8>,
         )> {
-            fn visit(
-                root: &std::path::Path,
-                path: &std::path::Path,
-                rows: &mut Vec<(
-                    std::path::PathBuf,
-                    bool,
-                    u64,
-                    bool,
-                    std::time::SystemTime,
-                    Vec<u8>,
-                )>,
-            ) {
+            #[cfg(test)]
+            type TreeInventoryRows = Vec<(
+                std::path::PathBuf,
+                bool,
+                u64,
+                bool,
+                std::time::SystemTime,
+                Vec<u8>,
+            )>;
+            fn visit(root: &std::path::Path, path: &std::path::Path, rows: &mut TreeInventoryRows) {
                 let metadata = std::fs::symlink_metadata(path).unwrap();
                 assert!(!metadata.file_type().is_symlink());
                 rows.push((
@@ -9455,18 +9453,16 @@ mod tests {
             std::time::SystemTime,
             Vec<u8>,
         )> {
-            fn visit(
-                root: &std::path::Path,
-                path: &std::path::Path,
-                rows: &mut Vec<(
-                    std::path::PathBuf,
-                    bool,
-                    u64,
-                    bool,
-                    std::time::SystemTime,
-                    Vec<u8>,
-                )>,
-            ) {
+            #[cfg(test)]
+            type TreeInventoryRows = Vec<(
+                std::path::PathBuf,
+                bool,
+                u64,
+                bool,
+                std::time::SystemTime,
+                Vec<u8>,
+            )>;
+            fn visit(root: &std::path::Path, path: &std::path::Path, rows: &mut TreeInventoryRows) {
                 let metadata = std::fs::symlink_metadata(path).unwrap();
                 assert!(!metadata.file_type().is_symlink());
                 rows.push((
