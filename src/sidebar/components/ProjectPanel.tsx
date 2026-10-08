@@ -1,5 +1,4 @@
-import { createTaskStatusTooltip } from "../../shared/task-status-tooltip";
-import { Accessor, Component, For, Show, createEffect, createMemo, createSignal, createUniqueId, on, onMount, onCleanup, untrack } from "solid-js";
+import { Accessor, Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings, UnresolvedLoopTarget, CoManagedState, OffReason } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, CoManagedAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
@@ -442,55 +441,12 @@ function remoteActivityClasses(sourcePath: string): string {
   }`;
 }
 
-// Sidebar retains snapshot ownership and adapts the shared tooltip interaction.
-const SidebarTaskLabel: Component<{ room: string; text: string; class: string; testId?: string; state?: string }> = (props) => {
-  const tooltipStatus = createMemo(() => projectStore.taskSnapshot(props.room)?.status ?? null);
-  const tooltipId = createUniqueId();
-  let titleAnchor: HTMLSpanElement | undefined;
-  let tooltipElement: HTMLDivElement | undefined;
-  const tooltip = createTaskStatusTooltip({
-    status: tooltipStatus, titleAnchor: () => titleAnchor, tooltipElement: () => tooltipElement,
-  });
-  const { open: tooltipOpen, visible: tooltipVisible, position: tooltipPosition,
-    enter: enterTooltip, leave: leaveTooltip } = tooltip;
-  const dismissTooltip = (event: KeyboardEvent) => {
-    if (tooltipStatus() !== null) tooltip.dismiss(event);
-  };
-  const tooltipKeyDown = (event: KeyboardEvent) => tooltip.keyDown(event, tooltipStatus() !== null);
-  createEffect(() => {
-    const snapshot = projectStore.taskSnapshot(props.room);
-    const status = tooltipStatus();
-    untrack(() => {
-      if (snapshot?.status === null) tooltip.resetDismissal();
-      if (status === null) tooltip.hideUnavailable();
-      else tooltip.openIfActive();
-    });
-  });
-  createEffect(on(() => props.room, () => tooltip.resetIdentity()));
-  createEffect(() => {
-    if (!tooltipOpen()) return;
-    tooltipStatus();
-    tooltip.schedulePosition();
-  });
-  onMount(() => document.addEventListener("keydown", dismissTooltip, true));
-  onCleanup(() => document.removeEventListener("keydown", dismissTooltip, true));
-
-  return <>
-    <span ref={titleAnchor} class={props.class + " sidebar-task-label"} tabIndex={0}
-      data-ac-testid={props.testId} data-ac-role={props.testId ? "text" : undefined} data-ac-state={props.state}
-      aria-describedby={tooltipStatus() !== null ? tooltipId : undefined}
-      onPointerEnter={() => enterTooltip("title")} onPointerLeave={() => leaveTooltip("title")}
-      onFocus={tooltip.focus}
-      onBlur={tooltip.blur}
-      onKeyDown={tooltipKeyDown}>{props.text}</span>
-    <Show when={tooltipStatus() !== null}>
-      <Portal><div id={tooltipId} ref={tooltipElement} role="tooltip" class="sidebar-task-tooltip"
-        style={{ display: tooltipOpen() && tooltipVisible() ? "block" : "none", left: tooltipPosition().left + "px", top: tooltipPosition().top + "px",
-          "max-width": tooltipPosition().width + "px", "max-height": tooltipPosition().height + "px" }}
-        onPointerEnter={() => enterTooltip("tooltip")} onPointerLeave={() => leaveTooltip("tooltip")}>{tooltipStatus()}</div></Portal>
-    </Show>
-  </>;
-};
+const SidebarTaskLabel: Component<{ text: string; class: string; testId?: string; state?: string }> = (props) => (
+  <span class={props.class + " sidebar-task-label"} tabIndex={0}
+    data-ac-testid={props.testId} data-ac-role={props.testId ? "text" : undefined} data-ac-state={props.state}>
+    {props.text}
+  </span>
+);
 
 function taskCleanDisabled(room: string): boolean {
   const snapshot = projectStore.taskSnapshot(room);
@@ -3016,7 +2972,7 @@ const ProjectPanel: Component = () => {
               <div class="replica-item-info">
                 <Show when={taskTitle}>
                   <div class="coord-task-line">
-                    <SidebarTaskLabel room={wg.path} class="coord-task-title" text={taskTitle ?? ""} />
+                    <SidebarTaskLabel class="coord-task-title" text={taskTitle ?? ""} />
                     <Show when={showRaiseHand()}>
                       <span
                         class="coord-communication-slot"
@@ -3244,7 +3200,7 @@ const ProjectPanel: Component = () => {
                   </Show>
                   <span class="ac-wg-name">{wg.name}</span>
                   <Show when={wg.taskTitle?.trim() || stripFrontmatter(wg.taskTitle ?? "").trim()}>
-                    {(text) => <SidebarTaskLabel room={wg.path} class="ac-wg-task" text={text()}
+                    {(text) => <SidebarTaskLabel class="ac-wg-task" text={text()}
                       testId={`workgroup.taskTitle.${projectAutomationId()}.${automationIdPart(rowContext)}.${automationIdPart(wg.name)}`}
                       state={isTaskClean(wg.taskTitle) ? "clean" : "task"} />}
                   </Show>
