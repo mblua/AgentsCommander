@@ -411,6 +411,20 @@ pub(crate) const AGENTS_INSTANCE_FILE_NAME: &str = AGENTS_INSTANCE_TARGET_NAME;
 pub(crate) const AGENTS_INSTANCE_TMP_GLOB: &str =
     concat!(layered_name!("agents", instance, no_git, "json"), ".*.tmp");
 
+/// Private identity intent journal; working state has no competing layer.
+pub(crate) const IDENTITY_TRANSITION_STATE_NAME: &str =
+    layered_name!("coding-agent-identity-transition", state, no_git, "json");
+pub(crate) const IDENTITY_TRANSITION_LOCK_NAME: &str = concat!(
+    ".",
+    layered_name!("coding-agent-identity-transition", state, no_git, "json"),
+    ".lock"
+);
+pub(crate) const IDENTITY_TRANSITION_TMP_GLOB: &str = concat!(
+    ".",
+    layered_name!("coding-agent-identity-transition", state, no_git, "json"),
+    ".*.tmp"
+);
+
 /// #2713 - the naming-migration journal, which is also its completion marker:
 /// one file, so there is one source of truth. `config::naming_migration` owns it.
 pub(crate) const NAMING_MIGRATION_STATE_NAME: &str =
@@ -488,6 +502,18 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: transient API client registry write temporaries",
+    },
+    InstanceArtifact {
+        name: IDENTITY_TRANSITION_TMP_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: private identity intent journal write temporaries",
+    },
+    InstanceArtifact {
+        name: IDENTITY_TRANSITION_LOCK_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: private identity intent journal lock; created once and never deleted",
     },
     InstanceArtifact {
         name: NAMING_MIGRATION_LOCK_NAME,
@@ -630,6 +656,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::Dir,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: per-agent isolated coding-agent home trees",
+    },
+    InstanceArtifact {
+        name: IDENTITY_TRANSITION_STATE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: private identity intent journal and original recovery images; never user content",
     },
     InstanceArtifact {
         name: CODING_AGENT_REQUESTS_DIR_NAME,
@@ -993,6 +1025,34 @@ pub(crate) fn matches_atomic_write_tmp_glob(file_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_identity_journal_names_and_ignore_registry() {
+        ignore_rows_are_unique_and_byte_sorted_by_name();
+        assert_eq!(
+            IDENTITY_TRANSITION_STATE_NAME,
+            "coding-agent-identity-transition.state.no-git.json"
+        );
+        assert_eq!(
+            IDENTITY_TRANSITION_LOCK_NAME,
+            format!(".{IDENTITY_TRANSITION_STATE_NAME}.lock")
+        );
+        assert_eq!(
+            IDENTITY_TRANSITION_TMP_GLOB,
+            format!(".{IDENTITY_TRANSITION_STATE_NAME}.*.tmp")
+        );
+        for name in [
+            IDENTITY_TRANSITION_STATE_NAME,
+            IDENTITY_TRANSITION_LOCK_NAME,
+            IDENTITY_TRANSITION_TMP_GLOB,
+        ] {
+            let row = INSTANCE_ARTIFACTS
+                .iter()
+                .find(|row| row.name == name)
+                .expect("private artifact registered");
+            assert_eq!(row.disposition, Disposition::Ignore);
+        }
+    }
 
     const COMMENT_PREFIX: &str = "# AgentsCommander: ";
     const GIT_WILDCARDS: [char; 4] = ['*', '?', '[', ']'];

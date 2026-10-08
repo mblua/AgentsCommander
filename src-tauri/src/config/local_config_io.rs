@@ -432,6 +432,314 @@ where
     )
 }
 
+/// Exact private disk image. Absence is distinct from an existing empty object.
+/// Bytes are recovery authority; the digest is checked when a plan is executed.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+pub(crate) enum PhysicalState {
+    Absent,
+    Bytes { sha256: String, bytes: Vec<u8> },
+}
+
+impl PhysicalState {
+    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+    pub(crate) fn from_bytes(bytes: Vec<u8>) -> Self {
+        use sha2::{Digest, Sha256};
+        Self::Bytes {
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            bytes,
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+    fn map(&self) -> Result<Map<String, Value>, PreparedPairError> {
+        match self {
+            Self::Absent => Ok(Map::new()),
+            Self::Bytes { bytes, .. } => {
+                if Self::from_bytes(bytes.clone()) != *self {
+                    return Err(PreparedPairError::InvalidPlan("physical digest mismatch"));
+                }
+                match serde_json::from_slice(bytes) {
+                    Ok(Value::Object(map)) => Ok(map),
+                    _ => Err(PreparedPairError::InvalidPlan(
+                        "physical image must be a JSON object",
+                    )),
+                }
+            }
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+pub(crate) fn read_config_pair_physical(path: &Path) -> Result<PhysicalState, PreparedPairError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+            return Err(PreparedPairError::Io(
+                "PAIR target must be a regular non-symlink file".into(),
+            ));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PhysicalState::Absent),
+        Err(e) => return Err(PreparedPairError::Io(e.to_string())),
+    }
+    std::fs::read(path)
+        .map(PhysicalState::from_bytes)
+        .map_err(|e| PreparedPairError::Io(e.to_string()))
+}
+
+/// T0=(D0,S0), T1=(D0,Sc), T2=(Dc,Sc), T3=(Dc,Sf), T4=(Df,Sf).
+/// No locator, callback or journal is persisted here. The authorized caller
+/// supplies the target and persists this private plan in its own protocol.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+pub(crate) struct PreparedConfigPairPlan {
+    stages: [[PhysicalState; 2]; 5],
+}
+
+impl PreparedConfigPairPlan {
+    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+    pub(crate) fn stages(&self) -> &[[PhysicalState; 2]; 5] {
+        &self.stages
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+    fn validate(&self) -> Result<(), PreparedPairError> {
+        for tuple in &self.stages {
+            for image in tuple {
+                image.map()?;
+            }
+        }
+        for (stage, changed_side) in [(1, 1), (2, 0), (3, 1), (4, 0)] {
+            if self.stages[stage][1 - changed_side] != self.stages[stage - 1][1 - changed_side]
+                || (self.stages[stage][changed_side] == PhysicalState::Absent
+                    && self.stages[stage - 1][changed_side] != PhysicalState::Absent)
+            {
+                return Err(PreparedPairError::InvalidPlan(
+                    "invalid ordered PAIR images",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+pub(crate) enum PreparedPairError {
+    InvalidPlan(&'static str),
+    Preparation(String),
+    Conflict,
+    Io(String),
+}
+
+impl std::fmt::Display for PreparedPairError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidPlan(reason) => write!(f, "invalidPreparedPair: {reason}"),
+            Self::Preparation(reason) => write!(f, "preparedPairRejected: {reason}"),
+            Self::Conflict => {
+                f.write_str("preparedPairConflict: current tuple is not an authorized stage")
+            }
+            Self::Io(reason) => write!(f, "preparedPairIo: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for PreparedPairError {}
+
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+fn prepared_pair_image(
+    previous: &PhysicalState,
+    before: &Map<String, Value>,
+    after: &Map<String, Value>,
+) -> Result<PhysicalState, PreparedPairError> {
+    if before == after {
+        return Ok(previous.clone());
+    }
+    let mut bytes = serde_json::to_vec_pretty(after)
+        .map_err(|e| PreparedPairError::Preparation(e.to_string()))?;
+    bytes.push(b'\n');
+    Ok(PhysicalState::from_bytes(bytes))
+}
+
+/// Pure preparation. Both closures finish before any publish. Reuses the
+/// writer's map equality and pretty+newline serializer; untouched bytes survive.
+/// Closures must only edit the supplied maps, never enter another writer.
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+pub(crate) fn prepare_config_pair_plan<F>(
+    before: [PhysicalState; 2],
+    cleanup: Option<ConfigPairCleanup<'_>>,
+    mutate: F,
+) -> Result<PreparedConfigPairPlan, PreparedPairError>
+where
+    F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
+{
+    let _writer = ConfigWriterActive::enter("prepare_config_pair_plan")
+        .map_err(PreparedPairError::Preparation)?;
+    let mut decisions = before[0].map()?;
+    let mut state = before[1].map()?;
+    let original_decisions = decisions.clone();
+    let original_state = state.clone();
+    if let Some(cleanup) = cleanup {
+        cleanup(&mut decisions, &mut state).map_err(PreparedPairError::Preparation)?;
+    }
+    let dc = prepared_pair_image(&before[0], &original_decisions, &decisions)?;
+    let sc = prepared_pair_image(&before[1], &original_state, &state)?;
+    let clean_decisions = decisions.clone();
+    let clean_state = state.clone();
+    mutate(&mut decisions, &mut state).map_err(PreparedPairError::Preparation)?;
+    let df = prepared_pair_image(&dc, &clean_decisions, &decisions)?;
+    let sf = prepared_pair_image(&sc, &clean_state, &state)?;
+    Ok(PreparedConfigPairPlan {
+        stages: [
+            before.clone(),
+            [before[0].clone(), sc.clone()],
+            [dc.clone(), sc],
+            [dc, sf.clone()],
+            [df, sf],
+        ],
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+pub(crate) fn execute_prepared_config_pair(
+    decisions: &Path,
+    state: &Path,
+    plan: &PreparedConfigPairPlan,
+) -> Result<(), PreparedPairError> {
+    execute_prepared_config_pair_with_stage(decisions, state, plan, &|_| Ok(()))
+}
+
+/// One lock acquisition per side, for the whole execution. The stage seam is
+/// private and exercises partial failure in the production execution body.
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+fn execute_prepared_config_pair_with_stage(
+    decisions: &Path,
+    state: &Path,
+    plan: &PreparedConfigPairPlan,
+    on_stage: &dyn Fn(usize) -> Result<(), PreparedPairError>,
+) -> Result<(), PreparedPairError> {
+    let _writer = ConfigWriterActive::enter("execute_prepared_config_pair")
+        .map_err(PreparedPairError::Preparation)?;
+    plan.validate()?;
+    let resolve = |path: &Path| -> Result<PathBuf, PreparedPairError> {
+        let parent = path
+            .parent()
+            .ok_or(PreparedPairError::InvalidPlan("PAIR target has no parent"))?;
+        let name = path
+            .file_name()
+            .ok_or(PreparedPairError::InvalidPlan("PAIR target has no name"))?;
+        let parent =
+            std::fs::canonicalize(parent).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        Ok(parent.join(name))
+    };
+    let decisions = resolve(decisions)?;
+    let state = resolve(state)?;
+    let same_target = decisions == state
+        || (cfg!(windows)
+            && decisions.to_string_lossy().to_lowercase()
+                == state.to_string_lossy().to_lowercase());
+    if same_target {
+        return Err(PreparedPairError::InvalidPlan(
+            "PAIR targets must be distinct",
+        ));
+    }
+    let _guard = lock_local_config_writes();
+    let _decisions_lock = acquire_config_file_write_lock(&decisions, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let _state_lock = acquire_config_file_write_lock(&state, CONFIG_LOCK_TIMEOUT)
+        .map_err(PreparedPairError::Io)?;
+    let read = || -> Result<[PhysicalState; 2], PreparedPairError> {
+        Ok([
+            read_config_pair_physical(&decisions)?,
+            read_config_pair_physical(&state)?,
+        ])
+    };
+    let current: [PhysicalState; 2] = read()?;
+    let start = plan
+        .stages
+        .iter()
+        .rposition(|tuple| *tuple == current)
+        .ok_or(PreparedPairError::Conflict)?;
+    for stage in start + 1..5 {
+        if read()? != plan.stages[stage - 1] {
+            return Err(PreparedPairError::Conflict);
+        }
+        let side = if stage == 1 || stage == 3 { 1 } else { 0 };
+        if plan.stages[stage][side] != plan.stages[stage - 1][side] {
+            let path = if side == 0 { &decisions } else { &state };
+            publish_prepared_pair_image(
+                path,
+                &plan.stages[stage - 1][side],
+                &plan.stages[stage][side],
+            )?;
+            if read()? != plan.stages[stage] {
+                return Err(PreparedPairError::Conflict);
+            }
+            on_stage(stage)?;
+        }
+    }
+    if read()? != plan.stages[4] {
+        return Err(PreparedPairError::Conflict);
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // P10: inactive until P11 activation.
+fn publish_prepared_pair_image(
+    path: &Path,
+    before: &PhysicalState,
+    after: &PhysicalState,
+) -> Result<(), PreparedPairError> {
+    let PhysicalState::Bytes { bytes, .. } = after else {
+        return Err(PreparedPairError::InvalidPlan("PAIR never deletes a side"));
+    };
+    let tmp = temp_config_path(path);
+    let result = (|| {
+        let mut file =
+            std::fs::File::create(&tmp).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        file.write_all(bytes)
+            .and_then(|_| file.flush())
+            .and_then(|_| file.sync_all())
+            .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        drop(file);
+        if read_config_pair_physical(path)? != *before {
+            return Err(PreparedPairError::Conflict);
+        }
+        if *before == PhysicalState::Absent {
+            // Atomic create-if-absent; rename would clobber a racing Unix creator.
+            std::fs::hard_link(&tmp, path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    PreparedPairError::Conflict
+                } else {
+                    PreparedPairError::Io(e.to_string())
+                }
+            })?;
+            std::fs::remove_file(&tmp).map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        } else {
+            publish_temp_config(&tmp, path).map_err(PreparedPairError::Io)?;
+        }
+        #[cfg(not(windows))]
+        std::fs::File::open(
+            path.parent()
+                .ok_or(PreparedPairError::InvalidPlan("PAIR target has no parent"))?,
+        )
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| PreparedPairError::Io(e.to_string()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        if let Err(e) = std::fs::remove_file(&tmp) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("[prepared-pair] temporary cleanup failed: {e}");
+            }
+        }
+    }
+    result
+}
+
 /// #2786 (C1) - one side of the pair as a map: absent is empty, anything that
 /// is not a readable JSON object is an error.
 fn read_pair_side(path: &Path) -> Result<Map<String, Value>, String> {
@@ -776,10 +1084,12 @@ fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_config_file_write_lock, config_lock_path, format_publish_error,
-        is_transient_publish_error, temp_config_path, update_config_json_object,
-        update_config_json_object_with_publish, update_config_pair, write_file_atomic,
-        write_file_atomic_with_publish, CONFIG_LOCK_TIMEOUT,
+        acquire_config_file_write_lock, config_lock_path, execute_prepared_config_pair,
+        execute_prepared_config_pair_with_stage, format_publish_error, is_transient_publish_error,
+        prepare_config_pair_plan, publish_prepared_pair_image, read_config_pair_physical,
+        temp_config_path, update_config_json_object, update_config_json_object_with_publish,
+        update_config_pair, write_file_atomic, write_file_atomic_with_publish, PhysicalState,
+        PreparedConfigPairPlan, PreparedPairError, CONFIG_LOCK_TIMEOUT,
     };
     use serde_json::{json, Map, Value};
     use std::collections::HashSet;
@@ -2220,6 +2530,294 @@ pub fn bad(agent_dir: &Path) -> Result<(), String> {
             !state.exists(),
             "a decisions-only mutate must not create a state file"
         );
+    }
+
+    fn prepared_fixture_plan() -> PreparedConfigPairPlan {
+        let before = [
+            PhysicalState::from_bytes(br#"{"d":0,"unknown":[1,2]}"#.to_vec()),
+            PhysicalState::from_bytes(br#"{"s":0,"unknown":null}"#.to_vec()),
+        ];
+        let cleanup = |d: &mut Map<String, Value>, s: &mut Map<String, Value>| {
+            d.insert("d".into(), json!(1));
+            s.insert("s".into(), json!(1));
+            Ok(())
+        };
+        prepare_config_pair_plan(before, Some(&cleanup), |d, s| {
+            d.insert("d".into(), json!(2));
+            s.insert("s".into(), json!(2));
+            Ok(())
+        })
+        .unwrap()
+    }
+
+    fn prepared_install(path: &Path, image: &PhysicalState) {
+        match image {
+            PhysicalState::Absent => {
+                if path.exists() {
+                    std::fs::remove_file(path).unwrap();
+                }
+            }
+            PhysicalState::Bytes { bytes, .. } => std::fs::write(path, bytes).unwrap(),
+        }
+    }
+
+    #[test]
+    fn prepared_all_25_side_combinations_reachable_or_conflict() {
+        let plan = prepared_fixture_plan();
+        let d_steps = [0, 0, 1, 1, 2];
+        let s_steps = [0, 1, 1, 2, 2];
+        let mut reached = 0;
+        let mut conflicts = 0;
+        for (i, &d_step) in d_steps.iter().enumerate() {
+            for (j, &s_step) in s_steps.iter().enumerate() {
+                let (_temp, d, s) = pair_fixture(None, None);
+                prepared_install(&d, &plan.stages[i][0]);
+                prepared_install(&s, &plan.stages[j][1]);
+                let before = [std::fs::read(&d).unwrap(), std::fs::read(&s).unwrap()];
+                let reachable = s_step == d_step || s_step == d_step + 1;
+                let result = execute_prepared_config_pair(&d, &s, &plan);
+                if reachable {
+                    result.unwrap();
+                    reached += 1;
+                    assert_eq!(
+                        [
+                            read_config_pair_physical(&d).unwrap(),
+                            read_config_pair_physical(&s).unwrap()
+                        ],
+                        plan.stages[4]
+                    );
+                    assert_eq!(read_value(&d)["unknown"], json!([1, 2]));
+                    assert_eq!(read_value(&s)["unknown"], Value::Null);
+                } else {
+                    assert_eq!(result, Err(PreparedPairError::Conflict));
+                    conflicts += 1;
+                    assert_eq!(
+                        [std::fs::read(&d).unwrap(), std::fs::read(&s).unwrap()],
+                        before
+                    );
+                }
+            }
+        }
+        assert_eq!((reached, conflicts), (16, 9));
+    }
+
+    #[test]
+    fn prepared_each_publish_cut_original_plan_resume_idempotent() {
+        for cut in 1..=4 {
+            let plan = prepared_fixture_plan();
+            let (_temp, d, s) = pair_fixture(None, None);
+            prepared_install(&d, &plan.stages[0][0]);
+            prepared_install(&s, &plan.stages[0][1]);
+            let stages = std::cell::RefCell::new(Vec::new());
+            let result = execute_prepared_config_pair_with_stage(&d, &s, &plan, &|stage| {
+                stages.borrow_mut().push(stage);
+                assert!(write_file_atomic(&d, b"{}")
+                    .unwrap_err()
+                    .contains("Nested config write"));
+                // Both sidecars remain held across cleanup and caller images.
+                for path in [&d, &s] {
+                    assert!(acquire_config_file_write_lock(path, Duration::ZERO)
+                        .unwrap_err()
+                        .contains("configLockTimeout"));
+                }
+                if stage == cut {
+                    Err(PreparedPairError::Io("lost progress".into()))
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result, Err(PreparedPairError::Io("lost progress".into())));
+            assert_eq!(*stages.borrow(), (1..=cut).collect::<Vec<_>>());
+            assert_eq!(
+                [
+                    read_config_pair_physical(&d).unwrap(),
+                    read_config_pair_physical(&s).unwrap()
+                ],
+                plan.stages[cut]
+            );
+            let restored: PreparedConfigPairPlan =
+                serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
+            execute_prepared_config_pair(&d, &s, &restored).unwrap();
+            execute_prepared_config_pair_with_stage(&d, &s, &restored, &|_| {
+                panic!("complete replay publishes nothing")
+            })
+            .unwrap();
+            assert_eq!(
+                [
+                    read_config_pair_physical(&d).unwrap(),
+                    read_config_pair_physical(&s).unwrap()
+                ],
+                plan.stages[4]
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_initial_absence_collapsed_stages_and_empty_object_distinct() {
+        let (_temp, d, s) = pair_fixture(None, None);
+        let plan = prepare_config_pair_plan(
+            [PhysicalState::Absent, PhysicalState::Absent],
+            None,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        execute_prepared_config_pair_with_stage(&d, &s, &plan, &|_| panic!("no target writes"))
+            .unwrap();
+        assert!(!d.exists() && !s.exists());
+        std::fs::write(&s, b"{}").unwrap();
+        assert_eq!(
+            execute_prepared_config_pair(&d, &s, &plan),
+            Err(PreparedPairError::Conflict)
+        );
+        let create = prepare_config_pair_plan(
+            [
+                PhysicalState::Absent,
+                PhysicalState::from_bytes(b"{}".to_vec()),
+            ],
+            None,
+            |d, _| {
+                d.insert("owned".into(), json!(true));
+                Ok(())
+            },
+        )
+        .unwrap();
+        execute_prepared_config_pair(&d, &s, &create).unwrap();
+        assert_eq!(std::fs::read(&s).unwrap(), b"{}");
+        assert_eq!(read_value(&d)["owned"], true);
+    }
+
+    #[test]
+    fn prepared_external_bytes_disappearance_and_mid_stage_drift_no_clobber() {
+        for external in [Some(b"{broken".as_slice()), Some(b"{}".as_slice()), None] {
+            let plan = prepared_fixture_plan();
+            let (_temp, d, s) = pair_fixture(None, None);
+            prepared_install(&d, &plan.stages[0][0]);
+            prepared_install(&s, &plan.stages[0][1]);
+            if let Some(bytes) = external {
+                std::fs::write(&s, bytes).unwrap();
+            } else {
+                std::fs::remove_file(&s).unwrap();
+            }
+            assert_eq!(
+                execute_prepared_config_pair(&d, &s, &plan),
+                Err(PreparedPairError::Conflict)
+            );
+            assert_eq!(read_config_pair_physical(&d).unwrap(), plan.stages[0][0]);
+            assert_eq!(
+                read_config_pair_physical(&s).unwrap(),
+                external
+                    .map(|b| PhysicalState::from_bytes(b.to_vec()))
+                    .unwrap_or(PhysicalState::Absent)
+            );
+        }
+        let plan = prepared_fixture_plan();
+        let (_temp, d, s) = pair_fixture(None, None);
+        prepared_install(&d, &plan.stages[0][0]);
+        prepared_install(&s, &plan.stages[0][1]);
+        let result = execute_prepared_config_pair_with_stage(&d, &s, &plan, &|stage| {
+            assert_eq!(stage, 1);
+            std::fs::write(&d, b"{\"external\":true}").unwrap();
+            Ok(())
+        });
+        assert_eq!(result, Err(PreparedPairError::Conflict));
+        assert_eq!(std::fs::read(&d).unwrap(), b"{\"external\":true}");
+        assert_eq!(read_config_pair_physical(&s).unwrap(), plan.stages[1][1]);
+    }
+
+    #[test]
+    fn prepared_rejects_invalid_plan_and_nested_writer_before_target_effects() {
+        let (_temp, d, s) = pair_fixture(None, None);
+        let nested = prepare_config_pair_plan(
+            [PhysicalState::Absent, PhysicalState::Absent],
+            None,
+            |_, _| write_file_atomic(&d, b"{}"),
+        );
+        assert!(nested
+            .unwrap_err()
+            .to_string()
+            .contains("Nested config write"));
+        assert!(!d.exists() && !s.exists());
+        let rejected = prepare_config_pair_plan(
+            [PhysicalState::Absent, PhysicalState::Absent],
+            None,
+            |d, _| {
+                d.insert("owned".into(), json!(1));
+                Err("rejected".into())
+            },
+        );
+        assert!(matches!(rejected, Err(PreparedPairError::Preparation(_))));
+        assert!(!d.exists());
+        for malformed in [b"null".as_slice(), b"[]".as_slice(), b"{broken".as_slice()] {
+            assert!(prepare_config_pair_plan(
+                [
+                    PhysicalState::from_bytes(malformed.to_vec()),
+                    PhysicalState::Absent
+                ],
+                None,
+                |_, _| Ok(())
+            )
+            .is_err());
+        }
+        let mut plan = prepared_fixture_plan();
+        if let PhysicalState::Bytes { sha256, .. } = &mut plan.stages[0][0] {
+            *sha256 = "forged".into();
+        }
+        assert!(matches!(
+            execute_prepared_config_pair(&d, &s, &plan),
+            Err(PreparedPairError::InvalidPlan(_))
+        ));
+        let mut plan = prepared_fixture_plan();
+        plan.stages[1][0] = plan.stages[4][0].clone();
+        assert!(matches!(
+            execute_prepared_config_pair(&d, &s, &plan),
+            Err(PreparedPairError::InvalidPlan(_))
+        ));
+        assert!(!d.exists() && !s.exists());
+        assert!(!lock_sidecar_path(&d).exists());
+    }
+
+    #[test]
+    fn prepared_publish_failure_retains_reachable_stage_and_releases_locks() {
+        let plan = prepared_fixture_plan();
+        let (_temp, d, s) = pair_fixture(None, None);
+        prepared_install(&d, &plan.stages[0][0]);
+        prepared_install(&s, &plan.stages[0][1]);
+        std::fs::create_dir(temp_config_path(&d)).unwrap();
+        assert!(matches!(
+            execute_prepared_config_pair(&d, &s, &plan),
+            Err(PreparedPairError::Io(_))
+        ));
+        assert_eq!(
+            [
+                read_config_pair_physical(&d).unwrap(),
+                read_config_pair_physical(&s).unwrap()
+            ],
+            plan.stages[1]
+        );
+        for path in [&d, &s] {
+            drop(acquire_config_file_write_lock(path, Duration::ZERO).unwrap());
+        }
+        std::fs::remove_dir(temp_config_path(&d)).unwrap();
+        execute_prepared_config_pair(&d, &s, &plan).unwrap();
+    }
+
+    #[test]
+    fn prepared_expected_absent_publication_preserves_other_creator() {
+        let (_temp, d, _s) = pair_fixture(Some("{\"other\":1}"), None);
+        let after = PhysicalState::from_bytes(b"{\"owned\":1}\n".to_vec());
+        assert_eq!(
+            publish_prepared_pair_image(&d, &PhysicalState::Absent, &after),
+            Err(PreparedPairError::Conflict)
+        );
+        assert_eq!(std::fs::read(&d).unwrap(), b"{\"other\":1}");
+        assert!(!temp_config_path(&d).exists());
+    }
+
+    #[test]
+    fn prepared_sidecar_timeout_and_process_death_release() {
+        // Reuse the exact lock's bounded existing child-process coverage.
+        issue_1937_config_lock_process_death_release();
+        issue_1937_config_lock_same_process_handles();
     }
 
     const NESTED_CHILD_ACTION_ENV: &str = "AC_2786_NESTED_WRITER_CHILD_ACTION";
