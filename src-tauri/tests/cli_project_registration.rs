@@ -1192,10 +1192,23 @@ fn p05_real_peer_discovery_uses_registered_remote_without_managed_writes() {
                 .iter()
                 .find(|peer| peer["name"] == "RegisteredRemote:room-01-devs/coord")
                 .expect("registered coordinator peer");
-            assert_eq!(
-                std::fs::canonicalize(coord["path"].as_str().unwrap()).unwrap(),
-                std::fs::canonicalize(&fixture.coordinator).unwrap()
-            );
+            if verb == "list-peers" {
+                assert_eq!(
+                    std::fs::canonicalize(coord["path"].as_str().unwrap()).unwrap(),
+                    std::fs::canonicalize(&fixture.coordinator).unwrap()
+                );
+            } else {
+                assert!(coord.get("path").is_none(), "lean peers omit path");
+                for field in ["working", "waitingForInput", "reachable"] {
+                    assert!(coord[field].is_boolean(), "lean {field}: {coord}");
+                }
+                assert!(coord["sessionStatus"].is_string());
+                assert!(coord["teams"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|team| team.is_string()));
+            }
         }
     }
 }
