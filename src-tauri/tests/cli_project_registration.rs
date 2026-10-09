@@ -139,6 +139,53 @@ fn assert_registration_request(request: &serde_json::Value, project: &Path) {
     assert_eq!(request["reason"], "projectRegistered");
 }
 
+/// Drain both pipes while waiting so output cannot defeat the child deadline.
+fn bounded_output(mut child: std::process::Child) -> std::process::Output {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let stderr = child.stderr.take().expect("stderr pipe");
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).map(|_| bytes)
+        })
+    };
+    let stdout = drain(Box::new(stdout));
+    let stderr = drain(Box::new(stderr));
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if start.elapsed() < Duration::from_secs(10) => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result => {
+                let reason = format!("child deadline/wait failure: {result:?}");
+                let _ = child.kill();
+                let reaped = child.wait();
+                break Err(format!("{reason}; reap: {reaped:?}"));
+            }
+        }
+    };
+    let stdout = stdout.join().expect("stdout reader").expect("read stdout");
+    let stderr = stderr.join().expect("stderr reader").expect("read stderr");
+    std::process::Output {
+        status: status.unwrap_or_else(|error| {
+            panic!(
+                "{error}
+stdout: {}
+stderr: {}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            )
+        }),
+        stdout,
+        stderr,
+    }
+}
+
 fn run_success(bin: &Path, args: &[&str]) {
     let mut command = command_for_binary(bin);
     command
@@ -150,7 +197,7 @@ fn run_success(bin: &Path, args: &[&str]) {
         let _guard = spawn_lock();
         command.spawn().expect("spawn")
     };
-    let out = child.wait_with_output().expect("collect output");
+    let out = bounded_output(child);
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -174,7 +221,7 @@ fn run_json(bin: &Path, args: &[&str]) -> (serde_json::Value, String) {
         let _guard = spawn_lock();
         command.spawn().expect("spawn")
     };
-    let out = child.wait_with_output().expect("collect output");
+    let out = bounded_output(child);
     assert!(
         out.status.success(),
         "exit {:?}\nstdout: {}\nstderr: {}",
@@ -201,7 +248,7 @@ fn run_failure(bin: &Path, args: &[&str]) -> std::process::Output {
         let _guard = spawn_lock();
         command.spawn().expect("spawn")
     };
-    let out = child.wait_with_output().expect("collect output");
+    let out = bounded_output(child);
     assert!(
         !out.status.success(),
         "expected failure\nstdout: {}\nstderr: {}",
@@ -986,5 +1033,674 @@ fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
             .expect("catalog persists"),
         r##"{"schemaVersion":1,"agents":[{"key":"sentinel-1967","label":"Sentinel","description":"d","color":"#654321","command":"sentinel-1967-command","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["sentinel update"]}]}"##,
         "add --from-catalog never writes the persisted catalog"
+    );
+}
+
+// P05: production consumers must never finalize GUI migrations while reading.
+const P05_TOKEN: &str = "a873f0dd-732b-46b7-abd4-f690dc37080a";
+const P05_MESSAGE: &str = "20261009-150000-room01-peer-to-room01-coord-p05.md";
+
+struct ReadonlyFixture {
+    _tmp: Tmp,
+    bin: PathBuf,
+    config: PathBuf,
+    project: PathBuf,
+    coordinator: String,
+    peer: String,
+    origin: String,
+}
+
+impl ReadonlyFixture {
+    fn new() -> Self {
+        let tmp = Tmp::new("p05-readonly");
+        let bin = copy_binary_into(tmp.path());
+        let config = config_dir_for_bin(&bin);
+        let project = tmp.path().join("RegisteredRemote");
+        let ac = project.join(".ac");
+        let room = ac.join("room-01-devs");
+        for name in ["coord", "peer"] {
+            let origin = ac.join(format!("_agent_{name}"));
+            let replica = room.join(format!("__agent_{name}"));
+            std::fs::create_dir_all(&origin).unwrap();
+            std::fs::create_dir_all(&replica).unwrap();
+            std::fs::write(
+                origin.join("config.json"),
+                r#"{"tooling":{"lastCodingAgent":"codex"}}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                replica.join("config.json"),
+                format!(r#"{{"identity":"../../_agent_{name}"}}"#),
+            )
+            .unwrap();
+        }
+        let team = ac.join("_team_devs");
+        std::fs::create_dir_all(&team).unwrap();
+        std::fs::write(
+            team.join("config.json"),
+            r#"{"agents":["_agent_coord","_agent_peer"],"coordinator":"_agent_coord","repos":[]}"#,
+        )
+        .unwrap();
+        let messaging = room.join("messaging");
+        std::fs::create_dir_all(&messaging).unwrap();
+        std::fs::write(messaging.join(P05_MESSAGE), "P05 message").unwrap();
+        write_settings(&config, &[&project]);
+        // Explicit absolute project bypasses settings-based name resolution.
+        // Settle naming journal/lock before any managed-byte snapshot or probe.
+        let _ = run_json(
+            &bin,
+            &["workgroup", "list", "--project", project.to_str().unwrap()],
+        );
+        let value = serde_json::json!({
+            "defaultShell":"powershell.exe", "defaultShellArgs":[],
+            "agents":[], "projectPaths":[project],
+            "startOnlyCoordinators":true, "sidebarZoom":1.25
+        });
+        std::fs::write(
+            config.join("settings.30.instance.no-git.json"),
+            serde_json::to_vec_pretty(&value).unwrap(),
+        )
+        .unwrap();
+        Self {
+            bin,
+            config,
+            coordinator: room.join("__agent_coord").to_string_lossy().into_owned(),
+            peer: room.join("__agent_peer").to_string_lossy().into_owned(),
+            origin: ac.join("_agent_coord").to_string_lossy().into_owned(),
+            project,
+            _tmp: tmp,
+        }
+    }
+
+    fn managed_bytes(&self) -> std::collections::BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(&self.config)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                let name = path.file_name().unwrap().to_string_lossy();
+                // Lock/journal/log files have separate, existing authority.
+                path.is_file()
+                    && (name.starts_with("settings")
+                        || name.starts_with("agents")
+                        || name.starts_with("project-paths"))
+                    && !name.ends_with(".lock")
+            })
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn outbox_for_root(&self, root: &str) -> PathBuf {
+        Path::new(root)
+            .join(self.config.file_name().unwrap())
+            .join("outbox")
+    }
+
+    fn assert_no_outbox(&self) {
+        for root in [&self.coordinator, &self.peer] {
+            let path = self.outbox_for_root(root);
+            assert!(!path.exists() || std::fs::read_dir(path).unwrap().next().is_none());
+        }
+    }
+
+    fn assert_reader(&self, args: &[&str]) -> serde_json::Value {
+        let before = self.managed_bytes();
+        let (value, _) = run_json(&self.bin, args);
+        assert_eq!(self.managed_bytes(), before, "managed writes from {args:?}");
+        value
+    }
+
+    fn assert_denied(&self, args: &[&str], diagnostic: &str) {
+        let before = self.managed_bytes();
+        let out = run_failure(&self.bin, args);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(diagnostic),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("Queued:"));
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&out.stdout).is_err(),
+            "source/authorization refusal emitted success JSON"
+        );
+        assert_eq!(self.managed_bytes(), before, "managed writes from {args:?}");
+        self.assert_no_outbox();
+    }
+}
+
+#[test]
+fn p05_real_peer_discovery_uses_registered_remote_without_managed_writes() {
+    let fixture = ReadonlyFixture::new();
+    // A root outside the registered project cannot supply its path by augmentation.
+    let root = fixture.config.join("ac-root-agent");
+    std::fs::create_dir_all(&root).unwrap();
+    for verb in ["list-peers", "list-peers-lean"] {
+        for caller in [
+            root.to_str().unwrap(),
+            fixture.origin.as_str(),
+            fixture.peer.as_str(),
+        ] {
+            let peers = fixture.assert_reader(&[verb, "--token", P05_TOKEN, "--root", caller]);
+            let coord = peers
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|peer| peer["name"] == "RegisteredRemote:room-01-devs/coord")
+                .expect("registered coordinator peer");
+            assert_eq!(coord["path"], fixture.coordinator);
+        }
+    }
+}
+
+#[test]
+fn p05_real_send_enqueues_and_close_resolves_before_coordinator_denial() {
+    let fixture = ReadonlyFixture::new();
+    let before = fixture.managed_bytes();
+    let out = run_failure(
+        &fixture.bin,
+        &[
+            "send",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            &fixture.peer,
+            "--to",
+            "RegisteredRemote:room-01-devs/coord",
+            "--send",
+            P05_MESSAGE,
+            "--mode",
+            "wake",
+            "--confirm-timeout",
+            "0",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let receipt = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Queued: "))
+        .expect("durable enqueue receipt");
+    let id = receipt.split_whitespace().next().unwrap();
+    uuid::Uuid::parse_str(id).unwrap();
+    assert_eq!(receipt, id, "exact default enqueue receipt");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("delivery confirmation timeout after 0s"));
+    let outbox = fixture.outbox_for_root(&fixture.peer);
+    let queued_path = outbox.join(format!("{id}.json"));
+    let queued: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&queued_path).unwrap()).unwrap();
+    assert_eq!(queued["to"], "RegisteredRemote:room-01-devs/coord");
+    assert_eq!(queued["from"], "RegisteredRemote:room-01-devs/peer");
+    assert_eq!(queued["mode"], "wake");
+    assert_eq!(queued["body"], "P05 message");
+    assert_eq!(fixture.managed_bytes(), before);
+    std::fs::remove_file(queued_path).unwrap();
+    fixture.assert_denied(
+        &[
+            "close-session",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            &fixture.peer,
+            "--target",
+            "RegisteredRemote:room-01-devs/coord",
+        ],
+        "authorization denied",
+    );
+}
+
+#[test]
+fn p05_real_task_consumers_preserve_coordinator_and_denial_contracts() {
+    let fixture = ReadonlyFixture::new();
+    let before = fixture.managed_bytes();
+    for (verb, flag, text) in [
+        ("task-set-title", "--title", "P05"),
+        ("task-append-body", "--text", "First"),
+        ("task-set-body", "--text", "Replacement"),
+    ] {
+        run_success(
+            &fixture.bin,
+            &[
+                verb,
+                "--token",
+                P05_TOKEN,
+                "--root",
+                &fixture.coordinator,
+                flag,
+                text,
+            ],
+        );
+        assert_eq!(fixture.managed_bytes(), before, "{verb}");
+        let task = fixture.project.join(".ac/room-01-devs/TASK.md");
+        let task_before = std::fs::read(&task).unwrap();
+        fixture.assert_denied(
+            &[
+                verb,
+                "--token",
+                P05_TOKEN,
+                "--root",
+                &fixture.peer,
+                flag,
+                "Denied",
+            ],
+            "authorization denied",
+        );
+        assert_eq!(std::fs::read(task).unwrap(), task_before);
+    }
+    let snapshot = fixture.assert_reader(&[
+        "task-get",
+        "--token",
+        P05_TOKEN,
+        "--root",
+        &fixture.coordinator,
+    ]);
+    let revision = snapshot["revision"].as_str().unwrap();
+    let request = uuid::Uuid::new_v4().to_string();
+    let status = fixture.assert_reader(&[
+        "task-status-set",
+        "--token",
+        P05_TOKEN,
+        "--root",
+        &fixture.coordinator,
+        "--expected-revision",
+        revision,
+        "--request-id",
+        &request,
+        "--text",
+        "P05 pending",
+    ]);
+    assert_eq!(status["status"], "P05 pending");
+    for verb in ["task-get", "task-status-set"] {
+        let mut args = vec![verb, "--token", P05_TOKEN, "--root", &fixture.peer];
+        if verb == "task-status-set" {
+            args.extend([
+                "--expected-revision",
+                revision,
+                "--request-id",
+                &request,
+                "--text",
+                "Denied",
+            ]);
+        }
+        fixture.assert_denied(&args, "authorization_denied");
+    }
+    let after = fixture.assert_reader(&[
+        "task-get",
+        "--token",
+        P05_TOKEN,
+        "--root",
+        &fixture.coordinator,
+    ]);
+    assert_eq!(after["status"], "P05 pending");
+}
+
+#[test]
+fn p05_malformed_source_refuses_direct_and_task_consumers_before_outputs() {
+    let fixture = ReadonlyFixture::new();
+    std::fs::write(
+        fixture.config.join("settings.30.instance.no-git.json"),
+        b"{malformed",
+    )
+    .unwrap();
+    for verb in ["list-peers", "list-peers-lean"] {
+        fixture.assert_denied(
+            &[verb, "--token", P05_TOKEN, "--root", &fixture.peer],
+            "could not be parsed",
+        );
+    }
+    fixture.assert_denied(
+        &[
+            "send",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            &fixture.peer,
+            "--to",
+            "RegisteredRemote:room-01-devs/coord",
+            "--send",
+            P05_MESSAGE,
+            "--confirm-timeout",
+            "0",
+        ],
+        "could not be parsed",
+    );
+    fixture.assert_denied(
+        &[
+            "close-session",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            &fixture.peer,
+            "--target",
+            "RegisteredRemote:room-01-devs/coord",
+        ],
+        "could not be parsed",
+    );
+    for (verb, flag) in [
+        ("task-set-title", "--title"),
+        ("task-append-body", "--text"),
+        ("task-set-body", "--text"),
+    ] {
+        fixture.assert_denied(
+            &[
+                verb,
+                "--token",
+                P05_TOKEN,
+                "--root",
+                &fixture.coordinator,
+                flag,
+                "Denied",
+            ],
+            "authorization denied",
+        );
+    }
+    fixture.assert_denied(
+        &[
+            "task-get",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            &fixture.coordinator,
+        ],
+        "authorization_denied",
+    );
+    fixture.assert_denied(
+        &[
+            "task-status-set",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            &fixture.coordinator,
+            "--expected-revision",
+            "legacy:0",
+            "--request-id",
+            P05_TOKEN,
+            "--text",
+            "Denied",
+        ],
+        "authorization_denied",
+    );
+    assert!(!fixture.project.join(".ac/room-01-devs/TASK.md").exists());
+    assert!(!fixture
+        .project
+        .join(".ac/room-01-devs/TASK-status.jsonl")
+        .exists());
+}
+
+#[test]
+fn p05_token_only_reads_preserve_root_master_and_uuid_behavior() {
+    let fixture = ReadonlyFixture::new();
+    for token in ["", "malformed-token"] {
+        fixture.assert_denied(
+            &["list-peers-lean", "--token", token, "--root", &fixture.peer],
+            if token.is_empty() {
+                "--token is required"
+            } else {
+                "invalid token supplied"
+            },
+        );
+    }
+    fixture.assert_denied(
+        &["list-peers-lean", "--root", &fixture.peer],
+        "--token is required",
+    );
+    // UUID is shape-valid but not privileged: the team gate still denies this peer.
+    fixture.assert_denied(
+        &[
+            "task-set-title",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            &fixture.peer,
+            "--title",
+            "Denied",
+        ],
+        "authorization denied",
+    );
+    let path = fixture.config.join("settings.30.instance.no-git.json");
+    let mut settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    settings["rootToken"] = "persisted-root".into();
+    std::fs::write(&path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+    let before = fixture.managed_bytes();
+    run_success(
+        &fixture.bin,
+        &[
+            "task-set-title",
+            "--token",
+            "persisted-root",
+            "--root",
+            &fixture.peer,
+            "--title",
+            "Root bypass",
+        ],
+    );
+    assert_eq!(fixture.managed_bytes(), before);
+    settings.as_object_mut().unwrap().remove("rootToken");
+    std::fs::write(&path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+    std::fs::write(
+        fixture.config.join("master-token.txt"),
+        "persisted-master\n",
+    )
+    .unwrap();
+    let before = fixture.managed_bytes();
+    run_success(
+        &fixture.bin,
+        &[
+            "task-set-title",
+            "--token",
+            "persisted-master",
+            "--root",
+            &fixture.peer,
+            "--title",
+            "Master bypass",
+        ],
+    );
+    assert_eq!(fixture.managed_bytes(), before);
+}
+
+#[test]
+fn p05_missing_and_valid_empty_settings_remain_readonly() {
+    let fixture = ReadonlyFixture::new();
+    let root = fixture.config.join("ac-root-agent");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = fixture.config.join("settings.30.instance.no-git.json");
+    for absent in [true, false] {
+        if absent {
+            std::fs::remove_file(&path).unwrap();
+        } else {
+            write_settings(&fixture.config, &[]);
+        }
+        let peers = fixture.assert_reader(&[
+            "list-peers-lean",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            root.to_str().unwrap(),
+        ]);
+        assert_eq!(peers, serde_json::json!([]));
+        // WG still reports its own peer from the caller's room after a valid read.
+        let peers = fixture.assert_reader(&[
+            "list-peers-lean",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            &fixture.peer,
+        ]);
+        assert!(peers
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "RegisteredRemote:room-01-devs/coord"));
+    }
+}
+
+fn write_p05_custom_settings(fixture: &ReadonlyFixture) {
+    let value = serde_json::json!({
+        "defaultShell":"powershell.exe", "defaultShellArgs":[],
+        "projectPaths":[fixture.project], "npmUpdateNotificationsEnabled":false,
+        "sidebarZoom":1.0, "mainZoom":1.0,
+        "agents":[{"id":"p05","label":"P05 custom","command":"codex","color":"#123456","instructionsFilename":"P05-INSTRUCTIONS.md"}]
+    });
+    std::fs::write(
+        fixture.config.join("settings.30.instance.no-git.json"),
+        serde_json::to_vec_pretty(&value).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes() {
+    let fixture = ReadonlyFixture::new();
+    write_p05_custom_settings(&fixture);
+    let before = fixture.managed_bytes();
+    run_success(
+        &fixture.bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            fixture.project.to_str().unwrap(),
+            "--team",
+            "devs",
+            "--title",
+            "P05 created room",
+        ],
+    );
+    assert_eq!(
+        fixture.managed_bytes(),
+        before,
+        "production gitignore loader wrote managed config"
+    );
+    let ignore = std::fs::read_to_string(fixture.project.join(".ac/.gitignore")).unwrap();
+    assert!(
+        ignore.contains("**/__agent_*/P05-INSTRUCTIONS.md"),
+        "{ignore}"
+    );
+    let rooms = run_json(
+        &fixture.bin,
+        &[
+            "workgroup",
+            "list",
+            "--project",
+            fixture.project.to_str().unwrap(),
+        ],
+    )
+    .0;
+    assert_eq!(rooms.as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn p05_production_new_project_preserves_authorized_legacy_writer_contract() {
+    let fixture = ReadonlyFixture::new();
+    write_p05_custom_settings(&fixture);
+    for preexisting in [false, true] {
+        let project = fixture
+            ._tmp
+            .path()
+            .join(if preexisting { "Preexisting" } else { "Fresh" });
+        if preexisting {
+            std::fs::create_dir_all(project.join(".ac")).unwrap();
+        }
+        run_success(&fixture.bin, &["new-project", project.to_str().unwrap()]);
+        let settings: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(fixture.config.join("settings.30.instance.no-git.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            settings.get("rootToken").is_none_or(|v| v.is_null()),
+            "incidental loader generated root privilege: {settings}"
+        );
+        assert_eq!(settings["defaultShell"], "powershell.exe");
+        assert_eq!(settings["npmUpdateNotificationsEnabled"], false);
+        assert!(settings["projectPaths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str()
+                == Some(
+                    std::fs::canonicalize(&project)
+                        .unwrap()
+                        .to_string_lossy()
+                        .as_ref()
+                )));
+        let ignore = std::fs::read_to_string(project.join(".ac/.gitignore")).unwrap();
+        assert!(
+            ignore.contains("**/__agent_*/P05-INSTRUCTIONS.md"),
+            "{ignore}"
+        );
+        assert!(
+            fixture
+                .managed_bytes()
+                .keys()
+                .all(|name| !name.starts_with("project-paths")),
+            "P05 must keep migration dormant"
+        );
+    }
+}
+
+#[test]
+fn p05_root_send_resolves_remote_registration_without_own_project_fallback() {
+    let fixture = ReadonlyFixture::new();
+    let root = fixture.config.join("ac-root-agent");
+    std::fs::create_dir_all(root.join("messaging")).unwrap();
+    std::fs::write(root.join("messaging").join(P05_MESSAGE), "Remote P05").unwrap();
+    let before = fixture.managed_bytes();
+    let out = run_failure(
+        &fixture.bin,
+        &[
+            "send",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            root.to_str().unwrap(),
+            "--to",
+            "RegisteredRemote:room-01-devs/coord",
+            "--send",
+            P05_MESSAGE,
+            "--mode",
+            "wake",
+            "--confirm-timeout",
+            "0",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Queued: "))
+        .expect("exact enqueue receipt");
+    uuid::Uuid::parse_str(id).unwrap();
+    let queued: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            fixture
+                .outbox_for_root(root.to_str().unwrap())
+                .join(format!("{id}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(queued["to"], "RegisteredRemote:room-01-devs/coord");
+    assert_eq!(queued["from"], "agentscommander://root-agent");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("delivery confirmation timeout after 0s"));
+    assert_eq!(fixture.managed_bytes(), before);
+    // Close resolves this same remote target before denying non-coordinator origin.
+    let outsider = fixture._tmp.path().join("Unregistered/.ac/_agent_outsider");
+    std::fs::create_dir_all(&outsider).unwrap();
+    fixture.assert_denied(
+        &[
+            "close-session",
+            "--token",
+            P05_TOKEN,
+            "--root",
+            outsider.to_str().unwrap(),
+            "--target",
+            "RegisteredRemote:room-01-devs/coord",
+        ],
+        "authorization denied",
     );
 }

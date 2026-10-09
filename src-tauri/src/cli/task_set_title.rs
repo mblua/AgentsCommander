@@ -88,7 +88,7 @@ pub fn execute(args: TaskSetTitleArgs) -> i32 {
     };
 
     if !is_master {
-        let teams = crate::config::teams::discover_teams();
+        let teams = crate::config::teams::discover_teams_for_cli();
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             eprintln!(
                 "Error: authorization denied — '{}' is not an orchestrator of any team. \

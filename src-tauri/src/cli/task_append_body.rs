@@ -91,7 +91,7 @@ pub fn execute(args: TaskAppendBodyArgs) -> i32 {
     };
 
     if !is_master {
-        let teams = crate::config::teams::discover_teams();
+        let teams = crate::config::teams::discover_teams_for_cli();
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             eprintln!(
                 "Error: authorization denied — '{}' is not an orchestrator of any team. \
@@ -224,7 +224,7 @@ pub fn execute_set_body(args: TaskSetBodyArgs) -> i32 {
     };
 
     if !is_master {
-        let teams = crate::config::teams::discover_teams();
+        let teams = crate::config::teams::discover_teams_for_cli();
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             eprintln!(
                 "Error: authorization denied — '{}' is not an orchestrator of any team. \
@@ -357,7 +357,7 @@ fn task_authorization(token: &str, root: &str) -> Result<(std::path::PathBuf, St
         crate::cli::validate_cli_token(&Some(token.to_owned())).map_err(|_| denied())?;
     let sender = agent_name_from_root(root);
     if !is_master {
-        let teams = crate::config::teams::discover_teams();
+        let teams = crate::config::teams::discover_teams_for_cli();
         if teams.is_empty() || !crate::config::teams::is_any_coordinator(&sender, &teams) {
             return Err(denied());
         }
