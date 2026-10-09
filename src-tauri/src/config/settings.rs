@@ -12008,11 +12008,6 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
     save_settings_to_path_preserving_project_paths(settings, &path)
 }
 
-/// #1077: atomic tmp+rename writer over an already-built JSON `Value`. Shared by
-/// the raw and the project-aware writers. Preserves the #774 unique-temp +
-/// `rename_with_retry` behavior. The temp IS fsynced
-/// (`temporary.sync_all()`), and the parent directory is fsynced on unix after
-/// the rename. The caller owns #2058 backup rotation of the returned bytes.
 #[cfg(test)]
 thread_local! {
     static PROJECT_MIGRATION_ATOMIC_FAULT: std::cell::RefCell<Option<(PathBuf, SettingsSaveStage)>> = const { std::cell::RefCell::new(None) };
@@ -12040,6 +12035,11 @@ fn project_atomic_checkpoint(
     })
 }
 
+/// #1077: atomic tmp+rename writer over an already-built JSON `Value`. Shared by
+/// the raw and the project-aware writers. Preserves the #774 unique-temp +
+/// `rename_with_retry` behavior. The temp IS fsynced
+/// (`temporary.sync_all()`), and the parent directory is fsynced on unix after
+/// the rename. The caller owns #2058 backup rotation of the returned bytes.
 fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSaveError> {
     use std::io::Write as _;
 
@@ -12124,10 +12124,17 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
 
     let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
-    let mut temp_name = path
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new(SETTINGS_FILE_NAME))
-        .to_os_string();
+    // Settings keep their existing instance-qualified temp prefix, including
+    // callers supplying a fixture path. The fixed sidecar uses its own name.
+    let temp_base = match path.file_name() {
+        Some(name)
+            if name == std::ffi::OsStr::new(super::instance_artifacts::PROJECT_PATHS_FILE_NAME) =>
+        {
+            name
+        }
+        _ => std::ffi::OsStr::new(SETTINGS_FILE_NAME),
+    };
+    let mut temp_name = temp_base.to_os_string();
     temp_name.push(format!(".{pid}.{op_id}.tmp"));
     let tmp_path = dir.join(temp_name);
     let mut options = std::fs::OpenOptions::new();
@@ -13044,6 +13051,9 @@ mod tests {
             if raw["projectPaths"] == 42 {
                 assert!(state.has_structural());
             }
+            // Windows rejects reads through another handle while the lock is
+            // held. Snapshot every file only between migration transactions.
+            drop(transaction);
             let before: Vec<_> = std::fs::read_dir(temp.path())
                 .unwrap()
                 .map(|entry| {
@@ -13055,7 +13065,9 @@ mod tests {
                     )
                 })
                 .collect();
+            let transaction = migration_transaction(&path);
             super::ensure_project_paths_migrated_locked(&transaction).unwrap();
+            drop(transaction);
             assert_eq!(
                 std::fs::read_dir(temp.path()).unwrap().count(),
                 before.len()
