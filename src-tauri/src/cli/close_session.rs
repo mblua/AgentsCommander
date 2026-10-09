@@ -175,7 +175,13 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     // Belt-and-braces alongside the mailbox-side resolver at handle_close_session
     // entry (§AR2-G1). Fail-fast at the CLI gives users immediate feedback on
     // ambiguous or unknown targets without writing to the outbox.
-    let settings = crate::config::settings::load_settings();
+    let settings = match crate::config::settings::load_settings_for_cli_strict() {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("Error: {}", error);
+            return 1;
+        }
+    };
     let resolved_target =
         match crate::config::teams::resolve_agent_target(&args.target, &settings.project_paths) {
             Ok(fqn) => fqn,
@@ -201,7 +207,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     };
 
     if !is_master {
-        let discovered = teams::discover_teams();
+        let discovered = teams::discover_teams_from_project_paths(&settings.project_paths);
         if discovered.is_empty()
             || !teams::is_coordinator_of(&sender, &resolved_target, &discovered)
         {

@@ -1785,9 +1785,26 @@ pub fn can_communicate(from: &str, to: &str, teams: &[DiscoveredTeam]) -> bool {
 /// Scans settings.project_paths (and immediate children) for Project AC Root `_team_*/config.json`.
 pub fn discover_teams() -> Vec<DiscoveredTeam> {
     let settings = crate::config::settings::load_settings();
+    discover_teams_from_project_paths(&settings.project_paths)
+}
+
+/// CLI coordinator discovery fails closed on an unreadable registered source.
+/// Root/master bypass and the caller's existing empty-team denial stay unchanged.
+pub(crate) fn discover_teams_for_cli() -> Vec<DiscoveredTeam> {
+    match crate::config::settings::load_settings_for_cli_strict() {
+        Ok(settings) => discover_teams_from_project_paths(&settings.project_paths),
+        Err(error) => {
+            log::error!("[cli] {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// Scan a captured registered-project slice without loading or saving settings.
+pub(crate) fn discover_teams_from_project_paths(project_paths: &[String]) -> Vec<DiscoveredTeam> {
     let mut teams = Vec::new();
 
-    for repo_path in &settings.project_paths {
+    for repo_path in project_paths {
         log::trace!(
             "[teams] discover_teams: scanning project_path='{}'",
             repo_path
@@ -1833,7 +1850,7 @@ pub fn discover_teams() -> Vec<DiscoveredTeam> {
     log::debug!(
         "[teams] discovered {} team(s) across {} project path(s)",
         teams.len(),
-        settings.project_paths.len()
+        project_paths.len()
     );
     teams
 }
@@ -2018,6 +2035,28 @@ pub(crate) fn create_test_junction(link: &Path, target: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_registered_paths_define_team_authorization_without_own_root_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("registered");
+        let team = project.join(".ac/_team_devs");
+        std::fs::create_dir_all(&team).unwrap();
+        std::fs::write(
+            team.join("config.json"),
+            r#"{"agents":["_agent_peer"],"coordinator":"_agent_coord"}"#,
+        )
+        .unwrap();
+        let paths = vec![project.to_string_lossy().into_owned()];
+        let discovered = discover_teams_from_project_paths(&paths);
+        assert_eq!(discovered.len(), 1);
+        assert!(is_any_coordinator(
+            "registered:room-01-devs/coord",
+            &discovered
+        ));
+        assert!(!is_any_coordinator("other:room-01-devs/coord", &discovered));
+        assert!(discover_teams_from_project_paths(&[]).is_empty());
+    }
 
     #[cfg(windows)]
     #[test]

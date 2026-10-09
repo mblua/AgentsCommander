@@ -396,8 +396,8 @@ pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), Stri
         }
     };
 
-    // Accept root_token from settings
-    let settings = crate::config::settings::load_settings();
+    // Compare the persisted root token without generating, repairing or saving it.
+    let settings = crate::config::settings::load_settings_for_cli();
     if settings.root_token.as_deref() == Some(&token) {
         return Ok((token, true));
     }

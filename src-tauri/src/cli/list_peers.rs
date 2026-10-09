@@ -751,10 +751,10 @@ fn build_wg_peer(
 /// that the legacy `execute_wg_discovery` would have serialized. Shared by
 /// `execute` and `execute_lean` so the peer set is identical by construction
 /// for both verbs (see issue #252).
-fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
+fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> Vec<PeerInfo> {
     let session_index = build_session_index();
     let mut peers: Vec<PeerInfo> = Vec::new();
-    let discovered = crate::config::teams::discover_teams();
+    let discovered = crate::config::teams::discover_teams_from_project_paths(project_paths);
     // Canonical FQN: `<project>:<wg>/<agent>`. All downstream routing checks
     // (`can_communicate`) compare project-qualified strings.
     let my_full_name = format!("{}:{}/{}", wg.my_project, wg.my_wg_name, wg.my_agent_name);
@@ -855,14 +855,12 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
     }
 
     // #293 — synthetic Root Agent reply peer (identity-verified coordinators
-    // only). Augment `settings.project_paths` with the caller's own project
+    // only). Augment the captured runtime project paths with the caller's own project
     // dir so `verified_wg_coordinator_target` sees the replica even when the
     // project isn't in settings. Mirrors `cli/send.rs::effective_project_paths`
     // (send.rs `derive_root_project_dir` augmentation) and the mailbox
     // root-recipient arm's `derive_project_from_outbox_path` augmentation.
-    let mut effective_paths = crate::config::settings::load_settings()
-        .project_paths
-        .clone();
+    let mut effective_paths = project_paths.to_vec();
     if let Some(project_dir) = wg.ac_root.parent() {
         if let Some(project_str) = project_dir.to_str() {
             let p = project_str.to_string();
@@ -884,11 +882,11 @@ fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
 }
 
 /// Discovery for non-WG-replica roots: standard team membership scan + a
-/// WG-replica scan across `settings.project_paths`. Returns the same vector
+/// WG-replica scan across captured registered projects. Returns the same vector
 /// that the legacy `execute` body would have serialized. Shared by `execute`
 /// and `execute_lean` so the peer set is identical by construction for both
 /// verbs (see issue #252).
-fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
+fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec<PeerInfo> {
     // ── Standard discovery-based peer listing ────────────────────────
     //
     // `execute` is the non-WG-replica path (WG replicas return early above).
@@ -896,7 +894,7 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
     // origin form `project/agent` (identical to the legacy behavior for
     // non-WG paths). Using the canonical helper eliminates the shadow.
     let my_name = crate::config::teams::agent_fqn_from_path(root);
-    let discovered = crate::config::teams::discover_teams();
+    let discovered = crate::config::teams::discover_teams_from_project_paths(project_paths);
     let session_index = build_session_index();
 
     let mut peers: Vec<PeerInfo> = Vec::new();
@@ -984,8 +982,7 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
 
     // ── WG replica discovery ──────────────────────────────────────────────
     // Scan project_paths for Project AC Root wg-*/__agent_* replicas
-    let settings = crate::config::settings::load_settings();
-    for base_path in &settings.project_paths {
+    for base_path in project_paths {
         let base = Path::new(base_path);
         if !base.is_dir() {
             continue;
@@ -1080,9 +1077,8 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
     peers
 }
 
-fn discover_root_coordinator_peers() -> Vec<PeerInfo> {
-    let settings = crate::config::settings::load_settings();
-    discover_root_coordinator_peers_from_project_paths(&settings.project_paths)
+fn discover_root_coordinator_peers(project_paths: &[String]) -> Vec<PeerInfo> {
+    discover_root_coordinator_peers_from_project_paths(project_paths)
 }
 
 fn discover_root_coordinator_peers_from_project_paths(project_paths: &[String]) -> Vec<PeerInfo> {
@@ -1262,12 +1258,13 @@ fn report_unknown_peers(unknown: &[String], available: &[String]) -> i32 {
 /// origin-agent path otherwise. Factored so `execute` and `execute_lean`
 /// share the dispatch.
 fn discover_peers(root: &str) -> Result<Vec<PeerInfo>, String> {
+    let settings = crate::config::settings::load_settings_for_cli_strict()?;
     if crate::config::root_agent::is_root_agent_path(root) {
-        Ok(discover_root_coordinator_peers())
+        Ok(discover_root_coordinator_peers(&settings.project_paths))
     } else if let Some(wg) = detect_wg_replica(root)? {
-        Ok(discover_wg_peers(wg))
+        Ok(discover_wg_peers(wg, &settings.project_paths))
     } else {
-        Ok(discover_origin_peers(root))
+        Ok(discover_origin_peers(root, &settings.project_paths))
     }
 }
 
@@ -1764,7 +1761,7 @@ mod tests {
         let wg = detect_wg_replica(root.to_str().unwrap())
             .unwrap()
             .expect("Project AC Root should be accepted");
-        let peers = discover_wg_peers(wg);
+        let peers = discover_wg_peers(wg, &[]);
         let names: Vec<&str> = peers.iter().map(|peer| peer.name.as_str()).collect();
 
         assert!(names.contains(&"proj-a:wg-1-devs/bob"));
@@ -1777,7 +1774,7 @@ mod tests {
             .unwrap()
             .expect("portable coordinator replica");
 
-        let peers = discover_wg_peers(wg);
+        let peers = discover_wg_peers(wg, &[]);
         let names: Vec<&str> = peers.iter().map(|peer| peer.name.as_str()).collect();
 
         assert!(names.contains(&"proj-a:wg-1-dev-team/dev-rust"));
@@ -1793,7 +1790,7 @@ mod tests {
             .unwrap()
             .expect("portable non-coordinator replica");
 
-        let peers = discover_wg_peers(wg);
+        let peers = discover_wg_peers(wg, &[]);
         let names: Vec<&str> = peers.iter().map(|peer| peer.name.as_str()).collect();
 
         assert!(names.contains(&"proj-a:wg-1-dev-team/tech-lead"));

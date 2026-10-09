@@ -899,7 +899,13 @@ pub fn execute(args: SendArgs) -> i32 {
     // CLI-side resolution is belt-and-braces (§DR1); the mailbox also
     // canonicalizes on receive (§AR2-norm) so direct outbox writes cannot
     // bypass the reject-on-ambiguity rule.
-    let settings = crate::config::settings::load_settings();
+    let settings = match crate::config::settings::load_settings_for_cli_strict() {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("Error: {}", error);
+            return 1;
+        }
+    };
     // Build an in-memory project-path slice that includes the project
     // derived from --root (if any). Mirrors list-peers's WG-replica walk-up
     // discovery so qualified WG-peer targets that list-peers reports as
@@ -968,9 +974,9 @@ pub fn execute(args: SendArgs) -> i32 {
             return 1;
         }
     } else if !is_root {
-        // Load discovered teams and check if sender can reach destination BEFORE
+        // Use the unaugmented captured registrations for team authorization BEFORE
         // writing to outbox. Fail immediately with a clear error if not.
-        let discovered = teams::discover_teams();
+        let discovered = teams::discover_teams_from_project_paths(&settings.project_paths);
         if !teams::can_communicate(&sender, &resolved_to, &discovered) {
             eprintln!(
                 "Error: routing rejected — '{}' cannot reach '{}'. \
