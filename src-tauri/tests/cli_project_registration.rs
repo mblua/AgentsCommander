@@ -1192,7 +1192,10 @@ fn p05_real_peer_discovery_uses_registered_remote_without_managed_writes() {
                 .iter()
                 .find(|peer| peer["name"] == "RegisteredRemote:room-01-devs/coord")
                 .expect("registered coordinator peer");
-            assert_eq!(coord["path"], fixture.coordinator);
+            assert_eq!(
+                std::fs::canonicalize(coord["path"].as_str().unwrap()).unwrap(),
+                std::fs::canonicalize(&fixture.coordinator).unwrap()
+            );
         }
     }
 }
@@ -1236,7 +1239,23 @@ fn p05_real_send_enqueues_and_close_resolves_before_coordinator_denial() {
     assert_eq!(queued["to"], "RegisteredRemote:room-01-devs/coord");
     assert_eq!(queued["from"], "RegisteredRemote:room-01-devs/peer");
     assert_eq!(queued["mode"], "wake");
-    assert_eq!(queued["body"], "P05 message");
+    let message_path = fixture
+        .project
+        .join(".ac/room-01-devs/messaging")
+        .join(P05_MESSAGE);
+    let canonical_message = std::fs::canonicalize(&message_path).unwrap();
+    let canonical_message = canonical_message.to_string_lossy();
+    assert_eq!(
+        queued["body"],
+        format!(
+            "Process this inter-agent message: {}",
+            canonical_message.trim_start_matches(r"\\?\")
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&message_path).unwrap(),
+        "P05 message"
+    );
     assert_eq!(fixture.managed_bytes(), before);
     std::fs::remove_file(queued_path).unwrap();
     fixture.assert_denied(
@@ -1612,17 +1631,12 @@ fn p05_production_new_project_preserves_authorized_legacy_writer_contract() {
         );
         assert_eq!(settings["defaultShell"], "powershell.exe");
         assert_eq!(settings["npmUpdateNotificationsEnabled"], false);
+        let canonical_project = std::fs::canonicalize(&project).unwrap();
         assert!(settings["projectPaths"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v.as_str()
-                == Some(
-                    std::fs::canonicalize(&project)
-                        .unwrap()
-                        .to_string_lossy()
-                        .as_ref()
-                )));
+            .any(|v| std::fs::canonicalize(v.as_str().unwrap()).unwrap() == canonical_project));
         let ignore = std::fs::read_to_string(project.join(".ac/.gitignore")).unwrap();
         assert!(
             ignore.contains("**/__agent_*/P05-INSTRUCTIONS.md"),
