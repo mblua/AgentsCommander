@@ -1085,11 +1085,11 @@ impl ReadonlyFixture {
         std::fs::create_dir_all(&messaging).unwrap();
         std::fs::write(messaging.join(P05_MESSAGE), "P05 message").unwrap();
         write_settings(&config, &[&project]);
-        // Explicit absolute project bypasses settings-based name resolution.
+        // Use the registered folder name required by CLI project resolution.
         // Settle naming journal/lock before any managed-byte snapshot or probe.
         let _ = run_json(
             &bin,
-            &["workgroup", "list", "--project", project.to_str().unwrap()],
+            &["workgroup", "list", "--project", "RegisteredRemote"],
         );
         let value = serde_json::json!({
             "defaultShell":"powershell.exe", "defaultShellArgs":[],
@@ -1564,7 +1564,7 @@ fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes(
             "workgroup",
             "add",
             "--project",
-            fixture.project.to_str().unwrap(),
+            "RegisteredRemote",
             "--team",
             "devs",
             "--title",
@@ -1583,12 +1583,7 @@ fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes(
     );
     let rooms = run_json(
         &fixture.bin,
-        &[
-            "workgroup",
-            "list",
-            "--project",
-            fixture.project.to_str().unwrap(),
-        ],
+        &["workgroup", "list", "--project", "RegisteredRemote"],
     )
     .0;
     assert_eq!(rooms.as_array().unwrap().len(), 2);
