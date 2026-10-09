@@ -164,6 +164,13 @@ pub(crate) const ORPHAN_ARCHIVE_FILENAME: &str = "orphaned-sessions.archive.json
 /// Rotated generations of the orphaned-session archive; same shape and same
 /// reason as `ACTIVITY_LOG_ROTATION_GLOB`.
 pub(crate) const ORPHAN_ARCHIVE_ROTATION_GLOB: &str = "orphaned-sessions.archive.json.*";
+pub(crate) const PROJECT_PATHS_FILE_NAME: &str = "project-paths.json";
+pub(crate) const PROJECT_PATHS_TMP_GLOB: &str = "project-paths.json.*.tmp";
+pub(crate) const PROJECT_PATHS_BACKUP_FILE_NAME: &str = "project-paths.pre-migration.no-git.json";
+pub(crate) const PROJECT_PATHS_BACKUP_TMP_GLOB: &str =
+    "project-paths.pre-migration.no-git.json.*.tmp";
+pub(crate) const PROJECT_PATHS_RECOVERED_GLOB: &str =
+    "project-paths.pre-migration.recovered-*.no-git.json";
 pub(crate) const PROJECT_REFRESH_REQUESTS_DIR_NAME: &str = "project-refresh-requests";
 pub(crate) const PTY_INPUT_LOCKS_DIR_NAME: &str = "pty-input-locks";
 /// #2374 - the whole-file remote CI view the daemon republishes each sweep and
@@ -875,6 +882,36 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: rotated generations of the archived orphaned-session records; the same runtime artifact under a numeric suffix",
     },
     InstanceArtifact {
+        name: PROJECT_PATHS_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: machine-local raw project paths",
+    },
+    InstanceArtifact {
+        name: PROJECT_PATHS_TMP_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: project path write temporaries",
+    },
+    InstanceArtifact {
+        name: PROJECT_PATHS_BACKUP_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: immutable original settings before project path migration",
+    },
+    InstanceArtifact {
+        name: PROJECT_PATHS_BACKUP_TMP_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: retained project path backup publication evidence",
+    },
+    InstanceArtifact {
+        name: PROJECT_PATHS_RECOVERED_GLOB,
+        kind: ArtifactKind::Glob,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: operator-preserved project path backup recovery evidence",
+    },
+    InstanceArtifact {
         name: PROJECT_REFRESH_REQUESTS_DIR_NAME,
         kind: ArtifactKind::Dir,
         disposition: Disposition::Ignore,
@@ -1448,6 +1485,36 @@ mod tests {
     #[test]
     fn the_settings_tmp_glob_derives_from_the_settings_name() {
         assert_eq!(SETTINGS_TMP_GLOB, format!("{SETTINGS_FILE_NAME}.*.tmp"));
+    }
+
+    #[test]
+    fn project_paths_artifacts_cover_publication_and_recovery() {
+        assert_eq!(
+            PROJECT_PATHS_TMP_GLOB,
+            format!("{PROJECT_PATHS_FILE_NAME}.*.tmp")
+        );
+        assert_eq!(
+            PROJECT_PATHS_BACKUP_TMP_GLOB,
+            format!("{PROJECT_PATHS_BACKUP_FILE_NAME}.*.tmp")
+        );
+        assert_eq!(
+            PROJECT_PATHS_RECOVERED_GLOB,
+            "project-paths.pre-migration.recovered-*.no-git.json"
+        );
+        for name in [
+            PROJECT_PATHS_FILE_NAME,
+            PROJECT_PATHS_TMP_GLOB,
+            PROJECT_PATHS_BACKUP_FILE_NAME,
+            PROJECT_PATHS_BACKUP_TMP_GLOB,
+            PROJECT_PATHS_RECOVERED_GLOB,
+        ] {
+            let rows: Vec<_> = INSTANCE_ARTIFACTS
+                .iter()
+                .filter(|row| row.name == name)
+                .collect();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].disposition, Disposition::Ignore);
+        }
     }
 
     #[test]
