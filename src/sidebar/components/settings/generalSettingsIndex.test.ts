@@ -56,3 +56,13 @@ describe("generalSettingsIndex (#2704)", () => {
     });
   });
 });
+
+describe("response close search (#2851)", () => {
+  it("finds both labels in the terminal category", () => {
+    expect(keys("close terminal after response")).toContain("responseCloseEnabled");
+    expect(keys("idle seconds after response")).toEqual(["responseCloseIdleSeconds"]);
+    const entries = searchGeneralSettings("response");
+    expect(entries.map((e) => e.key)).toEqual(["responseCloseEnabled", "responseCloseIdleSeconds"]);
+    expect(entries.every((e) => e.category === "terminal")).toBe(true);
+  });
+});

@@ -69,6 +69,12 @@ export function mergeSettingsForSavePreservingProjects(
     ...draft,
     ...webServerFields,
     ...apiServerFields,
+    responseCloseEnabled: modalSeed && (draft.responseCloseEnabled ?? true) === (modalSeed.responseCloseEnabled ?? true)
+      ? (fresh.responseCloseEnabled ?? true)
+      : (draft.responseCloseEnabled ?? true),
+    responseCloseIdleSeconds: modalSeed && (draft.responseCloseIdleSeconds ?? 30) === (modalSeed.responseCloseIdleSeconds ?? 30)
+      ? (fresh.responseCloseIdleSeconds ?? 30)
+      : (draft.responseCloseIdleSeconds ?? 30),
     agents: draft.agents
       .map(normalizeAgentInstructionsFilename)
       .map(normalizeAgentConfigSeed)

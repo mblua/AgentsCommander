@@ -852,6 +852,8 @@ export interface AppSettings {
    *  to 1..3600; optional so a snapshot saved before the field reads as the
    *  backend default (30). */
   typingHoldSeconds?: number;
+  responseCloseEnabled?: boolean;
+  responseCloseIdleSeconds?: number;
   screenshotCaptureHotkey?: string;
   /** #2281 Sidebar compact toggle hotkey, e.g. "Ctrl+Shift+E". Validated on save;
    * an invalid value blocks the save. */
