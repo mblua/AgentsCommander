@@ -316,7 +316,11 @@ pub fn write_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     write_file_atomic_with_publish(path, bytes, publish_temp_config)
 }
 
-fn write_file_atomic_with_publish<P>(path: &Path, bytes: &[u8], publish: P) -> Result<(), String>
+pub(super) fn write_file_atomic_with_publish<P>(
+    path: &Path,
+    bytes: &[u8],
+    publish: P,
+) -> Result<(), String>
 where
     P: FnOnce(&Path, &Path) -> Result<(), String>,
 {
@@ -358,6 +362,8 @@ where
 /// it edits the decisions map and the state map before `mutate` runs.
 pub(crate) type ConfigPairCleanup<'a> =
     &'a dyn Fn(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>;
+
+pub(super) type ConfigPublisher<'a> = &'a dyn Fn(&Path, &Path) -> Result<(), String>;
 
 pub(crate) type ConfigPairFinish<'a> = &'a dyn Fn(&mut Map<String, Value>) -> Result<(), String>;
 
@@ -402,6 +408,7 @@ where
         &|_| Ok(()),
         None,
         None,
+        &publish_temp_config,
     )
 }
 
@@ -434,11 +441,12 @@ where
         finish,
         activity,
         nonpending_preflight,
+        &publish_temp_config,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_config_pair_inner<F>(
+pub(super) fn update_config_pair_inner<F>(
     decisions: &Path,
     state: &Path,
     reservation: Option<&Path>,
@@ -449,6 +457,7 @@ fn update_config_pair_inner<F>(
     finish: ConfigPairFinish<'_>,
     activity: Option<(&str, &Cell<bool>)>,
     nonpending_preflight: Option<&dyn Fn() -> Result<(), String>>,
+    publish: ConfigPublisher<'_>,
 ) -> Result<(), String>
 where
     F: FnOnce(&mut Map<String, Value>, &mut Map<String, Value>) -> Result<(), String>,
@@ -587,6 +596,7 @@ where
             (state, &state_before, &state_map),
             on_stage,
             ["after_cleanup_state_publish", "after_cleanup_tracked_write"],
+            publish,
         )?;
     }
 
@@ -599,6 +609,7 @@ where
         (state, &state_before, &state_map),
         on_stage,
         ["after_caller_state_publish", "after_caller_decisions_write"],
+        publish,
     )
 }
 
@@ -2199,10 +2210,11 @@ fn publish_pair_sides(
     state: (&Path, &Map<String, Value>, &Map<String, Value>),
     on_stage: &dyn Fn(&str),
     [state_stage, decisions_stage]: [&str; 2],
+    publish: ConfigPublisher<'_>,
 ) -> Result<(), String> {
     for ((path, before, after), stage) in [(state, state_stage), (decisions, decisions_stage)] {
         if before != after {
-            publish_pair_side(path, after)?;
+            publish_pair_side_with_publish(path, after, publish)?;
             on_stage(stage);
         }
     }
@@ -2211,7 +2223,16 @@ fn publish_pair_sides(
 
 /// #2786 (C1) - temp plus `publish_temp_config`, never `write_file_atomic`:
 /// the pair already holds the process `Mutex`, which is not reentrant.
+#[cfg(test)]
 fn publish_pair_side(path: &Path, map: &Map<String, Value>) -> Result<(), String> {
+    publish_pair_side_with_publish(path, map, &publish_temp_config)
+}
+
+fn publish_pair_side_with_publish(
+    path: &Path,
+    map: &Map<String, Value>,
+    publish: ConfigPublisher<'_>,
+) -> Result<(), String> {
     let mut json = serde_json::to_string_pretty(map)
         .map_err(|e| format!("Failed to serialize {}: {}", path.display(), e))?;
     json.push('\n');
@@ -2232,7 +2253,7 @@ fn publish_pair_side(path: &Path, map: &Map<String, Value>) -> Result<(), String
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
-    if let Err(e) = publish_temp_config(&tmp_path, path) {
+    if let Err(e) = publish(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
@@ -2314,7 +2335,7 @@ fn ordinary_staging_error(error: PreparedPairError) -> String {
 
 // Legacy names exist only as detached-debris regression fixture inputs.
 #[cfg(test)]
-fn temp_config_path(path: &Path) -> PathBuf {
+pub(super) fn temp_config_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -2390,7 +2411,7 @@ fn format_publish_error(path: &Path, tmp_path: &Path, err: &std::io::Error) -> S
 }
 
 #[cfg(not(windows))]
-fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
+pub(super) fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
     ordinary_publish_result(publish_temp_config_guarded(
         tmp_path,
         path,
@@ -2551,7 +2572,7 @@ fn publish_path_wide(path: &Path) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
+pub(super) fn publish_temp_config(tmp_path: &Path, path: &Path) -> Result<(), String> {
     ordinary_publish_result(publish_temp_config_guarded(
         tmp_path,
         path,

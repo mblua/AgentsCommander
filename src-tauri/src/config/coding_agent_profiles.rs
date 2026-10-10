@@ -1133,12 +1133,22 @@ pub fn clear_replica_selection_lock(
     replica_path: &Path,
     expected: &ReplicaSelectionExpectation,
 ) -> Result<SelectionWriteOutcome, String> {
+    clear_replica_selection_lock_with_publish(settings, replica_path, expected, None)
+}
+
+fn clear_replica_selection_lock_with_publish(
+    settings: &AppSettings,
+    replica_path: &Path,
+    expected: &ReplicaSelectionExpectation,
+    publish: Option<crate::config::agent_config::ConfigPublisher<'_>>,
+) -> Result<SelectionWriteOutcome, String> {
     let replica_dir = validated_replica_dir(settings, replica_path)?;
     let config_path = replica_dir.join("config.json");
     let marker = std::cell::Cell::new(None::<SelectionGuardMarker>);
 
-    let written =
-        crate::config::agent_config::update_existing_agent_config(&config_path, |obj, _state| {
+    let written = crate::config::agent_config::update_existing_agent_config_with_publish(
+        &config_path,
+        |obj, _state| {
             let (_current_pair, current_locked) =
                 validate_selection_write_state(&replica_dir, expected)?;
             if !current_locked {
@@ -1156,7 +1166,9 @@ pub fn clear_replica_selection_lock(
                 })?;
             tooling.insert("selectionLocked".to_string(), Value::Bool(false));
             Ok(())
-        });
+        },
+        publish,
+    );
 
     match written {
         Ok(_) => Ok(SelectionWriteOutcome {
@@ -2488,21 +2500,39 @@ mod tests {
         );
         assert_eq!(config_bytes(&fixture.replica), before);
 
-        // A directory at the known temp-config path proves the already-unlocked
-        // path never even attempts a temp file.
+        // Legacy debris selects the explicit refusal callback for decisions only.
+        // The already-unlocked path must bypass that callback and preserve bytes.
         let temp_obstruction = fixture
             .replica
             .join(format!(".config.json.{}.tmp", std::process::id()));
         std::fs::create_dir(&temp_obstruction).unwrap();
+        let publish = |tmp: &std::path::Path, target: &std::path::Path| {
+            assert!(
+                tmp.is_file(),
+                "fresh staging acquired before injected refusal"
+            );
+            if crate::config::agent_config::temp_config_path(target) == temp_obstruction {
+                assert!(temp_obstruction.is_dir());
+                Err("fixture temp config publish failure".into())
+            } else {
+                crate::config::agent_config::publish_temp_config(tmp, target)
+            }
+        };
         assert_eq!(
-            clear_replica_selection_lock(&fixture.settings, &fixture.replica, &expected).unwrap(),
+            clear_replica_selection_lock_with_publish(
+                &fixture.settings,
+                &fixture.replica,
+                &expected,
+                Some(&publish)
+            )
+            .unwrap(),
             SelectionWriteOutcome::UNCHANGED
         );
         assert!(temp_obstruction.is_dir());
         assert_eq!(config_bytes(&fixture.replica), before);
 
-        // Positive control: a true flag DOES publish, reaches that obstruction
-        // and fails temp creation — the error is never masked as success.
+        // Positive control: a true flag reaches the publisher and is refused
+        // after fresh acquisition — the error is never masked as success.
         write_config(
             &fixture.replica,
             &seed_selection_config(
@@ -2513,9 +2543,13 @@ mod tests {
         let locked_expected = read_replica_selection_state(&fixture.replica)
             .expectation()
             .unwrap();
-        let error =
-            clear_replica_selection_lock(&fixture.settings, &fixture.replica, &locked_expected)
-                .unwrap_err();
+        let error = clear_replica_selection_lock_with_publish(
+            &fixture.settings,
+            &fixture.replica,
+            &locked_expected,
+            Some(&publish),
+        )
+        .unwrap_err();
         assert!(error.contains("temp config"), "{error}");
         assert!(temp_obstruction.is_dir());
         assert_eq!(config_bytes(&fixture.replica), locked_before);
