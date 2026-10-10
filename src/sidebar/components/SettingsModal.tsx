@@ -303,6 +303,9 @@ const appSettingsOnly = (snapshot: AppSettings | null): AppSettings | null => {
 // #2337 - the typing-hold bounds the backend enforces in
 // `validate_typing_hold_settings` (settings.rs). The draft is checked against the
 // same numbers so the modal refuses an invalid window before the save round-trip.
+const RESPONSE_CLOSE_IDLE_SECONDS_DEFAULT = 30;
+const RESPONSE_CLOSE_IDLE_SECONDS_MIN = 1;
+const RESPONSE_CLOSE_IDLE_SECONDS_MAX = 3600;
 const TYPING_HOLD_SECONDS_DEFAULT = 30;
 const TYPING_HOLD_SECONDS_MIN = 1;
 const TYPING_HOLD_SECONDS_MAX = 3600;
@@ -335,6 +338,15 @@ function parseTypingHoldSeconds(raw: string): number | null {
   if (!/^\d+$/.test(text)) return null;
   const value = Number(text);
   return value >= TYPING_HOLD_SECONDS_MIN && value <= TYPING_HOLD_SECONDS_MAX
+    ? value
+    : null;
+}
+
+function parseResponseCloseIdleSeconds(raw: string): number | null {
+  const text = raw.trim();
+  if (!/^[0-9]+$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) && value >= RESPONSE_CLOSE_IDLE_SECONDS_MIN && value <= RESPONSE_CLOSE_IDLE_SECONDS_MAX
     ? value
     : null;
 }
@@ -810,6 +822,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [typingHoldSecondsText, setTypingHoldSecondsText] = createSignal(
     String(seededSettings?.typingHoldSeconds ?? TYPING_HOLD_SECONDS_DEFAULT),
   );
+  const [responseCloseIdleSecondsText, setResponseCloseIdleSecondsText] = createSignal(
+    String(seededSettings?.responseCloseIdleSeconds ?? RESPONSE_CLOSE_IDLE_SECONDS_DEFAULT),
+  );
   const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
@@ -917,6 +932,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       terminalSnapshotsEnabled: terminalSnapshotsDraft,
     });
     setSettings("data", nextDraft);
+    setResponseCloseIdleSecondsText(
+      String(nextSettings.responseCloseIdleSeconds ?? RESPONSE_CLOSE_IDLE_SECONDS_DEFAULT),
+    );
     setModalSeed(nextModalSeed);
     adoptBackendAgentOrder(nextSettings.agents);
     setDraftDirty(terminalSnapshotsDraft !== terminalSnapshotsOpeningValue());
@@ -1557,6 +1575,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       setTerminalSnapshotsOpeningValue(loaded.terminalSnapshotsEnabled);
       setTypingHoldSecondsText(
         String(nextSettings?.typingHoldSeconds ?? TYPING_HOLD_SECONDS_DEFAULT),
+      );
+      setResponseCloseIdleSecondsText(
+        String(nextSettings?.responseCloseIdleSeconds ?? RESPONSE_CLOSE_IDLE_SECONDS_DEFAULT),
       );
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
     }
@@ -2469,10 +2490,17 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     return null;
   };
 
+  const validateResponseCloseIdleSeconds = (): string | null => {
+    if (!settings.data) return null;
+    return parseResponseCloseIdleSeconds(responseCloseIdleSecondsText()) === null
+      ? "Idle seconds after response: seconds must be a whole number from 1 to 3600"
+      : null;
+  };
+
   // #2704 - which General category holds a blocking validation error (red dot cue).
   const generalInvalid = createMemo((): Record<GeneralCategoryId, boolean> => ({
     appearance: !!(validateScreenshotHotkey() || validateSidebarCompactHotkey() || validateRoomNumberMask()),
-    terminal: !!validateTypingHoldSeconds(),
+    terminal: !!(validateTypingHoldSeconds() || validateResponseCloseIdleSeconds()),
     agents: !!validateCoordinatorIdle(),
     network: !!validateApiServerSettings(),
     system: false,
@@ -2483,6 +2511,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateResources() ??
     validateCoordinatorIdle() ??
     validateTypingHoldSeconds() ??
+    validateResponseCloseIdleSeconds() ??
     validateApiServerSettings() ??
     validateScreenshotHotkey() ??
     validateSidebarCompactHotkey() ??
@@ -3026,6 +3055,49 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                   data-ac-testid="settings.general.typingHoldSeconds.error"
                 >
                   {validateTypingHoldSeconds()}
+                </div>
+              </Show>
+            </div>
+
+            <div class="settings-section">
+              <div class="settings-section-title">Response close</div>
+              <label data-ac-setting="responseCloseEnabled" class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings.data!.responseCloseEnabled ?? true}
+                  disabled={saving()}
+                  onChange={(e) => updateField("responseCloseEnabled", e.currentTarget.checked)}
+                  data-ac-testid="settings.general.responseCloseEnabled"
+                />
+                <span>Close terminal after response</span>
+              </label>
+              <label data-ac-setting="responseCloseIdleSeconds" class="settings-field">
+                <span class="settings-label">Idle seconds after response</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  type="number"
+                  min={RESPONSE_CLOSE_IDLE_SECONDS_MIN}
+                  max={RESPONSE_CLOSE_IDLE_SECONDS_MAX}
+                  step="1"
+                  value={responseCloseIdleSecondsText()}
+                  onInput={(e) => {
+                    const raw = e.currentTarget.value;
+                    setDraftDirty(true);
+                    setResponseCloseIdleSecondsText(raw);
+                    const value = parseResponseCloseIdleSeconds(raw);
+                    if (value !== null) updateField("responseCloseIdleSeconds", value);
+                  }}
+                  data-ac-testid="settings.general.responseCloseIdleSeconds"
+                  data-ac-role="spinbutton"
+                />
+              </label>
+              <div class="settings-hint">
+                Applies to all eligible coordinator requests. Ordinary acknowledgements or progress responses can qualify after continuous inactivity. This preference takes effect when response close becomes available.
+              </div>
+              <Show when={validateResponseCloseIdleSeconds()}>
+                <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.responseCloseIdleSeconds.error">
+                  {validateResponseCloseIdleSeconds()}
                 </div>
               </Show>
             </div>

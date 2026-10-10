@@ -4774,6 +4774,55 @@ mod tests {
 
     #[test]
     fn managed_catalog_has_catalog_publication_malformed_future_and_directory_are_err() {
+        fn inventory(
+            root: &std::path::Path,
+        ) -> Vec<(
+            std::path::PathBuf,
+            bool,
+            u64,
+            bool,
+            std::time::SystemTime,
+            Vec<u8>,
+        )> {
+            #[cfg(test)]
+            type TreeInventoryRows = Vec<(
+                std::path::PathBuf,
+                bool,
+                u64,
+                bool,
+                std::time::SystemTime,
+                Vec<u8>,
+            )>;
+            fn visit(root: &std::path::Path, path: &std::path::Path, rows: &mut TreeInventoryRows) {
+                let metadata = std::fs::symlink_metadata(path).unwrap();
+                assert!(!metadata.file_type().is_symlink());
+                rows.push((
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    metadata.is_dir(),
+                    metadata.len(),
+                    metadata.permissions().readonly(),
+                    metadata.modified().unwrap(),
+                    if metadata.is_file() {
+                        std::fs::read(path).unwrap()
+                    } else {
+                        Vec::new()
+                    },
+                ));
+                if metadata.is_dir() {
+                    let mut entries: Vec<_> = std::fs::read_dir(path)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path())
+                        .collect();
+                    entries.sort();
+                    for entry in entries {
+                        visit(root, &entry, rows);
+                    }
+                }
+            }
+            let mut rows = Vec::new();
+            visit(root, root, &mut rows);
+            rows
+        }
         let (_temp, project) = setup_project();
         std::fs::write(canonical_path(&project), b"not = [valid toml").unwrap();
         assert!(has_catalog_publication(&project).is_err());
@@ -4788,7 +4837,35 @@ mod tests {
 
         let (_temp, project) = setup_project();
         std::fs::create_dir(canonical_path(&project)).unwrap();
+        std::fs::write(canonical_path(&project).join("keep.txt"), b"keep").unwrap();
+        let unrelated = project.join(".ac").join("unrelated-target.toml");
+        std::fs::write(
+            &unrelated,
+            b"# unrelated target
+",
+        )
+        .unwrap();
+        let before = inventory(&project);
         assert!(has_catalog_publication(&project).is_err());
+        for _ in 0..3 {
+            let error = has_catalog_publication(&project).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&canonical_path(&project).display().to_string()),
+                "{error}"
+            );
+            assert_eq!(inventory(&project), before);
+        }
+        assert_eq!(
+            std::fs::read(canonical_path(&project).join("keep.txt")).unwrap(),
+            b"keep"
+        );
+        assert_eq!(
+            std::fs::read(unrelated).unwrap(),
+            b"# unrelated target
+"
+        );
     }
 
     #[test]

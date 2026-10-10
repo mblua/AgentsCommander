@@ -5717,12 +5717,74 @@ mod tests {
 
     #[test]
     fn project_nonregular_and_read_errors_degrade_only_project() {
+        fn inventory(
+            root: &std::path::Path,
+        ) -> Vec<(
+            std::path::PathBuf,
+            bool,
+            u64,
+            bool,
+            std::time::SystemTime,
+            Vec<u8>,
+        )> {
+            #[cfg(test)]
+            type TreeInventoryRows = Vec<(
+                std::path::PathBuf,
+                bool,
+                u64,
+                bool,
+                std::time::SystemTime,
+                Vec<u8>,
+            )>;
+            fn visit(root: &std::path::Path, path: &std::path::Path, rows: &mut TreeInventoryRows) {
+                let metadata = std::fs::symlink_metadata(path).unwrap();
+                assert!(!metadata.file_type().is_symlink());
+                rows.push((
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    metadata.is_dir(),
+                    metadata.len(),
+                    metadata.permissions().readonly(),
+                    metadata.modified().unwrap(),
+                    if metadata.is_file() {
+                        std::fs::read(path).unwrap()
+                    } else {
+                        Vec::new()
+                    },
+                ));
+                if metadata.is_dir() {
+                    let mut entries: Vec<_> = std::fs::read_dir(path)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path())
+                        .collect();
+                    entries.sort();
+                    for entry in entries {
+                        visit(root, &entry, rows);
+                    }
+                }
+            }
+            let mut rows = Vec::new();
+            visit(root, root, &mut rows);
+            rows
+        }
         let dir = seed_dir();
         ensure_seeded(dir.path(), None);
+        let baseline = project_report(dir.path());
         std::fs::create_dir(project_catalog_path(dir.path())).unwrap();
+        std::fs::write(project_catalog_path(dir.path()).join("keep.txt"), b"keep").unwrap();
+        let before = inventory(dir.path());
         let report = project_report(dir.path());
         assert_eq!(report.catalog.len(), 8);
         assert!(report.warnings.iter().any(|w| w.code == "projectInvalid"));
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog, baseline.catalog);
+        assert_eq!(keys_of(&report.catalog), keys_of(&baseline.catalog));
+        assert!(report.warnings.iter().any(|w| w.code == "projectInvalid"
+            && w.path == project_catalog_path(dir.path()).display().to_string()
+            && !w.reason.is_empty()));
+        for _ in 0..3 {
+            assert_eq!(project_report(dir.path()), report);
+        }
+        assert_eq!(inventory(dir.path()), before);
         let snapshot = read_catalog_snapshot_with(
             dir.path(),
             CatalogReadScope::Project,
@@ -5742,6 +5804,35 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.code == "projectInvalid" && w.reason == "project read denied"));
+        assert!(resolved.unavailable.is_none());
+        assert_eq!(resolved.catalog, baseline.catalog);
+        assert!(resolved.warnings.iter().any(|w| w.code == "projectInvalid"
+            && w.path == project_catalog_path(dir.path()).display().to_string()
+            && w.reason == "project read denied"));
+        for _ in 0..3 {
+            let snapshot = read_catalog_snapshot_with(
+                dir.path(),
+                CatalogReadScope::Project,
+                |path, description| {
+                    if path == project_catalog_path(dir.path()) {
+                        Err("project read denied".into())
+                    } else {
+                        read_optional_regular_file(path, description)
+                    }
+                },
+            )
+            .unwrap();
+            let repeated =
+                resolve_catalog_snapshot(dir.path(), snapshot, CatalogSourceContext::Project);
+            assert_eq!(repeated.catalog, resolved.catalog);
+            assert_eq!(repeated.warnings, resolved.warnings);
+            assert_eq!(repeated.unavailable, resolved.unavailable);
+            assert_eq!(
+                repeated.base_verified_managed,
+                resolved.base_verified_managed
+            );
+        }
+        assert_eq!(inventory(dir.path()), before);
     }
     #[test]
     fn project_symlink_and_dangling_link_remain_invalid_and_preserved() {
@@ -9352,6 +9443,63 @@ mod tests {
 
     #[test]
     fn managed_catalog_existing_local_entries_are_never_clobbered() {
+        test09_directory_local_preserved();
+        test09_regular_local_and_read_denied_preserved();
+    }
+
+    #[cfg(test)]
+    type TreeInventoryRows = Vec<(
+        std::path::PathBuf,
+        bool,
+        u64,
+        bool,
+        std::time::SystemTime,
+        Vec<u8>,
+    )>;
+
+    fn test09_visit(root: &std::path::Path, path: &std::path::Path, rows: &mut TreeInventoryRows) {
+        let metadata = std::fs::symlink_metadata(path).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        rows.push((
+            path.strip_prefix(root).unwrap().to_path_buf(),
+            metadata.is_dir(),
+            metadata.len(),
+            metadata.permissions().readonly(),
+            metadata.modified().unwrap(),
+            if metadata.is_file() {
+                std::fs::read(path).unwrap()
+            } else {
+                Vec::new()
+            },
+        ));
+        if metadata.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            entries.sort();
+            for entry in entries {
+                test09_visit(root, &entry, rows);
+            }
+        }
+    }
+
+    fn test09_inventory(
+        root: &std::path::Path,
+    ) -> Vec<(
+        std::path::PathBuf,
+        bool,
+        u64,
+        bool,
+        std::time::SystemTime,
+        Vec<u8>,
+    )> {
+        let mut rows = Vec::new();
+        test09_visit(root, root, &mut rows);
+        rows
+    }
+
+    fn test09_directory_local_preserved() {
         // A directory at the local path is preserved and disables the layer.
         let dir = seed_dir();
         let local = local_catalog_path(dir.path());
@@ -9360,6 +9508,7 @@ mod tests {
         assert!(ensure_seeded(dir.path(), None).is_some());
         assert!(local.is_dir());
         assert_eq!(std::fs::read(local.join("keep.txt")).unwrap(), b"keep");
+        let before = test09_inventory(dir.path());
         let report = load_catalog_report(dir.path());
         assert_eq!(report.catalog.len(), 8, "the valid base stays usable");
         assert!(
@@ -9371,6 +9520,17 @@ mod tests {
             report.warnings
         );
 
+        assert!(report.unavailable.is_none());
+        assert!(report.warnings.iter().any(|w| w.code == "localInvalid"
+            && w.path == local.display().to_string()
+            && !w.reason.is_empty()));
+        for _ in 0..3 {
+            assert_eq!(load_catalog_report(dir.path()), report);
+        }
+        assert_eq!(test09_inventory(dir.path()), before);
+    }
+
+    fn test09_regular_local_and_read_denied_preserved() {
         // A user-authored regular local file is preserved byte-for-byte and
         // composes onto the fresh managed base.
         let dir = seed_dir();
@@ -9378,9 +9538,54 @@ mod tests {
         write_local(dir.path(), user);
         assert!(ensure_seeded(dir.path(), None).is_some());
         assert_eq!(read_text(&local_catalog_path(dir.path())), user);
+        let before = test09_inventory(dir.path());
         let loaded = load_catalog(dir.path()).unwrap();
         assert_eq!(loaded.len(), 9);
         assert_eq!(loaded.last().unwrap().key, "mine");
+        assert_eq!(loaded.last().unwrap().label, "Mine");
+        let report = load_catalog_report(dir.path());
+        assert!(report.unavailable.is_none());
+        assert_eq!(report.catalog, loaded);
+        for _ in 0..3 {
+            assert_eq!(load_catalog_report(dir.path()), report);
+        }
+        let mut expected = loaded.clone();
+        expected.retain(|row| row.key != "mine");
+        let mut denied: Option<ResolvedCatalog> = None;
+        for _ in 0..3 {
+            let snapshot = read_catalog_snapshot_with(
+                dir.path(),
+                CatalogReadScope::Project,
+                |path, description| {
+                    if path == local_catalog_path(dir.path()) {
+                        Err("local read denied".into())
+                    } else {
+                        read_optional_regular_file(path, description)
+                    }
+                },
+            )
+            .unwrap();
+            let degraded =
+                resolve_catalog_snapshot(dir.path(), snapshot, CatalogSourceContext::Project);
+            assert!(degraded.unavailable.is_none());
+            assert_eq!(degraded.catalog, expected);
+            assert_eq!(keys_of(&degraded.catalog), keys_of(&expected));
+            assert!(!degraded.catalog.iter().any(|row| row.key == "mine"));
+            assert!(degraded.warnings.iter().any(|w| w.code == "localInvalid"
+                && w.path == local_catalog_path(dir.path()).display().to_string()
+                && w.reason == "local read denied"));
+            if let Some(previous) = &denied {
+                assert_eq!(degraded.catalog, previous.catalog);
+                assert_eq!(degraded.warnings, previous.warnings);
+                assert_eq!(degraded.unavailable, previous.unavailable);
+                assert_eq!(
+                    degraded.base_verified_managed,
+                    previous.base_verified_managed
+                );
+            }
+            denied = Some(degraded);
+        }
+        assert_eq!(test09_inventory(dir.path()), before);
     }
 
     #[test]

@@ -5480,6 +5480,12 @@ pub struct AppSettings {
     /// each hold evaluation, so an edit takes effect without a restart.
     #[serde(default = "default_typing_hold_seconds")]
     pub typing_hold_seconds: u32,
+    /// User preference; runtime readiness is controlled separately.
+    #[serde(default = "default_true")]
+    pub response_close_enabled: bool,
+    /// Continuous safe idle required after an eligible response, in seconds.
+    #[serde(default = "default_response_close_idle_seconds")]
+    pub response_close_idle_seconds: u32,
 }
 
 /// #1171 - one entry of the root `watchers` map, or whatever the user wrote there.
@@ -5852,6 +5858,27 @@ fn default_typing_hold_seconds() -> u32 {
     DEFAULT_TYPING_HOLD_SECONDS
 }
 
+const DEFAULT_RESPONSE_CLOSE_IDLE_SECONDS: u32 = 30;
+const RESPONSE_CLOSE_IDLE_SECONDS_MIN: u32 = 1;
+const RESPONSE_CLOSE_IDLE_SECONDS_MAX: u32 = 3600;
+
+fn default_response_close_idle_seconds() -> u32 {
+    DEFAULT_RESPONSE_CLOSE_IDLE_SECONDS
+}
+
+/// Disk repair changes only the effective value, without requesting a write.
+fn repair_loaded_response_close_settings(settings: &mut AppSettings, source: &str) {
+    if !(RESPONSE_CLOSE_IDLE_SECONDS_MIN..=RESPONSE_CLOSE_IDLE_SECONDS_MAX)
+        .contains(&settings.response_close_idle_seconds)
+    {
+        log::warn!(
+            "Invalid responseCloseIdleSeconds={} from {source}: expected 1..=3600; using 30 in memory",
+            settings.response_close_idle_seconds
+        );
+        settings.response_close_idle_seconds = DEFAULT_RESPONSE_CLOSE_IDLE_SECONDS;
+    }
+}
+
 fn default_resource_keep_last_snapshot() -> bool {
     true
 }
@@ -5976,6 +6003,8 @@ impl Default for AppSettings {
             quota_sources: BTreeMap::new(),
             menu_guard_enabled: true,
             typing_hold_seconds: default_typing_hold_seconds(),
+            response_close_enabled: true,
+            response_close_idle_seconds: default_response_close_idle_seconds(),
         }
     }
 }
@@ -7129,6 +7158,40 @@ fn agents_unreadable_dirs() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
     DIRS.get_or_init(Default::default)
 }
 
+// Dormant until the P05 carrier publication consumer is wired.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentsPublicationLockError {
+    WouldBlock,
+    Poisoned,
+}
+
+/// Runs a synchronous publication step while the suppression registry is locked.
+/// The callback receives the unreadable flag and must not await or reacquire
+/// this registry. Contention and poison never authorize publication.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn try_with_agents_layer_publication_state<R>(
+    dir: &Path,
+    f: impl FnOnce(bool) -> R,
+) -> Result<R, AgentsPublicationLockError> {
+    try_with_agents_layer_publication_state_in(agents_unreadable_dirs(), dir, f)
+}
+
+// A local registry lets poison tests exercise this same path without poisoning
+// the process-wide registry used by other settings tests.
+#[cfg_attr(not(test), allow(dead_code))]
+fn try_with_agents_layer_publication_state_in<R>(
+    registry: &std::sync::Mutex<HashSet<PathBuf>>,
+    dir: &Path,
+    f: impl FnOnce(bool) -> R,
+) -> Result<R, AgentsPublicationLockError> {
+    let dirs = registry.try_lock().map_err(|error| match error {
+        std::sync::TryLockError::WouldBlock => AgentsPublicationLockError::WouldBlock,
+        std::sync::TryLockError::Poisoned(_) => AgentsPublicationLockError::Poisoned,
+    })?;
+    Ok(f(dirs.contains(dir)))
+}
+
 /// #2716 (B3, option C) - true while the agents file beside `dir`'s settings file
 /// could not be read by the last full load of it.
 pub(crate) fn agents_layer_unreadable_for_dir(dir: &Path) -> bool {
@@ -7571,6 +7634,7 @@ fn parse_settings_json(
     if let (Some(p), Some(state)) = (settings_path, agents_layer) {
         set_agents_layer_state(&mut settings, p, state);
     }
+    repair_loaded_response_close_settings(&mut settings, source);
     Ok((settings, legacy_profiles))
 }
 
@@ -7643,6 +7707,7 @@ fn default_settings_with_overlay(settings_path: &Path, source: &str) -> AppSetti
             // the defaults-plus-overlay view; still no write.
             finalize_agent_order(&mut settings.agents);
             settings.local_overlay_state = Arc::new(overlay);
+            repair_loaded_response_close_settings(&mut settings, source);
             settings
         }
         Err(e) => {
@@ -8122,6 +8187,11 @@ pub fn validate_preflight_timeouts(settings: &AppSettings) -> Result<(), String>
 }
 
 pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), String> {
+    if !(RESPONSE_CLOSE_IDLE_SECONDS_MIN..=RESPONSE_CLOSE_IDLE_SECONDS_MAX)
+        .contains(&settings.response_close_idle_seconds)
+    {
+        return Err("responseCloseIdleSeconds must be between 1 and 3600 seconds".to_string());
+    }
     validate_preflight_timeouts(settings)?;
     adopt_orphaned_profiles(settings);
     normalize_agent_backend_configs(settings)?;
@@ -9885,6 +9955,12 @@ impl SettingsSaveStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsSaveReason {
+    #[cfg(test)]
+    ProjectPathsConflict,
+    #[cfg(test)]
+    ProjectPathsBackupMismatch,
+    #[cfg(test)]
+    ProjectPathsSourceRejected,
     LockTimedOut,
     LockDeadlineOverflow,
     LockFileNotRegular,
@@ -9909,6 +9985,12 @@ enum SettingsSaveReason {
 impl SettingsSaveReason {
     fn as_str(self) -> &'static str {
         match self {
+            #[cfg(test)]
+            Self::ProjectPathsConflict => "project_paths_conflict",
+            #[cfg(test)]
+            Self::ProjectPathsBackupMismatch => "project_paths_backup_mismatch",
+            #[cfg(test)]
+            Self::ProjectPathsSourceRejected => "project_paths_source_rejected",
             Self::LockTimedOut => "lock_timed_out",
             Self::LockDeadlineOverflow => "lock_deadline_overflow",
             Self::LockFileNotRegular => "lock_file_not_regular",
@@ -10398,6 +10480,322 @@ pub(crate) fn reconcile_project_state_to_path(
         ProjectWriteMode::Reconcile { active, archived },
     )
     .map_err(|error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings))
+}
+
+// P02 remains dormant until the separately reviewed source-activation phase.
+#[cfg(test)]
+fn project_paths_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(super::instance_artifacts::PROJECT_PATHS_FILE_NAME)
+}
+
+#[cfg(test)]
+fn raw_project_projection(object: &Map<String, Value>) -> Map<String, Value> {
+    [
+        FIELD_PROJECT_PATH,
+        FIELD_PROJECT_PATH_REL,
+        FIELD_PROJECT_PATHS,
+        FIELD_PROJECT_PATHS_REL,
+        FIELD_ARCHIVED,
+        FIELD_ARCHIVED_REL,
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        object
+            .get(key)
+            .map(|value| (key.to_string(), value.clone()))
+    })
+    .collect()
+}
+
+#[cfg(test)]
+fn project_migration_error(
+    path: &Path,
+    stage: SettingsSaveStage,
+    reason: &str,
+) -> SettingsSaveError {
+    let kind = if reason.starts_with("project_paths_conflict") {
+        SettingsSaveReason::ProjectPathsConflict
+    } else if reason.starts_with("project_paths_backup_mismatch") {
+        SettingsSaveReason::ProjectPathsBackupMismatch
+    } else {
+        SettingsSaveReason::ProjectPathsSourceRejected
+    };
+    SettingsSaveError::semantic(
+        stage,
+        path,
+        None,
+        kind,
+        SettingsSaveLegacyOutward::DiskRead(format!("{}: {reason}", path.display())),
+    )
+}
+
+#[cfg(test)]
+fn read_project_source_bytes(path: &Path) -> Result<Option<Vec<u8>>, SettingsSaveError> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(SettingsSaveError::io(
+                SettingsSaveStage::ProjectPathsRefreshDiskGate,
+                path,
+                None,
+                error,
+                SettingsSaveLegacyOutward::SettingsSaveFailed,
+            ))
+        }
+        Ok(_) => {}
+    }
+    crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024)
+        .map(|(bytes, _)| Some(bytes))
+        .map_err(|reason| {
+            project_migration_error(
+                path,
+                SettingsSaveStage::ProjectPathsRefreshDiskGate,
+                &reason,
+            )
+        })
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct RawProjectSource {
+    object: Map<String, Value>,
+    bytes: Vec<u8>,
+}
+
+#[cfg(test)]
+fn read_raw_project_source(path: &Path) -> Result<Option<RawProjectSource>, SettingsSaveError> {
+    let Some(bytes) = read_project_source_bytes(path)? else {
+        return Ok(None);
+    };
+    let value = crate::path_identity::parse_json_no_duplicates(&bytes).map_err(|reason| {
+        project_migration_error(
+            path,
+            SettingsSaveStage::ProjectPathsRefreshDiskGate,
+            &reason,
+        )
+    })?;
+    let Value::Object(object) = value else {
+        return Err(project_migration_error(
+            path,
+            SettingsSaveStage::ProjectPathsRefreshDiskGate,
+            "project_paths_source_not_object",
+        ));
+    };
+    Ok(Some(RawProjectSource { object, bytes }))
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct SelectedProjectSource {
+    legacy: Option<RawProjectSource>,
+    destination: Option<RawProjectSource>,
+    projection: Map<String, Value>,
+}
+
+// Capture both immutable objects only while the original settings token is held.
+#[cfg(test)]
+fn select_project_source_locked(
+    transaction: &ProjectPathsWriteTransaction,
+) -> Result<SelectedProjectSource, SettingsSaveError> {
+    let path = &transaction.path;
+    let legacy = read_raw_project_source(path)?;
+    let destination_path = project_paths_path(path);
+    let destination = read_raw_project_source(&destination_path)?;
+    let legacy_projection = legacy
+        .as_ref()
+        .map(|source| raw_project_projection(&source.object))
+        .unwrap_or_default();
+    let projection = match &destination {
+        None => legacy_projection,
+        Some(source) => {
+            let projection = raw_project_projection(&source.object);
+            if !legacy_projection.is_empty() && legacy_projection != projection {
+                return Err(project_migration_error(&destination_path, SettingsSaveStage::ProjectPathsRefreshDiskGate,
+                    &format!("project_paths_conflict; source={}; destination={}; preserve both files and reconcile raw projections to equality", path.display(), destination_path.display())));
+            }
+            projection
+        }
+    };
+    Ok(SelectedProjectSource {
+        legacy,
+        destination,
+        projection,
+    })
+}
+
+// Read-only selection acquires before even checking either source's existence.
+#[cfg(test)]
+fn select_project_source_at_path(path: &Path) -> Result<Map<String, Value>, SettingsSaveError> {
+    let lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
+    let transaction = ProjectPathsWriteTransaction {
+        _lock: lock,
+        path: path.to_path_buf(),
+        fresh: AppSettings::default(),
+        revalidated_after_failure: false,
+    };
+    Ok(select_project_source_locked(&transaction)?.projection)
+}
+
+#[cfg(test)]
+fn publish_project_migration_backup(
+    settings_path: &Path,
+    bytes: &[u8],
+    checkpoint: &mut impl FnMut(&str, &Path) -> Result<(), SettingsSaveError>,
+) -> Result<(), SettingsSaveError> {
+    use std::io::Write as _;
+    let backup =
+        settings_path.with_file_name(super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
+    let mismatch = || {
+        project_migration_error(&backup, SettingsSaveStage::PostWriteVerify,
+        &format!("project_paths_backup_mismatch; source={}; destination={}; backup={}; stop all AC/old processes, preserve copies and orphan temps, rename backup without overwrite to project-paths.pre-migration.recovered-<UTC>-<unique>.no-git.json, verify intended legacy projection and retry", settings_path.display(), project_paths_path(settings_path).display(), backup.display()))
+    };
+    if let Some(existing) = read_project_source_bytes(&backup)? {
+        return if existing == bytes {
+            Ok(())
+        } else {
+            Err(mismatch())
+        };
+    }
+    let parent = backup.parent().ok_or_else(|| {
+        project_migration_error(&backup, SettingsSaveStage::PrepareTarget, "missing parent")
+    })?;
+    crate::path_identity::verify_component_chain(parent).map_err(|reason| {
+        project_migration_error(&backup, SettingsSaveStage::PrepareTarget, &reason)
+    })?;
+    let mut name = backup.file_name().unwrap().to_os_string();
+    name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        SAVE_OP_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let temp = parent.join(name);
+    checkpoint("backup_create", &temp)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let io_error = |stage, source| {
+        SettingsSaveError::io(
+            stage,
+            &backup,
+            Some(&temp),
+            source,
+            SettingsSaveLegacyOutward::SettingsSaveFailed,
+        )
+    };
+    let mut file = options
+        .open(&temp)
+        .map_err(|error| io_error(SettingsSaveStage::TempCreate, error))?;
+    crate::path_identity::verify_opened_regular_file(&temp, &file, false)
+        .map_err(|reason| project_migration_error(&temp, SettingsSaveStage::TempVerify, &reason))?;
+    let prefix = bytes.len() / 2;
+    file.write_all(&bytes[..prefix])
+        .map_err(|error| io_error(SettingsSaveStage::TempWrite, error))?;
+    checkpoint("backup_prefix", &temp)?;
+    file.write_all(&bytes[prefix..])
+        .map_err(|error| io_error(SettingsSaveStage::TempWrite, error))?;
+    checkpoint("backup_write", &temp)?;
+    file.sync_all()
+        .map_err(|error| io_error(SettingsSaveStage::TempSync, error))?;
+    checkpoint("backup_sync", &temp)?;
+    drop(file);
+    if read_project_source_bytes(&temp)?.as_deref() != Some(bytes) {
+        return Err(mismatch());
+    }
+    checkpoint("backup_before_rename", &temp)?;
+    // Never use the replacing atomic writer for the immutable fixed name.
+    if let Some(existing) = read_project_source_bytes(&backup)? {
+        return if existing == bytes {
+            Ok(())
+        } else {
+            Err(mismatch())
+        };
+    }
+    if let Err(error) = std::fs::rename(&temp, &backup) {
+        match read_project_source_bytes(&backup)? {
+            Some(existing) if existing == bytes => {}
+            Some(_) => return Err(mismatch()),
+            None => return Err(io_error(SettingsSaveStage::AtomicReplace, error)),
+        }
+    }
+    #[cfg(unix)]
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| io_error(SettingsSaveStage::ParentDirectorySync, error))?;
+    if read_project_source_bytes(&backup)?.as_deref() != Some(bytes) {
+        return Err(mismatch());
+    }
+    checkpoint("backup_published", &backup)
+}
+
+#[cfg(test)]
+fn ensure_project_paths_migrated_locked(
+    transaction: &ProjectPathsWriteTransaction,
+) -> Result<(), SettingsSaveError> {
+    ensure_project_paths_migrated_with(transaction, &mut |_, _| Ok(()))
+}
+
+#[cfg(test)]
+fn ensure_project_paths_migrated_with(
+    transaction: &ProjectPathsWriteTransaction,
+    checkpoint: &mut impl FnMut(&str, &Path) -> Result<(), SettingsSaveError>,
+) -> Result<(), SettingsSaveError> {
+    let selected = select_project_source_locked(transaction)?;
+    let path = &transaction.path;
+    let destination = project_paths_path(path);
+    let legacy_fields = selected
+        .legacy
+        .as_ref()
+        .is_some_and(|source| !raw_project_projection(&source.object).is_empty());
+    if selected.destination.is_none() {
+        if legacy_fields {
+            publish_project_migration_backup(
+                path,
+                &selected.legacy.as_ref().unwrap().bytes,
+                checkpoint,
+            )?;
+        }
+        checkpoint("destination_before_write", &destination)?;
+        write_value_atomic(&Value::Object(selected.projection.clone()), &destination)?;
+        checkpoint("destination_published", &destination)?;
+    }
+    if !legacy_fields {
+        return Ok(());
+    }
+    checkpoint("destination_readback", &destination)?;
+    let readback = read_raw_project_source(&destination)?.ok_or_else(|| {
+        project_migration_error(
+            &destination,
+            SettingsSaveStage::PostWriteRead,
+            "project_paths_destination_disappeared",
+        )
+    })?;
+    if raw_project_projection(&readback.object) != selected.projection {
+        return Err(project_migration_error(
+            &destination,
+            SettingsSaveStage::PostWriteVerify,
+            "project_paths_readback_mismatch",
+        ));
+    }
+    checkpoint("source_cleanup", path)?;
+    let original = selected.legacy.unwrap();
+    let mut cleaned = original.object;
+    for key in selected.projection.keys() {
+        cleaned.remove(key);
+    }
+    let written = write_value_atomic(&Value::Object(cleaned), path)?;
+    if original.bytes != written {
+        rotate_settings_backups(path, &original.bytes);
+    }
+    checkpoint("cleanup_complete", path)
 }
 
 /// Owns the shared file lock throughout a synchronous project operation.
@@ -11110,6 +11508,7 @@ fn save_settings_value_locked(
     })?;
     written.project_path_state = Arc::new(fresh_state);
     written.local_overlay_state = settings.local_overlay_state.clone();
+    repair_loaded_response_close_settings(&mut written, &path.display().to_string());
     Ok(written)
 }
 
@@ -11454,6 +11853,7 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     // Overlay values stay in memory: `save_settings_value_locked` restores the
     // base `agents` array before writing the file.
     finalize_agent_order(&mut settings.agents);
+    repair_loaded_response_close_settings(&mut settings, &settings_path.display().to_string());
     Ok(settings)
 }
 
@@ -11680,6 +12080,33 @@ pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
     save_settings_to_path_preserving_project_paths(settings, &path)
 }
 
+#[cfg(test)]
+thread_local! {
+    static PROJECT_MIGRATION_ATOMIC_FAULT: std::cell::RefCell<Option<(PathBuf, SettingsSaveStage)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn project_atomic_checkpoint(
+    path: &Path,
+    stage: SettingsSaveStage,
+) -> Result<(), SettingsSaveError> {
+    PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+        if slot
+            .borrow()
+            .as_ref()
+            .is_some_and(|(target, point)| target == path && *point == stage)
+        {
+            Err(project_migration_error(
+                path,
+                stage,
+                "injected migration atomic failure",
+            ))
+        } else {
+            Ok(())
+        }
+    })
+}
+
 /// #1077: atomic tmp+rename writer over an already-built JSON `Value`. Shared by
 /// the raw and the project-aware writers. Preserves the #774 unique-temp +
 /// `rename_with_retry` behavior. The temp IS fsynced
@@ -11769,7 +12196,19 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
 
     let op_id = SAVE_OP_ID.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
-    let tmp_path = dir.join(format!("{SETTINGS_FILE_NAME}.{}.{}.tmp", pid, op_id));
+    // Settings keep their existing instance-qualified temp prefix, including
+    // callers supplying a fixture path. The fixed sidecar uses its own name.
+    let temp_base = match path.file_name() {
+        Some(name)
+            if name == std::ffi::OsStr::new(super::instance_artifacts::PROJECT_PATHS_FILE_NAME) =>
+        {
+            name
+        }
+        _ => std::ffi::OsStr::new(SETTINGS_FILE_NAME),
+    };
+    let mut temp_name = temp_base.to_os_string();
+    temp_name.push(format!(".{pid}.{op_id}.tmp"));
+    let tmp_path = dir.join(temp_name);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -11785,6 +12224,8 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
     }
 
     let result: Result<(), SettingsSaveError> = (|| {
+        #[cfg(test)]
+        project_atomic_checkpoint(path, SettingsSaveStage::TempCreate)?;
         let mut temporary = options.open(&tmp_path).map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::TempCreate,
@@ -11794,6 +12235,8 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
                 SettingsSaveLegacyOutward::SettingsSaveFailed,
             )
         })?;
+        #[cfg(test)]
+        project_atomic_checkpoint(path, SettingsSaveStage::TempWrite)?;
         temporary.write_all(&json).map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::TempWrite,
@@ -11812,6 +12255,8 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
                 SettingsSaveLegacyOutward::SettingsSaveFailed,
             )
         })?;
+        #[cfg(test)]
+        project_atomic_checkpoint(path, SettingsSaveStage::TempSync)?;
         temporary.sync_all().map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::TempSync,
@@ -11834,6 +12279,8 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
         )?;
         drop(temporary);
 
+        #[cfg(test)]
+        project_atomic_checkpoint(path, SettingsSaveStage::AtomicReplace)?;
         replace_settings_file_atomic(&tmp_path, path).map_err(|source| {
             SettingsSaveError::io(
                 SettingsSaveStage::AtomicReplace,
@@ -11869,6 +12316,8 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
                     )
                 })?;
         }
+        #[cfg(test)]
+        project_atomic_checkpoint(path, SettingsSaveStage::PostWriteRead)?;
         let (written, _) = crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024)
             .map_err(|_| {
                 SettingsSaveError::semantic(
@@ -12042,6 +12491,726 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn project_migration_fault_reopen_and_backup_recovery() {
+        let raw = serde_json::json!({"projectPaths":["C:/missing"],"projectPath":null,"unknown":{"keep":true}});
+        for point in [
+            "backup_create",
+            "backup_prefix",
+            "backup_write",
+            "backup_sync",
+            "backup_before_rename",
+            "backup_published",
+            "destination_before_write",
+            "destination_published",
+            "destination_readback",
+            "source_cleanup",
+        ] {
+            let (temp, path, bytes) = migration_fixture(&raw);
+            let transaction = migration_transaction(&path);
+            let mut orphan = None;
+            assert!(
+                super::ensure_project_paths_migrated_with(&transaction, &mut |stage, target| {
+                    if stage == point {
+                        if target
+                            .extension()
+                            .is_some_and(|extension| extension == "tmp")
+                            && target.exists()
+                        {
+                            orphan = Some((target.to_path_buf(), std::fs::read(target).unwrap()));
+                        }
+                        return Err(super::project_migration_error(
+                            target,
+                            super::SettingsSaveStage::TempWrite,
+                            "injected backup/publication failure",
+                        ));
+                    }
+                    Ok(())
+                })
+                .is_err(),
+                "{point}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{point}");
+            let backup = temp
+                .path()
+                .join(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
+            if point.starts_with("backup_") && point != "backup_published" {
+                assert!(!backup.exists());
+            }
+            drop(transaction);
+            super::ensure_project_paths_migrated_locked(&migration_transaction(&path)).unwrap();
+            assert_eq!(std::fs::read(backup).unwrap(), bytes);
+            if let Some((orphan, original)) = orphan {
+                assert_eq!(std::fs::read(orphan).unwrap(), original);
+            }
+            assert_eq!(
+                super::read_raw_project_source(&super::project_paths_path(&path))
+                    .unwrap()
+                    .unwrap()
+                    .object,
+                super::raw_project_projection(raw.as_object().unwrap())
+            );
+        }
+        let (temp, path, bytes) = migration_fixture(&raw);
+        let backup = temp
+            .path()
+            .join(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
+        std::fs::write(&backup, b"historical partial backup").unwrap();
+        let transaction = migration_transaction(&path);
+        let error = super::ensure_project_paths_migrated_locked(&transaction).unwrap_err();
+        assert!(matches!(
+            error.cause,
+            super::SettingsSaveCause::Semantic(
+                super::SettingsSaveReason::ProjectPathsBackupMismatch
+            )
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(!super::project_paths_path(&path).exists());
+        // Simulate the specified stopped-operator recovery, inside this fixture only.
+        let recovered = temp
+            .path()
+            .join("project-paths.pre-migration.recovered-20261008-unique.no-git.json");
+        assert!(!recovered.exists());
+        std::fs::rename(&backup, &recovered).unwrap();
+        super::ensure_project_paths_migrated_locked(&transaction).unwrap();
+        assert_eq!(
+            std::fs::read(recovered).unwrap(),
+            b"historical partial backup"
+        );
+        assert_eq!(std::fs::read(backup).unwrap(), bytes);
+    }
+
+    #[test]
+    fn project_migration_atomic_failure_matrix() {
+        for target_source in [false, true] {
+            for stage in [
+                super::SettingsSaveStage::TempCreate,
+                super::SettingsSaveStage::TempWrite,
+                super::SettingsSaveStage::TempSync,
+                super::SettingsSaveStage::AtomicReplace,
+                super::SettingsSaveStage::PostWriteRead,
+            ] {
+                let (_temp, path, bytes) =
+                    migration_fixture(&serde_json::json!({"projectPaths":["C:/gone"],"unknown":9}));
+                let target = if target_source {
+                    path.clone()
+                } else {
+                    super::project_paths_path(&path)
+                };
+                let transaction = migration_transaction(&path);
+                super::PROJECT_MIGRATION_ATOMIC_FAULT
+                    .with(|slot| *slot.borrow_mut() = Some((target, stage)));
+                let result = super::ensure_project_paths_migrated_locked(&transaction);
+                super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+                assert!(result.is_err());
+                if !target_source || stage != super::SettingsSaveStage::PostWriteRead {
+                    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                }
+                drop(transaction);
+                super::ensure_project_paths_migrated_locked(&migration_transaction(&path)).unwrap();
+                assert_eq!(
+                    super::read_raw_project_source(&super::project_paths_path(&path))
+                        .unwrap()
+                        .unwrap()
+                        .object["projectPaths"],
+                    serde_json::json!(["C:/gone"])
+                );
+                assert!(super::raw_project_projection(
+                    &super::read_raw_project_source(&path)
+                        .unwrap()
+                        .unwrap()
+                        .object
+                )
+                .is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn project_migration_equal_retry_skips_backup_and_keeps_unrelated_changes() {
+        let (temp, path, _) =
+            migration_fixture(&serde_json::json!({"projectPaths":["C:/gone"],"unknown":1}));
+        let transaction = migration_transaction(&path);
+        assert!(
+            super::ensure_project_paths_migrated_with(&transaction, &mut |stage, target| {
+                if stage == "source_cleanup" {
+                    return Err(super::project_migration_error(
+                        target,
+                        super::SettingsSaveStage::AtomicReplace,
+                        "cleanup failed",
+                    ));
+                }
+                Ok(())
+            })
+            .is_err()
+        );
+        drop(transaction);
+        std::fs::write(&path, br#"{"projectPaths":["C:/gone"],"unknown":2}"#).unwrap();
+        let backup = temp
+            .path()
+            .join(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
+        let backup_bytes = std::fs::read(&backup).unwrap();
+        super::ensure_project_paths_migrated_locked(&migration_transaction(&path)).unwrap();
+        assert_eq!(
+            super::read_raw_project_source(&path)
+                .unwrap()
+                .unwrap()
+                .object["unknown"],
+            2
+        );
+        assert_eq!(std::fs::read(&backup).unwrap(), backup_bytes);
+        std::fs::write(&path, br#"{"projectPaths":["different"],"unknown":3}"#).unwrap();
+        assert!(
+            super::ensure_project_paths_migrated_locked(&migration_transaction(&path)).is_err()
+        );
+        std::fs::write(&path, br#"{"projectPaths":["C:/gone"],"unknown":3}"#).unwrap();
+        std::fs::remove_file(&backup).unwrap();
+        std::fs::create_dir(&backup).unwrap();
+        super::ensure_project_paths_migrated_locked(&migration_transaction(&path)).unwrap();
+        assert_eq!(
+            super::read_raw_project_source(&path)
+                .unwrap()
+                .unwrap()
+                .object["unknown"],
+            3
+        );
+        assert!(
+            backup.is_dir(),
+            "equal remnant must never read historical backup"
+        );
+    }
+
+    fn migration_wait_marker(root: &std::path::Path, name: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !root.join(name).is_file() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "barrier timed out: {name}; diagnostics {}",
+                root.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    struct MigrationChild {
+        child: std::process::Child,
+        root: std::path::PathBuf,
+    }
+
+    impl MigrationChild {
+        fn finish(&mut self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if let Some(status) = self.child.try_wait().unwrap() {
+                    std::fs::write(self.root.join("child-exit.txt"), status.to_string()).unwrap();
+                    assert!(
+                        status.success(),
+                        "child failed; diagnostics {}",
+                        self.root.display()
+                    );
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "child exit timed out; diagnostics {}",
+                    self.root.display()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    impl Drop for MigrationChild {
+        fn drop(&mut self) {
+            // Cleanup cannot replace a primary assertion/error with a second panic.
+            match self.child.try_wait() {
+                Ok(Some(_)) => {}
+                _ => {
+                    let killed = self.child.kill();
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                    loop {
+                        let reaped = self.child.try_wait();
+                        let done = matches!(&reaped, Ok(Some(_)));
+                        if done || std::time::Instant::now() >= deadline {
+                            let _ = std::fs::write(
+                                self.root.join("child-cleanup.txt"),
+                                format!(
+                                    "kill={killed:?}; reap={reaped:?}; deadline_expired={}",
+                                    !done
+                                ),
+                            );
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+            }
+        }
+    }
+
+    fn launch_migration_child(root: &std::path::Path, role: &str) -> MigrationChild {
+        let log = std::fs::File::create(root.join("child.log")).unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::settings::tests::project_migration_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("AC_P02_CHILD_ROOT", root)
+            .env("AC_P02_CHILD_ROLE", role)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::from(log.try_clone().unwrap()))
+            .stdout(std::process::Stdio::from(log))
+            .spawn()
+            .unwrap();
+        MigrationChild {
+            child,
+            root: root.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn project_migration_child() {
+        let Some(root) = std::env::var_os("AC_P02_CHILD_ROOT") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        assert!(root.is_absolute());
+        assert_eq!(
+            std::fs::read(root.join("isolated-fixture.marker")).unwrap(),
+            b"P02 isolated process fixture"
+        );
+        let role = std::env::var("AC_P02_CHILD_ROLE").unwrap();
+        assert!(matches!(
+            role.as_str(),
+            "hold" | "crash-backup-sync" | "crash-backup-published" | "crash-destination"
+        ));
+        std::fs::write(root.join("ready"), std::process::id().to_string()).unwrap();
+        migration_wait_marker(&root, "begin");
+        let transaction = migration_transaction(&root.join("settings.json"));
+        std::fs::write(root.join("acquired"), b"lock owned").unwrap();
+        super::ensure_project_paths_migrated_with(&transaction, &mut |stage, _| {
+            let stop = match role.as_str() {
+                "hold" | "crash-destination" => stage == "destination_published",
+                "crash-backup-sync" => stage == "backup_sync",
+                "crash-backup-published" => stage == "backup_published",
+                _ => unreachable!(),
+            };
+            if stop {
+                std::fs::write(root.join("publication"), stage.as_bytes()).unwrap();
+                migration_wait_marker(&root, "attempt");
+                migration_wait_marker(&root, "release-cleanup");
+            }
+            Ok(())
+        })
+        .unwrap();
+        std::fs::write(
+            root.join("cleanup"),
+            b"source cleaned with lock still owned",
+        )
+        .unwrap();
+        migration_wait_marker(&root, "release-lock");
+        drop(transaction);
+    }
+
+    // Dormant writer control: same P01 token, migration before the requested
+    // mutation. Production entry points remain deliberately legacy in P02.
+    fn migration_fixture_writer(
+        path: &std::path::Path,
+        variant: &str,
+    ) -> Result<(), super::SettingsSaveError> {
+        let lock = super::SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
+        let transaction = super::ProjectPathsWriteTransaction {
+            _lock: lock,
+            path: path.to_path_buf(),
+            fresh: super::AppSettings::default(),
+            revalidated_after_failure: false,
+        };
+        super::ensure_project_paths_migrated_locked(&transaction)?;
+        let target = if variant == "Reconcile" {
+            super::project_paths_path(path)
+        } else {
+            path.to_path_buf()
+        };
+        let mut object = super::read_raw_project_source(&target)?.unwrap().object;
+        match variant {
+            "Preserve" => {
+                object.insert("requestedPreserve".into(), serde_json::json!(true));
+            }
+            "Reconcile" => {
+                object.insert(
+                    "projectPaths".into(),
+                    serde_json::json!(["C:/requested-registration"]),
+                );
+            }
+            "CAS" => {
+                assert_eq!(object["terminalSnapshotsEnabled"], false);
+                object.insert("terminalSnapshotsEnabled".into(), serde_json::json!(true));
+            }
+            _ => panic!("unknown fixture writer"),
+        }
+        super::write_value_atomic(&serde_json::Value::Object(object), &target)?;
+        Ok(())
+    }
+
+    #[test]
+    fn project_migration_process_timeout_retry_preserve_reconcile_cas() {
+        use sha2::{Digest, Sha256};
+        for variant in ["Preserve", "Reconcile", "CAS"] {
+            let (temp, path, source) = migration_fixture(
+                &serde_json::json!({"projectPaths":[],"terminalSnapshotsEnabled":false,"unrelated":9}),
+            );
+            let root = temp.keep(); // Retain child diagnostics, including failure/crash evidence.
+            std::fs::write(
+                root.join("isolated-fixture.marker"),
+                b"P02 isolated process fixture",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("source-sha256.txt"),
+                format!("{:x}", Sha256::digest(&source)),
+            )
+            .unwrap();
+            let mut child = launch_migration_child(&root, "hold");
+            migration_wait_marker(&root, "ready");
+            std::fs::write(root.join("begin"), b"begin").unwrap();
+            migration_wait_marker(&root, "acquired");
+            migration_wait_marker(&root, "publication");
+            let destination = std::fs::read(super::project_paths_path(&path)).unwrap();
+            std::fs::write(root.join("attempt"), variant).unwrap();
+            let current = super::AppSettings::default();
+            // Real production lock entry points must also reject the request.
+            match variant {
+                "Preserve" => assert!(super::save_settings_value(
+                    &current,
+                    &path,
+                    super::ProjectWriteMode::Preserve
+                )
+                .is_err()),
+                "Reconcile" => assert!(super::begin_project_paths_transaction_at_path(
+                    &current, &path
+                )
+                .is_err()),
+                "CAS" => assert!(super::compare_and_set_terminal_snapshots_enabled_at_path(
+                    &current, &path, false, true
+                )
+                .is_err()),
+                _ => unreachable!(),
+            }
+            let start = std::time::Instant::now();
+            let error = migration_fixture_writer(&path, variant).unwrap_err();
+            assert!(matches!(
+                error.cause,
+                super::SettingsSaveCause::Semantic(super::SettingsSaveReason::LockTimedOut)
+            ));
+            assert!(start.elapsed() >= std::time::Duration::from_secs(2));
+            std::fs::write(
+                root.join("timeout-ms.txt"),
+                start.elapsed().as_millis().to_string(),
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), source);
+            assert_eq!(
+                std::fs::read(super::project_paths_path(&path)).unwrap(),
+                destination
+            );
+            assert!(!root.join("cleanup").exists());
+            std::fs::write(root.join("release-cleanup"), b"release").unwrap();
+            migration_wait_marker(&root, "cleanup");
+            assert!(super::raw_project_projection(
+                &super::read_raw_project_source(&path)
+                    .unwrap()
+                    .unwrap()
+                    .object
+            )
+            .is_empty());
+            // Cleanup completion does not release ownership early.
+            let early =
+                super::SettingsFileLock::acquire(&path, std::time::Duration::from_millis(30));
+            assert!(early.is_err());
+            std::fs::write(root.join("release-lock"), b"release").unwrap();
+            child.finish();
+            migration_fixture_writer(&path, variant).unwrap();
+            let settings = super::read_raw_project_source(&path)
+                .unwrap()
+                .unwrap()
+                .object;
+            assert_eq!(settings["unrelated"], 9);
+            assert!(super::raw_project_projection(&settings).is_empty());
+            match variant {
+                "Preserve" => assert_eq!(settings["requestedPreserve"], true),
+                "CAS" => assert_eq!(settings["terminalSnapshotsEnabled"], true),
+                "Reconcile" => assert_eq!(
+                    super::read_raw_project_source(&super::project_paths_path(&path))
+                        .unwrap()
+                        .unwrap()
+                        .object["projectPaths"],
+                    serde_json::json!(["C:/requested-registration"])
+                ),
+                _ => unreachable!(),
+            }
+            eprintln!("P02 {variant} process diagnostics {}", root.display());
+        }
+    }
+
+    #[test]
+    fn project_migration_process_crash_reopen_between_publications() {
+        for role in [
+            "crash-backup-sync",
+            "crash-backup-published",
+            "crash-destination",
+        ] {
+            let (temp, path, bytes) =
+                migration_fixture(&serde_json::json!({"projectPaths":["C:/gone"],"unknown":9}));
+            let root = temp.keep();
+            std::fs::write(
+                root.join("isolated-fixture.marker"),
+                b"P02 isolated process fixture",
+            )
+            .unwrap();
+            let child = launch_migration_child(&root, role);
+            migration_wait_marker(&root, "ready");
+            std::fs::write(root.join("begin"), b"begin").unwrap();
+            migration_wait_marker(&root, "publication");
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            let orphans: Vec<_> = std::fs::read_dir(&root)
+                .unwrap()
+                .filter_map(|entry| {
+                    let p = entry.unwrap().path();
+                    p.extension()
+                        .is_some_and(|extension| extension == "tmp")
+                        .then(|| (p.clone(), std::fs::read(p).unwrap()))
+                })
+                .collect();
+            let backup =
+                root.join(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
+            if role == "crash-backup-sync" {
+                assert!(!backup.exists());
+                assert_eq!(orphans.len(), 1);
+            }
+            // Drop kills and reaps the child while it holds the actual OS lock.
+            drop(child);
+            let cleanup = std::fs::read_to_string(root.join("child-cleanup.txt")).unwrap();
+            assert!(cleanup.contains("deadline_expired=false"), "{cleanup}");
+            super::ensure_project_paths_migrated_locked(&migration_transaction(&path)).unwrap();
+            assert_eq!(std::fs::read(backup).unwrap(), bytes);
+            for (orphan, original) in orphans {
+                assert_eq!(std::fs::read(orphan).unwrap(), original);
+            }
+            assert!(super::raw_project_projection(
+                &super::read_raw_project_source(&path)
+                    .unwrap()
+                    .unwrap()
+                    .object
+            )
+            .is_empty());
+            eprintln!("P02 {role} crash diagnostics {}", root.display());
+        }
+    }
+
+    #[test]
+    fn project_migration_readback_and_cleanup_order_oracle() {
+        for unsafe_destination in [false, true] {
+            let (_temp, path, bytes) =
+                migration_fixture(&serde_json::json!({"projectPaths":["C:/gone"],"unknown":9}));
+            let destination = super::project_paths_path(&path);
+            let transaction = migration_transaction(&path);
+            let result =
+                super::ensure_project_paths_migrated_with(&transaction, &mut |stage, target| {
+                    if stage == "destination_published" {
+                        if unsafe_destination {
+                            std::fs::remove_file(target).unwrap();
+                            std::fs::create_dir(target).unwrap();
+                        } else {
+                            std::fs::write(target, b"{\"projectPaths\":[\"wrong\"]}").unwrap();
+                        }
+                    }
+                    Ok(())
+                });
+            assert!(
+                result.is_err(),
+                "unsafe publication must never authorize cleanup"
+            );
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "readback/order oracle: source loss"
+            );
+            if unsafe_destination {
+                std::fs::remove_dir(&destination).unwrap();
+            }
+            std::fs::write(
+                &destination,
+                b"{\"projectPaths\":[\"C:/gone\"],\"unknownTarget\":17}",
+            )
+            .unwrap();
+            super::ensure_project_paths_migrated_locked(&transaction).unwrap();
+            assert_eq!(
+                super::read_raw_project_source(&destination)
+                    .unwrap()
+                    .unwrap()
+                    .object["unknownTarget"],
+                17
+            );
+            assert_eq!(
+                super::read_raw_project_source(&path)
+                    .unwrap()
+                    .unwrap()
+                    .object["unknown"],
+                9
+            );
+        }
+    }
+
+    fn migration_transaction(path: &std::path::Path) -> super::ProjectPathsWriteTransaction {
+        super::ProjectPathsWriteTransaction {
+            _lock: super::SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))
+                .unwrap(),
+            path: path.to_path_buf(),
+            fresh: super::AppSettings::default(),
+            revalidated_after_failure: false,
+        }
+    }
+
+    fn migration_fixture(
+        raw: &serde_json::Value,
+    ) -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let bytes = serde_json::to_vec_pretty(raw).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        (temp, path, bytes)
+    }
+
+    #[test]
+    fn project_migration_raw_matrix_and_noop_reopen() {
+        let cases = [
+            serde_json::json!({}),
+            serde_json::json!({"projectPath":"C:/singular-only"}),
+            serde_json::json!({"projectPaths":null,"projectPath":null,"archivedProjectPaths":[]}),
+            serde_json::json!({"projectPaths":["C:/gone","D:/missing","//server/share/missing"],"projectPathsRelativeToInstance":["../gone",null,"../conflict"],"projectPath":"C:/gone","projectPathRelativeToInstance":"../gone","archivedProjectPaths":["C:/archived-missing"],"archivedProjectPathsRelativeToInstance":["../archived-missing"]}),
+            serde_json::json!({"projectPaths":42,"projectPathsRelativeToInstance":{},"archivedProjectPaths":[null,7],"projectPath":true}),
+        ];
+        for mut raw in cases {
+            raw["unrelatedUnknown"] = serde_json::json!({"nested":[null,42,"unchanged"]});
+            let (temp, path, bytes) = migration_fixture(&raw);
+            let expected = super::raw_project_projection(raw.as_object().unwrap());
+            assert_eq!(
+                super::select_project_source_at_path(&path).unwrap(),
+                expected
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert!(
+                !super::project_paths_path(&path).exists(),
+                "read-only must not migrate"
+            );
+            let transaction = migration_transaction(&path);
+            super::ensure_project_paths_migrated_locked(&transaction).unwrap();
+            let destination = super::read_raw_project_source(&super::project_paths_path(&path))
+                .unwrap()
+                .unwrap();
+            assert_eq!(destination.object, expected);
+            let cleaned = super::read_raw_project_source(&path).unwrap().unwrap();
+            assert!(super::raw_project_projection(&cleaned.object).is_empty());
+            assert_eq!(cleaned.object["unrelatedUnknown"], raw["unrelatedUnknown"]);
+            let state = super::decode_project_state(
+                &destination.object,
+                Some(temp.path()),
+                &super::projects::FsCandidateResolver,
+            );
+            if raw["projectPaths"] == 42 {
+                assert!(state.has_structural());
+            }
+            // Windows rejects reads through another handle while the lock is
+            // held. Snapshot every file only between migration transactions.
+            drop(transaction);
+            let before: Vec<_> = std::fs::read_dir(temp.path())
+                .unwrap()
+                .map(|entry| {
+                    let p = entry.unwrap().path();
+                    (
+                        p.clone(),
+                        std::fs::read(&p).unwrap(),
+                        std::fs::metadata(&p).unwrap().modified().unwrap(),
+                    )
+                })
+                .collect();
+            let transaction = migration_transaction(&path);
+            super::ensure_project_paths_migrated_locked(&transaction).unwrap();
+            drop(transaction);
+            assert_eq!(
+                std::fs::read_dir(temp.path()).unwrap().count(),
+                before.len()
+            );
+            for (p, bytes, modified) in before {
+                assert_eq!(std::fs::read(&p).unwrap(), bytes);
+                assert_eq!(std::fs::metadata(p).unwrap().modified().unwrap(), modified);
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        assert!(super::select_project_source_at_path(&path)
+            .unwrap()
+            .is_empty());
+        super::ensure_project_paths_migrated_locked(&migration_transaction(&path)).unwrap();
+        assert_eq!(
+            std::fs::read(super::project_paths_path(&path)).unwrap(),
+            b"{}"
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn project_migration_rejects_invalid_sources_and_conflicts() {
+        for bad in [
+            b"[1]".as_slice(),
+            b"{",
+            b"{\"projectPaths\":[],\"projectPaths\":[1]}",
+        ] {
+            for bad_destination in [false, true] {
+                let (_temp, path, bytes) =
+                    migration_fixture(&serde_json::json!({"projectPaths":[]}));
+                let destination = super::project_paths_path(&path);
+                let bad_path = if bad_destination { &destination } else { &path };
+                std::fs::write(bad_path, bad).unwrap();
+                let transaction = migration_transaction(&path);
+                assert!(super::ensure_project_paths_migrated_locked(&transaction).is_err());
+                assert_eq!(std::fs::read(bad_path).unwrap(), bad);
+                if bad_destination {
+                    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                } else {
+                    assert!(!destination.exists());
+                    // A present valid destination cannot hide an invalid source:
+                    // conflict/remnant evaluation requires both readable objects.
+                    std::fs::write(&destination, b"{\"projectPaths\":[]}").unwrap();
+                    assert!(super::ensure_project_paths_migrated_locked(&transaction).is_err());
+                    assert_eq!(std::fs::read(&path).unwrap(), bad);
+                    assert_eq!(
+                        std::fs::read(&destination).unwrap(),
+                        b"{\"projectPaths\":[]}"
+                    );
+                }
+            }
+        }
+        let (_temp, path, bytes) = migration_fixture(&serde_json::json!({"projectPath":null}));
+        let destination = super::project_paths_path(&path);
+        std::fs::write(&destination, b"{}").unwrap();
+        let transaction = migration_transaction(&path);
+        let error = super::ensure_project_paths_migrated_locked(&transaction).unwrap_err();
+        assert!(super::report_settings_save_error(
+            error,
+            super::SettingsSaveReportSurface::GeneralSettings
+        )
+        .contains("project_paths_conflict"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"{}");
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert!(super::ensure_project_paths_migrated_locked(&transaction).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
 
     #[test]
     fn project_transaction_refreshes_after_barrier_controlled_second_writer() {
@@ -14005,6 +15174,352 @@ mod tests {
         TelegramNetworkPollErrorLogging, TelegramPollFailureLogLevel, TelegramPollRecoveryLogLevel,
     };
     use std::collections::BTreeMap;
+
+    mod response_close_2850 {
+        use super::super::*;
+        use super::local_overlay_1737::{base_fixture, seed};
+
+        #[test]
+        fn publication_state_reports_bool_and_holds_lock_through_callback() {
+            let dir = Path::new("publication-state-test");
+            let registry = std::sync::Mutex::new(HashSet::new());
+            for unreadable in [false, true] {
+                if unreadable {
+                    registry.lock().unwrap().insert(dir.to_path_buf());
+                }
+                let returned =
+                    try_with_agents_layer_publication_state_in(&registry, dir, |actual| {
+                        assert_eq!(actual, unreadable);
+                        assert!(matches!(
+                            registry.try_lock(),
+                            Err(std::sync::TryLockError::WouldBlock)
+                        ));
+                        42
+                    })
+                    .unwrap();
+                assert_eq!(returned, 42);
+                assert!(registry.try_lock().is_ok());
+            }
+        }
+
+        #[test]
+        fn publication_state_try_uses_existing_registry_without_calling_on_contention() {
+            let _guard = agents_unreadable_dirs()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let called = std::cell::Cell::new(false);
+            let result = try_with_agents_layer_publication_state(
+                Path::new("publication-contention-test"),
+                |_| called.set(true),
+            );
+            assert_eq!(result, Err(AgentsPublicationLockError::WouldBlock));
+            assert!(!called.get());
+        }
+
+        #[test]
+        fn publication_state_poison_refuses_callback_without_recovering_registry() {
+            let registry = std::sync::Mutex::new(HashSet::new());
+            let panic = std::panic::catch_unwind(|| {
+                let _guard = registry.lock().unwrap();
+                panic!("poison isolated publication registry");
+            });
+            assert!(panic.is_err());
+            let called = std::cell::Cell::new(false);
+            let result = try_with_agents_layer_publication_state_in(
+                &registry,
+                Path::new("publication-poison-test"),
+                |_| called.set(true),
+            );
+            assert_eq!(result, Err(AgentsPublicationLockError::Poisoned));
+            assert!(!called.get());
+            assert!(registry.is_poisoned());
+        }
+
+        // Capture every disk artifact, including migration/rotation backups.
+        // The existing writer may create its persistent lock file.
+        fn disk_bytes(directory: &Path) -> BTreeMap<String, Vec<u8>> {
+            std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.is_file() && path.extension().is_none_or(|ext| ext != "lock"))
+                .map(|path| {
+                    (
+                        path.file_name().unwrap().to_string_lossy().into_owned(),
+                        std::fs::read(path).unwrap(),
+                    )
+                })
+                .collect()
+        }
+
+        fn assert_repaired(settings: &AppSettings) {
+            assert!(!settings.response_close_enabled);
+            assert_eq!(settings.response_close_idle_seconds, 30);
+            assert_eq!(settings.typing_hold_seconds, 7);
+        }
+
+        fn overlay(seconds: u32) -> Value {
+            serde_json::json!({
+                "responseCloseEnabled": false,
+                "responseCloseIdleSeconds": seconds,
+                "typingHoldSeconds": 7
+            })
+        }
+
+        #[test]
+        fn legacy_defaults_and_boundary_preferences_persist_and_reload() {
+            let defaults = AppSettings::default();
+            assert!(defaults.response_close_enabled);
+            assert_eq!(defaults.response_close_idle_seconds, 30);
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), Some(&base_fixture()), None);
+            let before = disk_bytes(temp.path());
+            let legacy = load_settings_for_cli_from_path(&path);
+            assert!(legacy.response_close_enabled);
+            assert_eq!(legacy.response_close_idle_seconds, 30);
+            assert_eq!(disk_bytes(temp.path()), before);
+            for enabled in [true, false] {
+                for seconds in [1, 30, 3600] {
+                    let mut candidate = legacy.clone();
+                    candidate.response_close_enabled = enabled;
+                    candidate.response_close_idle_seconds = seconds;
+                    validate_and_repair_settings(&mut candidate).unwrap();
+                    let written =
+                        save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+                    let raw: Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    assert_eq!(raw["responseCloseEnabled"], enabled);
+                    assert_eq!(raw["responseCloseIdleSeconds"], seconds);
+                    assert!(raw.get("response_close_enabled").is_none());
+                    let reloaded = load_settings_from_path(&path);
+                    for settings in [written, reloaded] {
+                        assert_eq!(settings.response_close_enabled, enabled);
+                        assert_eq!(settings.response_close_idle_seconds, seconds);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn f1_absent_base_cli_overlay_repairs_without_any_write() {
+            for seconds in [0, 999999] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = seed(temp.path(), None, Some(&overlay(seconds)));
+                let before = disk_bytes(temp.path());
+                for settings in [
+                    load_settings_for_cli_from_path(&path),
+                    load_settings_for_cli_strict_from_path(Some(&path)).unwrap(),
+                ] {
+                    assert_repaired(&settings);
+                    assert!(settings.root_token.is_none());
+                    for key in [
+                        "responseCloseEnabled",
+                        "responseCloseIdleSeconds",
+                        "typingHoldSeconds",
+                    ] {
+                        assert!(settings.local_overlay_state.owns_top_level(key));
+                    }
+                }
+                assert!(!path.exists());
+                assert_eq!(disk_bytes(temp.path()), before);
+            }
+        }
+
+        #[test]
+        fn f2_gui_malformed_base_repairs_before_failed_token_migration_save() {
+            for seconds in [0, 999999] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = seed(temp.path(), None, Some(&overlay(seconds)));
+                std::fs::write(&path, b"{malformed-base").unwrap();
+                let before = disk_bytes(temp.path());
+                let (records, _capture) = super::capture_settings_save_diagnostics();
+                let mut settings = load_settings_from_path(&path);
+                assert_repaired(&settings);
+                assert!(settings.root_token.is_some());
+                assert!(settings
+                    .local_overlay_state
+                    .owns_top_level("responseCloseIdleSeconds"));
+                let records = records.borrow();
+                assert_eq!(records.len(), 1);
+                let fields = super::parse_settings_save_diagnostic(&records[0]);
+                assert_eq!(fields["stage"], "preserve_disk_gate");
+                drop(records);
+                settings.sidebar_zoom = 1.25;
+                validate_and_repair_settings(&mut settings).unwrap();
+                let error = save_settings_to_path_preserving_project_paths_typed(&settings, &path)
+                    .unwrap_err();
+                assert_eq!(error.stage, SettingsSaveStage::PreserveDiskGate);
+                assert_eq!(disk_bytes(temp.path()), before);
+            }
+        }
+
+        #[test]
+        fn f3_malformed_base_cli_fallback_and_strict_refusal_preserve_bytes() {
+            for seconds in [0, 999999] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = seed(temp.path(), None, Some(&overlay(seconds)));
+                std::fs::write(&path, b"{malformed-base").unwrap();
+                let before = disk_bytes(temp.path());
+                let settings = load_settings_for_cli_from_path(&path);
+                assert_repaired(&settings);
+                assert!(settings.root_token.is_none());
+                assert!(load_settings_for_cli_strict_from_path(Some(&path)).is_err());
+                assert_eq!(disk_bytes(temp.path()), before);
+            }
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            std::fs::create_dir(&path).unwrap();
+            assert!(load_settings_for_cli_strict_from_path(Some(&path)).is_err());
+            assert!(path.is_dir());
+            assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+        }
+
+        #[test]
+        fn valid_base_disk_repair_and_cas_no_write_preserve_false_and_bytes() {
+            for seconds in [0, 999999] {
+                for with_overlay in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut base = base_fixture();
+                    base["responseCloseEnabled"] = Value::Bool(false);
+                    base["responseCloseIdleSeconds"] = Value::from(seconds);
+                    base["typingHoldSeconds"] = Value::from(7);
+                    let local = overlay(seconds);
+                    let path = seed(temp.path(), Some(&base), with_overlay.then_some(&local));
+                    // Establish the current split-file schema before simulating
+                    // an external seconds edit, so Reconcile has nothing to migrate.
+                    let initial = load_settings_for_cli_from_path(&path);
+                    save_settings_to_path_preserving_project_paths(&initial, &path).unwrap();
+                    let mut raw: Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    raw["responseCloseIdleSeconds"] = Value::from(seconds);
+                    std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+                    let before = disk_bytes(temp.path());
+                    let settings = load_settings_from_path(&path);
+                    assert_repaired(&settings);
+                    assert_repaired(&load_settings_for_cli_from_path(&path));
+                    assert_repaired(&load_settings_for_cli_strict_from_path(Some(&path)).unwrap());
+                    let cas = compare_and_set_terminal_snapshots_enabled_at_path(
+                        &settings, &path, true, true,
+                    )
+                    .unwrap();
+                    assert_repaired(&cas);
+                    assert_eq!(disk_bytes(temp.path()), before);
+
+                    // Reconcile keeps unrelated disk fields, then re-decodes them.
+                    let reconciled = save_settings_value(
+                        &settings,
+                        &path,
+                        ProjectWriteMode::Reconcile {
+                            active: true,
+                            archived: true,
+                        },
+                    )
+                    .unwrap();
+                    assert_repaired(&reconciled);
+                    let raw: Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    assert_eq!(raw["responseCloseIdleSeconds"], seconds);
+                    assert_eq!(disk_bytes(temp.path()), before);
+                    if with_overlay {
+                        assert_eq!(
+                            std::fs::read(temp.path().join("settings.50.personal.no-git.json"))
+                                .unwrap(),
+                            before["settings.50.personal.no-git.json"]
+                        );
+                    }
+                    let mut unrelated = reconciled;
+                    unrelated.sidebar_zoom = 1.25;
+                    let agent = serde_json::from_value(serde_json::json!({
+                        "id": "response-test", "label": "Response test",
+                        "command": "codex", "color": "#000000"
+                    }))
+                    .unwrap();
+                    crate::config::coding_agent_mutations::apply_coding_agent_op(
+                        &mut unrelated,
+                        &crate::config::coding_agent_mutations::CodingAgentOp::Add { agent },
+                    )
+                    .unwrap();
+                    let written =
+                        save_settings_to_path_preserving_project_paths(&unrelated, &path).unwrap();
+                    assert_repaired(&written);
+                    assert_eq!(written.sidebar_zoom, 1.25);
+                    assert_eq!(written.agents[0].id, "response-test");
+                    assert_repaired(&load_settings_from_path(&path));
+                }
+            }
+        }
+
+        #[test]
+        fn malformed_overlay_falls_back_without_changing_disk() {
+            for local in [
+                "{broken",
+                r#"{"responseCloseIdleSeconds":"30"}"#,
+                r#"{"responseCloseEnabled":1}"#,
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut base = base_fixture();
+                base["responseCloseEnabled"] = Value::Bool(false);
+                base["responseCloseIdleSeconds"] = Value::from(3600);
+                let path = seed(temp.path(), Some(&base), None);
+                let current = load_settings_for_cli_from_path(&path);
+                save_settings_to_path_preserving_project_paths(&current, &path).unwrap();
+                std::fs::write(temp.path().join("settings.50.personal.no-git.json"), local)
+                    .unwrap();
+                let before = disk_bytes(temp.path());
+                let settings = load_settings_from_path(&path);
+                assert!(!settings.response_close_enabled);
+                assert_eq!(settings.response_close_idle_seconds, 3600);
+                assert_eq!(disk_bytes(temp.path()), before);
+            }
+        }
+
+        #[tokio::test]
+        async fn invalid_explicit_updates_reject_before_either_writer_and_keep_live_and_disk() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), Some(&base_fixture()), None);
+            let original = load_settings_from_path(&path);
+            let state: SettingsState = Arc::new(RwLock::new(original.clone()));
+            let before = disk_bytes(temp.path());
+            for seconds in [0, 3601, 999999] {
+                let mut invalid = original.clone();
+                invalid.response_close_enabled = false;
+                invalid.response_close_idle_seconds = seconds;
+                for error in [
+                    crate::commands::config::persist_protected_settings_update(
+                        &state,
+                        invalid.clone(),
+                    )
+                    .await
+                    .unwrap_err(),
+                    crate::commands::config::persist_settings_draft_update(&state, invalid)
+                        .await
+                        .unwrap_err(),
+                ] {
+                    assert!(error.contains("responseCloseIdleSeconds"));
+                }
+                assert_eq!(
+                    serde_json::to_value(&*state.read().await).unwrap(),
+                    serde_json::to_value(&original).unwrap()
+                );
+                assert_eq!(disk_bytes(temp.path()), before);
+            }
+            for value in [
+                Value::from("30"),
+                Value::from(-1),
+                serde_json::json!(1.5),
+                Value::Null,
+                Value::Bool(true),
+                Value::from(u64::MAX),
+            ] {
+                let mut payload = serde_json::to_value(&original).unwrap();
+                payload["responseCloseIdleSeconds"] = value;
+                assert!(serde_json::from_value::<AppSettings>(payload).is_err());
+            }
+            let mut payload = serde_json::to_value(&original).unwrap();
+            payload["responseCloseEnabled"] = Value::from("false");
+            assert!(serde_json::from_value::<AppSettings>(payload).is_err());
+            assert_eq!(disk_bytes(temp.path()), before);
+        }
+    }
 
     #[test]
     fn issue_2859_optional_preflight_serde_preserves_legacy_and_raw_values() {
@@ -19107,6 +20622,10 @@ mod tests {
             assert!(!object.contains_key("codingAgentInstallEnabled"));
             // #2800 extends the schema; the historical captured control stays intact.
             object.insert("codingAgentInstallEnabled".to_string(), Value::Bool(false));
+            assert!(!object.contains_key("responseCloseEnabled"));
+            assert!(!object.contains_key("responseCloseIdleSeconds"));
+            object.insert("responseCloseEnabled".to_string(), Value::Bool(true));
+            object.insert("responseCloseIdleSeconds".to_string(), Value::from(30));
             let sorted: BTreeMap<String, Value> =
                 object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             let expected = serde_json::to_string_pretty(&sorted).unwrap();

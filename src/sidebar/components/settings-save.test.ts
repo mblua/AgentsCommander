@@ -403,3 +403,37 @@ describe("mergeSettingsForSavePreservingProjects (#1793 restart-resume fields)",
     expect(merged.restartResumeAgentPrompt).toBe("replica, carry on");
   });
 });
+
+describe("response close preference rebasing (#2851)", () => {
+  it("normalizes old snapshots and preserves unedited concurrent preferences and projects", () => {
+    const seed = settings();
+    const draft = settings({ responseCloseEnabled: true, responseCloseIdleSeconds: 30 });
+    const fresh = settings({ responseCloseEnabled: false, responseCloseIdleSeconds: 120,
+      projectPath: "C:/fresh", projectPaths: ["C:/fresh"], archivedProjectPaths: ["C:/archive"] });
+    const merged = mergeSettingsForSavePreservingProjects(draft, fresh, seed);
+    expect(merged.responseCloseEnabled).toBe(false);
+    expect(merged.responseCloseIdleSeconds).toBe(120);
+    expect(merged.projectPath).toBe("C:/fresh");
+    expect(merged.projectPaths).toEqual(["C:/fresh"]);
+    expect(merged.archivedProjectPaths).toEqual(["C:/archive"]);
+    const defaults = mergeSettingsForSavePreservingProjects(settings(), settings(), seed);
+    expect(defaults.responseCloseEnabled).toBe(true);
+    expect(defaults.responseCloseIdleSeconds).toBe(30);
+  });
+
+  it("preserves explicit edits independently and normalizes absent fresh values", () => {
+    const seed = settings({ responseCloseEnabled: true, responseCloseIdleSeconds: 120 });
+    const edited = mergeSettingsForSavePreservingProjects(
+      settings({ responseCloseEnabled: false, responseCloseIdleSeconds: 3600 }), settings(), seed);
+    expect(edited.responseCloseEnabled).toBe(false);
+    expect(edited.responseCloseIdleSeconds).toBe(3600);
+    const unedited = mergeSettingsForSavePreservingProjects(seed, settings(), seed);
+    expect(unedited.responseCloseEnabled).toBe(true);
+    expect(unedited.responseCloseIdleSeconds).toBe(30);
+    const mixed = mergeSettingsForSavePreservingProjects(
+      settings({ responseCloseEnabled: false, responseCloseIdleSeconds: 120 }),
+      settings({ responseCloseEnabled: true, responseCloseIdleSeconds: 90 }), seed);
+    expect(mixed.responseCloseEnabled).toBe(false);
+    expect(mixed.responseCloseIdleSeconds).toBe(90);
+  });
+});
