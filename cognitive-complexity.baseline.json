@@ -49,20 +49,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/cli/list_peers.rs::discover_origin_peers",
-      "sites": {
-        "windows": [
-          "10a4c04d2673"
-        ],
-        "linux": [
-          "10a4c04d2673"
-        ],
-        "macos": [
-          "10a4c04d2673"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/cli/send.rs::execute",
       "sites": {
         "windows": [

@@ -881,35 +881,23 @@ fn discover_wg_peers(wg: WgReplicaInfo, project_paths: &[String]) -> Vec<PeerInf
     peers
 }
 
-/// Discovery for non-WG-replica roots: standard team membership scan + a
-/// WG-replica scan across captured registered projects. Returns the same vector
-/// that the legacy `execute` body would have serialized. Shared by `execute`
-/// and `execute_lean` so the peer set is identical by construction for both
-/// verbs (see issue #252).
-fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec<PeerInfo> {
-    // ── Standard discovery-based peer listing ────────────────────────
-    //
-    // `execute` is the non-WG-replica path (WG replicas return early above).
-    // `root` is an origin matrix agent CWD → `agent_fqn_from_path` gives the
-    // origin form `project/agent` (identical to the legacy behavior for
-    // non-WG paths). Using the canonical helper eliminates the shadow.
-    let my_name = crate::config::teams::agent_fqn_from_path(root);
-    let discovered = crate::config::teams::discover_teams_from_project_paths(project_paths);
-    let session_index = build_session_index();
-
-    let mut peers: Vec<PeerInfo> = Vec::new();
-
+fn append_origin_team_peers(
+    my_name: &str,
+    discovered: &[crate::config::teams::DiscoveredTeam],
+    session_index: &HashMap<String, Vec<CandidateSession>>,
+    peers: &mut Vec<PeerInfo>,
+) {
     // Find teams where I'm a member, then list their other members.
     // Also: if I'm a coordinator, show other coordinators (cross-team).
     let i_am_coordinator = discovered.iter().any(|t| {
-        crate::config::teams::is_in_team(&my_name, t)
+        crate::config::teams::is_in_team(my_name, t)
             && t.coordinator_name
                 .as_deref()
                 .is_some_and(|cn| cn == my_name)
     });
 
-    for team in &discovered {
-        let i_am_in_team = crate::config::teams::is_in_team(&my_name, team);
+    for team in discovered {
+        let i_am_in_team = crate::config::teams::is_in_team(my_name, team);
 
         if !i_am_in_team && !i_am_coordinator {
             continue;
@@ -922,13 +910,12 @@ fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec<PeerInfo> 
                 .unwrap_or_else(|| display_name.clone());
 
             // Skip ourselves
-            if peer_name == my_name || display_name == &my_name {
+            if peer_name == my_name || display_name == my_name {
                 continue;
             }
 
             // Determine reachability using the canonical routing rules
-            let reachable =
-                crate::config::teams::can_communicate(&my_name, &peer_name, &discovered);
+            let reachable = crate::config::teams::can_communicate(my_name, &peer_name, discovered);
 
             // Skip duplicates — add team to existing peer, upgrade reachable if needed
             if let Some(existing) = peers.iter_mut().find(|p| p.name == peer_name) {
@@ -954,7 +941,7 @@ fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec<PeerInfo> 
 
             let peer_config = read_agent_local_config(&peer_ac).unwrap_or_default();
 
-            let ps = compute_peer_status(&path_str, None, &session_index);
+            let ps = compute_peer_status(&path_str, None, session_index);
             peers.push(PeerInfo {
                 name: peer_name,
                 path: path_str,
@@ -979,6 +966,27 @@ fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec<PeerInfo> 
             });
         }
     }
+}
+
+/// Discovery for non-WG-replica roots: standard team membership scan + a
+/// WG-replica scan across captured registered projects. Returns the same vector
+/// that the legacy `execute` body would have serialized. Shared by `execute`
+/// and `execute_lean` so the peer set is identical by construction for both
+/// verbs (see issue #252).
+fn discover_origin_peers(root: &str, project_paths: &[String]) -> Vec<PeerInfo> {
+    // ── Standard discovery-based peer listing ────────────────────────
+    //
+    // `execute` is the non-WG-replica path (WG replicas return early above).
+    // `root` is an origin matrix agent CWD → `agent_fqn_from_path` gives the
+    // origin form `project/agent` (identical to the legacy behavior for
+    // non-WG paths). Using the canonical helper eliminates the shadow.
+    let my_name = crate::config::teams::agent_fqn_from_path(root);
+    let discovered = crate::config::teams::discover_teams_from_project_paths(project_paths);
+    let session_index = build_session_index();
+
+    let mut peers: Vec<PeerInfo> = Vec::new();
+
+    append_origin_team_peers(&my_name, &discovered, &session_index, &mut peers);
 
     // ── WG replica discovery ──────────────────────────────────────────────
     // Scan project_paths for Project AC Root wg-*/__agent_* replicas
