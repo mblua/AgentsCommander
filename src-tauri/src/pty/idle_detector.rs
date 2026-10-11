@@ -15,6 +15,7 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const HEARTBEAT_TICKS: u64 = 120;
 
 type Callback = Arc<dyn Fn(Uuid) + Send + Sync>;
+type RawOutputObserver = Arc<dyn Fn(Uuid, Instant) + Send + Sync>;
 
 /// #2124 - one session's unconfirmed output burst: when it opened, when its
 /// last chunk arrived, how many bytes it accumulated (printable or not) and
@@ -28,7 +29,7 @@ struct PendingBurst {
 }
 
 pub struct IdleDetector {
-    raw_output_observer: std::sync::OnceLock<(usize, Arc<dyn Fn(Uuid, Instant) + Send + Sync>)>,
+    raw_output_observer: std::sync::OnceLock<(usize, RawOutputObserver)>,
     activity: Arc<Mutex<HashMap<Uuid, Instant>>>,
     /// #552 auto-close silence clock. SEPARATE from `activity` (which drives the
     /// #260 idle dot). Reset by user input, inter-agent delivery and PTY output

@@ -37,26 +37,46 @@ pub(crate) enum ResponseClosePublisher {
 
 #[derive(Default)]
 struct ResponseCloseInner {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     ready: bool,
     publishers: u8,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     work_bootstrapped: bool,
     enabled: bool,
     seconds: u32,
     settings_epoch: u64,
     failed: bool,
     routes: HashMap<Uuid, ResponseCloseRoute>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     work: HashMap<String, ResponseCloseWork>,
-    create_owners: HashMap<String, Uuid>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    create_owners: HashMap<String, HashMap<Uuid, bool>>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     next_return_sequence: u64,
     unknown_spawns: usize,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     terminal_returns: HashMap<(ResponseRouteIdentity, ResponseRouteIdentity, String), String>,
 }
 
 #[derive(Default)]
 struct ResponseCloseWork {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     provisional: usize,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     dispatch: usize,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pending: HashMap<String, String>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     terminal: HashMap<String, String>,
 }
 
@@ -67,21 +87,40 @@ pub(crate) struct ResponseRouteIdentity {
     pub token: Uuid,
     pub generation: u64,
     pub carrier_version: u64,
+    pub backend: SessionBackendKind,
 }
 
 #[derive(Clone)]
 struct ResponseClosePolicy {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     nonce: Uuid,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     member: ResponseRouteIdentity,
     coordinator: ResponseRouteIdentity,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     work_epoch: u64,
     settings_epoch: u64,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     request_key: String,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     request_digest: String,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     opened_at: std::time::Instant,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     submitted: bool,
     registered_at: Option<std::time::Instant>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     success_at: Option<std::time::Instant>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     returns: HashMap<String, (String, u64)>,
     selected: Option<Uuid>,
 }
@@ -105,7 +144,12 @@ struct ResponseCloseRoute {
     last_change: std::time::Instant,
     policy: Option<ResponseClosePolicy>,
     closing: Option<Uuid>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     closing_target: Option<String>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    committed_binding: Option<ResponseCloseCommittedBinding>,
 }
 
 impl ResponseCloseRoute {
@@ -137,10 +181,14 @@ impl ResponseCloseRoute {
 pub(crate) enum ResponseCloseError {
     ClosingDeferred,
     Unknown,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     Conflict,
     Unavailable,
 }
 
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
 pub(crate) struct WorkAdmission {
     state: ResponseCloseState,
     target: String,
@@ -148,6 +196,8 @@ pub(crate) struct WorkAdmission {
     active: bool,
 }
 
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
 pub(crate) struct WorkDeliveryReservation {
     state: ResponseCloseState,
     target: String,
@@ -160,18 +210,66 @@ pub(crate) struct WriterAdmission {
     generation: u64,
 }
 
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
 pub(crate) struct CreateOwnerReservation {
     state: ResponseCloseState,
     target: String,
     nonce: Uuid,
+    classification: CreateClassification,
+}
+
+/// P05 supplies current ALL-scopes classification under the publication permit.
+/// A reservation records ownership; it does not prove protection or identity.
+#[derive(Clone)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) enum CreateClassification {
+    Foreign {
+        publication_epoch: u64,
+    },
+    Protected {
+        identity: ResponseRouteIdentity,
+        // Dormant until P05 integration; remove with real callers.
+        #[allow(dead_code)]
+        publication_epoch: u64,
+    },
+    Preparing {
+        owner_nonce: Uuid,
+        identity: ResponseRouteIdentity,
+        // Dormant until P05 integration; remove with real callers.
+        #[allow(dead_code)]
+        publication_epoch: u64,
+    },
+    Unknown,
+}
+
+impl CreateOwnerReservation {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn classification(&self) -> &CreateClassification {
+        &self.classification
+    }
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) enum CreateAdmission {
+    Reserved(CreateOwnerReservation),
+    ClosingDeferred,
+    WaitingIdentity,
 }
 
 #[derive(Clone)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
 pub(crate) struct ResponseDeliveryContext {
     session_id: Uuid,
     nonce: Uuid,
 }
 
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
 pub(crate) struct ResponseDeliveryProof {
     pub context: ResponseDeliveryContext,
     pub member: ResponseRouteIdentity,
@@ -180,6 +278,8 @@ pub(crate) struct ResponseDeliveryProof {
 }
 
 #[derive(Clone)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
 pub(crate) struct ReturnObservationContext {
     settings_epoch: u64,
     sequence: u64,
@@ -192,11 +292,15 @@ pub(crate) struct ReturnObservationContext {
     work_epoch: u64,
 }
 
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
 pub(crate) struct ReturnDeliveryProof {
     pub context: ReturnObservationContext,
 }
 
 #[derive(Clone)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
 pub(crate) struct ResponseCloseTicket {
     session_id: Uuid,
     generation: u64,
@@ -206,7 +310,70 @@ pub(crate) struct ResponseCloseTicket {
     activity_version: u64,
     carrier_version: u64,
     settings_epoch: u64,
+    member: ResponseRouteIdentity,
 }
+
+/// Incarnation is the exact UUID/token/generation tuple; backend kind and the
+/// checked generation identify the frozen backend route. Version stays at commit.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ResponseCloseCommittedBinding {
+    pub member: ResponseRouteIdentity,
+    pub close_nonce: Uuid,
+}
+
+impl ResponseCloseTicket {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn committed_binding(&self) -> ResponseCloseCommittedBinding {
+        ResponseCloseCommittedBinding {
+            member: self.member.clone(),
+            close_nonce: self.selection_nonce,
+        }
+    }
+}
+
+/// These are owned facts from P05's latest guarded manager/Confirmed checkpoint
+/// validation. P03 never performs I/O or imports its publication/effect types.
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct ResponseCloseCurrentSettlement {
+    pub current_carrier_version: u64,
+    pub confirmed_carrier_version: u64,
+    pub checkpoint_nonce: Uuid,
+    pub current_checkpoint_nonce: Uuid,
+    pub publication_epoch: u64,
+    pub current_publication_epoch: u64,
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) enum ResponseCloseSettlementOutcome {
+    Dormant {
+        exact_backend_absent: bool,
+        all_effects_completed: bool,
+        retained_exited_confirmed: bool,
+        selection_settled: bool,
+    },
+    ReopenAfterKillFailure {
+        terminal_kill_failure: bool,
+        all_effects_terminal: bool,
+        original_backend_alive: bool,
+        original_manager_identity_intact: bool,
+    },
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct ResponseCloseSettlementEvidence {
+    pub committed_binding: ResponseCloseCommittedBinding,
+    pub current_settlement: ResponseCloseCurrentSettlement,
+    pub outcome: ResponseCloseSettlementOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct StaleOrInvalidSettlement;
 
 impl ResponseCloseState {
     pub(crate) fn bind_publisher(&self, publisher: ResponseClosePublisher) {
@@ -216,9 +383,13 @@ impl ResponseCloseState {
         self.with_inner(|inner| inner.publishers == 63)
             .unwrap_or(false)
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn mark_work_bootstrapped(&self) {
         let _ = self.with_inner(|inner| inner.work_bootstrapped = true);
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn try_enable_readiness(&self) -> Result<(), ResponseCloseError> {
         self.with_inner(|inner| {
             if inner.publishers != 63 || !inner.work_bootstrapped {
@@ -235,6 +406,8 @@ impl ResponseCloseState {
             route.policy = None;
         }
     }
+    // Publish primitive row facts under the manager guard, preserving the P03 API.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish_manager_row(
         &self,
         id: Uuid,
@@ -386,6 +559,7 @@ impl ResponseCloseState {
                     policy: None,
                     closing: None,
                     closing_target: None,
+                    committed_binding: None,
                 },
             );
         });
@@ -407,6 +581,8 @@ impl ResponseCloseState {
             }
         });
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn publish_manager_facts(
         &self,
         identity: ResponseRouteIdentity,
@@ -696,6 +872,8 @@ impl ResponseCloseState {
     ) -> Result<WriterAdmission, ResponseCloseError> {
         self.reserve_writer_inner(id, generation, true)
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn reserve_work(
         &self,
         target: &str,
@@ -733,6 +911,8 @@ impl ResponseCloseState {
             })
         })?
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn settle_terminal(&self, target: &str, key: &str, now: std::time::Instant) {
         let _ = self.with_inner(|inner| {
             let work = inner.work.entry(target.to_owned()).or_default();
@@ -751,6 +931,8 @@ impl ResponseCloseState {
             }
         });
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn begin_delivery(
         &self,
         target: &str,
@@ -775,21 +957,47 @@ impl ResponseCloseState {
             })
         })?
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn reserve_create_owner(
         &self,
         target: &str,
         nonce: Uuid,
-    ) -> Result<CreateOwnerReservation, ResponseCloseError> {
+        classification: CreateClassification,
+    ) -> Result<CreateAdmission, ResponseCloseError> {
         self.with_inner(|inner| {
+            if matches!(&classification, CreateClassification::Unknown) {
+                return Ok(CreateAdmission::WaitingIdentity);
+            }
+            if let CreateClassification::Protected { identity, .. }
+            | CreateClassification::Preparing { identity, .. } = &classification
+            {
+                if identity.target != target {
+                    return Err(ResponseCloseError::Conflict);
+                }
+            }
             if inner.routes.values().any(|route| {
                 route.closing.is_some() && route.closing_target.as_deref() == Some(target)
             }) {
-                return Err(ResponseCloseError::ClosingDeferred);
+                return Ok(CreateAdmission::ClosingDeferred);
             }
-            if inner.create_owners.contains_key(target) {
-                return Err(ResponseCloseError::ClosingDeferred);
+            if matches!(
+                &classification,
+                CreateClassification::Preparing { owner_nonce, .. } if *owner_nonce != nonce
+            ) {
+                return Ok(CreateAdmission::ClosingDeferred);
             }
-            inner.create_owners.insert(target.to_owned(), nonce);
+            let exclusive = !matches!(&classification, CreateClassification::Foreign { .. });
+            let owners = inner.create_owners.entry(target.to_owned()).or_default();
+            if owners.contains_key(&nonce) {
+                return Err(ResponseCloseError::Conflict);
+            }
+            // Foreign ownership is non-exclusive, including a retained core
+            // whose caller was cancelled. Never infer protection from owners.
+            if exclusive && owners.values().any(|exclusive| *exclusive) {
+                return Ok(CreateAdmission::ClosingDeferred);
+            }
+            owners.insert(nonce, exclusive);
             for route in inner
                 .routes
                 .values_mut()
@@ -799,13 +1007,16 @@ impl ResponseCloseState {
                     inner.failed = true;
                 }
             }
-            Ok(CreateOwnerReservation {
+            Ok(CreateAdmission::Reserved(CreateOwnerReservation {
                 state: self.clone(),
                 target: target.to_owned(),
                 nonce,
-            })
+                classification,
+            }))
         })?
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn reserve_policy_candidate(
         &self,
         member: ResponseRouteIdentity,
@@ -861,6 +1072,8 @@ impl ResponseCloseState {
             })
         })?
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn mark_request_submitted(
         &self,
         context: &ResponseDeliveryContext,
@@ -882,6 +1095,8 @@ impl ResponseCloseState {
             }
         });
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn register_request(
         &self,
         proof: ResponseDeliveryProof,
@@ -922,6 +1137,8 @@ impl ResponseCloseState {
             Ok(())
         })?
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn admit_return(
         &self,
         member: &ResponseRouteIdentity,
@@ -996,6 +1213,8 @@ impl ResponseCloseState {
             })
         })?
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn observe_return_success(
         &self,
         proof: ReturnDeliveryProof,
@@ -1003,6 +1222,8 @@ impl ResponseCloseState {
     ) -> Result<(), ResponseCloseError> {
         self.settle_return(&proof.context, true, now)
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn settle_return_terminal(
         &self,
         context: &ReturnObservationContext,
@@ -1010,6 +1231,8 @@ impl ResponseCloseState {
     ) -> Result<(), ResponseCloseError> {
         self.settle_return(context, false, now)
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     fn settle_return(
         &self,
         context: &ReturnObservationContext,
@@ -1064,6 +1287,8 @@ impl ResponseCloseState {
             Ok(())
         })?
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     fn safe(
         inner: &ResponseCloseInner,
         route: &ResponseCloseRoute,
@@ -1114,6 +1339,8 @@ impl ResponseCloseState {
                     .max(route.hold_until.unwrap_or(registered)),
             ) >= std::time::Duration::from_secs(u64::from(inner.seconds))
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn select_ticket(
         &self,
         id: Uuid,
@@ -1137,9 +1364,12 @@ impl ResponseCloseState {
                 activity_version: route.activity_version,
                 carrier_version: policy.member.carrier_version,
                 settings_epoch: inner.settings_epoch,
+                member: policy.member.clone(),
             })
         })?
     }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     fn try_commit_response_close(
         &self,
         ticket: &ResponseCloseTicket,
@@ -1159,6 +1389,7 @@ impl ResponseCloseState {
                     p.nonce == ticket.nonce
                         && p.selected == Some(ticket.selection_nonce)
                         && p.member.carrier_version == ticket.carrier_version
+                        && p.member == ticket.member
                 })
             {
                 return Err(ResponseCloseError::Unknown);
@@ -1169,34 +1400,74 @@ impl ResponseCloseState {
                 .policy
                 .as_ref()
                 .map(|policy| policy.member.target.clone());
+            route.committed_binding = Some(ticket.committed_binding());
             route.policy = None;
             Ok(ticket.selection_nonce)
         })?
     }
-    fn finish_response_close(
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn finish_response_close(
         &self,
-        id: Uuid,
-        generation: u64,
-        nonce: Uuid,
-    ) -> Result<(), ResponseCloseError> {
+        ticket: &ResponseCloseTicket,
+        evidence: ResponseCloseSettlementEvidence,
+    ) -> Result<(), StaleOrInvalidSettlement> {
         self.with_inner(|inner| {
-            let route = inner.routes.get(&id).ok_or(ResponseCloseError::Unknown)?;
-            if route.generation != generation || route.closing != Some(nonce) {
-                return Err(ResponseCloseError::Conflict);
+            let route = inner
+                .routes
+                .get(&ticket.session_id)
+                .ok_or(StaleOrInvalidSettlement)?;
+            let binding = ticket.committed_binding();
+            let current = &evidence.current_settlement;
+            if evidence.committed_binding != binding
+                || route.committed_binding.as_ref() != Some(&binding)
+                || route.closing != Some(binding.close_nonce)
+                || route.closing_target.as_deref() != Some(binding.member.target.as_str())
+                || route.generation != binding.member.generation
+                || route.manager_token != Some(binding.member.token)
+                || route.manager_version != current.current_carrier_version
+                || current.current_carrier_version < binding.member.carrier_version
+                || current.confirmed_carrier_version != current.current_carrier_version
+                || current.checkpoint_nonce != current.current_checkpoint_nonce
+                || current.publication_epoch != current.current_publication_epoch
+            {
+                return Err(StaleOrInvalidSettlement);
             }
-            // Pure settlement only; facts=None is not proof of backend death.
-            // P05 must establish exact old-route liveness, completed effects
-            // and retained-row reconciliation before adding a production caller.
-            if route.facts.is_some() {
-                return Err(ResponseCloseError::Unknown);
+            match evidence.outcome {
+                ResponseCloseSettlementOutcome::Dormant {
+                    exact_backend_absent: true,
+                    all_effects_completed: true,
+                    retained_exited_confirmed: true,
+                    selection_settled: true,
+                } => {
+                    if route.manager_working != Some(false) || route.eligible {
+                        return Err(StaleOrInvalidSettlement);
+                    }
+                    inner.routes.remove(&ticket.session_id);
+                }
+                ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
+                    terminal_kill_failure: true,
+                    all_effects_terminal: true,
+                    original_backend_alive: true,
+                    original_manager_identity_intact: true,
+                } => {
+                    let route = inner.routes.get_mut(&ticket.session_id).unwrap();
+                    route.closing = None;
+                    route.closing_target = None;
+                    route.committed_binding = None;
+                    route.policy = None;
+                }
+                _ => return Err(StaleOrInvalidSettlement),
             }
-            inner.routes.remove(&id);
             Ok(())
-        })?
+        })
+        .map_err(|_| StaleOrInvalidSettlement)?
     }
 }
 
 impl WorkAdmission {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn accept_durable(&mut self, digest: &str) -> Result<bool, ResponseCloseError> {
         self.state.with_inner(|inner| {
             let work = inner
@@ -1288,8 +1559,16 @@ impl Drop for WriterAdmission {
 impl Drop for CreateOwnerReservation {
     fn drop(&mut self) {
         let _ = self.state.with_inner(|inner| {
-            if inner.create_owners.get(&self.target) == Some(&self.nonce) {
-                inner.create_owners.remove(&self.target);
+            let removed = if let Some(owners) = inner.create_owners.get_mut(&self.target) {
+                let removed = owners.remove(&self.nonce).is_some();
+                if owners.is_empty() {
+                    inner.create_owners.remove(&self.target);
+                }
+                removed
+            } else {
+                false
+            };
+            if removed {
                 for route in inner
                     .routes
                     .values_mut()
@@ -2220,6 +2499,8 @@ fn acquire_route_lifecycle(
 }
 
 impl PtyAuthorityRouteProof {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     pub(crate) fn try_commit_response_close(
         &self,
         state: &ResponseCloseState,
@@ -2237,11 +2518,9 @@ impl PtyAuthorityRouteProof {
             .route_registry
             .lock()
             .map_err(|_| ResponseCloseError::Unavailable)?;
-        if !registry
-            .routes
-            .get(&self.session_id)
-            .is_some_and(|route| route.generation == self.route_generation)
-        {
+        if !registry.routes.get(&self.session_id).is_some_and(|route| {
+            route.generation == self.route_generation && route.kind == ticket.member.backend
+        }) {
             return Err(ResponseCloseError::Unknown);
         }
         state.try_commit_response_close(ticket, now)
@@ -3382,19 +3661,50 @@ mod response_close_tests {
         let now = Instant::now() + Duration::from_secs(3600);
         let (state, member, coordinator) = routes(now);
         arm(&state, &member, &coordinator, now);
-        let owner = state
-            .reserve_create_owner(&member.target, Uuid::new_v4())
-            .unwrap();
+        let first = Uuid::new_v4();
+        let foreign = || CreateClassification::Foreign {
+            publication_epoch: 1,
+        };
+        let protected_classification = || CreateClassification::Protected {
+            identity: member.clone(),
+            publication_epoch: 1,
+        };
+        let CreateAdmission::Reserved(owner) = state
+            .reserve_create_owner(&member.target, first, foreign())
+            .unwrap()
+        else {
+            panic!("Foreign ownership must progress");
+        };
         assert!(state
             .select_ticket(member.session_id, now + Duration::from_secs(100))
             .is_err());
         let successor = Uuid::new_v4();
-        state
-            .inner
-            .lock()
+        let CreateAdmission::Reserved(successor_owner) = state
+            .reserve_create_owner(&member.target, successor, foreign())
             .unwrap()
-            .create_owners
-            .insert(member.target.clone(), successor);
+        else {
+            panic!("retained Foreign core cannot defer another Foreign owner");
+        };
+        assert!(matches!(
+            state.reserve_create_owner(
+                &member.target,
+                Uuid::new_v4(),
+                CreateClassification::Unknown,
+            ),
+            Ok(CreateAdmission::WaitingIdentity)
+        ));
+        assert!(matches!(
+            state.reserve_create_owner(
+                &member.target,
+                Uuid::new_v4(),
+                CreateClassification::Preparing {
+                    owner_nonce: first,
+                    identity: member.clone(),
+                    publication_epoch: 1,
+                },
+            ),
+            Ok(CreateAdmission::ClosingDeferred)
+        ));
         drop(owner);
         assert_eq!(
             state
@@ -3402,12 +3712,45 @@ mod response_close_tests {
                 .lock()
                 .unwrap()
                 .create_owners
-                .get(&member.target),
-            Some(&successor)
+                .get(&member.target)
+                .and_then(|owners| owners.get(&successor)),
+            Some(&false)
         );
         assert!(state
             .select_ticket(member.session_id, now + Duration::from_secs(100))
             .is_err());
+        drop(successor_owner);
+        let CreateAdmission::Reserved(protected) = state
+            .reserve_create_owner(&member.target, first, protected_classification())
+            .unwrap()
+        else {
+            panic!("first protected owner");
+        };
+        assert!(matches!(
+            state.reserve_create_owner(&member.target, successor, protected_classification()),
+            Ok(CreateAdmission::ClosingDeferred)
+        ));
+        drop(protected);
+        assert!(!state
+            .inner
+            .lock()
+            .unwrap()
+            .create_owners
+            .contains_key(&member.target));
+        // Foreign does not demand a canonical FQN before legacy preflight.
+        let CreateAdmission::Reserved(alias) = state
+            .reserve_create_owner("legacy/alias", first, foreign())
+            .unwrap()
+        else {
+            panic!("legacy alias Foreign ownership");
+        };
+        assert!(matches!(
+            alias.classification(),
+            CreateClassification::Foreign {
+                publication_epoch: 1
+            }
+        ));
+        drop(alias);
     }
 
     #[test]
@@ -3465,6 +3808,7 @@ mod response_close_tests {
             token: Uuid::new_v4(),
             generation: 1,
             carrier_version: 1,
+            backend: SessionBackendKind::LocalProcess,
         };
         let coordinator = ResponseRouteIdentity {
             target: "project:room/coordinator".into(),
@@ -3472,6 +3816,7 @@ mod response_close_tests {
             token: Uuid::new_v4(),
             generation: 2,
             carrier_version: 1,
+            backend: SessionBackendKind::LocalProcess,
         };
         for (identity, eligible) in [(&member, true), (&coordinator, false)] {
             state.register_route(identity.session_id, identity.generation, now);
@@ -3629,9 +3974,220 @@ mod response_close_tests {
         assert!(state
             .is_closing(member.session_id, member.generation)
             .unwrap());
+        assert_eq!(ticket.committed_binding().close_nonce, nonce);
+        let dormant = || ResponseCloseSettlementOutcome::Dormant {
+            exact_backend_absent: true,
+            all_effects_completed: true,
+            retained_exited_confirmed: true,
+            selection_settled: true,
+        };
+        let evidence = |version, outcome| {
+            let checkpoint_nonce = Uuid::new_v4();
+            ResponseCloseSettlementEvidence {
+                committed_binding: ticket.committed_binding(),
+                current_settlement: ResponseCloseCurrentSettlement {
+                    current_carrier_version: version,
+                    confirmed_carrier_version: version,
+                    checkpoint_nonce,
+                    current_checkpoint_nonce: checkpoint_nonce,
+                    publication_epoch: 2,
+                    current_publication_epoch: 2,
+                },
+                outcome,
+            }
+        };
+        // Same-UUID stable carrier changes advance current facts without
+        // relabelling the committed ticket or reviving its consumed lease.
+        state.publish_manager_row(
+            member.session_id,
+            member.token,
+            member.generation,
+            2,
+            false,
+            false,
+            now + Duration::from_secs(63),
+        );
+        assert_eq!(ticket.committed_binding().member.carrier_version, 1);
+        let mut stale = evidence(2, dormant());
+        stale.current_settlement.confirmed_carrier_version = 1;
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        assert_eq!(
+            state.finish_response_close(&ticket, evidence(1, dormant())),
+            Err(StaleOrInvalidSettlement)
+        );
+        let mut stale = evidence(2, dormant());
+        stale.current_settlement.current_checkpoint_nonce = Uuid::new_v4();
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        let mut stale = evidence(2, dormant());
+        stale.current_settlement.current_publication_epoch += 1;
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        let mut stale = evidence(2, dormant());
+        stale.committed_binding.member.backend = SessionBackendKind::ContainerTransport;
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        let mut stale = evidence(2, dormant());
+        stale.committed_binding.member.generation += 1;
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        // None facts are not proof of completion. Running, NotStarted or
+        // Ambiguous must be represented by false, not Completed(Err).
+        assert_eq!(
+            state.finish_response_close(
+                &ticket,
+                evidence(
+                    2,
+                    ResponseCloseSettlementOutcome::Dormant {
+                        exact_backend_absent: true,
+                        all_effects_completed: false,
+                        retained_exited_confirmed: true,
+                        selection_settled: true,
+                    },
+                ),
+            ),
+            Err(StaleOrInvalidSettlement)
+        );
         assert!(state
-            .finish_response_close(member.session_id, member.generation, nonce)
+            .is_closing(member.session_id, member.generation)
+            .unwrap());
+        assert_eq!(
+            state.finish_response_close(&ticket, evidence(2, dormant())),
+            Ok(())
+        );
+        assert_eq!(
+            state.inner.lock().unwrap().work[&member.target].pending["after-commit"],
+            "retained-body"
+        );
+
+        // Contrast kill failure: latest LIVE Confirmed carrier, no Exited or
+        // selection-clear claim. Every effect must still be terminal.
+        let (state, member, coordinator) = routes(now);
+        arm(&state, &member, &coordinator, now);
+        let ticket = state
+            .select_ticket(member.session_id, now + Duration::from_secs(30))
+            .unwrap();
+        state
+            .try_commit_response_close(&ticket, now + Duration::from_secs(30))
+            .unwrap();
+        state.publish_manager_row(
+            member.session_id,
+            member.token,
+            member.generation,
+            2,
+            true,
+            false,
+            now,
+        );
+        let reopen = |all_effects_terminal| ResponseCloseSettlementEvidence {
+            committed_binding: ticket.committed_binding(),
+            current_settlement: ResponseCloseCurrentSettlement {
+                current_carrier_version: 2,
+                confirmed_carrier_version: 2,
+                checkpoint_nonce: nonce,
+                current_checkpoint_nonce: nonce,
+                publication_epoch: 3,
+                current_publication_epoch: 3,
+            },
+            outcome: ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
+                terminal_kill_failure: true,
+                all_effects_terminal,
+                original_backend_alive: true,
+                original_manager_identity_intact: true,
+            },
+        };
+        assert_eq!(
+            state.finish_response_close(&ticket, reopen(false)),
+            Err(StaleOrInvalidSettlement)
+        );
+        assert!(state
+            .is_closing(member.session_id, member.generation)
+            .unwrap());
+        assert_eq!(state.finish_response_close(&ticket, reopen(true)), Ok(()));
+        assert!(!state
+            .is_closing(member.session_id, member.generation)
+            .unwrap());
+        assert!(state.begin_delivery(&member.target).is_ok());
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
             .is_err());
+        assert!(state
+            .try_commit_response_close(&ticket, now + Duration::from_secs(100))
+            .is_err());
+
+        let mut current_member = member.clone();
+        current_member.carrier_version = 2;
+        state.publish_manager_facts(current_member.clone(), true, false, now);
+        // Pure terminal-ledger replay cannot mint another candidate. P05/P06
+        // separately verify authenticated admission and on-disk receipt replay.
+        assert!(matches!(
+            state.reserve_policy_candidate(
+                current_member.clone(),
+                coordinator.clone(),
+                "request".into(),
+                "request".into(),
+                now + Duration::from_secs(100),
+            ),
+            Err(ResponseCloseError::Conflict)
+        ));
+
+        let new_request = candidate(
+            &state,
+            &current_member,
+            &coordinator,
+            "new-request",
+            now + Duration::from_secs(100),
+        );
+        register(
+            &state,
+            &current_member,
+            &coordinator,
+            new_request,
+            now + Duration::from_secs(100),
+        );
+        // Registration alone cannot reuse the old ACK or its idle interval.
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(200))
+            .is_err());
+        let returned_at = now + Duration::from_secs(200);
+        let fresh_return = state
+            .admit_return(
+                &current_member,
+                &coordinator,
+                "fresh-ack".into(),
+                "fresh-ack".into(),
+                returned_at,
+            )
+            .unwrap();
+        state
+            .observe_return_success(
+                ReturnDeliveryProof {
+                    context: fresh_return,
+                },
+                returned_at,
+            )
+            .unwrap();
+        assert!(matches!(
+            state.select_ticket(
+                member.session_id,
+                returned_at + Duration::from_secs(30) - Duration::from_nanos(1),
+            ),
+            Err(ResponseCloseError::Unknown)
+        ));
+        assert!(state
+            .select_ticket(member.session_id, returned_at + Duration::from_secs(30))
+            .is_ok());
     }
     #[test]
     fn response_close_early_return_waits_for_complete_submission_and_registration() {
