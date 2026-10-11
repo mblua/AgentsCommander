@@ -2502,8 +2502,8 @@ mod tests {
 
         // Legacy debris selects the explicit refusal callback for decisions only.
         // The already-unlocked path must bypass that callback and preserve bytes.
-        let temp_obstruction = fixture
-            .replica
+        let temp_obstruction = validated_replica_dir(&fixture.settings, &fixture.replica)
+            .unwrap()
             .join(format!(".config.json.{}.tmp", std::process::id()));
         std::fs::create_dir(&temp_obstruction).unwrap();
         let publish = |tmp: &std::path::Path, target: &std::path::Path| {
