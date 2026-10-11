@@ -1,3 +1,6 @@
+pub(super) use crate::config::local_config_io::ConfigPublisher;
+#[cfg(test)]
+pub(super) use crate::config::local_config_io::{publish_temp_config, temp_config_path};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -1168,15 +1171,33 @@ pub fn update_existing_agent_config<F>(decisions: &Path, mutate: F) -> Result<()
 where
     F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
 {
-    update_agent_config(decisions, |d, s| {
-        if !decisions.exists() {
-            return Err(format!(
-                "Local config {} does not exist",
-                decisions.display()
-            ));
-        }
-        mutate(d, s)
-    })
+    update_existing_agent_config_with_publish(decisions, mutate, None)
+}
+
+pub(super) fn update_existing_agent_config_with_publish<F>(
+    decisions: &Path,
+    mutate: F,
+    publish: Option<crate::config::local_config_io::ConfigPublisher<'_>>,
+) -> Result<(), String>
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
+    update_agent_config_with_activity_and_publish(
+        decisions,
+        production_journal_dir().as_deref(),
+        &|_: &str| {},
+        |d, s| {
+            if !decisions.exists() {
+                return Err(format!(
+                    "Local config {} does not exist",
+                    decisions.display()
+                ));
+            }
+            mutate(d, s)
+        },
+        None,
+        publish,
+    )
 }
 
 /// The journal directory of a production call. Under `cfg(test)` the live
@@ -1262,6 +1283,27 @@ fn update_agent_config_with_activity<F>(
 where
     F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
 {
+    update_agent_config_with_activity_and_publish(
+        decisions,
+        journal_dir,
+        on_stage,
+        mutate,
+        activity,
+        None,
+    )
+}
+
+fn update_agent_config_with_activity_and_publish<F>(
+    decisions: &Path,
+    journal_dir: Option<&Path>,
+    on_stage: &dyn Fn(&str),
+    mutate: F,
+    activity: Option<(&str, &std::cell::Cell<bool>)>,
+    publish: Option<crate::config::local_config_io::ConfigPublisher<'_>>,
+) -> Result<(), String>
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
     let parent = decisions.parent().ok_or_else(|| {
         format!(
             "Local config {} has no parent directory",
@@ -1286,18 +1328,44 @@ where
     };
     let reservation =
         parent.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME);
-    crate::config::local_config_io::update_config_pair_guarded(
+    let args = (
         decisions,
-        &state,
-        &reservation,
+        state.as_path(),
+        reservation.as_path(),
         &STATE_KEYS,
-        Some(&nonpending_preflight),
-        Some(&cleanup),
+        &nonpending_preflight as &dyn Fn() -> Result<(), String>,
+        &cleanup as crate::config::local_config_io::ConfigPairCleanup<'_>,
         on_stage,
-        mutate,
-        &finish,
+        &finish as crate::config::local_config_io::ConfigPairFinish<'_>,
         activity,
-    )?;
+    );
+    match publish {
+        None => crate::config::local_config_io::update_config_pair_guarded(
+            args.0,
+            args.1,
+            args.2,
+            args.3,
+            Some(args.4),
+            Some(args.5),
+            args.6,
+            mutate,
+            args.7,
+            args.8,
+        ),
+        Some(publish) => crate::config::local_config_io::update_config_pair_inner(
+            args.0,
+            args.1,
+            Some(args.2),
+            args.3,
+            Some(args.5),
+            args.6,
+            mutate,
+            args.7,
+            args.8,
+            Some(args.4),
+            publish,
+        ),
+    }?;
 
     for (key, state_value, tracked_value) in overridden.into_inner() {
         log::warn!(
@@ -1375,6 +1443,26 @@ pub(crate) fn prepare_and_reserve_identity_reference_pair<F>(
 where
     F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
 {
+    prepare_and_reserve_identity_reference_pair_guarded(decisions, request, mutate, &|| Ok(()))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn prepare_and_reserve_identity_reference_pair_guarded<F>(
+    decisions: &Path,
+    request: &crate::config::local_config_io::PairReservationRequest,
+    mutate: F,
+    validate: &dyn Fn() -> Result<(), crate::config::local_config_io::PreparedPairError>,
+) -> Result<
+    (
+        crate::config::local_config_io::PairReservation,
+        crate::config::local_config_io::PairReservationRole,
+    ),
+    crate::config::local_config_io::PreparedPairError,
+>
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
+    validate()?;
     use crate::config::local_config_io::PreparedPairError;
     let parent = decisions
         .parent()
@@ -1385,7 +1473,7 @@ where
     let moved = std::cell::RefCell::new(Vec::new());
     let overridden = std::cell::RefCell::new(Vec::new());
     let cleanup = |d: &mut JsonMap, s: &mut JsonMap| absorb_state_keys(d, s, &moved, &overridden);
-    crate::config::local_config_io::prepare_and_reserve_config_pair(
+    crate::config::local_config_io::prepare_and_reserve_config_pair_guarded(
         decisions,
         &state_file_path(parent),
         &parent.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME),
@@ -1396,6 +1484,7 @@ where
             stamp_split_marker(s);
             Ok(())
         },
+        validate,
     )
 }
 
@@ -3046,6 +3135,33 @@ mod tests {
             update_agent_config_in(&self.decisions(), Some(&self.journal), mutate)
         }
 
+        fn write_with_publish<F>(&self, mutate: F) -> Result<(), String>
+        where
+            F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+        {
+            update_agent_config_with_activity_and_publish(
+                &self.decisions(),
+                Some(&self.journal),
+                &|_: &str| {},
+                mutate,
+                None,
+                Some(&|tmp, target| self.publish(tmp, target)),
+            )
+        }
+
+        fn publish(&self, tmp: &Path, target: &Path) -> Result<(), String> {
+            if (target == self.decisions() && self.decisions_temp().is_dir())
+                || (target == self.state() && self.state_temp().is_dir())
+            {
+                assert!(
+                    tmp.is_file(),
+                    "fresh staging acquired before injected refusal"
+                );
+                return Err("fixture temp config publish failure".into());
+            }
+            crate::config::local_config_io::publish_temp_config(tmp, target)
+        }
+
         /// A writer outside this binary's protocol: it puts a state key back
         /// into the tracked file with a plain write.
         fn foreign_write(&self, key: &str, value: Value) {
@@ -3329,7 +3445,7 @@ mod tests {
         p.seed_decisions(json!({ "tooling": { "lastCodingAgent": "claude" } }));
         let tracked = bytes_of(&p.decisions());
         std::fs::create_dir(p.decisions_temp()).expect("block the decisions publish");
-        p.write(no_change)
+        p.write_with_publish(no_change)
             .expect_err("(d) the decisions write must fail");
         assert_eq!(
             bytes_of(&p.state()).map(|_| p.stored_state()["tooling"]["lastCodingAgent"].clone()),
@@ -3923,7 +4039,7 @@ mod tests {
         let p = unmigrated();
         let tracked = bytes_of(&p.decisions());
         std::fs::create_dir(p.decisions_temp()).expect("block the decisions publish");
-        p.write(no_change).expect_err("the Io refusal");
+        p.write_with_publish(no_change).expect_err("the Io refusal");
         assert_eq!(bytes_of(&p.decisions()), tracked, "Io: decisions unchanged");
         assert_eq!(
             p.stored_state()["tooling"]["lastCodingAgent"],
@@ -3957,8 +4073,15 @@ mod tests {
                 std::fs::create_dir(p.decisions_temp()).expect("block the decisions publish");
             }
         };
-        update_agent_config_with_stage(&p.decisions(), Some(&p.journal), &block, mutate_both)
-            .expect_err("the caller's decisions publish");
+        update_agent_config_with_activity_and_publish(
+            &p.decisions(),
+            Some(&p.journal),
+            &block,
+            mutate_both,
+            None,
+            Some(&|tmp, target| p.publish(tmp, target)),
+        )
+        .expect_err("the caller's decisions publish");
         let state = p.stored_state();
         assert_eq!(state["tooling"]["lastCodingAgent"], json!("v_new"));
         assert_eq!(
@@ -3982,8 +4105,15 @@ mod tests {
                 std::fs::create_dir(p.state_temp()).expect("block the state publish");
             }
         };
-        update_agent_config_with_stage(&p.decisions(), Some(&p.journal), &block, mutate_both)
-            .expect_err("the caller's state publish");
+        update_agent_config_with_activity_and_publish(
+            &p.decisions(),
+            Some(&p.journal),
+            &block,
+            mutate_both,
+            None,
+            Some(&|tmp, target| p.publish(tmp, target)),
+        )
+        .expect_err("the caller's state publish");
         assert_eq!(
             p.stored_state(),
             json!({ "tooling": { "lastCodingAgent": "v_old" } }),
@@ -4795,5 +4925,109 @@ mod pair_activity_tests {
         .unwrap();
         assert_eq!(read_last_agent_message_at(repo).as_deref(), Some(T3));
         assert_ne!(std::fs::read(&d).unwrap(), d_before);
+    }
+    #[test]
+    fn p22_agent_guard_preflight_refuses_before_ignore_or_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let ac = root.path().join(".ac");
+        let matrix = ac.join("_agent-test");
+        std::fs::create_dir_all(&matrix).unwrap();
+        let decisions = matrix.join("config.json");
+        std::fs::write(&decisions, b"{}").unwrap();
+        let before = [
+            read_config_pair_physical(&decisions).unwrap(),
+            read_config_pair_physical(&state_file_path(&matrix)).unwrap(),
+        ];
+        let request = PairReservationRequest {
+            operation_id: "operation-guard".into(),
+            source_physical_key: "source-key".into(),
+            owner_instance_id: "C1".into(),
+            mappings_digest: "a".repeat(64),
+            before_protected: protected_config_pair_revision(&before).unwrap(),
+        };
+        assert_eq!(
+            prepare_and_reserve_identity_reference_pair_guarded(
+                &decisions,
+                &request,
+                |_, _| panic!("no mutation after failed preflight"),
+                &|| Err(crate::config::local_config_io::PreparedPairError::Conflict),
+            ),
+            Err(crate::config::local_config_io::PreparedPairError::Conflict)
+        );
+        assert!(!ac.join(".gitignore").exists());
+        assert_eq!(std::fs::read(decisions).unwrap(), b"{}");
+        assert!(!state_file_path(&matrix).exists());
+    }
+
+    #[test]
+    fn p22_agent_allowing_guard_reuses_policy_and_adapter_packet() {
+        let root = tempfile::tempdir().unwrap();
+        let ac = root.path().join(".ac");
+        let matrix = ac.join("_agent-test");
+        std::fs::create_dir_all(&matrix).unwrap();
+        let decisions = matrix.join("config.json");
+        let state = state_file_path(&matrix);
+        let reservation =
+            matrix.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME);
+        std::fs::write(&decisions, b"{\"name\":\"before\"}").unwrap();
+        let user_rows = "# user rows\nkeep-me/\n!keep-me/allowed\n";
+        std::fs::write(ac.join(".gitignore"), user_rows).unwrap();
+        assert_eq!(nearest_ac_root(&decisions), Some(ac.as_path()));
+        let before = [
+            read_config_pair_physical(&decisions).unwrap(),
+            read_config_pair_physical(&state).unwrap(),
+        ];
+        let request = PairReservationRequest {
+            operation_id: "operation-1".into(),
+            source_physical_key: "source-key".into(),
+            owner_instance_id: "C1".into(),
+            mappings_digest: "a".repeat(64),
+            before_protected: protected_config_pair_revision(&before).unwrap(),
+        };
+        prepare_and_reserve_identity_reference_pair(&decisions, &request, |d, _| {
+            d.insert("name".into(), json!("after"));
+            Ok(())
+        })
+        .unwrap();
+        let packet = std::fs::read(&reservation).unwrap();
+        let ignore = std::fs::read_to_string(ac.join(".gitignore")).unwrap();
+        let mut expected = user_rows.to_string();
+        expected.push_str(&crate::config::naming_migration::missing_ignore_rows(
+            user_rows,
+            &crate::config::naming_migration::config_state_ignore_rows(),
+        ));
+        for name in [
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME,
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_LOCK,
+            crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_TMP,
+        ] {
+            expected.push_str(&format!(
+                "# AgentsCommander: private PAIR reservation state\n**/{name}\n"
+            ));
+        }
+        assert_eq!(ignore, expected);
+        assert!(ignore.starts_with(user_rows));
+        prepare_and_reserve_identity_reference_pair_guarded(
+            &decisions,
+            &request,
+            |d, _| {
+                d.insert("name".into(), json!("after"));
+                Ok(())
+            },
+            &|| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(reservation).unwrap(), packet);
+        assert_eq!(
+            std::fs::read_to_string(ac.join(".gitignore")).unwrap(),
+            ignore
+        );
+        assert_eq!(
+            [
+                read_config_pair_physical(&decisions).unwrap(),
+                read_config_pair_physical(&state).unwrap()
+            ],
+            before
+        );
     }
 }
