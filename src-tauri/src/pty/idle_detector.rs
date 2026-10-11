@@ -28,6 +28,7 @@ struct PendingBurst {
 }
 
 pub struct IdleDetector {
+    raw_output_observer: std::sync::OnceLock<(usize, Arc<dyn Fn(Uuid, Instant) + Send + Sync>)>,
     activity: Arc<Mutex<HashMap<Uuid, Instant>>>,
     /// #552 auto-close silence clock. SEPARATE from `activity` (which drives the
     /// #260 idle dot). Reset by user input, inter-agent delivery and PTY output
@@ -132,11 +133,26 @@ pub(crate) enum PtyInputBoundaryFailure {
 }
 
 impl IdleDetector {
+    pub(crate) fn bind_raw_output_observer(
+        &self,
+        identity: usize,
+        observer: impl Fn(Uuid, Instant) + Send + Sync + 'static,
+    ) -> bool {
+        self.raw_output_observer
+            .set((identity, Arc::new(observer)))
+            .is_ok()
+    }
+    pub(crate) fn raw_output_observer_identity(&self) -> Option<usize> {
+        self.raw_output_observer
+            .get()
+            .map(|(identity, _)| *identity)
+    }
     pub fn new(
         on_idle: impl Fn(Uuid) + Send + Sync + 'static,
         on_busy: impl Fn(Uuid) + Send + Sync + 'static,
     ) -> Arc<Self> {
         Arc::new(Self {
+            raw_output_observer: std::sync::OnceLock::new(),
             activity: Arc::new(Mutex::new(HashMap::new())),
             silence: Arc::new(Mutex::new(HashMap::new())),
             registered_at: Arc::new(Mutex::new(HashMap::new())),
@@ -229,6 +245,9 @@ impl IdleDetector {
         printable: bool,
         now: Instant,
     ) {
+        if let Some((_, observer)) = self.raw_output_observer.get() {
+            observer(session_id, now);
+        }
         let tuning = self
             .tuning
             .lock()
@@ -1621,5 +1640,25 @@ mod tests {
         assert_eq!(fx.busy(), 1);
         assert!(fx.silence_age() < Duration::from_secs(1));
         assert!(!fx.pending());
+    }
+}
+
+#[cfg(test)]
+mod response_close_raw_output_tests {
+    use super::*;
+
+    #[test]
+    fn response_close_raw_output_observer_precedes_filter_and_receives_escape_only_output() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let detector = IdleDetector::new(|_| {}, |_| {});
+        assert!(detector
+            .bind_raw_output_observer(1, move |id, now| captured.lock().unwrap().push((id, now))));
+        assert!(!detector.bind_raw_output_observer(2, |_, _| {}));
+        let id = Uuid::new_v4();
+        let now = Instant::now();
+        detector.record_output_at(id, 3, false, now);
+        assert_eq!(observed.lock().unwrap().as_slice(), &[(id, now)]);
+        assert_eq!(detector.raw_output_observer_identity(), Some(1));
     }
 }

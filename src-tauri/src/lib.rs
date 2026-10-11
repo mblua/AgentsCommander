@@ -4119,6 +4119,22 @@ fn apply_main_display_state<E: fmt::Display>(
     }
 }
 
+fn response_close_wiring_matches(
+    state: &crate::pty::manager::ResponseCloseState,
+    manager: &SessionManager,
+    pty: &PtyManager,
+    detector: &IdleDetector,
+    menu: &crate::pty::menu_guard::MenuGuard,
+) -> bool {
+    state.publishers_bound()
+        && state.same_state(&manager.response_close_state())
+        && state.same_state(&pty.response_close_state())
+        && detector.raw_output_observer_identity() == Some(state.wiring_identity())
+        && menu
+            .response_close_state()
+            .is_some_and(|bound| state.same_state(bound))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(
     test_window_placement: Option<crate::testability::window_placement::TestWindowPlacement>,
@@ -4227,7 +4243,11 @@ pub fn run(
     // Create WS broadcaster (shared between Tauri commands and web server)
     let broadcaster = WsBroadcaster::new();
 
-    let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+    let response_close = crate::pty::manager::ResponseCloseState::default();
+    let response_close_for_setup = response_close.clone();
+    let session_mgr = Arc::new(tokio::sync::RwLock::new(
+        SessionManager::with_response_close(response_close.clone()),
+    ));
     let shutdown_signal = ShutdownSignal::new();
     let terminal_snapshot_state =
         crate::pty::terminal_snapshot::TerminalSnapshotState::new(shutdown_signal.clone());
@@ -4252,8 +4272,11 @@ pub fn run(
     let app_handle_lock: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
     let handle_for_idle = Arc::clone(&app_handle_lock);
     let handle_for_busy = Arc::clone(&app_handle_lock);
+    let response_close_for_idle = response_close.clone();
+    let response_close_for_busy = response_close.clone();
     let idle_detector = IdleDetector::new(
         move |id| {
+            response_close_for_idle.observe_detector(id, false, std::time::Instant::now());
             log::debug!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
             if let Some(app) = handle_for_idle.get() {
                 // #2232 phase 7: the Co-managed decision travels in the same
@@ -4304,6 +4327,7 @@ pub fn run(
             }
         },
         move |id| {
+            response_close_for_busy.observe_detector(id, true, std::time::Instant::now());
             log::debug!("[idle] >>> EMIT session_busy for {}", &id.to_string()[..8]);
             if let Some(app) = handle_for_busy.get() {
                 let _ = tauri::Emitter::emit(
@@ -4322,6 +4346,14 @@ pub fn run(
             }
         },
     );
+    response_close.bind_publisher(crate::pty::manager::ResponseClosePublisher::Detector);
+    let response_close_for_output = response_close.clone();
+    if !idle_detector.bind_raw_output_observer(response_close.wiring_identity(), move |id, now| {
+        response_close_for_output.observe_raw_output(id, now)
+    }) {
+        response_close.fail_closed();
+    }
+    response_close.bind_publisher(crate::pty::manager::ResponseClosePublisher::RawOutput);
     let session_mgr_for_git = Arc::clone(&session_mgr);
     let session_mgr_for_git_sweeper = Arc::clone(&session_mgr);
     let session_mgr_for_discovery = Arc::clone(&session_mgr);
@@ -4354,6 +4386,11 @@ pub fn run(
     ));
 
     let loaded_settings = config::settings::load_settings();
+    response_close.apply_settings(
+        loaded_settings.response_close_enabled,
+        loaded_settings.response_close_idle_seconds,
+        std::time::Instant::now(),
+    );
     // (#621) Snapshot registered project paths for the startup orphan-clock prune
     // below (taken before the value is moved into the RwLock).
     let startup_project_paths = loaded_settings.project_paths.clone();
@@ -4494,6 +4531,7 @@ pub fn run(
         .manage(screenshot_capture_state) // #714
         .manage(screenshot_hotkey_state) // #714
         .manage(crate::pty::input_activity::new_state()) // #871 substantive-input tracker
+        .manage(response_close.clone())
         .manage(crate::pty::input_activity::new_typing_hold_state()) // #2336 typing hold
         .manage(crate::session::warnings::new_session_warning_state())
         .manage(Arc::new(QuitGate::new())) // #2296 managed type: Arc<QuitGate>
@@ -4639,6 +4677,7 @@ pub fn run(
                 Some(broadcaster_for_pty),
                 Some(selection_coordinator_for_setup.container_lifecycle_sender()),
             )));
+            pty_mgr.lock().unwrap().bind_response_close(response_close_for_setup.clone());
             install_container_route_remover(&pty_mgr);
             pty_mgr
                 .lock()
@@ -4748,9 +4787,23 @@ pub fn run(
             app.manage(Arc::clone(&watcher_engine));
             app.manage(watcher_history);
             // #1646 / #1647 - proactive detection of terminal blocking menus
-            let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::with_store(
+            let menu_guard = Arc::new(crate::pty::menu_guard::MenuGuard::with_response_close(
                 config::settings::BlockingMenusStore::load_from_config_dir(),
+                response_close_for_setup.clone(),
             ));
+            if app.try_state::<crate::pty::input_activity::TypingHoldState>().is_some()
+                && app.try_state::<crate::pty::manager::ResponseCloseState>().is_some_and(|bound| bound.same_state(&response_close_for_setup)) {
+                response_close_for_setup.bind_publisher(crate::pty::manager::ResponseClosePublisher::Hold);
+            }
+            let manager = tauri::async_runtime::block_on(async {
+                let managed = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = managed.read().await;
+                guard.clone()
+            });
+            if !response_close_wiring_matches(&response_close_for_setup, &manager, &pty_mgr.lock().unwrap(), &idle_detector_for_setup, &menu_guard) {
+                response_close_for_setup.fail_closed();
+                log::warn!("[response-close] safety publisher wiring unavailable; readiness remains disabled");
+            }
             crate::config::settings::refresh_shipped_agent_help_from_config_dir();
             menu_guard.start(app.handle().clone(), shutdown_for_setup.clone());
             // (#1652) Started at the top of setup and NOT in the post-restore

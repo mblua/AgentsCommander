@@ -362,6 +362,13 @@ fn classify_substantive<R: tauri::Runtime>(
 /// `typing_hold_user_message_sources_do_not_arm_hold` in this module. Driving
 /// the real web dispatcher needs a Wry `WsState` fixture and web-module
 /// internals, outside this phase's approved file inventory.
+fn response_close_hold_publisher<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Option<crate::pty::manager::ResponseCloseState> {
+    app.try_state::<crate::pty::manager::ResponseCloseState>()
+        .map(|state| state.inner().clone())
+}
+
 fn record_typing_hold_keystroke<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
@@ -370,11 +377,22 @@ fn record_typing_hold_keystroke<R: tauri::Runtime>(
     if !crate::pty::input_activity::chunk_qualifies_typing_hold(data) {
         return;
     }
+    let window = app
+        .try_state::<crate::config::settings::SettingsState>()
+        .and_then(|settings| {
+            settings.try_read().ok().map(|settings| {
+                Duration::from_secs(u64::from(settings.typing_hold_seconds.clamp(
+                    crate::config::settings::TYPING_HOLD_SECONDS_MIN,
+                    crate::config::settings::TYPING_HOLD_SECONDS_MAX,
+                )))
+            })
+        });
     if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .note_qualifying_key(session_id);
+        let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
+        hold.note_qualifying_key(session_id);
+        if let Some(publisher) = response_close_hold_publisher(app) {
+            publisher.publish_typing_key(session_id, window, std::time::Instant::now());
+        }
     }
 }
 
@@ -401,10 +419,19 @@ fn typing_hold_snapshot<R: tauri::Runtime>(
     window: Duration,
 ) -> crate::pty::input_activity::TypingHoldSnapshot {
     match app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        Some(state) => state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .snapshot(session_id, window),
+        Some(state) => {
+            let hold = state.lock().unwrap_or_else(|error| error.into_inner());
+            let snapshot = hold.snapshot(session_id, window);
+            if let Some(publisher) = response_close_hold_publisher(app) {
+                publisher.refresh_hold_snapshot(
+                    session_id,
+                    window,
+                    snapshot.closed,
+                    std::time::Instant::now(),
+                );
+            }
+            snapshot
+        }
         None => crate::pty::input_activity::TypingHoldSnapshot {
             closed: false,
             held_count: 0,
@@ -430,10 +457,11 @@ pub(crate) fn note_held_wake<R: tauri::Runtime>(
     message_id: &str,
 ) {
     if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .record_held_message(session_id, message_id);
+        let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
+        hold.record_held_message(session_id, message_id);
+        if let Some(publisher) = response_close_hold_publisher(app) {
+            publisher.publish_held_key(session_id, message_id, true, std::time::Instant::now());
+        }
     }
 }
 
@@ -444,10 +472,11 @@ pub(crate) fn clear_held_wake<R: tauri::Runtime>(
     message_id: &str,
 ) {
     if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear_held_message(session_id, message_id);
+        let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
+        hold.clear_held_message(session_id, message_id);
+        if let Some(publisher) = response_close_hold_publisher(app) {
+            publisher.publish_held_key(session_id, message_id, false, std::time::Instant::now());
+        }
     }
 }
 
@@ -502,10 +531,33 @@ pub async fn toggle_typing_hold(
     ensure_session_exists(&app, session_id).await?;
     let window = typing_hold_window(&app).await;
     match app.try_state::<crate::pty::input_activity::TypingHoldState>() {
-        Some(state) => Ok(state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .toggle_manual(session_id, window)),
+        Some(state) => {
+            let publisher = response_close_hold_publisher(&app);
+            let _admission = match &publisher {
+                Some(publisher) => publisher
+                    .reserve_hold_change(session_id)
+                    .map_err(|_| "response_close_deferred".to_string())?,
+                None => None,
+            };
+            let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
+            let was_closed = hold.snapshot(session_id, window).closed;
+            let snapshot = hold.toggle_manual(session_id, window);
+            if let Some(publisher) = publisher {
+                let now = std::time::Instant::now();
+                publisher.refresh_hold_snapshot(session_id, window, snapshot.closed, now);
+                publisher.publish_hold(
+                    session_id,
+                    if was_closed {
+                        None
+                    } else {
+                        now.checked_add(window.saturating_mul(2))
+                    },
+                    true,
+                    now,
+                );
+            }
+            Ok(snapshot)
+        }
         None => Err("typing hold state is unavailable".to_string()),
     }
 }
