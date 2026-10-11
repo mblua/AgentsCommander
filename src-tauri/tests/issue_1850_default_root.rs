@@ -680,21 +680,25 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
                 case.name, run_a.status, run_a.stderr
             ));
         }
-        for (offset, character) in run_a.stdout.char_indices() {
-            if character == '[' || character == '{' {
-                if let Some(Ok(value)) =
+        if run_a
+            .stdout
+            .char_indices()
+            .filter(|(_, character)| *character == '[' || *character == '{')
+            .any(|(offset, _)| {
+                matches!(
                     serde_json::Deserializer::from_str(&run_a.stdout[offset..])
                         .into_iter::<serde_json::Value>()
-                        .next()
-                {
-                    if value.is_array() || value.is_object() {
-                        return Err(format!(
-                            "{}: child A emitted successful peer JSON: {:?}",
-                            case.name, run_a.stdout
-                        ));
-                    }
-                }
-            }
+                        .next(),
+                    Some(Ok(
+                        serde_json::Value::Array(_) | serde_json::Value::Object(_)
+                    ))
+                )
+            })
+        {
+            return Err(format!(
+                "{}: child A emitted successful peer JSON: {:?}",
+                case.name, run_a.stdout
+            ));
         }
     } else if !run_a.success {
         return Err(format!(
