@@ -668,7 +668,35 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
     inject_injected_home(&mut child_a, mode, home);
     let run_a = run_child(&mut child_a, &format!("{} child A", case.name))?;
     print_retained(&format!("{} child A", case.name), &run_a);
-    if !run_a.success {
+    if case.canonical == CanonicalFixture::Invalid {
+        if run_a.success
+            || run_a.status != Some(1)
+            || !run_a
+                .stderr
+                .contains("settings.json exists but could not be parsed")
+        {
+            return Err(format!(
+                "{}: child A did not refuse invalid settings status={:?} stderr={:?}",
+                case.name, run_a.status, run_a.stderr
+            ));
+        }
+        for (offset, character) in run_a.stdout.char_indices() {
+            if character == '[' || character == '{' {
+                if let Some(Ok(value)) =
+                    serde_json::Deserializer::from_str(&run_a.stdout[offset..])
+                        .into_iter::<serde_json::Value>()
+                        .next()
+                {
+                    if value.is_array() || value.is_object() {
+                        return Err(format!(
+                            "{}: child A emitted successful peer JSON: {:?}",
+                            case.name, run_a.stdout
+                        ));
+                    }
+                }
+            }
+        }
+    } else if !run_a.success {
         return Err(format!(
             "{}: child A list-peers failed status={:?} stderr={:?}",
             case.name, run_a.status, run_a.stderr
