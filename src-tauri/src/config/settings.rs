@@ -6613,6 +6613,16 @@ pub(crate) fn agent_help_shipped_path(settings_path: &Path) -> PathBuf {
 /// True when written. A hand edit is overwritten at the next start: the file is AC-owned.
 /// Never fails: a write error is logged and startup continues on the embedded constant.
 pub(crate) fn refresh_shipped_agent_help_file(settings_path: &Path) -> bool {
+    refresh_shipped_agent_help_file_with_publish(
+        settings_path,
+        &crate::config::local_config_io::publish_temp_config,
+    )
+}
+
+fn refresh_shipped_agent_help_file_with_publish(
+    settings_path: &Path,
+    publish: crate::config::local_config_io::ConfigPublisher<'_>,
+) -> bool {
     let path = agent_help_shipped_path(settings_path);
     let Ok(canonical) = pretty_json_bytes(shipped_agent_help()) else {
         return false;
@@ -6620,7 +6630,8 @@ pub(crate) fn refresh_shipped_agent_help_file(settings_path: &Path) -> bool {
     if matches!(std::fs::read(&path), Ok(existing) if existing == canonical) {
         return false;
     }
-    match crate::config::local_config_io::write_file_atomic(&path, &canonical) {
+    match crate::config::local_config_io::write_file_atomic_with_publish(&path, &canonical, publish)
+    {
         Ok(()) => {
             log::info!("[agent-help] wrote the shipped help to {}", path.display());
             true
@@ -6925,6 +6936,18 @@ pub(crate) fn export_blocking_menus_to_local_file(
     settings: &mut AppSettings,
     settings_path: &Path,
 ) -> bool {
+    export_blocking_menus_to_local_file_with_publish(
+        settings,
+        settings_path,
+        &crate::config::local_config_io::publish_temp_config,
+    )
+}
+
+fn export_blocking_menus_to_local_file_with_publish(
+    settings: &mut AppSettings,
+    settings_path: &Path,
+    publish: crate::config::local_config_io::ConfigPublisher<'_>,
+) -> bool {
     if settings.agents.iter().all(|a| a.blocking_menus.is_none()) {
         return false;
     }
@@ -7040,7 +7063,11 @@ pub(crate) fn export_blocking_menus_to_local_file(
         {
             return abort_blocking_menus_export(&local_path, &format!("the merged file {e}"));
         }
-        if let Err(e) = crate::config::local_config_io::write_file_atomic(&local_path, &bytes) {
+        if let Err(e) = crate::config::local_config_io::write_file_atomic_with_publish(
+            &local_path,
+            &bytes,
+            publish,
+        ) {
             return abort_blocking_menus_export(
                 &local_path,
                 &format!("could not write the file: {e}"),
@@ -8580,9 +8607,68 @@ pub fn load_settings() -> AppSettings {
 /// through the real loader instead of reproducing the loader in a test. No
 /// production caller outside this module.
 pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
+    load_settings_from_path_with_blocking_menus_publish(path, None)
+}
+
+fn load_settings_from_path_with_blocking_menus_publish(
+    path: &Path,
+    publish: Option<crate::config::local_config_io::ConfigPublisher<'_>>,
+) -> AppSettings {
+    let (mut settings, legacy_profiles_detected, legacy_profiles_contents) =
+        read_settings_for_startup(path);
+    apply_loaded_window_migrations(&mut settings);
+
+    // #248 migration — translates legacy startOnlyCoordinators (if present).
+    // Track whether the legacy field was on disk so we can fire a single save
+    // at the end of the function (Grinch Z3 — without this, upgrade users
+    // with an existing root_token never persist the migration and the legacy
+    // key lingers in settings.json, spamming the migration log on every launch).
+    let issue_248_migrated = settings.legacy_start_only_coordinators.is_some();
+    apply_issue_248_migration(&mut settings);
+
+    // Auto-generate root token if missing.
+    let mut needs_save = issue_248_migrated || legacy_profiles_detected;
+    let exported = match publish {
+        None => export_blocking_menus_to_local_file(&mut settings, path),
+        Some(publish) => {
+            export_blocking_menus_to_local_file_with_publish(&mut settings, path, publish)
+        }
+    };
+    if exported {
+        log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
+        needs_save = true;
+    }
+    if export_agents_to_instance_file(&mut settings, path) {
+        needs_save = true;
+    }
+    if adopt_orphaned_profiles(&mut settings) {
+        needs_save = true;
+    }
+    if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
+        log::info!("[settings-migration] repaired codingAgentProfiles invariants");
+        needs_save = true;
+    }
+    if settings.root_token.is_none() {
+        settings.root_token = Some(uuid::Uuid::new_v4().to_string());
+        log::info!("Generated new root token");
+        needs_save = true;
+    }
+    if needs_save {
+        persist_loaded_settings_migrations(
+            &mut settings,
+            path,
+            legacy_profiles_detected,
+            &legacy_profiles_contents,
+        );
+    }
+
+    settings
+}
+
+fn read_settings_for_startup(path: &Path) -> (AppSettings, bool, Option<String>) {
     let mut legacy_profiles_detected = false;
     let mut legacy_profiles_contents: Option<String> = None;
-    let mut settings = if !path.exists() {
+    let settings = if !path.exists() {
         log::info!("No settings file found at {:?}, using defaults", path);
         default_settings_with_overlay(path, &path.to_string_lossy())
     } else {
@@ -8621,6 +8707,10 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
         }
     };
 
+    (settings, legacy_profiles_detected, legacy_profiles_contents)
+}
+
+fn apply_loaded_window_migrations(settings: &mut AppSettings) {
     // 0.8.0 unified-window migration — seed main_* from legacy fields on first load
     // after upgrade. Runs BEFORE root_token auto-gen so the migrated values persist
     // via the same save. The deprecated `sidebar_geometry`/`terminal_geometry` fields
@@ -8664,77 +8754,49 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
             "[settings-migration] seeded main_always_on_top from legacy sidebar_always_on_top"
         );
     }
+}
 
-    // #248 migration — translates legacy startOnlyCoordinators (if present).
-    // Track whether the legacy field was on disk so we can fire a single save
-    // at the end of the function (Grinch Z3 — without this, upgrade users
-    // with an existing root_token never persist the migration and the legacy
-    // key lingers in settings.json, spamming the migration log on every launch).
-    let issue_248_migrated = settings.legacy_start_only_coordinators.is_some();
-    apply_issue_248_migration(&mut settings);
-
-    // Auto-generate root token if missing.
-    let mut needs_save = issue_248_migrated || legacy_profiles_detected;
-    if export_blocking_menus_to_local_file(&mut settings, path) {
-        log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
-        needs_save = true;
-    }
-    if export_agents_to_instance_file(&mut settings, path) {
-        needs_save = true;
-    }
-    if adopt_orphaned_profiles(&mut settings) {
-        needs_save = true;
-    }
-    if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
-        log::info!("[settings-migration] repaired codingAgentProfiles invariants");
-        needs_save = true;
-    }
-    if settings.root_token.is_none() {
-        settings.root_token = Some(uuid::Uuid::new_v4().to_string());
-        log::info!("Generated new root token");
-        needs_save = true;
-    }
-    if needs_save {
-        let backup_ok = if legacy_profiles_detected {
-            match legacy_profiles_contents.as_deref() {
-                Some(contents) => match write_pre_384_v1_backup(path, contents) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        log::error!(
-                            "Failed to persist settings v2 migration backup; leaving settings.json untouched: {}",
-                            e
-                        );
-                        false
-                    }
-                },
-                None => true,
-            }
-        } else {
-            true
-        };
-        if backup_ok {
-            // #2306 P1 - the migration write is authorized, so persist explicit
-            // contiguous ordinals. Finalize already ran at load; this renumber is
-            // the write-side guarantee and cannot re-sort or revive stale values.
-            normalize_agent_order(&mut settings.agents);
-            // #1077: route the startup root-token/migration write through PRESERVE
-            // mode so it cannot erase project companions/conflicts before the
-            // first snapshot, and so a present-but-invalid file is never
-            // overwritten (the preserve writer's disk gate returns Err). On
-            // success adopt the fresh-decoded settings so runtime/hidden agree.
-            match save_settings_to_path_preserving_project_paths_typed(&settings, path) {
-                Ok(written) => settings = written,
-                Err(error) => {
-                    let _ = report_settings_save_error(
-                        error,
-                        SettingsSaveReportSurface::GeneralSettings,
+fn persist_loaded_settings_migrations(
+    settings: &mut AppSettings,
+    path: &Path,
+    legacy_profiles_detected: bool,
+    legacy_profiles_contents: &Option<String>,
+) {
+    let backup_ok = if legacy_profiles_detected {
+        match legacy_profiles_contents.as_deref() {
+            Some(contents) => match write_pre_384_v1_backup(path, contents) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::error!(
+                        "Failed to persist settings v2 migration backup; leaving settings.json untouched: {}",
+                        e
                     );
+                    false
                 }
+            },
+            None => true,
+        }
+    } else {
+        true
+    };
+    if backup_ok {
+        // #2306 P1 - the migration write is authorized, so persist explicit
+        // contiguous ordinals. Finalize already ran at load; this renumber is
+        // the write-side guarantee and cannot re-sort or revive stale values.
+        normalize_agent_order(&mut settings.agents);
+        // #1077: route the startup root-token/migration write through PRESERVE
+        // mode so it cannot erase project companions/conflicts before the
+        // first snapshot, and so a present-but-invalid file is never
+        // overwritten (the preserve writer's disk gate returns Err). On
+        // success adopt the fresh-decoded settings so runtime/hidden agree.
+        match save_settings_to_path_preserving_project_paths_typed(settings, path) {
+            Ok(written) => *settings = written,
+            Err(error) => {
+                let _ =
+                    report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings);
             }
         }
     }
-
-    settings
 }
 
 fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> Result<(), String> {
@@ -22192,7 +22254,17 @@ mod tests {
             std::fs::create_dir(&tmp_dir).unwrap();
             let seeded_bytes = std::fs::read(&path).unwrap();
 
-            let settings = load_settings_from_path(&path);
+            let settings = load_settings_from_path_with_blocking_menus_publish(
+                &path,
+                Some(&|tmp, target| {
+                    assert!(
+                        tmp.is_file(),
+                        "fresh staging acquired before injected refusal"
+                    );
+                    assert_eq!(target, blocking_menus_local_path(&path));
+                    Err("fixture temp config publish failure".into())
+                }),
+            );
 
             super::b3_assert_split_matches_seed(&path, &seeded_bytes, &[]);
             assert!(!blocking_menus_local_path(&path).exists());
@@ -23817,14 +23889,24 @@ mod tests {
         fn a_write_failure_is_swallowed() {
             let dir = tempfile::tempdir().unwrap();
             let settings_path = settings_path_in(&dir);
-            // The atomic writer's temp name; a directory there makes the write fail.
+            // Retain legacy debris; inject refusal at the real publisher after fresh acquisition.
             std::fs::create_dir(
                 dir.path()
                     .join(format!(".agent-help.json.{}.tmp", std::process::id())),
             )
             .unwrap();
 
-            assert!(!refresh_shipped_agent_help_file(&settings_path));
+            assert!(!refresh_shipped_agent_help_file_with_publish(
+                &settings_path,
+                &|tmp, target| {
+                    assert!(
+                        tmp.is_file(),
+                        "fresh staging acquired before injected refusal"
+                    );
+                    assert_eq!(target, agent_help_shipped_path(&settings_path));
+                    Err("fixture temp config publish failure".into())
+                },
+            ));
             assert!(!agent_help_shipped_path(&settings_path).exists());
         }
 

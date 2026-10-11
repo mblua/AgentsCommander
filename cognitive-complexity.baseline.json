@@ -161,20 +161,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/config/settings.rs::load_settings_from_path",
-      "sites": {
-        "windows": [
-          "b1087fb21839"
-        ],
-        "linux": [
-          "b1087fb21839"
-        ],
-        "macos": [
-          "b1087fb21839"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/config/settings.rs::mod:tests::settings_save_error_preserves_sources_and_separates_diagnostic_from_outward",
       "sites": {
         "windows": [
