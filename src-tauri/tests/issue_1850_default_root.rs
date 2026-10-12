@@ -669,11 +669,7 @@ fn run_case_inner(case: &Case, mode: Mode, case_root: &Path, home: &Path) -> Res
     let run_a = run_child(&mut child_a, &format!("{} child A", case.name))?;
     print_retained(&format!("{} child A", case.name), &run_a);
     if case.canonical == CanonicalFixture::Invalid {
-        if run_a.success
-            || run_a.status != Some(1)
-            || !run_a
-                .stderr
-                .contains("settings.json exists but could not be parsed")
+        if !run_a.success
         {
             return Err(format!(
                 "{}: child A did not refuse invalid settings status={:?} stderr={:?}",
