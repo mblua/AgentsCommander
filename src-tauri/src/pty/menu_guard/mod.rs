@@ -252,6 +252,54 @@ impl MenuGuard {
             .unwrap_or(false)
     }
 
+    async fn clear_disabled_menus<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_mgr_state: &Arc<tokio::sync::RwLock<SessionManager>>,
+    ) {
+        let manager = { session_mgr_state.read().await.clone() };
+        let disabled_current_ids = manager
+            .list_sessions()
+            .await
+            .into_iter()
+            .filter_map(|row| Uuid::parse_str(&row.id).ok())
+            .collect::<Vec<_>>();
+        let blocked_sessions: Vec<Uuid> = {
+            let mut sessions = match self.sessions.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let mut ids = Vec::new();
+            for id in &disabled_current_ids {
+                self.publish_response_menu(*id, Some(false));
+            }
+            for (id, state) in sessions.iter_mut() {
+                if state.is_blocked || state.matched_pattern.is_some() {
+                    state.is_blocked = false;
+                    state.matched_pattern = None;
+                    state.matched_notification = None;
+                    state.suppressed_episode_id = None;
+                    self.publish_response_menu(*id, Some(false));
+                    ids.push(*id);
+                }
+            }
+            ids
+        };
+        if !blocked_sessions.is_empty() {
+            let session_mgr = { session_mgr_state.read().await.clone() };
+            for id in blocked_sessions {
+                if crate::config::sessions_persistence::clear_blocked_menu_and_persist(
+                    &session_mgr,
+                    id,
+                )
+                .await
+                {
+                    crate::session::selection::publish_session_communication(app, id, None);
+                }
+            }
+        }
+    }
+
     pub async fn scan_tick<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
         let Some(settings_state) = app.try_state::<SettingsState>() else {
             return;
@@ -263,52 +311,9 @@ impl MenuGuard {
             return;
         };
 
-        let disabled_current_ids = if !settings.menu_guard_enabled {
-            let manager = { session_mgr_state.read().await.clone() };
-            manager
-                .list_sessions()
-                .await
-                .into_iter()
-                .filter_map(|row| Uuid::parse_str(&row.id).ok())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
         if !settings.menu_guard_enabled {
-            let blocked_sessions: Vec<Uuid> = {
-                let mut sessions = match self.sessions.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
-                let mut ids = Vec::new();
-                for id in &disabled_current_ids {
-                    self.publish_response_menu(*id, Some(false));
-                }
-                for (id, state) in sessions.iter_mut() {
-                    if state.is_blocked || state.matched_pattern.is_some() {
-                        state.is_blocked = false;
-                        state.matched_pattern = None;
-                        state.matched_notification = None;
-                        state.suppressed_episode_id = None;
-                        self.publish_response_menu(*id, Some(false));
-                        ids.push(*id);
-                    }
-                }
-                ids
-            };
-            if !blocked_sessions.is_empty() {
-                let session_mgr = { session_mgr_state.read().await.clone() };
-                for id in blocked_sessions {
-                    if crate::config::sessions_persistence::clear_blocked_menu_and_persist(
-                        &session_mgr,
-                        id,
-                    )
-                    .await
-                    {
-                        crate::session::selection::publish_session_communication(app, id, None);
-                    }
-                }
-            }
+            self.clear_disabled_menus(app, session_mgr_state.inner())
+                .await;
             return;
         }
 

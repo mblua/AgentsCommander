@@ -3930,6 +3930,11 @@ mod response_close_tests {
     #[test]
     fn response_close_ordinary_ack_requires_full_interval_and_raw_output_revokes_ticket() {
         let now = Instant::now() + Duration::from_secs(3600);
+        let nonce = ordinary_ack_dormant_settlement(now);
+        ordinary_ack_reopen_and_fresh_return(now, nonce);
+    }
+
+    fn ordinary_ack_dormant_settlement(now: Instant) -> Uuid {
         let (state, member, coordinator) = routes(now);
         arm(&state, &member, &coordinator, now);
         assert!(state
@@ -4070,7 +4075,10 @@ mod response_close_tests {
             state.inner.lock().unwrap().work[&member.target].pending["after-commit"],
             "retained-body"
         );
+        nonce
+    }
 
+    fn ordinary_ack_reopen_and_fresh_return(now: Instant, nonce: Uuid) {
         // Contrast kill failure: latest LIVE Confirmed carrier, no Exited or
         // selection-clear claim. Every effect must still be terminal.
         let (state, member, coordinator) = routes(now);
