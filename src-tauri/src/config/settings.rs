@@ -13368,8 +13368,9 @@ mod tests {
         std::fs::create_dir_all(io.parent().unwrap()).unwrap();
         std::fs::write(super::agents_instance_path(&io), b"{broken").unwrap();
         let projection = serde_json::Map::new();
+        let contents = serde_json::to_string(&super::AppSettings::default()).unwrap();
         let (mut settings, _) = super::parse_settings_json_with_projection_labeled(
-            "{}",
+            &contents,
             &label.to_string_lossy(),
             Some(&io),
             Some(&label),
