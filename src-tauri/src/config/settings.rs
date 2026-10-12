@@ -14053,9 +14053,11 @@ mod tests {
                 assert!(super::ensure_project_paths_migrated_locked(&transaction).is_err());
                 assert_eq!(std::fs::read(bad_path).unwrap(), bad);
                 if bad_destination {
-                    let error =
-                        super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap_err();
-                    assert!(!error.contains("settings.json exists but could not be parsed"));
+                    let error = super::select_project_source_locked(&transaction).unwrap_err();
+                    assert!(!error
+                        .legacy_outward
+                        .into_general_string()
+                        .contains("settings.json exists but could not be parsed"));
                     assert_eq!(std::fs::read(&path).unwrap(), bytes);
                 } else {
                     assert!(!destination.exists());
