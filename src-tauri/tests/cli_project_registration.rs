@@ -1731,8 +1731,10 @@ fn assert_p03_gitignore_partial_retry_mode(mode: usize) {
     let stderr = String::from_utf8_lossy(&output.stderr)
         .to_lowercase()
         .replace(char::from(92), "/");
-    let ignore_display = ignore
+    let canonical_ignore = std::fs::canonicalize(&ignore).unwrap();
+    let ignore_display = canonical_ignore
         .to_string_lossy()
+        .trim_start_matches(r"\\?\")
         .to_lowercase()
         .replace(char::from(92), "/");
     assert!(
