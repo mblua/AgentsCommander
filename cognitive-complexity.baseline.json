@@ -472,20 +472,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/session/manager.rs::impl:SessionManager::commit_selection_transition",
-      "sites": {
-        "windows": [
-          "5d7ebb93c414"
-        ],
-        "linux": [
-          "5d7ebb93c414"
-        ],
-        "macos": [
-          "5d7ebb93c414"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/session/profile.rs::mod:tests::muse_serde_profile_detection_and_submission_boundary_are_stable",
       "sites": {
         "windows": [
