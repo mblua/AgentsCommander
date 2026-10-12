@@ -7437,7 +7437,7 @@ fn save_agents_instance_file(
     settings: &AppSettings,
     path: &Path,
     mode: &ProjectWriteMode,
-    disk: Option<&Map<String, Value>>,
+    #[cfg(test)] disk: Option<&Map<String, Value>>,
     out: &Map<String, Value>,
     disk_gate_stage: SettingsSaveStage,
 ) -> Result<Map<String, Value>, SettingsSaveError> {
@@ -11683,8 +11683,15 @@ fn save_settings_value_locked(
 
     // #2716 (B3): the agents file is written first; only the keys it now holds
     // leave `out`, in both modes. A failure returns before the settings write.
-    let agents_groups =
-        save_agents_instance_file(settings, path, &mode, disk.as_ref(), &out, disk_gate_stage)?;
+    let agents_groups = save_agents_instance_file(
+        settings,
+        path,
+        &mode,
+        #[cfg(test)]
+        disk.as_ref(),
+        &out,
+        disk_gate_stage,
+    )?;
     strip_agents_instance_keys(&mut out, &agents_groups);
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
