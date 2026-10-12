@@ -130,9 +130,20 @@ async fn auto_unarchive_for_activation<R: tauri::Runtime>(
         let mut transaction =
             crate::config::settings::begin_project_paths_transaction_at_path(&current, &path)?;
         let mut candidate = transaction.fresh_settings().clone();
+        if crate::config::settings::project_state_has_structural(&candidate) {
+            return Err(format!(
+                "Cannot start a session in archived project '{}': settings.json has malformed project metadata. Fix or remove the corrupt project fields first.",
+                folder_name(&root_owned)
+            ));
+        }
         transaction.refresh_raw_projects(&mut candidate)?;
-        let reg = auto_unarchive_registration(&mut candidate, &root_owned)
-            .map_err(|error| error.to_string())?;
+        let reg = auto_unarchive_registration(&mut candidate, &root_owned).map_err(|error| {
+            format!(
+                "Cannot start a session in archived project '{}': {}. Open Archived Projects to restore it, or remove it from the list.",
+                folder_name(&root_owned),
+                error
+            )
+        })?;
         let Some(reg) = reg else {
             return Ok((candidate, Ok(None)));
         };

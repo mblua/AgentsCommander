@@ -7456,6 +7456,7 @@ fn save_agents_instance_file(
     })?;
     let existing_groups = existing.as_ref().map(agents_instance_groups);
     let target = match mode {
+        #[cfg(test)]
         ProjectWriteMode::Reconcile { .. } => match existing_groups {
             Some(groups) => return Ok(groups),
             None => disk.map(agents_instance_groups).unwrap_or_default(),
@@ -7584,6 +7585,7 @@ pub fn normalize_profile_letter(raw: &str) -> Option<String> {
 
 /// #1737 (D5): `settings_path` is `Some` on every production loader and `None` on
 /// the in-module test call sites. `None` means "no overlay lookup".
+#[cfg(test)]
 fn parse_settings_json(
     contents: &str,
     source: &str,
@@ -7736,6 +7738,7 @@ fn legacy_profiles_shape_present(root: &Map<String, Value>) -> bool {
 /// serialized defaults, so the file the following `needs_save` write creates holds
 /// exactly what a no-overlay fresh instance would have written and deleting the
 /// local file restores it.
+#[cfg(test)]
 fn default_settings_with_overlay(settings_path: &Path, _source: &str) -> AppSettings {
     match capture_project_settings(settings_path, false) {
         Ok((settings, _, _)) => settings,
@@ -7820,8 +7823,12 @@ fn unavailable_project_settings(mut settings: AppSettings, error: String) -> App
 }
 
 #[cfg(test)]
+type SettingsPathHook = Option<Box<dyn Fn(&Path)>>;
+
+#[cfg(test)]
 thread_local! {
-    static PROJECT_SOURCE_CAPTURE_HOOK: std::cell::RefCell<Option<Box<dyn Fn(&Path)>>> = std::cell::RefCell::new(None);
+    static PROJECT_SOURCE_CAPTURE_HOOK: std::cell::RefCell<SettingsPathHook> = std::cell::RefCell::new(None);
+    static SETTINGS_PRESERVE_LOCK_HOOK: std::cell::RefCell<SettingsPathHook> = std::cell::RefCell::new(None);
 }
 
 fn capture_project_settings(
@@ -7851,13 +7858,28 @@ fn capture_project_settings(
             Some(legacy) => {
                 let contents =
                     String::from_utf8(legacy.bytes).map_err(|error| error.to_string())?;
-                let (settings, legacy_profiles) = parse_settings_json_with_projection(
+                match parse_settings_json_with_projection(
                     &contents,
                     &path.to_string_lossy(),
                     Some(path),
                     Some(&selected.projection),
-                )?;
-                Ok((settings, legacy_profiles, Some(contents)))
+                ) {
+                    Ok((settings, legacy_profiles)) => {
+                        Ok((settings, legacy_profiles, Some(contents)))
+                    }
+                    Err(error) => {
+                        log::error!("{error}");
+                        // Selection succeeded; unrelated decode failure must not
+                        // mark the authoritative project source unavailable.
+                        let mut settings = default_settings_with_overlay_captured(
+                            path,
+                            &path.to_string_lossy(),
+                            &selected.projection,
+                        );
+                        set_agents_layer_state(&mut settings, path, agents_layer_state_at(path));
+                        Ok((settings, false, None))
+                    }
+                }
             }
             None => Ok((
                 default_settings_with_overlay_captured(
@@ -7873,7 +7895,7 @@ fn capture_project_settings(
             let message =
                 report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings);
             // Preserve readable unrelated values while exposing no project authorization.
-            let settings = read_raw_project_source(path)
+            let mut settings = read_raw_project_source(path)
                 .ok()
                 .flatten()
                 .and_then(|legacy| {
@@ -7894,6 +7916,7 @@ fn capture_project_settings(
                         &Map::new(),
                     )
                 });
+            set_agents_layer_state(&mut settings, path, agents_layer_state_at(path));
             Ok((unavailable_project_settings(settings, message), false, None))
         }
     }
@@ -8817,11 +8840,11 @@ fn load_settings_from_path_with_blocking_menus_publish(
 fn read_settings_for_startup(path: &Path) -> (AppSettings, bool, Option<String>) {
     match capture_project_settings(path, true) {
         Ok(captured) => captured,
-        Err(error) => (
-            unavailable_project_settings(AppSettings::default(), error),
-            false,
-            None,
-        ),
+        Err(error) => {
+            let mut settings = AppSettings::default();
+            set_agents_layer_state(&mut settings, path, agents_layer_state_at(path));
+            (unavailable_project_settings(settings, error), false, None)
+        }
     }
 }
 
@@ -9732,7 +9755,11 @@ pub(crate) fn apply_project_decode_to_value(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProjectWriteMode {
     Preserve,
-    Reconcile { active: bool, archived: bool },
+    #[cfg(test)]
+    Reconcile {
+        active: bool,
+        archived: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9828,34 +9855,6 @@ fn write_archived_group(
     let (primary, companion) = rebuild_group_arrays(state.archived_pairs(), base);
     out.insert(FIELD_ARCHIVED.to_string(), Value::Array(primary));
     out.insert(FIELD_ARCHIVED_REL.to_string(), Value::Array(companion));
-}
-
-/// Copy a field from `disk` into `out`, preserving its present/absent bit.
-fn copy_or_remove(out: &mut Map<String, Value>, disk: &Map<String, Value>, key: &str) {
-    match disk.get(key) {
-        Some(v) => {
-            out.insert(key.to_string(), v.clone());
-        }
-        None => {
-            out.remove(key);
-        }
-    }
-}
-
-/// Whether the disk object has authoritative active truth (§4.1): `projectPaths`
-/// is an array, or (absent/null plural) `projectPath` is a string.
-fn active_has_disk_truth(disk: &Map<String, Value>) -> bool {
-    match disk.get(FIELD_PROJECT_PATHS) {
-        Some(Value::Array(_)) => true,
-        None | Some(Value::Null) => matches!(disk.get(FIELD_PROJECT_PATH), Some(Value::String(_))),
-        Some(_) => true, // wrong-typed: structural, but still "present" disk truth to preserve
-    }
-}
-
-/// Whether the disk object has authoritative archived truth: `archivedProjectPaths`
-/// is an array (or any present value to preserve).
-fn archived_has_disk_truth(disk: &Map<String, Value>) -> bool {
-    matches!(disk.get(FIELD_ARCHIVED), Some(v) if !v.is_null())
 }
 
 /// If `AppSettings` was constructed directly (empty hidden state) yet carries
@@ -10497,13 +10496,6 @@ fn report_settings_save_error(
     surface.into_outward_string(error)
 }
 
-fn read_disk_object_for_write(path: &Path) -> Result<Option<Map<String, Value>>, String> {
-    read_disk_object_for_write_typed(path, SettingsSaveStage::ProjectPathsRefreshDiskGate).map_err(
-        |error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings),
-    )
-}
-
-/// case the caller must NOT write (§4.1). A valid object is returned for reuse.
 fn read_disk_object_for_write_typed(
     path: &Path,
     stage: SettingsSaveStage,
@@ -10792,6 +10784,7 @@ fn select_project_source_at_locked_path_with_limit(
 }
 
 // Read-only selection acquires before even checking either source's existence.
+#[cfg(test)]
 fn select_project_source_at_path(path: &Path) -> Result<Map<String, Value>, SettingsSaveError> {
     let lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
     let transaction = ProjectPathsWriteTransaction {
@@ -11509,6 +11502,12 @@ fn save_settings_value(
     mode: ProjectWriteMode,
 ) -> Result<AppSettings, SettingsSaveError> {
     let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
+    #[cfg(test)]
+    SETTINGS_PRESERVE_LOCK_HOOK.with(|hook| {
+        if let Some(callback) = hook.borrow().as_ref() {
+            callback(path);
+        }
+    });
     save_settings_value_locked(
         settings,
         path,
@@ -11532,6 +11531,7 @@ fn save_settings_value_locked(
         path,
         match &mode {
             ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
+            #[cfg(test)]
             ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
         },
     )?;
@@ -11540,6 +11540,7 @@ fn save_settings_value_locked(
     let base = production_instance_base();
     let disk_gate_stage = match &mode {
         ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
+        #[cfg(test)]
         ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
     };
     let disk_read = read_disk_object_and_contents_for_write_typed(path, disk_gate_stage)?;
@@ -11596,6 +11597,7 @@ fn save_settings_value_locked(
     // (or the live settings when the file is absent).
     let mut out: Map<String, Value> = match mode {
         ProjectWriteMode::Preserve => serialize_object()?,
+        #[cfg(test)]
         ProjectWriteMode::Reconcile { .. } => match &disk {
             Some(m) => m.clone(),
             None => serialize_object()?,
@@ -11638,7 +11640,7 @@ fn save_settings_value_locked(
     // #2348: main-window placement is owned by the narrow placement command.
     // `Preserve` never regresses it: for each key independently, a PRESENT disk
     // value is authoritative, and an absent disk key leaves the caller value
-    // alone. Deliberately NOT `copy_or_remove`: an absent legacy `mainGeometry`
+    // alone. An absent legacy `mainGeometry`
     // must not erase the value the load-time migration synthesized in memory.
     // `Explicit` writes the pair exactly as the placement command received it.
     // Runs before `restore_base`, which stays the last writer over the base file.
@@ -12223,9 +12225,8 @@ pub(crate) fn refresh_project_paths_from_path(
     settings: &mut AppSettings,
     path: &Path,
 ) -> Result<(), String> {
-    let lists = read_project_paths_from_disk(path).map_err(|error| {
+    let lists = read_project_paths_from_disk(path).inspect_err(|error| {
         settings.project_paths_persistence_error = Some(error.clone());
-        error
     })?;
     if let Some(lists) = lists {
         settings.project_paths = lists.project_paths;
@@ -12241,6 +12242,7 @@ pub(crate) fn refresh_project_paths_from_path(
 /// SELECTED canonical paths and installing the fresh hidden pair state. Aborts
 /// (`Err`) on a present-but-invalid whole object; keeps the live runtime/hidden
 /// state when the file is absent.
+#[cfg(test)]
 pub(crate) fn refresh_and_decode_project_paths_from_path(
     settings: &mut AppSettings,
     path: &Path,
@@ -13115,6 +13117,141 @@ mod tests {
         );
     }
 
+    #[test]
+    fn selected_project_decode_fallback_retains_overlay_and_agents_state() {
+        for startup in [false, true] {
+            for unreadable in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("settings.json");
+                let project = temp.path().join("A");
+                std::fs::create_dir(&project).unwrap();
+                let a = project.to_string_lossy().replace('\\', "/");
+                // Valid source object, unrelated typed field cannot decode.
+                let source = serde_json::to_vec(&serde_json::json!({
+                    "rootToken":42,"projectPaths":[a],"projectPath":a
+                }))
+                .unwrap();
+                std::fs::write(&path, &source).unwrap();
+                let overlay_path = b3_overlay_path(temp.path());
+                let overlay = br####"{"roomNumberMask":"###"}"####;
+                std::fs::write(&overlay_path, overlay).unwrap();
+                let agents_path = super::agents_instance_path(&path);
+                let defaults = serde_json::to_value(super::AppSettings::default()).unwrap();
+                let agents = if unreadable {
+                    b"{broken agents".to_vec()
+                } else {
+                    serde_json::to_vec(&serde_json::json!({
+                        "agents":defaults["agents"],
+                        "codingAgentProfiles":defaults["codingAgentProfiles"]
+                    }))
+                    .unwrap()
+                };
+                std::fs::write(&agents_path, &agents).unwrap();
+                let (settings, legacy_profiles, original) = if startup {
+                    super::read_settings_for_startup(&path)
+                } else {
+                    super::capture_project_settings(&path, false).unwrap()
+                };
+                assert_eq!(settings.project_paths, vec![a.clone()]);
+                assert_eq!(settings.project_path, Some(a));
+                assert!(settings.project_paths_persistence_error.is_none());
+                assert_eq!(settings.room_number_mask, "###");
+                assert_eq!(settings.root_token, None);
+                assert!(!legacy_profiles);
+                assert!(original.is_none());
+                assert_eq!(
+                    settings.agents_layer.unreadable_path().is_some(),
+                    unreadable
+                );
+                assert_eq!(
+                    super::agents_layer_unreadable_for_dir(temp.path()),
+                    unreadable
+                );
+                assert_eq!(
+                    super::try_with_agents_layer_publication_state(temp.path(), |flag| flag)
+                        .unwrap(),
+                    unreadable
+                );
+                assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
+                assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay);
+                let sidecar = super::project_paths_path(&path);
+                if startup {
+                    assert!(super::raw_project_projection(&b3_object(&path)).is_empty());
+                } else {
+                    assert_eq!(std::fs::read(&path).unwrap(), source);
+                    assert!(!sidecar.exists());
+                    assert!(!temp
+                        .path()
+                        .join(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME)
+                        .exists());
+                }
+                let before_sidecar = std::fs::read(&sidecar).ok();
+                match super::save_settings_to_path_preserving_project_paths_typed(&settings, &path)
+                {
+                    Ok(_) => {
+                        assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
+                        assert!(super::raw_project_projection(&b3_object(&path)).is_empty());
+                    }
+                    Err(error) => {
+                        eprintln!("P1 Preserve explicitly refused: {error:?}");
+                        assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
+                    }
+                }
+                if let Some(bytes) = before_sidecar {
+                    assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+                }
+                assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay);
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_project_fallback_retains_agents_publication_mark() {
+        for unreadable in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            let source = br#"{"rootToken":42}"#;
+            let destination = b"{broken project source";
+            let agents = if unreadable {
+                b"{broken".as_slice()
+            } else {
+                b"{}".as_slice()
+            };
+            std::fs::write(&path, source).unwrap();
+            std::fs::write(super::project_paths_path(&path), destination).unwrap();
+            std::fs::write(super::agents_instance_path(&path), agents).unwrap();
+            for startup in [false, true] {
+                let (settings, _, _) = if startup {
+                    super::read_settings_for_startup(&path)
+                } else {
+                    super::capture_project_settings(&path, false).unwrap()
+                };
+                assert!(settings.project_paths_persistence_error.is_some());
+                assert!(settings.project_paths.is_empty());
+                assert!(settings.project_path.is_none());
+                assert_eq!(
+                    settings.agents_layer.unreadable_path().is_some(),
+                    unreadable
+                );
+                assert_eq!(
+                    super::try_with_agents_layer_publication_state(temp.path(), |flag| flag)
+                        .unwrap(),
+                    unreadable
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), source);
+                assert_eq!(
+                    std::fs::read(super::project_paths_path(&path)).unwrap(),
+                    destination
+                );
+                assert_eq!(
+                    std::fs::read(super::agents_instance_path(&path)).unwrap(),
+                    agents
+                );
+                assert!(settings.root_token.is_none());
+            }
+        }
+    }
+
     fn migration_wait_marker(root: &std::path::Path, name: &str) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !root.join(name).is_file() {
@@ -13184,6 +13321,14 @@ mod tests {
     }
 
     fn launch_migration_child(root: &std::path::Path, role: &str) -> MigrationChild {
+        launch_migration_child_with_path(root, role, &root.join("settings.json"))
+    }
+
+    fn launch_migration_child_with_path(
+        root: &std::path::Path,
+        role: &str,
+        path: &std::path::Path,
+    ) -> MigrationChild {
         let log = std::fs::File::create(root.join("child.log")).unwrap();
         let child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -13194,6 +13339,7 @@ mod tests {
             ])
             .env("AC_P02_CHILD_ROOT", root)
             .env("AC_P02_CHILD_ROLE", role)
+            .env("AC_P03_DATA_PATH", path)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::from(log.try_clone().unwrap()))
             .stdout(std::process::Stdio::from(log))
@@ -13217,6 +13363,10 @@ mod tests {
             b"P02 isolated process fixture"
         );
         let role = std::env::var("AC_P02_CHILD_ROLE").unwrap();
+        if role.starts_with("race-") {
+            project_archive_preserve_child(&root, &role);
+            return;
+        }
         assert!(matches!(
             role.as_str(),
             "hold" | "crash-backup-sync" | "crash-backup-published" | "crash-destination"
@@ -13247,6 +13397,242 @@ mod tests {
         .unwrap();
         migration_wait_marker(&root, "release-lock");
         drop(transaction);
+    }
+
+    // Separate control roots share one data path and actual native settings lock.
+    fn project_archive_preserve_child(root: &std::path::Path, role: &str) {
+        let path = std::path::PathBuf::from(std::env::var_os("AC_P03_DATA_PATH").unwrap());
+        assert!(path.is_absolute());
+        let data = path.parent().unwrap();
+        let draft: super::AppSettings =
+            serde_json::from_slice(&std::fs::read(data.join("stale-draft.json")).unwrap()).unwrap();
+        let target = std::fs::read_to_string(data.join("target.txt")).unwrap();
+        let holder = role.ends_with("-holder");
+        let preserve = role.starts_with("race-preserve-");
+        let unarchive = role.starts_with("race-unarchive-");
+        assert!(preserve || unarchive || role.starts_with("race-archive-"));
+        std::fs::write(root.join("ready"), b"ready").unwrap();
+        migration_wait_marker(root, "begin");
+        if preserve && holder {
+            let control = root.to_path_buf();
+            super::SETTINGS_PRESERVE_LOCK_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move |_| {
+                    std::fs::write(control.join("acquired"), b"Preserve lock owned").unwrap();
+                    migration_wait_marker(&control, "release");
+                }));
+            });
+        }
+        let operation = || -> Result<(), String> {
+            if preserve {
+                super::save_settings_to_path_preserving_project_paths_typed(&draft, &path)
+                    .map(|_| ())
+                    .map_err(|error| {
+                        super::report_settings_save_error(
+                            error,
+                            super::SettingsSaveReportSurface::GeneralSettings,
+                        )
+                    })
+            } else {
+                let mut transaction =
+                    super::begin_project_paths_transaction_at_path(&draft, &path)?;
+                if holder {
+                    std::fs::write(root.join("acquired"), b"project token owned").unwrap();
+                    migration_wait_marker(root, "release");
+                }
+                let mut candidate = transaction.fresh_settings().clone();
+                transaction.refresh_raw_projects(&mut candidate)?;
+                if unarchive {
+                    assert!(super::projects::unarchive_project_path(
+                        &mut candidate,
+                        &target
+                    ));
+                } else {
+                    assert!(super::projects::archive_project_path(
+                        &mut candidate,
+                        &target
+                    ));
+                }
+                super::resync_project_state_from_runtime(&mut candidate);
+                transaction.commit_project_groups(&candidate, true, true)?;
+                Ok(())
+            }
+        };
+        if !holder {
+            let source = std::fs::read(&path).unwrap();
+            let sidecar = std::fs::read(super::project_paths_path(&path)).unwrap();
+            let started = std::time::Instant::now();
+            let refused = operation().expect_err("held native lock must refuse competing writer");
+            assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+            assert_eq!(std::fs::read(&path).unwrap(), source);
+            assert_eq!(
+                std::fs::read(super::project_paths_path(&path)).unwrap(),
+                sidecar
+            );
+            std::fs::write(root.join("refused"), refused).unwrap();
+            migration_wait_marker(root, "retry");
+        }
+        let before = std::fs::read(super::project_paths_path(&path)).unwrap();
+        operation().unwrap();
+        if preserve {
+            assert_eq!(
+                std::fs::read(super::project_paths_path(&path)).unwrap(),
+                before
+            );
+        }
+        std::fs::write(root.join("done"), b"writer succeeded").unwrap();
+    }
+
+    #[test]
+    fn project_archive_unarchive_processes_race_typed_preserve_both_orders() {
+        for unarchive in [false, true] {
+            for preserve_first in [false, true] {
+                project_archive_preserve_case(unarchive, preserve_first);
+            }
+        }
+    }
+
+    fn project_archive_preserve_case(unarchive: bool, preserve_first: bool) {
+        let root = tempfile::tempdir().unwrap().keep();
+        let path = root.join("settings.json");
+        let a = root.join("A").to_string_lossy().replace('\\', "/");
+        let b = root.join("B").to_string_lossy().replace('\\', "/");
+        // Missing raw registrations exercise retained companion pairs.
+        assert!(!root.join("A").exists() && !root.join("B").exists());
+        let (active, archived, active_rel, archived_rel) = if unarchive {
+            (
+                serde_json::json!([b]),
+                serde_json::json!([a]),
+                serde_json::json!(["missing-companion-B"]),
+                serde_json::json!(["missing-companion-A"]),
+            )
+        } else {
+            (
+                serde_json::json!([a, b]),
+                serde_json::json!([]),
+                serde_json::json!(["missing-companion-A", "missing-companion-B"]),
+                serde_json::json!([]),
+            )
+        };
+        std::fs::write(
+            &path,
+            br###"{"roomNumberMask":"##","rootToken":"fixture"}"###,
+        )
+        .unwrap();
+        std::fs::write(
+            super::project_paths_path(&path),
+            serde_json::to_vec(&serde_json::json!({
+                "projectPaths":active,"projectPathsRelativeToInstance":active_rel,
+                "archivedProjectPaths":archived,
+                "archivedProjectPathsRelativeToInstance":archived_rel,
+                "projectPath": if unarchive { &b } else { &a },
+                "projectPathRelativeToInstance":null,"unknownSidecar":{"sentinel":29}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let draft = super::AppSettings {
+            project_paths: vec![a.clone(), b.clone()],
+            project_path: Some(a.clone()),
+            archived_project_paths: vec![b.clone()],
+            room_number_mask: "##".into(),
+            root_token: Some("fixture".into()),
+            ..super::AppSettings::default()
+        };
+        std::fs::write(
+            root.join("stale-draft.json"),
+            serde_json::to_vec(&draft).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(root.join("target.txt"), &a).unwrap();
+        let holder_root = root.join("holder");
+        let contender_root = root.join("contender");
+        for control in [&holder_root, &contender_root] {
+            std::fs::create_dir(control).unwrap();
+            std::fs::write(
+                control.join("isolated-fixture.marker"),
+                b"P02 isolated process fixture",
+            )
+            .unwrap();
+        }
+        let mutation = if unarchive {
+            "race-unarchive"
+        } else {
+            "race-archive"
+        };
+        let (holder_role, contender_role) = if preserve_first {
+            (
+                "race-preserve-holder".to_string(),
+                format!("{mutation}-contender"),
+            )
+        } else {
+            (
+                format!("{mutation}-holder"),
+                "race-preserve-contender".to_string(),
+            )
+        };
+        let mut holder = launch_migration_child_with_path(&holder_root, &holder_role, &path);
+        let mut contender =
+            launch_migration_child_with_path(&contender_root, &contender_role, &path);
+        migration_wait_marker(&holder_root, "ready");
+        migration_wait_marker(&contender_root, "ready");
+        std::fs::write(holder_root.join("begin"), b"begin").unwrap();
+        migration_wait_marker(&holder_root, "acquired");
+        let before_settings = std::fs::read(&path).unwrap();
+        let before_sidecar = std::fs::read(super::project_paths_path(&path)).unwrap();
+        std::fs::write(contender_root.join("begin"), b"begin").unwrap();
+        migration_wait_marker(&contender_root, "refused");
+        assert_eq!(std::fs::read(&path).unwrap(), before_settings);
+        assert_eq!(
+            std::fs::read(super::project_paths_path(&path)).unwrap(),
+            before_sidecar
+        );
+        std::fs::write(holder_root.join("release"), b"release").unwrap();
+        holder.finish();
+        std::fs::write(contender_root.join("retry"), b"retry").unwrap();
+        contender.finish();
+        let raw = b3_object(&super::project_paths_path(&path));
+        assert_eq!(
+            raw["projectPaths"],
+            if unarchive {
+                serde_json::json!([b, a])
+            } else {
+                serde_json::json!([b])
+            }
+        );
+        assert_eq!(
+            raw["archivedProjectPaths"],
+            if unarchive {
+                serde_json::json!([])
+            } else {
+                serde_json::json!([a])
+            }
+        );
+        assert_eq!(raw["projectPath"], serde_json::json!(b));
+        assert_eq!(raw["projectPathRelativeToInstance"], "missing-companion-B");
+        assert_eq!(
+            raw["projectPathsRelativeToInstance"],
+            if unarchive {
+                serde_json::json!(["missing-companion-B", null])
+            } else {
+                serde_json::json!(["missing-companion-B"])
+            }
+        );
+        assert_eq!(
+            raw["archivedProjectPathsRelativeToInstance"],
+            if unarchive {
+                serde_json::json!([])
+            } else {
+                serde_json::json!([null])
+            }
+        );
+        assert_eq!(raw["unknownSidecar"], serde_json::json!({"sentinel":29}));
+        let managed = b3_object(&path);
+        assert_eq!(managed["roomNumberMask"], "##");
+        assert!(super::raw_project_projection(&managed).is_empty());
+        eprintln!(
+            "P03 unarchive={unarchive}/Preserve-first={preserve_first} diagnostics {}",
+            root.display()
+        );
     }
 
     // Dormant writer control: same P01 token, migration before the requested

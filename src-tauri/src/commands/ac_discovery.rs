@@ -3385,7 +3385,7 @@ async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
     let mutation_path = path.to_string();
     mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
         let path = mutation_path.as_str();
-        crate::config::projects::archive_project_path(s, &path);
+        crate::config::projects::archive_project_path(s, path);
         Ok(())
     })
     .await?;
@@ -3401,7 +3401,7 @@ async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
     let restored: Result<bool, String> =
         mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
             let path = mutation_path.as_str();
-            let key = crate::config::projects::normalize_for_compare(&path);
+            let key = crate::config::projects::normalize_for_compare(path);
             let still_archived = s
                 .archived_project_paths
                 .iter()
@@ -3409,7 +3409,7 @@ async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
             if !still_archived {
                 return Ok(false);
             }
-            Ok(crate::config::projects::unarchive_project_path(s, &path))
+            Ok(crate::config::projects::unarchive_project_path(s, path))
         })
         .await;
 
