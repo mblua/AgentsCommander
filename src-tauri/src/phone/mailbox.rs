@@ -473,6 +473,7 @@ enum WakeDelivery<'a> {
         /// #2232 phase 7: display-only attribution for a Co-managed-origin
         /// message. False for every pre-existing caller.
         comanaged: bool,
+        response: Option<&'a ResponseWakeWork>,
     },
     InternalSystem {
         target: InternalSystemTarget,
@@ -1343,9 +1344,9 @@ async fn deliver_claimed_wake<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     claim: &Path,
     origin: &Path,
-    msg: &OutboxMessage,
+    validated: &ValidatedWake,
 ) -> Result<(), String> {
-    match delivery.deliver_wake(app, msg).await {
+    match delivery.deliver_validated_wake(app, validated, false).await {
         // `claim.parent()` is the outbox dir, so delivered/ is derived exactly
         // as it is today and the destination still comes from `msg.id`. The
         // delivered JSON carries the receipt annotation (#1635-2 D4).
@@ -2512,6 +2513,7 @@ pub(crate) fn err_is_pty_session_missing(e: &str) -> bool {
 fn classify_injection_error(error: &str) -> (log::Level, &'static str) {
     if crate::pty::menu_guard::is_menu_guard_deferred_error(error)
         || crate::pty::menu_guard::is_typing_hold_deferred_error(error)
+        || crate::api::message_store::is_response_closing_deferred(error)
     {
         (log::Level::Debug, "deferred")
     } else {
@@ -2522,6 +2524,7 @@ fn classify_injection_error(error: &str) -> (log::Level, &'static str) {
 pub(crate) fn is_deferred_internal_delivery_error(error: &str) -> bool {
     crate::pty::menu_guard::is_menu_guard_deferred_error(error)
         || crate::pty::menu_guard::is_typing_hold_deferred_error(error)
+        || crate::api::message_store::is_response_closing_deferred(error)
 }
 
 /// §224 D.3 — pure filter: session infos by exact-FQN match on
@@ -3211,9 +3214,43 @@ impl MailboxPoller {
     }
 }
 
+#[derive(Clone)]
+struct ResponseWakeWork {
+    state: crate::pty::manager::ResponseCloseState,
+    target: String,
+    key: String,
+    digest: String,
+    return_context: Option<crate::pty::manager::ReturnObservationContext>,
+    // P05 creates the nonce-bound context at the actual pre-write boundary.
+    #[allow(dead_code)]
+    delivery_context: Option<crate::pty::manager::ResponseDeliveryContext>,
+}
+
+struct ValidatedWake {
+    message: OutboxMessage,
+    response: Option<ResponseWakeWork>,
+}
+
+// Local stage payloads carry the existing facts and fallback ownership only.
+// A handled rejection remains terminal even when its archival result is Ok.
+type OutboxStage<T = ()> = Result<std::ops::ControlFlow<Result<(), String>, T>, String>;
+type OutboxAuthenticationFacts = (bool, bool, bool, bool, bool);
+type PeerWakeFallback = (
+    bool,
+    Option<Uuid>,
+    Option<String>,
+    Option<crate::session::session::SessionCommunication>,
+);
+type SpawnedPeerWake = (
+    Uuid,
+    Option<crate::config::agent_command::AgentSpawnCommand>,
+    ResolvedWakeAgentCommand,
+);
+
 pub struct MailboxPoller {
     poll_interval: std::time::Duration,
     retry_tracker: HashMap<PathBuf, RetryState>,
+    response_sources: Arc<Mutex<HashMap<PathBuf, ResponseWakeWork>>>,
     snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner,
     /// (#1399) Claim paths this process has handed off whose outcome has not yet
     /// been successfully settled by `drain_wake_outcomes`. Membership includes
@@ -3394,11 +3431,174 @@ impl Default for MailboxPoller {
 }
 
 impl MailboxPoller {
+    fn settle_response_source(&self, path: &Path, success: bool) {
+        let origin = wake_claim_origin(path).unwrap_or_else(|| path.to_path_buf());
+        let work = self
+            .response_sources
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&origin);
+        if let Some(work) = work {
+            let now = std::time::Instant::now();
+            work.state.settle_terminal(&work.target, &work.key, now);
+            if let Some(context) = work.return_context {
+                if success {
+                    let _ = work.state.observe_return_success(
+                        crate::pty::manager::ReturnDeliveryProof { context },
+                        now,
+                    );
+                } else {
+                    let _ = work.state.settle_return_terminal(&context, now);
+                }
+            }
+        }
+    }
+
+    async fn admit_response_source<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        authenticated: bool,
+        content: &str,
+    ) -> Option<ResponseWakeWork> {
+        let state = app
+            .try_state::<crate::pty::manager::ResponseCloseState>()?
+            .inner()
+            .clone();
+        let digest = crate::phone::types::sha256_hex(content.as_bytes());
+        if let Some(previous) = self
+            .response_sources
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(path)
+            .cloned()
+        {
+            if previous.digest != digest || previous.target != msg.to {
+                state.fail_closed();
+                return None;
+            }
+            return Some(previous);
+        }
+        let key = format!("fs:{}:{}", path.to_string_lossy(), msg.id);
+        let mut admission = match state.reserve_work(&msg.to, &key) {
+            Ok(admission) => admission,
+            Err(_) => {
+                state.fail_closed();
+                return None;
+            }
+        };
+        if admission.accept_durable(&digest).is_err() {
+            state.fail_closed();
+            return None;
+        }
+        drop(admission);
+        let mut work = ResponseWakeWork {
+            state: state.clone(),
+            target: msg.to.clone(),
+            key,
+            digest,
+            return_context: None,
+            delivery_context: None,
+        };
+        if authenticated {
+            let settings = app.state::<SettingsState>();
+            let settings = settings.read().await;
+            state.apply_settings(
+                settings.response_close_enabled,
+                settings.response_close_idle_seconds,
+                std::time::Instant::now(),
+            );
+            let coordinator =
+                teams::verified_wg_coordinator_target(&msg.to, &settings.project_paths);
+            drop(settings);
+            let same_room = msg.from.rsplit_once('/').map(|(room, _)| room)
+                == msg.to.rsplit_once('/').map(|(room, _)| room);
+            if coordinator.is_some() && same_room {
+                let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let manager = managers.read().await.clone();
+                let token = msg
+                    .token
+                    .as_deref()
+                    .and_then(|token| Uuid::parse_str(token).ok());
+                work.return_context = manager
+                    .with_response_close_facts(|snapshot| {
+                        let route = |target: &str| {
+                            let mut matches = snapshot.rows.iter().filter(|row| {
+                                !snapshot.pending_ids.contains(&row.id)
+                                    && sender_name_for_session_cwd_with_root_flag(
+                                        &row.working_directory,
+                                        row.is_root_agent,
+                                    ) == target
+                                    && !matches!(row.status, SessionStatus::Exited(_))
+                                    && row.backend_kind == SessionBackendKind::LocalProcess
+                            });
+                            let row = matches.next()?;
+                            if matches.next().is_some() {
+                                return None;
+                            }
+                            Some((
+                                crate::pty::manager::ResponseRouteIdentity {
+                                    target: target.to_string(),
+                                    session_id: row.id,
+                                    token: row.token,
+                                    generation: state.generation(row.id)?,
+                                    carrier_version: *snapshot.versions.get(&row.id)?,
+                                    backend: row.backend_kind,
+                                },
+                                row,
+                            ))
+                        };
+                        let (member, member_row) = route(&msg.from)?;
+                        let (coordinator, coordinator_row) = route(&msg.to)?;
+                        if member_row.is_coordinator
+                            || member_row.is_root_agent
+                            || member_row.agent_kind.is_none()
+                            || token != Some(member.token)
+                            || !coordinator_row.is_coordinator
+                            || coordinator_row.is_root_agent
+                        {
+                            return None;
+                        }
+                        let now = std::time::Instant::now();
+                        state.publish_manager_facts(
+                            member.clone(),
+                            true,
+                            crate::session::session::is_working(member_row),
+                            now,
+                        );
+                        state.publish_manager_facts(
+                            coordinator.clone(),
+                            false,
+                            crate::session::session::is_working(coordinator_row),
+                            now,
+                        );
+                        state
+                            .admit_return(
+                                &member,
+                                &coordinator,
+                                work.key.clone(),
+                                work.digest.clone(),
+                                now,
+                            )
+                            .ok()
+                    })
+                    .await;
+            }
+        }
+        self.response_sources
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(path.to_path_buf(), work.clone());
+        Some(work)
+    }
+
     pub fn new() -> Self {
         let (wake_outcomes_tx, wake_outcomes_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            response_sources: Arc::new(Mutex::new(HashMap::new())),
             snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             live_claims: std::collections::HashSet::new(),
             wake_lanes: Arc::new(crate::phone::wake_lanes::WakeLanes::default()),
@@ -3416,6 +3616,7 @@ impl MailboxPoller {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            response_sources: Arc::new(Mutex::new(HashMap::new())),
             snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             live_claims: std::collections::HashSet::new(),
             wake_lanes: Arc::new(crate::phone::wake_lanes::WakeLanes::default()),
@@ -3437,6 +3638,7 @@ impl MailboxPoller {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            response_sources: Arc::new(Mutex::new(HashMap::new())),
             snapshot_scanner:
                 crate::phone::terminal_snapshot::SnapshotMailboxScanner::delivery_only(),
             live_claims: std::collections::HashSet::new(),
@@ -3455,7 +3657,8 @@ impl MailboxPoller {
     /// equivalent to `&self` for the tail. Test hooks are carried across
     /// because `MailboxTestHooks` is `Arc`-based and `Clone`.
     fn delivery_poller(&self) -> Self {
-        let poller = Self::delivery_only();
+        let mut poller = Self::delivery_only();
+        poller.response_sources = self.response_sources.clone();
         #[cfg(test)]
         let poller = Self {
             test_hooks: self.test_hooks.clone(),
@@ -3566,7 +3769,7 @@ impl MailboxPoller {
             let Some(id) = origin.file_stem().and_then(|stem| stem.to_str()) else {
                 continue;
             };
-            // The receipt is the proof the delivery already completed. Share
+            // The receipt proves a terminal outcome, not successful delivery. Share
             // this predicate with the owned-outcome drain so both paths treat
             // a failed observation as pending rather than absence.
             let settled = match wake_claim_has_settled_receipt(&origin) {
@@ -3581,15 +3784,23 @@ impl MailboxPoller {
                 }
             };
             if settled {
+                // Preserve pending if an origin remains or its observation fails.
+                // Receipt recovery has no authenticated full-return delivery proof.
+                let origin_absent = matches!(origin.try_exists(), Ok(false));
                 // (#1399 R6) Keep the Result: `remove_file` fails under exactly
                 // the locked-handle condition that is ordinary on Windows, and
                 // a log line reporting an action that did not happen costs an
                 // hour in an incident. Self-heals on a later cycle either way.
                 match std::fs::remove_file(claim) {
-                    Ok(()) => log::warn!(
-                        "[mailbox] #1399 dropped unowned claim {} (receipt already present)",
-                        id
-                    ),
+                    Ok(()) => {
+                        if origin_absent {
+                            self.settle_response_source(&origin, false);
+                        }
+                        log::warn!(
+                            "[mailbox] #1399 dropped unowned claim {} (receipt already present)",
+                            id
+                        );
+                    }
                     Err(error) => log::warn!(
                         "[mailbox] #1399 could not drop unowned claim {}: {}",
                         id,
@@ -3622,12 +3833,44 @@ impl MailboxPoller {
     /// reclamation and this function in sequence on one task, nothing can
     /// observe that window. An await inside it would let reclamation treat the
     /// claim as unowned and rename it back under a live worker.
+    #[cfg(test)]
     fn claim_and_spawn_wake<R: tauri::Runtime>(
         &mut self,
         app: &tauri::AppHandle<R>,
         path: &Path,
         msg: OutboxMessage,
     ) -> WakeHandoff {
+        self.claim_and_spawn_validated_wake(
+            app,
+            path,
+            ValidatedWake {
+                message: msg,
+                response: None,
+            },
+        )
+    }
+
+    fn claim_and_spawn_validated_wake<R: tauri::Runtime>(
+        &mut self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        validated: ValidatedWake,
+    ) -> WakeHandoff {
+        let msg = &validated.message;
+        let response_delivery = validated
+            .response
+            .as_ref()
+            .map(|work| work.state.begin_delivery(&work.target));
+        let response_delivery = match response_delivery {
+            Some(Err(crate::pty::manager::ResponseCloseError::ClosingDeferred)) => {
+                return WakeHandoff::LaneBusy
+            }
+            Some(Err(crate::pty::manager::ResponseCloseError::Unavailable)) | None => None,
+            Some(Err(error)) => {
+                return WakeHandoff::ClaimFailed(format!("response close admission: {:?}", error))
+            }
+            Some(Ok(reservation)) => Some(reservation),
+        };
         // A queued or requeued outcome can outlive both its worker and lane.
         // Cap `live_claims` separately so pending reports cannot exceed the
         // same global limit.
@@ -3663,11 +3906,13 @@ impl MailboxPoller {
         let worker_claim = claim.clone();
         self.wake_workers.spawn(async move {
             let _reservation = reservation;
+            let _response_delivery = response_delivery;
             // (#1399 R1) RAII, for the same reason `_reservation` is: an
             // unwind must not be able to skip the report.
             let mut report = WakeOutcomeReport::new(outcomes, origin.clone());
             let outcome =
-                deliver_claimed_wake(&delivery, &worker_app, &worker_claim, &origin, &msg).await;
+                deliver_claimed_wake(&delivery, &worker_app, &worker_claim, &origin, &validated)
+                    .await;
             report.set(outcome);
         });
         // Inserted AFTER `spawn` returns: if `spawn` itself panicked, an
@@ -3775,6 +4020,12 @@ impl MailboxPoller {
 
             self.live_claims.remove(&claim);
             if claim_has_receipt {
+                // The claim was removed successfully after receipt observation.
+                // Never turn delivered-or-rejected into return success authority,
+                // or retire work while a restored origin remains actionable.
+                if !origin_present {
+                    self.settle_response_source(&path, false);
+                }
                 // Receipt-wins recovery is already the contract of general
                 // reclamation. Clear retry state and do not redeliver.
                 self.record_message_outcome(path, Ok(())).await;
@@ -4088,7 +4339,7 @@ impl MailboxPoller {
                     }
                     OutboxClassification::Standard(content) => content,
                 };
-                let mut deferred: Option<OutboxMessage> = None;
+                let mut deferred: Option<ValidatedWake> = None;
                 let outcome = self
                     .process_message_content(
                         app,
@@ -4103,7 +4354,7 @@ impl MailboxPoller {
                         // Validated and handed off (or the lane was busy): the
                         // retry state for `path` must survive until the worker
                         // reports.
-                        Some(msg) => match self.claim_and_spawn_wake(app, &path, msg) {
+                        Some(msg) => match self.claim_and_spawn_validated_wake(app, &path, msg) {
                             WakeHandoff::Spawned => {}
                             WakeHandoff::LaneBusy => {}
                             WakeHandoff::ClaimFailed(e) => {
@@ -4169,6 +4420,8 @@ impl MailboxPoller {
                     Some("menu guard")
                 } else if crate::pty::menu_guard::is_typing_hold_deferred_error(&e) {
                     Some("typing hold")
+                } else if crate::api::message_store::is_response_closing_deferred(&e) {
+                    Some("response close")
                 } else {
                     None
                 };
@@ -5524,6 +5777,10 @@ impl MailboxPoller {
         let target = match initial.target.clone() {
             Some(target) => target,
             None => return,
+        };
+        let _response_delivery = match store.begin_response_delivery(&target) {
+            Ok(reservation) => reservation,
+            Err(_) => return,
         };
         let target_gate = match &state.target_gate {
             Ok(gate) => Arc::clone(gate),
@@ -7129,11 +7386,66 @@ impl MailboxPoller {
         path: &Path,
         origin: OutboxOrigin,
         content: &str,
-        deferred_tail: Option<&mut Option<OutboxMessage>>,
+        deferred_tail: Option<&mut Option<ValidatedWake>>,
     ) -> Result<(), String> {
-        // The pre-phase-7 boolean, derived once: every pre-existing branch that
-        // only knew "app outbox or not" keeps its exact behaviour.
         let is_app_outbox = origin == OutboxOrigin::Master;
+        let (msg, outbox_project) = match self
+            .parse_and_normalize_outbox(app, path, origin, content)
+            .await?
+        {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        let authentication = match self.authenticate_outbox(app, path, &msg).await? {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        let () = match self
+            .dispatch_outbox_self_operation(
+                app,
+                path,
+                &msg,
+                origin,
+                is_app_outbox,
+                authentication.4,
+            )
+            .await?
+        {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        let () = match self
+            .authorize_outbox_route(app, path, &msg, origin, &outbox_project, authentication)
+            .await?
+        {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        let () = match self
+            .validate_outbox_action_and_mode(app, path, &msg, is_app_outbox)
+            .await?
+        {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        self.deliver_outbox_tail(
+            app,
+            path,
+            msg,
+            content,
+            (origin, deferred_tail),
+            authentication,
+        )
+        .await
+    }
+
+    async fn parse_and_normalize_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        origin: OutboxOrigin,
+        content: &str,
+    ) -> OutboxStage<(OutboxMessage, Option<String>)> {
         // `let mut msg`: §AR2-norm below mutates `msg.from` / `msg.to` in place
         // as the SINGLE POINT OF TRUTH for canonicalization. Downstream code
         // (routing, action dispatch, injection, archival) reads the canonical
@@ -7152,7 +7464,9 @@ impl MailboxPoller {
         let outbox_project = match derive_project_from_outbox_path(path) {
             Ok(project) => project,
             Err(reason) => {
-                return self.reject_message(path, &msg, &reason).await;
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, &msg, &reason).await,
+                ));
             }
         };
 
@@ -7173,7 +7487,7 @@ impl MailboxPoller {
             if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
                 let derived = sender_name_for_session_cwd(&repo_path.to_string_lossy());
                 if !anti_spoof_accept(&msg.from, &derived) {
-                    return self
+                    return Ok(std::ops::ControlFlow::Break(self
                         .reject_message(
                             path,
                             &msg,
@@ -7182,7 +7496,7 @@ impl MailboxPoller {
                                 derived, msg.from
                             ),
                         )
-                        .await;
+                        .await));
                 }
                 expected_from = Some(derived);
             }
@@ -7218,6 +7532,25 @@ impl MailboxPoller {
         // augmentation — see #228 Step 1) resolve here too. Without this, the daemon
         // re-rejects with `UnknownQualified` even though the CLI side succeeded.
         // settings.json is NOT mutated. In-memory, this-message only. See #228 D1-a.
+        match self
+            .normalize_outbox_recipient(app, path, &mut msg, &outbox_project)
+            .await?
+        {
+            std::ops::ControlFlow::Continue(()) => {}
+            std::ops::ControlFlow::Break(result) => {
+                return Ok(std::ops::ControlFlow::Break(result))
+            }
+        }
+        Ok(std::ops::ControlFlow::Continue((msg, outbox_project)))
+    }
+
+    async fn normalize_outbox_recipient<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &mut OutboxMessage,
+        outbox_project: &Option<String>,
+    ) -> OutboxStage {
         if !msg.to.is_empty() {
             let mut paths = {
                 let cfg = app.state::<SettingsState>();
@@ -7244,13 +7577,115 @@ impl MailboxPoller {
                     }
                 }
                 Err(e) => {
-                    return self
-                        .reject_message(path, &msg, &format!("Unresolvable target: {}", e))
-                        .await;
+                    return Ok(std::ops::ControlFlow::Break(
+                        self.reject_message(path, msg, &format!("Unresolvable target: {}", e))
+                            .await,
+                    ));
                 }
             }
         }
 
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn authenticate_outbox_session<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        token_str: &str,
+    ) -> OutboxStage<(bool, bool)> {
+        let token_belongs_to_root_agent;
+        let saw_session_token;
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+
+        if let Ok(token_uuid) = Uuid::parse_str(token_str) {
+            match mgr.find_by_token(token_uuid).await {
+                None => {
+                    // Token is stale/invalid. Env-only credentials cannot be refreshed into
+                    // an already-running child process, so reject instead of injecting a new token.
+                    drop(mgr);
+                    if let Some(session_id) = self.find_active_session(app, &msg.from).await {
+                        log::warn!(
+                            "[mailbox] Stale token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
+                            msg.from,
+                            session_id
+                        );
+                    }
+                    return Ok(std::ops::ControlFlow::Break(self
+                        .reject_message(
+                            path,
+                            msg,
+                            "Invalid session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
+                        )
+                        .await));
+                }
+                Some(session) => {
+                    saw_session_token = true;
+                    token_belongs_to_root_agent = session.is_root_agent
+                        || crate::config::root_agent::is_root_agent_path(
+                            &session.working_directory,
+                        );
+                    // Anti-spoofing: verify msg.from matches the token's session CWD.
+                    // Post-§AR2-norm, msg.from is canonical FQN (or legacy unqualified
+                    // if expected_from was unavailable). Session-derived name uses the
+                    // canonical helper; comparison is exact equality.
+                    let session_name = sender_name_for_session_cwd_with_root_flag(
+                        &session.working_directory,
+                        token_belongs_to_root_agent,
+                    );
+                    if session_name != msg.from {
+                        log::warn!(
+                            "[mailbox] Token-root mismatch: token session='{}' but from='{}'",
+                            session_name,
+                            msg.from
+                        );
+                        return Ok(std::ops::ControlFlow::Break(
+                            self.reject_message(
+                                path,
+                                msg,
+                                &format!(
+                                    "Token-root mismatch: session is '{}' but message claims '{}'",
+                                    session_name, msg.from
+                                ),
+                            )
+                            .await,
+                        ));
+                    }
+                }
+            }
+        } else {
+            // Token is not a valid UUID. Env-only credentials cannot be refreshed
+            // into an already-running child process, so reject instead of injecting.
+            drop(mgr);
+            if let Some(session_id) = self.find_active_session(app, &msg.from).await {
+                log::warn!(
+                    "[mailbox] Malformed token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
+                    msg.from,
+                    session_id
+                );
+            }
+            return Ok(std::ops::ControlFlow::Break(self
+                .reject_message(
+                    path,
+                    msg,
+                    "Malformed session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
+                )
+                .await));
+        }
+        Ok(std::ops::ControlFlow::Continue((
+            token_belongs_to_root_agent,
+            saw_session_token,
+        )))
+    }
+
+    async fn authenticate_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+    ) -> OutboxStage<OutboxAuthenticationFacts> {
         // Check if token is the master token or root token (bypasses anti-spoofing + team validation)
         let is_master = if let Some(ref token_str) = msg.token {
             let master = app.state::<MasterToken>();
@@ -7270,86 +7705,39 @@ impl MailboxPoller {
         let mut saw_session_token = false;
 
         if !is_master {
-            // Validate session token if present (anti-spoofing)
-            if let Some(ref token_str) = msg.token {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = session_mgr.read().await;
-
-                if let Ok(token_uuid) = Uuid::parse_str(token_str) {
-                    match mgr.find_by_token(token_uuid).await {
-                        None => {
-                            // Token is stale/invalid. Env-only credentials cannot be refreshed into
-                            // an already-running child process, so reject instead of injecting a new token.
-                            drop(mgr);
-                            if let Some(session_id) = self.find_active_session(app, &msg.from).await
-                            {
-                                log::warn!(
-                                    "[mailbox] Stale token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
-                                    msg.from,
-                                    session_id
-                                );
-                            }
-                            return self
-                                .reject_message(
-                                    path,
-                                    &msg,
-                                    "Invalid session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
-                                )
-                                .await;
-                        }
-                        Some(session) => {
-                            saw_session_token = true;
-                            token_belongs_to_root_agent = session.is_root_agent
-                                || crate::config::root_agent::is_root_agent_path(
-                                    &session.working_directory,
-                                );
-                            // Anti-spoofing: verify msg.from matches the token's session CWD.
-                            // Post-§AR2-norm, msg.from is canonical FQN (or legacy unqualified
-                            // if expected_from was unavailable). Session-derived name uses the
-                            // canonical helper; comparison is exact equality.
-                            let session_name = sender_name_for_session_cwd_with_root_flag(
-                                &session.working_directory,
-                                token_belongs_to_root_agent,
-                            );
-                            if session_name != msg.from {
-                                log::warn!(
-                                    "[mailbox] Token-root mismatch: token session='{}' but from='{}'",
-                                    session_name, msg.from
-                                );
-                                return self.reject_message(
-                                    path,
-                                    &msg,
-                                    &format!(
-                                        "Token-root mismatch: session is '{}' but message claims '{}'",
-                                        session_name, msg.from
-                                    ),
-                                )
-                                .await;
-                            }
-                        }
+            if let Some(token_str) = msg.token.as_deref() {
+                match self
+                    .authenticate_outbox_session(app, path, msg, token_str)
+                    .await?
+                {
+                    std::ops::ControlFlow::Continue((root, saw)) => {
+                        token_belongs_to_root_agent = root;
+                        saw_session_token = saw;
                     }
-                } else {
-                    // Token is not a valid UUID. Env-only credentials cannot be refreshed
-                    // into an already-running child process, so reject instead of injecting.
-                    drop(mgr);
-                    if let Some(session_id) = self.find_active_session(app, &msg.from).await {
-                        log::warn!(
-                            "[mailbox] Malformed token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
-                            msg.from,
-                            session_id
-                        );
+                    std::ops::ControlFlow::Break(result) => {
+                        return Ok(std::ops::ControlFlow::Break(result))
                     }
-                    return self
-                        .reject_message(
-                            path,
-                            &msg,
-                            "Malformed session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
-                        )
-                        .await;
                 }
             }
         }
+        Ok(std::ops::ControlFlow::Continue((
+            is_master,
+            root_agent_claim,
+            root_agent_recipient,
+            token_belongs_to_root_agent,
+            saw_session_token,
+        )))
+    }
 
+    async fn dispatch_outbox_self_operation<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        origin: OutboxOrigin,
+        is_app_outbox: bool,
+        saw_session_token: bool,
+    ) -> OutboxStage {
         // ── #2232 phase 7: the Co-managed origin may express exactly one thing ──
         // A wake carrying a pointer. `action` and `command` are rejected here,
         // before the pre-routing dispatch below, because `purge-wg` and
@@ -7363,13 +7751,14 @@ impl MailboxPoller {
                 msg.command,
                 msg.id
             );
-            return self
-                .reject_message(
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(
                     path,
-                    &msg,
+                    msg,
                     "Co-managed origin may carry only a wake; action and command are rejected",
                 )
-                .await;
+                .await,
+            ));
         }
 
         // ── #617 self-clear: token-authorized self-operation ──
@@ -7380,22 +7769,28 @@ impl MailboxPoller {
         // reject valid callers in no shared team. close-session stays in the
         // post-routing action block because it IS a cross-agent operation.
         if msg.action.as_deref() == Some(SELF_CLEAR_ACTION) {
-            return self.handle_self_clear(app, path, &msg, is_app_outbox).await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_self_clear(app, path, msg, is_app_outbox).await,
+            ));
         }
         if msg.action.as_deref() == Some(SELF_SWITCH_ACTION) {
-            return self
-                .handle_self_handoff_switch(app, path, &msg, is_app_outbox)
-                .await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_self_handoff_switch(app, path, msg, is_app_outbox)
+                    .await,
+            ));
         }
         // (#1632) Same pre-routing block, same reason: self-handoff-and-restart operates on the
         // CALLER'S OWN session and is authorized by token ownership, not by team reachability.
         if msg.action.as_deref() == Some(SELF_RESTART_ACTION) {
-            return self
-                .handle_self_restart(app, path, &msg, is_app_outbox)
-                .await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_self_restart(app, path, msg, is_app_outbox)
+                    .await,
+            ));
         }
         if msg.action.as_deref() == Some(RAISE_HAND_ACTION) {
-            return self.handle_raise_hand(app, path, &msg, is_app_outbox).await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_raise_hand(app, path, msg, is_app_outbox).await,
+            ));
         }
 
         // (#885 F-7) `purge-wg` dispatches pre-routing, after the anti-spoof block.
@@ -7408,136 +7803,208 @@ impl MailboxPoller {
         // resolve against ANY workgroup on disk. Root has no workgroup.
         if msg.action.as_deref() == Some(PURGE_WG_ACTION) {
             if !saw_session_token {
-                return self
-                    .reject_message(path, &msg, "purge-room requires a session token")
-                    .await;
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, msg, "purge-room requires a session token")
+                        .await,
+                ));
             }
-            return self.handle_purge_wg(app, path, &msg, is_app_outbox).await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_purge_wg(app, path, msg, is_app_outbox).await,
+            ));
         }
 
-        if origin == OutboxOrigin::CoManaged {
-            // #2232 phase 7: no token, no master path, no anti-spoof. The FQN in
-            // `from` is the credential and the destination check is the CLI's:
-            // Root through the verified-coordinator validator, everything else
-            // through `can_communicate`. An unreachable destination is rejected.
-            let mut paths = {
-                let cfg = app.state::<SettingsState>();
-                let c = cfg.read().await;
-                c.project_paths.clone()
-            };
-            // The queue lives under a room root, whose grandparent is the project
-            // directory; include it so a qualified coordinator FQN resolves even
-            // when the project is not in settings (session-derived rooms).
-            if let Some(project_dir) = crate::config::co_managed::room_root_for_path(path)
-                .and_then(|room_root| room_root.parent().map(|ac_root| ac_root.to_path_buf()))
-                .and_then(|ac_root| ac_root.parent().map(|project| project.to_path_buf()))
-            {
-                let canon_project = std::fs::canonicalize(&project_dir).ok();
-                let already_present = paths.iter().any(|p| match &canon_project {
-                    Some(canon_target) => {
-                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
-                    }
-                    None => std::path::Path::new(p) == project_dir,
-                });
-                if !already_present {
-                    paths.push(project_dir.to_string_lossy().to_string());
-                }
-            }
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
 
-            if root_agent_recipient {
-                if let Err(reason) = validate_coordinator_to_root_route(&msg.from, &paths) {
-                    return self.reject_message(path, &msg, reason).await;
-                }
-            } else {
-                let discovered_teams = teams::discover_teams();
-                if !self.can_reach(&msg.from, &msg.to, &discovered_teams) {
-                    log::warn!(
-                        "[mailbox] Co-managed routing check FAILED: '{}' cannot reach '{}'",
-                        msg.from,
-                        msg.to
-                    );
-                    return self
-                        .reject_message(path, &msg, "Sender cannot reach destination")
-                        .await;
-                }
+    async fn authorize_comanaged_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        root_agent_recipient: bool,
+    ) -> OutboxStage {
+        // #2232 phase 7: no token, no master path, no anti-spoof. The FQN in
+        // `from` is the credential and the destination check is the CLI's:
+        // Root through the verified-coordinator validator, everything else
+        // through `can_communicate`. An unreachable destination is rejected.
+        let mut paths = {
+            let cfg = app.state::<SettingsState>();
+            let c = cfg.read().await;
+            c.project_paths.clone()
+        };
+        // The queue lives under a room root, whose grandparent is the project
+        // directory; include it so a qualified coordinator FQN resolves even
+        // when the project is not in settings (session-derived rooms).
+        if let Some(project_dir) = crate::config::co_managed::room_root_for_path(path)
+            .and_then(|room_root| room_root.parent().map(|ac_root| ac_root.to_path_buf()))
+            .and_then(|ac_root| ac_root.parent().map(|project| project.to_path_buf()))
+        {
+            let canon_project = std::fs::canonicalize(&project_dir).ok();
+            let already_present = paths.iter().any(|p| match &canon_project {
+                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                None => std::path::Path::new(p) == project_dir,
+            });
+            if !already_present {
+                paths.push(project_dir.to_string_lossy().to_string());
             }
-            log::debug!(
-                "[mailbox] Co-managed routing check passed: '{}' -> '{}'",
-                msg.from,
-                msg.to
-            );
-        } else if root_agent_claim {
-            let mut paths = {
-                let cfg = app.state::<SettingsState>();
-                let c = cfg.read().await;
-                c.project_paths.clone()
-            };
-            if let Some(root_project) = outbox_project.as_ref() {
-                let canon_root_project = std::fs::canonicalize(root_project).ok();
-                let already_present = paths.iter().any(|p| match &canon_root_project {
-                    Some(canon_target) => {
-                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
-                    }
-                    None => p == root_project,
-                });
-                if !already_present {
-                    paths.push(root_project.clone());
-                }
-            }
+        }
 
-            if let Err(reason) = validate_root_sender_route(
-                &msg.to,
-                &paths,
-                is_master,
-                saw_session_token,
-                token_belongs_to_root_agent,
-            ) {
-                return self.reject_message(path, &msg, reason).await;
-            }
-            if let Err(reason) = validate_root_sender_payload(&msg) {
-                return self.reject_message(path, &msg, &reason).await;
-            }
-            log::debug!(
-                "[mailbox] Root Agent routing check passed: '{}' -> '{}'",
-                msg.from,
-                msg.to
-            );
-        } else if root_agent_recipient {
-            // #293 — coordinator → root recipient.
-            //
-            // Build the same effective_project_paths slice the root-sender
-            // branch uses (settings + the outbox file's WG-replica project
-            // walk-up) so verified_wg_coordinator_target sees the project
-            // where the outbox lives.
-            let mut paths = {
-                let cfg = app.state::<SettingsState>();
-                let c = cfg.read().await;
-                c.project_paths.clone()
-            };
-            if let Some(root_project) = outbox_project.as_ref() {
-                let canon_root_project = std::fs::canonicalize(root_project).ok();
-                let already_present = paths.iter().any(|p| match &canon_root_project {
-                    Some(canon_target) => {
-                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
-                    }
-                    None => p == root_project,
-                });
-                if !already_present {
-                    paths.push(root_project.clone());
-                }
-            }
-
-            // Master/root token does NOT bypass the verified-coordinator check
-            // for root-recipient: the URI is meaningful only when paired with
-            // a real coordinator identity, and the verified check is cheap.
+        if root_agent_recipient {
             if let Err(reason) = validate_coordinator_to_root_route(&msg.from, &paths) {
-                return self.reject_message(path, &msg, reason).await;
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, msg, reason).await,
+                ));
             }
-            log::debug!(
-                "[mailbox] Coordinator→Root routing check passed: '{}' -> '{}'",
-                msg.from,
-                msg.to
-            );
+        } else {
+            let discovered_teams = teams::discover_teams();
+            if !self.can_reach(&msg.from, &msg.to, &discovered_teams) {
+                log::warn!(
+                    "[mailbox] Co-managed routing check FAILED: '{}' cannot reach '{}'",
+                    msg.from,
+                    msg.to
+                );
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, msg, "Sender cannot reach destination")
+                        .await,
+                ));
+            }
+        }
+        log::debug!(
+            "[mailbox] Co-managed routing check passed: '{}' -> '{}'",
+            msg.from,
+            msg.to
+        );
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn authorize_root_sender_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        outbox_project: &Option<String>,
+        authentication: (bool, bool, bool),
+    ) -> OutboxStage {
+        let (is_master, saw_session_token, token_belongs_to_root_agent) = authentication;
+        let mut paths = {
+            let cfg = app.state::<SettingsState>();
+            let c = cfg.read().await;
+            c.project_paths.clone()
+        };
+        if let Some(root_project) = outbox_project.as_ref() {
+            let canon_root_project = std::fs::canonicalize(root_project).ok();
+            let already_present = paths.iter().any(|p| match &canon_root_project {
+                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                None => p == root_project,
+            });
+            if !already_present {
+                paths.push(root_project.clone());
+            }
+        }
+
+        if let Err(reason) = validate_root_sender_route(
+            &msg.to,
+            &paths,
+            is_master,
+            saw_session_token,
+            token_belongs_to_root_agent,
+        ) {
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(path, msg, reason).await,
+            ));
+        }
+        if let Err(reason) = validate_root_sender_payload(msg) {
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(path, msg, &reason).await,
+            ));
+        }
+        log::debug!(
+            "[mailbox] Root Agent routing check passed: '{}' -> '{}'",
+            msg.from,
+            msg.to
+        );
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn authorize_root_recipient_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        outbox_project: &Option<String>,
+    ) -> OutboxStage {
+        // #293 — coordinator → root recipient.
+        //
+        // Build the same effective_project_paths slice the root-sender
+        // branch uses (settings + the outbox file's WG-replica project
+        // walk-up) so verified_wg_coordinator_target sees the project
+        // where the outbox lives.
+        let mut paths = {
+            let cfg = app.state::<SettingsState>();
+            let c = cfg.read().await;
+            c.project_paths.clone()
+        };
+        if let Some(root_project) = outbox_project.as_ref() {
+            let canon_root_project = std::fs::canonicalize(root_project).ok();
+            let already_present = paths.iter().any(|p| match &canon_root_project {
+                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                None => p == root_project,
+            });
+            if !already_present {
+                paths.push(root_project.clone());
+            }
+        }
+
+        // Master/root token does NOT bypass the verified-coordinator check
+        // for root-recipient: the URI is meaningful only when paired with
+        // a real coordinator identity, and the verified check is cheap.
+        if let Err(reason) = validate_coordinator_to_root_route(&msg.from, &paths) {
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(path, msg, reason).await,
+            ));
+        }
+        log::debug!(
+            "[mailbox] Coordinator→Root routing check passed: '{}' -> '{}'",
+            msg.from,
+            msg.to
+        );
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn authorize_outbox_route<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        origin: OutboxOrigin,
+        outbox_project: &Option<String>,
+        authentication: OutboxAuthenticationFacts,
+    ) -> OutboxStage {
+        let (
+            is_master,
+            root_agent_claim,
+            root_agent_recipient,
+            token_belongs_to_root_agent,
+            saw_session_token,
+        ) = authentication;
+        if origin == OutboxOrigin::CoManaged {
+            return self
+                .authorize_comanaged_outbox(app, path, msg, root_agent_recipient)
+                .await;
+        } else if root_agent_claim {
+            return self
+                .authorize_root_sender_outbox(
+                    app,
+                    path,
+                    msg,
+                    outbox_project,
+                    (is_master, saw_session_token, token_belongs_to_root_agent),
+                )
+                .await;
+        } else if root_agent_recipient {
+            return self
+                .authorize_root_recipient_outbox(app, path, msg, outbox_project)
+                .await;
         } else if is_master {
             log::debug!(
                 "[mailbox] Master token used — bypassing team validation for {} -> {}",
@@ -7552,9 +8019,10 @@ impl MailboxPoller {
                     msg.from,
                     msg.to
                 );
-                return self
-                    .reject_message(path, &msg, "Sender cannot reach destination")
-                    .await;
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, msg, "Sender cannot reach destination")
+                        .await,
+                ));
             }
             log::debug!(
                 "[mailbox] Routing check passed: '{}' -> '{}'",
@@ -7563,6 +8031,16 @@ impl MailboxPoller {
             );
         }
 
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn validate_outbox_action_and_mode<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        is_app_outbox: bool,
+    ) -> OutboxStage {
         // Action-based dispatch (close-session, etc.) — handled before mode-based delivery
         if let Some(ref action) = msg.action {
             match action.as_str() {
@@ -7573,14 +8051,16 @@ impl MailboxPoller {
                     // path). That derived path lands under
                     // <config_dir>/instances/<id>/responses/ which the CLI
                     // never polls, so writing there leaks orphan JSON files.
-                    return self
-                        .handle_close_session(app, path, &msg, is_app_outbox)
-                        .await;
+                    return Ok(std::ops::ControlFlow::Break(
+                        self.handle_close_session(app, path, msg, is_app_outbox)
+                            .await,
+                    ));
                 }
                 _ => {
-                    return self
-                        .reject_message(path, &msg, &format!("Unknown action '{}'", action))
-                        .await;
+                    return Ok(std::ops::ControlFlow::Break(
+                        self.reject_message(path, msg, &format!("Unknown action '{}'", action))
+                            .await,
+                    ));
                 }
             }
         }
@@ -7594,37 +8074,64 @@ impl MailboxPoller {
         // Only `wake` is supported. Defensive check for malformed outbox files
         // that might arrive from external (root-token) write paths.
         if mode != "wake" {
-            return self
-                .reject_message(
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(
                     path,
-                    &msg,
+                    msg,
                     &format!("Unsupported delivery mode '{}'. Valid: wake", mode),
                 )
-                .await;
+                .await,
+            ));
         }
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn deliver_outbox_tail<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: OutboxMessage,
+        content: &str,
+        delivery: (OutboxOrigin, Option<&mut Option<ValidatedWake>>),
+        authentication: OutboxAuthenticationFacts,
+    ) -> Result<(), String> {
+        let (origin, deferred_tail) = delivery;
+        let (is_master, _, _, token_belongs_to_root_agent, saw_session_token) = authentication;
+        let response = self
+            .admit_response_source(
+                app,
+                path,
+                &msg,
+                saw_session_token
+                    && !is_master
+                    && !token_belongs_to_root_agent
+                    && origin != OutboxOrigin::CoManaged
+                    && msg.command.is_none()
+                    && !msg.get_output
+                    && msg.pty_input.is_none(),
+                content,
+            )
+            .await;
+        let validated = ValidatedWake {
+            message: msg,
+            response,
+        };
         // #2232 phase 7: a Co-managed message is delivered inline with its
         // display attribution; it is never parked for the detached worker pool,
         // whose shared `deliver_wake` tail carries no attribution and must keep
         // its exact behaviour for every other origin.
         if origin == OutboxOrigin::CoManaged {
-            let annotated = self
-                .deliver_wake_with_attribution(
-                    app,
-                    &msg,
-                    WakeDeliveryOrigin::FilesystemPoller,
-                    true,
-                )
-                .await?;
+            let annotated = self.deliver_validated_wake(app, &validated, true).await?;
             return self.move_to_delivered(path, &annotated).await;
         }
         if let Some(slot) = deferred_tail {
-            *slot = Some(msg);
+            *slot = Some(validated);
             return Ok(());
         }
         // #1635-2 D4: write the annotated message so the `Delivered:` CLI
         // receipt can report the effective agent/profile. No-flag messages are
         // still byte-identical to today.
-        let annotated = self.deliver_wake(app, &msg).await?;
+        let annotated = self.deliver_validated_wake(app, &validated, false).await?;
 
         // Move to delivered/ with token stripped
         self.move_to_delivered(path, &annotated).await
@@ -7660,6 +8167,7 @@ impl MailboxPoller {
                 message: msg,
                 origin,
                 comanaged: false,
+                response: None,
             },
         )
         .await
@@ -7674,6 +8182,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
+        response: Option<&ResponseWakeWork>,
     ) -> Result<OutboxMessage, String> {
         self.deliver_wake_engine(
             app,
@@ -7681,6 +8190,7 @@ impl MailboxPoller {
                 message: msg,
                 origin,
                 comanaged,
+                response,
             },
         )
         .await
@@ -7691,18 +8201,50 @@ impl MailboxPoller {
     /// notice, cancellation, and guard capability are required for `InternalSystem`.
     /// Returns the annotated `OutboxMessage` for the `Delivered:` receipt; the
     /// internal-system arm builds its own envelope (it holds no serialized message).
+    async fn deliver_validated_wake<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        validated: &ValidatedWake,
+        comanaged: bool,
+    ) -> Result<OutboxMessage, String> {
+        if !comanaged && validated.response.is_none() {
+            return self.deliver_wake(app, &validated.message).await;
+        }
+        self.deliver_wake_with_attribution(
+            app,
+            &validated.message,
+            WakeDeliveryOrigin::FilesystemPoller,
+            comanaged,
+            validated.response.as_ref(),
+        )
+        .await
+    }
+
     async fn deliver_wake_engine<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         delivery: WakeDelivery<'_>,
     ) -> Result<OutboxMessage, String> {
+        let target_fqn = match &delivery {
+            WakeDelivery::Peer { message, .. } => message.to.as_str(),
+            WakeDelivery::InternalSystem { target, .. } => target.fqn(),
+        };
+        let _response_delivery =
+            match app.try_state::<crate::api::message_store::MessageStoreState>() {
+                Some(state) => match &state.store {
+                    Ok(store) => Some(store.begin_response_delivery(target_fqn)?),
+                    Err(_) => None,
+                },
+                None => None,
+            };
         match delivery {
             WakeDelivery::Peer {
                 message,
                 origin,
                 comanaged,
+                response,
             } => {
-                self.deliver_peer_wake(app, message, origin, comanaged)
+                self.deliver_peer_wake(app, message, origin, comanaged, response)
                     .await
             }
             WakeDelivery::InternalSystem {
@@ -7730,6 +8272,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
+        response: Option<&ResponseWakeWork>,
     ) -> Result<OutboxMessage, String> {
         // Parse a hand-authored logical action after process_message's
         // authorization/routing gates but before any recipient actuation.
@@ -7778,6 +8321,116 @@ impl MailboxPoller {
             }
         }
 
+        let fallback = match self
+            .select_peer_wake_candidate(
+                app,
+                msg,
+                (origin, comanaged),
+                response,
+                (parsed_remote_command.is_some(), flags_present),
+            )
+            .await?
+        {
+            std::ops::ControlFlow::Break(delivered) => return Ok(delivered),
+            std::ops::ControlFlow::Continue(fallback) => fallback,
+        };
+        self.deliver_peer_wake_fallback(
+            app,
+            msg,
+            (origin, comanaged),
+            response,
+            (parsed_remote_command.is_some(), flags_present),
+            fallback,
+        )
+        .await
+    }
+
+    async fn try_inject_peer_candidate<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        response: Option<&ResponseWakeWork>,
+        session_id: Uuid,
+        dispatch: (bool, bool),
+    ) -> Result<Option<OutboxMessage>, String> {
+        let (origin, comanaged) = delivery;
+        let (logical_command, flags_present) = dispatch;
+        if logical_command {
+            let shell = {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                mgr.get_session(session_id)
+                    .await
+                    .map(|session| session.shell)
+            };
+            let Some(shell) = shell else {
+                log::warn!(
+                    "[mailbox] wake: candidate {} vanished during logical-command preflight, trying next",
+                    session_id
+                );
+                return Ok(None);
+            };
+            if let Some(wire_value) = msg.command.as_deref() {
+                resolve_remote_pty_command(&shell, wire_value)?;
+            }
+        }
+
+        // (#1001 PR2 / B) Settle the live session to paste-ready before
+        // injecting. The MEASURED live-path drop is the still-starting
+        // case (100% here / 83% baseline, P2), which the alive_age
+        // Starting route closes via the #611 settle. The established
+        // fresh-idle guard is DEFENSIVE retention (bias-to-deliver, cannot
+        // drop - the cap always injects), not a measured-drop closer; the
+        // ~75% figure was PR1's COLD-SPAWN fresh-idle measurement, not this
+        // established path. Busy/mid-turn and long-idle sessions inject at
+        // once; only a freshly-idle established one waits the guard.
+        // Best-effort - a vanished session just falls through to the
+        // inject's own race handling below.
+        let settle = self.settle_live_before_inject(app, session_id).await;
+        match self
+            .inject_wake_into_pty(app, session_id, msg, (origin, comanaged), settle, response)
+            .await
+        {
+            Ok(()) => {
+                // #1635-2 D1: a live target cannot apply dispatch
+                // flags — deliver as today and annotate the receipt.
+                // A plain wake stays byte-identical (no annotation).
+                let mut delivered = msg.clone();
+                if flags_present {
+                    delivered.dispatch_not_applied = Some("live-target".to_string());
+                }
+                Ok(Some(delivered))
+            }
+            Err(e) if err_is_pty_session_missing(&e) => {
+                // Race: PTY died between `find_live_candidates`
+                // probe and `PtyManager::write`. Load-bearing
+                // safety net for the dropped per-iteration
+                // re-read (grinch G.M2). Try the next candidate.
+                // Flag the race for the post-loop AC5 promotion
+                // (grinch HIGH-1) — if every Inject candidate
+                // races to dead, the spawn-persistent fall-through
+                // must still set spawn_with_resume.
+                log::warn!(
+                    "[mailbox] wake: candidate {} died after liveness probe ({}), trying next",
+                    session_id,
+                    e
+                );
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn select_peer_wake_candidate<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        response: Option<&ResponseWakeWork>,
+        dispatch: (bool, bool),
+    ) -> Result<std::ops::ControlFlow<OutboxMessage, PeerWakeFallback>, String> {
+        let (logical_command, flags_present) = dispatch;
         // Whether the spawn-fallback should allow provider auto-resume.
         // Default false: cold wake — no SessionManager record at this CWD.
         // Promoted to true in two paths below: (a) RespawnExited deferred-
@@ -7796,10 +8449,6 @@ impl MailboxPoller {
         let mut pending_exited_communication: Option<
             crate::session::session::SessionCommunication,
         > = None;
-        // (#747) Set only when the deferred destroy FAILS: the orphan Exited
-        // record then still holds the restored hand and must be cleared once
-        // the replacement spawn succeeds (single-carrier rule, 5d).
-        let mut pending_exited_orphan_to_clear: Option<Uuid> = None;
         // HIGH-1 (Step-7 review): symmetric AC5 protection. Tracks whether
         // every iter'd Inject candidate hit the `err_is_pty_session_missing`
         // race arm — if so, the post-loop fall-through must still promote
@@ -7839,72 +8488,19 @@ impl MailboxPoller {
 
             match wake_action_for(status) {
                 WakeAction::Inject => {
-                    if parsed_remote_command.is_some() {
-                        let shell = {
-                            let session_mgr =
-                                app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                            let mgr = session_mgr.read().await;
-                            mgr.get_session(session_id)
-                                .await
-                                .map(|session| session.shell)
-                        };
-                        let Some(shell) = shell else {
-                            lost_inject_to_race = true;
-                            log::warn!(
-                                "[mailbox] wake: candidate {} vanished during logical-command preflight, trying next",
-                                session_id
-                            );
-                            continue;
-                        };
-                        if let Some(wire_value) = msg.command.as_deref() {
-                            resolve_remote_pty_command(&shell, wire_value)?;
-                        }
-                    }
-
-                    // (#1001 PR2 / B) Settle the live session to paste-ready before
-                    // injecting. The MEASURED live-path drop is the still-starting
-                    // case (100% here / 83% baseline, P2), which the alive_age
-                    // Starting route closes via the #611 settle. The established
-                    // fresh-idle guard is DEFENSIVE retention (bias-to-deliver, cannot
-                    // drop - the cap always injects), not a measured-drop closer; the
-                    // ~75% figure was PR1's COLD-SPAWN fresh-idle measurement, not this
-                    // established path. Busy/mid-turn and long-idle sessions inject at
-                    // once; only a freshly-idle established one waits the guard.
-                    // Best-effort - a vanished session just falls through to the
-                    // inject's own race handling below.
-                    let settle = self.settle_live_before_inject(app, session_id).await;
                     match self
-                        .inject_wake_into_pty(app, session_id, msg, origin, comanaged, settle)
-                        .await
+                        .try_inject_peer_candidate(
+                            app,
+                            msg,
+                            delivery,
+                            response,
+                            session_id,
+                            (logical_command, flags_present),
+                        )
+                        .await?
                     {
-                        Ok(()) => {
-                            // #1635-2 D1: a live target cannot apply dispatch
-                            // flags — deliver as today and annotate the receipt.
-                            // A plain wake stays byte-identical (no annotation).
-                            let mut delivered = msg.clone();
-                            if flags_present {
-                                delivered.dispatch_not_applied = Some("live-target".to_string());
-                            }
-                            return Ok(delivered);
-                        }
-                        Err(e) if err_is_pty_session_missing(&e) => {
-                            // Race: PTY died between `find_live_candidates`
-                            // probe and `PtyManager::write`. Load-bearing
-                            // safety net for the dropped per-iteration
-                            // re-read (grinch G.M2). Try the next candidate.
-                            // Flag the race for the post-loop AC5 promotion
-                            // (grinch HIGH-1) — if every Inject candidate
-                            // races to dead, the spawn-persistent fall-through
-                            // must still set spawn_with_resume.
-                            lost_inject_to_race = true;
-                            log::warn!(
-                                "[mailbox] wake: candidate {} died after liveness probe ({}), trying next",
-                                session_id,
-                                e
-                            );
-                            continue;
-                        }
-                        Err(e) => return Err(e),
+                        Some(delivered) => return Ok(std::ops::ControlFlow::Break(delivered)),
+                        None => lost_inject_to_race = true,
                     }
                 }
                 WakeAction::RespawnExited => {
@@ -7962,74 +8558,22 @@ impl MailboxPoller {
             );
         }
 
-        // No viable Inject candidate succeeded, so the fallback would spawn a
-        // persistent session. Root Agent remains user-launched only.
-        log::info!(
-            "[mailbox] wake: no active session for '{}', spawning persistent session",
-            msg.to
-        );
-        if crate::config::root_agent::is_root_agent_target(&msg.to) {
-            let restoring = app
-                .state::<Arc<crate::RestoreInProgress>>()
-                .0
-                .load(std::sync::atomic::Ordering::SeqCst);
-            return if restoring {
-                Err(format!(
-                    "Root Agent session not yet restored for '{}'; daemon restart in progress — will retry.",
-                    msg.to
-                ))
-            } else {
-                Err(format!(
-                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages — ask the user to launch it.",
-                    msg.to
-                ))
-            };
-        }
+        Ok(std::ops::ControlFlow::Continue((
+            spawn_with_resume,
+            pending_exited_destroy,
+            pending_exited_telegram_bot_id,
+            pending_exited_communication,
+        )))
+    }
 
-        // A logical action must be mapped against the exact carried spawn shell
-        // before an Exited record is destroyed or provider directories are made.
-        let mut spawn_plan = if parsed_remote_command.is_some() {
-            let plan = self.resolve_wake_spawn_plan(app, msg).await?;
-            if let Some(wire_value) = msg.command.as_deref() {
-                resolve_remote_pty_command(&plan.spawn_shell, wire_value)?;
-            }
-            Some(plan)
-        } else {
-            None
-        };
-
-        if let Some(exited_id) = pending_exited_destroy {
-            log::debug!(
-                "[mailbox] wake: executing deferred destroy for Exited candidate {}",
-                exited_id
-            );
-            if let Err(e) = self.destroy_exited_wake_session(app, exited_id).await {
-                // Best-effort. Orphan SessionManager record lingers until AC3's
-                // runtime-dedup path (`#223-fu1`) drains it. spawn-persistent
-                // below still fires with the correct spawn_with_resume flag.
-                // (grinch G.M5 option (c).)
-                log::error!(
-                    "[mailbox] wake: failed to destroy exited session {} (orphan will linger until AC3): {}",
-                    exited_id,
-                    e
-                );
-                // (#747) The orphan Exited record still holds its restored
-                // raised hand. Do NOT clear it here: if the spawn below also
-                // fails, the orphan must stay the sole carrier (the hand is
-                // not lost with the failed wake). Remember it so 5d moves the
-                // hand to the new session once the spawn succeeds.
-                pending_exited_orphan_to_clear = Some(exited_id);
-            }
-        }
-
-        // Normal messages retain their original ordering: resolve the plan only
-        // after any deferred Exited destroy. Logical actions already carry the
-        // read-only plan proven safe above.
-        if spawn_plan.is_none() {
-            spawn_plan = Some(self.resolve_wake_spawn_plan(app, msg).await?);
-        }
-        let plan = spawn_plan
-            .ok_or_else(|| "Internal error: wake spawn plan was not resolved".to_string())?;
+    async fn spawn_peer_wake_fallback<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        plan: ResolvedWakeSpawnPlan,
+        spawn_with_resume: bool,
+        flags_present: bool,
+    ) -> Result<SpawnedPeerWake, String> {
         let ResolvedWakeSpawnPlan {
             resolved_command,
             cwd,
@@ -8085,6 +8629,34 @@ impl MailboxPoller {
         let session_id =
             Uuid::parse_str(&info.id).map_err(|e| format!("Failed to parse session id: {}", e))?;
 
+        Ok((
+            session_id,
+            configured_spawn_for_annotation,
+            resolved_command,
+        ))
+    }
+
+    async fn finish_peer_wake_fallback<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        response: Option<&ResponseWakeWork>,
+        restored: (
+            Option<String>,
+            Option<Uuid>,
+            Option<crate::session::session::SessionCommunication>,
+        ),
+        spawned: (bool, SpawnedPeerWake),
+    ) -> Result<OutboxMessage, String> {
+        let (origin, comanaged) = delivery;
+        let (
+            pending_exited_telegram_bot_id,
+            mut pending_exited_orphan_to_clear,
+            mut pending_exited_communication,
+        ) = restored;
+        let (flags_present, (session_id, configured_spawn_for_annotation, resolved_command)) =
+            spawned;
         if pending_exited_telegram_bot_id.is_some() {
             self.attach_persisted_telegram_for_wake(
                 app,
@@ -8137,7 +8709,7 @@ impl MailboxPoller {
         let settle = self.wait_for_spawned_wake_idle(app, session_id).await?;
 
         // Inject message — interactive mode (session persists, user sees reply instructions)
-        self.inject_wake_into_pty(app, session_id, msg, origin, comanaged, settle)
+        self.inject_wake_into_pty(app, session_id, msg, (origin, comanaged), settle, response)
             .await?;
 
         // #1635-2 D4: the delivered JSON reports the effective agent and
@@ -8156,6 +8728,112 @@ impl MailboxPoller {
             }
         }
         Ok(delivered)
+    }
+
+    async fn deliver_peer_wake_fallback<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        response: Option<&ResponseWakeWork>,
+        dispatch: (bool, bool),
+        fallback: PeerWakeFallback,
+    ) -> Result<OutboxMessage, String> {
+        let (logical_command, flags_present) = dispatch;
+        let (
+            spawn_with_resume,
+            pending_exited_destroy,
+            pending_exited_telegram_bot_id,
+            pending_exited_communication,
+        ) = fallback;
+        // (#747) Set only when the deferred destroy FAILS: the orphan Exited
+        // record then still holds the restored hand and must be cleared once
+        // the replacement spawn succeeds (single-carrier rule, 5d).
+        let mut pending_exited_orphan_to_clear: Option<Uuid> = None;
+        // No viable Inject candidate succeeded, so the fallback would spawn a
+        // persistent session. Root Agent remains user-launched only.
+        log::info!(
+            "[mailbox] wake: no active session for '{}', spawning persistent session",
+            msg.to
+        );
+        if crate::config::root_agent::is_root_agent_target(&msg.to) {
+            let restoring = app
+                .state::<Arc<crate::RestoreInProgress>>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst);
+            return if restoring {
+                Err(format!(
+                    "Root Agent session not yet restored for '{}'; daemon restart in progress — will retry.",
+                    msg.to
+                ))
+            } else {
+                Err(format!(
+                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages — ask the user to launch it.",
+                    msg.to
+                ))
+            };
+        }
+
+        // A logical action must be mapped against the exact carried spawn shell
+        // before an Exited record is destroyed or provider directories are made.
+        let mut spawn_plan = if logical_command {
+            let plan = self.resolve_wake_spawn_plan(app, msg).await?;
+            if let Some(wire_value) = msg.command.as_deref() {
+                resolve_remote_pty_command(&plan.spawn_shell, wire_value)?;
+            }
+            Some(plan)
+        } else {
+            None
+        };
+
+        if let Some(exited_id) = pending_exited_destroy {
+            log::debug!(
+                "[mailbox] wake: executing deferred destroy for Exited candidate {}",
+                exited_id
+            );
+            if let Err(e) = self.destroy_exited_wake_session(app, exited_id).await {
+                // Best-effort. Orphan SessionManager record lingers until AC3's
+                // runtime-dedup path (`#223-fu1`) drains it. spawn-persistent
+                // below still fires with the correct spawn_with_resume flag.
+                // (grinch G.M5 option (c).)
+                log::error!(
+                    "[mailbox] wake: failed to destroy exited session {} (orphan will linger until AC3): {}",
+                    exited_id,
+                    e
+                );
+                // (#747) The orphan Exited record still holds its restored
+                // raised hand. Do NOT clear it here: if the spawn below also
+                // fails, the orphan must stay the sole carrier (the hand is
+                // not lost with the failed wake). Remember it so 5d moves the
+                // hand to the new session once the spawn succeeds.
+                pending_exited_orphan_to_clear = Some(exited_id);
+            }
+        }
+
+        // Normal messages retain their original ordering: resolve the plan only
+        // after any deferred Exited destroy. Logical actions already carry the
+        // read-only plan proven safe above.
+        if spawn_plan.is_none() {
+            spawn_plan = Some(self.resolve_wake_spawn_plan(app, msg).await?);
+        }
+        let plan = spawn_plan
+            .ok_or_else(|| "Internal error: wake spawn plan was not resolved".to_string())?;
+        let spawned = self
+            .spawn_peer_wake_fallback(app, msg, plan, spawn_with_resume, flags_present)
+            .await?;
+        self.finish_peer_wake_fallback(
+            app,
+            msg,
+            delivery,
+            response,
+            (
+                pending_exited_telegram_bot_id,
+                pending_exited_orphan_to_clear,
+                pending_exited_communication,
+            ),
+            (flags_present, spawned),
+        )
+        .await
     }
 
     /// Deliver a validated AgentsCommander-generated notice through the existing wake,
@@ -8884,10 +9562,11 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         session_id: Uuid,
         msg: &OutboxMessage,
-        origin: WakeDeliveryOrigin,
-        comanaged: bool,
+        attribution: (WakeDeliveryOrigin, bool),
         settle: SettleReadiness,
+        _response: Option<&ResponseWakeWork>,
     ) -> Result<(), String> {
+        let (origin, comanaged) = attribution;
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
             {
@@ -12810,6 +13489,7 @@ impl MailboxPoller {
 
         // Remove original
         std::fs::remove_file(path).map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+        self.settle_response_source(path, true);
 
         log::info!("[mailbox] Message {} moved to delivered/", msg.id);
         Ok(())
@@ -12842,6 +13522,7 @@ impl MailboxPoller {
 
         // Remove original
         std::fs::remove_file(path).map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+        self.settle_response_source(path, false);
 
         log::warn!(
             "[mailbox] Message {} moved to rejected/: {}",

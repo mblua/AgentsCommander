@@ -375,6 +375,14 @@ pub(crate) struct ResponseCloseSettlementEvidence {
 #[allow(dead_code)]
 pub(crate) struct StaleOrInvalidSettlement;
 
+impl ResponseCloseInner {
+    fn target_is_closing(&self, target: &str) -> bool {
+        self.routes
+            .values()
+            .any(|route| route.closing.is_some() && route.closing_target.as_deref() == Some(target))
+    }
+}
+
 impl ResponseCloseState {
     pub(crate) fn bind_publisher(&self, publisher: ResponseClosePublisher) {
         let _ = self.with_inner(|inner| inner.publishers |= publisher as u8);
@@ -931,31 +939,47 @@ impl ResponseCloseState {
             }
         });
     }
-    // Dormant until P05 integration; remove with real callers.
-    #[allow(dead_code)]
+    pub(crate) fn target_is_closing(&self, target: &str) -> bool {
+        let inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poison) => {
+                let mut inner = poison.into_inner();
+                inner.failed = true;
+                inner
+            }
+        };
+        inner.target_is_closing(target)
+    }
+
     pub(crate) fn begin_delivery(
         &self,
         target: &str,
     ) -> Result<WorkDeliveryReservation, ResponseCloseError> {
-        self.with_inner(|inner| {
-            if inner
-                .routes
-                .values()
-                .any(|r| r.closing.is_some() && r.closing_target.as_deref() == Some(target))
-            {
-                return Err(ResponseCloseError::ClosingDeferred);
-            }
-            let work = inner.work.entry(target.to_owned()).or_default();
-            let Some(next) = work.dispatch.checked_add(1) else {
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poison) => {
+                let mut inner = poison.into_inner();
                 inner.failed = true;
-                return Err(ResponseCloseError::Unavailable);
-            };
-            work.dispatch = next;
-            Ok(WorkDeliveryReservation {
-                state: self.clone(),
-                target: target.to_owned(),
-            })
-        })?
+                inner
+            }
+        };
+        if inner.target_is_closing(target) {
+            return Err(ResponseCloseError::ClosingDeferred);
+        }
+        if inner.failed {
+            return Err(ResponseCloseError::Unavailable);
+        }
+        let work = inner.work.entry(target.to_owned()).or_default();
+        let Some(next) = work.dispatch.checked_add(1) else {
+            inner.failed = true;
+            return Err(ResponseCloseError::Unavailable);
+        };
+        work.dispatch = next;
+        drop(inner);
+        Ok(WorkDeliveryReservation {
+            state: self.clone(),
+            target: target.to_owned(),
+        })
     }
     // Dormant until P05 integration; remove with real callers.
     #[allow(dead_code)]

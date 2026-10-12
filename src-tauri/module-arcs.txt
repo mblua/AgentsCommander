@@ -175,6 +175,7 @@ agentscommander_lib::api::message_store -> agentscommander_lib::path_identity
 agentscommander_lib::api::message_store -> agentscommander_lib::phone::types
 agentscommander_lib::api::message_store -> agentscommander_lib::pty::backend
 agentscommander_lib::api::message_store -> agentscommander_lib::pty::inject
+agentscommander_lib::api::message_store -> agentscommander_lib::pty::manager
 agentscommander_lib::api::schema -> agentscommander_lib::cli::list_peers
 agentscommander_lib::api::schema -> agentscommander_lib::phone::types
 agentscommander_lib::capture::jev -> agentscommander_lib::capture::catalog
