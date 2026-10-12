@@ -4,14 +4,11 @@
 //! `config::projects` module.
 //!
 //! No `--token` requirement: project registration mutates the user-local
-//! `settings.json`, which any process with shell access can already write to.
+//! `project-paths.json`, which any process with shell access can already write to.
 //! Adding token gating would not change the security boundary; it would only
 //! diverge the CLI UX from `git init` / `npm init`.
 //!
-//! GUI concurrency caveat: when AC's GUI is running, its in-memory
-//! `SettingsState` is the source of truth. A subsequent GUI `update_settings`
-//! built from a stale snapshot can clobber a CLI-registered entry. Documented
-//! in the plan §6 — a watcher/reload story is a follow-up issue.
+//! Registration holds the shared settings lock across fresh capture and commit.
 
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -19,8 +16,8 @@ use std::path::{Path, PathBuf};
 use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::{register_existing_project, ProjectError};
 use crate::config::settings::{
-    load_settings_for_cli_strict, project_state_has_structural, refresh_project_paths_from_disk,
-    resync_project_state_from_runtime, save_settings_with_project_paths,
+    begin_project_paths_transaction_at_path, load_settings_for_cli_strict,
+    project_state_has_structural, resync_project_state_from_runtime, settings_path,
 };
 
 #[derive(Args)]
@@ -53,18 +50,24 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
             return 1;
         }
     };
-    // #1077: structural project-metadata corruption blocks any list mutation.
-    if project_state_has_structural(&settings) {
-        eprintln!(
-            "Error: settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first."
-        );
+    let Some(path) = settings_path() else {
+        eprintln!("Error: Could not determine settings directory");
+        return 1;
+    };
+    let mut transaction = match begin_project_paths_transaction_at_path(&settings, &path) {
+        Ok(token) => token,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return 1;
+        }
+    };
+    settings = transaction.fresh_settings().clone();
+    if let Err(error) = transaction.refresh_raw_projects(&mut settings) {
+        eprintln!("Error: {error}");
         return 1;
     }
-    // #1077: reconcile the runtime list from the RAW disk fields (which retain a
-    // stored-but-missing project the strict decode filters out) so a subsequent
-    // resync preserves those records in place instead of dropping them.
-    if let Err(e) = refresh_project_paths_from_disk(&mut settings) {
-        eprintln!("Error: {}", e);
+    if project_state_has_structural(&settings) {
+        eprintln!("Error: project-paths.json has malformed project metadata");
         return 1;
     }
     let result = match register_existing_project(&mut settings, &args.path) {
@@ -86,10 +89,11 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
         // instance-relative companion (retaining any preserved conflict/missing
         // records) instead of dropping the append.
         resync_project_state_from_runtime(&mut settings);
-        if let Err(e) = save_settings_with_project_paths(&settings) {
+        if let Err(e) = transaction.commit_project_groups(&settings, true, true) {
             eprintln!("Error: failed to persist settings: {}", e);
             return 1;
         }
+        drop(transaction);
         // #1318 - a CLI open of an unseeded project seeds the catalog + masters
         // immediately (no restart needed). Fail-soft: any error is logged and
         // the boot loop covers the project at the next boot.

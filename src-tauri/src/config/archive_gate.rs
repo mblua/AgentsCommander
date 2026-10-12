@@ -52,7 +52,13 @@ pub(crate) async fn probe_spawn_refusal<R: tauri::Runtime>(
     cwd: &str,
 ) -> Result<(), String> {
     let settings = app.state::<crate::config::settings::SettingsState>();
-    let archived = { settings.read().await.archived_project_paths.clone() };
+    let archived = {
+        let current = settings.read().await;
+        if let Some(error) = &current.project_paths_persistence_error {
+            return Err(error.clone());
+        }
+        current.archived_project_paths.clone()
+    };
     if archived.is_empty() {
         return Ok(());
     }
@@ -76,7 +82,13 @@ pub(crate) async fn enforce_unarchived_for_spawn<R: tauri::Runtime>(
     session_label: &str,
 ) -> Result<(), String> {
     let settings = app.state::<crate::config::settings::SettingsState>();
-    let archived = { settings.read().await.archived_project_paths.clone() };
+    let archived = {
+        let current = settings.read().await;
+        if let Some(error) = &current.project_paths_persistence_error {
+            return Err(error.clone());
+        }
+        current.archived_project_paths.clone()
+    };
     if archived.is_empty() {
         return Ok(());
     }
@@ -107,44 +119,35 @@ async fn auto_unarchive_for_activation<R: tauri::Runtime>(
             )
         })?;
 
-    crate::config::settings::refresh_project_paths_from_disk(&mut s)?;
-    // #1077: structural project-metadata corruption cannot be mutated; refuse
-    // the auto-unarchive rather than normalizing a corrupt list.
-    if crate::config::settings::project_state_has_structural(&s) {
-        return Err(format!(
-            "Cannot start a session in archived project '{}': settings.json has malformed project metadata. Fix or remove the corrupt project fields first.",
-            folder_name(root)
-        ));
-    }
-    // #1077 §4.3: apply the unarchive to a candidate clone; publish only after the
-    // atomic save succeeds. On failure the live guard keeps the refreshed
-    // pre-mutation (disk-authoritative archived) state, never the unsaved move.
-    let mut candidate = s.clone();
-    let reg = match auto_unarchive_registration(&mut candidate, root).map_err(|e| {
-        format!(
-            "Cannot start a session in archived project '{}': {}. Open Archived Projects to restore it, or remove it from the list.",
-            folder_name(root),
-            e
-        )
-    })? {
-        Some(reg) => reg,
-        None => return Ok(()),
-    };
-
-    // Rebuild the candidate's hidden pairs to match its mutated runtime lists so
-    // the reconcile serializer records the unarchived pair (with its companion).
-    crate::config::settings::resync_project_state_from_runtime(&mut candidate);
-    let path = match crate::config::config_dir() {
-        Some(dir) => dir.join(SETTINGS_FILE_NAME),
-        None => return Err("Could not determine settings directory".to_string()),
-    };
-    match crate::config::settings::reconcile_project_state_to_path(&candidate, &path, true, true) {
-        Ok(written) => *s = written,
-        Err(e) => {
-            drop(s);
-            return Err(e);
+    let path = crate::config::config_dir()
+        .ok_or("Could not determine settings directory")?
+        .join(SETTINGS_FILE_NAME);
+    let root_owned = root.to_string();
+    let current = s.clone();
+    // The managed guard stays owned by this future; the blocking closure owns
+    // only the file token and captures, and releases it before the await ends.
+    let written = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let mut transaction =
+            crate::config::settings::begin_project_paths_transaction_at_path(&current, &path)?;
+        let mut candidate = transaction.fresh_settings().clone();
+        transaction.refresh_raw_projects(&mut candidate)?;
+        let reg = auto_unarchive_registration(&mut candidate, &root_owned)
+            .map_err(|error| error.to_string())?;
+        let Some(reg) = reg else {
+            return Ok((candidate, Ok(None)));
+        };
+        crate::config::settings::resync_project_state_from_runtime(&mut candidate);
+        match transaction.commit_project_groups(&candidate, true, true) {
+            Ok(written) => Ok((written, Ok(Some(reg)))),
+            Err(error) => Ok((transaction.fresh_settings().clone(), Err(error))),
         }
-    }
+    })
+    .await
+    .map_err(|error| format!("archive gate task failed: {error}"))??;
+    *s = written.0;
+    let Some(reg) = written.1? else {
+        return Ok(());
+    };
     drop(s);
 
     log::warn!(

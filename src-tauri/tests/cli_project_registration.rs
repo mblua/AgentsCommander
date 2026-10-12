@@ -1574,7 +1574,7 @@ fn p05_missing_and_valid_empty_settings_remain_readonly() {
 fn write_p05_custom_settings(fixture: &ReadonlyFixture) {
     let value = serde_json::json!({
         "defaultShell":"powershell.exe", "defaultShellArgs":[],
-        "projectPaths":[fixture.project], "npmUpdateNotificationsEnabled":false,
+        "projectPaths":[fixture.project], "projectPathsRelativeToInstance":[null], "projectPath":fixture.project, "projectPathRelativeToInstance":null, "archivedProjectPaths":[], "archivedProjectPathsRelativeToInstance":[], "npmUpdateNotificationsEnabled":false,
         "sidebarZoom":1.0, "mainZoom":1.0,
         "agents":[{"id":"p05","label":"P05 custom","command":"codex","color":"#123456","instructionsFilename":"P05-INSTRUCTIONS.md"}]
     });
@@ -1587,44 +1587,105 @@ fn write_p05_custom_settings(fixture: &ReadonlyFixture) {
 
 #[test]
 fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes() {
-    let fixture = ReadonlyFixture::new();
-    write_p05_custom_settings(&fixture);
-    let before = fixture.managed_bytes();
-    run_success(
-        &fixture.bin,
-        &[
-            "workgroup",
-            "add",
-            "--project",
-            "RegisteredRemote",
-            "--team",
-            "devs",
-            "--title",
-            "P05 created room",
-        ],
-    );
-    assert_eq!(
-        fixture.managed_bytes(),
-        before,
-        "production gitignore loader wrote managed config"
-    );
-    let ignore = std::fs::read_to_string(fixture.project.join(".ac/.gitignore")).unwrap();
-    assert!(
-        ignore.contains("**/__agent_*/P05-INSTRUCTIONS.md"),
-        "{ignore}"
-    );
-    let rooms = run_json(
-        &fixture.bin,
-        &["workgroup", "list", "--project", "RegisteredRemote"],
-    )
-    .0;
-    assert_eq!(rooms.as_array().unwrap().len(), 2);
+    for mode in 0..3 {
+        let fixture = ReadonlyFixture::new();
+        write_p05_custom_settings(&fixture);
+        stage_p03_source(&fixture, mode);
+        let before = fixture.managed_bytes();
+        run_success(
+            &fixture.bin,
+            &[
+                "workgroup",
+                "add",
+                "--project",
+                "RegisteredRemote",
+                "--team",
+                "devs",
+                "--title",
+                "P05 created room",
+            ],
+        );
+        assert_eq!(
+            fixture.managed_bytes(),
+            before,
+            "production gitignore loader wrote managed config"
+        );
+        let ignore = std::fs::read_to_string(fixture.project.join(".ac/.gitignore")).unwrap();
+        assert!(
+            ignore.contains("**/__agent_*/P05-INSTRUCTIONS.md"),
+            "{ignore}"
+        );
+        let rooms = run_json(
+            &fixture.bin,
+            &["workgroup", "list", "--project", "RegisteredRemote"],
+        )
+        .0;
+        assert_eq!(rooms.as_array().unwrap().len(), 2);
+    }
+
+    // Reachable optional helper error: capture succeeds; reading a directory fails.
+    for mode in 0..3 {
+        let fixture = ReadonlyFixture::new();
+        write_p05_custom_settings(&fixture);
+        stage_p03_source(&fixture, mode);
+        let ignore = fixture.project.join(".ac/.gitignore");
+        assert!(!ignore.exists(), "unexpected fixture gitignore");
+        std::fs::create_dir(&ignore).unwrap();
+        let before = fixture.managed_bytes();
+        run_success(
+            &fixture.bin,
+            &[
+                "workgroup",
+                "add",
+                "--project",
+                "RegisteredRemote",
+                "--team",
+                "devs",
+                "--title",
+                "P03 helper failure",
+            ],
+        );
+        assert!(ignore.is_dir());
+        assert!(std::fs::read_dir(&ignore).unwrap().next().is_none());
+        assert_eq!(fixture.managed_bytes(), before);
+        let rooms = run_json(
+            &fixture.bin,
+            &["workgroup", "list", "--project", "RegisteredRemote"],
+        )
+        .0;
+        assert_eq!(rooms.as_array().unwrap().len(), 2);
+        std::fs::remove_dir(&ignore).unwrap();
+        run_success(
+            &fixture.bin,
+            &[
+                "workgroup",
+                "add",
+                "--project",
+                "RegisteredRemote",
+                "--team",
+                "devs",
+                "--title",
+                "P03 helper retry",
+            ],
+        );
+        assert!(std::fs::read_to_string(&ignore)
+            .unwrap()
+            .contains("**/__agent_*/P05-INSTRUCTIONS.md"));
+        let rooms = run_json(
+            &fixture.bin,
+            &["workgroup", "list", "--project", "RegisteredRemote"],
+        )
+        .0;
+        assert_eq!(rooms.as_array().unwrap().len(), 3);
+        assert_eq!(fixture.managed_bytes(), before);
+    }
 }
 
 #[test]
-fn p05_production_new_project_preserves_authorized_legacy_writer_contract() {
+fn p03_production_new_project_migrates_once_and_preserves_other_sources() {
     let fixture = ReadonlyFixture::new();
     write_p05_custom_settings(&fixture);
+    let original = std::fs::read(fixture.config.join("settings.30.instance.no-git.json")).unwrap();
     for preexisting in [false, true] {
         let project = fixture
             ._tmp
@@ -1645,7 +1706,23 @@ fn p05_production_new_project_preserves_authorized_legacy_writer_contract() {
         assert_eq!(settings["defaultShell"], "powershell.exe");
         assert_eq!(settings["npmUpdateNotificationsEnabled"], false);
         let canonical_project = std::fs::canonicalize(&project).unwrap();
-        assert!(settings["projectPaths"]
+        let paths: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(fixture.config.join("project-paths.json")).unwrap(),
+        )
+        .unwrap();
+        for key in PROJECT_KEYS {
+            assert!(settings.get(key).is_none());
+        }
+        assert_eq!(
+            std::fs::read(
+                fixture
+                    .config
+                    .join("project-paths.pre-migration.no-git.json")
+            )
+            .unwrap(),
+            original
+        );
+        assert!(paths["projectPaths"]
             .as_array()
             .unwrap()
             .iter()
@@ -1655,13 +1732,17 @@ fn p05_production_new_project_preserves_authorized_legacy_writer_contract() {
             ignore.contains("**/__agent_*/P05-INSTRUCTIONS.md"),
             "{ignore}"
         );
-        assert!(
-            fixture
-                .managed_bytes()
-                .keys()
-                .all(|name| !name.starts_with("project-paths")),
-            "P05 must keep migration dormant"
-        );
+        assert!(paths["projectPaths"].as_array().unwrap().iter().any(
+            |path| std::fs::canonicalize(path.as_str().unwrap()).unwrap()
+                == std::fs::canonicalize(&fixture.project).unwrap()
+        ));
+        assert!(!fixture
+            .config
+            .join("agents.30.instance.no-git.json")
+            .exists());
+        let stable = fixture.managed_bytes();
+        run_success(&fixture.bin, &["new-project", project.to_str().unwrap()]);
+        assert_eq!(fixture.managed_bytes(), stable);
     }
 }
 
@@ -1725,4 +1806,377 @@ fn p05_root_send_resolves_remote_registration_without_own_project_fallback() {
         ],
         "authorization denied",
     );
+}
+
+const PROJECT_KEYS: [&str; 6] = [
+    "projectPath",
+    "projectPathRelativeToInstance",
+    "projectPaths",
+    "projectPathsRelativeToInstance",
+    "archivedProjectPaths",
+    "archivedProjectPathsRelativeToInstance",
+];
+
+fn stage_p03_source(fixture: &ReadonlyFixture, mode: usize) {
+    let path = fixture.config.join("settings.30.instance.no-git.json");
+    let mut settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let projection: serde_json::Map<String, serde_json::Value> = PROJECT_KEYS
+        .iter()
+        .filter_map(|key| {
+            settings
+                .get(*key)
+                .map(|value| ((*key).to_string(), value.clone()))
+        })
+        .collect();
+    if mode > 0 {
+        std::fs::write(
+            fixture.config.join("project-paths.json"),
+            serde_json::to_vec(&projection).unwrap(),
+        )
+        .unwrap();
+    }
+    if mode == 1 {
+        for key in PROJECT_KEYS {
+            settings.as_object_mut().unwrap().remove(key);
+        }
+        std::fs::write(path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    }
+}
+
+struct P03SettingsLock(std::fs::File);
+
+impl P03SettingsLock {
+    fn acquire(config: &Path) -> Self {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(config.join("settings.30.instance.no-git.json.lock"))
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            assert_eq!(
+                unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                0
+            );
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+            };
+            let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+                unsafe { std::mem::zeroed() };
+            assert_ne!(
+                unsafe {
+                    LockFileEx(
+                        file.as_raw_handle(),
+                        LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                        0,
+                        u32::MAX,
+                        u32::MAX,
+                        &mut overlapped,
+                    )
+                },
+                0
+            );
+        }
+        Self(file)
+    }
+}
+
+impl Drop for P03SettingsLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            assert_eq!(unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) }, 0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+            let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+                unsafe { std::mem::zeroed() };
+            assert_ne!(
+                unsafe {
+                    UnlockFileEx(
+                        self.0.as_raw_handle(),
+                        0,
+                        u32::MAX,
+                        u32::MAX,
+                        &mut overlapped,
+                    )
+                },
+                0
+            );
+        }
+    }
+}
+
+#[test]
+fn p03_real_readers_hold_shared_lock_and_retry_sidecar_without_managed_writes() {
+    for mode in 0..3 {
+        let fixture = ReadonlyFixture::new();
+        stage_p03_source(&fixture, mode);
+        let remote_root = fixture.config.join("ac-root-agent");
+        std::fs::create_dir_all(remote_root.join("messaging")).unwrap();
+        std::fs::write(
+            remote_root.join("messaging").join(P05_MESSAGE),
+            "P03 message",
+        )
+        .unwrap();
+        for verb in ["list-peers", "list-peers-lean"] {
+            let peers = fixture.assert_reader(&[
+                verb,
+                "--token",
+                P05_TOKEN,
+                "--root",
+                remote_root.to_str().unwrap(),
+            ]);
+            assert!(peers
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|peer| peer["name"] == "RegisteredRemote:room-01-devs/coord"));
+        }
+        let held = P03SettingsLock::acquire(&fixture.config);
+        let before = fixture.managed_bytes();
+        let commands = vec![
+            vec![
+                "list-peers",
+                "--token",
+                P05_TOKEN,
+                "--root",
+                remote_root.to_str().unwrap(),
+            ],
+            vec![
+                "list-peers-lean",
+                "--token",
+                P05_TOKEN,
+                "--root",
+                remote_root.to_str().unwrap(),
+            ],
+            vec![
+                "send",
+                "--token",
+                P05_TOKEN,
+                "--root",
+                remote_root.to_str().unwrap(),
+                "--to",
+                "RegisteredRemote:room-01-devs/coord",
+                "--send",
+                P05_MESSAGE,
+                "--mode",
+                "wake",
+                "--confirm-timeout",
+                "0",
+            ],
+            vec![
+                "close-session",
+                "--token",
+                P05_TOKEN,
+                "--root",
+                &fixture.peer,
+                "--target",
+                "RegisteredRemote:room-01-devs/coord",
+            ],
+            vec![
+                "create-agent-matrix",
+                "--project",
+                "RegisteredRemote",
+                "--name",
+                "P03Matrix",
+                "--description",
+                "P03",
+            ],
+        ];
+        for args in &commands {
+            let start = std::time::Instant::now();
+            let output = run_failure(&fixture.bin, args);
+            assert_eq!(output.status.code(), Some(1));
+            assert!(start.elapsed() >= std::time::Duration::from_secs(2));
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("Queued:"));
+            assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err());
+            assert_eq!(fixture.managed_bytes(), before);
+            fixture.assert_no_outbox();
+            assert!(!fixture.project.join(".ac/_agent_p03matrix").exists());
+        }
+        // Explicit fixture staging models post-publication/pre-cleanup, not engine execution.
+        if mode == 0 {
+            stage_p03_source(&fixture, 2);
+        }
+        let path = fixture.config.join("settings.30.instance.no-git.json");
+        let mut settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for key in PROJECT_KEYS {
+            settings.as_object_mut().unwrap().remove(key);
+        }
+        std::fs::write(path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        drop(held);
+        let before = fixture.managed_bytes();
+        for args in &commands[..2] {
+            let peers = fixture.assert_reader(args);
+            assert!(peers
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|peer| peer["name"] == "RegisteredRemote:room-01-devs/coord"));
+        }
+        let output = run_failure(&fixture.bin, &commands[2]);
+        assert!(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.starts_with("Queued: ")));
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .contains("delivery confirmation timeout after 0s"));
+        let outbox = fixture.outbox_for_root(remote_root.to_str().unwrap());
+        let queued: Vec<_> = std::fs::read_dir(&outbox)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(queued.len(), 1);
+        let message: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&queued[0]).unwrap()).unwrap();
+        assert_eq!(message["to"], "RegisteredRemote:room-01-devs/coord");
+        std::fs::remove_file(&queued[0]).unwrap();
+        fixture.assert_denied(&commands[3], "authorization denied");
+        run_success(&fixture.bin, &commands[4]);
+        assert!(fixture.project.join(".ac/_agent_p03matrix").is_dir());
+        assert_eq!(fixture.managed_bytes(), before);
+    }
+}
+
+#[test]
+fn p03_real_new_project_initial_lock_refusal_and_concurrent_registration_retry() {
+    let fixture = ReadonlyFixture::new();
+    write_p05_custom_settings(&fixture);
+    let before = fixture.managed_bytes();
+    let projects = [
+        fixture._tmp.path().join("ConcurrentA"),
+        fixture._tmp.path().join("ConcurrentB"),
+    ];
+    std::fs::create_dir_all(projects[1].join(".ac")).unwrap();
+    let held = P03SettingsLock::acquire(&fixture.config);
+    for project in &projects {
+        let output = run_failure(&fixture.bin, &["new-project", project.to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stdout).is_empty());
+        assert_eq!(fixture.managed_bytes(), before);
+        assert!(!project.join(".ac/Context.global.md").exists());
+        assert!(!project.join(".ac/.gitignore").exists());
+    }
+    assert!(!projects[0].exists());
+    drop(held);
+    let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let mut children = Vec::new();
+    for project in &projects {
+        let start = start.clone();
+        let binary = fixture.bin.clone();
+        let project = project.clone();
+        children.push(std::thread::spawn(move || {
+            start.wait();
+            run_success(&binary, &["new-project", project.to_str().unwrap()]);
+        }));
+    }
+    start.wait();
+    for child in children {
+        child.join().unwrap();
+    }
+    let paths: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.config.join("project-paths.json")).unwrap())
+            .unwrap();
+    let active = paths["projectPaths"].as_array().unwrap();
+    assert_eq!(active.len(), 3);
+    assert_eq!(
+        active.len(),
+        paths["projectPathsRelativeToInstance"]
+            .as_array()
+            .unwrap()
+            .len()
+    );
+    for project in [&fixture.project, &projects[0], &projects[1]] {
+        assert!(active.iter().any(
+            |path| std::fs::canonicalize(path.as_str().unwrap()).unwrap()
+                == std::fs::canonicalize(project).unwrap()
+        ));
+    }
+    let settings: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(fixture.config.join("settings.30.instance.no-git.json")).unwrap(),
+    )
+    .unwrap();
+    for key in PROJECT_KEYS {
+        assert!(settings.get(key).is_none());
+    }
+    let stable = fixture.managed_bytes();
+    for project in &projects {
+        run_success(&fixture.bin, &["new-project", project.to_str().unwrap()]);
+        assert_eq!(fixture.managed_bytes(), stable);
+    }
+}
+
+#[test]
+fn p03_workgroup_initial_resolution_lock_refusal_has_no_outputs_then_retry_succeeds() {
+    let fixture = ReadonlyFixture::new();
+    write_p05_custom_settings(&fixture);
+    let before = fixture.managed_bytes();
+    let rooms = run_json(
+        &fixture.bin,
+        &["workgroup", "list", "--project", "RegisteredRemote"],
+    )
+    .0;
+    let held = P03SettingsLock::acquire(&fixture.config);
+    let output = run_failure(
+        &fixture.bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "RegisteredRemote",
+            "--team",
+            "devs",
+            "--title",
+            "P03 denied",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err());
+    assert_eq!(fixture.managed_bytes(), before);
+    drop(held);
+    assert_eq!(
+        run_json(
+            &fixture.bin,
+            &["workgroup", "list", "--project", "RegisteredRemote"]
+        )
+        .0,
+        rooms
+    );
+    run_success(
+        &fixture.bin,
+        &[
+            "workgroup",
+            "add",
+            "--project",
+            "RegisteredRemote",
+            "--team",
+            "devs",
+            "--title",
+            "P03 retry",
+        ],
+    );
+    let after = run_json(
+        &fixture.bin,
+        &["workgroup", "list", "--project", "RegisteredRemote"],
+    )
+    .0;
+    assert_eq!(
+        after.as_array().unwrap().len(),
+        rooms.as_array().unwrap().len() + 1
+    );
+    let ignore = std::fs::read_to_string(fixture.project.join(".ac/.gitignore")).unwrap();
+    assert!(ignore.contains("**/__agent_*/P05-INSTRUCTIONS.md"));
+    assert_eq!(fixture.managed_bytes(), before);
 }

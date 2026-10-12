@@ -4220,7 +4220,7 @@ Completion or blockage requires an explicit reply to the orchestrator or peer wi
 /// summary. A root agent has no origin matrix (matrix_root == None), so this
 /// never collides with the matrix "3.". (#1005 S3: the old Allowed-bullet
 /// companion const is gone; the numbered entries are the single grant source.)
-const ROOT_PROJECT_SCOPE_ENTRY: &str = "3. **Every registered AgentsCommander project folder (the entire `<project>` directory, one level ABOVE `.ac`), including its git repository and its `.ac` tree:** as the verified Root Agent you may create, modify, and delete files anywhere under ANY project folder registered in this AgentsCommander install. This is a RULE, not a fixed list: the registered set is exactly `settings.projectPaths` in the app config `settings.json`, and the grant automatically covers every project registered now or added later. Inside each project it covers the source tree and git repository, the nested `.ac` tree, and everything beneath, including other agents' canonical state (`_agent_*` matrices and `__agent_*` replicas, with their `Role.md`, `memory/`, and `skills/`), room directories, messaging directories, plans, and session artifacts. The caution about other agents' replica directories that entry #2 carries for non-root agents is not rendered for you, and does not bind you: this grant covers reading and writing them alike. The `repo-*` naming restriction in entry #1 does NOT apply to you: you operate on each registered project's actual repository whatever its folder is named, always identified as the registered `settings.projectPaths` entry. You are the only agent permitted to write a registered project folder or its repository. This grant has ONE hard exclusion that always wins: the AgentsCommander app config directory itself (holding the global `settings.json` and the Agency template cache) stays CLI-managed and off-limits to direct edits, EVEN WHEN that config directory happens to physically sit inside a registered project folder; only your own Root Agent home inside that directory stays writable, as covered by entry #2.\n\n";
+const ROOT_PROJECT_SCOPE_ENTRY: &str = "3. **Every registered AgentsCommander project folder (the entire `<project>` directory, one level ABOVE `.ac`), including its git repository and its `.ac` tree:** as the verified Root Agent you may create, modify, and delete files anywhere under ANY project folder registered in this AgentsCommander install. This is a RULE, not a fixed list: the registered set is exactly `projectPaths` in the app config `project-paths.json`, and the grant automatically covers every project registered now or added later. Inside each project it covers the source tree and git repository, the nested `.ac` tree, and everything beneath, including other agents' canonical state (`_agent_*` matrices and `__agent_*` replicas, with their `Role.md`, `memory/`, and `skills/`), room directories, messaging directories, plans, and session artifacts. The caution about other agents' replica directories that entry #2 carries for non-root agents is not rendered for you, and does not bind you: this grant covers reading and writing them alike. The `repo-*` naming restriction in entry #1 does NOT apply to you: you operate on each registered project's actual repository whatever its folder is named, always identified as the registered `projectPaths` in `project-paths.json` entry. You are the only agent permitted to write a registered project folder or its repository. This grant has ONE hard exclusion that always wins: the AgentsCommander app config directory itself (holding the global `settings.json`, `project-paths.json` and the Agency template cache) stays CLI-managed and off-limits to direct edits, EVEN WHEN that config directory happens to physically sit inside a registered project folder; only your own Root Agent home inside that directory stays writable, as covered by entry #2.\n\n";
 
 /// Requirement B. Appended at the very end of the write-restrictions block
 /// (after the REFUSE line), so it renders as its own section before
@@ -4263,7 +4263,7 @@ fn strip_legacy_self_maintenance(content: &str) -> String {
     out
 }
 
-const ROOT_GIT_SCOPE: &str = "Git discovery above the Root Agent session root is blocked. State-changing Git belongs at a registered project root (the `settings.projectPaths` entry, one level above `.ac`), never in the Root Agent directory or another `.ac` subtree; the `repo-*` naming restriction does not apply. Read-only Git is allowed within scope.";
+const ROOT_GIT_SCOPE: &str = "Git discovery above the Root Agent session root is blocked. State-changing Git belongs at a registered project root (the `projectPaths` in `project-paths.json` entry, one level above `.ac`), never in the Root Agent directory or another `.ac` subtree; the `repo-*` naming restriction does not apply. Read-only Git is allowed within scope.";
 const WORKGROUP_GIT_SCOPE: &str = "`room-*/` and `wg-*/` are gitignored; origin Agent Matrices are not and can be tracked. Git discovery above replica and Matrix roots is blocked. State-changing Git belongs in `repo-*`; read-only Git is allowed within scope.";
 /// #1614 D8b: the exact `WORKGROUP_GIT_SCOPE` bytes shipped at d7008b34.
 /// Read only by `legacy_rendered_default_context_for_generation`, which
@@ -4690,7 +4690,7 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
         "the workspace root"
     };
     let forbidden_scope = if is_root_agent {
-        "the entries listed above; your write scope already covers every registered project folder in `settings.projectPaths`, so the only writes off-limits are the global `settings.json`, the Agency template cache, and any other file anywhere under the app config directory outside your own Root Agent home (CLI-managed, even when the app config directory falls within a registered project folder), plus anything outside the registered set: files of projects not listed in `settings.projectPaths`, user home files unrelated to AgentsCommander, and arbitrary paths on disk".to_string()
+        "the entries listed above; your write scope already covers every registered project folder in `projectPaths` in `project-paths.json`, so the only writes off-limits are the global `settings.json`, `project-paths.json`, the Agency template cache, and any other file anywhere under the app config directory outside your own Root Agent home (CLI-managed, even when the app config directory falls within a registered project folder), plus anything outside the registered set: files of projects not listed in `projectPaths` in `project-paths.json`, user home files unrelated to AgentsCommander, and arbitrary paths on disk".to_string()
     } else if matrix_root.is_some() {
         format!(
             "the entries listed above — including other agents' replica directories, any other files inside the Agent Matrix, {ws}, parent project dirs, user home files, or arbitrary paths on disk",
@@ -4712,12 +4712,12 @@ You MAY also READ exactly one specifically identified canonical inter-agent mess
     // #923: reads are now restricted to the same allowed entries as writes. The Root
     // Agent already holds a project-wide read grant, so it gets a scope sentence rather
     // than the peer-privacy clause that applies to every other agent. D2: that scope is
-    // defined by `settings.json`, which lives in the app config dir OUTSIDE every
+    // defined by `project-paths.json`, which lives in the app config dir OUTSIDE every
     // registered project in a normal install, so reading it must be granted explicitly
     // or the grant becomes self-referentially unreadable.
     let forbidden_read_scope = if is_root_agent {
         format!(
-            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI operations covered by the exception below. Your Root Agent scope already grants reads across every project folder registered in `settings.projectPaths`, including its `.ac` tree. You may ALWAYS read the app config `settings.json` to enumerate that set, and the Agency template cache directory that `agency-templates status` and `agency-templates list` report on; those two reads are grants, while direct writes to them stay CLI-managed. Reads stay off-limits beyond the registered set: files of projects not listed in `settings.projectPaths`, user home files unrelated to AgentsCommander, and arbitrary paths on disk.",
+            "the entries listed above{ms}, except for explicitly requested AgentsCommander CLI operations covered by the exception below. Your Root Agent scope already grants reads across every project folder registered in `projectPaths` in `project-paths.json`, including its `.ac` tree. You may ALWAYS read the app config `project-paths.json` to enumerate that set, the app config `settings.json` for unrelated settings, and the Agency template cache directory that `agency-templates status` and `agency-templates list` report on; these reads are grants, while direct writes to them stay CLI-managed. Reads stay off-limits beyond the registered set: files of projects not listed in `projectPaths` in `project-paths.json`, user home files unrelated to AgentsCommander, and arbitrary paths on disk.",
             ms = messaging_read_phrase,
         )
     } else {
@@ -6796,7 +6796,7 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
         assert!(plain.contains("inbound message file grant above"));
         assert!(plain.contains("another agent's memory is private"));
         assert!(root.contains("Every registered AgentsCommander project folder"));
-        assert!(root.contains("settings.projectPaths"));
+        assert!(root.contains("projectPaths` in `project-paths.json"));
         assert!(root.contains("## Root Agent Authority and Chain of Command"));
         // #1795: this fixture's room has no `.ac` grandparent, so
         // `replica_shared_roots` fails closed at check 3 and the block keeps its
@@ -8099,7 +8099,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         assert!(replica.contains("Do NOT read or write into other agents' replica directories"));
     }
 
-    /// #923 D2: the Root Agent's read scope is defined by `settings.json`, which sits in
+    /// #923 D2: the Root Agent's read scope is defined by `project-paths.json`, which sits in
     /// the app config directory, OUTSIDE every registered project in a normal install.
     /// Forbidding that read would make the grant self-referentially unreadable.
     #[test]
@@ -8107,10 +8107,11 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
         assert!(out.contains("- **FORBIDDEN**: Any read operation outside"));
         assert!(out
-            .contains("You may ALWAYS read the app config `settings.json` to enumerate that set"));
+            .contains("You may ALWAYS read the app config `project-paths.json` to enumerate that set, the app config `settings.json` for unrelated settings"));
         assert!(out.contains("`agency-templates status` and `agency-templates list` report on"));
-        assert!(out
-            .contains("those two reads are grants, while direct writes to them stay CLI-managed"));
+        assert!(
+            out.contains("these reads are grants, while direct writes to them stay CLI-managed")
+        );
     }
 
     // T10 (#1172, acceptance criterion 6): another agent's memory is private
@@ -8301,7 +8302,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         assert!(out.contains("Every registered AgentsCommander project folder"));
         assert!(out.contains("one level ABOVE `.ac`"));
         assert!(out.contains("including its git repository"));
-        assert!(out.contains("settings.projectPaths"));
+        assert!(out.contains("projectPaths` in `project-paths.json"));
         assert!(out.contains("This is a RULE, not a fixed list"));
         assert!(out.contains("`_agent_*` matrices and `__agent_*` replicas"));
         // The repo-* naming restriction must be explicitly waived for the root.
@@ -8314,7 +8315,9 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
     #[test]
     fn root_grant_keeps_global_config_off_limits() {
         let out = default_context_as_root("C:/fake/ac-root-agent", None, &no_skill_section());
-        assert!(out.contains("the global `settings.json`, the Agency template cache"));
+        assert!(out.contains(
+            "the global `settings.json`, `project-paths.json`, the Agency template cache"
+        ));
         assert!(out.contains("outside your own Root Agent home"));
         // C1 (round 2): the project working tree is now IN scope, so the old
         // "working tree outside `.ac`" forbidden clause must be GONE.
@@ -8329,7 +8332,9 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
             "EVEN WHEN that config directory happens to physically sit inside a registered project folder"
         ));
         // The forbidden set now bites only UNREGISTERED locations.
-        assert!(out.contains("files of projects not listed in `settings.projectPaths`"));
+        assert!(
+            out.contains("files of projects not listed in `projectPaths` in `project-paths.json`")
+        );
         // config-dir subdirs stay covered ("anywhere under", not "directly under").
         assert!(out.contains("any other file anywhere under the app config directory"));
         assert!(!out.contains("directly under the app config directory"));
@@ -8667,12 +8672,14 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
             );
         }
 
-        assert!(root.git_scope.contains("settings.projectPaths"));
+        assert!(root
+            .git_scope
+            .contains("projectPaths` in `project-paths.json"));
         assert!(!root.git_scope.contains("belongs in `repo-*`"));
         assert!(workgroup.git_scope.contains("belongs in `repo-*`"));
         assert!(direct_matrix.git_scope.contains("belongs in `repo-*`"));
         for non_root in [&workgroup.git_scope, &direct_matrix.git_scope] {
-            assert!(!non_root.contains("settings.projectPaths"));
+            assert!(!non_root.contains("projectPaths` in `project-paths.json"));
             assert!(!non_root.contains("registered project root"));
         }
 
