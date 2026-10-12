@@ -2430,9 +2430,21 @@ mod tests {
         .expect("gated synchronous registration");
 
         assert!(result.registered);
+        let expected_disk_only = super::display_canonical(
+            std::fs::canonicalize(&disk_only)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref(),
+        );
+        let expected_new_project = super::display_canonical(
+            std::fs::canonicalize(&result.path)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref(),
+        );
         assert_eq!(
             disk_settings.project_paths,
-            vec![disk_only.clone(), result.path.clone()]
+            vec![expected_disk_only, expected_new_project]
         );
         // #2716 (B3): the file no longer decodes as a whole `AppSettings` (its
         // `agents` moved to the agents file), so the written key is read raw.
