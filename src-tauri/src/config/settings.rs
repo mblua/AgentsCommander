@@ -471,8 +471,100 @@ pub struct SourceSnapshot<Agent> {
     pub context_revision: String,
 }
 
-// #2895 P14: dormant source coordination primitives. The orchestrator owns
-// authorization, C-before-source acquisition and local inventory/PAIR work.
+// #2897 P03: compiled gate; no caller-controlled activation bypass.
+#[allow(dead_code)]
+pub(crate) const fn source_protocol_active() -> bool {
+    false
+}
+
+// Keep lower IO carriers behind the existing settings facade.
+#[allow(unused_imports)]
+pub(crate) use crate::config::local_config_io::{
+    PairCompleteProof as IdentityReferenceCompleteProof,
+    PairReservation as IdentityReferencePacket, PairReservationRequest as IdentityReferenceRequest,
+    PhysicalState as IdentityReferencePhysicalState, PreparedPairError as IdentityReferenceError,
+    ProtectedRevision as IdentityReferenceProtectedRevision,
+};
+
+/// PAIR layout belongs beside the physical identity-reference facade.
+#[allow(dead_code)]
+pub(crate) fn identity_reference_pair_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    (
+        root.join("config.json"),
+        root.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+        root.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME),
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn read_identity_reference_physical(
+    path: &Path,
+) -> Result<IdentityReferencePhysicalState, IdentityReferenceError> {
+    crate::config::local_config_io::read_config_pair_physical(path)
+}
+
+#[allow(dead_code)]
+pub(crate) fn identity_reference_protected_revision(
+    tuple: &[IdentityReferencePhysicalState; 2],
+) -> Result<[IdentityReferenceProtectedRevision; 2], IdentityReferenceError> {
+    crate::config::local_config_io::protected_config_pair_revision(tuple)
+}
+
+#[allow(dead_code)]
+pub(crate) fn execute_identity_reference_pair_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<(), IdentityReferenceError> {
+    crate::config::local_config_io::execute_reserved_config_pair_guarded(
+        decisions,
+        state,
+        reservation,
+        operation_id,
+        validate,
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_identity_reference_pair_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    plan_digest: &str,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<[IdentityReferencePhysicalState; 2], IdentityReferenceError> {
+    crate::config::local_config_io::verify_reserved_config_pair_guarded(
+        decisions,
+        state,
+        reservation,
+        operation_id,
+        plan_digest,
+        validate,
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn release_identity_reference_pair_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    proof: &IdentityReferenceCompleteProof,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<[IdentityReferencePhysicalState; 2], IdentityReferenceError> {
+    crate::config::local_config_io::release_reserved_config_pair_guarded(
+        decisions,
+        state,
+        reservation,
+        proof,
+        validate,
+    )
+}
+
+// Dormant single-editor source primitives. C serializes internal writes;
+// settings owns authorization, original inventory and the local journal.
 // No legacy loader, Save endpoint or transport invokes these primitives yet.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -487,6 +579,8 @@ pub(crate) enum SourceCoordinationError {
     Stale,
     #[error("journalInvalid")]
     Invalid,
+    #[error("notFound")]
+    NotFound,
     #[error("unauthorized")]
     Unauthorized,
     #[error("sourceCoordinationIo: {0}")]
@@ -494,20 +588,11 @@ pub(crate) enum SourceCoordinationError {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
-pub(crate) struct SourceParticipant {
-    pub(crate) membership_revision: u64,
-    pub(crate) inventory_digest: String,
-    pub(crate) capability_version: u32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
-pub(crate) enum SharedSourcePhase {
-    Preparing,
-    ParticipantsReady,
+pub(crate) enum SourceTransitionPhase {
+    IntentStored,
+    Prepared,
     SourcePublished,
     Complete,
 }
@@ -515,42 +600,12 @@ pub(crate) enum SharedSourcePhase {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
-pub(crate) struct SourceTargetCommitment {
+pub(crate) struct SourcePacketRecord {
+    pub(crate) target: PathBuf,
     pub(crate) target_id: String,
     pub(crate) before_protected_revision: SourceRevision,
     pub(crate) after_protected_revision: SourceRevision,
     pub(crate) plan_digest: String,
-    pub(crate) owner_instance_id: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
-pub(crate) struct SourceParticipantCommitment {
-    pub(crate) participant_id: String,
-    pub(crate) context_revision: String,
-    pub(crate) inventory_digest: String,
-    pub(crate) targets: Vec<SourceTargetCommitment>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
-pub(crate) struct SharedSourceOperation {
-    pub(crate) operation_id: String,
-    pub(crate) request_id: String,
-    pub(crate) payload_digest: String,
-    pub(crate) source: SourceRef,
-    pub(crate) expected_source_revision: SourceRevision,
-    pub(crate) after_source_revision: SourceRevision,
-    pub(crate) initiator_id: String,
-    pub(crate) initiator_intent_digest: String,
-    pub(crate) mappings: Vec<SourceIdentityMapping>,
-    pub(crate) participant_set: BTreeMap<String, SourceParticipant>,
-    pub(crate) commitments: BTreeMap<String, SourceParticipantCommitment>,
-    pub(crate) acks: BTreeMap<String, SourceRevision>,
-    pub(crate) phase: SharedSourcePhase,
-    pub(crate) receipt: Option<SharedSourceReceipt>,
 }
 
 // This is metadata only; original candidate bytes stay in the private Intent.
@@ -568,162 +623,9 @@ pub(crate) struct SourceIdentityMapping {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
-pub(crate) struct SharedSourceReceipt {
+pub(crate) struct SourceReceipt {
     pub(crate) operation_id: String,
     pub(crate) source_revision: SourceRevision,
-    pub(crate) participant_ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
-pub(crate) struct SharedSourceLedger {
-    pub(crate) schema_version: u32,
-    pub(crate) generation: u64,
-    pub(crate) physical_source_key: String,
-    pub(crate) participants: BTreeMap<String, SourceParticipant>,
-    pub(crate) operations: BTreeMap<String, SharedSourceOperation>,
-}
-
-#[allow(dead_code)]
-impl SharedSourceLedger {
-    fn empty(key: String) -> Self {
-        Self {
-            schema_version: 1,
-            generation: 0,
-            physical_source_key: key,
-            participants: BTreeMap::new(),
-            operations: BTreeMap::new(),
-        }
-    }
-
-    fn pending(&self) -> bool {
-        self.operations
-            .values()
-            .any(|op| op.phase != SharedSourcePhase::Complete)
-    }
-
-    fn validate(&self, key: &str) -> Result<(), SourceCoordinationError> {
-        if self.schema_version != 1 || self.physical_source_key != key {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        if self.participants.iter().any(|(id, p)| {
-            !coordination_digest(id)
-                || !coordination_digest(&p.inventory_digest)
-                || p.membership_revision == 0
-                || p.capability_version != 1
-        }) {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        let mut requests = HashSet::new();
-        let mut pending = 0;
-        for (id, op) in &self.operations {
-            if id != &op.operation_id
-                || !coordination_id(id)
-                || !coordination_id(&op.request_id)
-                || !requests.insert(&op.request_id)
-                || !coordination_digest(&op.payload_digest)
-                || !coordination_digest(&op.initiator_intent_digest)
-                || !valid_coordination_revision(&op.expected_source_revision)
-                || !matches!(op.after_source_revision, SourceRevision::Bytes { .. })
-                || !valid_coordination_revision(&op.after_source_revision)
-                || op.participant_set.iter().any(|(id, p)| {
-                    !coordination_digest(id)
-                        || !coordination_digest(&p.inventory_digest)
-                        || p.capability_version != 1
-                        || p.membership_revision == 0
-                })
-                || !op.participant_set.contains_key(&op.initiator_id)
-                || op.participant_set != self.participants
-                    && op.phase != SharedSourcePhase::Complete
-            {
-                return Err(SourceCoordinationError::Invalid);
-            }
-            for (participant, commitment) in &op.commitments {
-                let member = op
-                    .participant_set
-                    .get(participant)
-                    .ok_or(SourceCoordinationError::Invalid)?;
-                if &commitment.participant_id != participant
-                    || !coordination_digest(&commitment.context_revision)
-                    || commitment.inventory_digest != member.inventory_digest
-                {
-                    return Err(SourceCoordinationError::Invalid);
-                }
-                let mut targets = HashSet::new();
-                for target in &commitment.targets {
-                    if !coordination_digest(&target.target_id)
-                        || !coordination_digest(&target.plan_digest)
-                        || !targets.insert(&target.target_id)
-                        || !op.participant_set.contains_key(&target.owner_instance_id)
-                        || !valid_coordination_revision(&target.before_protected_revision)
-                        || !valid_coordination_revision(&target.after_protected_revision)
-                    {
-                        return Err(SourceCoordinationError::Invalid);
-                    }
-                }
-            }
-            // Overlapping target plans must be equivalent, including the first
-            // durable packet's owner. No takeover or offline-owner expiry.
-            let mut targets = BTreeMap::new();
-            for commitment in op.commitments.values() {
-                for target in &commitment.targets {
-                    if let Some(prior) = targets.insert(&target.target_id, target) {
-                        if prior != target {
-                            return Err(SourceCoordinationError::Invalid);
-                        }
-                    }
-                }
-            }
-            if op.acks.iter().any(|(participant, revision)| {
-                !op.commitments.contains_key(participant) || revision != &op.after_source_revision
-            }) {
-                return Err(SourceCoordinationError::Invalid);
-            }
-            let ready = op.commitments.len() == op.participant_set.len();
-            if ready
-                && targets.values().any(|target| {
-                    op.commitments
-                        .get(&target.owner_instance_id)
-                        .is_none_or(|owner| !owner.targets.contains(target))
-                })
-            {
-                return Err(SourceCoordinationError::Invalid);
-            }
-            match op.phase {
-                SharedSourcePhase::Preparing if !op.acks.is_empty() || op.receipt.is_some() => {
-                    return Err(SourceCoordinationError::Invalid);
-                }
-                SharedSourcePhase::ParticipantsReady
-                    if !ready || !op.acks.is_empty() || op.receipt.is_some() =>
-                {
-                    return Err(SourceCoordinationError::Invalid);
-                }
-                SharedSourcePhase::SourcePublished if !ready || op.receipt.is_some() => {
-                    return Err(SourceCoordinationError::Invalid);
-                }
-                SharedSourcePhase::Complete => {
-                    let expected = SharedSourceReceipt {
-                        operation_id: id.clone(),
-                        source_revision: op.after_source_revision.clone(),
-                        participant_ids: op.participant_set.keys().cloned().collect(),
-                    };
-                    if !ready
-                        || op.acks.len() != op.participant_set.len()
-                        || op.receipt.as_ref() != Some(&expected)
-                    {
-                        return Err(SourceCoordinationError::Invalid);
-                    }
-                }
-                _ => {}
-            }
-            pending += usize::from(op.phase != SharedSourcePhase::Complete);
-        }
-        if pending > 1 {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        Ok(())
-    }
 }
 
 fn coordination_digest(value: &str) -> bool {
@@ -754,10 +656,20 @@ pub(crate) struct IdentityWriteLease {
 }
 #[allow(dead_code)]
 impl IdentityWriteLease {
+    pub(crate) fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
     pub(crate) fn acquire(
         context: &SourceReadContext,
         timeout: std::time::Duration,
     ) -> Result<Self, SourceCoordinationError> {
+        #[cfg(test)]
+        SOURCE_COORDINATION_ACQUISITIONS.with(|count| {
+            let mut value = count.get();
+            value[0] += 1;
+            count.set(value);
+        });
         let parent = coordination_parent(&context.settings_path)?;
         let canonical = &parent.identity().canonical_path;
         let spelling = canonical
@@ -793,26 +705,35 @@ impl IdentityWriteLease {
 }
 
 #[allow(dead_code)]
-pub(crate) struct SourceCoordinationLease<'a> {
+pub(crate) struct SourceWriteContext<'a> {
     identity: &'a IdentityWriteLease,
-    _lock: crate::config::local_config_io::SidecarWriteLock,
     parent: crate::path_identity::RetainedDirectory,
     source_path: PathBuf,
-    ledger_path: PathBuf,
     source: SourceRef,
     context_revision: String,
     physical_source_key: String,
 }
 
 #[allow(dead_code)]
-impl<'a> SourceCoordinationLease<'a> {
+impl<'a> SourceWriteContext<'a> {
+    pub(crate) fn source(&self) -> &SourceRef {
+        &self.source
+    }
+
+    pub(crate) fn physical_source_key(&self) -> &str {
+        &self.physical_source_key
+    }
+
+    pub(crate) fn context_revision(&self) -> &str {
+        &self.context_revision
+    }
+
     /// Internal only: caller acquires C first and supplies backend context.
     /// Parent object + normalized basename stays stable over atomic replace.
     pub(crate) fn acquire(
         context: &SourceReadContext,
         source: &SourceRef,
         identity: &'a IdentityWriteLease,
-        timeout: std::time::Duration,
     ) -> Result<Self, SourceCoordinationError> {
         let own = coordination_parent(&context.settings_path)?;
         if !crate::path_identity::same_object(own.identity(), identity.parent.identity()) {
@@ -831,27 +752,17 @@ impl<'a> SourceCoordinationLease<'a> {
             .file_name()
             .ok_or(SourceCoordinationError::IdentityUncertain)?;
         let key = coordination_key(&parent.identity().object_id, name)?;
-        let ledger_name = source_ledger_name(source.kind);
-        let ledger_path = canonical.join(ledger_name);
-        let lock = crate::config::local_config_io::acquire_sidecar_write_lock(
-            &canonical.join(format!(".{ledger_name}.lock")),
-            timeout,
-            "sourceCoordinationTimeout",
-            "source coordination lock",
-        )
-        .map_err(SourceCoordinationError::Io)?;
+        // Legacy artifacts are diagnosed and preserved, never used as authority.
+        reject_legacy_source_ledger(&canonical.join(source_ledger_name(source.kind)))?;
         let lease = Self {
             identity,
-            _lock: lock,
             parent,
             source_path: canonical.join(name),
-            ledger_path,
             source: source.clone(),
             context_revision: context.revision.clone(),
             physical_source_key: key,
         };
         lease.revalidate(context)?;
-        lease.read_ledger()?;
         Ok(lease)
     }
 
@@ -872,6 +783,13 @@ impl<'a> SourceCoordinationLease<'a> {
         self.parent
             .verify_current()
             .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        reject_legacy_source_ledger(
+            &self
+                .parent
+                .identity()
+                .canonical_path
+                .join(source_ledger_name(self.source.kind)),
+        )?;
         coordination_read(&self.source_path)?;
         Ok(())
     }
@@ -886,82 +804,13 @@ impl<'a> SourceCoordinationLease<'a> {
             .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
         Ok(coordination_read(&self.source_path)?.0)
     }
+}
 
-    pub(crate) fn read_ledger(
-        &self,
-    ) -> Result<(SourceRevision, SharedSourceLedger), SourceCoordinationError> {
-        self.parent
-            .verify_current()
-            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
-        let (revision, bytes) = coordination_read(&self.ledger_path)?;
-        let ledger = match bytes {
-            Some(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?
-            }
-            None => SharedSourceLedger::empty(self.physical_source_key.clone()),
-        };
-        ledger.validate(&self.physical_source_key)?;
-        if ledger
-            .operations
-            .values()
-            .any(|op| op.source != self.source)
-        {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        Ok((revision, ledger))
-    }
-
-    fn update<F>(
-        &self,
-        expected: &SourceRevision,
-        change: F,
-    ) -> Result<SourceRevision, SourceCoordinationError>
-    where
-        F: FnOnce(&mut SharedSourceLedger) -> Result<(), SourceCoordinationError>,
-    {
-        let (revision, mut ledger) = self.read_ledger()?;
-        if &revision != expected {
-            return Err(SourceCoordinationError::Stale);
-        }
-        let before = ledger.clone();
-        change(&mut ledger)?;
-        if ledger == before {
-            return Ok(revision);
-        }
-        ledger.generation = ledger
-            .generation
-            .checked_add(1)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        ledger.validate(&self.physical_source_key)?;
-        let mut bytes =
-            serde_json::to_vec_pretty(&ledger).map_err(|_| SourceCoordinationError::Invalid)?;
-        bytes.push(b'\n');
-        self.parent
-            .verify_current()
-            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
-        let (observed, old) = coordination_read(&self.ledger_path)?;
-        if observed != revision {
-            return Err(SourceCoordinationError::Stale);
-        }
-        let physical = match old {
-            Some(old) => crate::config::local_config_io::PhysicalState::from_bytes(old),
-            None => crate::config::local_config_io::PhysicalState::Absent,
-        };
-        crate::config::local_config_io::publish_coordination_bytes(
-            &self.ledger_path,
-            &physical,
-            &bytes,
-        )
-        .map_err(|e| match e {
-            crate::config::local_config_io::PreparedPairError::Conflict => {
-                SourceCoordinationError::Stale
-            }
-            crate::config::local_config_io::PreparedPairError::InvalidPlan(_) => {
-                SourceCoordinationError::Invalid
-            }
-            other => SourceCoordinationError::Io(other.to_string()),
-        })?;
-        Ok(source_bytes_revision(&bytes))
+fn coordination_publication_error(error: IdentityReferenceError) -> SourceCoordinationError {
+    match error {
+        IdentityReferenceError::Conflict => SourceCoordinationError::Stale,
+        IdentityReferenceError::InvalidPlan(_) => SourceCoordinationError::Invalid,
+        other => SourceCoordinationError::Io(other.to_string()),
     }
 }
 
@@ -1018,154 +867,95 @@ fn coordination_read(
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn enroll_source_participant(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    instance_id: &str,
-    participant: SourceParticipant,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    if instance_id != lease.identity.instance_id {
-        return Err(SourceCoordinationError::Unauthorized);
+fn reject_legacy_source_ledger(path: &Path) -> Result<(), SourceCoordinationError> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(SourceCoordinationError::Io(error.to_string())),
+        Ok(_) => Err(SourceCoordinationError::Invalid),
     }
-    lease.update(expected, |ledger| {
-        if ledger.pending() {
-            return Err(SourceCoordinationError::Pending);
-        }
-        if let Some(old) = ledger.participants.get(instance_id) {
-            if old == &participant {
-                return Ok(());
-            }
-            if participant.membership_revision
-                != old
-                    .membership_revision
-                    .checked_add(1)
-                    .ok_or(SourceCoordinationError::Invalid)?
-            {
-                return Err(SourceCoordinationError::Stale);
-            }
-        } else if participant.membership_revision != 1 {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        ledger.participants.insert(instance_id.into(), participant);
-        Ok(())
-    })
 }
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct IdentityTransitionSummary {
     pub(crate) operation_id: String,
-    pub(crate) phase: SharedSourcePhase,
+    pub(crate) phase: SourceTransitionPhase,
     pub(crate) source: SourceRef,
     pub(crate) source_revision_observed: SourceRevision,
+    pub(crate) expected_source_revision: SourceRevision,
+    pub(crate) after_source_revision: SourceRevision,
     pub(crate) journal_revision: SourceRevision,
-    pub(crate) pending_participants: Vec<String>,
     pub(crate) mappings: Vec<SourceIdentityMapping>,
-    pub(crate) receipt: Option<SharedSourceReceipt>,
+    pub(crate) receipt: Option<SourceReceipt>,
 }
 
-/// Stable revisions are retained even before a fence or for an unknown operation.
 #[derive(Clone, Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) struct SharedTransitionStatus {
+pub(crate) struct SourceTransitionStatus {
     pub(crate) journal_revision: SourceRevision,
     pub(crate) source_revision_observed: SourceRevision,
     pub(crate) summary: Option<IdentityTransitionSummary>,
 }
 
-/// Read-only: no sidecar creation, enrollment, consolidation or recovery.
+/// Stable journal -> source -> journal observation; no write proofs or effects.
 #[allow(dead_code)]
-pub(crate) fn read_shared_transition(
+pub(crate) fn read_source_transition(
     context: &SourceReadContext,
     source: &SourceRef,
     operation_id: &str,
-) -> Result<SharedTransitionStatus, SourceCoordinationError> {
-    read_shared_transition_with_reader(context, source, operation_id, coordination_read)
-}
-
-fn read_shared_transition_with_reader(
-    context: &SourceReadContext,
-    source: &SourceRef,
-    operation_id: &str,
-    mut read: impl FnMut(
-        &std::path::Path,
-    ) -> Result<(SourceRevision, Option<Vec<u8>>), SourceCoordinationError>,
-) -> Result<SharedTransitionStatus, SourceCoordinationError> {
+) -> Result<SourceTransitionStatus, SourceCoordinationError> {
     let locator = context
         .locator(source)
         .map_err(|_| SourceCoordinationError::Unauthorized)?;
     let parent = coordination_parent(&locator)?;
-    let canonical = &parent.identity().canonical_path;
-    let name = locator
-        .file_name()
-        .ok_or(SourceCoordinationError::IdentityUncertain)?;
-    let key = coordination_key(&parent.identity().object_id, name)?;
-    let ledger_path = canonical.join(source_ledger_name(source.kind));
+    reject_legacy_source_ledger(
+        &parent
+            .identity()
+            .canonical_path
+            .join(source_ledger_name(source.kind)),
+    )?;
     for _ in 0..=2 {
-        let (revision, before) = read(&ledger_path)?;
-        let observed = read(&canonical.join(name))?.0;
-        if read(&ledger_path)?.0 != revision {
+        let (revision, journal) = read_own_source_journal(context)?;
+        let observed = coordination_read(&locator)?.0;
+        if read_own_source_journal(context)?.0 != revision {
             continue;
         }
         parent
             .verify_current()
             .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
-        let Some(bytes) = before else {
-            return Ok(SharedTransitionStatus {
-                journal_revision: revision,
-                source_revision_observed: observed,
-                summary: None,
-            });
-        };
-        let ledger: SharedSourceLedger =
-            serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?;
-        ledger.validate(&key)?;
-        let Some(op) = ledger.operations.get(operation_id) else {
-            return Ok(SharedTransitionStatus {
-                journal_revision: revision,
-                source_revision_observed: observed,
-                summary: None,
-            });
-        };
-        if &op.source != source {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        let pending_participants = op
-            .participant_set
-            .keys()
-            .filter(|id| {
-                if matches!(
-                    op.phase,
-                    SharedSourcePhase::Preparing | SharedSourcePhase::ParticipantsReady
-                ) {
-                    !op.commitments.contains_key(*id)
-                } else {
-                    !op.acks.contains_key(*id)
+        let summary = match journal.intents.get(operation_id) {
+            None => None,
+            Some(intent) => {
+                if &intent.source != source {
+                    return Err(SourceCoordinationError::Unauthorized);
                 }
-            })
-            .cloned()
-            .collect();
-        return Ok(SharedTransitionStatus {
-            journal_revision: revision.clone(),
-            source_revision_observed: observed.clone(),
-            summary: Some(IdentityTransitionSummary {
-                operation_id: operation_id.into(),
-                phase: op.phase.clone(),
-                source: op.source.clone(),
-                source_revision_observed: observed,
-                journal_revision: revision,
-                pending_participants,
-                mappings: op.mappings.clone(),
-                receipt: op.receipt.clone(),
-            }),
+                let progress = journal
+                    .progress
+                    .get(operation_id)
+                    .ok_or(SourceCoordinationError::Invalid)?;
+                Some(IdentityTransitionSummary {
+                    operation_id: operation_id.into(),
+                    phase: progress.phase(),
+                    source: source.clone(),
+                    source_revision_observed: observed.clone(),
+                    expected_source_revision: intent.expected_revision.clone(),
+                    after_source_revision: source_bytes_revision(&intent.serialized_after),
+                    journal_revision: revision.clone(),
+                    mappings: intent.mappings.clone(),
+                    receipt: progress.receipt.clone(),
+                })
+            }
+        };
+        return Ok(SourceTransitionStatus {
+            journal_revision: revision,
+            source_revision_observed: observed,
+            summary,
         });
     }
     Err(SourceCoordinationError::Busy)
 }
 
-/// Private durable Intent. Stored by the later coordinator before fence. No
-/// shared metadata contains candidate bytes, authorized paths or credentials.
+/// Original private Intent. Persisted with inventory before any packet/source effect.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
@@ -1179,7 +969,7 @@ pub(crate) struct SourceStoredIntent {
     pub(crate) before_bytes: Option<Vec<u8>>,
     pub(crate) serialized_after: Vec<u8>,
     pub(crate) mappings: Vec<SourceIdentityMapping>,
-    pub(crate) initiator_id: String,
+    pub(crate) editor_id: String,
     pub(crate) context_revision: String,
     pub(crate) authorization_revision: String,
 }
@@ -1190,6 +980,775 @@ pub(crate) struct SourceStoredIntent {
 pub(crate) struct SourcePrivateJournal {
     pub(crate) schema_version: u32,
     pub(crate) intents: BTreeMap<String, SourceStoredIntent>,
+    #[serde(default)]
+    pub(crate) inventories: BTreeMap<String, SourceLocalInventory>,
+    #[serde(default)]
+    pub(crate) progress: BTreeMap<String, SourceLocalProgress>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceDiscoveryWitness {
+    pub(crate) registry: Vec<String>,
+    pub(crate) parents: Vec<PathBuf>,
+    pub(crate) slots: Vec<(PathBuf, bool)>,
+    pub(crate) membership: Vec<(PathBuf, Vec<PathBuf>)>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_TRANSITION_PUBLICATIONS: std::cell::Cell<[usize; 3]> = const { std::cell::Cell::new([0; 3]) };
+    static SOURCE_COORDINATION_ACQUISITIONS: std::cell::Cell<[usize; 2]> = const { std::cell::Cell::new([0, 0]) };
+}
+
+/// Calling-thread oracle only: driver fixtures and local reload execute synchronously
+/// on this thread. A worker must return its own counts; these are not global totals.
+#[cfg(test)]
+pub(crate) fn source_transition_effect_counts() -> ([usize; 2], usize) {
+    (
+        SOURCE_COORDINATION_ACQUISITIONS.with(std::cell::Cell::get),
+        crate::config::local_config_io::source_guard_publication_calls(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn source_transition_publication_counts() -> [usize; 3] {
+    SOURCE_TRANSITION_PUBLICATIONS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn count_source_transition_publication(kind: usize) {
+    SOURCE_TRANSITION_PUBLICATIONS.with(|count| {
+        let mut next = count.get();
+        next[kind] += 1;
+        count.set(next);
+    });
+}
+
+/// Private locators are frozen by the backend's complete authorized inventory.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceInventoryTarget {
+    pub(crate) root: PathBuf,
+    pub(crate) root_object: (u64, u64),
+    pub(crate) decisions: PathBuf,
+    pub(crate) state: PathBuf,
+    pub(crate) reservation: PathBuf,
+    pub(crate) before_protected: [IdentityReferenceProtectedRevision; 2],
+    pub(crate) original_selections: Vec<ConfigurationRef>,
+    #[serde(default)]
+    pub(crate) original_physical: Option<[IdentityReferencePhysicalState; 2]>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceLocalInventory {
+    pub(crate) editor_id: String,
+    pub(crate) source: SourceRef,
+    pub(crate) physical_source_key: String,
+    pub(crate) context_revision: String,
+    pub(crate) authorization_revision: String,
+    pub(crate) authorized_roots: Vec<(PathBuf, (u64, u64))>,
+    pub(crate) targets: Vec<SourceInventoryTarget>,
+    pub(crate) mappings: Vec<SourceIdentityMapping>,
+    origin_binding: Option<OriginBinding>,
+    #[serde(default)]
+    original_evidence: Option<SourceOriginalInventoryEvidence>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceLocalProgress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_publication:
+        Option<crate::config::local_config_io::PreparedSourcePublication>,
+    pub(crate) packets: Vec<SourcePacketRecord>,
+    pub(crate) packets_prepared: bool,
+    pub(crate) source_published: bool,
+    pub(crate) refs_verified: bool,
+    pub(crate) reloaded: bool,
+    pub(crate) receipt: Option<SourceReceipt>,
+}
+
+impl SourceLocalProgress {
+    pub(crate) fn phase(&self) -> SourceTransitionPhase {
+        if self.receipt.is_some() {
+            SourceTransitionPhase::Complete
+        } else if self.source_published {
+            SourceTransitionPhase::SourcePublished
+        } else if self.packets_prepared {
+            SourceTransitionPhase::Prepared
+        } else {
+            SourceTransitionPhase::IntentStored
+        }
+    }
+}
+
+impl SourcePrivateJournal {
+    fn empty() -> Self {
+        Self {
+            schema_version: 2,
+            intents: BTreeMap::new(),
+            inventories: BTreeMap::new(),
+            progress: BTreeMap::new(),
+        }
+    }
+
+    fn validate(&self) -> Result<(), SourceCoordinationError> {
+        if self.schema_version != 2 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        if self.intents.keys().ne(self.inventories.keys())
+            || self.intents.keys().ne(self.progress.keys())
+        {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let mut pending_sources = HashSet::new();
+        for (id, inventory) in &self.inventories {
+            if self.progress.get(id).is_none_or(|p| p.receipt.is_none())
+                && !pending_sources.insert(&inventory.physical_source_key)
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+        }
+        let mut requests = std::collections::BTreeSet::new();
+        for (id, intent) in &self.intents {
+            if id != &intent.operation_id
+                || !coordination_id(id)
+                || intent.schema_version != 2
+                || !coordination_id(&intent.request_id)
+                || !requests.insert(&intent.request_id)
+                || !coordination_digest(&intent.payload_digest)
+                || !coordination_digest(&intent.editor_id)
+                || !coordination_digest(&intent.context_revision)
+                || !coordination_digest(&intent.authorization_revision)
+                || intent.source.context_root.is_empty()
+                || !valid_coordination_revision(&intent.expected_revision)
+                || intent.serialized_after.is_empty()
+                || intent
+                    .before_bytes
+                    .as_ref()
+                    .map(|bytes| source_bytes_revision(bytes))
+                    .unwrap_or(SourceRevision::Absent {})
+                    != intent.expected_revision
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+        }
+        for (id, inventory) in &self.inventories {
+            inventory.validate_original_evidence()?;
+            if !coordination_id(id)
+                || !coordination_digest(&inventory.editor_id)
+                || !coordination_digest(&inventory.physical_source_key)
+                || !coordination_digest(&inventory.context_revision)
+                || !coordination_digest(&inventory.authorization_revision)
+                || inventory.source.context_root.is_empty()
+                || inventory
+                    .authorized_roots
+                    .windows(2)
+                    .any(|pair| pair[0].0 >= pair[1].0)
+                || inventory
+                    .targets
+                    .windows(2)
+                    .any(|pair| pair[0].decisions >= pair[1].decisions)
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            for target in &inventory.targets {
+                if !target.root.is_absolute()
+                    || !target.decisions.is_absolute()
+                    || !target.state.is_absolute()
+                    || !target.reservation.is_absolute()
+                    || target.decisions.parent() != Some(target.root.as_path())
+                    || target.state.parent() != Some(target.root.as_path())
+                    || target.reservation.parent() != Some(target.root.as_path())
+                    || target.decisions == target.state
+                    || target.decisions == target.reservation
+                    || target.state == target.reservation
+                    || !inventory
+                        .authorized_roots
+                        .iter()
+                        .any(|(root, _)| target.root.starts_with(root))
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+            }
+            if let Some(intent) = self.intents.get(id) {
+                if intent.source != inventory.source
+                    || intent.mappings != inventory.mappings
+                    || intent.editor_id != inventory.editor_id
+                    || intent.context_revision != inventory.context_revision
+                    || intent.authorization_revision != inventory.authorization_revision
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+            }
+        }
+        for (id, progress) in &self.progress {
+            if let Some(proof) = &progress.source_publication {
+                let intent = self
+                    .intents
+                    .get(id)
+                    .ok_or(SourceCoordinationError::Invalid)?;
+                let digest = source_transition_digest(intent)?;
+                if intent.before_bytes.is_some() || !proof.validate_record(&digest) {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+            }
+            let inventory = self
+                .inventories
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            let mut targets = std::collections::BTreeSet::new();
+            for packet in &progress.packets {
+                if !targets.insert(&packet.target)
+                    || !inventory
+                        .targets
+                        .iter()
+                        .any(|target| target.decisions == packet.target)
+                    || !coordination_digest(&packet.target_id)
+                    || !coordination_digest(&packet.plan_digest)
+                    || !valid_coordination_revision(&packet.before_protected_revision)
+                    || !valid_coordination_revision(&packet.after_protected_revision)
+                    || inventory
+                        .targets
+                        .iter()
+                        .find(|target| target.decisions == packet.target)
+                        .is_none_or(|target| {
+                            !source_transition_digest(&target.before_protected).is_ok_and(
+                                |digest| {
+                                    packet.before_protected_revision
+                                        == (SourceRevision::Bytes { sha256: digest })
+                                },
+                            )
+                        })
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+            }
+            let intent = self
+                .intents
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            if progress.packets_prepared && progress.packets.len() != inventory.targets.len()
+                || progress.source_published
+                    && (!progress.packets_prepared
+                        || intent.before_bytes.is_none() && progress.source_publication.is_none())
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            if progress.refs_verified && !progress.source_published
+                || progress.reloaded && !progress.refs_verified
+                || progress.receipt.as_ref().is_some_and(|receipt| {
+                    receipt.operation_id != *id
+                        || !progress.reloaded
+                        || receipt.source_revision
+                            != source_bytes_revision(&intent.serialized_after)
+                })
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn own_source_journal_path(
+    context: &SourceReadContext,
+) -> Result<PathBuf, SourceCoordinationError> {
+    Ok(context
+        .settings_path
+        .parent()
+        .ok_or(SourceCoordinationError::Unauthorized)?
+        .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME))
+}
+
+pub(crate) fn read_own_source_journal(
+    context: &SourceReadContext,
+) -> Result<(SourceRevision, SourcePrivateJournal), SourceCoordinationError> {
+    let (revision, bytes) = coordination_read(&own_source_journal_path(context)?)?;
+    let journal = match bytes {
+        None => SourcePrivateJournal::empty(),
+        Some(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?
+        }
+    };
+    journal.validate()?;
+    let parent = coordination_parent(&context.settings_path)?;
+    let canonical = parent
+        .identity()
+        .canonical_path
+        .to_str()
+        .ok_or(SourceCoordinationError::IdentityUncertain)?;
+    let spelling = if cfg!(windows) {
+        canonical.to_lowercase()
+    } else {
+        canonical.to_owned()
+    };
+    let own_revision = source_bytes_revision(spelling.as_bytes());
+    let SourceRevision::Bytes { sha256: own_id } = own_revision else {
+        unreachable!()
+    };
+    if journal
+        .intents
+        .values()
+        .any(|intent| intent.editor_id != own_id)
+        || journal
+            .inventories
+            .values()
+            .any(|inventory| inventory.editor_id != own_id)
+    {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    parent
+        .verify_current()
+        .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+    Ok((revision, journal))
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct SourcePublicationObservation {
+    pub(crate) revision: SourceRevision,
+}
+
+/// The caller retains its original authority; exact after is recognized outside
+/// the publisher and is never interpreted as a rejected, effect-free attempt.
+#[allow(dead_code)]
+pub(crate) fn publish_source_intent_with_validation(
+    lease: &SourceWriteContext,
+    context: &SourceReadContext,
+    intent: &SourceStoredIntent,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<SourcePublicationObservation, SourceCoordinationError> {
+    if intent.source != lease.source
+        || intent.editor_id != lease.identity.instance_id
+        || intent.context_revision != lease.context_revision
+    {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    let after = source_bytes_revision(&intent.serialized_after);
+    let guard = || {
+        lease
+            .identity
+            .parent
+            .verify_current()
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        lease
+            .revalidate(context)
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        let revision = lease
+            .source_revision()
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        if revision != intent.expected_revision && revision != after {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        validate()
+    };
+    guard().map_err(coordination_publication_error)?;
+    let observed = lease.source_revision()?;
+    let before = match &intent.before_bytes {
+        None => IdentityReferencePhysicalState::Absent,
+        Some(bytes) => IdentityReferencePhysicalState::from_bytes(bytes.clone()),
+    };
+    let (mut private_revision, mut journal) = read_own_source_journal(context)?;
+    if journal.intents.get(&intent.operation_id) != Some(intent) {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    let inventory = journal
+        .inventories
+        .get(&intent.operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    if inventory.source != intent.source
+        || inventory.editor_id != intent.editor_id
+        || inventory.context_revision != intent.context_revision
+        || inventory.authorization_revision != intent.authorization_revision
+        || inventory.physical_source_key != lease.physical_source_key
+        || inventory.mappings != intent.mappings
+    {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    let progress = journal
+        .progress
+        .get(&intent.operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    if !progress.packets_prepared {
+        return Err(SourceCoordinationError::Pending);
+    }
+    let already_published = progress.source_published;
+    let initial_proof = progress.source_publication.clone();
+    let intent_digest = source_transition_digest(intent)?;
+    let ownership_required = intent.before_bytes.is_none();
+    if ownership_required && observed == after {
+        let proof = initial_proof
+            .as_ref()
+            .ok_or(SourceCoordinationError::Stale)?;
+        if !already_published {
+            crate::config::local_config_io::verify_prepared_source_target(
+                &lease.parent,
+                &lease.source_path,
+                &intent.serialized_after,
+                proof,
+                &guard,
+            )
+            .map_err(coordination_publication_error)?;
+        }
+    }
+    if observed == after {
+        if coordination_read(&lease.source_path)?.1.as_deref()
+            != Some(intent.serialized_after.as_slice())
+        {
+            return Err(SourceCoordinationError::Stale);
+        }
+        guard().map_err(coordination_publication_error)?;
+        return Ok(SourcePublicationObservation { revision: after });
+    }
+    if already_published {
+        return Err(SourceCoordinationError::Stale);
+    }
+    if ownership_required {
+        let mut capability = match initial_proof.as_ref() {
+            Some(proof) => crate::config::local_config_io::reopen_source_publication(
+                &lease.parent,
+                &lease.source_path,
+                &intent.serialized_after,
+                proof,
+                &guard,
+            ),
+            None => crate::config::local_config_io::prepare_source_publication(
+                &lease.parent,
+                &lease.source_path,
+                &intent.serialized_after,
+                &intent_digest,
+                &guard,
+            ),
+        }
+        .map_err(coordination_publication_error)?;
+        if initial_proof.is_none() {
+            let proof = capability.proof().clone();
+            let mut planned = journal.clone();
+            planned
+                .progress
+                .get_mut(&intent.operation_id)
+                .ok_or(SourceCoordinationError::Invalid)?
+                .source_publication = Some(proof.clone());
+            let checkpoint_guard = || capability.check();
+            let checkpoint = update_own_source_journal_for_publication(
+                lease.identity,
+                lease,
+                context,
+                &private_revision,
+                |journal| {
+                    journal
+                        .progress
+                        .get_mut(&intent.operation_id)
+                        .ok_or(SourceCoordinationError::Invalid)?
+                        .source_publication = Some(proof);
+                    Ok(())
+                },
+                &checkpoint_guard,
+                Some((&intent.operation_id, &capability)),
+            );
+            match checkpoint {
+                Ok(revision) => {
+                    capability.check().map_err(coordination_publication_error)?;
+                    let (confirmed_revision, confirmed) = read_own_source_journal(context)?;
+                    if confirmed_revision != revision || confirmed != planned {
+                        return Err(SourceCoordinationError::Stale);
+                    }
+                    private_revision = confirmed_revision;
+                    journal = confirmed;
+                }
+                Err(error) => {
+                    // Pure Err-before/Err-landed/other classification. Every
+                    // outcome retains the stage and returns the original error;
+                    // no native, unlink or second CAS follows an Err.
+                    if capability.check().is_ok() {
+                        if let Ok((revision, current)) = read_own_source_journal(context) {
+                            let _before_exact = revision == private_revision && current == journal;
+                            let _after_exact = current == planned;
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let checkpoint_guard = || {
+            guard()?;
+            let (revision, current) =
+                read_own_source_journal(context).map_err(|_| IdentityReferenceError::Conflict)?;
+            if revision != private_revision || current != journal {
+                return Err(IdentityReferenceError::Conflict);
+            }
+            Ok(())
+        };
+        #[cfg(test)]
+        count_source_transition_publication(2);
+        capability
+            .commit(&checkpoint_guard)
+            .map_err(coordination_publication_error)?;
+        return Ok(SourcePublicationObservation { revision: after });
+    }
+    #[cfg(test)]
+    count_source_transition_publication(2);
+    let publication =
+        crate::config::local_config_io::publish_source_coordination_bytes_with_validation(
+            &lease.source_path,
+            &before,
+            &intent.serialized_after,
+            &lease.parent,
+            &guard,
+        );
+    publication.result.map_err(coordination_publication_error)?;
+    // Validate authority again, then classify durable bytes even if the final
+    // publication check failed. No callback advances local progress or events.
+    guard().map_err(coordination_publication_error)?;
+    match lease.source_revision()? {
+        revision if revision == after => Ok(SourcePublicationObservation { revision }),
+        revision if revision == intent.expected_revision => Err(SourceCoordinationError::Stale),
+        _ => Err(SourceCoordinationError::Stale),
+    }
+}
+
+/// Pure record changes are redecoded before guarded CAS publication; callbacks
+/// borrow original proofs and never advance coordinator progress themselves.
+#[allow(dead_code)]
+pub(crate) fn update_own_source_journal_with_validation<F>(
+    identity: &IdentityWriteLease,
+    lease: &SourceWriteContext,
+    context: &SourceReadContext,
+    expected: &SourceRevision,
+    change: F,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<SourceRevision, SourceCoordinationError>
+where
+    F: FnOnce(&mut SourcePrivateJournal) -> Result<(), SourceCoordinationError>,
+{
+    update_own_source_journal_for_publication(
+        identity, lease, context, expected, change, validate, None,
+    )
+}
+
+fn update_own_source_journal_for_publication<F>(
+    identity: &IdentityWriteLease,
+    lease: &SourceWriteContext,
+    context: &SourceReadContext,
+    expected: &SourceRevision,
+    change: F,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+    prepared: Option<(
+        &str,
+        &crate::config::local_config_io::PreparedSourceCapability<'_>,
+    )>,
+) -> Result<SourceRevision, SourceCoordinationError>
+where
+    F: FnOnce(&mut SourcePrivateJournal) -> Result<(), SourceCoordinationError>,
+{
+    if !std::ptr::eq(identity, lease.identity) {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    let parent = coordination_parent(&context.settings_path)?;
+    if !crate::path_identity::same_object(parent.identity(), identity.parent.identity()) {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    let guard = || {
+        identity
+            .parent
+            .verify_current()
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        lease
+            .revalidate(context)
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        validate()
+    };
+    guard().map_err(coordination_publication_error)?;
+    let path = own_source_journal_path(context)?;
+    let before = read_identity_reference_physical(&path).map_err(coordination_publication_error)?;
+    let (revision, mut journal) = read_own_source_journal(context)?;
+    if &revision != expected
+        || before
+            != read_identity_reference_physical(&path).map_err(coordination_publication_error)?
+    {
+        return Err(SourceCoordinationError::Stale);
+    }
+    let original = journal.clone();
+    change(&mut journal)?;
+    journal.validate()?;
+    if original
+        .intents
+        .iter()
+        .any(|(id, intent)| journal.intents.get(id) != Some(intent))
+        || original
+            .inventories
+            .iter()
+            .any(|(id, inventory)| journal.inventories.get(id) != Some(inventory))
+        || original
+            .progress
+            .keys()
+            .any(|id| !journal.progress.contains_key(id))
+    {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    for (id, previous) in &original.progress {
+        let next = journal
+            .progress
+            .get(id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if !next.packets.starts_with(&previous.packets)
+            || previous
+                .source_publication
+                .as_ref()
+                .is_some_and(|proof| next.source_publication.as_ref() != Some(proof))
+            || previous.packets_prepared && !next.packets_prepared
+            || previous.source_published && !next.source_published
+            || previous.refs_verified && !next.refs_verified
+            || previous.reloaded && !next.reloaded
+            || previous
+                .receipt
+                .as_ref()
+                .is_some_and(|receipt| next.receipt.as_ref() != Some(receipt))
+        {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    for (id, next) in &journal.progress {
+        if original
+            .progress
+            .get(id)
+            .and_then(|p| p.source_publication.as_ref())
+            .is_none()
+            && next.source_publication.is_some()
+        {
+            let (prepared_id, capability) = prepared.ok_or(SourceCoordinationError::Invalid)?;
+            let intent = journal
+                .intents
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            if prepared_id != id
+                || intent.source != lease.source
+                || next.source_publication.as_ref() != Some(capability.proof())
+                || !next.packets_prepared
+                || intent.editor_id != identity.instance_id
+                || intent.expected_revision != (SourceRevision::Absent {})
+                || lease.source_revision()? != (SourceRevision::Absent {})
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            capability.check().map_err(coordination_publication_error)?;
+        }
+    }
+    for (id, next) in &journal.progress {
+        let previous = original.progress.get(id);
+        let publishing = next.source_published && previous.is_none_or(|p| !p.source_published);
+        let completing = next.receipt.is_some() && previous.is_none_or(|p| p.receipt.is_none());
+        if publishing || completing {
+            let intent = journal
+                .intents
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            let inventory = journal
+                .inventories
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            if intent.source != lease.source
+                || intent.editor_id != identity.instance_id
+                || inventory.physical_source_key != lease.physical_source_key
+                || coordination_read(&lease.source_path)?.1.as_deref()
+                    != Some(intent.serialized_after.as_slice())
+            {
+                return Err(SourceCoordinationError::Stale);
+            }
+            if publishing && intent.before_bytes.is_none() {
+                let proof = next
+                    .source_publication
+                    .as_ref()
+                    .ok_or(SourceCoordinationError::Invalid)?;
+                crate::config::local_config_io::verify_prepared_source_target(
+                    &lease.parent,
+                    &lease.source_path,
+                    &intent.serialized_after,
+                    proof,
+                    &guard,
+                )
+                .map_err(coordination_publication_error)?;
+            }
+        }
+    }
+    for (id, intent) in &journal.intents {
+        if original.intents.contains_key(id) {
+            continue;
+        }
+        if intent.editor_id != identity.instance_id
+            || intent.source != lease.source
+            || intent.context_revision != lease.context_revision
+            || lease.source_revision()? != intent.expected_revision
+        {
+            return Err(SourceCoordinationError::Stale);
+        }
+    }
+    for (id, inventory) in &journal.inventories {
+        if original.inventories.get(id) == Some(inventory) {
+            continue;
+        }
+        if inventory.editor_id != identity.instance_id
+            || inventory.source != lease.source
+            || inventory.physical_source_key != lease.physical_source_key
+            || inventory.context_revision != lease.context_revision
+        {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+        let intent = journal
+            .intents
+            .get(id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let evidence = inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if intent.editor_id != identity.instance_id
+            || intent.source != inventory.source
+            || intent.mappings != inventory.mappings
+            || intent.authorization_revision != inventory.authorization_revision
+            || evidence.expected_source != intent.expected_revision
+            || evidence.after_source != source_bytes_revision(&intent.serialized_after)
+            || evidence.inventory_digest
+                != source_inventory_digest(
+                    &inventory.editor_id,
+                    &inventory.source,
+                    &inventory.physical_source_key,
+                    &inventory.context_revision,
+                    &evidence.topology,
+                )?
+            || lease.source_revision()? != evidence.expected_source
+        {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+    }
+    if journal == original {
+        guard().map_err(coordination_publication_error)?;
+        return Ok(revision);
+    }
+    let mut bytes =
+        serde_json::to_vec_pretty(&journal).map_err(|_| SourceCoordinationError::Invalid)?;
+    bytes.push(b'\n');
+    let decoded: SourcePrivateJournal =
+        serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?;
+    decoded.validate()?;
+    if decoded != journal {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    #[cfg(test)]
+    count_source_transition_publication(1);
+    crate::config::local_config_io::publish_source_coordination_bytes_with_validation(
+        &path,
+        &before,
+        &bytes,
+        &identity.parent,
+        &guard,
+    )
+    .result
+    .map_err(coordination_publication_error)?;
+    Ok(source_bytes_revision(&bytes))
 }
 
 /// Lookup is restricted to the own C path derived from backend context. Status
@@ -1199,953 +1758,58 @@ pub(crate) fn read_own_source_intent(
     context: &SourceReadContext,
     operation_id: &str,
 ) -> Result<(SourceRevision, Option<SourceStoredIntent>), SourceCoordinationError> {
-    let path = context
-        .settings_path
-        .parent()
-        .ok_or(SourceCoordinationError::Unauthorized)?
-        .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
-    let (revision, bytes) = coordination_read(&path)?;
-    let Some(bytes) = bytes else {
-        return Ok((revision, None));
-    };
-    let journal: SourcePrivateJournal =
-        serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?;
-    if journal.schema_version != 1 {
-        return Err(SourceCoordinationError::Invalid);
-    }
-    for (id, intent) in &journal.intents {
-        if id != &intent.operation_id || !coordination_id(id) || intent.schema_version != 1 {
-            return Err(SourceCoordinationError::Invalid);
-        }
-    }
+    let (revision, journal) = read_own_source_journal(context)?;
     Ok((revision, journal.intents.get(operation_id).cloned()))
 }
 
 #[allow(dead_code)]
-pub(crate) fn install_source_fence(
-    lease: &SourceCoordinationLease,
+pub(crate) fn source_complete_proof(
+    lease: &SourceWriteContext,
     context: &SourceReadContext,
-    expected_shared: &SourceRevision,
-    expected_intent: &SourceRevision,
     operation_id: &str,
-    current_authorization_revision: &str,
-) -> Result<SourceRevision, SourceCoordinationError> {
+    target_id: &str,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<IdentityReferenceCompleteProof, SourceCoordinationError> {
+    validate().map_err(coordination_publication_error)?;
     lease.revalidate(context)?;
-    let (revision, intent) = read_own_source_intent(context, operation_id)?;
-    if &revision != expected_intent {
-        return Err(SourceCoordinationError::Stale);
-    }
-    let intent = intent.ok_or(SourceCoordinationError::Invalid)?;
-    if intent.initiator_id != lease.identity.instance_id
+    let (_, journal) = read_own_source_journal(context)?;
+    let intent = journal
+        .intents
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    let inventory = journal
+        .inventories
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    let progress = journal
+        .progress
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    if intent.editor_id != lease.identity.instance_id
         || intent.source != lease.source
-        || intent.context_revision != lease.context_revision
-        || intent.authorization_revision != current_authorization_revision
-        || !coordination_digest(current_authorization_revision)
-        || intent.serialized_after.is_empty()
-        || intent
-            .before_bytes
-            .as_ref()
-            .map(|b| source_bytes_revision(b))
-            .unwrap_or(SourceRevision::Absent {})
-            != intent.expected_revision
-        || lease.source_revision()? != intent.expected_revision
+        || inventory.physical_source_key != lease.physical_source_key
+        || coordination_read(&lease.source_path)?.1.as_deref()
+            != Some(intent.serialized_after.as_slice())
     {
         return Err(SourceCoordinationError::Stale);
     }
-    let bytes = serde_json::to_vec(&intent).map_err(|_| SourceCoordinationError::Invalid)?;
-    let SourceRevision::Bytes { sha256: digest } = source_bytes_revision(&bytes) else {
-        unreachable!()
-    };
-    lease.update(expected_shared, |ledger| {
-        if let Some(existing) = ledger.operations.get(operation_id) {
-            if existing.initiator_intent_digest == digest {
-                return Ok(());
-            }
-            return Err(SourceCoordinationError::Invalid);
-        }
-        if ledger.pending() {
-            return Err(SourceCoordinationError::Pending);
-        }
-        if !ledger.participants.contains_key(&intent.initiator_id) {
-            return Err(SourceCoordinationError::Unauthorized);
-        }
-        ledger.operations.insert(
-            operation_id.into(),
-            SharedSourceOperation {
-                operation_id: intent.operation_id.clone(),
-                request_id: intent.request_id.clone(),
-                payload_digest: intent.payload_digest.clone(),
-                source: intent.source.clone(),
-                expected_source_revision: intent.expected_revision.clone(),
-                after_source_revision: source_bytes_revision(&intent.serialized_after),
-                initiator_id: intent.initiator_id.clone(),
-                initiator_intent_digest: digest,
-                mappings: intent.mappings.clone(),
-                participant_set: ledger.participants.clone(),
-                commitments: BTreeMap::new(),
-                acks: BTreeMap::new(),
-                phase: SharedSourcePhase::Preparing,
-                receipt: None,
-            },
-        );
-        Ok(())
-    })
-}
-
-/// Called only after own inventory + all own packets + aggregate are durable;
-/// P15/P03 supply verified local evidence, never a transport DTO.
-#[allow(dead_code)]
-pub(crate) fn commit_source_participant(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    operation_id: &str,
-    commitment: SourceParticipantCommitment,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    if commitment.participant_id != lease.identity.instance_id {
-        return Err(SourceCoordinationError::Unauthorized);
-    }
-    if commitment.context_revision != lease.context_revision {
-        return Err(SourceCoordinationError::Stale);
-    }
-    if lease.source_revision()?
-        != lease
-            .read_ledger()?
-            .1
-            .operations
-            .get(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?
-            .expected_source_revision
-    {
-        return Err(SourceCoordinationError::Stale);
-    }
-    lease.update(expected, |ledger| {
-        let op = ledger
-            .operations
-            .get_mut(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        if let Some(old) = op.commitments.get(&commitment.participant_id) {
-            return if old == &commitment {
-                Ok(())
-            } else {
-                Err(SourceCoordinationError::Invalid)
-            };
-        }
-        if op.phase != SharedSourcePhase::Preparing {
-            return Err(SourceCoordinationError::Pending);
-        }
-        op.commitments
-            .insert(commitment.participant_id.clone(), commitment);
-        if op.commitments.len() == op.participant_set.len() {
-            op.phase = SharedSourcePhase::ParticipantsReady;
-        }
-        Ok(())
-    })
-}
-
-/// Reconciles the original source after publication (including lost progress).
-/// It does not publish source bytes or execute any PAIR writer itself.
-#[allow(dead_code)]
-pub(crate) fn recognize_source_published(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    operation_id: &str,
-    initiator: &str,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    let observed = lease.source_revision()?;
-    lease.update(expected, |ledger| {
-        let op = ledger
-            .operations
-            .get_mut(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        if op.initiator_id != initiator || initiator != lease.identity.instance_id {
-            return Err(SourceCoordinationError::Unauthorized);
-        }
-        if observed != op.after_source_revision {
-            return Err(SourceCoordinationError::Stale);
-        }
-        if op.phase == SharedSourcePhase::Preparing {
-            return Err(SourceCoordinationError::Pending);
-        }
-        if op.phase == SharedSourcePhase::ParticipantsReady {
-            op.phase = SharedSourcePhase::SourcePublished;
-        }
-        Ok(())
-    })
-}
-
-/// P03 calls this after verifying/reloading all own owner and observer targets.
-#[allow(dead_code)]
-pub(crate) fn ack_source_participant(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    operation_id: &str,
-    participant: &str,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    let observed = lease.source_revision()?;
-    lease.update(expected, |ledger| {
-        let op = ledger
-            .operations
-            .get_mut(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        if !matches!(
-            op.phase,
-            SharedSourcePhase::SourcePublished | SharedSourcePhase::Complete
-        ) {
-            return Err(SourceCoordinationError::Pending);
-        }
-        if participant != lease.identity.instance_id || !op.commitments.contains_key(participant) {
-            return Err(SourceCoordinationError::Unauthorized);
-        }
-        if observed != op.after_source_revision {
-            return Err(SourceCoordinationError::Stale);
-        }
-        op.acks.insert(participant.into(), observed);
-        Ok(())
-    })
-}
-
-#[allow(dead_code)]
-pub(crate) fn complete_shared_source(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    operation_id: &str,
-    initiator: &str,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    let observed = lease.source_revision()?;
-    lease.update(expected, |ledger| {
-        let op = ledger
-            .operations
-            .get_mut(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        if op.initiator_id != initiator || initiator != lease.identity.instance_id {
-            return Err(SourceCoordinationError::Unauthorized);
-        }
-        if observed != op.after_source_revision {
-            return Err(SourceCoordinationError::Stale);
-        }
-        if op.phase == SharedSourcePhase::Complete {
-            return Ok(());
-        }
-        if op.phase != SharedSourcePhase::SourcePublished
-            || op.acks.len() != op.participant_set.len()
-        {
-            return Err(SourceCoordinationError::Pending);
-        }
-        op.receipt = Some(SharedSourceReceipt {
-            operation_id: operation_id.into(),
-            source_revision: observed,
-            participant_ids: op.participant_set.keys().cloned().collect(),
-        });
-        op.phase = SharedSourcePhase::Complete;
-        Ok(())
-    })
-}
-
-#[cfg(test)]
-mod source_coordination_tests {
-    use super::*;
-    use std::time::Duration;
-
-    struct Fixture {
-        _root: tempfile::TempDir,
-        contexts: [SourceReadContext; 2],
-        source: SourceRef,
-    }
-    impl Fixture {
-        fn new() -> Self {
-            let root = tempfile::tempdir().unwrap();
-            let project = root.path().join("project");
-            std::fs::create_dir_all(project.join(".ac/coding-agents")).unwrap();
-            let contexts = ["C1", "C2"].map(|name| {
-                let config = root.path().join(name);
-                std::fs::create_dir(&config).unwrap();
-                let settings = AppSettings {
-                    project_paths: vec![project.to_string_lossy().into_owned()],
-                    ..AppSettings::default()
-                };
-                SourceReadContext::from_settings(&settings, &config.join(SETTINGS_FILE_NAME))
-                    .unwrap()
-            });
-            let source = contexts[0].source(SourceKind::CatalogPersonal);
-            Self {
-                _root: root,
-                contexts,
-                source,
-            }
-        }
-        fn member() -> SourceParticipant {
-            SourceParticipant {
-                membership_revision: 1,
-                inventory_digest: "b".repeat(64),
-                capability_version: 1,
-            }
-        }
-        fn intent(&self, identity: &IdentityWriteLease) -> SourceStoredIntent {
-            SourceStoredIntent {
-                schema_version: 1,
-                operation_id: "operation-1".into(),
-                request_id: "request-1".into(),
-                payload_digest: "c".repeat(64),
-                source: self.source.clone(),
-                expected_revision: SourceRevision::Absent {},
-                before_bytes: None,
-                serialized_after: b"{\"schemaVersion\":2,\"agents\":[]}".to_vec(),
-                mappings: vec![],
-                initiator_id: identity.instance_id.clone(),
-                context_revision: self.contexts[0].revision.clone(),
-                authorization_revision: "d".repeat(64),
-            }
-        }
-        fn store(&self, intent: SourceStoredIntent) -> SourceRevision {
-            let journal = SourcePrivateJournal {
-                schema_version: 1,
-                intents: BTreeMap::from([(intent.operation_id.clone(), intent)]),
-            };
-            let bytes = serde_json::to_vec(&journal).unwrap();
-            let path = self.contexts[0]
-                .settings_path
-                .parent()
-                .unwrap()
-                .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
-            crate::config::local_config_io::publish_coordination_bytes(
-                &path,
-                &crate::config::local_config_io::PhysicalState::Absent,
-                &bytes,
-            )
-            .unwrap();
-            source_bytes_revision(&bytes)
-        }
-        fn enroll(&self, index: usize) -> String {
-            let identity =
-                IdentityWriteLease::acquire(&self.contexts[index], Duration::ZERO).unwrap();
-            let lease = SourceCoordinationLease::acquire(
-                &self.contexts[index],
-                &self.source,
-                &identity,
-                Duration::ZERO,
-            )
-            .unwrap();
-            let revision = lease.read_ledger().unwrap().0;
-            enroll_source_participant(&lease, &revision, &identity.instance_id, Self::member())
-                .unwrap();
-            identity.instance_id.clone()
-        }
-        fn commitment(id: &str, context: &SourceReadContext) -> SourceParticipantCommitment {
-            SourceParticipantCommitment {
-                participant_id: id.into(),
-                context_revision: context.revision.clone(),
-                inventory_digest: "b".repeat(64),
-                targets: vec![],
-            }
-        }
-    }
-
-    #[test]
-    fn source_coordination_completion_rejects_other_instance_initiator_string() {
-        let f = Fixture::new();
-        let id = f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent = f.intent(&identity);
-        let intent_revision = f.store(intent.clone());
-        let shared = lease.read_ledger().unwrap().0;
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let shared = commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id, &f.contexts[0]),
-        )
-        .unwrap();
-        crate::config::local_config_io::publish_coordination_bytes(
-            &lease.source_path,
-            &crate::config::local_config_io::PhysicalState::Absent,
-            &intent.serialized_after,
-        )
-        .unwrap();
-        let shared = recognize_source_published(&lease, &shared, "operation-1", &id).unwrap();
-        let shared = ack_source_participant(&lease, &shared, "operation-1", &id).unwrap();
-        let before = std::fs::read(&lease.ledger_path).unwrap();
-        drop(lease);
-        drop(identity);
-        let identity = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id),
-            Err(SourceCoordinationError::Unauthorized)
-        );
-        assert_eq!(std::fs::read(&lease.ledger_path).unwrap(), before);
-        assert!(lease.read_ledger().unwrap().1.operations["operation-1"]
-            .receipt
-            .is_none());
-        drop(lease);
-        drop(identity);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        complete_shared_source(&lease, &shared, "operation-1", &id).unwrap();
-    }
-
-    #[test]
-    fn source_coordination_commitment_rejects_foreign_context_without_write() {
-        let f = Fixture::new();
-        let id = f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent_revision = f.store(f.intent(&identity));
-        let shared = lease.read_ledger().unwrap().0;
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let before = std::fs::read(&lease.ledger_path).unwrap();
-        let mut commitment = Fixture::commitment(&id, &f.contexts[0]);
-        commitment.context_revision = f.contexts[1].revision.clone();
-        assert_ne!(commitment.context_revision, lease.context_revision);
-        assert_eq!(
-            commit_source_participant(&lease, &shared, "operation-1", commitment),
-            Err(SourceCoordinationError::Stale)
-        );
-        assert_eq!(std::fs::read(&lease.ledger_path).unwrap(), before);
-        commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id, &f.contexts[0]),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn source_coordination_alias_uncertainty_rejects_hardlinked_source() {
-        let f = Fixture::new();
-        let path = f.contexts[0].locator(&f.source).unwrap();
-        std::fs::write(&path, b"{}").unwrap();
-        std::fs::hard_link(&path, path.with_extension("alias")).unwrap();
-        assert_eq!(
-            read_shared_transition(&f.contexts[0], &f.source, "operation-1").unwrap_err(),
-            SourceCoordinationError::IdentityUncertain
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
-    }
-    fn disk_image(
-        root: &std::path::Path,
-    ) -> BTreeMap<std::path::PathBuf, (Vec<u8>, std::time::SystemTime)> {
-        let mut image = BTreeMap::new();
-        for entry in std::fs::read_dir(root).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                image.extend(disk_image(&path));
-            } else {
-                image.insert(
-                    path.clone(),
-                    (
-                        std::fs::read(&path).unwrap_or_else(|error| {
-                            panic!("snapshot read {}: {error}", path.display())
-                        }),
-                        std::fs::metadata(&path).unwrap().modified().unwrap(),
-                    ),
-                );
-            }
-        }
-        image
-    }
-
-    #[test]
-    fn source_coordination_readonly_present_ledger_pending_and_missing_operation() {
-        let f = Fixture::new();
-        let id = f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent_revision = f.store(f.intent(&identity));
-        let shared = lease.read_ledger().unwrap().0;
-        drop(lease);
-        drop(identity);
-        // Snapshot every file, including sidecars, after releasing Windows byte-range locks.
-        // The prefence lookup retains the present ledger CAS without acquiring a lock.
-        let prefence_image = disk_image(f._root.path());
-        let prefence = read_shared_transition(&f.contexts[1], &f.source, "operation-1").unwrap();
-        assert_eq!(prefence.journal_revision, shared);
-        assert_eq!(prefence.source_revision_observed, SourceRevision::Absent {});
-        assert!(prefence.summary.is_none());
-        assert_eq!(disk_image(f._root.path()), prefence_image);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        assert_eq!(lease.read_ledger().unwrap().0, shared);
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let members = lease.read_ledger().unwrap().1.participants;
-        drop(lease);
-        drop(identity);
-        let before = disk_image(f._root.path());
-        for _ in 0..3 {
-            let status = read_shared_transition(&f.contexts[1], &f.source, "operation-1").unwrap();
-            assert_eq!(status.journal_revision, shared);
-            assert_eq!(
-                status.summary.unwrap().pending_participants,
-                vec![id.clone()]
-            );
-            let absent = read_shared_transition(&f.contexts[1], &f.source, "missing").unwrap();
-            assert_eq!(absent.journal_revision, shared);
-            assert!(absent.summary.is_none());
-        }
-        assert_eq!(disk_image(f._root.path()), before);
-        // Offline/drop and repeated status do not expire/unregister membership or the fence.
-        let identity = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let (revision, ledger) = lease.read_ledger().unwrap();
-        assert_eq!(revision, shared);
-        assert_eq!(ledger.participants, members);
-        assert_eq!(
-            ledger.operations["operation-1"].phase,
-            SharedSourcePhase::Preparing
-        );
-        assert_eq!(
-            enroll_source_participant(&lease, &shared, &identity.instance_id, Fixture::member()),
-            Err(SourceCoordinationError::Pending)
-        );
-    }
-
-    #[test]
-    fn source_coordination_readonly_churn_reports_busy_after_two_retries() {
-        let f = Fixture::new();
-        let mut reads = 0;
-        let result =
-            read_shared_transition_with_reader(&f.contexts[0], &f.source, "operation-1", |path| {
-                if path.file_name().unwrap() == source_ledger_name(f.source.kind) {
-                    reads += 1;
-                    let revision = if reads % 2 == 1 {
-                        SourceRevision::Absent {}
-                    } else {
-                        source_bytes_revision(b"{}")
-                    };
-                    Ok((revision, None))
-                } else {
-                    coordination_read(path)
-                }
-            });
-        assert_eq!(result.unwrap_err(), SourceCoordinationError::Busy);
-        assert_eq!(reads, 6);
-        assert_eq!(SourceCoordinationError::Busy.to_string(), "sourceBusy");
-        assert!(disk_image(f._root.path()).is_empty());
-    }
-
-    #[test]
-    fn source_coordination_readonly_navigation_zero_write() {
-        let f = Fixture::new();
-        let status = read_shared_transition(&f.contexts[0], &f.source, "operation-1").unwrap();
-        assert!(status.summary.is_none());
-        assert_eq!(status.journal_revision, SourceRevision::Absent {});
-        assert_eq!(status.source_revision_observed, SourceRevision::Absent {});
-        assert_eq!(
-            std::fs::read_dir(f.contexts[0].locator(&f.source).unwrap().parent().unwrap())
-                .unwrap()
-                .count(),
-            0
-        );
-        assert_eq!(
-            std::fs::read_dir(f.contexts[0].settings_path.parent().unwrap())
-                .unwrap()
-                .count(),
-            0
-        );
-    }
-
-    #[test]
-    fn source_coordination_same_source_distinct_instances_one_sidecar() {
-        let f = Fixture::new();
-        let c1 = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let c2 = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
-        assert_ne!(c1.instance_id, c2.instance_id);
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &c1, Duration::ZERO)
-                .unwrap();
-        assert!(
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &c2, Duration::ZERO)
-                .is_err()
-        );
-        let key = lease.physical_source_key.clone();
-        drop(lease);
-        let lease2 =
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &c2, Duration::ZERO)
-                .unwrap();
-        assert_eq!(key, lease2.physical_source_key);
-        assert!(
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &c1, Duration::ZERO)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn source_coordination_intent_stored_prefence_requires_original_cas() {
-        let f = Fixture::new();
-        f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let shared = lease.read_ledger().unwrap().0;
-        assert!(install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &SourceRevision::Absent {},
-            "operation-1",
-            &"d".repeat(64)
-        )
-        .is_err());
-        let intent = f.intent(&identity);
-        let revision = f.store(intent.clone());
-        assert_eq!(
-            read_own_source_intent(&f.contexts[0], "operation-1")
-                .unwrap()
-                .1,
-            Some(intent)
-        );
-        assert!(
-            read_shared_transition(&f.contexts[0], &f.source, "operation-1")
-                .unwrap()
-                .summary
-                .is_none()
-        );
-        assert!(install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &SourceRevision::Absent {},
-            "operation-1",
-            &"d".repeat(64)
-        )
-        .is_err());
-        install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        assert_eq!(lease.source_revision().unwrap(), SourceRevision::Absent {});
-        assert_eq!(
-            lease.read_ledger().unwrap().1.operations["operation-1"].phase,
-            SharedSourcePhase::Preparing
-        );
-    }
-
-    #[test]
-    fn source_coordination_offline_fence_survives_drop_and_late_enrollment() {
-        let f = Fixture::new();
-        let id1 = f.enroll(0);
-        let id2 = f.enroll(1);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent_revision = f.store(f.intent(&identity));
-        let shared = lease.read_ledger().unwrap().0;
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let shared = commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id1, &f.contexts[0]),
-        )
-        .unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id1),
-            Err(SourceCoordinationError::Stale)
-        );
-        assert_eq!(
-            enroll_source_participant(&lease, &shared, &id1, Fixture::member()),
-            Err(SourceCoordinationError::Pending)
-        );
-        drop(lease);
-        drop(identity);
-        let identity = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let summary = read_shared_transition(&f.contexts[1], &f.source, "operation-1")
-            .unwrap()
-            .summary
-            .unwrap();
-        assert_eq!(summary.pending_participants, vec![id2.clone()]);
-        assert_eq!(summary.phase, SharedSourcePhase::Preparing);
-        let shared = commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id2, &f.contexts[1]),
-        )
-        .unwrap();
-        assert_eq!(
-            lease.read_ledger().unwrap().1.operations["operation-1"].phase,
-            SharedSourcePhase::ParticipantsReady
-        );
-        assert_eq!(
-            recognize_source_published(&lease, &shared, "operation-1", &id2),
-            Err(SourceCoordinationError::Unauthorized)
-        );
-    }
-
-    #[test]
-    fn source_coordination_global_complete_requires_all_acks_and_current_source() {
-        let f = Fixture::new();
-        let id = f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent = f.intent(&identity);
-        let intent_revision = f.store(intent.clone());
-        let shared = lease.read_ledger().unwrap().0;
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let shared = commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id, &f.contexts[0]),
-        )
-        .unwrap();
-        crate::config::local_config_io::publish_coordination_bytes(
-            &lease.source_path,
-            &crate::config::local_config_io::PhysicalState::Absent,
-            &intent.serialized_after,
-        )
-        .unwrap();
-        let shared = recognize_source_published(&lease, &shared, "operation-1", &id).unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id),
-            Err(SourceCoordinationError::Pending)
-        );
-        let shared = ack_source_participant(&lease, &shared, "operation-1", &id).unwrap();
-        let shared = complete_shared_source(&lease, &shared, "operation-1", &id).unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id).unwrap(),
-            shared
-        );
-        assert!(lease.read_ledger().unwrap().1.operations["operation-1"]
-            .receipt
-            .is_some());
-        std::fs::write(&lease.source_path, b"{\"later\":true}").unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id),
-            Err(SourceCoordinationError::Stale)
-        );
-    }
-
-    #[test]
-    fn source_coordination_invalid_ledger_preserved_and_stale_cas_no_write() {
-        let f = Fixture::new();
-        f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let before = std::fs::read(&lease.ledger_path).unwrap();
-        assert_eq!(
-            enroll_source_participant(
-                &lease,
-                &SourceRevision::Absent {},
-                &identity.instance_id,
-                Fixture::member()
-            ),
-            Err(SourceCoordinationError::Stale)
-        );
-        assert_eq!(std::fs::read(&lease.ledger_path).unwrap(), before);
-        std::fs::write(&lease.ledger_path, b"{\"schemaVersion\":99}").unwrap();
-        assert_eq!(
-            read_shared_transition(&f.contexts[0], &f.source, "operation-1").unwrap_err(),
-            SourceCoordinationError::Invalid
-        );
-        drop(lease);
-        assert!(SourceCoordinationLease::acquire(
-            &f.contexts[0],
-            &f.source,
-            &identity,
-            Duration::ZERO
-        )
-        .is_err());
-        let path = f.contexts[0]
-            .locator(&f.source)
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join(source_ledger_name(f.source.kind));
-        assert_eq!(std::fs::read(path).unwrap(), b"{\"schemaVersion\":99}");
-    }
-
-    #[test]
-    fn source_coordination_alias_dot_and_absent_existing_replacement_key() {
-        let f = Fixture::new();
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let key = lease.physical_source_key.clone();
-        let source_path = lease.source_path.clone();
-        std::fs::write(&source_path, b"{}").unwrap();
-        let alias = coordination_parent(
-            &source_path
-                .parent()
-                .unwrap()
-                .join(".")
-                .join(source_path.file_name().unwrap()),
-        )
-        .unwrap();
-        assert_eq!(
-            key,
-            coordination_key(
-                &alias.identity().object_id,
-                source_path.file_name().unwrap()
-            )
-            .unwrap()
-        );
-        drop(lease);
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let before = crate::config::local_config_io::PhysicalState::from_bytes(b"{}".to_vec());
-        crate::config::local_config_io::publish_coordination_bytes(
-            &source_path,
-            &before,
-            b"{\"changed\":true}",
-        )
-        .unwrap();
-        assert_eq!(key, lease.physical_source_key);
-        lease.revalidate(&f.contexts[0]).unwrap();
-    }
-
-    #[test]
-    fn source_coordination_multiple_targets_observer_divergence_no_takeover() {
-        let f = Fixture::new();
-        let id1 = f.enroll(0);
-        let id2 = f.enroll(1);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent_revision = f.store(f.intent(&identity));
-        let shared = lease.read_ledger().unwrap().0;
-        install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let mut ledger = lease.read_ledger().unwrap().1;
-        let targets = ["e", "f"].map(|name| SourceTargetCommitment {
-            target_id: name.repeat(64),
-            before_protected_revision: SourceRevision::Absent {},
-            after_protected_revision: source_bytes_revision(b"{}"),
-            plan_digest: "a".repeat(64),
-            owner_instance_id: id1.clone(),
-        });
-        let op = ledger.operations.get_mut("operation-1").unwrap();
-        for (id, context) in [(&id1, &f.contexts[0]), (&id2, &f.contexts[1])] {
-            let mut commitment = Fixture::commitment(id, context);
-            commitment.targets = targets.to_vec();
-            op.commitments.insert(id.clone(), commitment);
-        }
-        op.phase = SharedSourcePhase::ParticipantsReady;
-        ledger.validate(&lease.physical_source_key).unwrap();
-        let valid = ledger.clone();
-        ledger
-            .operations
-            .get_mut("operation-1")
-            .unwrap()
-            .commitments
-            .get_mut(&id2)
-            .unwrap()
-            .targets[1]
-            .plan_digest = "b".repeat(64);
-        assert_eq!(
-            ledger.validate(&lease.physical_source_key),
-            Err(SourceCoordinationError::Invalid)
-        );
-        let mut ledger = valid.clone();
-        ledger
-            .operations
-            .get_mut("operation-1")
-            .unwrap()
-            .commitments
-            .get_mut(&id2)
-            .unwrap()
-            .targets[0]
-            .owner_instance_id = id2.clone();
-        assert_eq!(
-            ledger.validate(&lease.physical_source_key),
-            Err(SourceCoordinationError::Invalid)
-        );
-        let mut ledger = valid;
-        ledger
-            .operations
-            .get_mut("operation-1")
-            .unwrap()
-            .commitments
-            .get_mut(&id1)
-            .unwrap()
-            .targets
-            .clear();
-        assert_eq!(
-            ledger.validate(&lease.physical_source_key),
-            Err(SourceCoordinationError::Invalid)
-        );
-        assert_eq!(lease.source_revision().unwrap(), SourceRevision::Absent {});
-    }
+    let projection = serde_json::json!({
+        "schemaVersion":2, "operationId":operation_id, "phase":progress.phase(),
+        "physicalSourceKey":inventory.physical_source_key,
+        "afterSourceRevision":source_bytes_revision(&intent.serialized_after),
+        "packetsPrepared":progress.packets_prepared, "sourcePublished":progress.source_published,
+        "refsVerified":progress.refs_verified, "reloaded":progress.reloaded,
+        "packets":progress.packets, "receipt":progress.receipt
+    });
+    let source = serde_json::to_value(lease.source_revision()?)
+        .map_err(|_| SourceCoordinationError::Invalid)?;
+    IdentityReferenceCompleteProof::from_single_editor_complete(
+        &projection,
+        operation_id,
+        target_id,
+        &source,
+    )
+    .map_err(coordination_publication_error)
 }
 
 // #2893 P02: internal readers and pure preparations. No caller publishes these
@@ -2176,6 +1840,10 @@ pub(crate) enum SourcePreparationError {
 }
 
 #[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) fn source_transition_digest_bytes(bytes: &[u8]) -> SourceRevision {
+    source_bytes_revision(bytes)
+}
+
 fn source_bytes_revision(bytes: &[u8]) -> SourceRevision {
     use sha2::{Digest, Sha256};
     SourceRevision::Bytes {
@@ -2386,6 +2054,15 @@ pub(crate) fn read_source_snapshot(
 ) -> Result<RawSourceSnapshot, SourcePreparationError> {
     let path = context.locator(source)?;
     let raw = OriginPhysicalInput::read(&path);
+    source_snapshot_from_original(context, source, raw)
+}
+
+fn source_snapshot_from_original(
+    context: &SourceReadContext,
+    source: &SourceRef,
+    raw: OriginPhysicalInput,
+) -> Result<RawSourceSnapshot, SourcePreparationError> {
+    context.locator(source)?;
     let revision = raw
         .revision()
         .ok_or(SourcePreparationError::OriginUnavailable)?;
@@ -2759,6 +2436,38 @@ impl LegacyCompatibilityOrigin {
         current_target: &[u8],
         matrix: Option<&str>,
     ) -> Result<LegacyOriginLinkProof, SourcePreparationError> {
+        let slot = if matrix.is_some() {
+            SourceOriginalSlot::MatrixDefault
+        } else {
+            SourceOriginalSlot::Decision
+        };
+        self.bind_original_selection_at(
+            snapshot,
+            selection,
+            original_source_revision,
+            original_context_revision,
+            original_target,
+            current_target,
+            matrix,
+            &slot,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_original_selection_at(
+        &self,
+        snapshot: &RawSourceSnapshot,
+        selection: &ConfigurationRef,
+        original_source_revision: &SourceRevision,
+        original_context_revision: &str,
+        original_target: &[u8],
+        current_target: &[u8],
+        matrix: Option<&str>,
+        slot: &SourceOriginalSlot,
+    ) -> Result<LegacyOriginLinkProof, SourcePreparationError> {
+        if matrix.is_some() != matches!(slot, SourceOriginalSlot::MatrixDefault) {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
         if original_target != current_target
             || selection.version != 1
             || selection.source != snapshot.snapshot.source
@@ -2771,11 +2480,7 @@ impl LegacyCompatibilityOrigin {
         }
         let target: Value = serde_json::from_slice(current_target)
             .map_err(|_| SourcePreparationError::OriginUnavailable)?;
-        let stored = if matrix.is_some() {
-            target.pointer("/tooling/replicaSelectionDefault/configurationRef")
-        } else {
-            target.pointer("/tooling/configurationRef")
-        };
+        let stored = slot.stored(&target);
         let stored: ConfigurationRef = serde_json::from_value(
             stored
                 .cloned()
@@ -3229,11 +2934,139 @@ fn validate_source_identity_groups(
 }
 
 #[allow(dead_code)] // Dormant until the later source protocol cuts.
+/// Grouping preserves each original selection's Entry/Profile/Default relation.
+/// Only the complete backend inventory factory may construct this aggregate.
+#[derive(Debug)]
+pub(crate) struct SourceOriginalProofAggregate {
+    originals: Vec<LegacyOriginLinkProof>,
+}
+
+fn require_source_original_units(
+    origin: &LegacyCompatibilityOrigin,
+    units: &std::collections::BTreeSet<LegacyOriginUnit>,
+    aggregate: Option<&SourceOriginalProofAggregate>,
+) -> Result<(), SourcePreparationError> {
+    let Some(aggregate) = aggregate else {
+        if unresolved_default_dependency(origin, units) {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        return origin.require_disjoint(units.iter().cloned());
+    };
+    if aggregate
+        .originals
+        .iter()
+        .any(|proof| proof.binding != origin.binding)
+    {
+        return Err(SourcePreparationError::StaleRevision);
+    }
+    for unit in units {
+        if origin.require_disjoint([unit.clone()]).is_ok() {
+            continue;
+        }
+        let mut covered = false;
+        for proof in aggregate
+            .originals
+            .iter()
+            .filter(|proof| proof.units.contains(unit))
+        {
+            // This model records binding and unit membership only; the per-unit
+            // loop rechecks those facts. Same-Default relation coherence is
+            // enforced below; distinct default/profile groups remain separate.
+            origin.require_legacy_units([unit.clone()], Some(proof))?;
+            covered = true;
+        }
+        if !covered {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+    }
+    let entry_or_profile = units.iter().any(|unit| {
+        matches!(
+            unit,
+            LegacyOriginUnit::Entry(_) | LegacyOriginUnit::Profile(_, _)
+        )
+    });
+    if !entry_or_profile {
+        return Ok(());
+    }
+    for default in origin
+        .represented
+        .iter()
+        .filter(|unit| matches!(unit, LegacyOriginUnit::Default(_)))
+    {
+        if origin.require_disjoint([default.clone()]).is_ok() {
+            continue;
+        }
+        let mut groups = aggregate
+            .originals
+            .iter()
+            .filter(|proof| proof.units.contains(default));
+        let group = groups
+            .next()
+            .ok_or(SourcePreparationError::LegacyOriginUnresolved)?;
+        if groups.any(|other| other.units != group.units) {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let keys: Vec<_> = group
+            .units
+            .iter()
+            .filter_map(|unit| match unit {
+                LegacyOriginUnit::Entry(key) => Some(key),
+                _ => None,
+            })
+            .collect();
+        if keys.len() != 1 {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let key = keys[0];
+        let profiles: Vec<_> = group
+            .units
+            .iter()
+            .filter_map(|unit| match unit {
+                LegacyOriginUnit::Profile(profile_key, letter) if profile_key == key => {
+                    Some(letter)
+                }
+                _ => None,
+            })
+            .collect();
+        if profiles.len() > 1 {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let changes_profile = units.iter().any(|unit| {
+            matches!(unit,
+            LegacyOriginUnit::Profile(profile_key, _) if profile_key == key)
+        });
+        // Missing original selected profile cannot prove disjunction for K/L.
+        if changes_profile && profiles.is_empty() {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let linked_change = units.contains(&LegacyOriginUnit::Entry(key.clone()))
+            || profiles.iter().any(|letter| {
+                units.contains(&LegacyOriginUnit::Profile(key.clone(), (*letter).clone()))
+            })
+            || units.contains(default);
+        if linked_change {
+            origin.require_legacy_units([default.clone()], Some(group))?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
 pub(crate) fn prepare_source_candidate(
     snapshot: &RawSourceSnapshot,
     expected: &SourceRevision,
     candidate: &Value,
     origin: Option<&LegacyCompatibilityOrigin>,
+) -> Result<PreparedSourceCandidate, SourcePreparationError> {
+    prepare_source_candidate_with_original_links(snapshot, expected, candidate, origin, None)
+}
+
+pub(crate) fn prepare_source_candidate_with_original_links(
+    snapshot: &RawSourceSnapshot,
+    expected: &SourceRevision,
+    candidate: &Value,
+    origin: Option<&LegacyCompatibilityOrigin>,
+    proofs: Option<&SourceOriginalProofAggregate>,
 ) -> Result<PreparedSourceCandidate, SourcePreparationError> {
     if expected != &snapshot.snapshot.revision {
         return Err(SourcePreparationError::StaleRevision);
@@ -3278,10 +3111,7 @@ pub(crate) fn prepare_source_candidate(
             return Err(SourcePreparationError::StaleRevision);
         }
         let units = changed_origin_units(&before, candidate, origin);
-        if unresolved_default_dependency(origin, &units) {
-            return Err(SourcePreparationError::LegacyOriginUnresolved);
-        }
-        origin.require_disjoint(units)?;
+        require_source_original_units(origin, &units, proofs)?;
     }
     let mut candidate = candidate.clone();
     let key_name = if registered { "id" } else { "key" };
@@ -3335,10 +3165,7 @@ pub(crate) fn prepare_source_candidate(
     if registered {
         let origin = origin.ok_or(SourcePreparationError::OriginUnavailable)?;
         let units = changed_origin_units(&before, &candidate, origin);
-        if unresolved_default_dependency(origin, &units) {
-            return Err(SourcePreparationError::LegacyOriginUnresolved);
-        }
-        origin.require_disjoint(units)?;
+        require_source_original_units(origin, &units, proofs)?;
     }
     let mut serialized_after = serde_json::to_vec_pretty(&candidate)
         .map_err(|_| SourcePreparationError::InvalidCandidate)?;
@@ -4057,6 +3884,100 @@ mod independent_source_tests {
                 .require_disjoint([LegacyOriginUnit::Default("N".into())]),
             Err(SourcePreparationError::OriginUnavailable)
         );
+    }
+
+    #[test]
+    fn legacy_origin_contract_shared_units_preserve_distinct_default_groups_and_order() {
+        let fixture = Fixture::new();
+        fixture
+            .overlay(&json!({"codingAgentProfiles":{"defaultProfileByAgent":{"N":"B","M":"A"}}}));
+        let (_, origin) = fixture.origin();
+        let snapshot = fixture.snapshot();
+        let (agents, profiles) = decode_registered_raw(&fixture.registered).unwrap();
+        let mut proofs = Vec::new();
+        for (matrix, letter) in [("N", "B"), ("M", "A")] {
+            let selection = ConfigurationRef {
+                version: 1,
+                source: snapshot.snapshot.source.clone(),
+                calculated_id: configuration_identity(&agents[0].command, &agents[0].envs),
+                requested_profile: Some(letter.into()),
+                profile_calculated_id: Some(profile_identity(
+                    &profiles.profiles_by_agent["K"][letter],
+                )),
+                legacy_entry_hint: Some("K".into()),
+            };
+            let bytes = serde_json::to_vec(
+                &json!({"tooling":{"replicaSelectionDefault":{"configurationRef":selection}}}),
+            )
+            .unwrap();
+            proofs.push(
+                origin
+                    .bind_original_selection(
+                        &snapshot,
+                        &selection,
+                        &snapshot.snapshot.revision,
+                        &snapshot.snapshot.context_revision,
+                        &bytes,
+                        &bytes,
+                        Some(matrix),
+                    )
+                    .unwrap(),
+            );
+        }
+        let units = [LegacyOriginUnit::Entry("K".into())].into_iter().collect();
+        let aggregate = SourceOriginalProofAggregate {
+            originals: proofs.clone(),
+        };
+        require_source_original_units(&origin, &units, Some(&aggregate)).unwrap();
+        proofs.reverse();
+        require_source_original_units(
+            &origin,
+            &units,
+            Some(&SourceOriginalProofAggregate {
+                originals: proofs.clone(),
+            }),
+        )
+        .unwrap();
+        // Keep the real M group covered. Add only a negative clone claiming N
+        // with M's different profile, so N coherence is the sole violated rule.
+        let mut conflicting_n = proofs[0].clone();
+        conflicting_n
+            .units
+            .remove(&LegacyOriginUnit::Default("M".into()));
+        conflicting_n
+            .units
+            .insert(LegacyOriginUnit::Default("N".into()));
+        proofs.push(conflicting_n);
+        let m = LegacyOriginUnit::Default("M".into());
+        assert!(proofs.iter().any(|proof| proof.units.contains(&m)));
+        let n = LegacyOriginUnit::Default("N".into());
+        let n_groups: Vec<_> = proofs
+            .iter()
+            .filter(|proof| proof.units.contains(&n))
+            .collect();
+        assert_eq!(n_groups.len(), 2);
+        assert_ne!(n_groups[0].units, n_groups[1].units);
+        origin
+            .require_legacy_units(
+                [m.clone()],
+                proofs.iter().find(|proof| proof.units.contains(&m)),
+            )
+            .unwrap();
+        for reverse in [false, true] {
+            if reverse {
+                proofs.reverse();
+            }
+            assert_eq!(
+                require_source_original_units(
+                    &origin,
+                    &units,
+                    Some(&SourceOriginalProofAggregate {
+                        originals: proofs.clone()
+                    })
+                ),
+                Err(SourcePreparationError::LegacyOriginUnresolved)
+            );
+        }
     }
 
     #[test]
@@ -25340,4 +25261,1477 @@ mod tests {
             vec!["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()]
         );
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn source_transition_digest<T: Serialize>(
+    value: &T,
+) -> Result<String, SourceCoordinationError> {
+    let bytes = serde_json::to_vec(value).map_err(|_| SourceCoordinationError::Invalid)?;
+    let SourceRevision::Bytes { sha256 } = source_bytes_revision(&bytes) else {
+        unreachable!()
+    };
+    Ok(sha256)
+}
+
+/// Validate the retained original packet with existing guarded PAIR verification.
+/// Pending is admissible here only after the primitive validates its reachable
+/// stage; it never licenses preparation of a replacement packet.
+#[allow(dead_code)]
+pub(crate) fn recover_source_target_packet(
+    target: &SourceInventoryTarget,
+    operation_id: &str,
+    source_key: &str,
+    mappings_digest: &str,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<Option<IdentityReferencePacket>, IdentityReferenceError> {
+    for _ in 0..=2 {
+        validate()?;
+        let physical = read_identity_reference_physical(&target.reservation)?;
+        let bytes = match &physical {
+            IdentityReferencePhysicalState::Absent => return Ok(None),
+            IdentityReferencePhysicalState::Bytes { bytes, .. } => bytes,
+        };
+        let packet: IdentityReferencePacket =
+            serde_json::from_slice(bytes).map_err(|_| IdentityReferenceError::Conflict)?;
+        let value: Value =
+            serde_json::from_slice(bytes).map_err(|_| IdentityReferenceError::Conflict)?;
+        if packet.operation_id != operation_id
+            || packet.source_physical_key != source_key
+            || value.get("mappingsDigest").and_then(Value::as_str) != Some(mappings_digest)
+        {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        let before_bytes = serde_json::to_vec(&target.before_protected)
+            .map_err(|error| IdentityReferenceError::Io(error.to_string()))?;
+        let before = source_bytes_revision(&before_bytes);
+        let hashes = packet.protected_revision_digests()?;
+        if before
+            != (SourceRevision::Bytes {
+                sha256: hashes[0].clone(),
+            })
+        {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        match verify_identity_reference_pair_guarded(
+            &target.decisions,
+            &target.state,
+            &target.reservation,
+            operation_id,
+            &packet.plan_digest,
+            validate,
+        ) {
+            Ok(_) | Err(IdentityReferenceError::Pending) => {}
+            Err(error) => return Err(error),
+        }
+        validate()?;
+        if read_identity_reference_physical(&target.reservation)? == physical {
+            return Ok(Some(packet));
+        }
+    }
+    Err(IdentityReferenceError::Conflict)
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_completed_source_target(
+    target: &SourceInventoryTarget,
+    commitment: &SourcePacketRecord,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<(), IdentityReferenceError> {
+    validate()?;
+    let original_before = serde_json::to_vec(&target.before_protected)
+        .map_err(|error| IdentityReferenceError::Io(error.to_string()))?;
+    if source_bytes_revision(&original_before) != commitment.before_protected_revision {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    let before = [
+        read_identity_reference_physical(&target.decisions)?,
+        read_identity_reference_physical(&target.state)?,
+    ];
+    let protected = identity_reference_protected_revision(&before)?;
+    let digest =
+        source_transition_digest(&protected).map_err(|_| IdentityReferenceError::Conflict)?;
+    if commitment.after_protected_revision != (SourceRevision::Bytes { sha256: digest }) {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    validate()?;
+    if before
+        != [
+            read_identity_reference_physical(&target.decisions)?,
+            read_identity_reference_physical(&target.state)?,
+        ]
+    {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceOriginalInventoryEvidence {
+    discovery: SourceDiscoveryWitness,
+    objects: Vec<(PathBuf, (u64, u64))>,
+    source_before: IdentityReferencePhysicalState,
+    expected_source: SourceRevision,
+    after_source: SourceRevision,
+    discovered: Vec<SourceDiscoveredTargetEvidence>,
+    topology: SourceMembershipTopology,
+    inventory_digest: String,
+}
+
+#[allow(dead_code)]
+pub(crate) fn source_inventory_target(
+    root: PathBuf,
+    decisions: PathBuf,
+    state: PathBuf,
+    reservation: PathBuf,
+    physical: [IdentityReferencePhysicalState; 2],
+    originals: Vec<ConfigurationRef>,
+) -> Result<SourceInventoryTarget, IdentityReferenceError> {
+    let identity = crate::path_identity::verify_directory(&root)
+        .map_err(IdentityReferenceError::Preparation)?;
+    if identity.canonical_path != root
+        || decisions.parent() != Some(root.as_path())
+        || state.parent() != Some(root.as_path())
+        || reservation.parent() != Some(root.as_path())
+    {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    let before_protected = identity_reference_protected_revision(&physical)?;
+    Ok(SourceInventoryTarget {
+        root,
+        root_object: (identity.object_id.volume, identity.object_id.file),
+        decisions,
+        state,
+        reservation,
+        before_protected,
+        original_selections: originals,
+        original_physical: Some(physical),
+    })
+}
+
+pub(crate) fn source_original_mappings(
+    snapshot: &RawSourceSnapshot,
+    prepared: &PreparedSourceCandidate,
+) -> Result<Vec<SourceIdentityMapping>, SourcePreparationError> {
+    let registered = snapshot.snapshot.source.kind == SourceKind::RegisteredInstance;
+    let after: Value = serde_json::from_slice(&prepared.serialized_after)
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    let (after_agents, after_profiles) = if registered {
+        let (agents, profiles) = decode_registered_raw(&after)?;
+        (
+            agents
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?,
+            profiles.profiles_by_agent,
+        )
+    } else {
+        let catalog =
+            crate::config::coding_agents_catalog::parse_catalog_schema2(&prepared.serialized_after)
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+        (
+            catalog
+                .agents
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?,
+            catalog.coding_agent_profiles,
+        )
+    };
+    let key_field = if registered { "id" } else { "key" };
+    let old: BTreeMap<_, _> = snapshot
+        .snapshot
+        .agents
+        .iter()
+        .map(|agent| {
+            agent
+                .get(key_field)
+                .and_then(Value::as_str)
+                .map(|key| (key.to_owned(), agent))
+                .ok_or(SourcePreparationError::InvalidCandidate)
+        })
+        .collect::<Result<_, _>>()?;
+    let new: BTreeMap<_, _> = after_agents
+        .iter()
+        .map(|agent| {
+            agent
+                .get(key_field)
+                .and_then(Value::as_str)
+                .map(|key| (key.to_owned(), agent))
+                .ok_or(SourcePreparationError::InvalidCandidate)
+        })
+        .collect::<Result<_, _>>()?;
+    let calculated = |value: &&Value| -> Result<String, SourcePreparationError> {
+        let command = value
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or(SourcePreparationError::InvalidCandidate)?;
+        let envs: Vec<CodingAgentEnv> = value
+            .get("envs")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| SourcePreparationError::InvalidCandidate)?
+            .unwrap_or_default();
+        Ok(configuration_identity(command, &envs))
+    };
+    let keys: std::collections::BTreeSet<_> = old.keys().chain(new.keys()).cloned().collect();
+    let mut mappings = Vec::new();
+    for key in keys {
+        let old_calculated_id = old.get(&key).map(&calculated).transpose()?;
+        let new_calculated_id = new.get(&key).map(&calculated).transpose()?;
+        let old_cells = snapshot.snapshot.profiles.get(&key);
+        let new_cells = after_profiles.get(&key);
+        let letters: std::collections::BTreeSet<_> = old_cells
+            .into_iter()
+            .flat_map(|cells| cells.keys())
+            .chain(new_cells.into_iter().flat_map(|cells| cells.keys()))
+            .cloned()
+            .collect();
+        let profiles: BTreeMap<_, _> = letters
+            .into_iter()
+            .filter_map(|letter| {
+                let before = old_cells
+                    .and_then(|cells| cells.get(&letter))
+                    .map(profile_identity);
+                let after = new_cells
+                    .and_then(|cells| cells.get(&letter))
+                    .map(profile_identity);
+                (before != after).then_some((letter, (before, after)))
+            })
+            .collect();
+        if old_calculated_id != new_calculated_id || !profiles.is_empty() {
+            let unavailable = new_calculated_id.is_none()
+                || !registered
+                    && crate::config::coding_agents_catalog::BUILTIN_AGENT_SUPPORT
+                        .iter()
+                        .any(|(builtin, supported)| *builtin == key && !supported);
+            mappings.push(SourceIdentityMapping {
+                entry_hint: key,
+                old_calculated_id,
+                new_calculated_id,
+                profiles,
+                unavailable,
+            });
+        }
+    }
+    Ok(mappings)
+}
+
+type SourceMembershipTarget = (PathBuf, (u64, u64), PathBuf, PathBuf, PathBuf);
+
+/// Private, backend-validated topology; never a deserialized authority token.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceMembershipTopology {
+    registry: Vec<String>,
+    directories: Vec<(PathBuf, (u64, u64))>,
+    slots: Vec<(PathBuf, bool)>,
+    membership: Vec<(PathBuf, Vec<PathBuf>)>,
+    targets: Vec<SourceMembershipTarget>,
+    // Slot coordinate is structural: mutable selection values are excluded.
+    links: Vec<(PathBuf, String, SourceRef, String)>,
+}
+
+fn source_ref_tuple(
+    source: &SourceRef,
+) -> (SourceFamily, SourceRole, SourceScope, SourceKind, &str) {
+    (
+        source.family,
+        source.role,
+        source.scope,
+        source.kind,
+        &source.context_root,
+    )
+}
+
+fn source_inventory_projection(
+    editor: &str,
+    source: &SourceRef,
+    physical_source_key: &str,
+    context_revision: &str,
+    original: &SourceMembershipTopology,
+) -> Result<Vec<u8>, SourceCoordinationError> {
+    if editor.is_empty() || physical_source_key.is_empty() || context_revision.is_empty() {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    // Registry order is policy-significant. Everything below is set-valued.
+    let mut topology = original.clone();
+    topology.directories.sort();
+    topology.directories.dedup();
+    topology.slots.sort();
+    topology.slots.dedup();
+    for (_, members) in &mut topology.membership {
+        members.sort();
+        members.dedup();
+    }
+    topology.membership.sort();
+    topology.membership.dedup();
+    topology.targets.sort();
+    topology.targets.dedup();
+    for pair in topology.directories.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    for pair in topology.slots.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    for pair in topology.membership.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    for pair in topology.targets.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    let mut links = topology
+        .links
+        .iter()
+        .map(|(root, slot, linked, key)| {
+            if slot.is_empty() || linked != source || key != physical_source_key {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            // Encode enum spellings via serde, not Debug or platform formatting.
+            serde_json::to_vec(&(root, slot, source_ref_tuple(linked), key))
+                .map(|bytes| ((root.clone(), slot.clone()), bytes))
+                .map_err(|_| SourceCoordinationError::Invalid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    links.sort();
+    links.dedup();
+    for pair in links.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    let links = links
+        .into_iter()
+        .map(|(_, bytes)| {
+            serde_json::from_slice::<Value>(&bytes).map_err(|_| SourceCoordinationError::Invalid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    serde_json::to_vec(&(
+        "p03-member-inventory-v1",
+        editor,
+        1u32,
+        source_ref_tuple(source),
+        physical_source_key,
+        context_revision,
+        topology.registry,
+        topology.directories,
+        topology.slots,
+        topology.membership,
+        topology.targets,
+        links,
+    ))
+    .map_err(|_| SourceCoordinationError::Invalid)
+}
+
+fn source_inventory_digest(
+    participant: &str,
+    source: &SourceRef,
+    physical_source_key: &str,
+    context_revision: &str,
+    topology: &SourceMembershipTopology,
+) -> Result<String, SourceCoordinationError> {
+    let bytes = source_inventory_projection(
+        participant,
+        source,
+        physical_source_key,
+        context_revision,
+        topology,
+    )?;
+    match source_bytes_revision(&bytes) {
+        SourceRevision::Bytes { sha256 } => Ok(sha256),
+        SourceRevision::Absent {} => Err(SourceCoordinationError::Invalid),
+    }
+}
+
+#[cfg(test)]
+mod source_inventory_projection_tests {
+    use super::*;
+
+    fn fixture() -> (SourceRef, SourceMembershipTopology) {
+        (
+            SourceRef {
+                family: SourceFamily::Agents,
+                role: SourceRole::Registered,
+                scope: SourceScope::Instance,
+                kind: SourceKind::RegisteredInstance,
+                context_root: "C".into(),
+            },
+            SourceMembershipTopology {
+                registry: vec!["P".into(), "Q".into()],
+                directories: vec![],
+                slots: vec![],
+                membership: vec![],
+                targets: vec![],
+                links: vec![],
+            },
+        )
+    }
+
+    #[test]
+    fn source_membership_fixed_encoding_vector_and_ordered_registry() {
+        let (source, mut topology) = fixture();
+        let bytes =
+            source_inventory_projection("C", &source, "source-key", "context", &topology).unwrap();
+        assert_eq!(bytes, br#"["p03-member-inventory-v1","C",1,["agents","registered","instance","registeredInstance","C"],"source-key","context",["P","Q"],[],[],[],[],[]]"#);
+        let before =
+            source_inventory_digest("C", &source, "source-key", "context", &topology).unwrap();
+        topology.registry.reverse();
+        assert_ne!(
+            before,
+            source_inventory_digest("C", &source, "source-key", "context", &topology).unwrap()
+        );
+    }
+
+    #[test]
+    fn source_membership_sets_permute_but_objects_slots_and_source_do_not() {
+        let (source, mut topology) = fixture();
+        topology.directories = vec![(PathBuf::from("b"), (1, 2)), (PathBuf::from("a"), (1, 1))];
+        topology.slots = vec![
+            (PathBuf::from("b/.ac"), false),
+            (PathBuf::from("a/.ac"), true),
+        ];
+        topology.links = vec![(
+            PathBuf::from("a"),
+            "state/sourceReferences/1/configurationRef".into(),
+            source.clone(),
+            "source-key".into(),
+        )];
+        let digest = |topology: &SourceMembershipTopology| {
+            source_inventory_digest("C", &source, "source-key", "context", topology).unwrap()
+        };
+        let before = digest(&topology);
+        topology.directories.reverse();
+        topology.slots.reverse();
+        assert_eq!(before, digest(&topology));
+        let mut replaced = topology.clone();
+        replaced.directories[0].1 .1 += 1;
+        assert_ne!(before, digest(&replaced));
+        let mut shifted = topology.clone();
+        shifted.links[0].1 = "state/sourceReferences/0/configurationRef".into();
+        assert_ne!(before, digest(&shifted));
+        let mut reassigned = topology.clone();
+        reassigned.links[0].2.context_root = "other".into();
+        assert_eq!(
+            source_inventory_projection("C", &source, "source-key", "context", &reassigned),
+            Err(SourceCoordinationError::Invalid)
+        );
+        let mut contradictory = topology.clone();
+        contradictory.slots.push((PathBuf::from("a/.ac"), false));
+        assert_eq!(
+            source_inventory_projection("C", &source, "source-key", "context", &contradictory),
+            Err(SourceCoordinationError::Invalid)
+        );
+    }
+}
+
+/// Backend semantic coordinate; history cannot manufacture matrix-default authority.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) enum SourceOriginalSlot {
+    Decision,
+    MatrixDefault,
+    ReplicaDefault,
+    HistoryKey(String),
+    HistoryIndex(usize),
+}
+
+impl SourceOriginalSlot {
+    fn stored<'a>(&self, target: &'a Value) -> Option<&'a Value> {
+        match self {
+            Self::Decision => target.pointer("/tooling/configurationRef"),
+            Self::MatrixDefault | Self::ReplicaDefault => {
+                target.pointer("/tooling/replicaSelectionDefault/configurationRef")
+            }
+            Self::HistoryKey(key) => target
+                .get("tooling")?
+                .get("codingAgents")?
+                .as_object()?
+                .get(key)?
+                .get("configurationRef"),
+            Self::HistoryIndex(index) => target
+                .get("tooling")?
+                .get("sourceReferences")?
+                .as_array()?
+                .get(*index)?
+                .get("configurationRef"),
+        }
+    }
+
+    fn coordinate(&self) -> String {
+        match self {
+            Self::Decision => "decision/configurationRef".into(),
+            Self::MatrixDefault | Self::ReplicaDefault => {
+                "decision/replicaSelectionDefault/configurationRef".into()
+            }
+            Self::HistoryKey(key) => format!(
+                "state/codingAgents/{}/configurationRef",
+                key.replace('~', "~0").replace('/', "~1")
+            ),
+            Self::HistoryIndex(index) => format!("state/sourceReferences/{index}/configurationRef"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceDiscoveredTargetEvidence {
+    pub(crate) target: SourceInventoryTarget,
+    pub(crate) slots: Vec<(SourceOriginalSlot, ConfigurationRef)>,
+    pub(crate) affected: bool,
+}
+
+pub(crate) struct SourceInventoryCapture {
+    discovery: SourceDiscoveryWitness,
+    objects: Vec<(PathBuf, (u64, u64))>,
+    discovered: Vec<SourceDiscoveredTargetEvidence>,
+    topology: SourceMembershipTopology,
+    original_links: SourceOriginalProofAggregate,
+    classified: bool,
+}
+
+impl SourceInventoryCapture {
+    pub(crate) fn capture(
+        discovery: SourceDiscoveryWitness,
+        mut discovered: Vec<SourceDiscoveredTargetEvidence>,
+        snapshot: &RawSourceSnapshot,
+        origin: &LegacyCompatibilityOrigin,
+        physical_source_key: &str,
+    ) -> Result<Self, SourcePreparationError> {
+        let invalid = || SourcePreparationError::LegacyOriginUnresolved;
+        let mut paths = discovery.parents.clone();
+        for (root, members) in &discovery.membership {
+            paths.push(root.clone());
+            paths.extend(members.iter().cloned());
+        }
+        paths.extend(
+            discovered
+                .iter()
+                .map(|evidence| evidence.target.root.clone()),
+        );
+        paths.sort();
+        paths.dedup();
+        let mut objects = Vec::new();
+        for path in paths {
+            let verified = crate::path_identity::verify_directory(&path).map_err(|_| invalid())?;
+            objects.push((
+                verified.canonical_path,
+                (verified.object_id.volume, verified.object_id.file),
+            ));
+        }
+        objects.sort();
+        objects.dedup();
+        if objects.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(invalid());
+        }
+        for (slot, present) in &discovery.slots {
+            if *present {
+                let verified =
+                    crate::path_identity::verify_directory(slot).map_err(|_| invalid())?;
+                if !objects.iter().any(|(path, object)| {
+                    path == &verified.canonical_path
+                        && *object == (verified.object_id.volume, verified.object_id.file)
+                }) {
+                    return Err(invalid());
+                }
+            } else {
+                let parent = slot.parent().ok_or_else(invalid)?;
+                crate::path_identity::verify_directory(parent).map_err(|_| invalid())?;
+                match std::fs::symlink_metadata(slot) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err(invalid()),
+                }
+            }
+        }
+        discovered.sort_by(|a, b| a.target.decisions.cmp(&b.target.decisions));
+        if discovered
+            .windows(2)
+            .any(|pair| pair[0].target.root == pair[1].target.root)
+        {
+            return Err(invalid());
+        }
+        let mut links = Vec::new();
+        let mut originals = Vec::new();
+        let mut defaults: BTreeMap<
+            String,
+            (PathBuf, std::collections::BTreeSet<LegacyOriginUnit>),
+        > = BTreeMap::new();
+        for evidence in &discovered {
+            let target = &evidence.target;
+            let physical = target.original_physical.as_ref().ok_or_else(invalid)?;
+            if identity_reference_protected_revision(physical).map_err(|_| invalid())?
+                != target.before_protected
+                || !objects
+                    .iter()
+                    .any(|(root, object)| root == &target.root && object == &target.root_object)
+            {
+                return Err(invalid());
+            }
+            for (slot, selection) in &evidence.slots {
+                if selection.version != 1 {
+                    return Err(invalid());
+                }
+                if matches!(
+                    slot,
+                    SourceOriginalSlot::MatrixDefault | SourceOriginalSlot::ReplicaDefault
+                ) {
+                    let name = target
+                        .root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(invalid)?;
+                    let matrix = name.starts_with("_agent_");
+                    let replica = name.starts_with("__agent_");
+                    if matrix != matches!(slot, SourceOriginalSlot::MatrixDefault)
+                        || replica != matches!(slot, SourceOriginalSlot::ReplicaDefault)
+                    {
+                        return Err(invalid());
+                    }
+                }
+                let side = match slot {
+                    SourceOriginalSlot::Decision
+                    | SourceOriginalSlot::MatrixDefault
+                    | SourceOriginalSlot::ReplicaDefault => 0,
+                    _ => 1,
+                };
+                let bytes = match &physical[side] {
+                    IdentityReferencePhysicalState::Bytes { bytes, .. } => bytes,
+                    _ => return Err(invalid()),
+                };
+                let raw: Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+                let stored: ConfigurationRef =
+                    serde_json::from_value(slot.stored(&raw).cloned().ok_or_else(invalid)?)
+                        .map_err(|_| invalid())?;
+                if stored != *selection {
+                    return Err(invalid());
+                }
+                if selection.source != snapshot.snapshot.source {
+                    continue;
+                }
+                links.push((
+                    target.root.clone(),
+                    slot.coordinate(),
+                    selection.source.clone(),
+                    physical_source_key.into(),
+                ));
+                if snapshot.snapshot.source.kind != SourceKind::RegisteredInstance {
+                    continue;
+                }
+                let matrix = if matches!(slot, SourceOriginalSlot::MatrixDefault) {
+                    // Only a real origin Matrix can own N. Replica/history never mint Default.
+                    let name = target
+                        .root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(invalid)?;
+                    Some(
+                        name.strip_prefix("_agent_")
+                            .filter(|name| !name.is_empty())
+                            .ok_or_else(invalid)?,
+                    )
+                } else {
+                    None
+                };
+                let proof = origin.bind_original_selection_at(
+                    snapshot,
+                    selection,
+                    &snapshot.snapshot.revision,
+                    &snapshot.snapshot.context_revision,
+                    bytes,
+                    bytes,
+                    matrix,
+                    slot,
+                )?;
+                if let Some(matrix) = matrix {
+                    let provenance = (target.root.clone(), proof.units.clone());
+                    if defaults
+                        .get(matrix)
+                        .is_some_and(|original| original != &provenance)
+                    {
+                        return Err(invalid());
+                    }
+                    defaults.insert(matrix.into(), provenance);
+                }
+                originals.push(proof);
+            }
+        }
+        let topology = SourceMembershipTopology {
+            registry: discovery.registry.clone(),
+            directories: objects.clone(),
+            slots: discovery.slots.clone(),
+            membership: discovery.membership.clone(),
+            targets: discovered
+                .iter()
+                .map(|e| {
+                    let t = &e.target;
+                    (
+                        t.root.clone(),
+                        t.root_object,
+                        t.decisions.clone(),
+                        t.state.clone(),
+                        t.reservation.clone(),
+                    )
+                })
+                .collect(),
+            links,
+        };
+        Ok(Self {
+            discovery,
+            objects,
+            discovered,
+            topology,
+            original_links: SourceOriginalProofAggregate { originals },
+            classified: false,
+        })
+    }
+
+    pub(crate) fn original_links(&self) -> &SourceOriginalProofAggregate {
+        &self.original_links
+    }
+}
+
+pub(crate) type SourceOriginalSlotParser<'a> = dyn Fn(
+        &SourceInventoryTarget,
+    ) -> Result<Vec<(SourceOriginalSlot, ConfigurationRef)>, IdentityReferenceError>
+    + 'a;
+
+pub(crate) struct SourceInventoryInputs<'borrow, 'identity> {
+    pub(crate) settings: &'borrow AppSettings,
+    pub(crate) context: &'borrow SourceReadContext,
+    pub(crate) identity: &'borrow IdentityWriteLease,
+    pub(crate) lease: &'borrow SourceWriteContext<'identity>,
+}
+
+/// Backend-only original operation authority. No retained discovery handles.
+pub(crate) struct SourceInventoryProof {
+    operation_id: String,
+    inventory: SourceLocalInventory,
+}
+
+impl SourceInventoryProof {
+    pub(crate) fn for_candidate(
+        inputs: SourceInventoryInputs<'_, '_>,
+        snapshot: &RawSourceSnapshot,
+        prepared: &PreparedSourceCandidate,
+        origin: &OriginInputs,
+        capture: SourceInventoryCapture,
+        operation_id: &str,
+    ) -> Result<Self, SourcePreparationError> {
+        let SourceInventoryInputs {
+            settings,
+            context,
+            identity,
+            lease,
+        } = inputs;
+        if !capture.classified
+            || SourceReadContext::from_settings(settings, &context.settings_path)? != *context
+            || capture.discovery.registry != settings.project_paths
+            || prepared.source != snapshot.snapshot.source
+            || prepared.source != *lease.source()
+        {
+            return Err(SourcePreparationError::ContextChanged);
+        }
+        prepared.revalidate_before_write(context)?;
+        origin.revalidate(context)?;
+        let inventory_digest = source_inventory_digest(
+            identity.instance_id(),
+            lease.source(),
+            lease.physical_source_key(),
+            lease.context_revision(),
+            &capture.topology,
+        )
+        .map_err(|_| SourcePreparationError::ContextChanged)?;
+        let mappings = source_original_mappings(snapshot, prepared)?;
+        let source_before = match &prepared.before_bytes {
+            Some(bytes) => IdentityReferencePhysicalState::from_bytes(bytes.clone()),
+            None => IdentityReferencePhysicalState::Absent,
+        };
+        let evidence = SourceOriginalInventoryEvidence {
+            discovery: capture.discovery,
+            objects: capture.objects.clone(),
+            source_before,
+            expected_source: prepared.expected_revision.clone(),
+            after_source: source_bytes_revision(&prepared.serialized_after),
+            discovered: capture.discovered.clone(),
+            topology: capture.topology,
+            inventory_digest,
+        };
+        let mut targets = Vec::new();
+        for classified in &capture.discovered {
+            if classified.affected {
+                let mut target = classified.target.clone();
+                // Original images have one durable location, in full evidence.
+                target.original_physical = None;
+                targets.push(target);
+            }
+        }
+        let mut inventory = SourceLocalInventory {
+            editor_id: identity.instance_id().into(),
+            source: prepared.source.clone(),
+            physical_source_key: lease.physical_source_key().into(),
+            context_revision: context.revision.clone(),
+            authorization_revision: String::new(),
+            authorized_roots: capture.objects,
+            targets,
+            mappings,
+            origin_binding: Some(origin.binding.clone()),
+            original_evidence: Some(evidence),
+        };
+        inventory.authorization_revision = source_transition_digest(&inventory)
+            .map_err(|_| SourcePreparationError::ContextChanged)?;
+        let proof = Self {
+            operation_id: operation_id.into(),
+            inventory,
+        };
+        proof
+            .validate(identity, lease, context)
+            .map_err(|_| SourcePreparationError::ContextChanged)?;
+        Ok(proof)
+    }
+
+    pub(crate) fn inventory(&self) -> &SourceLocalInventory {
+        &self.inventory
+    }
+
+    pub(crate) fn inventory_digest(&self) -> Result<&str, SourceCoordinationError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let actual = source_inventory_digest(
+            &self.inventory.editor_id,
+            &self.inventory.source,
+            &self.inventory.physical_source_key,
+            &self.inventory.context_revision,
+            &original.topology,
+        )?;
+        if actual != original.inventory_digest {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        Ok(&original.inventory_digest)
+    }
+
+    pub(crate) fn stored_intent(
+        &self,
+        prepared: &PreparedSourceCandidate,
+        operation_id: &str,
+        request_id: &str,
+        payload_digest: &str,
+    ) -> Result<SourceStoredIntent, SourceCoordinationError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if operation_id != self.operation_id
+            || prepared.source != self.inventory.source
+            || prepared.expected_revision != original.expected_source
+            || source_bytes_revision(&prepared.serialized_after) != original.after_source
+        {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        Ok(SourceStoredIntent {
+            schema_version: 2,
+            operation_id: operation_id.into(),
+            request_id: request_id.into(),
+            payload_digest: payload_digest.into(),
+            source: self.inventory.source.clone(),
+            expected_revision: prepared.expected_revision.clone(),
+            before_bytes: prepared.before_bytes.clone(),
+            serialized_after: prepared.serialized_after.clone(),
+            mappings: self.inventory.mappings.clone(),
+            editor_id: self.inventory.editor_id.clone(),
+            context_revision: self.inventory.context_revision.clone(),
+            authorization_revision: self.inventory.authorization_revision.clone(),
+        })
+    }
+
+    /// Pure segment guard: directory/object and original origin checks only.
+    /// Full enumeration is orchestrated outside PAIR by mutations.
+    pub(crate) fn validate(
+        &self,
+        identity: &IdentityWriteLease,
+        lease: &SourceWriteContext,
+        context: &SourceReadContext,
+    ) -> Result<(), IdentityReferenceError> {
+        #[cfg(test)]
+        source_factory_guard_cut()?;
+        let conflict = || IdentityReferenceError::Conflict;
+        let inventory = &self.inventory;
+        let original = inventory.original_evidence.as_ref().ok_or_else(conflict)?;
+        if identity.instance_id() != inventory.editor_id
+            || lease.source() != &inventory.source
+            || lease.physical_source_key() != inventory.physical_source_key
+            || context.revision != inventory.context_revision
+        {
+            return Err(conflict());
+        }
+        lease.revalidate(context).map_err(|_| conflict())?;
+        for (path, object) in &original.objects {
+            let current = crate::path_identity::verify_directory(path).map_err(|_| conflict())?;
+            if current.canonical_path != *path
+                || (current.object_id.volume, current.object_id.file) != *object
+            {
+                return Err(conflict());
+            }
+        }
+        for (slot, present) in &original.discovery.slots {
+            let exists = match std::fs::symlink_metadata(slot) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                _ => return Err(conflict()),
+            };
+            if exists != *present {
+                return Err(conflict());
+            }
+        }
+        let observed = OriginInputs::read(context);
+        let binding = inventory.origin_binding.as_ref().ok_or_else(conflict)?;
+        if observed.binding.context != binding.context
+            || observed.binding.settings != binding.settings
+            || observed.binding.overlay != binding.overlay
+        {
+            return Err(conflict());
+        }
+        let current_source = lease.source_revision().map_err(|_| conflict())?;
+        if current_source != original.expected_source && current_source != original.after_source {
+            return Err(conflict());
+        }
+        if current_source != original.expected_source {
+            let (_, journal) = read_own_source_journal(context).map_err(|_| conflict())?;
+            let intent = journal
+                .intents
+                .get(&self.operation_id)
+                .ok_or_else(conflict)?;
+            let progress = journal
+                .progress
+                .get(&self.operation_id)
+                .ok_or_else(conflict)?;
+            if !progress.packets_prepared
+                || intent.source != inventory.source
+                || intent.expected_revision != original.expected_source
+                || source_bytes_revision(&intent.serialized_after) != original.after_source
+                || intent.mappings != inventory.mappings
+                || intent.editor_id != identity.instance_id()
+            {
+                return Err(conflict());
+            }
+        }
+        if observed.binding.registered != binding.registered {
+            if inventory.source.kind != SourceKind::RegisteredInstance
+                || current_source != original.after_source
+                || observed.binding.registered.as_ref() != Some(&original.after_source)
+            {
+                return Err(conflict());
+            }
+            let (_, journal) = read_own_source_journal(context).map_err(|_| conflict())?;
+            let intent = journal
+                .intents
+                .get(&self.operation_id)
+                .ok_or_else(conflict)?;
+            if intent.source != inventory.source
+                || intent.expected_revision != original.expected_source
+                || source_bytes_revision(&intent.serialized_after) != original.after_source
+                || intent.mappings != inventory.mappings
+                || intent.editor_id != identity.instance_id()
+            {
+                return Err(conflict());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SourceInventoryCapture {
+    pub(crate) fn same_original_capture(&self, other: &Self) -> bool {
+        self.discovery == other.discovery
+            && self.objects == other.objects
+            && self.discovered == other.discovered
+            && self.topology == other.topology
+    }
+
+    pub(crate) fn original_targets(&self) -> &[SourceDiscoveredTargetEvidence] {
+        &self.discovered
+    }
+
+    pub(crate) fn classify(
+        &mut self,
+        classifications: Vec<(PathBuf, bool)>,
+    ) -> Result<(), SourcePreparationError> {
+        if classifications.len() != self.discovered.len() {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        for (evidence, (target, affected)) in self.discovered.iter_mut().zip(classifications) {
+            if evidence.target.decisions != target {
+                return Err(SourcePreparationError::LegacyOriginUnresolved);
+            }
+            evidence.affected = affected;
+        }
+        self.classified = true;
+        Ok(())
+    }
+}
+
+impl SourceLocalInventory {
+    fn validate_original_evidence(&self) -> Result<(), SourceCoordinationError> {
+        let Some(original) = &self.original_evidence else {
+            return Ok(());
+        };
+        let invalid = || SourceCoordinationError::Invalid;
+        let mut unsigned = self.clone();
+        unsigned.authorization_revision.clear();
+        if source_transition_digest(&unsigned)? != self.authorization_revision
+            || original.objects != self.authorized_roots
+            || original.topology.directories != original.objects
+            || original.topology.registry != original.discovery.registry
+            || original.topology.slots != original.discovery.slots
+            || original.topology.membership != original.discovery.membership
+            || self.origin_binding.is_none()
+        {
+            return Err(invalid());
+        }
+        let before = match &original.source_before {
+            IdentityReferencePhysicalState::Absent => SourceRevision::Absent {},
+            IdentityReferencePhysicalState::Bytes { bytes, .. } => {
+                if IdentityReferencePhysicalState::from_bytes(bytes.clone())
+                    != original.source_before
+                {
+                    return Err(invalid());
+                }
+                source_bytes_revision(bytes)
+            }
+        };
+        if before != original.expected_source
+            || source_inventory_digest(
+                &self.editor_id,
+                &self.source,
+                &self.physical_source_key,
+                &self.context_revision,
+                &original.topology,
+            )? != original.inventory_digest
+            || original
+                .discovered
+                .windows(2)
+                .any(|pair| pair[0].target.decisions >= pair[1].target.decisions)
+        {
+            return Err(invalid());
+        }
+        let mut selected = Vec::new();
+        let mut targets = Vec::new();
+        let mut links = Vec::new();
+        for evidence in &original.discovered {
+            let target = &evidence.target;
+            let physical = target.original_physical.as_ref().ok_or_else(invalid)?;
+            for image in physical {
+                if let IdentityReferencePhysicalState::Bytes { bytes, .. } = image {
+                    if &IdentityReferencePhysicalState::from_bytes(bytes.clone()) != image {
+                        return Err(invalid());
+                    }
+                }
+            }
+            if identity_reference_protected_revision(physical).map_err(|_| invalid())?
+                != target.before_protected
+                || !original
+                    .objects
+                    .iter()
+                    .any(|(path, object)| path == &target.root && object == &target.root_object)
+                || target.original_selections
+                    != evidence
+                        .slots
+                        .iter()
+                        .map(|(_, selection)| selection.clone())
+                        .collect::<Vec<_>>()
+            {
+                return Err(invalid());
+            }
+            targets.push((
+                target.root.clone(),
+                target.root_object,
+                target.decisions.clone(),
+                target.state.clone(),
+                target.reservation.clone(),
+            ));
+            for (slot, selection) in &evidence.slots {
+                if selection.source == self.source {
+                    links.push((
+                        target.root.clone(),
+                        slot.coordinate(),
+                        selection.source.clone(),
+                        self.physical_source_key.clone(),
+                    ));
+                }
+            }
+            if evidence.affected {
+                let mut target = target.clone();
+                target.original_physical = None;
+                selected.push(target);
+            }
+        }
+        if targets != original.topology.targets
+            || links != original.topology.links
+            || selected != self.targets
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify_original_slots(
+        &self,
+        parse: &SourceOriginalSlotParser<'_>,
+    ) -> Result<(), IdentityReferenceError> {
+        let original = self
+            .original_evidence
+            .as_ref()
+            .ok_or(IdentityReferenceError::Conflict)?;
+        for evidence in &original.discovered {
+            let slots = parse(&evidence.target)?;
+            if slots != evidence.slots
+                || slots
+                    .iter()
+                    .map(|(_, reference)| reference.clone())
+                    .collect::<Vec<_>>()
+                    != evidence.target.original_selections
+            {
+                return Err(IdentityReferenceError::Conflict);
+            }
+        }
+        Ok(())
+    }
+
+    /// Shared three-outcome reader: Ok(true) matches, Ok(false) is definite
+    /// protected mismatch, Err is uncertainty/invalid authority, never stale.
+    fn affected_original_protected_matches(&self) -> Result<bool, SourceCoordinationError> {
+        self.validate_original_evidence()?;
+        let original = self
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let mut matches = true;
+        for evidence in original
+            .discovered
+            .iter()
+            .filter(|evidence| evidence.affected)
+        {
+            let target = &evidence.target;
+            let identity = crate::path_identity::verify_directory(&target.root)
+                .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+            if (identity.object_id.volume, identity.object_id.file) != target.root_object {
+                return Err(SourceCoordinationError::IdentityUncertain);
+            }
+            let physical = [
+                read_identity_reference_physical(&target.decisions)
+                    .map_err(|_| SourceCoordinationError::IdentityUncertain)?,
+                read_identity_reference_physical(&target.state)
+                    .map_err(|_| SourceCoordinationError::IdentityUncertain)?,
+            ];
+            let protected = identity_reference_protected_revision(&physical)
+                .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+            matches &= protected == target.before_protected;
+        }
+        Ok(matches)
+    }
+}
+
+impl SourceInventoryProof {
+    pub(crate) fn for_resume(
+        inputs: SourceInventoryInputs<'_, '_>,
+        operation_id: &str,
+        journal: &SourcePrivateJournal,
+        parse_slots: &SourceOriginalSlotParser<'_>,
+    ) -> Result<Self, SourceCoordinationError> {
+        let SourceInventoryInputs {
+            settings,
+            context,
+            identity,
+            lease,
+        } = inputs;
+        let inventory = journal
+            .inventories
+            .get(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?
+            .clone();
+        // Recompute from original physical images BEFORE restoring any proof.
+        inventory
+            .verify_original_slots(parse_slots)
+            .map_err(|_| SourceCoordinationError::Invalid)?;
+        let original = inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if original.discovery.registry != settings.project_paths
+            || SourceReadContext::from_settings(settings, &context.settings_path)
+                .map_err(|_| SourceCoordinationError::Unauthorized)?
+                != *context
+        {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+        let mut unsigned = inventory.clone();
+        unsigned.authorization_revision.clear();
+        if source_transition_digest(&unsigned)? != inventory.authorization_revision {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let intent = journal
+            .intents
+            .get(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if intent.editor_id != identity.instance_id()
+            || intent.authorization_revision != inventory.authorization_revision
+            || intent.expected_revision != original.expected_source
+            || source_bytes_revision(&intent.serialized_after) != original.after_source
+            || intent.source != inventory.source
+            || intent.mappings != inventory.mappings
+        {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let proof = Self {
+            operation_id: operation_id.into(),
+            inventory,
+        };
+        proof.inventory_digest()?;
+        proof
+            .validate(identity, lease, context)
+            .map_err(|_| SourceCoordinationError::Stale)?;
+        proof.restore_original_links(context)?;
+        Ok(proof)
+    }
+
+    /// Replay the original pure patch over every discovered before image.
+    /// The callback is supplied by the orchestration owner, outside PAIR guards.
+    pub(crate) fn verify_original_classification(
+        &self,
+        classify: &dyn Fn(&SourceInventoryTarget) -> Result<bool, IdentityReferenceError>,
+    ) -> Result<(), IdentityReferenceError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(IdentityReferenceError::Conflict)?;
+        let mut selected = Vec::new();
+        for evidence in &original.discovered {
+            if classify(&evidence.target)? != evidence.affected {
+                return Err(IdentityReferenceError::Conflict);
+            }
+            if evidence.affected {
+                let mut target = evidence.target.clone();
+                target.original_physical = None;
+                selected.push(target);
+            }
+        }
+        if selected != self.inventory.targets {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        Ok(())
+    }
+
+    /// Fence-only invariant; later PAIR progress legitimately changes revisions.
+    pub(crate) fn verify_affected_before_fence(&self) -> Result<(), SourceCoordinationError> {
+        if self.inventory.affected_original_protected_matches()? {
+            Ok(())
+        } else {
+            Err(SourceCoordinationError::Stale)
+        }
+    }
+
+    pub(crate) fn verify_complete_discovery(
+        &self,
+        witness: &SourceDiscoveryWitness,
+        current: &[SourceDiscoveredTargetEvidence],
+    ) -> Result<(), SourceCoordinationError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if witness != &original.discovery || current.len() != original.discovered.len() {
+            return Err(SourceCoordinationError::Stale);
+        }
+        let mut links = Vec::new();
+        for (now_evidence, before_evidence) in current.iter().zip(&original.discovered) {
+            if !before_evidence.affected
+                && now_evidence.target.before_protected != before_evidence.target.before_protected
+            {
+                return Err(SourceCoordinationError::Stale);
+            }
+        }
+        for (now, before) in current.iter().zip(&original.discovered) {
+            let now = &now.target;
+            let before = &before.target;
+            if now.root != before.root
+                || now.root_object != before.root_object
+                || now.decisions != before.decisions
+                || now.state != before.state
+                || now.reservation != before.reservation
+            {
+                return Err(SourceCoordinationError::Stale);
+            }
+        }
+        for evidence in current {
+            for (slot, selection) in &evidence.slots {
+                if selection.source == self.inventory.source {
+                    links.push((
+                        evidence.target.root.clone(),
+                        slot.coordinate(),
+                        selection.source.clone(),
+                        self.inventory.physical_source_key.clone(),
+                    ));
+                }
+            }
+        }
+        let mut topology = original.topology.clone();
+        topology.links = links;
+        if source_inventory_digest(
+            &self.inventory.editor_id,
+            &self.inventory.source,
+            &self.inventory.physical_source_key,
+            &self.inventory.context_revision,
+            &topology,
+        )? != original.inventory_digest
+        {
+            return Err(SourceCoordinationError::Stale);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_FACTORY_GUARD_CUT: std::cell::Cell<(usize, Option<usize>)> = const { std::cell::Cell::new((0, None)) };
+}
+
+#[cfg(test)]
+pub(crate) fn configure_source_factory_guard_cut(fail_at: Option<usize>) {
+    SOURCE_FACTORY_GUARD_CUT.with(|state| state.set((0, fail_at)));
+}
+
+#[cfg(test)]
+pub(crate) fn source_factory_guard_calls() -> usize {
+    SOURCE_FACTORY_GUARD_CUT.with(|state| state.get().0)
+}
+
+#[cfg(test)]
+fn source_factory_guard_cut() -> Result<(), IdentityReferenceError> {
+    SOURCE_FACTORY_GUARD_CUT.with(|state| {
+        let (count, fail_at) = state.get();
+        let count = count + 1;
+        if fail_at == Some(count) {
+            state.set((count, None));
+            return Err(IdentityReferenceError::Conflict);
+        }
+        state.set((count, fail_at));
+        Ok(())
+    })
+}
+
+impl SourceInventoryProof {
+    /// Rebuild original proof groups from the SAME saved before source and target
+    /// images, after current source/packet authority has been independently checked.
+    fn restore_original_links(
+        &self,
+        context: &SourceReadContext,
+    ) -> Result<(), SourceCoordinationError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let raw = match &original.source_before {
+            IdentityReferencePhysicalState::Absent => OriginPhysicalInput::Absent,
+            IdentityReferencePhysicalState::Bytes { bytes, .. } => {
+                if IdentityReferencePhysicalState::from_bytes(bytes.clone())
+                    != original.source_before
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+                OriginPhysicalInput::Bytes(bytes.clone())
+            }
+        };
+        if raw.revision().as_ref() != Some(&original.expected_source) {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let binding = self
+            .inventory
+            .origin_binding
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let mut inputs = OriginInputs::read(context);
+        if inputs.binding.settings != binding.settings
+            || inputs.binding.overlay != binding.overlay
+            || inputs.binding.context != binding.context
+        {
+            return Err(SourceCoordinationError::Stale);
+        }
+        if self.inventory.source.kind == SourceKind::RegisteredInstance {
+            if binding.registered.as_ref() != Some(&original.expected_source) {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            inputs.registered = raw.clone();
+        } else if inputs.binding.registered != binding.registered {
+            return Err(SourceCoordinationError::Stale);
+        }
+        inputs.binding = binding.clone();
+        let origin = LegacyCompatibilityOrigin::classify(&inputs);
+        let snapshot = source_snapshot_from_original(context, &self.inventory.source, raw)
+            .map_err(|_| SourceCoordinationError::Invalid)?;
+        let captured = SourceInventoryCapture::capture(
+            original.discovery.clone(),
+            original.discovered.clone(),
+            &snapshot,
+            &origin,
+            &self.inventory.physical_source_key,
+        )
+        .map_err(|_| SourceCoordinationError::Invalid)?;
+        if captured.objects != original.objects || captured.topology != original.topology {
+            return Err(SourceCoordinationError::Stale);
+        }
+        let selected: Vec<_> = original
+            .discovered
+            .iter()
+            .filter(|target| target.affected)
+            .map(|record| {
+                let mut target = record.target.clone();
+                target.original_physical = None;
+                target
+            })
+            .collect();
+        if selected != self.inventory.targets {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn source_factory_guard_cut_armed() -> bool {
+    SOURCE_FACTORY_GUARD_CUT.with(|state| state.get().1.is_some())
+}
+
+#[cfg(test)]
+pub(crate) fn source_transition_test_root() -> tempfile::TempDir {
+    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/i2897-p03");
+    std::fs::create_dir_all(&scratch).unwrap();
+    tempfile::Builder::new()
+        .prefix("source-transition-")
+        .tempdir_in(scratch)
+        .unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn source_transition_test_locator(
+    context: &SourceReadContext,
+    source: &SourceRef,
+) -> Result<PathBuf, SourcePreparationError> {
+    context.locator(source)
 }
