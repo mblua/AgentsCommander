@@ -7550,6 +7550,7 @@ fn parse_settings_json(
     }
 }
 
+#[cfg(test)]
 fn parse_settings_json_with_projection(
     contents: &str,
     source: &str,
@@ -9010,6 +9011,10 @@ fn settings_backup_path(settings_path: &Path, index: u32) -> PathBuf {
 /// temporary. Deliberate local mirror of
 /// `sessions_persistence::rotate_orphan_archive`.
 fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
+    rotate_settings_backups_labeled(settings_path, settings_path, previous)
+}
+
+fn rotate_settings_backups_labeled(settings_path: &Path, label: &Path, previous: &[u8]) {
     use std::io::Write as _;
     // D8: a non-regular slot is a user-placed symlink or directory; never follow
     // or clobber it.
@@ -9020,7 +9025,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
                 if !metadata.is_file() {
                     log::warn!(
                         "[settings] #2058 aborting backup rotation: slot {:?} is not a regular file",
-                        slot
+                        settings_backup_path(label, index)
                     );
                     return;
                 }
@@ -9029,7 +9034,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
             Err(error) => {
                 log::warn!(
                     "[settings] #2058 aborting backup rotation: stat of slot {:?} failed: {}",
-                    slot,
+                    settings_backup_path(label, index),
                     error
                 );
                 return;
@@ -9047,7 +9052,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
             Err(error) => {
                 log::warn!(
                     "[settings] #2058 aborting backup rotation: stat of slot {:?} failed: {}",
-                    from,
+                    settings_backup_path(label, index),
                     error
                 );
                 return;
@@ -9056,8 +9061,8 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
         if let Err(error) = std::fs::rename(&from, &to) {
             log::warn!(
                 "[settings] #2058 aborting backup rotation: rename {:?} -> {:?} failed: {}",
-                from,
-                to,
+                settings_backup_path(label, index),
+                settings_backup_path(label, index + 1),
                 error
             );
             return;
@@ -9084,7 +9089,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
             if let Err(error) = file.write_all(previous) {
                 log::warn!(
                     "[settings] #2058 aborting backup rotation: write to slot {:?} failed: {}",
-                    slot_one,
+                    settings_backup_path(label, 1),
                     error
                 );
                 return;
@@ -9093,7 +9098,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
         Err(error) => {
             log::warn!(
                 "[settings] #2058 aborting backup rotation: open of slot {:?} failed: {}",
-                slot_one,
+                settings_backup_path(label, 1),
                 error
             );
             return;
@@ -9102,7 +9107,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
 
     log::info!(
         "[settings] #2058 archived the replaced settings to {:?}",
-        slot_one
+        settings_backup_path(label, 1)
     );
 }
 
@@ -10226,11 +10231,11 @@ impl SettingsSaveLegacyOutward {
 
 struct SettingsSaveError {
     stage: SettingsSaveStage,
-    target_path: std::path::PathBuf,
-    temp_path: Option<std::path::PathBuf>,
+    target_path: Box<PathBuf>,
+    temp_path: Option<Box<PathBuf>>,
     pid: u32,
-    display_target: Option<PathBuf>,
-    display_temp: Option<PathBuf>,
+    display_target: Option<Box<PathBuf>>,
+    display_temp: Option<Box<PathBuf>>,
     cause: SettingsSaveCause,
     legacy_outward: SettingsSaveLegacyOutward,
 }
@@ -10245,8 +10250,8 @@ impl SettingsSaveError {
     ) -> Self {
         Self {
             stage,
-            target_path: target_path.to_path_buf(),
-            temp_path: temp_path.map(Path::to_path_buf),
+            target_path: Box::new(target_path.to_path_buf()),
+            temp_path: temp_path.map(|path| Box::new(path.to_path_buf())),
             pid: std::process::id(),
             display_target: None,
             display_temp: None,
@@ -10264,8 +10269,8 @@ impl SettingsSaveError {
     ) -> Self {
         Self {
             stage,
-            target_path: target_path.to_path_buf(),
-            temp_path: temp_path.map(Path::to_path_buf),
+            target_path: Box::new(target_path.to_path_buf()),
+            temp_path: temp_path.map(|path| Box::new(path.to_path_buf())),
             pid: std::process::id(),
             display_target: None,
             display_temp: None,
@@ -10283,8 +10288,8 @@ impl SettingsSaveError {
     ) -> Self {
         Self {
             stage,
-            target_path: target_path.to_path_buf(),
-            temp_path: temp_path.map(Path::to_path_buf),
+            target_path: Box::new(target_path.to_path_buf()),
+            temp_path: temp_path.map(|path| Box::new(path.to_path_buf())),
             pid: std::process::id(),
             display_target: None,
             display_temp: None,
@@ -10294,13 +10299,15 @@ impl SettingsSaveError {
     }
 
     fn with_capture_labels(mut self, settings_label: &Path) -> Self {
-        let sibling = |physical: &Path| {
+        self.display_target = self
+            .target_path
+            .file_name()
+            .map(|name| Box::new(settings_label.with_file_name(name)));
+        self.display_temp = self.temp_path.as_deref().and_then(|physical| {
             physical
                 .file_name()
-                .map(|name| settings_label.with_file_name(name))
-        };
-        self.display_target = sibling(&self.target_path);
-        self.display_temp = self.temp_path.as_deref().and_then(sibling);
+                .map(|name| Box::new(settings_label.with_file_name(name)))
+        });
         self
     }
 
@@ -10349,7 +10356,7 @@ impl SettingsSaveError {
                 .display_temp
                 .as_deref()
                 .or(self.temp_path.as_deref())
-                .map(render_diagnostic_path),
+                .map(|path| render_diagnostic_path(path)),
             source_kind,
             io_kind,
             raw_os_error,
@@ -11117,7 +11124,7 @@ fn ensure_project_paths_migrated_at_labeled_path(
     }
     let written = write_value_atomic_labeled(&Value::Object(cleaned), path, label)?;
     if original.bytes != written {
-        rotate_settings_backups(path, &original.bytes);
+        rotate_settings_backups_labeled(path, label, &original.bytes);
     }
     checkpoint("cleanup_complete", path)
 }
@@ -15024,8 +15031,11 @@ mod tests {
                 assert!(std::ptr::eq(exposed_io, retained_source));
             }
             assert_eq!(error.stage, super::SettingsSaveStage::PreserveDiskGate);
-            assert_eq!(error.target_path, target);
-            assert_eq!(error.temp_path.as_deref(), Some(temporary.as_path()));
+            assert_eq!(error.target_path.as_path(), target.as_path());
+            assert_eq!(
+                error.temp_path.as_deref().map(|path| path.as_path()),
+                Some(temporary.as_path())
+            );
             assert_eq!(error.pid, std::process::id());
             assert_eq!(
                 error.general_settings_diagnostic_code(),
@@ -15460,7 +15470,7 @@ mod tests {
             _ => panic!("expected retained atomic replacement I/O source"),
         };
         assert!(source_raw.is_some());
-        assert_eq!(recorded_target, path);
+        assert_eq!(recorded_target.as_path(), path.as_path());
         assert_eq!(recorded_pid, std::process::id());
         assert_eq!(recorded_temp.parent(), Some(temp.path()));
         let temp_name = recorded_temp.file_name().unwrap().to_string_lossy();
