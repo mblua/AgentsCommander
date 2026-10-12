@@ -1712,6 +1712,14 @@ fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes(
         );
         assert_eq!(output.status.code(), Some(1));
         assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err());
+        let after_failure = list();
+        assert!(baseline.is_subset(&after_failure));
+        let added: Vec<_> = after_failure.difference(&baseline).cloned().collect();
+        assert_eq!(
+            added.len(),
+            1,
+            "optional helper must continue to partial room creation"
+        );
         let stderr = String::from_utf8_lossy(&output.stderr)
             .to_lowercase()
             .replace(char::from(92), "/");
@@ -1722,14 +1730,6 @@ fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes(
         assert!(
             stderr.contains(&format!("failed to read {ignore_display}")),
             "{stderr}"
-        );
-        let after_failure = list();
-        assert!(baseline.is_subset(&after_failure));
-        let added: Vec<_> = after_failure.difference(&baseline).cloned().collect();
-        assert_eq!(
-            added.len(),
-            1,
-            "optional helper must continue to partial room creation"
         );
         let partial = &added[0];
         assert!(partial.starts_with(&ac) && partial.parent() == Some(ac.as_path()));
