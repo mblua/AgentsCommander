@@ -243,7 +243,10 @@ fn make_fixture() -> Fixture {
         "archivedProjectPaths",
         "archivedProjectPathsRelativeToInstance",
     ] {
-        assert!(managed.get(key).is_none(), "managed settings retained {key}");
+        assert!(
+            managed.get(key).is_none(),
+            "managed settings retained {key}"
+        );
     }
 
     let captured_deliveries: Arc<Mutex<HashMap<String, usize>>> =

@@ -4029,6 +4029,11 @@ mod tests {
             archived_project_paths: vec![path.clone()],
             ..AppSettings::default()
         };
+        crate::config::settings::save_settings_with_project_paths_to_path(
+            &settings,
+            &settings_path,
+        )
+        .expect("seed canonical archived authority");
         let (app, state, mut rx, _, _) = archive_command_app(settings);
         let app_handle = app.handle().clone();
 
@@ -4072,6 +4077,11 @@ mod tests {
             archived_project_paths: vec![path.clone()],
             ..AppSettings::default()
         };
+        crate::config::settings::save_settings_with_project_paths_to_path(
+            &settings,
+            &settings_path,
+        )
+        .expect("seed canonical archived authority");
         let (app, state, mut rx, _, _) = archive_command_app(settings);
         let app_handle = app.handle().clone();
 

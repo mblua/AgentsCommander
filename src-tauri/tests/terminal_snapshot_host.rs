@@ -255,6 +255,7 @@ impl HostLayout {
         let binary = copied_binary(&bundle);
         let stem = binary.file_stem().unwrap().to_string_lossy();
         let config = bundle.join(format!(".{stem}"));
+        std::fs::create_dir_all(&config).unwrap();
         std::fs::write(
             config.join("settings.30.instance.no-git.json"),
             r#"{"defaultShell":"powershell.exe","defaultShellArgs":[],"terminalSnapshotsEnabled":false,"agents":[]}"#,

@@ -11881,12 +11881,26 @@ fn read_terminal_snapshot_security_settings_strict_from_path(
         Some(_) => return Err("snapshot_settings_invalid".to_string()),
         None => true,
     };
-    let paths = selected
-        .projection
-        .get(FIELD_PROJECT_PATHS)
-        .and_then(Value::as_array)
-        .filter(|paths| paths.len() <= 4_096)
-        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let paths = match selected.projection.get(FIELD_PROJECT_PATHS) {
+        Some(value) => value
+            .as_array()
+            .filter(|paths| paths.len() <= 4_096)
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?,
+        None if [
+            FIELD_PROJECT_PATH,
+            FIELD_PROJECT_PATH_REL,
+            FIELD_PROJECT_PATHS_REL,
+        ]
+        .iter()
+        .all(|key| !selected.projection.contains_key(*key)) =>
+        {
+            return Ok(TerminalSnapshotSecuritySettings {
+                terminal_snapshots_enabled: enabled,
+                project_paths: Vec::new(),
+            });
+        }
+        None => return Err("snapshot_settings_invalid".to_string()),
+    };
     let mut project_paths = Vec::with_capacity(paths.len());
     let mut aggregate_bytes = 0usize;
     for value in paths {
@@ -11950,8 +11964,6 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
         Ok(lock_guard) => lock_guard,
         Err(error) => return Err(report_typed_persistence_failure(error)),
     };
-    ensure_project_paths_migrated_at_locked_path(path, &mut |_, _| Ok(()))
-        .map_err(report_typed_persistence_failure)?;
     let disk = match read_disk_object_for_write_typed(path, SettingsSaveStage::PreserveDiskGate) {
         Ok(disk) => disk,
         Err(error) => {
@@ -11959,6 +11971,10 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
             return Err(report_typed_persistence_failure(error));
         }
     };
+    if let Err(error) = ensure_project_paths_migrated_at_locked_path(path, &mut |_, _| Ok(())) {
+        drop(lock_guard);
+        return Err(report_typed_persistence_failure(error));
+    }
     let disk_file_absent = disk.is_none();
     // An absent file compares as the default-on value, but its absence is
     // tracked separately: the idempotent early return below may not report
@@ -12254,7 +12270,16 @@ pub(crate) fn refresh_and_decode_project_paths_from_path(
     settings: &mut AppSettings,
     path: &Path,
 ) -> Result<(), String> {
-    let projection = select_project_source_at_path(path).map_err(|error| {
+    let lock =
+        SettingsFileLock::acquire(path, std::time::Duration::from_secs(2)).map_err(|error| {
+            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+        })?;
+    let projection = (|| {
+        read_disk_object_for_write_typed(path, SettingsSaveStage::ProjectPathsRefreshDiskGate)?;
+        select_project_source_at_locked_path(path).map(|selected| selected.projection)
+    })();
+    drop(lock);
+    let projection = projection.map_err(|error| {
         report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
     })?;
     apply_selected_project_state(settings, &projection);
@@ -13131,7 +13156,7 @@ mod tests {
                 let temp = tempfile::tempdir().unwrap();
                 let path = temp.path().join("settings.json");
                 let project = temp.path().join("A");
-                std::fs::create_dir(&project).unwrap();
+                std::fs::create_dir_all(project.join(".ac")).unwrap();
                 let a = project.to_string_lossy().replace('\\', "/");
                 // Valid source object, unrelated typed field cannot decode.
                 let source = serde_json::to_vec(&serde_json::json!({
@@ -13520,11 +13545,17 @@ mod tests {
                 serde_json::json!([]),
             )
         };
-        std::fs::write(
-            &path,
-            br###"{"roomNumberMask":"##","rootToken":"fixture"}"###,
-        )
+        let mut managed = serde_json::to_value(super::AppSettings {
+            room_number_mask: "##".into(),
+            root_token: Some("fixture".into()),
+            ..super::AppSettings::default()
+        })
         .unwrap();
+        super::replace_project_projection(
+            managed.as_object_mut().unwrap(),
+            &serde_json::Map::new(),
+        );
+        std::fs::write(&path, serde_json::to_vec(&managed).unwrap()).unwrap();
         std::fs::write(
             super::project_paths_path(&path),
             serde_json::to_vec(&serde_json::json!({
@@ -15739,6 +15770,39 @@ mod tests {
         assert!(strict.terminal_snapshots_enabled);
         assert_eq!(strict.project_paths, vec!["one"]);
 
+        // Empty active authority is valid only with all four active keys absent.
+        std::fs::write(&path, r#"{"terminalSnapshotsEnabled":true}"#).unwrap();
+        let destination = super::project_paths_path(&path);
+        for projection in [
+            r#"{}"#,
+            r#"{"archivedProjectPaths":["archived"]}"#,
+            r#"{"projectPaths":[]}"#,
+        ] {
+            std::fs::write(&destination, projection).unwrap();
+            let strict =
+                super::read_terminal_snapshot_security_settings_strict_from_path(&path).unwrap();
+            assert!(strict.terminal_snapshots_enabled);
+            assert!(strict.project_paths.is_empty());
+        }
+        for projection in [
+            r#"{"projectPath":"singular"}"#,
+            r#"{"projectPath":null}"#,
+            r#"{"projectPathRelativeToInstance":null}"#,
+            r#"{"projectPathsRelativeToInstance":[]}"#,
+            r#"{"projectPaths":null}"#,
+            r#"{"projectPaths":"scalar"}"#,
+            r#"{"projectPaths":[null]}"#,
+        ] {
+            std::fs::write(&destination, projection).unwrap();
+            assert!(
+                super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err(),
+                "{projection}"
+            );
+        }
+        std::fs::write(&destination, b"{}").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err());
+
         const PATH_CANARY: &str = r"C:\PATH_1173_SETTINGS_N3X6\project";
         let structural = super::TerminalSnapshotSecuritySettings {
             terminal_snapshots_enabled: true,
@@ -16141,7 +16205,7 @@ mod tests {
         }
 
         #[test]
-        fn f2_gui_malformed_base_repairs_before_failed_token_migration_save() {
+        fn f2_gui_malformed_base_repairs_overlay_without_authorization_then_recovers() {
             for seconds in [0, 999999] {
                 let temp = tempfile::tempdir().unwrap();
                 let path = seed(temp.path(), None, Some(&overlay(seconds)));
@@ -16150,21 +16214,30 @@ mod tests {
                 let (records, _capture) = super::capture_settings_save_diagnostics();
                 let mut settings = load_settings_from_path(&path);
                 assert_repaired(&settings);
-                assert!(settings.root_token.is_some());
+                assert!(settings.root_token.is_none());
+                assert!(settings.project_paths_persistence_error.is_some());
+                assert!(settings.project_paths.is_empty());
+                assert!(settings.project_path.is_none());
                 assert!(settings
                     .local_overlay_state
                     .owns_top_level("responseCloseIdleSeconds"));
                 let records = records.borrow();
                 assert_eq!(records.len(), 1);
                 let fields = super::parse_settings_save_diagnostic(&records[0]);
-                assert_eq!(fields["stage"], "preserve_disk_gate");
+                assert_eq!(fields["stage"], "project_paths_refresh_disk_gate");
                 drop(records);
+                assert_eq!(disk_bytes(temp.path()), before);
                 settings.sidebar_zoom = 1.25;
                 validate_and_repair_settings(&mut settings).unwrap();
                 let error = save_settings_to_path_preserving_project_paths_typed(&settings, &path)
                     .unwrap_err();
                 assert_eq!(error.stage, SettingsSaveStage::PreserveDiskGate);
                 assert_eq!(disk_bytes(temp.path()), before);
+                std::fs::write(&path, serde_json::to_vec(&base_fixture()).unwrap()).unwrap();
+                let recovered = load_settings_from_path(&path);
+                assert_repaired(&recovered);
+                assert!(recovered.project_paths_persistence_error.is_none());
+                assert!(recovered.root_token.is_some());
             }
         }
 
@@ -23060,10 +23133,19 @@ mod tests {
             let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
             let seeded_bytes = std::fs::read(&path).unwrap();
 
+            let (mut settings, _, _) =
+                super::super::capture_project_settings(&path, false).unwrap();
+            assert!(super::super::export_blocking_menus_to_local_file(
+                &mut settings,
+                &path
+            ));
             let held = SettingsFileLock::acquire(&path, Duration::from_millis(50)).unwrap();
-            let settings = load_settings_from_path(&path);
+            assert!(
+                super::super::save_settings_to_path_preserving_project_paths(&settings, &path)
+                    .is_err()
+            );
 
-            // The `.local` write succeeded inside the export; the settings save failed.
+            // Export completed unlocked; the contended Preserve save refuses.
             let local = local_disk_object(&path);
             assert_eq!(
                 local["byAgent"]["mine"],

@@ -1623,16 +1623,81 @@ fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes(
         assert_eq!(rooms.as_array().unwrap().len(), 2);
     }
 
-    // Reachable optional helper error: capture succeeds; reading a directory fails.
+    // The optional helper continues, then protected replica preflight fails.
     for mode in 0..3 {
         let fixture = ReadonlyFixture::new();
         write_p05_custom_settings(&fixture);
         stage_p03_source(&fixture, mode);
-        let ignore = fixture.project.join(".ac/.gitignore");
+        let ac = fixture.project.join(".ac");
+        let list = || {
+            let rooms = run_json(
+                &fixture.bin,
+                &["workgroup", "list", "--project", "RegisteredRemote"],
+            )
+            .0;
+            rooms
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|room| PathBuf::from(room["path"].as_str().unwrap()))
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let baseline = list(); // naming preflight before all snapshots
+        assert_eq!(baseline.len(), 1);
+        // Inline, bounded capture of these fixture-owned layouts; lock artifacts
+        // have separate authority and are intentionally not counted.
+        let capture = |root: &Path| {
+            let mut pending = vec![root.to_path_buf()];
+            let mut snapshot = std::collections::BTreeMap::new();
+            while let Some(path) = pending.pop() {
+                assert!(snapshot.len() < 128, "fixture layout exceeded bound");
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                assert!(relative.components().count() <= 4);
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                assert!(!metadata.file_type().is_symlink());
+                if path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(".lock"))
+                {
+                    continue;
+                }
+                if metadata.is_dir() {
+                    snapshot.insert(relative, None);
+                    pending.extend(
+                        std::fs::read_dir(&path)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().path()),
+                    );
+                } else {
+                    assert!(metadata.is_file() && metadata.len() <= 1024 * 1024);
+                    snapshot.insert(relative, Some(std::fs::read(&path).unwrap()));
+                }
+            }
+            snapshot
+        };
+        let baseline_files = capture(baseline.first().unwrap());
+        let config_paths = [
+            ac.join("_team_devs/config.json"),
+            ac.join("_agent_coord/config.json"),
+            ac.join("_agent_peer/config.json"),
+        ];
+        let config_bytes: Vec<_> = config_paths
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect();
+        let refresh_before: std::collections::BTreeMap<_, _> =
+            project_refresh_request_paths(&fixture.config)
+                .into_iter()
+                .map(|path| {
+                    let bytes = std::fs::read(&path).unwrap();
+                    (path, bytes)
+                })
+                .collect();
+        let before = fixture.managed_bytes();
+        let ignore = ac.join(".gitignore");
         assert!(!ignore.exists(), "unexpected fixture gitignore");
         std::fs::create_dir(&ignore).unwrap();
-        let before = fixture.managed_bytes();
-        run_success(
+        let output = run_failure(
             &fixture.bin,
             &[
                 "workgroup",
@@ -1645,17 +1710,83 @@ fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes(
                 "P03 helper failure",
             ],
         );
-        assert!(ignore.is_dir());
-        assert!(std::fs::read_dir(&ignore).unwrap().next().is_none());
+        assert_eq!(output.status.code(), Some(1));
+        assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err());
+        let stderr = String::from_utf8_lossy(&output.stderr)
+            .to_lowercase()
+            .replace(char::from(92), "/");
+        let ignore_display = ignore
+            .to_string_lossy()
+            .to_lowercase()
+            .replace(char::from(92), "/");
+        assert!(
+            stderr.contains(&format!("failed to read {ignore_display}")),
+            "{stderr}"
+        );
+        let after_failure = list();
+        assert!(baseline.is_subset(&after_failure));
+        let added: Vec<_> = after_failure.difference(&baseline).cloned().collect();
+        assert_eq!(
+            added.len(),
+            1,
+            "optional helper must continue to partial room creation"
+        );
+        let partial = &added[0];
+        assert!(partial.starts_with(&ac) && partial.parent() == Some(ac.as_path()));
+        assert!(partial.join("messaging").is_dir());
+        assert!(partial.join("room-shared").is_dir());
+        assert_eq!(
+            std::fs::read_to_string(partial.join("TASK.md")).unwrap(),
+            "---
+title: 'USER: P03 helper failure'
+---
+"
+        );
+        let replicas: Vec<_> = std::fs::read_dir(partial)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("__agent_")
+            })
+            .collect();
+        assert_eq!(replicas, vec![partial.join("__agent_coord")]);
+        let replica = &replicas[0];
+        for directory in ["inbox", "outbox"] {
+            assert!(replica.join(directory).is_dir());
+            assert!(std::fs::read_dir(replica.join(directory))
+                .unwrap()
+                .next()
+                .is_none());
+        }
+        assert!(!replica.join("config.json").exists());
+        assert!(!replica.join("config.state.no-git.json").exists());
+        assert!(!partial.join("__agent_peer").exists());
+        let partial_files = capture(partial);
+        assert!(ignore.is_dir() && std::fs::read_dir(&ignore).unwrap().next().is_none());
         assert_eq!(fixture.managed_bytes(), before);
-        let rooms = run_json(
-            &fixture.bin,
-            &["workgroup", "list", "--project", "RegisteredRemote"],
-        )
-        .0;
-        assert_eq!(rooms.as_array().unwrap().len(), 2);
-        std::fs::remove_dir(&ignore).unwrap();
-        run_success(
+        assert_eq!(capture(baseline.first().unwrap()), baseline_files);
+        assert_eq!(
+            config_paths
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
+                .collect::<Vec<_>>(),
+            config_bytes
+        );
+        let refresh_failed: std::collections::BTreeMap<_, _> =
+            project_refresh_request_paths(&fixture.config)
+                .into_iter()
+                .map(|path| {
+                    let bytes = std::fs::read(&path).unwrap();
+                    (path, bytes)
+                })
+                .collect();
+        assert_eq!(refresh_failed, refresh_before);
+
+        std::fs::remove_dir(&ignore).unwrap(); // only the known empty fixture directory
+        let result = run_json(
             &fixture.bin,
             &[
                 "workgroup",
@@ -1667,17 +1798,69 @@ fn p05_production_workgroup_gitignore_reads_custom_names_without_managed_writes(
                 "--title",
                 "P03 helper retry",
             ],
-        );
+        )
+        .0;
+        let healthy = PathBuf::from(result["path"].as_str().unwrap());
+        assert!(healthy.starts_with(&ac) && healthy.parent() == Some(ac.as_path()));
+        assert!(!after_failure.contains(&healthy));
         assert!(std::fs::read_to_string(&ignore)
             .unwrap()
             .contains("**/__agent_*/P05-INSTRUCTIONS.md"));
-        let rooms = run_json(
-            &fixture.bin,
-            &["workgroup", "list", "--project", "RegisteredRemote"],
-        )
-        .0;
-        assert_eq!(rooms.as_array().unwrap().len(), 3);
+        for directory in ["messaging", "room-shared"] {
+            assert!(healthy.join(directory).is_dir());
+        }
+        assert_eq!(
+            std::fs::read_to_string(healthy.join("TASK.md")).unwrap(),
+            "---
+title: 'USER: P03 helper retry'
+---
+"
+        );
+        for name in ["coord", "peer"] {
+            let config: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(healthy.join(format!("__agent_{name}/config.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(config["identity"], format!("../../_agent_{name}"));
+        }
+        let mut expected = after_failure.clone();
+        expected.insert(healthy.clone());
+        assert_eq!(list(), expected);
+        assert_eq!(expected.len(), 3);
+        assert_eq!(capture(partial), partial_files);
+        assert!(!replica.join("config.json").exists());
+        assert!(!replica.join("config.state.no-git.json").exists());
+        assert_eq!(capture(baseline.first().unwrap()), baseline_files);
+        assert_eq!(
+            config_paths
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
+                .collect::<Vec<_>>(),
+            config_bytes
+        );
         assert_eq!(fixture.managed_bytes(), before);
+        let refresh_after: std::collections::BTreeMap<_, _> =
+            project_refresh_request_paths(&fixture.config)
+                .into_iter()
+                .map(|path| {
+                    let bytes = std::fs::read(&path).unwrap();
+                    (path, bytes)
+                })
+                .collect();
+        for (path, bytes) in &refresh_before {
+            assert_eq!(refresh_after.get(path), Some(bytes));
+        }
+        let new_requests: Vec<_> = refresh_after
+            .iter()
+            .filter(|(path, _)| !refresh_before.contains_key(*path))
+            .collect();
+        assert_eq!(new_requests.len(), 1);
+        let request: serde_json::Value = serde_json::from_slice(new_requests[0].1).unwrap();
+        assert_eq!(
+            PathBuf::from(request["changedPath"].as_str().unwrap()),
+            healthy
+        );
+        assert_eq!(request["reason"], "workgroupCreated");
     }
 }
 

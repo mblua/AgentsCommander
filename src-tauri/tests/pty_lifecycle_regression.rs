@@ -242,7 +242,10 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
         "archivedProjectPaths",
         "archivedProjectPathsRelativeToInstance",
     ] {
-        assert!(managed.get(key).is_none(), "managed settings retained {key}");
+        assert!(
+            managed.get(key).is_none(),
+            "managed settings retained {key}"
+        );
     }
 
     write_child_script(&script_path);

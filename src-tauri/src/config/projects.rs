@@ -2405,6 +2405,7 @@ mod tests {
     fn synchronous_new_project_refreshes_and_saves_disk_authoritative_settings() {
         let fix = FixtureRoot::new("proj-new-sync-settings");
         let settings_path = fix.path().join("settings.json");
+        std::fs::create_dir_all(fix.path().join("disk-only/.ac")).unwrap();
         let disk_only = fix.path().join("disk-only").to_string_lossy().to_string();
         let mut disk_settings = AppSettings {
             project_paths: vec![disk_only.clone()],
