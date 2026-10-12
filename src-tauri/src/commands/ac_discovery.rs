@@ -1718,7 +1718,7 @@ pub(crate) fn ensure_ac_root_gitignore(ac_root: &Path) -> Result<(), String> {
     // writer: they get the legacy floor rows only.
     #[cfg(not(test))]
     let configured = crate::config::agent_command::managed_instructions_filenames(
-        &crate::config::settings::load_settings(),
+        &crate::config::settings::load_settings_for_cli_strict()?,
     );
     #[cfg(test)]
     let configured: Vec<String> = Vec::new();
