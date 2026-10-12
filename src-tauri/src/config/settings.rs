@@ -13236,21 +13236,40 @@ mod tests {
                 .join(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME)
                 .exists());
         }
+        assert_selected_project_decode_fallback_preserve(
+            &settings,
+            &path,
+            &agents_path,
+            &agents,
+            &overlay_path,
+            overlay,
+        );
+    }
+
+    fn assert_selected_project_decode_fallback_preserve(
+        settings: &super::AppSettings,
+        path: &std::path::Path,
+        agents_path: &std::path::Path,
+        agents: &[u8],
+        overlay_path: &std::path::Path,
+        overlay: &[u8],
+    ) {
+        let sidecar = super::project_paths_path(path);
         let before_sidecar = std::fs::read(&sidecar).ok();
-        match super::save_settings_to_path_preserving_project_paths_typed(&settings, &path) {
+        match super::save_settings_to_path_preserving_project_paths_typed(settings, path) {
             Ok(_) => {
-                assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
-                assert!(super::raw_project_projection(&b3_object(&path)).is_empty());
+                assert_eq!(std::fs::read(agents_path).unwrap(), agents);
+                assert!(super::raw_project_projection(&b3_object(path)).is_empty());
             }
             Err(error) => {
                 eprintln!("P1 Preserve explicitly refused: {error:?}");
-                assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
+                assert_eq!(std::fs::read(agents_path).unwrap(), agents);
             }
         }
         if let Some(bytes) = before_sidecar {
             assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
         }
-        assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay);
+        assert_eq!(std::fs::read(overlay_path).unwrap(), overlay);
     }
 
     #[test]
