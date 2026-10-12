@@ -2720,7 +2720,7 @@ fn capture_source_inventory(
 }
 
 #[cfg(test)]
-mod source_transition_driver_tests {
+mod tests_source_transition_driver {
     use super::*;
     use crate::config::settings::*;
 
