@@ -920,6 +920,484 @@ pub(crate) fn apply_replica_selection_default(
     Ok(())
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct SourceSelectionTarget {
+    pub(crate) root: PathBuf,
+    pub(crate) decisions: PathBuf,
+    pub(crate) state: PathBuf,
+    pub(crate) reservation: PathBuf,
+    pub(crate) physical_revision: [crate::config::settings::IdentityReferencePhysicalState; 2],
+}
+
+/// One backend-derived locator tuple serves read, inventory and PAIR recovery.
+/// No caller supplies a new path when the original operation resumes.
+pub(crate) fn read_source_selection_target(
+    settings: &AppSettings,
+    agent_path: &Path,
+) -> Result<SourceSelectionTarget, crate::config::settings::IdentityReferenceError> {
+    use crate::config::settings::{read_identity_reference_physical, IdentityReferenceError};
+    let validated_launch_path = validate_profile_selection_agent_path(settings, agent_path)
+        .map_err(IdentityReferenceError::Preparation)?
+        .launch_path;
+    let root = std::fs::canonicalize(&validated_launch_path)
+        .map_err(|error| IdentityReferenceError::Preparation(error.to_string()))?;
+    let (decisions, state, reservation) =
+        crate::config::settings::identity_reference_pair_paths(&root);
+    let physical_revision = [
+        read_identity_reference_physical(&decisions)?,
+        read_identity_reference_physical(&state)?,
+    ];
+    Ok(SourceSelectionTarget {
+        root,
+        decisions,
+        state,
+        reservation,
+        physical_revision,
+    })
+}
+
+/// Strict finite source discovery. The ordinary best-effort helper is unchanged.
+#[allow(dead_code)]
+pub(crate) fn discover_source_inventory(
+    settings: &AppSettings,
+) -> Result<
+    (
+        crate::config::settings::SourceDiscoveryWitness,
+        Vec<SourceSelectionTarget>,
+    ),
+    crate::config::settings::IdentityReferenceError,
+> {
+    use crate::config::settings::{IdentityReferenceError, SourceDiscoveryWitness};
+    let fail = |error: std::io::Error| IdentityReferenceError::Preparation(error.to_string());
+    let mut witness = SourceDiscoveryWitness {
+        registry: settings.project_paths.clone(),
+        parents: Vec::new(),
+        slots: Vec::new(),
+        membership: Vec::new(),
+    };
+    let mut candidates = Vec::new();
+    for project in &settings.project_paths {
+        let base = PathBuf::from(project);
+        if !std::fs::symlink_metadata(&base).map_err(&fail)?.is_dir() {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        witness.parents.push(base.clone());
+        if base
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_ac_root_name)
+        {
+            candidates.push(base.clone());
+        }
+        candidates.push(base.join(CANONICAL_AC_ROOT_DIR));
+        let mut children = Vec::new();
+        source_discovery_cut("readDir").map_err(&fail)?;
+        for item in std::fs::read_dir(&base).map_err(&fail)? {
+            source_discovery_cut("entry").map_err(&fail)?;
+            let item = item.map_err(&fail)?;
+            source_discovery_cut("fileType").map_err(&fail)?;
+            let kind = item.file_type().map_err(&fail)?;
+            if kind.is_dir() {
+                witness.parents.push(item.path());
+                children.push(item.path());
+                candidates.push(item.path().join(CANONICAL_AC_ROOT_DIR));
+            }
+        }
+        children.sort();
+        witness.membership.push((base, children));
+    }
+    candidates.sort();
+    candidates.dedup();
+    let mut ac_roots: Vec<PathBuf> = Vec::new();
+    for candidate in candidates {
+        match std::fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                witness.slots.push((candidate, false))
+            }
+            Err(error) => return Err(fail(error)),
+            Ok(metadata) => {
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(IdentityReferenceError::Conflict);
+                }
+                ensure_authoritative_ac_root(&candidate)
+                    .map_err(IdentityReferenceError::Preparation)?;
+                let canonical = canonical_existing_dir(&candidate, "Source AC Root")
+                    .map_err(IdentityReferenceError::Preparation)?;
+                witness.slots.push((candidate, true));
+                if !ac_roots
+                    .iter()
+                    .any(|root| same_canonical_path(root, &canonical))
+                {
+                    ac_roots.push(canonical);
+                }
+            }
+        }
+    }
+    ac_roots.sort();
+    let mut targets = Vec::new();
+    for root in ac_roots {
+        witness.parents.push(root.clone());
+        let mut selected = Vec::new();
+        source_discovery_cut("readDir").map_err(&fail)?;
+        for item in std::fs::read_dir(&root).map_err(&fail)? {
+            source_discovery_cut("entry").map_err(&fail)?;
+            let item = item.map_err(&fail)?;
+            source_discovery_cut("fileType").map_err(&fail)?;
+            let kind = item.file_type().map_err(&fail)?;
+            let name = item
+                .file_name()
+                .into_string()
+                .map_err(|_| IdentityReferenceError::Conflict)?;
+            if name.starts_with("_agent_") {
+                if !kind.is_dir() {
+                    return Err(IdentityReferenceError::Conflict);
+                }
+                selected.push(item.path());
+                targets.push(read_source_selection_target(settings, &item.path())?);
+            } else if crate::config::entity_prefix::has_entity_prefix(&name) {
+                if !kind.is_dir() {
+                    return Err(IdentityReferenceError::Conflict);
+                }
+                selected.push(item.path());
+                witness.parents.push(item.path());
+                let mut replicas = Vec::new();
+                source_discovery_cut("readDir").map_err(&fail)?;
+                for replica in std::fs::read_dir(item.path()).map_err(&fail)? {
+                    source_discovery_cut("entry").map_err(&fail)?;
+                    let replica = replica.map_err(&fail)?;
+                    source_discovery_cut("fileType").map_err(&fail)?;
+                    let kind = replica.file_type().map_err(&fail)?;
+                    let name = replica
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| IdentityReferenceError::Conflict)?;
+                    if !name.starts_with("__agent_") {
+                        continue;
+                    }
+                    if !kind.is_dir() {
+                        return Err(IdentityReferenceError::Conflict);
+                    }
+                    replicas.push(replica.path());
+                    targets.push(read_source_selection_target(settings, &replica.path())?);
+                }
+                replicas.sort();
+                witness.membership.push((item.path(), replicas));
+            }
+        }
+        selected.sort();
+        witness.membership.push((root, selected));
+    }
+    witness
+        .parents
+        .extend(targets.iter().map(|target| target.root.clone()));
+    witness.parents.sort();
+    witness.parents.dedup();
+    witness.slots.sort();
+    witness.membership.sort();
+    targets.sort_by(|left, right| left.decisions.cmp(&right.decisions));
+    if targets
+        .windows(2)
+        .any(|pair| same_canonical_path(&pair[0].decisions, &pair[1].decisions))
+    {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    Ok((witness, targets))
+}
+
+/// Source-aware original linkage is retained independently of the requested diff.
+/// Unknown fields remain untouched; inspect the same semantic domains as patch.
+#[allow(dead_code)]
+pub(crate) fn original_source_selections(
+    target: &SourceSelectionTarget,
+) -> Result<
+    Vec<crate::config::settings::ConfigurationRef>,
+    crate::config::settings::IdentityReferenceError,
+> {
+    Ok(source_original_slots(target)?
+        .into_iter()
+        .map(|(_, reference)| reference)
+        .collect())
+}
+
+// #2897 P03: read-only source companions, without enrollment or repair.
+#[allow(dead_code)]
+pub(crate) fn read_source_selection_state(
+    settings: &AppSettings,
+    agent_path: &Path,
+) -> Result<
+    crate::config::settings::SourceSelectionState<
+        Option<ReplicaSelectionPair>,
+        [crate::config::settings::IdentityReferencePhysicalState; 2],
+    >,
+    crate::config::settings::IdentityReferenceError,
+> {
+    use crate::config::settings::{IdentityReferenceError, SourceSelectionState};
+    let target = read_source_selection_target(settings, agent_path)?;
+    let physical_revision = target.physical_revision;
+    let raw = identity_reference_value(&physical_revision[0])?;
+    let tooling = raw.get("tooling");
+    if tooling.is_some_and(|value| !value.is_object()) {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    let configuration_ref = tooling
+        .and_then(|value| value.get("configurationRef"))
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|_| IdentityReferenceError::Conflict)?;
+    let legacy_pair = match tooling.and_then(|value| value.get("currentCodingAgent")) {
+        None => None,
+        Some(Value::String(id)) if !id.trim().is_empty() => {
+            let profile = match tooling.and_then(|value| value.get("profile")) {
+                None => "A".into(),
+                Some(Value::String(profile)) => {
+                    normalize_profile_letter(profile).ok_or(IdentityReferenceError::Conflict)?
+                }
+                _ => return Err(IdentityReferenceError::Conflict),
+            };
+            Some(ReplicaSelectionPair {
+                coding_agent_id: id.clone(),
+                requested_profile: profile,
+            })
+        }
+        _ => return Err(IdentityReferenceError::Conflict),
+    };
+    Ok(SourceSelectionState {
+        legacy_pair,
+        configuration_ref,
+        physical_revision,
+    })
+}
+
+fn identity_reference_value(
+    physical: &crate::config::settings::IdentityReferencePhysicalState,
+) -> Result<Value, crate::config::settings::IdentityReferenceError> {
+    use crate::config::settings::{IdentityReferenceError, IdentityReferencePhysicalState};
+    match physical {
+        IdentityReferencePhysicalState::Absent => Ok(serde_json::json!({})),
+        IdentityReferencePhysicalState::Bytes { bytes, .. } => {
+            let value: Value =
+                serde_json::from_slice(bytes).map_err(|_| IdentityReferenceError::Conflict)?;
+            if !value.is_object()
+                || &IdentityReferencePhysicalState::from_bytes(bytes.clone()) != physical
+            {
+                return Err(IdentityReferenceError::Conflict);
+            }
+            Ok(value)
+        }
+    }
+}
+
+/// Pure caller images; the durable PAIR packet remains the execution authority.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct IdentityReferencePatch {
+    pub(crate) before: [crate::config::settings::IdentityReferencePhysicalState; 2],
+    pub(crate) after: [Value; 2],
+}
+
+fn patch_identity_companion(
+    value: &mut Value,
+    source: &crate::config::settings::SourceRef,
+    mappings: &[crate::config::settings::SourceIdentityMapping],
+) -> Result<(), crate::config::settings::IdentityReferenceError> {
+    use crate::config::settings::{ConfigurationRef, IdentityReferenceError};
+    let Some(raw) = value.get_mut("configurationRef") else {
+        return Ok(());
+    };
+    let mut reference: ConfigurationRef =
+        serde_json::from_value(raw.clone()).map_err(|_| IdentityReferenceError::Conflict)?;
+    if reference.version != 1 {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    if &reference.source != source {
+        return Ok(());
+    }
+    // The existing local hint narrows an explicit source reference. It never
+    // manufactures source authority for a legacy selection or neighboring row.
+    let matches: Vec<_> = mappings
+        .iter()
+        .filter(|mapping| {
+            mapping.old_calculated_id.as_ref() == Some(&reference.calculated_id)
+                && reference
+                    .legacy_entry_hint
+                    .as_ref()
+                    .is_none_or(|hint| hint == &mapping.entry_hint)
+        })
+        .collect();
+    if matches.len() > 1 {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    let Some(mapping) = matches.first() else {
+        return Ok(());
+    };
+    // Keep removed/disabled references, requested letters and locks unchanged.
+    if mapping.unavailable || mapping.new_calculated_id.is_none() {
+        return Ok(());
+    }
+    if let Some(letter) = reference.requested_profile.as_ref() {
+        if let Some((before, after)) = mapping.profiles.get(letter) {
+            if reference.profile_calculated_id.as_ref() != before.as_ref() {
+                return Err(IdentityReferenceError::Conflict);
+            }
+            let Some(after) = after else {
+                return Ok(());
+            };
+            reference.profile_calculated_id = Some(after.clone());
+        }
+    }
+    reference.calculated_id = mapping
+        .new_calculated_id
+        .clone()
+        .ok_or(IdentityReferenceError::Conflict)?;
+    let encoded = serde_json::to_value(reference).map_err(|_| IdentityReferenceError::Conflict)?;
+    let object = raw
+        .as_object_mut()
+        .ok_or(IdentityReferenceError::Conflict)?;
+    for key in ["calculatedId", "profileCalculatedId"] {
+        match encoded.get(key) {
+            Some(value) => {
+                object.insert(key.into(), value.clone());
+            }
+            None => {
+                object.remove(key);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prepares exact raw companions in memory, without enrollment or disk writes.
+#[allow(dead_code)]
+pub(crate) fn plan_identity_reference_patch(
+    before: [crate::config::settings::IdentityReferencePhysicalState; 2],
+    source: &crate::config::settings::SourceRef,
+    mappings: &[crate::config::settings::SourceIdentityMapping],
+) -> Result<IdentityReferencePatch, crate::config::settings::IdentityReferenceError> {
+    use crate::config::settings::IdentityReferenceError;
+    let mut after = [
+        identity_reference_value(&before[0])?,
+        identity_reference_value(&before[1])?,
+    ];
+    for (side_index, side) in after.iter_mut().enumerate() {
+        let Some(tooling) = side.get_mut("tooling") else {
+            continue;
+        };
+        if !tooling.is_object() {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        if side_index == 0 {
+            patch_identity_companion(tooling, source, mappings)?;
+            if let Some(default) = tooling.get_mut("replicaSelectionDefault") {
+                if !default.is_object() {
+                    return Err(IdentityReferenceError::Conflict);
+                }
+                patch_identity_companion(default, source, mappings)?;
+            }
+        } else {
+            if let Some(history) = tooling.get_mut("codingAgents") {
+                let history = history
+                    .as_object_mut()
+                    .ok_or(IdentityReferenceError::Conflict)?;
+                for entry in history.values_mut() {
+                    if !entry.is_object() {
+                        return Err(IdentityReferenceError::Conflict);
+                    }
+                    patch_identity_companion(entry, source, mappings)?;
+                }
+            }
+            if let Some(history) = tooling.get_mut("sourceReferences") {
+                let history = history
+                    .as_array_mut()
+                    .ok_or(IdentityReferenceError::Conflict)?;
+                for entry in history {
+                    if !entry.is_object() {
+                        return Err(IdentityReferenceError::Conflict);
+                    }
+                    patch_identity_companion(entry, source, mappings)?;
+                }
+            }
+        }
+    }
+    Ok(IdentityReferencePatch { before, after })
+}
+
+/// The caller has durably recorded the authorized inventory before this call.
+/// PAIR owns cleanup, timestamp protection and the original recovery images.
+#[allow(dead_code)]
+pub(crate) fn prepare_identity_reference_patch(
+    decisions: &Path,
+    request: &crate::config::settings::IdentityReferenceRequest,
+    source: &crate::config::settings::SourceRef,
+    mappings: &[crate::config::settings::SourceIdentityMapping],
+    validate: &dyn Fn() -> Result<(), crate::config::settings::IdentityReferenceError>,
+) -> Result<
+    crate::config::settings::IdentityReferencePacket,
+    crate::config::settings::IdentityReferenceError,
+> {
+    use crate::config::settings::IdentityReferencePhysicalState;
+    crate::config::agent_config::prepare_and_reserve_identity_reference_pair_guarded(
+        decisions,
+        request,
+        |decisions, state| {
+            // Cleanup has already run under the same PAIR locks. Patch only
+            // companions in these maps; never overwrite the loader's cleanup
+            // with snapshots taken before lock acquisition.
+            let physical = [decisions.clone(), state.clone()].map(|map| {
+                serde_json::to_vec(&map).map(IdentityReferencePhysicalState::from_bytes)
+            });
+            let [decisions_before, state_before] = physical;
+            let patch = plan_identity_reference_patch(
+                [
+                    decisions_before.map_err(|e| e.to_string())?,
+                    state_before.map_err(|e| e.to_string())?,
+                ],
+                source,
+                mappings,
+            )
+            .map_err(|e| e.to_string())?;
+            let [decisions_after, state_after] = patch.after;
+            *decisions = decisions_after
+                .as_object()
+                .ok_or("invalid decisions object")?
+                .clone();
+            *state = state_after
+                .as_object()
+                .ok_or("invalid state object")?
+                .clone();
+            Ok(())
+        },
+        validate,
+    )
+}
+
+/// Resume executes the original packet; it never prepares new caller images.
+/// The pure validation callback borrows existing C/source/target authority.
+#[allow(dead_code, clippy::too_many_arguments)]
+pub(crate) fn apply_identity_reference_patch(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    plan_digest: &str,
+    validate: &dyn Fn() -> Result<(), crate::config::settings::IdentityReferenceError>,
+) -> Result<
+    [crate::config::settings::IdentityReferencePhysicalState; 2],
+    crate::config::settings::IdentityReferenceError,
+> {
+    use crate::config::settings::{
+        execute_identity_reference_pair_guarded, verify_identity_reference_pair_guarded,
+    };
+    execute_identity_reference_pair_guarded(decisions, state, reservation, operation_id, validate)?;
+    verify_identity_reference_pair_guarded(
+        decisions,
+        state,
+        reservation,
+        operation_id,
+        plan_digest,
+        validate,
+    )
+}
+
 fn describe_selection_default(default: Option<&ReplicaSelectionDefault>) -> String {
     match default {
         Some(default) => format!(
@@ -1532,6 +2010,143 @@ mod tests {
             strip_extended_prefix(PathBuf::from(r"\\?\UNC\server\share\repo")),
             PathBuf::from(r"\\server\share\repo")
         );
+    }
+
+    #[test]
+    fn transition_inventory_locator_real_matrix_and_replica_readonly() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let ac_root = project.join(".ac");
+        let matrix = ac_root.join("_agent_dev-rust");
+        let replica = ac_root.join("wg-7-dev-team").join("__agent_dev-rust");
+        std::fs::create_dir_all(&matrix).unwrap();
+        std::fs::create_dir_all(&replica).unwrap();
+        let bytes = br#"{"identity":"../../_agent_dev-rust"}"#;
+        std::fs::write(replica.join("config.json"), bytes).unwrap();
+        let settings = settings_with_project(&project);
+        for path in [&matrix, &replica] {
+            let target = read_source_selection_target(&settings, path).unwrap();
+            assert_eq!(target.root, std::fs::canonicalize(path).unwrap());
+            assert_eq!(target.decisions, target.root.join("config.json"));
+            assert_eq!(
+                target.state,
+                target
+                    .root
+                    .join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+            );
+            assert_eq!(
+                target.reservation,
+                target
+                    .root
+                    .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+            );
+            assert_eq!(
+                target.physical_revision[1],
+                crate::config::settings::IdentityReferencePhysicalState::Absent
+            );
+            assert!(!target.state.exists());
+            assert!(!target.reservation.exists());
+        }
+        assert!(!matrix.join("config.json").exists());
+        assert_eq!(std::fs::read(replica.join("config.json")).unwrap(), bytes);
+    }
+
+    #[test]
+    fn transition_inventory_locator_rejects_unregistered_matrix_without_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let foreign = temp.path().join("foreign/.ac/_agent_dev-rust");
+        std::fs::create_dir_all(project.join(".ac")).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        let settings = settings_with_project(&project);
+        assert!(read_source_selection_target(&settings, &foreign).is_err());
+        assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn transition_strict_discovery_proves_empty_and_detects_new_candidate_without_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let settings = settings_with_project(&project);
+        let (before, targets) = discover_source_inventory(&settings).unwrap();
+        assert!(targets.is_empty());
+        assert!(before.slots.contains(&(project.join(".ac"), false)));
+        assert_eq!(std::fs::read_dir(&project).unwrap().count(), 0);
+        std::fs::create_dir(project.join(".ac")).unwrap();
+        let (after, targets) = discover_source_inventory(&settings).unwrap();
+        assert!(targets.is_empty());
+        assert_ne!(before, after);
+        assert_eq!(std::fs::read_dir(project.join(".ac")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn transition_strict_discovery_refuses_invalid_candidate_and_missing_registry_base() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let settings = settings_with_project(&project);
+        let candidate = project.join(".ac");
+        std::fs::write(&candidate, b"external-not-directory").unwrap();
+        assert!(discover_source_inventory(&settings).is_err());
+        assert_eq!(
+            std::fs::read(&candidate).unwrap(),
+            b"external-not-directory"
+        );
+        assert!(
+            discover_source_inventory(&settings_with_project(&root.path().join("missing")))
+                .is_err()
+        );
+        assert!(!root.path().join("missing").exists());
+    }
+
+    #[test]
+    fn source_discovery_actual_iterator_type_and_directory_failures_never_prove_empty() {
+        let root = crate::config::settings::source_transition_test_root();
+        let project = root.path().join("P");
+        let matrix = project.join(".ac/_agent_N");
+        let nested = project.join("child/.ac/_agent_nested");
+        let replica = project.join(".ac/room-7-dev-team/__agent_N");
+        for path in [&matrix, &nested, &replica] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
+        let target = matrix.join("config.json");
+        let bytes = br#"{"unknown":null}"#;
+        std::fs::write(&target, bytes).unwrap();
+        let replica_bytes = br#"{"identity":"../../_agent_N"}"#;
+        std::fs::write(replica.join("config.json"), replica_bytes).unwrap();
+        SOURCE_DISCOVERY_FAILURE.with(|failure| failure.set(None));
+        SOURCE_DISCOVERY_CALLS.with(|calls| calls.borrow_mut().clear());
+        let baseline = discover_source_inventory(&settings).unwrap();
+        assert_eq!(baseline.1.len(), 3);
+        let counts = SOURCE_DISCOVERY_CALLS.with(|calls| calls.borrow().clone());
+        for stage in ["readDir", "entry", "fileType"] {
+            assert!(
+                counts[stage] > 1,
+                "fixture must reach multiple discovery loops"
+            );
+            for ordinal in 1..=counts[stage] {
+                SOURCE_DISCOVERY_FAILURE.with(|failure| failure.set(Some((stage, ordinal))));
+                assert!(
+                    discover_source_inventory(&settings).is_err(),
+                    "{stage}/{ordinal} silently became empty"
+                );
+                SOURCE_DISCOVERY_FAILURE
+                    .with(|failure| assert!(failure.get().is_none(), "cut not reached"));
+                assert_eq!(std::fs::read(&target).unwrap(), bytes);
+                assert_eq!(
+                    std::fs::read(replica.join("config.json")).unwrap(),
+                    replica_bytes
+                );
+                let recovered = discover_source_inventory(&settings).unwrap();
+                assert_eq!(recovered.0, baseline.0);
+                assert_eq!(recovered.1.len(), baseline.1.len());
+            }
+        }
     }
 
     fn settings_with_project(project: &Path) -> AppSettings {
@@ -3396,4 +4011,302 @@ mod tests {
         let control_dir = tempfile::tempdir().unwrap();
         c4_absence_controls(control_dir.path());
     }
+}
+
+#[cfg(test)]
+mod transition_reference_tests {
+    use super::*;
+    use crate::config::settings::{
+        IdentityReferencePhysicalState, SourceIdentityMapping, SourceRef,
+    };
+
+    fn fixture() -> (
+        SourceRef,
+        [IdentityReferencePhysicalState; 2],
+        Vec<SourceIdentityMapping>,
+    ) {
+        let source: SourceRef = serde_json::from_value(serde_json::json!({
+            "family": "agents", "role": "registered", "scope": "instance",
+            "kind": "registeredInstance", "contextRoot": "fixture-instance"
+        }))
+        .unwrap();
+        let reference = |cid: &str, pid: &str, key: &str| {
+            serde_json::json!({
+                "version": 1, "source": source, "calculatedId": cid,
+                "requestedProfile": "B", "profileCalculatedId": pid, "legacyEntryHint": key
+            })
+        };
+        let first = reference("cid1:old-a", "pid1:old-a", "a");
+        let second = reference("cid1:old-b", "pid1:old-b", "b");
+        let third = reference("cid1:stable-c", "pid1:old-c", "c");
+        let decisions = serde_json::json!({"unknown": {"null": null}, "tooling": {
+            "currentCodingAgent": "a", "profile": "B", "selectionLocked": true,
+            "configurationRef": first, "replicaSelectionDefault": {
+                "codingAgentId": "b", "requestedProfile": "B", "selectionLocked": true,
+                "configurationRef": second
+            }
+        }});
+        let state = serde_json::json!({"unknown": [null, "keep"], "tooling": {"codingAgents": {"c": {"configurationRef": third, "unknown": null}}, "sourceReferences": [{"configurationRef": first, "unknown": true}]}});
+        let physical = [decisions, state].map(|value| {
+            IdentityReferencePhysicalState::from_bytes(serde_json::to_vec(&value).unwrap())
+        });
+        let mapping = |key: &str, before: &str, after: &str| SourceIdentityMapping {
+            entry_hint: key.into(),
+            old_calculated_id: Some(before.into()),
+            new_calculated_id: Some(after.into()),
+            unavailable: false,
+            profiles: std::collections::BTreeMap::from([(
+                "B".into(),
+                (
+                    Some(format!("pid1:old-{key}")),
+                    Some(format!("pid1:new-{key}")),
+                ),
+            )]),
+        };
+        (
+            source,
+            physical,
+            vec![
+                mapping("a", "cid1:old-a", "cid1:new-a"),
+                mapping("b", "cid1:old-b", "cid1:new-b"),
+                mapping("c", "cid1:stable-c", "cid1:stable-c"),
+            ],
+        )
+    }
+
+    #[test]
+    fn transition_reference_batch_two_cid_pid_only_default_lock_history_unknown() {
+        let (source, before, mappings) = fixture();
+        let patch = plan_identity_reference_patch(before.clone(), &source, &mappings).unwrap();
+        assert_eq!(patch.before, before);
+        assert_eq!(
+            patch.after[0].pointer("/tooling/configurationRef/calculatedId"),
+            Some(&serde_json::json!("cid1:new-a"))
+        );
+        assert_eq!(
+            patch.after[0]
+                .pointer("/tooling/replicaSelectionDefault/configurationRef/calculatedId"),
+            Some(&serde_json::json!("cid1:new-b"))
+        );
+        assert_eq!(
+            patch.after[1].pointer("/tooling/codingAgents/c/configurationRef/profileCalculatedId"),
+            Some(&serde_json::json!("pid1:new-c"))
+        );
+        assert_eq!(
+            patch.after[1].pointer("/tooling/sourceReferences/0/configurationRef/calculatedId"),
+            Some(&serde_json::json!("cid1:new-a"))
+        );
+        let mut expected = [
+            identity_reference_value(&before[0]).unwrap(),
+            identity_reference_value(&before[1]).unwrap(),
+        ];
+        for (side, pointer, cid, pid) in [
+            (0, "/tooling/configurationRef", "cid1:new-a", "pid1:new-a"),
+            (
+                0,
+                "/tooling/replicaSelectionDefault/configurationRef",
+                "cid1:new-b",
+                "pid1:new-b",
+            ),
+            (
+                1,
+                "/tooling/codingAgents/c/configurationRef",
+                "cid1:stable-c",
+                "pid1:new-c",
+            ),
+            (
+                1,
+                "/tooling/sourceReferences/0/configurationRef",
+                "cid1:new-a",
+                "pid1:new-a",
+            ),
+        ] {
+            let object = expected[side]
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            object.insert("calculatedId".into(), serde_json::json!(cid));
+            object.insert("profileCalculatedId".into(), serde_json::json!(pid));
+        }
+        assert_eq!(patch.after, expected);
+    }
+
+    #[test]
+    fn transition_reference_disabled_removed_and_other_source_preserve_every_field() {
+        let (source, before, mut mappings) = fixture();
+        mappings[0].unavailable = true;
+        mappings[1].new_calculated_id = None;
+        mappings[2]
+            .profiles
+            .insert("B".into(), (Some("pid1:old-c".into()), None));
+        let original = [
+            identity_reference_value(&before[0]).unwrap(),
+            identity_reference_value(&before[1]).unwrap(),
+        ];
+        assert_eq!(
+            plan_identity_reference_patch(before.clone(), &source, &mappings)
+                .unwrap()
+                .after,
+            original
+        );
+        let mut other = source;
+        other.context_root = "other-instance".into();
+        assert_eq!(
+            plan_identity_reference_patch(before, &other, &mappings)
+                .unwrap()
+                .after,
+            original
+        );
+    }
+
+    #[test]
+    fn transition_reference_stale_profile_conflict_leaves_input_physical_unchanged() {
+        let (source, before, mut mappings) = fixture();
+        let original = before.clone();
+        mappings[2].profiles.insert(
+            "B".into(),
+            (Some("pid1:stale".into()), Some("pid1:new-c".into())),
+        );
+        assert!(matches!(
+            plan_identity_reference_patch(before.clone(), &source, &mappings),
+            Err(crate::config::settings::IdentityReferenceError::Conflict)
+        ));
+        assert_eq!(before, original);
+    }
+
+    #[test]
+    fn transition_reference_metadata_only_and_absent_sides_remain_unchanged() {
+        let (source, before, _) = fixture();
+        let original = [
+            identity_reference_value(&before[0]).unwrap(),
+            identity_reference_value(&before[1]).unwrap(),
+        ];
+        assert_eq!(
+            plan_identity_reference_patch(before, &source, &[])
+                .unwrap()
+                .after,
+            original
+        );
+        let absent = [
+            IdentityReferencePhysicalState::Absent,
+            IdentityReferencePhysicalState::Absent,
+        ];
+        let patch = plan_identity_reference_patch(absent.clone(), &source, &[]).unwrap();
+        assert_eq!(patch.before, absent);
+        assert_eq!(patch.after, [serde_json::json!({}), serde_json::json!({})]);
+    }
+}
+
+/// Complete semantic slots captured from the SAME original physical snapshots.
+#[allow(dead_code)]
+pub(crate) fn source_original_slots(
+    target: &SourceSelectionTarget,
+) -> Result<
+    Vec<(
+        crate::config::settings::SourceOriginalSlot,
+        crate::config::settings::ConfigurationRef,
+    )>,
+    crate::config::settings::IdentityReferenceError,
+> {
+    use crate::config::settings::{ConfigurationRef, IdentityReferenceError, SourceOriginalSlot};
+    let mut slots = Vec::new();
+    let mut capture = |slot, value: &Value| -> Result<(), IdentityReferenceError> {
+        if !value.is_object() {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        if let Some(reference) = value.get("configurationRef") {
+            let reference: ConfigurationRef = serde_json::from_value(reference.clone())
+                .map_err(|_| IdentityReferenceError::Conflict)?;
+            if reference.version != 1 {
+                return Err(IdentityReferenceError::Conflict);
+            }
+            slots.push((slot, reference));
+        }
+        Ok(())
+    };
+    let decisions = identity_reference_value(&target.physical_revision[0])?;
+    let state = identity_reference_value(&target.physical_revision[1])?;
+    if let Some(tooling) = decisions.get("tooling") {
+        capture(SourceOriginalSlot::Decision, tooling)?;
+        if let Some(default) = tooling.get("replicaSelectionDefault") {
+            let slot = if target
+                .root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("_agent_"))
+            {
+                SourceOriginalSlot::MatrixDefault
+            } else {
+                SourceOriginalSlot::ReplicaDefault
+            };
+            capture(slot, default)?;
+        }
+    }
+    if let Some(tooling) = state.get("tooling") {
+        if !tooling.is_object() {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        if let Some(history) = tooling.get("codingAgents") {
+            for (key, entry) in history
+                .as_object()
+                .ok_or(IdentityReferenceError::Conflict)?
+            {
+                capture(SourceOriginalSlot::HistoryKey(key.clone()), entry)?;
+            }
+        }
+        if let Some(history) = tooling.get("sourceReferences") {
+            for (index, entry) in history
+                .as_array()
+                .ok_or(IdentityReferenceError::Conflict)?
+                .iter()
+                .enumerate()
+            {
+                capture(SourceOriginalSlot::HistoryIndex(index), entry)?;
+            }
+        }
+    }
+    Ok(slots)
+}
+
+#[allow(dead_code)]
+pub(crate) fn source_target_is_affected(
+    target: &SourceSelectionTarget,
+    source: &crate::config::settings::SourceRef,
+    mappings: &[crate::config::settings::SourceIdentityMapping],
+) -> Result<bool, crate::config::settings::IdentityReferenceError> {
+    let patch = plan_identity_reference_patch(target.physical_revision.clone(), source, mappings)?;
+    let original = [
+        identity_reference_value(&target.physical_revision[0])?,
+        identity_reference_value(&target.physical_revision[1])?,
+    ];
+    Ok(patch.after != original)
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_DISCOVERY_CALLS: std::cell::RefCell<std::collections::BTreeMap<&'static str, usize>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    static SOURCE_DISCOVERY_FAILURE: std::cell::Cell<Option<(&'static str, usize)>> = const { std::cell::Cell::new(None) };
+}
+
+fn source_discovery_cut(_stage: &'static str) -> Result<(), std::io::Error> {
+    #[cfg(test)]
+    SOURCE_DISCOVERY_CALLS.with(|calls| *calls.borrow_mut().entry(_stage).or_default() += 1);
+    #[cfg(test)]
+    SOURCE_DISCOVERY_FAILURE.with(|failure| {
+        if let Some((stage, remaining)) = failure.get() {
+            if stage == _stage {
+                if remaining == 1 {
+                    failure.set(None);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "source inventory fail-only cut",
+                    ));
+                }
+                failure.set(Some((stage, remaining - 1)));
+            }
+        }
+        Ok(())
+    })?;
+    Ok(())
 }

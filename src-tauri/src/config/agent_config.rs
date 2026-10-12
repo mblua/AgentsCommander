@@ -1434,10 +1434,7 @@ pub(crate) fn prepare_and_reserve_identity_reference_pair<F>(
     request: &crate::config::local_config_io::PairReservationRequest,
     mutate: F,
 ) -> Result<
-    (
-        crate::config::local_config_io::PairReservation,
-        crate::config::local_config_io::PairReservationRole,
-    ),
+    crate::config::local_config_io::PairReservation,
     crate::config::local_config_io::PreparedPairError,
 >
 where
@@ -1453,10 +1450,7 @@ pub(crate) fn prepare_and_reserve_identity_reference_pair_guarded<F>(
     mutate: F,
     validate: &dyn Fn() -> Result<(), crate::config::local_config_io::PreparedPairError>,
 ) -> Result<
-    (
-        crate::config::local_config_io::PairReservation,
-        crate::config::local_config_io::PairReservationRole,
-    ),
+    crate::config::local_config_io::PairReservation,
     crate::config::local_config_io::PreparedPairError,
 >
 where
@@ -4843,7 +4837,6 @@ mod pair_activity_tests {
         let request = PairReservationRequest {
             operation_id: "operation-1".into(),
             source_physical_key: "source-key".into(),
-            owner_instance_id: "C1".into(),
             mappings_digest: "a".repeat(64),
             before_protected: protected_config_pair_revision(&before).unwrap(),
         };
@@ -4894,7 +4887,7 @@ mod pair_activity_tests {
         assert_eq!(std::fs::read(&s).unwrap(), s_bytes);
         assert_eq!(std::fs::read(&r).unwrap(), r_bytes);
         assert_eq!(std::fs::read(&root_config).unwrap(), root_bytes);
-        execute_reserved_config_pair(&d, &s, &r, "operation-1", "C1").unwrap();
+        execute_reserved_config_pair(&d, &s, &r, "operation-1").unwrap();
         assert_eq!(read_last_agent_message_at(repo).as_deref(), Some(T3));
         assert_eq!(std::fs::read(root_config).unwrap(), root_bytes);
     }
@@ -4941,7 +4934,6 @@ mod pair_activity_tests {
         let request = PairReservationRequest {
             operation_id: "operation-guard".into(),
             source_physical_key: "source-key".into(),
-            owner_instance_id: "C1".into(),
             mappings_digest: "a".repeat(64),
             before_protected: protected_config_pair_revision(&before).unwrap(),
         };
@@ -4980,7 +4972,6 @@ mod pair_activity_tests {
         let request = PairReservationRequest {
             operation_id: "operation-1".into(),
             source_physical_key: "source-key".into(),
-            owner_instance_id: "C1".into(),
             mappings_digest: "a".repeat(64),
             before_protected: protected_config_pair_revision(&before).unwrap(),
         };
