@@ -10707,22 +10707,30 @@ struct RawProjectSource {
 }
 
 fn read_raw_project_source(path: &Path) -> Result<Option<RawProjectSource>, SettingsSaveError> {
-    read_raw_project_source_with_limit(path, 16 * 1024 * 1024)
+    read_raw_project_source_with_limit(path, 16 * 1024 * 1024, false)
 }
 
 fn read_raw_project_source_with_limit(
     path: &Path,
     limit: usize,
+    legacy_settings_diagnostic: bool,
 ) -> Result<Option<RawProjectSource>, SettingsSaveError> {
     let Some(bytes) = read_project_source_bytes_with_limit(path, limit)? else {
         return Ok(None);
     };
     let value = crate::path_identity::parse_json_no_duplicates(&bytes).map_err(|reason| {
-        project_migration_error(
+        let mut error = project_migration_error(
             path,
             SettingsSaveStage::ProjectPathsRefreshDiskGate,
             &reason,
-        )
+        );
+        if legacy_settings_diagnostic {
+            error.legacy_outward = SettingsSaveLegacyOutward::DiskRead(format!(
+                "settings.json exists but could not be parsed ({}: {reason}); refusing to modify it - fix or remove the file first",
+                path.display()
+            ));
+        }
+        error
     })?;
     let Value::Object(object) = value else {
         return Err(project_migration_error(
@@ -10758,9 +10766,9 @@ fn select_project_source_at_locked_path_with_limit(
     path: &Path,
     limit: usize,
 ) -> Result<SelectedProjectSource, SettingsSaveError> {
-    let legacy = read_raw_project_source_with_limit(path, limit)?;
+    let legacy = read_raw_project_source_with_limit(path, limit, true)?;
     let destination_path = project_paths_path(path);
-    let destination = read_raw_project_source_with_limit(&destination_path, limit)?;
+    let destination = read_raw_project_source_with_limit(&destination_path, limit, false)?;
     let legacy_projection = legacy
         .as_ref()
         .map(|source| raw_project_projection(&source.object))
@@ -13153,94 +13161,96 @@ mod tests {
     fn selected_project_decode_fallback_retains_overlay_and_agents_state() {
         for startup in [false, true] {
             for unreadable in [false, true] {
-                let temp = tempfile::tempdir().unwrap();
-                let path = temp.path().join("settings.json");
-                let project = temp.path().join("A");
-                std::fs::create_dir_all(project.join(".ac")).unwrap();
-                let a = project.to_string_lossy().replace('\\', "/");
-                // Valid source object, unrelated typed field cannot decode.
-                let source = serde_json::to_vec(&serde_json::json!({
-                    "rootToken":42,"projectPaths":[a],"projectPath":a
-                }))
-                .unwrap();
-                std::fs::write(&path, &source).unwrap();
-                let overlay_path = b3_overlay_path(temp.path());
-                let overlay = br####"{"roomNumberMask":"###"}"####;
-                std::fs::write(&overlay_path, overlay).unwrap();
-                let agents_path = super::agents_instance_path(&path);
-                let defaults = serde_json::to_value(super::AppSettings::default()).unwrap();
-                let agents = if unreadable {
-                    b"{broken agents".to_vec()
-                } else {
-                    serde_json::to_vec(&serde_json::json!({
-                        "agents":defaults["agents"],
-                        "codingAgentProfiles":defaults["codingAgentProfiles"]
-                    }))
-                    .unwrap()
-                };
-                std::fs::write(&agents_path, &agents).unwrap();
-                let (settings, legacy_profiles, original) = if startup {
-                    super::read_settings_for_startup(&path)
-                } else {
-                    super::capture_project_settings(&path, false).unwrap()
-                };
-                let expected = crate::config::projects::display_canonical(
-                    std::fs::canonicalize(&project)
-                        .unwrap()
-                        .to_string_lossy()
-                        .as_ref(),
-                );
-                assert_eq!(settings.project_paths, vec![expected.clone()]);
-                assert_eq!(settings.project_path, Some(expected));
-                assert!(settings.project_paths_persistence_error.is_none());
-                assert_eq!(settings.room_number_mask, "###");
-                assert_eq!(settings.root_token, None);
-                assert!(!legacy_profiles);
-                assert!(original.is_none());
-                assert_eq!(
-                    settings.agents_layer.unreadable_path().is_some(),
-                    unreadable
-                );
-                assert_eq!(
-                    super::agents_layer_unreadable_for_dir(temp.path()),
-                    unreadable
-                );
-                assert_eq!(
-                    super::try_with_agents_layer_publication_state(temp.path(), |flag| flag)
-                        .unwrap(),
-                    unreadable
-                );
-                assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
-                assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay);
-                let sidecar = super::project_paths_path(&path);
-                if startup {
-                    assert!(super::raw_project_projection(&b3_object(&path)).is_empty());
-                } else {
-                    assert_eq!(std::fs::read(&path).unwrap(), source);
-                    assert!(!sidecar.exists());
-                    assert!(!temp
-                        .path()
-                        .join(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME)
-                        .exists());
-                }
-                let before_sidecar = std::fs::read(&sidecar).ok();
-                match super::save_settings_to_path_preserving_project_paths_typed(&settings, &path)
-                {
-                    Ok(_) => {
-                        assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
-                        assert!(super::raw_project_projection(&b3_object(&path)).is_empty());
-                    }
-                    Err(error) => {
-                        eprintln!("P1 Preserve explicitly refused: {error:?}");
-                        assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
-                    }
-                }
-                if let Some(bytes) = before_sidecar {
-                    assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
-                }
-                assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay);
+                assert_selected_project_decode_fallback_case(startup, unreadable);
             }
         }
+    }
+
+    fn assert_selected_project_decode_fallback_case(startup: bool, unreadable: bool) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let project = temp.path().join("A");
+        std::fs::create_dir_all(project.join(".ac")).unwrap();
+        let a = project.to_string_lossy().replace('\\', "/");
+        // Valid source object, unrelated typed field cannot decode.
+        let source = serde_json::to_vec(&serde_json::json!({
+            "rootToken":42,"projectPaths":[a],"projectPath":a
+        }))
+        .unwrap();
+        std::fs::write(&path, &source).unwrap();
+        let overlay_path = b3_overlay_path(temp.path());
+        let overlay = br####"{"roomNumberMask":"###"}"####;
+        std::fs::write(&overlay_path, overlay).unwrap();
+        let agents_path = super::agents_instance_path(&path);
+        let defaults = serde_json::to_value(super::AppSettings::default()).unwrap();
+        let agents = if unreadable {
+            b"{broken agents".to_vec()
+        } else {
+            serde_json::to_vec(&serde_json::json!({
+                "agents":defaults["agents"],
+                "codingAgentProfiles":defaults["codingAgentProfiles"]
+            }))
+            .unwrap()
+        };
+        std::fs::write(&agents_path, &agents).unwrap();
+        let (settings, legacy_profiles, original) = if startup {
+            super::read_settings_for_startup(&path)
+        } else {
+            super::capture_project_settings(&path, false).unwrap()
+        };
+        let expected = crate::config::projects::display_canonical(
+            std::fs::canonicalize(&project)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref(),
+        );
+        assert_eq!(settings.project_paths, vec![expected.clone()]);
+        assert_eq!(settings.project_path, Some(expected));
+        assert!(settings.project_paths_persistence_error.is_none());
+        assert_eq!(settings.room_number_mask, "###");
+        assert_eq!(settings.root_token, None);
+        assert!(!legacy_profiles);
+        assert!(original.is_none());
+        assert_eq!(
+            settings.agents_layer.unreadable_path().is_some(),
+            unreadable
+        );
+        assert_eq!(
+            super::agents_layer_unreadable_for_dir(temp.path()),
+            unreadable
+        );
+        assert_eq!(
+            super::try_with_agents_layer_publication_state(temp.path(), |flag| flag).unwrap(),
+            unreadable
+        );
+        assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
+        assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay);
+        let sidecar = super::project_paths_path(&path);
+        if startup {
+            assert!(super::raw_project_projection(&b3_object(&path)).is_empty());
+        } else {
+            assert_eq!(std::fs::read(&path).unwrap(), source);
+            assert!(!sidecar.exists());
+            assert!(!temp
+                .path()
+                .join(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME)
+                .exists());
+        }
+        let before_sidecar = std::fs::read(&sidecar).ok();
+        match super::save_settings_to_path_preserving_project_paths_typed(&settings, &path) {
+            Ok(_) => {
+                assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
+                assert!(super::raw_project_projection(&b3_object(&path)).is_empty());
+            }
+            Err(error) => {
+                eprintln!("P1 Preserve explicitly refused: {error:?}");
+                assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
+            }
+        }
+        if let Some(bytes) = before_sidecar {
+            assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+        }
+        assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay);
     }
 
     #[test]
@@ -14043,6 +14053,9 @@ mod tests {
                 assert!(super::ensure_project_paths_migrated_locked(&transaction).is_err());
                 assert_eq!(std::fs::read(bad_path).unwrap(), bad);
                 if bad_destination {
+                    let error =
+                        super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap_err();
+                    assert!(!error.contains("settings.json exists but could not be parsed"));
                     assert_eq!(std::fs::read(&path).unwrap(), bytes);
                 } else {
                     assert!(!destination.exists());
@@ -16257,7 +16270,10 @@ mod tests {
                 let settings = load_settings_for_cli_from_path(&path);
                 assert_repaired(&settings);
                 assert!(settings.root_token.is_none());
-                assert!(load_settings_for_cli_strict_from_path(Some(&path)).is_err());
+                let error = load_settings_for_cli_strict_from_path(Some(&path)).unwrap_err();
+                assert!(error.contains("settings.json exists but could not be parsed"));
+                assert!(settings.project_paths_persistence_error.is_some());
+                assert!(settings.project_paths.is_empty());
                 assert_eq!(disk_bytes(temp.path()), before);
             }
             let temp = tempfile::tempdir().unwrap();
