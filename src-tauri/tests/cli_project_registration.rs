@@ -1858,7 +1858,7 @@ title: 'USER: P03 helper retry'
         let request: serde_json::Value = serde_json::from_slice(new_requests[0].1).unwrap();
         assert_eq!(
             PathBuf::from(request["changedPath"].as_str().unwrap()),
-            healthy
+            std::fs::canonicalize(&healthy).unwrap()
         );
         assert_eq!(request["reason"], "workgroupCreated");
     }

@@ -13184,8 +13184,14 @@ mod tests {
                 } else {
                     super::capture_project_settings(&path, false).unwrap()
                 };
-                assert_eq!(settings.project_paths, vec![a.clone()]);
-                assert_eq!(settings.project_path, Some(a));
+                let expected = crate::config::projects::display_canonical(
+                    std::fs::canonicalize(&project)
+                        .unwrap()
+                        .to_string_lossy()
+                        .as_ref(),
+                );
+                assert_eq!(settings.project_paths, vec![expected.clone()]);
+                assert_eq!(settings.project_path, Some(expected));
                 assert!(settings.project_paths_persistence_error.is_none());
                 assert_eq!(settings.room_number_mask, "###");
                 assert_eq!(settings.root_token, None);
