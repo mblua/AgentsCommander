@@ -4725,11 +4725,11 @@ mod tests {
     /// covered by the heartbeat backstop; an assignment anywhere else silently
     /// reintroduces an unrecorded edge.
     const STATUS_WRITER_OWNERS: [&str; 5] = [
-        "mark_idle",
-        "mark_busy",
-        "prepare_pty_input_boundary",
-        "commit_selection_transition",
-        "remove_exited_sessions",
+        "mark_idle_with_carrier_permit",
+        "mark_busy_with_carrier_permit",
+        "prepare_pty_input_boundary_with_carrier_permit",
+        "commit_selection_transition_with_carrier_permit",
+        "remove_exited_sessions_with_carrier_permit",
     ];
 
     fn ownership_violations(files: &[(String, String)]) -> Vec<String> {
@@ -4923,10 +4923,10 @@ mod tests {
     #[test]
     fn the_status_writer_guard_accepts_the_four_allowlisted_functions() {
         let owned = "\
-fn mark_idle() { s.status = SessionStatus::Idle; }
-fn mark_busy() { s.status = SessionStatus::Running; }
-fn prepare_pty_input_boundary() { session.status = SessionStatus::Running; }
-fn commit_selection_transition() {
+fn mark_idle_with_carrier_permit() { s.status = SessionStatus::Idle; }
+fn mark_busy_with_carrier_permit() { s.status = SessionStatus::Running; }
+fn prepare_pty_input_boundary_with_carrier_permit() { session.status = SessionStatus::Running; }
+fn commit_selection_transition_with_carrier_permit() {
     record.status = SessionStatus::Running;
     record.status = SessionStatus::Exited(exit_code);
     if previous.status == SessionStatus::Active { previous.status = SessionStatus::Running; }
