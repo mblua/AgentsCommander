@@ -1030,6 +1030,31 @@ pub fn apply_coding_agent_op(
     // config-seed dest, plus profile repair (A-cell bookkeeping for a new agent).
     // This is exactly what every existing writer enforces.
     validate_and_repair_settings(settings)?;
+    outcome_from_written(outcome, settings)
+}
+
+/// Select the final row by its stable ID after validation or persistence.
+/// Update intentionally retains the historical first-exact-ID selection.
+pub fn outcome_from_written(
+    mut outcome: CodingAgentOpOutcome,
+    written: &AppSettings,
+) -> Result<CodingAgentOpOutcome, String> {
+    if matches!(outcome.op, "add" | "update") {
+        let id = outcome
+            .agent
+            .as_ref()
+            .ok_or_else(|| "coding-agent outcome is missing its required row".to_string())?
+            .id
+            .clone();
+        outcome.agent = Some(
+            written
+                .agents
+                .iter()
+                .find(|agent| agent.id == id)
+                .ok_or_else(|| format!("written settings are missing agent '{id}'"))?
+                .clone(),
+        );
+    }
     Ok(outcome)
 }
 
@@ -1334,7 +1359,7 @@ pub fn process_coding_agent_request(
     results_dir: &Path,
     now_ms: u64,
     settings: &mut AppSettings,
-    save: &mut dyn FnMut(&AppSettings) -> Result<(), String>,
+    save: &mut dyn FnMut(&AppSettings) -> Result<AppSettings, String>,
 ) -> RequestDisposition {
     // Claim: an atomic rename on the same volume. ENOENT means a timed-out CLI
     // already removed the request; never apply it.
@@ -1369,7 +1394,7 @@ fn process_claimed(
     request_id: &str,
     now_ms: u64,
     settings: &mut AppSettings,
-    save: &mut dyn FnMut(&AppSettings) -> Result<(), String>,
+    save: &mut dyn FnMut(&AppSettings) -> Result<AppSettings, String>,
 ) -> RequestDisposition {
     let content = match std::fs::read_to_string(processing_path) {
         Ok(c) => c,
@@ -1395,14 +1420,25 @@ fn process_claimed(
     }
     match apply_coding_agent_op(settings, &request.op) {
         Ok(outcome) => {
-            if let Err(e) = save(settings) {
-                write_reject(
-                    results_dir,
-                    request_id,
-                    format!("failed to persist settings: {e}"),
-                );
-                return RequestDisposition::Rejected;
-            }
+            let written = match save(settings) {
+                Ok(written) => written,
+                Err(e) => {
+                    write_reject(
+                        results_dir,
+                        request_id,
+                        format!("failed to persist settings: {e}"),
+                    );
+                    return RequestDisposition::Rejected;
+                }
+            };
+            let outcome = match outcome_from_written(outcome, &written) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    write_reject(results_dir, request_id, error);
+                    return RequestDisposition::Rejected;
+                }
+            };
+            *settings = written;
             let agent_id = outcome
                 .agent
                 .as_ref()
@@ -1674,7 +1710,8 @@ mod tests {
             let mut settings = AppSettings::default();
             let mut save = |settings: &AppSettings| {
                 std::fs::write(&persisted, serde_json::to_vec(settings).unwrap())
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                Ok(settings.clone())
             };
             let disposition =
                 process_coding_agent_request(&path, &results, 200, &mut settings, &mut save);
@@ -1725,9 +1762,9 @@ mod tests {
         );
         let mut saves = 0;
         let disposition =
-            process_coding_agent_request(&path, &results, 200, &mut settings, &mut |_| {
+            process_coding_agent_request(&path, &results, 200, &mut settings, &mut |st| {
                 saves += 1;
-                Ok(())
+                Ok(st.clone())
             });
         assert_eq!(disposition, RequestDisposition::Rejected);
         assert_eq!(saves, 0);
@@ -1742,8 +1779,257 @@ mod tests {
         );
     }
 
-    fn noop_save() -> impl FnMut(&AppSettings) -> Result<(), String> {
-        |_s: &AppSettings| Ok(())
+    #[test]
+    fn id_hash_activation_apply_uses_final_command_env_and_metadata_exclusions() {
+        let mut settings = AppSettings::default();
+        let mut row = agent("stable", "Stable", "codex");
+        row.id_hash = Some("forged".into());
+        row.backend.image = Some("discard-local-image".into());
+        let added = apply_coding_agent_op(&mut settings, &add(row))
+            .unwrap()
+            .agent
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&added).unwrap(),
+            serde_json::to_value(&settings.agents[0]).unwrap()
+        );
+        assert!(added.backend.image.is_none());
+        let original_hash = added.id_hash.clone();
+        let metadata = AgentPatch {
+            label: Some("Renamed".into()),
+            color: Some("#abc123".into()),
+            isolated_home: Some(true),
+            ..Default::default()
+        };
+        let changed = apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "stable".into(),
+                patch: metadata,
+            },
+        )
+        .unwrap()
+        .agent
+        .unwrap();
+        assert_eq!(changed.id_hash, original_hash);
+        let disabled = CodingAgentEnv {
+            key: "MODE".into(),
+            value: "one".into(),
+            source: CodingAgentEnvSource::User,
+            enabled: false,
+        };
+        let updated = apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "stable".into(),
+                patch: AgentPatch {
+                    command: Some("codex x".into()),
+                    envs: Some(vec![disabled]),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap()
+        .agent
+        .unwrap();
+        assert_eq!(updated.id, "stable");
+        assert_eq!(
+            updated.id_hash,
+            Some(crate::config::settings::configuration_identity(
+                &updated.command,
+                &updated.envs
+            ))
+        );
+        assert_ne!(updated.id_hash, original_hash);
+        let disabled_hash = updated.id_hash;
+        settings.agents[0].envs[0].value = "two".into();
+        let updated = apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "stable".into(),
+                patch: AgentPatch::default(),
+            },
+        )
+        .unwrap()
+        .agent
+        .unwrap();
+        assert_ne!(updated.id_hash, disabled_hash);
+        let cleared = apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "stable".into(),
+                patch: AgentPatch {
+                    envs: Some(vec![]),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap()
+        .agent
+        .unwrap();
+        assert!(cleared.envs.is_empty());
+        assert_eq!(
+            cleared.id_hash,
+            Some(crate::config::settings::configuration_identity(
+                "codex x",
+                &[]
+            ))
+        );
+    }
+
+    #[test]
+    fn id_hash_activation_queued_real_saver_result_tracks_written_and_reload() {
+        let dir = crate::config::settings::source_transition_test_root();
+        let settings_path = dir.path().join("settings.json");
+        let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
+        let results = requests.join(RESULTS_SUBDIR);
+        let mut settings = AppSettings::default();
+        let mut input = agent("stable", "Stable", "codex");
+        input.id_hash = Some("forged-input".into());
+        for (request_id, op) in [
+            ("add", add(input)),
+            (
+                "clear",
+                CodingAgentOp::Update {
+                    id: "stable".into(),
+                    patch: AgentPatch {
+                        envs: Some(vec![]),
+                        ..Default::default()
+                    },
+                },
+            ),
+            (
+                "remove",
+                CodingAgentOp::Remove {
+                    id: "stable".into(),
+                },
+            ),
+        ] {
+            let request = write_request_file(&requests, request_id, 100, op);
+            let mut captured = None;
+            let disposition = process_coding_agent_request(
+                &request,
+                &results,
+                200,
+                &mut settings,
+                &mut |candidate| {
+                    let mut physical = candidate.clone();
+                    if let Some(row) = physical.agents.first_mut() {
+                        // A real saver must be the authority even if its final inputs differ.
+                        row.command = "final-saver-command".into();
+                        row.id_hash = Some("forged-before-save".into());
+                    }
+                    let written =
+                        crate::config::settings::save_settings_to_path_preserving_project_paths(
+                            &physical,
+                            &settings_path,
+                        )?;
+                    captured = Some(written.clone());
+                    Ok(written)
+                },
+            );
+            assert!(matches!(disposition, RequestDisposition::Applied { .. }));
+            let result = read_coding_agent_result(&results, request_id).unwrap();
+            assert!(result.ok);
+            let written = captured.unwrap();
+            let reload = crate::config::settings::load_settings_from_path(&settings_path);
+            assert_eq!(
+                serde_json::to_value(&settings.agents).unwrap(),
+                serde_json::to_value(&written.agents).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&reload.agents).unwrap(),
+                serde_json::to_value(&written.agents).unwrap()
+            );
+            if request_id == "remove" {
+                assert!(result.agent.is_none());
+                assert_eq!(result.removed_id.as_deref(), Some("stable"));
+            } else {
+                assert_eq!(
+                    serde_json::to_value(result.agent.as_ref()).unwrap(),
+                    serde_json::to_value(written.agents.first()).unwrap()
+                );
+                assert_eq!(result.agent.unwrap().command, "final-saver-command");
+                let disk: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(
+                        dir.path()
+                            .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    disk["agents"][0]["id_hash"],
+                    written.agents[0].id_hash.clone().unwrap()
+                );
+            }
+            assert!(!request.exists() && !processing_path_for(&request).exists());
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_queued_errors_never_publish_success() {
+        for failure in [
+            "invalid-command",
+            "invalid-env",
+            "bad-disk",
+            "missing-written-row",
+        ] {
+            let dir = crate::config::settings::source_transition_test_root();
+            let path = dir.path().join("settings.json");
+            let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
+            let results = requests.join(RESULTS_SUBDIR);
+            let mut row = agent("stable", "Stable", "codex");
+            if failure == "invalid-command" {
+                row.command = "codex resume --last".into();
+            }
+            if failure == "invalid-env" {
+                row.envs = vec![CodingAgentEnv {
+                    key: "AGENTSCOMMANDER_TOKEN".into(),
+                    value: "bad".into(),
+                    source: CodingAgentEnvSource::User,
+                    enabled: true,
+                }];
+            }
+            let sidecar = dir
+                .path()
+                .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME);
+            if failure == "bad-disk" {
+                std::fs::write(&sidecar, b"{ malformed").unwrap();
+            }
+            let request = write_request_file(&requests, "rejected", 100, add(row));
+            let mut candidate = AppSettings::default();
+            let disposition = process_coding_agent_request(
+                &request,
+                &results,
+                200,
+                &mut candidate,
+                &mut |settings| {
+                    let mut physical = settings.clone();
+                    if failure == "missing-written-row" {
+                        physical.agents.clear();
+                    }
+                    crate::config::settings::save_settings_to_path_preserving_project_paths(
+                        &physical, &path,
+                    )
+                },
+            );
+            assert_eq!(disposition, RequestDisposition::Rejected, "{failure}");
+            let result = read_coding_agent_result(&results, "rejected").unwrap();
+            assert!(!result.ok && result.agent.is_none(), "{failure}");
+            assert!(result.error.is_some());
+            if failure == "bad-disk" {
+                assert_eq!(std::fs::read(&sidecar).unwrap(), b"{ malformed");
+            }
+            if failure.starts_with("invalid-") {
+                assert!(!path.exists() && !sidecar.exists());
+            }
+            assert!(!processing_path_for(&request).exists());
+        }
+    }
+
+    fn noop_save() -> impl FnMut(&AppSettings) -> Result<AppSettings, String> {
+        |s: &AppSettings| Ok(s.clone())
     }
 
     // ---- id / color validators ---------------------------------------------
@@ -2264,7 +2550,7 @@ mod tests {
         let disp = {
             let mut save = |_s: &AppSettings| {
                 saved = true;
-                Ok(())
+                Ok(_s.clone())
             };
             process_coding_agent_request(&path, &results, 200, &mut settings, &mut save)
         };

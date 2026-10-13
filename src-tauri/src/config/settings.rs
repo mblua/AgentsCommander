@@ -4391,6 +4391,13 @@ pub fn configuration_identity(command: &str, envs: &[CodingAgentEnv]) -> String 
     identity_digest("cid1:", &configuration_identity_preimage(command, envs))
 }
 
+/// Refresh informational metadata only; stable IDs and row order stay untouched.
+pub fn refresh_agent_id_hashes(agents: &mut [AgentConfig]) {
+    for agent in agents {
+        agent.id_hash = Some(configuration_identity(&agent.command, &agent.envs));
+    }
+}
+
 /// A configured empty cell has an identity; an absent cell has no identity.
 /// The base configuration ID and decorative profile letter are not inputs.
 pub fn profile_identity(profile: &ProfileCellConfig) -> String {
@@ -4483,6 +4490,172 @@ fn validate_identity_snapshot_with_digest(
                     requested_profile: Some(letter.clone()),
                 });
             }
+        }
+    }
+    Ok(())
+}
+
+// Canonical pair signatures deliberately omit labels, order and supplied hashes.
+// Counts retain repeated legacy rows, including repeated stable IDs.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum PhysicalIdentityViolation {
+    Configuration([(String, String); 2]),
+    Profile([(String, String, String); 2]),
+}
+
+fn physical_identity_violations(
+    groups: &Map<String, Value>,
+    configurations_editable: bool,
+    profiles_editable: bool,
+) -> Result<BTreeMap<PhysicalIdentityViolation, (usize, IdentityValidationError)>, String> {
+    let agents: Vec<AgentConfig> = groups
+        .get("agents")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let profiles: CodingAgentProfilesConfig = groups
+        .get("codingAgentProfiles")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let mut violations = BTreeMap::new();
+    let mut record = |key, error| {
+        let entry = violations.entry(key).or_insert((0usize, error));
+        entry.0 += 1;
+    };
+    if configurations_editable {
+        collect_configuration_identity_violations(&agents, &mut record);
+    }
+    if profiles_editable {
+        collect_profile_identity_violations(&agents, &profiles, &mut record);
+    }
+    Ok(violations)
+}
+
+fn collect_configuration_identity_violations(
+    agents: &[AgentConfig],
+    record: &mut impl FnMut(PhysicalIdentityViolation, IdentityValidationError),
+) {
+    let preimages: Vec<_> = agents
+        .iter()
+        .map(|agent| configuration_identity_preimage(&agent.command, &agent.envs))
+        .collect();
+    let hashes: Vec<_> = preimages
+        .iter()
+        .map(|p| identity_digest("cid1:", p))
+        .collect();
+    for (index, agent) in agents.iter().enumerate() {
+        for other in 0..index {
+            if hashes[index] != hashes[other] {
+                continue;
+            }
+            let mut pair = [
+                (agents[other].id.clone(), preimages[other].clone()),
+                (agent.id.clone(), preimages[index].clone()),
+            ];
+            pair.sort();
+            record(
+                PhysicalIdentityViolation::Configuration(pair),
+                IdentityValidationError {
+                    code: if preimages[index] == preimages[other] {
+                        IdentityValidationCode::DuplicateConfigurationIdentity
+                    } else {
+                        IdentityValidationCode::IdentityHashCollision
+                    },
+                    existing_name: agents[other].label.clone(),
+                    entry_hint: agent.id.clone(),
+                    requested_profile: None,
+                },
+            );
+        }
+    }
+}
+
+fn collect_profile_identity_violations(
+    agents: &[AgentConfig],
+    profiles: &CodingAgentProfilesConfig,
+    record: &mut impl FnMut(PhysicalIdentityViolation, IdentityValidationError),
+) {
+    let cells: Vec<_> = profiles
+        .profiles_by_agent
+        .iter()
+        .flat_map(|(id, cells)| {
+            cells
+                .iter()
+                .filter(|(letter, _)| is_valid_profile_letter(letter))
+                .map(move |(letter, cell)| {
+                    let preimage = profile_identity_preimage(cell);
+                    let hash = identity_digest("pid1:", &preimage);
+                    (id, letter, preimage, hash)
+                })
+        })
+        .collect();
+    for (index, (id, letter, preimage, hash)) in cells.iter().enumerate() {
+        for (old_id, old_letter, old_preimage, old_hash) in &cells[..index] {
+            if hash != old_hash || (id != old_id && preimage == old_preimage) {
+                continue;
+            }
+            let mut pair = [
+                (
+                    (*old_id).clone(),
+                    (*old_letter).clone(),
+                    old_preimage.clone(),
+                ),
+                ((*id).clone(), (*letter).clone(), preimage.clone()),
+            ];
+            pair.sort();
+            record(
+                PhysicalIdentityViolation::Profile(pair),
+                IdentityValidationError {
+                    code: if preimage == old_preimage {
+                        IdentityValidationCode::DuplicateProfileIdentity
+                    } else {
+                        IdentityValidationCode::IdentityHashCollision
+                    },
+                    existing_name: agents
+                        .iter()
+                        .find(|agent| &agent.id == *old_id)
+                        .map(|agent| agent.label.clone())
+                        .unwrap_or_else(|| (*old_id).clone()),
+                    entry_hint: (*id).clone(),
+                    requested_profile: Some((*letter).clone()),
+                },
+            );
+        }
+    }
+}
+
+fn validate_physical_identity_delta(
+    before: &Map<String, Value>,
+    after: &Map<String, Value>,
+    configurations_editable: bool,
+    profiles_editable: bool,
+) -> Result<(), String> {
+    let old = physical_identity_violations(before, configurations_editable, profiles_editable)?;
+    let new = physical_identity_violations(after, configurations_editable, profiles_editable)?;
+    for (signature, (count, mut error)) in new {
+        if count > old.get(&signature).map_or(0, |(count, _)| *count) {
+            // A prepended new row must still name an incumbent from BEFORE.
+            if let PhysicalIdentityViolation::Configuration(pair) = &signature {
+                let incumbent = before
+                    .get("agents")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|raw| serde_json::from_value::<AgentConfig>(raw.clone()).ok())
+                    .find(|agent| {
+                        pair.contains(&(
+                            agent.id.clone(),
+                            configuration_identity_preimage(&agent.command, &agent.envs),
+                        ))
+                    });
+                if let Some(incumbent) = incumbent {
+                    error.existing_name = incumbent.label;
+                }
+            }
+            return Err(error.to_string());
         }
     }
     Ok(())
@@ -7450,10 +7623,11 @@ fn save_agents_instance_file(
     let existing_groups = existing.as_ref().map(agents_instance_groups);
     // Read the physical base, never the request or its overlay. The legacy
     // settings group remains authoritative only when the sidecar lacks it.
-    let legacy = if existing_groups
-        .as_ref()
-        .is_some_and(|groups| groups.contains_key("codingAgentProfiles"))
-    {
+    let legacy = if existing_groups.as_ref().is_some_and(|groups| {
+        AGENTS_INSTANCE_KEYS
+            .iter()
+            .all(|key| groups.contains_key(*key))
+    }) {
         None
     } else {
         read_disk_object_for_write_typed(path, disk_gate_stage)?
@@ -7496,6 +7670,50 @@ fn save_agents_instance_file(
         }
     };
     restore_codex_home_carrier(&mut target, base_profiles);
+    let mut before = legacy
+        .as_ref()
+        .map(agents_instance_groups)
+        .unwrap_or_default();
+    if let Some(groups) = &existing_groups {
+        before.extend(groups.clone());
+    }
+    let editable_agents = matches!(mode, ProjectWriteMode::Preserve)
+        && !settings.local_overlay_state.owns_top_level("agents");
+    let editable_profiles = matches!(mode, ProjectWriteMode::Preserve)
+        && !settings
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles");
+    let rejected = |reason: String| {
+        SettingsSaveError::semantic(
+            disk_gate_stage,
+            &sidecar_path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    };
+    // Decode the final physical rows, but update only their raw metadata property.
+    // Retained overlay-owned groups have no new backfill or validation authority.
+    if editable_agents {
+        if let Some(rows) = target.get_mut("agents") {
+            let agents: Vec<AgentConfig> = serde_json::from_value(rows.clone())
+                .map_err(|error| rejected(error.to_string()))?;
+            for (raw, agent) in rows.as_array_mut().into_iter().flatten().zip(agents) {
+                if let Some(object) = raw.as_object_mut() {
+                    object.insert(
+                        "id_hash".to_string(),
+                        Value::String(configuration_identity(&agent.command, &agent.envs)),
+                    );
+                }
+            }
+        }
+    }
+    if editable_agents || editable_profiles {
+        let mut after = before.clone();
+        after.extend(target.clone());
+        validate_physical_identity_delta(&before, &after, editable_agents, editable_profiles)
+            .map_err(rejected)?;
+    }
     if existing_groups.as_ref() == Some(&target) {
         return Ok(target);
     }
@@ -7745,6 +7963,7 @@ fn parse_settings_json_with_projection_labeled(
     // part of `needs_save`: a legacy file with no ordinals must load without a
     // disk write or a backup rotation.
     finalize_agent_order(&mut settings.agents);
+    refresh_agent_id_hashes(&mut settings.agents);
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
     if let (Some(p), Some(state)) = (settings_path, agents_layer) {
@@ -7847,6 +8066,7 @@ fn default_settings_with_overlay_captured(
             // #2306 P1 - same in-memory finalize as the normal parse, applied to
             // the defaults-plus-overlay view; still no write.
             finalize_agent_order(&mut settings.agents);
+            refresh_agent_id_hashes(&mut settings.agents);
             settings.local_overlay_state = Arc::new(overlay);
             repair_loaded_response_close_settings(&mut settings, source);
             settings
@@ -8726,6 +8946,7 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     normalize_agent_backend_configs(settings)?;
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     validate_agent_commands(settings)?;
+    refresh_agent_id_hashes(&mut settings.agents);
     validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
     validate_sidebar_compact_hotkey(&settings.sidebar_compact_hotkey)?;
     validate_room_number_mask(&settings.room_number_mask)?;
@@ -12210,6 +12431,7 @@ fn save_settings_value_locked(
             SettingsSaveLegacyOutward::ReDecode(outward),
         )
     })?;
+    refresh_agent_id_hashes(&mut written.agents);
     written.project_path_state = Arc::new(fresh_state);
     written.coding_agent_identity_physical = Some(Arc::new(identity_physical));
     written.local_overlay_state = settings.local_overlay_state.clone();
@@ -12593,6 +12815,7 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     // Overlay values stay in memory: `save_settings_value_locked` restores the
     // base `agents` array before writing the file.
     finalize_agent_order(&mut settings.agents);
+    refresh_agent_id_hashes(&mut settings.agents);
     repair_loaded_response_close_settings(&mut settings, &settings_path.display().to_string());
     Ok(settings)
 }
@@ -22278,6 +22501,15 @@ mod tests {
             assert!(!object.contains_key("responseCloseIdleSeconds"));
             object.insert("responseCloseEnabled".to_string(), Value::Bool(true));
             object.insert("responseCloseIdleSeconds".to_string(), Value::from(30));
+            // H02 adds backend-derived metadata; never rewrite the frozen control.
+            for raw in object.get_mut("agents").unwrap().as_array_mut().unwrap() {
+                assert!(raw.get("id_hash").is_none());
+                let agent: AgentConfig = serde_json::from_value(raw.clone()).unwrap();
+                raw.as_object_mut().unwrap().insert(
+                    "id_hash".to_string(),
+                    Value::String(configuration_identity(&agent.command, &agent.envs)),
+                );
+            }
             let sorted: BTreeMap<String, Value> =
                 object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             let expected = serde_json::to_string_pretty(&sorted).unwrap();
@@ -26212,6 +26444,411 @@ mod tests {
         let bytes = serde_json::to_vec_pretty(&serde_json::Value::Object(groups)).unwrap();
         std::fs::write(b3_sidecar_path(dir), &bytes).unwrap();
         bytes
+    }
+
+    fn hash_activation_seed(sidecar: bool) -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let mut settings = super::AppSettings {
+            root_token: Some("hash-test-token".into()),
+            agents: vec![serde_json::from_value(b3_agent("alpha", "Incumbent")).unwrap()],
+            ..super::AppSettings::default()
+        };
+        super::validate_and_repair_settings(&mut settings).unwrap();
+        super::normalize_agent_order(&mut settings.agents);
+        let mut value = serde_json::to_value(settings).unwrap();
+        super::replace_project_projection(value.as_object_mut().unwrap(), &serde_json::Map::new());
+        value["agents"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("id_hash");
+        let groups = if sidecar {
+            let object = value.as_object_mut().unwrap();
+            serde_json::json!({
+                "agents": object.remove("agents").unwrap(),
+                "codingAgentProfiles": object.remove("codingAgentProfiles").unwrap()
+            })
+        } else {
+            // Avoid the independent startup export; exercise missing-group legacy fallback.
+            serde_json::json!({})
+        };
+        b3_write(&path, &value);
+        b3_write(&b3_sidecar_path(temp.path()), &groups);
+        // The existing project migration publishes even an empty projection.
+        // Seed its destination before measuring hash-only read/rejection effects.
+        b3_write(&super::project_paths_path(&path), &serde_json::json!({}));
+        (temp, path)
+    }
+
+    fn hash_activation_files(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file() && path.extension().is_none_or(|ext| ext != "lock"))
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn hash_activation_assert(settings: &super::AppSettings) {
+        for agent in &settings.agents {
+            assert_eq!(
+                agent.id_hash.as_ref(),
+                Some(&super::configuration_identity(&agent.command, &agent.envs))
+            );
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_three_loaders_derive_without_writes_or_backups() {
+        for sidecar in [false, true] {
+            let (temp, path) = hash_activation_seed(sidecar);
+            let before = hash_activation_files(temp.path());
+            for (loader, settings) in b3_all_loaders(&path) {
+                assert_eq!(settings.agents[0].id, "alpha", "{loader}");
+                hash_activation_assert(&settings);
+                assert_eq!(hash_activation_files(temp.path()), before, "{loader}");
+            }
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_direct_save_backfills_literal_and_reaches_fixed_point() {
+        for supplied in [None, Some("forged".to_string())] {
+            let (temp, path) = hash_activation_seed(false);
+            let mut settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            settings.agents[0].id_hash = supplied;
+            let written =
+                super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            let raw = b3_object(&b3_sidecar_path(temp.path()));
+            assert_eq!(
+                raw["agents"][0]["id_hash"],
+                written.agents[0].id_hash.clone().unwrap()
+            );
+            assert!(raw["agents"][0].get("idHash").is_none());
+            assert_eq!(written.agents[0].id, "alpha");
+            let first = hash_activation_files(temp.path());
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            assert_eq!(hash_activation_files(temp.path()), first);
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_all_untrusted_metadata_is_replaced() {
+        for supplied in [
+            serde_json::Value::Null,
+            serde_json::json!(false),
+            serde_json::json!(42),
+            serde_json::json!(1.5),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!(""),
+            serde_json::json!("cid1:stale"),
+            serde_json::json!("forged"),
+        ] {
+            let (temp, path) = hash_activation_seed(true);
+            let sidecar = b3_sidecar_path(temp.path());
+            let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+            raw["agents"][0]["id_hash"] = supplied;
+            b3_write(&sidecar, &raw);
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            hash_activation_assert(&loaded);
+            let written =
+                super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            assert_eq!(
+                b3_object(&sidecar)["agents"][0]["id_hash"],
+                written.agents[0].id_hash.clone().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_malformed_real_fields_refuse_overwrite() {
+        for bad in [
+            serde_json::json!("not-array"),
+            serde_json::json!([{"id":"alpha","label":"A","color":"red","command":7}]),
+            serde_json::json!([{"id":"alpha","label":"A","color":"red","command":"tool","envs":{}}]),
+        ] {
+            let (temp, path) = hash_activation_seed(true);
+            let sidecar = b3_sidecar_path(temp.path());
+            let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+            raw["agents"] = bad.clone();
+            b3_write(&sidecar, &raw);
+            let before = hash_activation_files(temp.path());
+            let error = super::read_agents_instance_file(&sidecar).unwrap_err();
+            assert!(error.contains("undecodable agents array"), "{bad}: {error}");
+            // Existing strict loading exposes an unreadable layer in a valid
+            // unrelated-settings snapshot; it does not always return Err.
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert!(
+                matches!(&loaded.agents_layer, super::AgentsLayerState::Unreadable { path: failed, .. } if failed == &sidecar),
+                "{bad}"
+            );
+            assert!(loaded.agents.is_empty(), "{bad}");
+            assert!(super::save_settings_to_path_preserving_project_paths(
+                &super::AppSettings::default(),
+                &path
+            )
+            .is_err());
+            assert_eq!(hash_activation_files(temp.path()), before);
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_overlay_owned_physical_and_effective_remain_distinct() {
+        for sidecar in [false, true] {
+            let (temp, path) = hash_activation_seed(sidecar);
+            let physical_path = if sidecar {
+                b3_sidecar_path(temp.path())
+            } else {
+                path.clone()
+            };
+            let mut physical = serde_json::Value::Object(b3_object(&physical_path));
+            let physical_hash = if sidecar {
+                super::configuration_identity("claude", &[])
+            } else {
+                "retained-physical-metadata".into()
+            };
+            physical["agents"][0]["id_hash"] = serde_json::json!(physical_hash);
+            physical["agents"][0]["unknownRowField"] = serde_json::json!({"keep":9});
+            b3_write(&physical_path, &physical);
+            let raw_before = physical["agents"].clone();
+            let mut overlay = raw_before.clone();
+            overlay[0]["command"] = serde_json::json!("codex --different");
+            overlay[0]["envs"] =
+                serde_json::json!([{"key":"MODE","value":"effective","enabled":false}]);
+            overlay[0]["id_hash"] = serde_json::json!("forged-effective");
+            b3_write(
+                &b3_overlay_path(temp.path()),
+                &serde_json::json!({"agents":overlay}),
+            );
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            let written =
+                super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            hash_activation_assert(&written);
+            assert_eq!(written.agents[0].command, "codex --different");
+            assert_eq!(b3_object(&physical_path)["agents"], raw_before);
+            assert_eq!(written.agents[0].id, "alpha");
+            let reload = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert_eq!(
+                serde_json::to_value(&reload.agents).unwrap(),
+                serde_json::to_value(&written.agents).unwrap()
+            );
+            assert_ne!(
+                written.agents[0].id_hash.as_deref(),
+                Some(physical_hash.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_rejected_overlay_and_terminal_cas_derive_final_view() {
+        let (temp, path) = hash_activation_seed(true);
+        b3_write(
+            &b3_overlay_path(temp.path()),
+            &serde_json::json!({"defaultShellArgs":"bad"}),
+        );
+        let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        hash_activation_assert(&loaded);
+        assert!(loaded.local_overlay_state.rejection().is_some());
+        let mut stale = loaded.clone();
+        stale.agents[0].id_hash = Some("forged".into());
+        let unchanged = super::compare_and_set_terminal_snapshots_enabled_at_path(
+            &stale,
+            &path,
+            stale.terminal_snapshots_enabled,
+            stale.terminal_snapshots_enabled,
+        )
+        .unwrap();
+        hash_activation_assert(&unchanged);
+        let written = super::save_settings_to_path_preserving_project_paths(&stale, &path).unwrap();
+        hash_activation_assert(&written);
+        assert_eq!(
+            b3_object(&b3_sidecar_path(temp.path()))["agents"][0]["id_hash"],
+            written.agents[0].id_hash.clone().unwrap()
+        );
+    }
+
+    #[test]
+    fn id_hash_activation_main_publisher_failure_keeps_diagnostic_and_no_success() {
+        let (temp, path) = hash_activation_seed(true);
+        let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        let previous = std::fs::read(&path).unwrap();
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+            *slot.borrow_mut() = Some((path.clone(), super::SettingsSaveStage::AtomicReplace))
+        });
+        let result = super::save_settings_to_path_preserving_project_paths(&loaded, &path);
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        // Preserve the existing partial-publication behavior and report failure.
+        assert!(b3_object(&b3_sidecar_path(temp.path()))["agents"][0]["id_hash"].is_string());
+        hash_activation_assert(
+            &super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap(),
+        );
+    }
+
+    #[test]
+    fn id_hash_activation_legacy_duplicates_preserve_rows_multiplicity_and_allow_repair() {
+        let (temp, path) = hash_activation_seed(true);
+        let sidecar = b3_sidecar_path(temp.path());
+        let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+        let row = raw["agents"][0].clone();
+        raw["agents"].as_array_mut().unwrap().push(row.clone());
+        let mut third = row.clone();
+        third["id"] = serde_json::json!("beta");
+        third["command"] = serde_json::json!("unique-command");
+        raw["agents"].as_array_mut().unwrap().push(third);
+        b3_write(&sidecar, &raw);
+        let mut settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        settings.agents.reverse();
+        super::normalize_agent_order(&mut settings.agents);
+        settings.log_level = Some("debug".into());
+        let mut written =
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        assert_eq!(written.agents.iter().filter(|a| a.id == "alpha").count(), 2);
+        hash_activation_assert(&written);
+        let mut increased = written.clone();
+        increased.agents.push(serde_json::from_value(row).unwrap());
+        let before = hash_activation_files(temp.path());
+        assert!(
+            super::save_settings_to_path_preserving_project_paths(&increased, &path)
+                .unwrap_err()
+                .contains("DuplicateConfigurationIdentity")
+        );
+        assert_eq!(hash_activation_files(temp.path()), before);
+        written.agents[1].command = "repair-extra-character".into();
+        let repaired =
+            super::save_settings_to_path_preserving_project_paths(&written, &path).unwrap();
+        assert_eq!(repaired.agents.len(), 3);
+        written.agents.remove(1);
+        assert!(super::save_settings_to_path_preserving_project_paths(&written, &path).is_ok());
+    }
+
+    #[test]
+    fn id_hash_activation_delta_rejects_new_anagrams_and_allows_separate_files() {
+        let (_temp, path) = hash_activation_seed(true);
+        let mut settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        let mut duplicate = settings.agents[0].clone();
+        duplicate.id = "beta".into();
+        duplicate.label = "Requested".into();
+        duplicate.command = "eduacl".into(); // anagram of claude
+        settings.agents.push(duplicate);
+        let before = hash_activation_files(path.parent().unwrap());
+        let error =
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap_err();
+        assert!(error.contains("DuplicateConfigurationIdentity") && error.contains("Incumbent"));
+        assert_eq!(hash_activation_files(path.parent().unwrap()), before);
+        let fresh = tempfile::tempdir().unwrap();
+        let fresh_path = b3_settings_path(fresh.path());
+        assert!(
+            super::save_settings_to_path_preserving_project_paths(&settings, &fresh_path).is_err()
+        );
+        assert!(!fresh_path.exists() && !b3_sidecar_path(fresh.path()).exists());
+        settings.agents[1].command = "unique-extra-character".into();
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        settings.agents[1].command = "eduacl".into();
+        let before_edit = hash_activation_files(path.parent().unwrap());
+        assert!(
+            super::save_settings_to_path_preserving_project_paths(&settings, &path)
+                .unwrap_err()
+                .contains("Incumbent")
+        );
+        assert_eq!(hash_activation_files(path.parent().unwrap()), before_edit);
+        let (_other, other_path) = hash_activation_seed(true);
+        settings.agents.remove(0);
+        assert!(
+            super::save_settings_to_path_preserving_project_paths(&settings, &other_path).is_ok()
+        );
+    }
+
+    #[test]
+    fn id_hash_activation_profile_delta_preserves_history_and_rejects_new_pair() {
+        let (temp, path) = hash_activation_seed(true);
+        let sidecar = b3_sidecar_path(temp.path());
+        let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+        raw["codingAgentProfiles"]["profilesByAgent"]["alpha"] = serde_json::json!({
+            "A":{"command":"--one"},"B":{"command":"--one"},"C":{"command":"--two"}
+        });
+        let mut other = raw["agents"][0].clone();
+        other["id"] = serde_json::json!("beta");
+        other["command"] = serde_json::json!("distinct-command");
+        raw["agents"].as_array_mut().unwrap().push(other);
+        raw["codingAgentProfiles"]["profilesByAgent"]["beta"] =
+            serde_json::json!({"A":{"command":"--one"}});
+        b3_write(&sidecar, &raw);
+        let mut loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("beta")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .command = "--unrelated-edit".into();
+        loaded.agents[0].label = "Renamed".into();
+        super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .get_mut("C")
+            .unwrap()
+            .command = "--unique".into();
+        super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .get_mut("C")
+            .unwrap()
+            .command = "--one".into();
+        let before = hash_activation_files(temp.path());
+        let error =
+            super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap_err();
+        assert!(error.contains("DuplicateProfileIdentity") && error.contains("Renamed"));
+        assert_eq!(hash_activation_files(temp.path()), before);
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .remove("B");
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .remove("C");
+        assert!(super::save_settings_to_path_preserving_project_paths(&loaded, &path).is_ok());
+    }
+
+    #[test]
+    fn id_hash_activation_legacy_before_is_read_when_only_profiles_are_externalized() {
+        let (temp, path) = hash_activation_seed(false);
+        let mut base = serde_json::Value::Object(b3_object(&path));
+        let mut duplicate = base["agents"][0].clone();
+        duplicate["id"] = serde_json::json!("beta");
+        base["agents"].as_array_mut().unwrap().push(duplicate);
+        b3_write(
+            &b3_sidecar_path(temp.path()),
+            &serde_json::json!({
+                "codingAgentProfiles": base.as_object_mut().unwrap().remove("codingAgentProfiles").unwrap()
+            }),
+        );
+        b3_write(&path, &base);
+        let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        assert_eq!(written.agents.len(), 2);
+        hash_activation_assert(&written);
     }
 
     fn b3_all_loaders(path: &std::path::Path) -> Vec<(&'static str, super::AppSettings)> {
