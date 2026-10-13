@@ -43,7 +43,7 @@ C:\tools\agentscommander_stage.exe    ->  C:\tools\.agentscommander_stage\
 C:\work\agentscommander_team-a.exe    ->  C:\work\.agentscommander_team-a\
 ```
 
-The selected directory contains `settings.30.instance.no-git.json`, `sessions.json`, the web token, conversation logs, and other machine-local application state. Two copies have separate application state only when they select different configuration directories. Project-scoped team state remains in each project's shared `.ac/` tree.
+The selected directory contains `settings.30.instance.no-git.json`, `project-paths.json` on builds with project extraction, `sessions.json`, the web token, conversation logs, and other machine-local application state. Two copies have separate application state only when they select different configuration directories. Project-scoped team state remains in each project's shared `.ac/` tree.
 
 ### Settings left by published releases
 
@@ -102,6 +102,8 @@ Under either verified resolver, each binary derives its adjacent candidate from 
 
 ## Portable project paths
 
+Current builds store active and archived registrations and companions in `project-paths.json` beside managed settings. Move the whole selected configuration directory, including sidecar and migration/recovery files. The sidecar has no local override or layered variant.
+
 Every project registration has a canonical absolute path and may have a companion path relative to the selected instance base:
 
 - an absolute executable with a selected adjacent configuration uses the native executable's directory as the base;
@@ -110,7 +112,7 @@ Every project registration has a canonical absolute path and may have a companio
 
 `v0.30.3` release builds have no public override. Their normal native-binary case uses the adjacent executable directory as the base; their home fallback has no base.
 
-For an adjacent instance, move the raw native executable, its selected `.agentscommander_<suffix>/` directory, and project folders together. A project whose relative form still resolves is picked up at its new absolute path, and AC reconciles `settings.30.instance.no-git.json` on the next load. The relative form is anchored to the selected instance base, never the process working directory.
+For an adjacent instance, move the raw native executable, its selected `.agentscommander_<suffix>/` directory, and project folders together. A project whose relative form still resolves is picked up at its new absolute path, and AC reconciles `project-paths.json` on the next managed load. The relative form is anchored to the selected instance base, never the sidecar parent or process working directory.
 
 Relocation carries a project across the move when:
 
@@ -124,6 +126,12 @@ It does not help when only one side moves or when the project is on another driv
 **Conflict handling.** Both stored forms are resolved and validated on every load. If they point at the same directory, including through symlinks or Windows aliases, the project loads once. If they resolve to different real directories, AC loads neither side, writes nothing for that registration, and shows one sticky red error toast listing both paths. Other, non-conflicting projects still load normally. Dismiss the toast, then fix the registration by removing it and reopening the intended folder.
 
 **Sessions stay absolute.** This portability applies to project registrations only. Saved sessions in `sessions.json` keep absolute working directories and absolute nested repo paths, and they follow the existing retention and purge rules. Relocating an instance does not rewrite session paths.
+
+### Upgrade and downgrade safety
+
+Back up the entire selected configuration directory before upgrading. Managed startup or explicit writer transactions copy the six raw legacy settings fields into `project-paths.json`, verify them, then remove them from settings. Read-only CLI project loading can read legacy fields while the sidecar is absent, but never performs extraction. Once present, the sidecar is sole authority; differing legacy remnants fail rather than merge.
+
+Older binaries are unsupported after extraction, and AC provides no automatic downgrade export. Keep backup and orphan temp evidence with the instance. Follow [Recovery and upgrade safety](../reference/settings.md#recovery-and-upgrade-safety) for projection conflict, cleanup failure or a mismatched fixed backup.
 
 ## What is not isolated
 
