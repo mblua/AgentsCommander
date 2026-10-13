@@ -261,6 +261,9 @@ pub struct CodingAgentProfilesConfig {
     /// agent adopts (`adopt_orphaned_profiles`). Absent in an older file.
     #[serde(default)]
     pub identity_by_agent: BTreeMap<String, String>,
+    /// Backend-owned isolated Codex HOME leaves, retained independently of IDs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub codex_home_key_by_agent: BTreeMap<String, String>,
 }
 
 impl Default for CodingAgentProfilesConfig {
@@ -272,6 +275,7 @@ impl Default for CodingAgentProfilesConfig {
             profiles_by_agent: BTreeMap::new(),
             profile_labels_by_agent: BTreeMap::new(),
             identity_by_agent: BTreeMap::new(),
+            codex_home_key_by_agent: BTreeMap::new(),
         }
     }
 }
@@ -7369,6 +7373,32 @@ fn restore_agents_groups_for_redecode(written: &mut Value, groups: Map<String, V
     }
 }
 
+/// Restore only the backend-owned carrier; ordinary profile edits still apply.
+/// Absence in the physical base removes a forged client/overlay carrier.
+fn restore_codex_home_carrier(out: &mut Map<String, Value>, base_profiles: Option<&Value>) {
+    const KEY: &str = "codexHomeKeyByAgent";
+    let carrier = base_profiles
+        .and_then(Value::as_object)
+        .and_then(|profiles| profiles.get(KEY));
+    if carrier.is_some() {
+        out.entry("codingAgentProfiles")
+            .or_insert_with(|| Value::Object(Map::new()));
+    }
+    if let Some(profiles) = out
+        .get_mut("codingAgentProfiles")
+        .and_then(Value::as_object_mut)
+    {
+        match carrier {
+            Some(value) => {
+                profiles.insert(KEY.to_string(), value.clone());
+            }
+            None => {
+                profiles.remove(KEY);
+            }
+        }
+    }
+}
+
 /// #2716 (B3) - the agents-file half of a save, run under the settings lock before
 /// the settings file is written. Returns the groups the agents file now holds, which
 /// are exactly the keys the caller may strip from `out`. `Reconcile` never writes the
@@ -7395,10 +7425,28 @@ fn save_agents_instance_file(
         )
     })?;
     let existing_groups = existing.as_ref().map(agents_instance_groups);
-    let target = match mode {
+    // Read the physical base, never the request or its overlay. The legacy
+    // settings group remains authoritative only when the sidecar lacks it.
+    let legacy = if existing_groups
+        .as_ref()
+        .is_some_and(|groups| groups.contains_key("codingAgentProfiles"))
+    {
+        None
+    } else {
+        read_disk_object_for_write_typed(path, disk_gate_stage)?
+    };
+    let base_profiles = existing_groups
+        .as_ref()
+        .and_then(|groups| groups.get("codingAgentProfiles"))
+        .or_else(|| {
+            legacy
+                .as_ref()
+                .and_then(|disk| disk.get("codingAgentProfiles"))
+        });
+    let mut target = match mode {
         #[cfg(test)]
-        ProjectWriteMode::Reconcile { .. } => match existing_groups {
-            Some(groups) => return Ok(groups),
+        ProjectWriteMode::Reconcile { .. } => match &existing_groups {
+            Some(groups) => groups.clone(),
             None => disk.map(agents_instance_groups).unwrap_or_default(),
         },
         ProjectWriteMode::Preserve => {
@@ -7421,12 +7469,13 @@ fn save_agents_instance_file(
                 };
                 groups.insert(key.to_string(), value);
             }
-            if existing_groups.as_ref() == Some(&groups) {
-                return Ok(groups);
-            }
             groups
         }
     };
+    restore_codex_home_carrier(&mut target, base_profiles);
+    if existing_groups.as_ref() == Some(&target) {
+        return Ok(target);
+    }
     if !target.is_empty() {
         write_agents_instance_file(&target, &sidecar_path)?;
     }
@@ -7604,6 +7653,9 @@ fn parse_settings_json_with_projection_labeled(
         ),
         None => LocalSettingsOverlay::default(),
     };
+    if let (Some(object), Some(base)) = (value.as_object_mut(), &pre_merge) {
+        restore_codex_home_carrier(object, base.get("codingAgentProfiles"));
+    }
     let unmerged = if overlay.is_empty() { None } else { pre_merge };
     // #1077: decode the six project fields and replace the three runtime fields
     // with the SELECTED canonical paths BEFORE deserializing the rest of
@@ -7721,6 +7773,15 @@ fn default_settings_with_overlay_captured(
         OVERLAY_INELIGIBLE_DISK_KEYS,
         OVERLAY_INELIGIBLE_LEGACY_KEYS,
         OVERLAY_DERIVED_ID_CLOSURES,
+    );
+    let agents_base = read_agents_instance_file(&agents_instance_path(settings_path))
+        .ok()
+        .flatten();
+    restore_codex_home_carrier(
+        value.as_object_mut().unwrap(),
+        agents_base
+            .as_ref()
+            .and_then(|base| base.get("codingAgentProfiles")),
     );
     // Unconditionally, and BEFORE the early return: `is_empty()` is also true for a
     // REJECTED overlay, so returning first would swallow the very diagnostics D8
@@ -11876,12 +11937,17 @@ fn save_settings_value_locked(
     replace_project_projection(written_value.as_object_mut().unwrap(), &selected_projection);
     // #2716 (B3): the re-decode sees what a load would, the agents file's groups
     // in the base object, under the overlay reapplied below.
+    let base_profiles = agents_groups.get("codingAgentProfiles").cloned();
     restore_agents_groups_for_redecode(&mut written_value, agents_groups);
     // #1737: disk holds the base, memory holds the effective value. Without this the
     // caller would adopt base values for every overlay-owned key on the first save.
     if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
         settings.local_overlay_state.reapply_from(effective, object);
     }
+    restore_codex_home_carrier(
+        written_value.as_object_mut().unwrap(),
+        base_profiles.as_ref(),
+    );
     let fresh_state = apply_project_decode_to_value(
         &mut written_value,
         base.as_deref(),
@@ -12246,6 +12312,7 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     // order, under the overlay reapplied below. The decoded value is adopted and
     // written, so without it an empty `agents` would reach the agents file.
     let agents_layer = merge_agents_instance_file(settings_path, &mut value);
+    let base_profiles = value.get("codingAgentProfiles").cloned();
     // #1737 (D17): re-apply the overlay to the disk-decoded object, so the
     // `disk_gate == enabled` early return does not hand the caller base values.
     // Pinned before the project decode, and therefore strictly before
@@ -12253,6 +12320,7 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     if let Value::Object(map) = &mut value {
         overlay.reapply_from(effective, map);
     }
+    restore_codex_home_carrier(value.as_object_mut().unwrap(), base_profiles.as_ref());
     let state =
         apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
     let mut settings: AppSettings =
@@ -25430,6 +25498,269 @@ mod tests {
                 "input {input:?}"
             );
         }
+    }
+
+    #[test]
+    fn derived_agent_id_home_legacy_roundtrip_omits_empty_carrier() {
+        let value = b3_legacy_fixture("Legacy", "Profile");
+        let settings: super::AppSettings = serde_json::from_value(value).unwrap();
+        assert!(settings
+            .coding_agent_profiles
+            .codex_home_key_by_agent
+            .is_empty());
+        let encoded = serde_json::to_value(&settings).unwrap();
+        assert!(encoded["codingAgentProfiles"]
+            .get("codexHomeKeyByAgent")
+            .is_none());
+        let roundtrip: super::AppSettings = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            serde_json::to_value(&roundtrip.agents).unwrap(),
+            serde_json::to_value(&settings.agents).unwrap()
+        );
+        assert_eq!(
+            roundtrip.coding_agent_profiles,
+            settings.coding_agent_profiles
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_home_whole_save_restores_sidecar_and_written() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let mut legacy = b3_legacy_fixture("Legacy", "Legacy P");
+        legacy["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+            serde_json::json!({"alpha": "wrong-legacy"});
+        b3_write(&path, &legacy);
+        let mut sidecar = b3_legacy_fixture("Sidecar", "Sidecar P");
+        let expected = serde_json::json!({"alpha": "original-home", "orphan": "retained"});
+        sidecar["codingAgentProfiles"]["codexHomeKeyByAgent"] = expected.clone();
+        b3_write(&b3_sidecar_path(temp.path()), &sidecar);
+        let mut request = super::load_settings_for_cli_from_path(&path);
+        request.coding_agent_profiles.codex_home_key_by_agent =
+            std::collections::BTreeMap::from([("alpha".to_string(), "forged".to_string())]);
+        // Negative control: the ordinary request serializer really carries the
+        // forgery. Removing backend restoration makes the assertions below fail.
+        assert_ne!(
+            serde_json::to_value(&request).unwrap()["codingAgentProfiles"]["codexHomeKeyByAgent"],
+            expected
+        );
+        request.agents[0].label = "Edited label".to_string();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&request, &path).unwrap();
+        assert_eq!(
+            b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]["codexHomeKeyByAgent"],
+            expected
+        );
+        assert_eq!(
+            serde_json::to_value(&written.coding_agent_profiles).unwrap()["codexHomeKeyByAgent"],
+            expected
+        );
+        assert_eq!(written.agents[0].label, "Edited label");
+        assert_eq!(b3_marker(&written).as_deref(), Some("Sidecar P"));
+    }
+
+    #[test]
+    fn derived_agent_id_home_absent_base_rejects_new_carrier() {
+        for present in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            if present {
+                b3_write(&path, &b3_legacy_fixture("Legacy", "Profile"));
+            }
+            let mut request = super::AppSettings::default();
+            request
+                .coding_agent_profiles
+                .codex_home_key_by_agent
+                .insert("alpha".to_string(), "forged".to_string());
+            let written =
+                super::save_settings_to_path_preserving_project_paths(&request, &path).unwrap();
+            assert!(written
+                .coding_agent_profiles
+                .codex_home_key_by_agent
+                .is_empty());
+            assert!(
+                b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]
+                    .get("codexHomeKeyByAgent")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_home_serializers_preserve_legacy_carrier() {
+        for reconcile in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            let mut legacy = b3_legacy_fixture("Legacy", "Profile");
+            legacy["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+                serde_json::json!({"alpha": "legacy-home"});
+            b3_write(&path, &legacy);
+            let mut request = super::load_settings_for_cli_from_path(&path);
+            request
+                .coding_agent_profiles
+                .codex_home_key_by_agent
+                .clear();
+            if reconcile {
+                super::save_settings_with_project_paths_to_path(&request, &path).unwrap();
+            } else {
+                super::save_settings_to_path_preserving_project_paths(&request, &path).unwrap();
+            }
+            assert_eq!(
+                b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]
+                    ["codexHomeKeyByAgent"],
+                legacy["codingAgentProfiles"]["codexHomeKeyByAgent"]
+            );
+            assert_eq!(
+                super::load_settings_for_cli_from_path(&path)
+                    .coding_agent_profiles
+                    .codex_home_key_by_agent
+                    .get("alpha")
+                    .map(String::as_str),
+                Some("legacy-home")
+            );
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_home_narrow_and_overlay_cannot_forge_written() {
+        for terminal in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            b3_write(&path, &b3_migrated_fixture());
+            let mut sidecar = b3_legacy_fixture("Sidecar", "Profile");
+            sidecar["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+                serde_json::json!({"alpha": "physical-home"});
+            b3_write(&b3_sidecar_path(temp.path()), &sidecar);
+            b3_write(
+                &b3_overlay_path(temp.path()),
+                &serde_json::json!({
+                    "codingAgentProfiles": {"codexHomeKeyByAgent": {"alpha": "overlay-forged"}}
+                }),
+            );
+            let mut request = super::load_settings_for_cli_from_path(&path);
+            assert_eq!(
+                request.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+                "physical-home"
+            );
+            request
+                .coding_agent_profiles
+                .codex_home_key_by_agent
+                .insert("alpha".to_string(), "client-forged".to_string());
+            let written = if terminal {
+                super::compare_and_set_terminal_snapshots_enabled_at_path(
+                    &request, &path, true, false,
+                )
+                .unwrap()
+            } else {
+                let geometry = super::WindowGeometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 800.0,
+                    height: 600.0,
+                };
+                super::set_main_window_placement_at_path(
+                    &request,
+                    &path,
+                    &geometry,
+                    super::MainWindowDisplayState::Normal,
+                )
+                .unwrap()
+            };
+            assert_eq!(
+                written.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+                "physical-home"
+            );
+            assert_eq!(
+                b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]
+                    ["codexHomeKeyByAgent"]["alpha"],
+                "physical-home"
+            );
+            // Terminal CAS also has an idempotent return without serialization.
+            let unchanged = super::compare_and_set_terminal_snapshots_enabled_at_path(
+                &request,
+                &path,
+                written.terminal_snapshots_enabled,
+                written.terminal_snapshots_enabled,
+            )
+            .unwrap();
+            assert_eq!(
+                unchanged.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+                "physical-home"
+            );
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_home_load_uses_physical_origin_under_overlay() {
+        let physical = tempfile::tempdir().unwrap();
+        let logical = tempfile::tempdir().unwrap();
+        let io = b3_settings_path(physical.path());
+        let label = b3_settings_path(logical.path());
+        let mut source = b3_legacy_fixture("Physical", "Profile");
+        source["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+            serde_json::json!({"alpha": "physical-home"});
+        b3_write(&b3_sidecar_path(physical.path()), &source);
+        source["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+            serde_json::json!({"alpha": "logical-forged"});
+        b3_write(&b3_sidecar_path(logical.path()), &source);
+        b3_write(
+            &b3_overlay_path(physical.path()),
+            &serde_json::json!({"codingAgentProfiles": {"codexHomeKeyByAgent": {"alpha": "overlay-forged"}}}),
+        );
+        let contents = serde_json::to_string(&b3_migrated_fixture()).unwrap();
+        let (loaded, _) = super::parse_settings_json_with_projection_labeled(
+            &contents,
+            "physical-test",
+            Some(&io),
+            Some(&label),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+            "physical-home"
+        );
+        let default_loaded = super::default_settings_with_overlay_captured(
+            &io,
+            "physical-test",
+            &serde_json::Map::new(),
+        );
+        assert_eq!(
+            default_loaded.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+            "physical-home"
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_home_invalid_durable_leaf_survives_save_and_fails_use() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let mut source = b3_legacy_fixture("Codex", "Profile");
+        source["agents"][0]["command"] = serde_json::json!("codex");
+        source["agents"][0]["isolatedHome"] = serde_json::json!(true);
+        source["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+            serde_json::json!({"alpha": "../invalid"});
+        b3_write(&path, &source);
+        let mut request = super::load_settings_for_cli_from_path(&path);
+        request
+            .coding_agent_profiles
+            .codex_home_key_by_agent
+            .clear();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&request, &path).unwrap();
+        assert_eq!(
+            written.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+            "../invalid"
+        );
+        assert!(crate::config::agent_command::resolve_agent_spawn_command(
+            &written,
+            "alpha",
+            None,
+            Some("A"),
+            false
+        )
+        .unwrap_err()
+        .contains("Invalid isolated Codex HOME key"));
     }
 
     // #2716 (B3) - the agents file. Rows E4 to E20b of the phase plan.
