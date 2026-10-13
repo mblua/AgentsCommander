@@ -1,6 +1,7 @@
 #![cfg(target_os = "windows")]
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
@@ -14,9 +15,7 @@ use agentscommander_lib::commands::session::{
 use agentscommander_lib::config::sessions_persistence::{
     load_sessions, persist_current_state_result,
 };
-use agentscommander_lib::config::settings::{
-    save_settings_with_project_paths, AppSettings, SettingsState,
-};
+use agentscommander_lib::config::settings::{save_settings, AppSettings, SettingsState};
 use agentscommander_lib::pty::git_watcher::GitWatcher;
 use agentscommander_lib::pty::idle_detector::IdleDetector;
 use agentscommander_lib::pty::manager::PtyManager;
@@ -199,21 +198,80 @@ fn make_lifecycle_fixture() -> LifecycleFixture {
         agentscommander_lib::config::config_dir().expect("config dir override"),
         config_dir
     );
-    // #778: seeding project_paths to a fresh settings.json is a deliberate list
-    // write, so it must use the explicit verbatim writer. The default
-    // `save_settings` is now preserve-disk (it would read the not-yet-existent
-    // file as empty and write project_paths: []), which is exactly the fail-safe
-    // behavior #778 introduced.
-    save_settings_with_project_paths(&{
-        // #1077: AppSettings carries a crate-private hidden field, so an
-        // out-of-crate struct literal is not permitted; build from Default.
-        let mut s = AppSettings::default();
-        s.default_shell = "powershell.exe".to_string();
-        s.default_shell_args = vec!["-NoLogo".to_string()];
-        s.project_paths = vec![path_to_string(&repo_root)];
-        s
-    })
-    .expect("seed isolated settings");
+    // Seed canonical project authority before the unrelated Preserve save.
+    let mut settings = AppSettings::default();
+    settings.default_shell = "powershell.exe".to_string();
+    settings.default_shell_args = vec!["-NoLogo".to_string()];
+    settings.project_paths = vec![path_to_string(&repo_root)];
+    let project_paths_path = config_dir.join("project-paths.json");
+    let seed = serde_json::to_vec(&serde_json::json!({
+        "projectPaths": settings.project_paths,
+        "projectPathsRelativeToInstance": [null],
+        "archivedProjectPaths": [],
+        "archivedProjectPathsRelativeToInstance": []
+    }))
+    .expect("serialize canonical project fixture");
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&project_paths_path)
+            .expect("create isolated project authority");
+        file.write_all(&seed)
+            .expect("write canonical project fixture");
+    }
+    let project_paths_before = std::fs::read(&project_paths_path).expect("read seeded authority");
+    let saved = save_settings(&settings).expect("seed isolated settings");
+    let canonical_repo_root = std::fs::canonicalize(&repo_root)
+        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", repo_root.display()));
+    let canonical_repo_root = canonical_repo_root.to_str().unwrap_or_else(|| {
+        panic!(
+            "canonical repo root is not UTF-8: {}",
+            canonical_repo_root.display()
+        )
+    });
+    let expected_project_path = if let Some(unc) = canonical_repo_root.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(drive_path) = canonical_repo_root.strip_prefix(r"\\?\") {
+        let bytes = drive_path.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\'
+        {
+            drive_path.to_string()
+        } else {
+            canonical_repo_root.to_string()
+        }
+    } else {
+        canonical_repo_root.to_string()
+    };
+    let expected_project_paths = vec![expected_project_path];
+    assert_eq!(saved.project_paths, expected_project_paths);
+    assert_eq!(saved.default_shell, "powershell.exe");
+    assert_eq!(saved.default_shell_args, vec!["-NoLogo".to_string()]);
+    assert_eq!(
+        std::fs::read(&project_paths_path).expect("read preserved authority"),
+        project_paths_before
+    );
+    let managed: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(config_dir.join("settings.30.instance.no-git.json"))
+            .expect("read managed settings"),
+    )
+    .expect("parse managed settings");
+    for key in [
+        "projectPath",
+        "projectPathRelativeToInstance",
+        "projectPaths",
+        "projectPathsRelativeToInstance",
+        "archivedProjectPaths",
+        "archivedProjectPathsRelativeToInstance",
+    ] {
+        assert!(
+            managed.get(key).is_none(),
+            "managed settings retained {key}"
+        );
+    }
 
     write_child_script(&script_path);
     run_powershell_preflight();

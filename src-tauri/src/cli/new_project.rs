@@ -4,7 +4,7 @@
 //! command at `commands::ac_discovery::new_project` via the
 //! `config::projects` module.
 //!
-//! Same GUI concurrency caveat as `open-project` — see that file.
+//! Registration owns one shared settings-lock transaction.
 
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,6 @@ use crate::cli::workgroup::write_project_registration_refresh;
 use crate::config::projects::register_new_project;
 use crate::config::settings::{
     load_settings_for_cli_strict, project_state_has_structural, refresh_project_paths_from_disk,
-    resync_project_state_from_runtime, save_settings_with_project_paths,
 };
 
 #[derive(Args)]
@@ -50,7 +49,7 @@ pub fn execute(args: NewProjectArgs) -> i32 {
     // a half-registered project.
     if project_state_has_structural(&settings) {
         eprintln!(
-            "Error: settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first."
+            "Error: project-paths.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first."
         );
         return 1;
     }
@@ -71,14 +70,6 @@ pub fn execute(args: NewProjectArgs) -> i32 {
     // Save when we either created `.ac` or appended a new path entry.
     // (A pure no-op call still prints the status lines.)
     if result.created || result.registered {
-        // #1077: rebuild the hidden pair state from the mutated runtime lists so
-        // the paired reconcile serializer records both persisted forms instead of
-        // dropping the append.
-        resync_project_state_from_runtime(&mut settings);
-        if let Err(e) = save_settings_with_project_paths(&settings) {
-            eprintln!("Error: failed to persist settings: {}", e);
-            return 1;
-        }
         // #1318 - a CLI registration seeds the catalog + masters immediately
         // (no restart needed). Fail-soft: any error is logged and the boot loop
         // covers the project at the next boot.

@@ -2891,59 +2891,42 @@ pub async fn set_replica_context_files(path: String, files: Vec<String>) -> Resu
 
 // ── #191 — shared open/new project commands ──────────────────────────────
 
-async fn mutate_project_paths_with_settings_path<T>(
+async fn mutate_project_paths_with_settings_path<T: Send + 'static>(
     settings: &SettingsState,
     settings_path: Option<&Path>,
-    mutate: impl FnOnce(&mut crate::config::settings::AppSettings) -> Result<T, String>,
+    mutate: impl FnOnce(&mut crate::config::settings::AppSettings) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    // Resolve the concrete settings path (production uses config_dir).
-    let path_buf;
-    let path: &Path = match settings_path {
-        Some(p) => p,
-        None => {
-            path_buf = crate::config::config_dir()
-                .ok_or("Could not determine settings directory")?
-                .join(SETTINGS_FILE_NAME);
-            &path_buf
-        }
+    let path = match settings_path {
+        Some(path) => path.to_path_buf(),
+        None => crate::config::config_dir()
+            .ok_or("Could not determine settings directory")?
+            .join(SETTINGS_FILE_NAME),
     };
-
-    let mut s = settings.write().await;
-    // #778: reconcile project_paths from disk BEFORE the mutation so a concurrent
-    // CLI append is folded in, not clobbered. The raw three-field refresh (not
-    // the validating decoder) keeps a stored-but-missing project in the list so
-    // remove/archive of a vanished directory still matches it lexically (§3.7).
-    // Aborts on a non-NotFound read error (G2) or a wrong-typed project field.
-    crate::config::settings::refresh_project_paths_from_path(&mut s, path)?;
-    // #1077: structural project corruption blocks any list mutation; the
-    // three-field read above independently aborts on a wrong-typed primary field.
-    if crate::config::settings::project_state_has_structural(&s) {
-        return Err(
-            "settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first.".to_string(),
-        );
-    }
-    // #1077 §4.3: apply the operation to a separate candidate clone and publish
-    // only after the atomic save succeeds. On save failure the live guard keeps
-    // the refreshed pre-mutation state (never the unsaved candidate).
-    let mut candidate = s.clone();
-    let result = mutate(&mut candidate)?;
-    // Rebuild the candidate's hidden state to match its mutated runtime lists,
-    // reconciling preserved conflict/missing records against the mutation.
-    crate::config::settings::resync_project_state_from_runtime(&mut candidate);
-    match crate::config::settings::reconcile_project_state_to_path(&candidate, path, true, true) {
-        Ok(written) => {
-            // Publish the fresh-decoded value (selected runtime + hidden state)
-            // that §4.2 requires, not the stale candidate.
-            *s = written;
-            drop(s); // explicit; lock released AFTER the disk write completes
-            Ok(result)
+    let settings = std::sync::Arc::clone(settings);
+    crate::config::seed_manifest::run_blocking_owned(move || {
+        let mut current = settings.blocking_write();
+        let mut transaction =
+            crate::config::settings::begin_project_paths_transaction_at_path(&current, &path)?;
+        let mut candidate = transaction.fresh_settings().clone();
+        transaction.refresh_raw_projects(&mut candidate)?;
+        if crate::config::settings::project_state_has_structural(&candidate) {
+            return Err("project-paths.json has malformed project metadata".to_string());
         }
-        Err(e) => {
-            // Live state is still the refreshed pre-mutation snapshot.
-            drop(s);
-            Err(e)
+        let result = mutate(&mut candidate)?;
+        crate::config::settings::resync_project_state_from_runtime(&mut candidate);
+        match transaction.commit_project_groups(&candidate, true, true) {
+            Ok(written) => {
+                *current = written;
+                Ok(result)
+            }
+            Err(error) => {
+                *current = transaction.fresh_settings().clone();
+                Err(error)
+            }
         }
-    }
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -3045,7 +3028,9 @@ async fn open_project_inner_with_settings_path(
     path: &str,
     settings_path: Option<&Path>,
 ) -> Result<(crate::config::projects::ProjectRegistration, bool), String> {
-    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
+    let mutation_path = path.to_string();
+    mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
+        let path = mutation_path.as_str();
         let before = s.archived_project_paths.clone();
         let result = crate::config::projects::register_existing_project(s, path)
             .map_err(|e| e.to_string())?;
@@ -3132,27 +3117,13 @@ impl NewProjectTransactionHooks {
     fn save_settings(
         &self,
         settings: &crate::config::settings::AppSettings,
-        settings_path: Option<&Path>,
+        transaction: &mut crate::config::settings::ProjectPathsWriteTransaction,
     ) -> Result<crate::config::settings::AppSettings, String> {
         #[cfg(test)]
         if self.fail_settings_save {
             return Err("injected new-project settings save failure".to_string());
         }
-        // #1077 reconciliation: persist through the reconcile writer so the project
-        // fields are rebuilt from the resynced runtime_authoritative hidden state,
-        // and return the fresh-decoded settings for the caller to publish (§4.2).
-        // Mirrors mutate_project_paths_with_settings_path.
-        let path_buf;
-        let path: &Path = match settings_path {
-            Some(p) => p,
-            None => {
-                path_buf = crate::config::config_dir()
-                    .ok_or("Could not determine settings directory")?
-                    .join(SETTINGS_FILE_NAME);
-                &path_buf
-            }
-        };
-        crate::config::settings::reconcile_project_state_to_path(settings, path, true, true)
+        transaction.commit_project_groups(settings, true, true)
     }
 
     fn before_final_revalidation(&self, ac_root: &Path) {
@@ -3178,61 +3149,38 @@ async fn new_project_inner_with_settings_path_and_hooks(
         let prepared = crate::config::projects::prepare_new_project(&path)
             .map_err(|error| error.to_string())?;
         let mut current = settings.blocking_write();
-        if let Some(path) = settings_path.as_deref() {
-            crate::config::settings::refresh_project_paths_from_path(&mut current, path)?;
-        } else {
-            crate::config::settings::refresh_project_paths_from_disk(&mut current)?;
+        let settings_path = match settings_path {
+            Some(path) => path,
+            None => crate::config::config_dir().ok_or("Could not determine settings directory")?.join(SETTINGS_FILE_NAME),
+        };
+        let mut transaction = crate::config::settings::begin_project_paths_transaction_at_path(&current, &settings_path)?;
+        let before_raw = transaction.raw_project_projection()?;
+        let mut candidate = transaction.fresh_settings().clone();
+        transaction.refresh_raw_projects(&mut candidate)?;
+        if crate::config::settings::project_state_has_structural(&candidate) {
+            return Err("project-paths.json has malformed project metadata".to_string());
         }
-        // #1077 parity: structural project corruption blocks the registration,
-        // exactly as mutate_project_paths_with_settings_path does for the
-        // open/remove/archive mutators.
-        if crate::config::settings::project_state_has_structural(&current) {
-            return Err(
-                "settings.json has malformed project metadata; refusing to modify the project list. Fix or remove the corrupt project fields first.".to_string(),
-            );
-        }
-
-        let before_settings = current.clone();
-        let before_archived = current.archived_project_paths.clone();
-        let result = crate::config::projects::commit_prepared_new_project(&mut current, &prepared);
-        // #1077 reconciliation step 1: rebuild the hidden state runtime_authoritative
-        // from the upserted runtime lists so the reconcile write emits the runtime
-        // selection rather than the stale disk projection.
-        crate::config::settings::resync_project_state_from_runtime(&mut current);
-        if let Err(error) = prepared.revalidate() {
-            *current = before_settings;
-            return Err(error.to_string());
-        }
-
-        let snapshot = current.clone();
-        // Preserve the established save-failure contract: once the deliberate
-        // upsert is in live memory, a disk-save error is returned without
-        // reverting that in-memory list.
-        let written = hooks.save_settings(&snapshot, settings_path.as_deref())?;
-        // §4.2: publish the fresh-decoded settings (selected runtime + hidden state).
-        *current = written;
+        let before_archived = candidate.archived_project_paths.clone();
+        let result = crate::config::projects::commit_prepared_new_project(&mut candidate, &prepared);
+        crate::config::settings::resync_project_state_from_runtime(&mut candidate);
+        prepared.revalidate().map_err(|error| error.to_string())?;
+        let written = match hooks.save_settings(&candidate, &mut transaction) {
+            Ok(written) => written,
+            Err(error) => { *current = transaction.fresh_settings().clone(); return Err(error); }
+        };
         hooks.before_final_revalidation(prepared.ac_root());
         if let Err(error) = prepared.revalidate() {
-            // #1077 reconciliation step 3: resync the pre-mutation snapshot so its
-            // pre-mutation runtime list writes runtime_authoritative and CLEARS the
-            // earlier disk entry; publish the fresh-decoded value on success.
-            let mut reverted = before_settings.clone();
-            crate::config::settings::resync_project_state_from_runtime(&mut reverted);
-            let rollback = hooks.save_settings(&reverted, settings_path.as_deref());
-            return Err(match rollback {
-                Ok(written) => {
-                    *current = written;
-                    error.to_string()
-                }
+            return Err(match transaction.restore_raw_project_projection(&before_raw) {
+                Ok(written) => { *current = written; error.to_string() }
                 Err(rollback_error) => {
-                    *current = reverted;
-                    format!(
-                        "{}; failed to roll back project registration settings: {}",
-                        error, rollback_error
-                    )
+                    *current = transaction.fresh_settings().clone();
+                    current.project_paths_persistence_error = Some(rollback_error.clone());
+                    format!("{error}; failed to roll back project registration settings: {rollback_error}")
                 }
             });
         }
+        *current = written;
+        drop(transaction);
         let archived_changed = before_archived != current.archived_project_paths;
         drop(current);
         // #1318 - capture the project root BEFORE release (`abs` is private;
@@ -3278,7 +3226,9 @@ async fn remove_project_inner_with_settings_path(
     path: &str,
     settings_path: Option<&Path>,
 ) -> Result<bool, String> {
-    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
+    let mutation_path = path.to_string();
+    mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
+        let path = mutation_path.as_str();
         let before = s.archived_project_paths.clone();
         crate::config::projects::remove_project_path(s, path);
         Ok(before != s.archived_project_paths)
@@ -3432,8 +3382,10 @@ async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
         return Err(archive_blocked_message(&blockers));
     }
 
-    mutate_project_paths_with_settings_path(settings, settings_path, |s| {
-        crate::config::projects::archive_project_path(s, &path);
+    let mutation_path = path.to_string();
+    mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
+        let path = mutation_path.as_str();
+        crate::config::projects::archive_project_path(s, path);
         Ok(())
     })
     .await?;
@@ -3445,9 +3397,11 @@ async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
         return Ok(());
     }
 
+    let mutation_path = path.clone();
     let restored: Result<bool, String> =
-        mutate_project_paths_with_settings_path(settings, settings_path, |s| {
-            let key = crate::config::projects::normalize_for_compare(&path);
+        mutate_project_paths_with_settings_path(settings, settings_path, move |s| {
+            let path = mutation_path.as_str();
+            let key = crate::config::projects::normalize_for_compare(path);
             let still_archived = s
                 .archived_project_paths
                 .iter()
@@ -3455,7 +3409,7 @@ async fn archive_project_inner_with_settings_path<R: tauri::Runtime>(
             if !still_archived {
                 return Ok(false);
             }
-            Ok(crate::config::projects::unarchive_project_path(s, &path))
+            Ok(crate::config::projects::unarchive_project_path(s, path))
         })
         .await;
 
@@ -3525,8 +3479,10 @@ pub(crate) async fn unarchive_project_inner<R: tauri::Runtime>(
     settings: &SettingsState,
     path: &str,
 ) -> Result<crate::config::projects::ProjectRegistration, String> {
-    let result = mutate_project_paths_with_settings_path(settings, None, |s| {
-        crate::config::projects::register_existing_project(s, path).map_err(|e| e.to_string())
+    let mutation_path = path.to_string();
+    let result = mutate_project_paths_with_settings_path(settings, None, move |s| {
+        crate::config::projects::register_existing_project(s, &mutation_path)
+            .map_err(|e| e.to_string())
     })
     .await?;
     broadcast_project_archive_changed(
@@ -4073,6 +4029,11 @@ mod tests {
             archived_project_paths: vec![path.clone()],
             ..AppSettings::default()
         };
+        crate::config::settings::save_settings_with_project_paths_to_path(
+            &settings,
+            &settings_path,
+        )
+        .expect("seed canonical archived authority");
         let (app, state, mut rx, _, _) = archive_command_app(settings);
         let app_handle = app.handle().clone();
 
@@ -4116,6 +4077,11 @@ mod tests {
             archived_project_paths: vec![path.clone()],
             ..AppSettings::default()
         };
+        crate::config::settings::save_settings_with_project_paths_to_path(
+            &settings,
+            &settings_path,
+        )
+        .expect("seed canonical archived authority");
         let (app, state, mut rx, _, _) = archive_command_app(settings);
         let app_handle = app.handle().clone();
 
@@ -4447,8 +4413,10 @@ mod tests {
         assert!(settings.project_paths.is_empty());
         assert!(settings.archived_project_paths.is_empty());
         drop(settings);
-        let disk: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_path.with_file_name("project-paths.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(disk["projectPaths"], json!([path]));
         assert!(disk["archivedProjectPaths"].as_array().unwrap().is_empty());
         let event = recv_ws_event(&mut rx);
@@ -4741,7 +4709,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_settings_file_project_mutators_preserve_live_list() {
+    async fn missing_sources_discard_stale_live_lists_and_sidecar_survives_absent_settings() {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings_path = temp.path().join("settings.json");
         assert!(!settings_path.exists(), "precondition: no settings.json");
@@ -4768,8 +4736,11 @@ mod tests {
         let state: SettingsState = std::sync::Arc::new(tokio::sync::RwLock::new(settings));
 
         let disk = || -> Vec<String> {
-            let value: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+            let value: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(settings_path.with_file_name("project-paths.json"))
+                    .unwrap(),
+            )
+            .unwrap();
             value["projectPaths"]
                 .as_array()
                 .unwrap()
@@ -4784,23 +4755,23 @@ mod tests {
         let memory = state.read().await.project_paths.clone();
         assert_eq!(
             base(&memory),
-            vec!["proj-b"],
-            "A removed, B preserved in memory"
+            Vec::<&str>::new(),
+            "Absent sources cannot resurrect stale B"
         );
         assert_eq!(
             base(&disk()),
-            vec!["proj-b"],
-            "A removed, B preserved on disk"
+            Vec::<&str>::new(),
+            "Absent sources begin empty"
         );
 
         open_project_inner_with_settings_path(&state, &c, Some(&settings_path))
             .await
             .expect("open");
         let memory = state.read().await.project_paths.clone();
-        assert_eq!(base(&memory), vec!["proj-b", "proj-c"]);
-        assert_eq!(base(&disk()), vec!["proj-b", "proj-c"]);
+        assert_eq!(base(&memory), vec!["proj-c"]);
+        assert_eq!(base(&disk()), vec!["proj-c"]);
 
-        std::fs::remove_file(&settings_path).expect("remove settings.json");
+        assert!(!settings_path.exists());
         let d_path = temp.path().join("proj-d");
         let d = d_path.to_string_lossy().to_string();
         new_project_inner_with_settings_path(&state, &d, Some(&settings_path))
@@ -4808,16 +4779,16 @@ mod tests {
             .expect("new project");
         assert!(d_path.join(".ac").is_dir());
         let memory = state.read().await.project_paths.clone();
-        assert_eq!(base(&memory), vec!["proj-b", "proj-c", "proj-d"]);
+        assert_eq!(base(&memory), vec!["proj-c", "proj-d"]);
         assert_eq!(
             base(&disk()),
-            vec!["proj-b", "proj-c", "proj-d"],
-            "B and C must not be lost"
+            vec!["proj-c", "proj-d"],
+            "Sidecar C survives absent managed settings"
         );
     }
 
     #[tokio::test]
-    async fn new_project_settings_save_failure_keeps_live_registration_and_valid_root() {
+    async fn new_project_settings_save_failure_keeps_live_state_and_valid_root() {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings_path = temp.path().join("settings.json");
         let project = temp.path().join("project");
@@ -4839,7 +4810,7 @@ mod tests {
         .expect_err("injected save failure must surface");
 
         assert!(error.contains("injected new-project settings save failure"));
-        assert_eq!(state.read().await.project_paths, vec![project_text]);
+        assert!(state.read().await.project_paths.is_empty());
         assert!(!settings_path.exists());
         assert!(project
             .join(".ac")
@@ -4882,9 +4853,11 @@ mod tests {
 
         assert!(error.contains("retry the operation"));
         assert!(state.read().await.project_paths.is_empty());
-        let disk: AppSettings =
-            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-        assert!(disk.project_paths.is_empty());
+        let disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_path.with_file_name("project-paths.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(disk["projectPaths"].as_array().unwrap().is_empty());
         assert_eq!(
             std::fs::read(project.join(".ac").join("foreign.txt")).unwrap(),
             b"FOREIGN"

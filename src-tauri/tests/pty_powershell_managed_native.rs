@@ -37,9 +37,7 @@ use agentscommander_lib::commands::session::{
     create_session_inner, destroy_session_inner, CreateSelectionIntent,
 };
 use agentscommander_lib::config::agent_command::build_agent_spawn_command;
-use agentscommander_lib::config::settings::{
-    save_settings_with_project_paths, AppSettings, SettingsState,
-};
+use agentscommander_lib::config::settings::{save_settings, AppSettings, SettingsState};
 use agentscommander_lib::pty::backend::ResolvedAgentHostShell;
 use agentscommander_lib::pty::git_watcher::GitWatcher;
 use agentscommander_lib::pty::idle_detector::IdleDetector;
@@ -202,14 +200,79 @@ fn make_fixture() -> Fixture {
         agentscommander_lib::config::config_dir().expect("config dir override"),
         config_dir
     );
-    save_settings_with_project_paths(&{
-        let mut settings = AppSettings::default();
-        settings.default_shell = "powershell.exe".to_string();
-        settings.default_shell_args = vec!["-NoLogo".to_string()];
-        settings.project_paths = vec![repo_root.to_string_lossy().to_string()];
-        settings
-    })
-    .expect("seed isolated settings");
+    let mut settings = AppSettings::default();
+    settings.default_shell = "powershell.exe".to_string();
+    settings.default_shell_args = vec!["-NoLogo".to_string()];
+    settings.project_paths = vec![repo_root.to_string_lossy().to_string()];
+    let project_paths_path = config_dir.join("project-paths.json");
+    let seed = serde_json::to_vec(&serde_json::json!({
+        "projectPaths": settings.project_paths,
+        "projectPathsRelativeToInstance": [null],
+        "archivedProjectPaths": [],
+        "archivedProjectPathsRelativeToInstance": []
+    }))
+    .expect("serialize canonical project fixture");
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&project_paths_path)
+            .expect("create isolated project authority");
+        file.write_all(&seed)
+            .expect("write canonical project fixture");
+    }
+    let project_paths_before = std::fs::read(&project_paths_path).expect("read seeded authority");
+    let saved = save_settings(&settings).expect("seed isolated settings");
+    let canonical_repo_root = std::fs::canonicalize(&repo_root)
+        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", repo_root.display()));
+    let canonical_repo_root = canonical_repo_root.to_str().unwrap_or_else(|| {
+        panic!(
+            "canonical repo root is not UTF-8: {}",
+            canonical_repo_root.display()
+        )
+    });
+    let expected_project_path = if let Some(unc) = canonical_repo_root.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(drive_path) = canonical_repo_root.strip_prefix(r"\\?\") {
+        let bytes = drive_path.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\'
+        {
+            drive_path.to_string()
+        } else {
+            canonical_repo_root.to_string()
+        }
+    } else {
+        canonical_repo_root.to_string()
+    };
+    let expected_project_paths = vec![expected_project_path];
+    assert_eq!(saved.project_paths, expected_project_paths);
+    assert_eq!(saved.default_shell, "powershell.exe");
+    assert_eq!(saved.default_shell_args, vec!["-NoLogo".to_string()]);
+    assert_eq!(
+        std::fs::read(&project_paths_path).expect("read preserved authority"),
+        project_paths_before
+    );
+    let managed: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(config_dir.join("settings.30.instance.no-git.json"))
+            .expect("read managed settings"),
+    )
+    .expect("parse managed settings");
+    for key in [
+        "projectPath",
+        "projectPathRelativeToInstance",
+        "projectPaths",
+        "projectPathsRelativeToInstance",
+        "archivedProjectPaths",
+        "archivedProjectPathsRelativeToInstance",
+    ] {
+        assert!(
+            managed.get(key).is_none(),
+            "managed settings retained {key}"
+        );
+    }
 
     let captured_deliveries: Arc<Mutex<HashMap<String, usize>>> =
         Arc::new(Mutex::new(HashMap::new()));
