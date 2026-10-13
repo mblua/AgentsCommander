@@ -319,7 +319,18 @@ pub(crate) enum TerminalSnapshotFactsError {
     TooMany,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CodingAgentBinding {
+    pub id: String,
+    pub seed: Option<serde_json::Value>,
+    pub origin: Option<serde_json::Value>,
+}
+
 struct SessionManagerState {
+    coding_agent_bindings: HashMap<Uuid, String>,
+    binding_seeds: HashMap<String, serde_json::Value>,
+    binding_origins: HashMap<String, serde_json::Value>,
+    failed_binding_recipes: HashMap<String, serde_json::Value>,
     carrier_versions: HashMap<Uuid, u64>,
     raise_nonces: HashMap<Uuid, Uuid>,
     sessions: HashMap<Uuid, Session>,
@@ -333,6 +344,10 @@ struct SessionManagerState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ManagerAggregateSnapshot {
+    pub coding_agent_bindings: HashMap<Uuid, String>,
+    pub binding_seeds: HashMap<String, serde_json::Value>,
+    pub binding_origins: HashMap<String, serde_json::Value>,
+    pub failed_binding_recipes: HashMap<String, serde_json::Value>,
     pub sessions: Vec<Session>,
     pub order: Vec<Uuid>,
     pub pending_ids: HashSet<Uuid>,
@@ -528,6 +543,10 @@ impl SessionManager {
         Self {
             response_close: crate::pty::manager::ResponseCloseState::default(),
             state: Arc::new(RwLock::new(SessionManagerState {
+                coding_agent_bindings: HashMap::new(),
+                binding_seeds: HashMap::new(),
+                binding_origins: HashMap::new(),
+                failed_binding_recipes: HashMap::new(),
                 carrier_versions: HashMap::new(),
                 raise_nonces: HashMap::new(),
                 sessions: HashMap::new(),
@@ -2688,10 +2707,90 @@ impl SessionManager {
             .filter_map(|id| state.sessions.get(id).cloned())
             .collect();
         ManagerAggregateSnapshot {
+            coding_agent_bindings: state.coding_agent_bindings.clone(),
+            binding_seeds: state.binding_seeds.clone(),
+            binding_origins: state.binding_origins.clone(),
+            failed_binding_recipes: state.failed_binding_recipes.clone(),
             sessions,
             order: state.order.clone(),
             pending_ids: state.pending_create.keys().copied().collect(),
             selection: state.selection.clone(),
+        }
+    }
+
+    /// Only pending rows accept a birth binding; capture its seed before insertion.
+    pub(crate) async fn install_pending_coding_agent_binding(
+        &self,
+        pending: PendingCreateBinding,
+        binding: Option<CodingAgentBinding>,
+    ) -> Result<(), String> {
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut state = self.carrier_state_write(&permit).await;
+        if !binding_matches(&state, pending) {
+            return Err("pending coding-agent binding capability mismatch".to_string());
+        }
+        if let Some(binding) = binding {
+            Uuid::parse_str(&binding.id).map_err(|_| "invalid_coding_agent_binding".to_string())?;
+            if let Some(seed) = binding.seed.as_ref() {
+                let valid_seed = ["identityRevision", "originalAgentId"].iter().all(|key| {
+                    seed.get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.is_empty())
+                });
+                if !valid_seed {
+                    return Err("invalid_coding_agent_binding_seed".to_string());
+                }
+            }
+            if let (Some(before), Some(after)) =
+                (state.binding_seeds.get(&binding.id), binding.seed.as_ref())
+            {
+                if before != after {
+                    return Err("coding_agent_binding_seed_conflict".to_string());
+                }
+            }
+            if let Some(seed) = binding.seed {
+                state.binding_seeds.insert(binding.id.clone(), seed);
+            }
+            if let Some(origin) = binding.origin {
+                state.binding_origins.insert(binding.id.clone(), origin);
+            }
+            state
+                .coding_agent_bindings
+                .insert(pending.session_id, binding.id);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn coding_agent_binding(&self, id: Uuid) -> Option<CodingAgentBinding> {
+        let state = self.state.read().await;
+        let binding = state.coding_agent_bindings.get(&id)?;
+        Some(CodingAgentBinding {
+            id: binding.clone(),
+            seed: state.binding_seeds.get(binding).cloned(),
+            origin: state.binding_origins.get(binding).cloned(),
+        })
+    }
+
+    /// D09 enrolls receipt-affected failures; ordinary retention stays unchanged.
+    pub(crate) async fn refresh_failed_binding_recipes(
+        &self,
+        recipes: Vec<(CodingAgentBinding, serde_json::Value)>,
+    ) {
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut state = self.carrier_state_write(&permit).await;
+        for (binding, recipe) in recipes {
+            if let Some(seed) = binding.seed {
+                state
+                    .binding_seeds
+                    .entry(binding.id.clone())
+                    .or_insert(seed);
+            }
+            if let Some(origin) = binding.origin {
+                state.binding_origins.insert(binding.id.clone(), origin);
+            }
+            if let Some(affected) = state.failed_binding_recipes.get_mut(&binding.id) {
+                *affected = recipe;
+            }
         }
     }
 
@@ -2766,6 +2865,7 @@ impl SessionManager {
         }
         state.pending_create.remove(&binding.session_id);
         state.sessions.remove(&binding.session_id);
+        retire_coding_agent_binding(&mut state, binding.session_id);
         state.order.retain(|id| *id != binding.session_id);
         Ok(())
     }
@@ -2880,6 +2980,7 @@ impl SessionManager {
             match mutation {
                 FinalizeMutation::Live(binding, _) => {
                     state.pending_create.remove(&binding.session_id);
+                    clear_failed_recipe_for_runtime_binding(&mut state, binding.session_id);
                     if let Some(record) = state.sessions.get_mut(&binding.session_id) {
                         if matches!(record.status, SessionStatus::Exited(_)) {
                             return Err(format!(
@@ -2894,6 +2995,7 @@ impl SessionManager {
                 }
                 FinalizeMutation::Dormant(binding, _, exit_code) => {
                     state.pending_create.remove(&binding.session_id);
+                    clear_failed_recipe_for_runtime_binding(&mut state, binding.session_id);
                     if let Some(record) = state.sessions.get_mut(&binding.session_id) {
                         record.status = SessionStatus::Exited(exit_code);
                         result.finalized_rows.push(SessionInfo::from(&*record));
@@ -2936,6 +3038,7 @@ impl SessionManager {
             if let Some(record) = state.sessions.remove(&id) {
                 state.order.retain(|candidate| *candidate != id);
                 state.pending_create.remove(&id);
+                retire_coding_agent_binding(&mut state, id);
                 result.removed_rows.push(SessionInfo::from(&record));
             } else {
                 result.missing_ids.push(id);
@@ -3102,6 +3205,7 @@ impl SessionManager {
                 continue;
             }
             state.sessions.remove(&id);
+            retire_coding_agent_binding(&mut state, id);
             removed += 1;
             removed_ids.push(id);
             if state.selection.id() == Some(id) {
@@ -3378,6 +3482,26 @@ fn resolve_selection_commit_target(
     Ok((target_mode, target_id, target_status))
 }
 
+fn clear_failed_recipe_for_runtime_binding(state: &mut SessionManagerState, runtime: Uuid) {
+    if let Some(id) = state.coding_agent_bindings.get(&runtime).cloned() {
+        state.failed_binding_recipes.remove(&id);
+    }
+}
+
+fn retire_coding_agent_binding(state: &mut SessionManagerState, runtime: Uuid) {
+    if let Some(binding) = state.coding_agent_bindings.remove(&runtime) {
+        if !state
+            .coding_agent_bindings
+            .values()
+            .any(|id| id == &binding)
+            && !state.failed_binding_recipes.contains_key(&binding)
+        {
+            state.binding_seeds.remove(&binding);
+            state.binding_origins.remove(&binding);
+        }
+    }
+}
+
 fn binding_matches(state: &SessionManagerState, binding: PendingCreateBinding) -> bool {
     state.pending_create.get(&binding.session_id).copied() == Some(binding.nonce)
 }
@@ -3394,6 +3518,18 @@ fn validate_unique_ids(label: &str, ids: impl IntoIterator<Item = Uuid>) -> Resu
 
 #[cfg(test)]
 impl SessionManager {
+    pub(crate) async fn enroll_failed_binding_recipe_for_test(
+        &self,
+        binding: String,
+        recipe: serde_json::Value,
+    ) {
+        self.state
+            .write()
+            .await
+            .failed_binding_recipes
+            .insert(binding, recipe);
+    }
+
     pub async fn set_communication_for_test(&self, id: Uuid, communication: SessionCommunication) {
         if let Some(session) = self.state.write().await.sessions.get_mut(&id) {
             session.communication = Some(communication);
@@ -3588,6 +3724,7 @@ impl SessionManager {
         if state.sessions.remove(&id).is_none() {
             return Err(AppError::SessionNotFound(id.to_string()));
         }
+        retire_coding_agent_binding(&mut state, id);
         state.order.retain(|candidate| *candidate != id);
         if state.selection.id() != Some(id) {
             return Ok(None);
@@ -3620,6 +3757,148 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::selection::TrustedCreateIntent;
+
+    fn birth_binding() -> CodingAgentBinding {
+        CodingAgentBinding {
+            id: Uuid::new_v4().to_string(),
+            seed: Some(
+                serde_json::json!({"identityRevision": format!("r1:0:{}", "a".repeat(64)), "originalAgentId":"original"}),
+            ),
+            origin: Some(
+                serde_json::json!({"sessionsPath":"C:/sessions.json","rawFileSHA256":"witness","originalOrdinal":3}),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn derived_agent_id_binding_pending_rollback_retires_only_its_binding() {
+        let manager = SessionManager::new();
+        let (first, pending) = pending_fixture(&manager, false).await;
+        let (other, other_pending) = pending_fixture(&manager, false).await;
+        let birth = birth_binding();
+        let other_birth = birth_binding();
+        manager
+            .install_pending_coding_agent_binding(pending, Some(birth.clone()))
+            .await
+            .unwrap();
+        manager
+            .install_pending_coding_agent_binding(other_pending, Some(other_birth.clone()))
+            .await
+            .unwrap();
+        assert!(manager.aggregate_snapshot().await.sessions.is_empty());
+        manager.rollback_pending_create(pending).await.unwrap();
+        assert!(manager.coding_agent_binding(first.id).await.is_none());
+        assert_eq!(
+            manager.coding_agent_binding(other.id).await.unwrap().id,
+            other_birth.id
+        );
+        assert!(!manager
+            .aggregate_snapshot()
+            .await
+            .binding_seeds
+            .contains_key(&birth.id));
+        manager
+            .rollback_pending_create(other_pending)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn derived_agent_id_binding_failed_affected_survives_live_only_snapshot_until_success() {
+        let manager = SessionManager::new();
+        let birth = birth_binding();
+        let failed = serde_json::json!({
+            "name":"affected failure", "shell":"shell", "workingDirectory":"C:/failed", "shellArgs":[],
+            "agentId":"original", "codingAgentBindingId":birth.id, "codingAgentBindingSeed":birth.seed,
+        });
+        // Fixture represents enrollment by a receipt consumer (D09). D07 does
+        // not activate receipts or extend general failed-legacy retention.
+        manager
+            .state
+            .write()
+            .await
+            .failed_binding_recipes
+            .insert(birth.id.clone(), serde_json::to_value(&failed).unwrap());
+        manager
+            .refresh_failed_binding_recipes(vec![
+                (birth.clone(), failed.clone()),
+                (birth_binding(), failed.clone()),
+            ])
+            .await;
+        for _ in 0..2 {
+            let snapshot = manager.aggregate_snapshot().await;
+            assert_eq!(snapshot.failed_binding_recipes.len(), 1);
+            assert_eq!(snapshot.failed_binding_recipes[&birth.id], failed);
+            assert!(snapshot.sessions.is_empty());
+            assert!(manager.list_sessions().await.is_empty());
+        }
+        let (restored, pending) = pending_fixture(&manager, false).await;
+        manager
+            .install_pending_coding_agent_binding(pending, Some(birth))
+            .await
+            .unwrap();
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_dormant(pending, dormant_witness(restored.id), 7);
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                mutations,
+            )
+            .await
+            .unwrap();
+        assert!(manager
+            .aggregate_snapshot()
+            .await
+            .failed_binding_recipes
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn derived_agent_id_binding_ram_birth_aggregate_preserves_original_when_metadata_changes()
+    {
+        let manager = SessionManager::new();
+        let (session, pending) = pending_fixture(&manager, false).await;
+        let birth = birth_binding();
+        manager
+            .install_pending_coding_agent_binding(pending, Some(birth.clone()))
+            .await
+            .unwrap();
+        let live = live_witness(session.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(pending, live);
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Live(live),
+                SelectionCause::SessionCreated(TrustedCreateIntent::User),
+                mutations,
+            )
+            .await
+            .unwrap();
+        // Before a successful disk write, birth metadata remains owned by RAM.
+        // A later disk configuration cannot become this binding's birth seed.
+        manager
+            .state
+            .write()
+            .await
+            .sessions
+            .get_mut(&session.id)
+            .unwrap()
+            .agent_id = Some("reused-id-after-external-rekey".into());
+        let snapshot = manager.aggregate_snapshot().await;
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert_eq!(snapshot.coding_agent_bindings[&session.id], birth.id);
+        assert_eq!(
+            snapshot.binding_seeds[&birth.id]["originalAgentId"],
+            "original"
+        );
+        assert_eq!(
+            snapshot.binding_origins.get(&birth.id),
+            birth.origin.as_ref()
+        );
+    }
 
     #[test]
     fn terminal_snapshot_fact_debug_uses_only_structural_fields() {
