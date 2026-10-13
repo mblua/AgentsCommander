@@ -2835,6 +2835,7 @@ impl Drop for PtyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[derive(Debug, PartialEq, Eq)]
     enum Call {
@@ -3360,6 +3361,8 @@ mod tests {
         drop(second);
     }
 
+    /// Includes store execute-failure and late-bind dispatcher recheck only;
+    /// the latter is neither valid startup order nor a production commit/admission race.
     #[tokio::test]
     async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only_its_admission()
     {
@@ -3387,6 +3390,398 @@ mod tests {
         drop(first);
         assert_eq!(state.inner.lock().unwrap().routes[&id].writers, 0);
         assert_eq!(backend.calls(), vec![Call::Write(id, b"first".to_vec())]);
+        // Integrated store execute-failure oracle, not the SQL commit-failure branch.
+        use crate::api::message_store::{EnqueueRequest, MessageStore};
+        for fail_execute in [false, true] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("store-oracle.sqlite3");
+            let store = MessageStore::open(path.clone()).unwrap();
+            let tracker = ResponseCloseState::default();
+            store.bind_response_close(tracker.clone());
+            let row = store
+                .enqueue(EnqueueRequest {
+                    sender_fqn: "project:room/sender".into(),
+                    target_fqn: "project:room/member".into(),
+                    op_id: "store-oracle".into(),
+                    content_type: crate::api::message_store::DEFAULT_CONTENT_TYPE.into(),
+                    body: "durable-body".into(),
+                    source_plane: "api_inline".into(),
+                    source_ref: None,
+                })
+                .unwrap();
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            let snapshot = || {
+                connection.query_row("SELECT message_id,target_fqn,status,body,body_sha256,attempt,lease_owner,lease_until FROM messages WHERE message_id=?1", [&row.message_id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, i64>(5)?,r.get::<_, Option<String>>(6)?,r.get::<_, Option<String>>(7)?))).unwrap()
+            };
+            let before = snapshot();
+            let key = format!(
+                "db:{}:{}:{}",
+                "project:room/sender".len(),
+                "project:room/sender",
+                "store-oracle"
+            );
+            assert_eq!(
+                tracker.inner.lock().unwrap().work[&row.target_fqn].pending[&key],
+                before.4
+            );
+            let delivery = tracker.begin_delivery(&row.target_fqn).unwrap();
+            if fail_execute {
+                connection.execute_batch("CREATE TRIGGER fail_terminal BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'controlled execute failure'); END;").unwrap();
+                assert!(store
+                    .mark_delivered(&row.message_id, chrono::Utc::now())
+                    .is_err());
+                assert_eq!(snapshot(), before);
+                assert_eq!(before.2, "queued");
+                tracker.settle_terminal(&row.target_fqn, &key, std::time::Instant::now());
+                drop(delivery);
+                let inner = tracker.inner.lock().unwrap();
+                assert!(inner.failed);
+                assert_eq!(inner.work[&row.target_fqn].pending[&key], before.4);
+                assert!(!inner.work[&row.target_fqn].terminal.contains_key(&key));
+            } else {
+                store
+                    .mark_delivered(&row.message_id, chrono::Utc::now())
+                    .unwrap();
+                drop(delivery);
+                assert_eq!(snapshot().2, "delivered");
+                let inner = tracker.inner.lock().unwrap();
+                assert!(!inner.failed);
+                assert!(!inner.work[&row.target_fqn].pending.contains_key(&key));
+                assert_eq!(inner.work[&row.target_fqn].terminal[&key], before.4);
+            }
+        }
+
+        // C: PTY terminal persistence SQL failure before commit, not commit ambiguity.
+        for fail_execute in [false, true] {
+            use crate::phone::types::{
+                PtyInputPublicStatus, PtyInputReasonCode, PtyInputSourcePlane,
+            };
+            assert!(crate::phone::types::pty_input_reason_allowed_for_status(
+                PtyInputPublicStatus::Rejected,
+                Some(PtyInputReasonCode::Expired)
+            ));
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("pty-terminal-oracle.sqlite3");
+            let store = MessageStore::open(path.clone()).unwrap();
+            let tracker = ResponseCloseState::default();
+            store.bind_response_close(tracker.clone());
+            let id = Uuid::new_v4().to_string();
+            let issued = chrono::Utc::now();
+            store
+                .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
+                    injection_id: id.clone(),
+                    sender_fqn: "proj:wg-1-team/lead".into(),
+                    target_fqn: "proj:wg-1-team/dev".into(),
+                    op_id: id.clone(),
+                    nonce_sha256: "a".repeat(64),
+                    request_fingerprint: crate::phone::types::sha256_hex(b"pty-terminal-body"),
+                    confirmation_tag: Some("b".repeat(64)),
+                    requested_agent_id: None,
+                    payload: b"pty-terminal-body".to_vec(),
+                    source_plane: PtyInputSourcePlane::HostCli,
+                    sender_incarnation_fingerprint: "c".repeat(64),
+                    sender_identity_fingerprint: "d".repeat(64),
+                    target_identity_fingerprint: "e".repeat(64),
+                    authority_session_id: Uuid::new_v4().to_string(),
+                    authority_client_id: None,
+                    authority_client_generation: None,
+                    issued_at: crate::phone::types::canonical_pty_timestamp(issued),
+                    expires_at: crate::phone::types::canonical_pty_timestamp(
+                        issued + chrono::Duration::minutes(10),
+                    ),
+                })
+                .unwrap();
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            let snapshot = || {
+                connection.query_row("SELECT injection_id,sender_fqn,target_fqn,op_id,request_fingerprint,status,payload,attempt,lease_owner,lease_until,updated_at FROM pty_input_operations WHERE injection_id=?1", [&id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, String>(5)?,r.get::<_, Option<Vec<u8>>>(6)?,r.get::<_, i64>(7)?,r.get::<_, Option<String>>(8)?,r.get::<_, Option<String>>(9)?,r.get::<_, String>(10)?))).unwrap()
+            };
+            let before = snapshot();
+            let key = format!("pty:{}:{}:{}", before.1.len(), before.1, before.3);
+            assert_eq!(before.5, "queued");
+            assert_eq!(before.6.as_deref(), Some(b"pty-terminal-body".as_slice()));
+            assert_eq!(
+                tracker.inner.lock().unwrap().work[&before.2].pending[&key],
+                before.4
+            );
+            if fail_execute {
+                connection.execute_batch("CREATE TRIGGER fail_pty_terminal BEFORE UPDATE ON pty_input_operations BEGIN SELECT RAISE(ABORT, 'controlled precommit SQL failure'); END;").unwrap();
+                assert!(matches!(
+                    store.terminalize_pty_input(
+                        &id,
+                        PtyInputPublicStatus::Rejected,
+                        Some(PtyInputReasonCode::Expired),
+                        chrono::Utc::now()
+                    ),
+                    Err(crate::api::message_store::MessageStoreError::Sqlite(_))
+                ));
+                assert_eq!(snapshot(), before);
+                let inner = tracker.inner.lock().unwrap();
+                assert!(inner.failed);
+                assert_eq!(inner.work[&before.2].pending[&key], before.4);
+                assert!(!inner.work[&before.2].terminal.contains_key(&key));
+                let tombstones: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM pty_input_tombstones WHERE injection_id=?1",
+                        [&id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(tombstones, 0);
+            } else {
+                let result = store
+                    .terminalize_pty_input(
+                        &id,
+                        PtyInputPublicStatus::Rejected,
+                        Some(PtyInputReasonCode::Expired),
+                        chrono::Utc::now(),
+                    )
+                    .unwrap();
+                assert_eq!(result.status, PtyInputPublicStatus::Rejected);
+                assert!(result.terminal);
+                assert_eq!(result.reason.unwrap().code, PtyInputReasonCode::Expired);
+                let tombstone: (String, String) = connection.query_row("SELECT status,request_fingerprint FROM pty_input_tombstones WHERE injection_id=?1", [&id], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+                assert_eq!(tombstone, ("rejected".into(), before.4.clone()));
+                let inner = tracker.inner.lock().unwrap();
+                assert!(!inner.failed);
+                assert!(!inner.work[&before.2].pending.contains_key(&key));
+                assert_eq!(inner.work[&before.2].terminal[&key], before.4);
+            }
+        }
+
+        // Late-bind recheck only: not valid startup order or a production commit/admission race.
+        use crate::api::dispatcher::{dispatch_due_with, DispatcherConfig};
+        for closing in [false, true] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("late-bind-recheck.sqlite3");
+            let store = MessageStore::open(path.clone()).unwrap();
+            let backend = Arc::new(RecordingBackend::default());
+            let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+            let tracker = manager.lock().unwrap().response_close_state();
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            tracker.apply_settings(true, 30, now);
+            let member_id = Uuid::new_v4();
+            let coordinator_id = Uuid::new_v4();
+            for id in [member_id, coordinator_id] {
+                manager
+                    .lock()
+                    .unwrap()
+                    .try_record_route(id, SessionBackendKind::LocalProcess)
+                    .unwrap();
+            }
+            let member = ResponseRouteIdentity {
+                target: "project:room/member".into(),
+                session_id: member_id,
+                token: Uuid::new_v4(),
+                generation: tracker.generation(member_id).unwrap(),
+                carrier_version: 1,
+                backend: SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: "project:room/coordinator".into(),
+                session_id: coordinator_id,
+                token: Uuid::new_v4(),
+                generation: tracker.generation(coordinator_id).unwrap(),
+                ..member.clone()
+            };
+            for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    1,
+                    eligible,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+            }
+            tracker.observe_detector(member_id, false, now);
+            tracker.publish_menu(member_id, Some(false), now);
+            tracker.publish_hold(member_id, None, true, now);
+            let mut admission = tracker
+                .reserve_work(&member.target, "policy-request")
+                .unwrap();
+            admission.accept_durable("policy-body").unwrap();
+            drop(admission);
+            let context = tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    "policy-request".into(),
+                    "policy-body".into(),
+                    now,
+                )
+                .unwrap();
+            tracker.mark_request_submitted(&context, true);
+            tracker
+                .register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: 1,
+                    },
+                    now,
+                )
+                .unwrap();
+            let context = tracker
+                .admit_return(&member, &coordinator, "ack".into(), "ack-body".into(), now)
+                .unwrap();
+            tracker
+                .observe_return_success(ReturnDeliveryProof { context }, now)
+                .unwrap();
+            let at = now + Duration::from_secs(30);
+            let ticket = tracker.select_ticket(member_id, at).unwrap();
+            if closing {
+                PtyManager::authority_route_proof(&manager, member_id)
+                    .unwrap()
+                    .try_commit_response_close(&tracker, &ticket, at)
+                    .unwrap();
+            }
+            let enqueue = |op: &str, target: &str, body: &str| {
+                store
+                    .enqueue(EnqueueRequest {
+                        sender_fqn: "project:room/sender".into(),
+                        target_fqn: target.into(),
+                        op_id: op.into(),
+                        content_type: crate::api::message_store::DEFAULT_CONTENT_TYPE.into(),
+                        body: body.into(),
+                        source_plane: "api_inline".into(),
+                        source_ref: None,
+                    })
+                    .unwrap()
+            };
+            let first = enqueue("first", &coordinator.target, "first-body");
+            let second = enqueue("second", &member.target, "second-body");
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            // Explicit stable order without clock sleeps or timestamp collisions.
+            connection
+                .execute(
+                    "UPDATE messages SET created_at='2000-01-01T00:00:00Z' WHERE message_id=?1",
+                    [&first.message_id],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE messages SET created_at='2000-01-01T00:00:01Z' WHERE message_id=?1",
+                    [&second.message_id],
+                )
+                .unwrap();
+            let snapshot = |id: &str| {
+                connection.query_row("SELECT message_id,target_fqn,status,body,body_sha256,attempt,lease_owner,lease_until,next_attempt_at,sender_fqn,last_error FROM messages WHERE message_id=?1", [id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, i64>(5)?,r.get::<_, Option<String>>(6)?,r.get::<_, Option<String>>(7)?,r.get::<_, String>(8)?,r.get::<_, String>(9)?,r.get::<_, Option<String>>(10)?))).unwrap()
+            };
+            let before = snapshot(&second.message_id);
+            let first_key = format!(
+                "db:{}:{}:first",
+                "project:room/sender".len(),
+                "project:room/sender"
+            );
+            let second_key = format!(
+                "db:{}:{}:second",
+                "project:room/sender".len(),
+                "project:room/sender"
+            );
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let recorded = calls.clone();
+            let copy = store.clone();
+            let bound = tracker.clone();
+            let first_id = first.message_id.clone();
+            let dispatch_before = chrono::Utc::now();
+            let processed = dispatch_due_with(
+                &store,
+                chrono::Utc::now(),
+                &DispatcherConfig::default(),
+                move |message| {
+                    recorded.lock().unwrap().push(message.id.clone());
+                    if message.id == first_id {
+                        copy.bind_response_close(bound.clone());
+                        let inner = bound.inner.lock().unwrap();
+                        assert!(!inner.failed);
+                        assert!(inner.work_bootstrapped);
+                        assert_eq!(
+                            inner.work["project:room/coordinator"].pending[&first_key],
+                            crate::phone::types::sha256_hex(b"first-body")
+                        );
+                        assert_eq!(
+                            inner.work["project:room/member"].pending[&second_key],
+                            crate::phone::types::sha256_hex(b"second-body")
+                        );
+                    }
+                    async { Ok(()) }
+                },
+            )
+            .await
+            .unwrap();
+            let dispatch_after = chrono::Utc::now();
+            assert_eq!(processed, 2);
+            assert_eq!(snapshot(&first.message_id).2, "delivered");
+            let after = snapshot(&second.message_id);
+            if closing {
+                assert_eq!(*calls.lock().unwrap(), vec![first.message_id.clone()]);
+                assert_eq!(after.2, "queued");
+                assert_eq!(after.9, before.9);
+                assert_eq!(
+                    after.10.as_deref(),
+                    Some(crate::api::message_store::RESPONSE_CLOSING_DEFERRED)
+                );
+                let due = chrono::DateTime::parse_from_rfc3339(&after.8)
+                    .unwrap()
+                    .with_timezone(&chrono::Utc);
+                assert!(dispatch_before <= due && due <= dispatch_after);
+                let audit: (String, Option<String>) = connection.query_row("SELECT status,detail FROM message_audit WHERE message_id=?1 AND status='lease-released-deferred'", [&second.message_id], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+                assert_eq!(audit.0, "lease-released-deferred");
+                assert_eq!(
+                    audit.1.as_deref(),
+                    Some(crate::api::message_store::RESPONSE_CLOSING_DEFERRED)
+                );
+                assert_eq!(
+                    (after.0, after.1, after.3, after.4, after.5, after.6, after.7),
+                    (before.0, before.1, before.3, before.4, before.5, None, None)
+                );
+                assert!(tracker.target_is_closing(&member.target));
+                assert_eq!(
+                    tracker.inner.lock().unwrap().work[&member.target].pending[&format!(
+                        "db:{}:{}:second",
+                        "project:room/sender".len(),
+                        "project:room/sender"
+                    )],
+                    crate::phone::types::sha256_hex(b"second-body")
+                );
+            } else {
+                assert_eq!(
+                    *calls.lock().unwrap(),
+                    vec![first.message_id.clone(), second.message_id.clone()]
+                );
+                assert_eq!(after.2, "delivered");
+            }
+            assert!(backend.calls().is_empty());
+            // Separate bound-from-start SQL Closing filter, same positive twin.
+            let third = enqueue("bound-filter", &member.target, "filter-body");
+            let before = snapshot(&third.message_id);
+            let rows = store
+                .lease_due(chrono::Utc::now(), 10, Duration::from_secs(30), "filter")
+                .unwrap();
+            if closing {
+                assert!(rows.is_empty());
+                assert_eq!(snapshot(&third.message_id), before);
+            } else {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].message_id, third.message_id);
+                assert_eq!(rows[0].body, "filter-body");
+            }
+        }
     }
 
     #[tokio::test]
@@ -3648,8 +4043,8 @@ mod response_close_tests {
         assert!(state.same_state(&state.clone()));
     }
 
-    #[test]
-    fn response_close_cancelled_delivery_keeps_durable_work_and_terminal_dedupe() {
+    #[tokio::test]
+    async fn response_close_cancelled_delivery_keeps_durable_work_and_terminal_dedupe() {
         let state = ResponseCloseState::default();
         let mut admission = state.reserve_work("target", "request").unwrap();
         assert_eq!(admission.accept_durable("digest"), Ok(true));
@@ -3678,6 +4073,53 @@ mod response_close_tests {
         assert!(state.inner.lock().unwrap().work["target"]
             .pending
             .is_empty());
+        for wait_for_entry in [false, true] {
+            let state = ResponseCloseState::default();
+            let mut work = state.reserve_work("target", "cancelled").unwrap();
+            assert_eq!(work.accept_durable("durable-body"), Ok(true));
+            drop(work);
+            let delivery = state.begin_delivery("target").unwrap();
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (_release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+            let worker = tokio::spawn(async move {
+                let _delivery = delivery;
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+            });
+            if wait_for_entry {
+                tokio::time::timeout(Duration::from_secs(10), entered_rx)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            worker.abort();
+            assert!(worker.await.unwrap_err().is_cancelled());
+            let inner = state.inner.lock().unwrap();
+            assert_eq!(inner.work["target"].dispatch, 0);
+            assert_eq!(inner.work["target"].provisional, 0);
+            assert_eq!(inner.work["target"].pending["cancelled"], "durable-body");
+        }
+        let state = ResponseCloseState::default();
+        let mut work = state.reserve_work("failed-target", "failed-key").unwrap();
+        assert_eq!(work.accept_durable("failed-body"), Ok(true));
+        let delivery = state.begin_delivery("failed-target").unwrap();
+        assert_eq!(
+            state.inner.lock().unwrap().work["failed-target"].pending["failed-key"],
+            "failed-body"
+        );
+        state.fail_closed();
+        state.settle_terminal("failed-target", "failed-key", Instant::now());
+        drop(delivery);
+        drop(work);
+        let inner = state.inner.lock().unwrap();
+        assert!(inner.failed);
+        assert_eq!(
+            inner.work["failed-target"].pending["failed-key"],
+            "failed-body"
+        );
+        assert!(!inner.work["failed-target"]
+            .terminal
+            .contains_key("failed-key"));
     }
 
     #[test]
@@ -3794,6 +4236,70 @@ mod response_close_tests {
         assert_eq!(state.inner.lock().unwrap().routes[&id].writers, 0);
     }
 
+    fn assert_offloaded_enqueue_consistency(
+        db_path: &std::path::Path,
+        tracker: &ResponseCloseState,
+        request: &crate::api::message_store::EnqueueRequest,
+        key: &str,
+        digest: &str,
+        cancelled: bool,
+    ) {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        let rows = {
+            let mut statement = conn.prepare("SELECT sender_fqn,target_fqn,op_id,body,body_sha256,content_type,source_plane,source_ref,status FROM messages WHERE sender_fqn=?1 AND op_id=?2").unwrap();
+            let rows = statement
+                .query_map(
+                    rusqlite::params![request.sender_fqn, request.op_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                            row.get::<_, String>(8)?,
+                        ))
+                    },
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        assert!(rows.len() <= 1, "duplicate sender/op row");
+        let inner = tracker.inner.lock().unwrap();
+        assert!(!inner.failed);
+        let work = inner.work.get(&request.target_fqn);
+        assert_eq!(work.map_or(0, |work| work.provisional), 0);
+        assert_eq!(work.map_or(0, |work| work.dispatch), 0);
+        assert!(!work.is_some_and(|work| work.terminal.contains_key(key)));
+        if let Some(row) = rows.first() {
+            assert_eq!(
+                row,
+                &(
+                    request.sender_fqn.clone(),
+                    request.target_fqn.clone(),
+                    request.op_id.clone(),
+                    request.body.clone(),
+                    digest.to_owned(),
+                    request.content_type.clone(),
+                    request.source_plane.clone(),
+                    request.source_ref.clone(),
+                    "queued".into()
+                )
+            );
+            assert_eq!(work.and_then(|work| work.pending.get(key)), Some(&row.4));
+        } else {
+            assert!(cancelled, "positive twin must publish a row");
+            assert!(work.is_none_or(|work| !work.pending.contains_key(key)));
+        }
+        drop(inner);
+        drop(conn);
+    }
+
     #[test]
     fn response_close_counter_overflow_disables_feature_but_preserves_ordinary_writer() {
         let state = ResponseCloseState::default();
@@ -3813,6 +4319,84 @@ mod response_close_tests {
         ));
         assert!(state.inner.lock().unwrap().failed);
         assert!(state.reserve_writer(id, 1).is_ok());
+        let state = ResponseCloseState::default();
+        let delivery = state.begin_delivery("target").unwrap();
+        drop(delivery);
+        assert_eq!(state.inner.lock().unwrap().work["target"].dispatch, 0);
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .work
+            .get_mut("target")
+            .unwrap()
+            .dispatch = usize::MAX;
+        assert!(matches!(
+            state.begin_delivery("target"),
+            Err(ResponseCloseError::Unavailable)
+        ));
+        assert!(state.inner.lock().unwrap().failed);
+        assert!(matches!(
+            state.begin_delivery("other"),
+            Err(ResponseCloseError::Unavailable)
+        ));
+        // H: caller cancellation before/around blocking-worker start. Runtime
+        // shutdown may discard a queued job; either complete consistent branch
+        // is valid. This is not a post-commit publication-window barrier.
+        for cancelled in [true, false] {
+            use crate::api::message_store::{EnqueueRequest, MessageStore};
+            let temp = tempfile::TempDir::new().unwrap();
+            let db_path = temp.path().join("offloaded-cancel.sqlite3");
+            let store = MessageStore::open(db_path.clone()).unwrap();
+            let tracker = ResponseCloseState::default();
+            store.bind_response_close(tracker.clone());
+            let request = EnqueueRequest {
+                sender_fqn: "project:room/coordinator".into(),
+                target_fqn: "project:room/member".into(),
+                op_id: Uuid::new_v4().to_string(),
+                content_type: "text/plain".into(),
+                body: "offloaded durable body".into(),
+                source_plane: "test".into(),
+                source_ref: Some("same fixture".into()),
+            };
+            let key = format!(
+                "db:{}:{}:{}",
+                request.sender_fqn.len(),
+                request.sender_fqn,
+                request.op_id
+            );
+            let digest = crate::phone::types::sha256_hex(request.body.as_bytes());
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            if cancelled {
+                {
+                    let _entered = runtime.enter();
+                    let mut caller = Box::pin(store.enqueue_offloaded(request.clone()));
+                    let waker = std::task::Waker::noop();
+                    let mut context = std::task::Context::from_waker(waker);
+                    assert!(matches!(
+                        std::future::Future::poll(caller.as_mut(), &mut context),
+                        std::task::Poll::Pending
+                    ));
+                    drop(caller);
+                }
+            } else {
+                // Positive twin: the identical fixture really awaits enqueue.
+                let result = runtime
+                    .block_on(store.enqueue_offloaded(request.clone()))
+                    .unwrap();
+                assert!(!result.duplicate);
+                assert_eq!(result.target_fqn, request.target_fqn);
+            }
+            // No connection, state guard or runtime-enter guard is held here.
+            // Dropping the runtime joins running jobs, without forcing queued ones.
+            drop(runtime);
+            assert_offloaded_enqueue_consistency(
+                &db_path, &tracker, &request, &key, &digest, cancelled,
+            );
+        }
     }
 
     fn routes(
@@ -3956,6 +4540,72 @@ mod response_close_tests {
         let now = Instant::now() + Duration::from_secs(3600);
         let nonce = ordinary_ack_dormant_settlement(now);
         ordinary_ack_reopen_and_fresh_return(now, nonce);
+        for fault in ["healthy", "failed", "poison", "overflow"] {
+            let (state, member, coordinator) = routes(now);
+            arm(&state, &member, &coordinator, now);
+            let at = now + Duration::from_secs(30);
+            let ticket = state.select_ticket(member.session_id, at).unwrap();
+            let admission = state.reserve_work(&member.target, "before-commit").unwrap();
+            assert!(state.try_commit_response_close(&ticket, at).is_err());
+            drop(admission);
+            let delivery = state.begin_delivery(&member.target).unwrap();
+            assert!(state.select_ticket(member.session_id, at).is_err());
+            drop(delivery);
+            // Admission invalidates the old ticket. A fresh complete quiet interval is required.
+            let at = at + Duration::from_secs(30);
+            let ticket = state.select_ticket(member.session_id, at).unwrap();
+            let nonce = state.try_commit_response_close(&ticket, at).unwrap();
+            let mut work = state.reserve_work(&member.target, "after-commit").unwrap();
+            assert_eq!(work.accept_durable("body"), Ok(true));
+            drop(work);
+            state.remove_route(member.session_id, member.generation);
+            assert_eq!(
+                state.inner.lock().unwrap().routes[&member.session_id].closing,
+                Some(nonce)
+            );
+            match fault {
+                "failed" => state.fail_closed(),
+                "poison" => {
+                    let cloned = state.clone();
+                    assert!(std::thread::spawn(move || {
+                        let _guard = cloned.inner.lock().unwrap();
+                        panic!("controlled tracker poison");
+                    })
+                    .join()
+                    .is_err());
+                }
+                "overflow" => {
+                    state
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .work
+                        .get_mut(&member.target)
+                        .unwrap()
+                        .dispatch = usize::MAX
+                }
+                _ => {}
+            }
+            assert!(state.target_is_closing(&member.target));
+            assert!(!state.target_is_closing(&(member.target.clone() + "-other")));
+            assert!(matches!(
+                state.begin_delivery(&member.target),
+                Err(ResponseCloseError::ClosingDeferred)
+            ));
+            let inner = state.inner.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(inner.work[&member.target].pending["after-commit"], "body");
+            assert_eq!(inner.routes[&member.session_id].closing, Some(nonce));
+            assert_eq!(inner.failed, matches!(fault, "failed" | "poison"));
+            drop(inner);
+            if matches!(fault, "failed" | "poison") {
+                assert!(matches!(
+                    state.begin_delivery("unrelated"),
+                    Err(ResponseCloseError::Unavailable)
+                ));
+            } else {
+                drop(state.begin_delivery("unrelated").unwrap());
+            }
+        }
     }
 
     fn ordinary_ack_dormant_settlement(now: Instant) -> Uuid {

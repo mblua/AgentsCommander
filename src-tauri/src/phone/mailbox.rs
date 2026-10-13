@@ -15689,6 +15689,149 @@ mod tests {
                 b"\r".to_vec()
             ]
         );
+        // Same real engine, same idle fixture, now committed Closing before enqueue.
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        assert!(app.manage(tracker.clone()));
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        pty.lock().unwrap().bind_response_close(tracker.clone());
+        let (route, sender_id, target_id) =
+            seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+        let database = fixture._temp.path().join("shared-engine-closing.sqlite3");
+        let store =
+            Arc::new(crate::api::message_store::MessageStore::open(database.clone()).unwrap());
+        store.bind_response_close(tracker.clone());
+        use crate::pty::manager::{
+            ResponseClosePublisher, ResponseDeliveryProof, ResponseRouteIdentity,
+            ReturnDeliveryProof,
+        };
+        for publisher in [
+            ResponseClosePublisher::Manager,
+            ResponseClosePublisher::Pty,
+            ResponseClosePublisher::RawOutput,
+            ResponseClosePublisher::Detector,
+            ResponseClosePublisher::Menu,
+            ResponseClosePublisher::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.try_enable_readiness().unwrap();
+        let now = std::time::Instant::now() + Duration::from_secs(3600);
+        tracker.apply_settings(true, 30, now);
+        let member = ResponseRouteIdentity {
+            target: route.target.canonical_fqn.clone(),
+            session_id: target_id,
+            token: Uuid::new_v4(),
+            generation: tracker.generation(target_id).unwrap(),
+            carrier_version: 1,
+            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+        };
+        let coordinator = ResponseRouteIdentity {
+            target: route.sender.canonical_fqn.clone(),
+            session_id: sender_id,
+            token: Uuid::new_v4(),
+            generation: tracker.generation(sender_id).unwrap(),
+            ..member.clone()
+        };
+        for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+            tracker.publish_manager_row(
+                identity.session_id,
+                identity.token,
+                identity.generation,
+                1,
+                eligible,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+        }
+        tracker.observe_detector(target_id, false, now);
+        tracker.publish_menu(target_id, Some(false), now);
+        tracker.publish_hold(target_id, None, true, now);
+        let mut admission = tracker.reserve_work(&member.target, "request").unwrap();
+        admission.accept_durable("body").unwrap();
+        drop(admission);
+        let context = tracker
+            .reserve_policy_candidate(
+                member.clone(),
+                coordinator.clone(),
+                "request".into(),
+                "body".into(),
+                now,
+            )
+            .unwrap();
+        tracker.mark_request_submitted(&context, true);
+        tracker
+            .register_request(
+                ResponseDeliveryProof {
+                    context,
+                    member: member.clone(),
+                    coordinator: coordinator.clone(),
+                    published_carrier_version: 1,
+                },
+                now,
+            )
+            .unwrap();
+        let context = tracker
+            .admit_return(
+                &member,
+                &coordinator,
+                "return".into(),
+                "return-body".into(),
+                now,
+            )
+            .unwrap();
+        tracker
+            .observe_return_success(ReturnDeliveryProof { context }, now)
+            .unwrap();
+        let at = now + Duration::from_secs(30);
+        let ticket = tracker.select_ticket(target_id, at).unwrap();
+        PtyManager::authority_route_proof(&pty, target_id)
+            .unwrap()
+            .try_commit_response_close(&tracker, &ticket, at)
+            .unwrap();
+        assert!(tracker.target_is_closing(&member.target));
+        let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+        let injection_id =
+            enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"must remain queued");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let snapshot = || {
+            connection.query_row("SELECT status,attempt,lease_owner,lease_until,payload,queued_at,updated_at,actuating_at,selected_session_id FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, i64>(1)?,r.get::<_, Option<String>>(2)?,r.get::<_, Option<String>>(3)?,r.get::<_, Option<Vec<u8>>>(4)?,r.get::<_, String>(5)?,r.get::<_, String>(6)?,r.get::<_, Option<String>>(7)?,r.get::<_, Option<String>>(8)?))).unwrap()
+        };
+        let before = snapshot();
+        let hooks = MailboxTestHooks::default();
+        MailboxPoller::new_with_test_hooks(hooks.clone())
+            .dispatch_pty_input_operation(
+                &app,
+                &state,
+                &injection_id,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            )
+            .await;
+        assert_eq!(snapshot(), before);
+        assert_eq!(before.0, "queued");
+        assert_eq!(before.1, 0);
+        assert!(shared_engine_writes(&app, target_id).is_empty());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        let key = format!(
+            "pty:{}:{}:{}",
+            route.sender.canonical_fqn.len(),
+            route.sender.canonical_fqn,
+            injection_id
+        );
+        let digest =
+            crate::phone::types::sha256_hex(format!("shared-engine:{injection_id}").as_bytes());
+        let mut duplicate = tracker.reserve_work(&member.target, &key).unwrap();
+        assert_eq!(duplicate.accept_durable(&digest), Ok(false));
+        assert_eq!(
+            duplicate.accept_durable("collision"),
+            Err(crate::pty::manager::ResponseCloseError::Conflict)
+        );
+        assert!(tracker.target_is_closing(&member.target));
     }
 
     #[tokio::test]
@@ -15900,6 +16043,300 @@ mod tests {
         assert!(shared_engine_writes(&app, target_id).is_empty());
         assert_eq!(state.target_gate.as_ref().unwrap().exact_entry_count(), 0);
         drop(held_permit);
+        // G: shutdown after one engine-future poll, NOT exact permit-wait proof.
+        // Legacy300ms above is unchanged and does not establish this new cut.
+        for shutdown_after_start in [true, false] {
+            use crate::pty::manager::{
+                ResponseClosePublisher, ResponseDeliveryProof, ResponseRouteIdentity,
+                ReturnDeliveryProof,
+            };
+            let fixture = make_mailbox_fixture();
+            let app = fixture.app.handle().clone();
+            assert!(app.manage(crate::shutdown::ShutdownSignal::new()));
+            let (route, sender_id, target_id) =
+                seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            let tracker = pty.lock().unwrap().response_close_state();
+            assert!(app.manage(tracker.clone()));
+            let manager = {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = state.read().await;
+                guard.clone()
+            };
+            let member_row = manager.get_session(target_id).await.unwrap();
+            let coordinator_row = manager.get_session(sender_id).await.unwrap();
+            let member = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_TO.into(),
+                session_id: target_id,
+                token: member_row.token,
+                generation: tracker.generation(target_id).unwrap(),
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_FROM.into(),
+                session_id: sender_id,
+                token: coordinator_row.token,
+                generation: tracker.generation(sender_id).unwrap(),
+                ..member.clone()
+            };
+            let path = fixture._temp.path().join("one-poll-shutdown.sqlite3");
+            let store =
+                Arc::new(crate::api::message_store::MessageStore::open(path.clone()).unwrap());
+            store.bind_response_close(tracker.clone());
+            let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            tracker.apply_settings(true, 30, now);
+            for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+                tracker.register_route(identity.session_id, identity.generation, now);
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    identity.carrier_version,
+                    eligible,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+            }
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+
+            let held_permit = if shutdown_after_start {
+                Some(
+                    PtyManager::acquire_input_writer(&pty, target_id)
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let injection_id = enqueue_shared_pty_engine_operation(
+                &store,
+                &route,
+                sender_id,
+                b"one-poll durable body",
+            );
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let original = conn.query_row("SELECT sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, String>(5)?))).unwrap();
+            assert_eq!(original.1, member.target);
+            let scenario_target = original.1.clone();
+            let scenario_key = format!("pty:{}:{}:{}", original.0.len(), original.0, original.2);
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    scenario_key.clone(),
+                    original.3.clone(),
+                    now
+                )
+                .is_ok());
+            let hooks = MailboxTestHooks::default();
+            let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+            let mut engine = Box::pin(poller.dispatch_pty_input_operation(
+                &app,
+                &state,
+                &injection_id,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            ));
+            if shutdown_after_start {
+                let waker = std::task::Waker::noop();
+                let mut context = std::task::Context::from_waker(waker);
+                assert!(matches!(
+                    std::future::Future::poll(engine.as_mut(), &mut context),
+                    std::task::Poll::Pending
+                ));
+                app.state::<crate::shutdown::ShutdownSignal>().trigger();
+            }
+            tokio::time::timeout(Duration::from_secs(10), engine)
+                .await
+                .expect("engine must finish; timeout is failure");
+            assert_eq!(state.target_gate.as_ref().unwrap().exact_entry_count(), 0);
+            drop(held_permit);
+            // Phase1 durable snapshot precedes synthetic counter diagnostic.
+            let preserved = conn.query_row("SELECT sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, String>(5)?))).unwrap();
+            assert_eq!(
+                (&preserved.0, &preserved.1, &preserved.2, &preserved.3),
+                (&original.0, &original.1, &original.2, &original.3)
+            );
+            assert_eq!(tracker.generation(target_id), Some(member.generation));
+            assert!(!tracker.target_is_closing(&scenario_target));
+            if shutdown_after_start {
+                assert!(matches!(
+                    preserved.5.as_str(),
+                    "queued" | "preparing" | "retry" | "actuating"
+                ));
+                assert_eq!(preserved.4, original.4);
+                assert!(tracker
+                    .reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        scenario_key.clone(),
+                        original.3.clone(),
+                        now
+                    )
+                    .is_ok());
+                assert!(shared_engine_writes(&app, target_id).is_empty());
+            } else {
+                assert_eq!(preserved.5, "injected");
+                assert_eq!(
+                    shared_engine_writes(&app, target_id),
+                    vec![
+                        b"one-poll durable body".to_vec(),
+                        b"\r".to_vec(),
+                        b"\r".to_vec()
+                    ]
+                );
+                assert!(matches!(
+                    tracker.reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        scenario_key.clone(),
+                        original.3.clone(),
+                        now
+                    ),
+                    Err(crate::pty::manager::ResponseCloseError::Conflict)
+                ));
+            }
+            assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+            assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+            let preservation_snapshot = preserved.clone();
+            assert_eq!(preservation_snapshot.1, scenario_target);
+            // Same facts/generation after ordinary engine changes; no counter resets.
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            tracker.publish_manager_row(
+                member.session_id,
+                member.token,
+                member.generation,
+                member.carrier_version,
+                true,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(member.clone(), true, false, now);
+            tracker.publish_manager_row(
+                coordinator.session_id,
+                coordinator.token,
+                coordinator.generation,
+                coordinator.carrier_version,
+                false,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(coordinator.clone(), false, false, now);
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+
+            // Phase 2: synthetic TEST-LOCAL discharge ONLY. This does not prove FS/SQL
+            // terminalization, peer submission, or P05 proof. Phase 1 alone proves retention.
+            assert_eq!(member.target, scenario_target);
+            assert!(!tracker.target_is_closing(&scenario_target));
+            tracker.settle_terminal(&scenario_target, &scenario_key, std::time::Instant::now());
+            // A leaked dispatch/provisional counter is not changed by settle_terminal.
+            // Each fresh probe uses the SAME tracker, target, generation and facts.
+            for sensitivity in 0..5 {
+                let dispatch = if sensitivity == 1 {
+                    Some(tracker.begin_delivery(&scenario_target).unwrap())
+                } else {
+                    None
+                };
+                let provisional = if sensitivity == 3 {
+                    Some(
+                        tracker
+                            .reserve_work(
+                                &scenario_target,
+                                &format!("diagnostic-held-{}", Uuid::new_v4()),
+                            )
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                };
+                let probe_key = format!("diagnostic-request-{}", Uuid::new_v4());
+                let probe_digest = "diagnostic-body";
+                let mut admission = tracker.reserve_work(&scenario_target, &probe_key).unwrap();
+                assert_eq!(admission.accept_durable(probe_digest), Ok(true));
+                drop(admission);
+                let probe_at =
+                    std::time::Instant::now() + Duration::from_secs(7200 + sensitivity * 60);
+                let context = tracker
+                    .reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        probe_key.clone(),
+                        probe_digest.into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                // Unit-returning API; successful register below validates submitted=true.
+                tracker.mark_request_submitted(&context, true);
+                let registered = tracker.register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: member.carrier_version,
+                    },
+                    probe_at,
+                );
+                if sensitivity == 3 {
+                    assert!(
+                        registered.is_err(),
+                        "retained real provisional admission must be detected"
+                    );
+                    tracker.settle_terminal(&scenario_target, &probe_key, probe_at);
+                    drop(provisional);
+                    drop(dispatch);
+                    continue;
+                }
+                registered.unwrap();
+                let context = tracker
+                    .admit_return(
+                        &member,
+                        &coordinator,
+                        format!("diagnostic-return-{}", Uuid::new_v4()),
+                        "diagnostic-return-body".into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                tracker
+                    .observe_return_success(ReturnDeliveryProof { context }, probe_at)
+                    .unwrap();
+                let ticket =
+                    tracker.select_ticket(member.session_id, probe_at + Duration::from_secs(30));
+                if sensitivity == 1 {
+                    assert!(
+                        ticket.is_err(),
+                        "retained real SAME-target dispatch must be detected"
+                    );
+                } else {
+                    assert!(ticket.is_ok(), "same-object final success proves dispatch/provisional/writer counters zero");
+                }
+                drop(dispatch);
+                drop(provisional);
+            }
+
+            // Diagnostic leaves the phase1 SQL snapshot byte-identical.
+            let after = conn.query_row("SELECT sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, String>(5)?))).unwrap();
+            assert_eq!(after, preservation_snapshot);
+        }
     }
 
     #[tokio::test]
@@ -21043,6 +21480,7 @@ mod tests {
         ] {
             let fixture = make_mailbox_fixture();
             let app = app_handle(&fixture.app);
+            assert!(app.manage(crate::pty::manager::ResponseCloseState::default()));
             write_raise_hand_task_title(&fixture.sender_cwd, "Build the feature");
             let msg_id = format!("msg-rh-bad-token-{idx}");
             let rid = format!("rid-rh-bad-token-{idx}");
@@ -21062,7 +21500,92 @@ mod tests {
                 read_response_json(&fixture.sender_cwd, &rid).is_none(),
                 "bad token must not be converted into a false response"
             );
+            assert!(poller.response_sources.lock().unwrap().is_empty());
         }
+        // D: a real session token crosses the full validation/deferred handoff.
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        assert!(app.manage(tracker.clone()));
+        let (_, token) =
+            seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running).await;
+        app.state::<SettingsState>()
+            .write()
+            .await
+            .project_paths
+            .push(fixture.sender_cwd.to_string_lossy().to_string());
+        let path = write_wake_message(
+            &fixture.sender_cwd,
+            "valid-token-deferred",
+            "2026-07-15T00:00:03+00:00",
+        );
+        let mut message = wake_message_to_target();
+        message.id = "valid-token-deferred".into();
+        message.token = Some(token.to_string());
+        let content = serde_json::to_string_pretty(&message).unwrap();
+        std::fs::write(&path, &content).unwrap();
+        let hooks = MailboxTestHooks::default();
+        let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let mut slot = None;
+        poller
+            .process_message_content(
+                &app,
+                &path,
+                OutboxOrigin::Replica,
+                &content,
+                Some(&mut slot),
+            )
+            .await
+            .unwrap();
+        let validated = slot.expect("valid authenticated envelope reaches deferred slot");
+        assert_eq!(
+            validated.message.token.as_deref(),
+            Some(token.to_string().as_str())
+        );
+        let work = validated
+            .response
+            .as_ref()
+            .expect("validated carrier retains admission")
+            .clone();
+        assert!(work.state.same_state(&tracker));
+        assert_eq!(work.target, validated.message.to);
+        assert_eq!(
+            work.key,
+            format!("fs:{}:{}", path.to_string_lossy(), message.id)
+        );
+        assert_eq!(
+            work.digest,
+            crate::phone::types::sha256_hex(content.as_bytes())
+        );
+        assert!(work.delivery_context.is_none());
+        {
+            let sources = poller.response_sources.lock().unwrap();
+            let retained = &sources[&path];
+            assert!(retained.state.same_state(&work.state));
+            assert_eq!(
+                (&retained.target, &retained.key, &retained.digest),
+                (&work.target, &work.key, &work.digest)
+            );
+            assert!(retained.delivery_context.is_none());
+        }
+        poller.live_claims.insert(wake_claim_path(&path));
+        assert!(matches!(
+            poller.claim_and_spawn_validated_wake(&app, &path, validated),
+            WakeHandoff::LaneBusy
+        ));
+        let sources = poller.response_sources.lock().unwrap();
+        let retained = &sources[&path];
+        assert!(retained.state.same_state(&tracker));
+        assert_eq!(
+            (&retained.target, &retained.key, &retained.digest),
+            (&work.target, &work.key, &work.digest)
+        );
+        assert!(retained.delivery_context.is_none());
+        assert!(path.exists());
+        assert!(!wake_claim_path(&path).exists());
+        assert_eq!(poller.wake_workers.len(), 0);
+        assert_eq!(poller.wake_lanes.len(), 0);
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -27459,6 +27982,56 @@ mod tests {
         );
     }
 
+    fn assert_reclaimed_response_work(
+        poller: &MailboxPoller,
+        tracker: &crate::pty::manager::ResponseCloseState,
+        member: &crate::pty::manager::ResponseRouteIdentity,
+        coordinator: &crate::pty::manager::ResponseRouteIdentity,
+        now: std::time::Instant,
+        cases: [(&PathBuf, bool); 4],
+    ) {
+        for (claim, retained) in cases {
+            let origin = wake_claim_origin(claim).unwrap();
+            let key = format!("fs:{}", origin.display());
+            let digest = crate::phone::types::sha256_hex(b"{}");
+            let candidate = tracker.reserve_policy_candidate(
+                member.clone(),
+                coordinator.clone(),
+                key.clone(),
+                digest.clone(),
+                now,
+            );
+            if retained {
+                assert!(
+                    candidate.is_ok(),
+                    "restored/live work remains pending with exact digest"
+                );
+                let sources = poller.response_sources.lock().unwrap();
+                let work = &sources[&origin];
+                assert!(work.state.same_state(tracker));
+                assert_eq!(work.target, member.target);
+                assert_eq!(work.key, key);
+                assert_eq!(work.digest, digest);
+                assert!(work.delivery_context.is_none());
+                assert!(work.return_context.is_none());
+            } else {
+                assert!(matches!(
+                    candidate,
+                    Err(crate::pty::manager::ResponseCloseError::Conflict)
+                ));
+                assert!(!poller
+                    .response_sources
+                    .lock()
+                    .unwrap()
+                    .contains_key(&origin));
+            }
+            // Receipt recovery never fabricates an ordinary return-success proof.
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
+        }
+    }
+
     /// (#1399 T3) Reclamation, all four branches: an unowned claim with no
     /// receipt is returned; a claim whose receipt exists is deleted without
     /// recreating the message (the no-double-delivery assertion, for both
@@ -27489,6 +28062,128 @@ mod tests {
             live.clone(),
         ];
 
+        // C: the same healthy tracker backs all four existing reclaim cases.
+        use crate::pty::manager::{
+            ResponseClosePublisher, ResponseCloseState, ResponseRouteIdentity,
+        };
+        let now = std::time::Instant::now() + Duration::from_secs(3600);
+        let tracker = ResponseCloseState::default();
+        for publisher in [
+            ResponseClosePublisher::Manager,
+            ResponseClosePublisher::Pty,
+            ResponseClosePublisher::RawOutput,
+            ResponseClosePublisher::Detector,
+            ResponseClosePublisher::Menu,
+            ResponseClosePublisher::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.mark_work_bootstrapped();
+        tracker.try_enable_readiness().unwrap();
+        tracker.apply_settings(true, 30, now);
+        let member = ResponseRouteIdentity {
+            target: "project:room/member".into(),
+            session_id: Uuid::new_v4(),
+            token: Uuid::new_v4(),
+            generation: 1,
+            carrier_version: 1,
+            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+        };
+        let coordinator = ResponseRouteIdentity {
+            target: "project:room/coordinator".into(),
+            session_id: Uuid::new_v4(),
+            token: Uuid::new_v4(),
+            generation: 2,
+            ..member.clone()
+        };
+        for identity in [&member, &coordinator] {
+            tracker.register_route(identity.session_id, identity.generation, now);
+            tracker.publish_manager_row(
+                identity.session_id,
+                identity.token,
+                identity.generation,
+                identity.carrier_version,
+                true,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(identity.clone(), true, false, now);
+        }
+        tracker.observe_detector(member.session_id, false, now);
+        tracker.publish_menu(member.session_id, Some(false), now);
+        tracker.publish_hold(member.session_id, None, true, now);
+        // Positive control only: this healthy fixture can arm a real pure ticket.
+        // No receipt/reclaim branch receives or manufactures this success proof.
+        let mut positive = tracker
+            .reserve_work(&member.target, "positive-request")
+            .unwrap();
+        positive.accept_durable("positive-body").unwrap();
+        drop(positive);
+        let context = tracker
+            .reserve_policy_candidate(
+                member.clone(),
+                coordinator.clone(),
+                "positive-request".into(),
+                "positive-body".into(),
+                now,
+            )
+            .unwrap();
+        tracker.mark_request_submitted(&context, true);
+        tracker
+            .register_request(
+                crate::pty::manager::ResponseDeliveryProof {
+                    context,
+                    member: member.clone(),
+                    coordinator: coordinator.clone(),
+                    published_carrier_version: member.carrier_version,
+                },
+                now,
+            )
+            .unwrap();
+        let context = tracker
+            .admit_return(
+                &member,
+                &coordinator,
+                "positive-return".into(),
+                "positive-return-body".into(),
+                now,
+            )
+            .unwrap();
+        tracker
+            .observe_return_success(crate::pty::manager::ReturnDeliveryProof { context }, now)
+            .unwrap();
+        assert!(tracker
+            .select_ticket(member.session_id, now + Duration::from_secs(30))
+            .is_ok());
+        for claim in &claims {
+            let origin = wake_claim_origin(claim).unwrap();
+            let key = format!("fs:{}", origin.display());
+            let digest = crate::phone::types::sha256_hex(std::fs::read(claim).unwrap().as_slice());
+            let mut admission = tracker.reserve_work(&member.target, &key).unwrap();
+            admission.accept_durable(&digest).unwrap();
+            drop(admission);
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    key.clone(),
+                    digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller.response_sources.lock().unwrap().insert(
+                origin,
+                ResponseWakeWork {
+                    state: tracker.clone(),
+                    target: member.target.clone(),
+                    key,
+                    digest,
+                    return_context: None,
+                    delivery_context: None,
+                },
+            );
+        }
+
         poller.reclaim_unowned_wake_claims(&outbox, &claims);
 
         assert!(!unowned.exists());
@@ -27499,6 +28194,19 @@ mod tests {
         assert!(!outbox.join("m-rejected.json").exists());
         assert!(live.exists());
         assert!(!outbox.join("m-live.json").exists());
+        assert_reclaimed_response_work(
+            &poller,
+            &tracker,
+            &member,
+            &coordinator,
+            now,
+            [
+                (&unowned, true),
+                (&delivered, false),
+                (&rejected, false),
+                (&live, true),
+            ],
+        );
     }
 
     /// (#1399 T4) The sort key is send time, not filename: an earlier timestamp
@@ -27667,10 +28375,12 @@ mod tests {
     /// undrained: `claim_and_spawn_wake` refuses, spawns nothing, and leaves
     /// the file untouched. Without the guard this returns Spawned and lands a
     /// second attempt inside one cycle.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn claim_and_spawn_refuses_while_the_previous_outcome_is_undrained() {
         let fixture = make_mailbox_fixture();
         let app = app_handle(&fixture.app);
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        assert!(app.manage(tracker.clone()));
         let hooks = MailboxTestHooks::default();
         let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
         let source = write_wake_message(
@@ -27678,6 +28388,15 @@ mod tests {
             "undrained-outcome",
             "2026-07-15T00:00:01+00:00",
         );
+        let message = wake_message_to_target();
+        let admitted = poller
+            .admit_response_source(&app, &source, &message, true, "authenticated body")
+            .await
+            .unwrap();
+        assert!(admitted.state.same_state(&tracker));
+        assert!(admitted.delivery_context.is_none());
+        let retained_key = admitted.key.clone();
+        let retained_digest = admitted.digest.clone();
         poller.live_claims.insert(wake_claim_path(&source));
 
         let handoff = poller.claim_and_spawn_wake(&app, &source, wake_message_to_target());
@@ -27688,6 +28407,12 @@ mod tests {
         assert!(source.exists());
         assert!(!wake_claim_path(&source).exists());
         assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        {
+            let sources = poller.response_sources.lock().unwrap();
+            assert_eq!(sources[&source].key, retained_key);
+            assert_eq!(sources[&source].digest, retained_digest);
+            assert!(sources[&source].delivery_context.is_none());
+        }
 
         let capped_hooks = MailboxTestHooks::default();
         let mut capped_poller = MailboxPoller::new_with_test_hooks(capped_hooks.clone());
@@ -27713,12 +28438,442 @@ mod tests {
         assert!(capped_source.exists());
         assert!(!wake_claim_path(&capped_source).exists());
         assert!(capped_hooks.spawn_calls.lock().unwrap().is_empty());
+        // F: current-thread pre-poll cancellation; recovery is composition with C.
+        for cancelled in [true, false] {
+            let fixture = make_mailbox_fixture();
+            let app = app_handle(&fixture.app);
+            let session_id = add_mailbox_session_with_shell(
+                &app,
+                &fixture.target_cwd,
+                "wake-cancel",
+                "codex",
+                SessionStatus::Idle,
+            )
+            .await;
+
+            use crate::pty::manager::{
+                ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof,
+                ResponseRouteIdentity, ReturnDeliveryProof,
+            };
+            let tracker = ResponseCloseState::default();
+            assert!(app.manage(tracker.clone()));
+            let (coordinator_id, coordinator_token) =
+                seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running)
+                    .await;
+            let manager = {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = state.read().await;
+                guard.clone()
+            };
+            let target_row = manager.get_session(session_id).await.unwrap();
+            let member = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_TO.into(),
+                session_id,
+                token: target_row.token,
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_FROM.into(),
+                session_id: coordinator_id,
+                token: coordinator_token,
+                generation: 2,
+                ..member.clone()
+            };
+
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            tracker.apply_settings(true, 30, now);
+            for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+                tracker.register_route(identity.session_id, identity.generation, now);
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    identity.carrier_version,
+                    eligible,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+            }
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+
+            let hooks = MailboxTestHooks::default();
+            hooks.pty_presence.lock().unwrap().insert(session_id, true);
+            hooks
+                .inject_results
+                .lock()
+                .unwrap()
+                .push_back(Err("transient non-cancel twin".into()));
+            app.state::<SettingsState>()
+                .write()
+                .await
+                .project_paths
+                .push(fixture.sender_cwd.to_string_lossy().to_string());
+            let source = write_wake_message(
+                &fixture.sender_cwd,
+                "pre-poll-cancel",
+                "2026-07-15T00:00:04+00:00",
+            );
+            let content = std::fs::read_to_string(&source).unwrap();
+            let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+            let mut slot = None;
+            poller
+                .process_message_content(
+                    &app,
+                    &source,
+                    OutboxOrigin::Replica,
+                    &content,
+                    Some(&mut slot),
+                )
+                .await
+                .unwrap();
+            let validated = slot.unwrap();
+            let original = validated.response.as_ref().unwrap().clone();
+            assert_eq!(original.target, member.target);
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    original.key.clone(),
+                    original.digest.clone(),
+                    now
+                )
+                .is_ok());
+            assert!(matches!(
+                poller.claim_and_spawn_validated_wake(&app, &source, validated),
+                WakeHandoff::Spawned
+            ));
+            if cancelled {
+                poller.wake_workers.abort_all();
+            }
+            // First yield after abort; report construction lives inside the unpolled future.
+            poller.settle_wake_workers().await;
+            if cancelled {
+                assert!(!source.exists());
+                assert!(wake_claim_path(&source).is_file());
+                assert!(poller.live_claims.contains(&wake_claim_path(&source)));
+                assert!(!poller.retry_tracker.contains_key(&source));
+                assert!(hooks.inject_calls.lock().unwrap().is_empty());
+            } else {
+                assert!(source.is_file());
+                assert!(!wake_claim_path(&source).exists());
+                assert!(poller.live_claims.is_empty());
+                assert_eq!(
+                    poller
+                        .retry_tracker
+                        .get(&source)
+                        .map(|state| state.attempt_count),
+                    Some(1)
+                );
+                assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[session_id]);
+            }
+
+            // Phase 1: preservation before synthetic discharge. Exact pending proves
+            // that the scenario target has a work entry; no counters are inferred here.
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&source)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(
+                (&retained.target, &retained.key, &retained.digest),
+                (&original.target, &original.key, &original.digest)
+            );
+            assert_eq!(member.target, retained.target);
+            assert!(retained.delivery_context.is_none());
+            assert!(retained.return_context.is_none());
+            assert!(!tracker.target_is_closing(&member.target));
+            assert_eq!(
+                tracker.generation(member.session_id),
+                Some(member.generation)
+            );
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    original.key.clone(),
+                    original.digest.clone(),
+                    now
+                )
+                .is_ok());
+            let snapshot_path = if source.exists() {
+                source.clone()
+            } else {
+                wake_claim_path(&source)
+            };
+            let preservation_snapshot = (
+                retained.target.clone(),
+                retained.key.clone(),
+                retained.digest.clone(),
+                std::fs::read(snapshot_path).unwrap(),
+            );
+            assert_eq!(preservation_snapshot.3, content.as_bytes());
+            assert_eq!(poller.wake_workers.len(), 0);
+            assert_eq!(poller.wake_lanes.len(), 0);
+            assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+            assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+
+            let scenario_target = original.target.clone();
+            let scenario_key = original.key.clone();
+
+            // Phase 2: synthetic TEST-LOCAL discharge ONLY. This does not prove FS/SQL
+            // terminalization, peer submission, or P05 proof. Phase 1 alone proves retention.
+            assert_eq!(member.target, scenario_target);
+            assert!(!tracker.target_is_closing(&scenario_target));
+            tracker.settle_terminal(&scenario_target, &scenario_key, std::time::Instant::now());
+            // A leaked dispatch/provisional counter is not changed by settle_terminal.
+            // Each fresh probe uses the SAME tracker, target, generation and facts.
+            for sensitivity in 0..5 {
+                let dispatch = if sensitivity == 1 {
+                    Some(tracker.begin_delivery(&scenario_target).unwrap())
+                } else {
+                    None
+                };
+                let provisional = if sensitivity == 3 {
+                    Some(
+                        tracker
+                            .reserve_work(
+                                &scenario_target,
+                                &format!("diagnostic-held-{}", Uuid::new_v4()),
+                            )
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                };
+                let probe_key = format!("diagnostic-request-{}", Uuid::new_v4());
+                let probe_digest = "diagnostic-body";
+                let mut admission = tracker.reserve_work(&scenario_target, &probe_key).unwrap();
+                assert_eq!(admission.accept_durable(probe_digest), Ok(true));
+                drop(admission);
+                let probe_at =
+                    std::time::Instant::now() + Duration::from_secs(7200 + sensitivity * 60);
+                let context = tracker
+                    .reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        probe_key.clone(),
+                        probe_digest.into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                // Unit-returning API; successful register below validates submitted=true.
+                tracker.mark_request_submitted(&context, true);
+                let registered = tracker.register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: member.carrier_version,
+                    },
+                    probe_at,
+                );
+                if sensitivity == 3 {
+                    assert!(
+                        registered.is_err(),
+                        "retained real provisional admission must be detected"
+                    );
+                    tracker.settle_terminal(&scenario_target, &probe_key, probe_at);
+                    drop(provisional);
+                    drop(dispatch);
+                    continue;
+                }
+                registered.unwrap();
+                let context = tracker
+                    .admit_return(
+                        &member,
+                        &coordinator,
+                        format!("diagnostic-return-{}", Uuid::new_v4()),
+                        "diagnostic-return-body".into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                tracker
+                    .observe_return_success(ReturnDeliveryProof { context }, probe_at)
+                    .unwrap();
+                let ticket =
+                    tracker.select_ticket(member.session_id, probe_at + Duration::from_secs(30));
+                if sensitivity == 1 {
+                    assert!(
+                        ticket.is_err(),
+                        "retained real SAME-target dispatch must be detected"
+                    );
+                } else {
+                    assert!(ticket.is_ok(), "same-object final success proves dispatch/provisional/writer counters zero");
+                }
+                drop(dispatch);
+                drop(provisional);
+            }
+            // Synthetic tracker discharge leaves phase1 association/disk intact.
+            let retained_after = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&source)
+                .unwrap()
+                .clone();
+            assert!(retained_after.state.same_state(&tracker));
+            assert_eq!(
+                (
+                    retained_after.target,
+                    retained_after.key,
+                    retained_after.digest
+                ),
+                (
+                    preservation_snapshot.0,
+                    preservation_snapshot.1,
+                    preservation_snapshot.2
+                )
+            );
+            assert!(retained_after.delivery_context.is_none());
+            assert!(retained_after.return_context.is_none());
+            let path_after = if source.exists() {
+                source.clone()
+            } else {
+                wake_claim_path(&source)
+            };
+            assert_eq!(std::fs::read(path_after).unwrap(), preservation_snapshot.3);
+        }
     }
 
     /// (#1399 T7 / G4) The shared drain settles the full owned disk-state
     /// matrix directly and requeues each failed settlement exactly once.
     #[tokio::test]
     async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
+        let now = std::time::Instant::now() + Duration::from_secs(3600);
+        let prepare = || {
+            use crate::pty::manager::{
+                ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof,
+                ResponseRouteIdentity,
+            };
+            let tracker = ResponseCloseState::default();
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            tracker.apply_settings(true, 30, now);
+            let member = ResponseRouteIdentity {
+                target: "project:room/member".into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: "project:room/coordinator".into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 2,
+                ..member.clone()
+            };
+            for identity in [&member, &coordinator] {
+                tracker.register_route(identity.session_id, identity.generation, now);
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    1,
+                    true,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), true, false, now);
+            }
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+            let mut request = tracker.reserve_work(&member.target, "request").unwrap();
+            request.accept_durable("request-body").unwrap();
+            drop(request);
+            let context = tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    "request".into(),
+                    "request-body".into(),
+                    now,
+                )
+                .unwrap();
+            tracker.mark_request_submitted(&context, true);
+            tracker
+                .register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: 1,
+                    },
+                    now,
+                )
+                .unwrap();
+            let return_context = tracker
+                .admit_return(
+                    &member,
+                    &coordinator,
+                    "return".into(),
+                    "return-body".into(),
+                    now,
+                )
+                .unwrap();
+            let mut admission = tracker.reserve_work(&coordinator.target, "fs-key").unwrap();
+            assert_eq!(admission.accept_durable("fs-body"), Ok(true));
+            drop(admission);
+            let work = ResponseWakeWork {
+                state: tracker.clone(),
+                target: coordinator.target.clone(),
+                key: "fs-key".into(),
+                digest: "fs-body".into(),
+                return_context: Some(return_context),
+                delivery_context: None,
+            };
+            (tracker, member, coordinator, work)
+        };
+        // Positive twin: the same armable policy observes actual pure completion.
+        let (positive, member, _, work) = prepare();
+        let positive_poller = MailboxPoller::new();
+        let positive_path = PathBuf::from("positive.json");
+        positive_poller
+            .response_sources
+            .lock()
+            .unwrap()
+            .insert(positive_path.clone(), work);
+        positive_poller.settle_response_source(&positive_path, true);
+        assert!(positive
+            .select_ticket(member.session_id, now + Duration::from_secs(60))
+            .is_ok());
+
         // Restore succeeds: the origin is actionable before the Err is counted.
         {
             let temp = tempfile::TempDir::new().unwrap();
@@ -27728,6 +28883,21 @@ mod tests {
             let claim = wake_claim_path(&origin);
             std::fs::write(&claim, "{}").unwrap();
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             assert!(poller.live_claims.insert(claim.clone()));
             poller
                 .wake_outcomes_tx
@@ -27735,6 +28905,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(!claim.exists());
             assert!(origin.exists());
@@ -27764,6 +28966,21 @@ mod tests {
             std::fs::write(&claim, "{}").unwrap();
             std::fs::write(&receipt, "{}").unwrap();
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             poller.retry_tracker.insert(
                 origin.clone(),
                 RetryState {
@@ -27778,6 +28995,25 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(!poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(matches!(
+                pending,
+                Err(crate::pty::manager::ResponseCloseError::Conflict)
+            ));
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(receipt.exists());
             assert!(!claim.exists());
@@ -27787,6 +29023,82 @@ mod tests {
             assert!(!outbox
                 .join("rejected")
                 .join("claim-with-receipt.json")
+                .exists());
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+
+        // Claim plus receipt is authoritative and clears existing retry state.
+        {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outbox = temp.path().join("outbox");
+            let rejected_dir = outbox.join("rejected");
+            std::fs::create_dir_all(&rejected_dir).unwrap();
+            let origin = outbox.join("claim-with-rejected-receipt.json");
+            let claim = wake_claim_path(&origin);
+            let receipt = rejected_dir.join("claim-with-rejected-receipt.json");
+            std::fs::write(&claim, "{}").unwrap();
+            std::fs::write(&receipt, "{}").unwrap();
+            let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
+            poller.retry_tracker.insert(
+                origin.clone(),
+                RetryState {
+                    attempt_count: 4,
+                    logged: true,
+                },
+            );
+            assert!(poller.live_claims.insert(claim.clone()));
+            poller
+                .wake_outcomes_tx
+                .send((origin.clone(), Err("receipt wins".to_string())))
+                .unwrap();
+
+            poller.drain_wake_outcomes().await;
+            assert!(!poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(matches!(
+                pending,
+                Err(crate::pty::manager::ResponseCloseError::Conflict)
+            ));
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
+
+            assert!(receipt.exists());
+            assert!(!claim.exists());
+            assert!(!origin.exists());
+            assert!(poller.live_claims.is_empty());
+            assert!(!poller.retry_tracker.contains_key(&origin));
+            assert!(!outbox
+                .join("delivered")
+                .join("claim-with-rejected-receipt.json")
                 .exists());
             assert!(matches!(
                 poller.wake_outcomes_rx.try_recv(),
@@ -27807,6 +29119,21 @@ mod tests {
             std::fs::write(&origin, "{}").unwrap();
             std::fs::write(&receipt, "{}").unwrap();
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             assert!(poller.live_claims.insert(claim.clone()));
             poller
                 .wake_outcomes_tx
@@ -27814,6 +29141,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(origin.exists());
             assert!(receipt.exists());
@@ -27847,6 +29206,21 @@ mod tests {
             std::fs::write(&claim, "{}").unwrap();
             let outcome = Err("restore remains pending".to_string());
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             poller.retry_tracker.insert(
                 origin.clone(),
                 RetryState {
@@ -27861,6 +29235,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(claim.is_file());
             assert!(origin.is_dir());
@@ -27891,6 +29297,21 @@ mod tests {
             std::fs::write(&receipt, "{}").unwrap();
             let outcome = Err("delete remains pending".to_string());
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             poller.retry_tracker.insert(
                 origin.clone(),
                 RetryState {
@@ -27905,6 +29326,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(claim.is_dir());
             assert!(receipt.exists());
@@ -27934,6 +29387,21 @@ mod tests {
             assert!(wake_claim_has_settled_receipt(&origin).is_err());
             let outcome = Err("observation remains pending".to_string());
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             poller.retry_tracker.insert(
                 origin.clone(),
                 RetryState {
@@ -27948,6 +29416,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(poller.live_claims.contains(&claim));
             let state = poller.retry_tracker.get(&origin).unwrap();
@@ -27970,47 +29470,316 @@ mod tests {
     /// the claim stays owned forever and reclamation skips it on every cycle.
     #[tokio::test]
     async fn panicking_worker_reports_through_the_guard_and_frees_the_ledger() {
-        let fixture = make_mailbox_fixture();
-        let app = app_handle(&fixture.app);
-        let session_id = add_mailbox_session_with_shell(
-            &app,
-            &fixture.target_cwd,
-            "wake-panic",
-            "codex",
-            SessionStatus::Idle,
-        )
-        .await;
-        let hooks = MailboxTestHooks::default();
-        hooks.pty_presence.lock().unwrap().insert(session_id, true);
-        hooks.panic_on_inject.lock().unwrap().insert(session_id);
-        {
-            let settings = app.state::<SettingsState>();
-            settings
-                .write()
-                .await
-                .project_paths
-                .push(fixture.sender_cwd.to_string_lossy().to_string());
-        }
-        let source = write_wake_message(
-            &fixture.sender_cwd,
-            "panicking-wake",
-            "2026-07-15T00:00:01+00:00",
-        );
-        let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        for panic in [true, false] {
+            let fixture = make_mailbox_fixture();
+            let app = app_handle(&fixture.app);
+            let session_id = add_mailbox_session_with_shell(
+                &app,
+                &fixture.target_cwd,
+                "wake-panic",
+                "codex",
+                SessionStatus::Idle,
+            )
+            .await;
+            let hooks = MailboxTestHooks::default();
+            hooks.pty_presence.lock().unwrap().insert(session_id, true);
+            if panic {
+                hooks.panic_on_inject.lock().unwrap().insert(session_id);
+            }
+            hooks
+                .inject_results
+                .lock()
+                .unwrap()
+                .push_back(Err("transient twin failure".into()));
 
-        poller.poll(&app).await.unwrap();
-        poller.settle_wake_workers().await;
+            use crate::pty::manager::{
+                ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof,
+                ResponseRouteIdentity, ReturnDeliveryProof,
+            };
+            let tracker = ResponseCloseState::default();
+            assert!(app.manage(tracker.clone()));
+            let (coordinator_id, coordinator_token) =
+                seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running)
+                    .await;
+            let manager = {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = state.read().await;
+                guard.clone()
+            };
+            let target_row = manager.get_session(session_id).await.unwrap();
+            let member = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_TO.into(),
+                session_id,
+                token: target_row.token,
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_FROM.into(),
+                session_id: coordinator_id,
+                token: coordinator_token,
+                generation: 2,
+                ..member.clone()
+            };
 
-        assert!(poller.live_claims.is_empty());
-        assert_eq!(
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            tracker.apply_settings(true, 30, now);
+            for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+                tracker.register_route(identity.session_id, identity.generation, now);
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    identity.carrier_version,
+                    eligible,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+            }
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+
+            {
+                let settings = app.state::<SettingsState>();
+                settings
+                    .write()
+                    .await
+                    .project_paths
+                    .push(fixture.sender_cwd.to_string_lossy().to_string());
+            }
+            let source = write_wake_message(
+                &fixture.sender_cwd,
+                "panicking-wake",
+                "2026-07-15T00:00:01+00:00",
+            );
+            let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+            let content = std::fs::read_to_string(&source).unwrap();
+            let mut slot = None;
             poller
-                .retry_tracker
+                .process_message_content(
+                    &app,
+                    &source,
+                    OutboxOrigin::Replica,
+                    &content,
+                    Some(&mut slot),
+                )
+                .await
+                .unwrap();
+            let validated = slot.unwrap();
+            let original = validated.response.unwrap();
+            assert!(original.state.same_state(&tracker));
+            assert_eq!(original.target, member.target);
+            assert!(original.delivery_context.is_none());
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    original.key.clone(),
+                    original.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller.poll(&app).await.unwrap();
+            poller.settle_wake_workers().await;
+
+            assert!(poller.live_claims.is_empty());
+            assert_eq!(
+                poller
+                    .retry_tracker
+                    .get(&source)
+                    .map(|state| state.attempt_count),
+                Some(1)
+            );
+            assert!(!wake_claim_path(&source).exists());
+            assert!(source.exists());
+            // Phase 1: preservation before synthetic discharge. Exact pending proves
+            // that the scenario target has a work entry; no counters are inferred here.
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
                 .get(&source)
-                .map(|state| state.attempt_count),
-            Some(1)
-        );
-        assert!(!wake_claim_path(&source).exists());
-        assert!(source.exists());
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(
+                (&retained.target, &retained.key, &retained.digest),
+                (&original.target, &original.key, &original.digest)
+            );
+            assert_eq!(member.target, retained.target);
+            assert!(retained.delivery_context.is_none());
+            assert!(retained.return_context.is_none());
+            assert!(!tracker.target_is_closing(&member.target));
+            assert_eq!(
+                tracker.generation(member.session_id),
+                Some(member.generation)
+            );
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    original.key.clone(),
+                    original.digest.clone(),
+                    now
+                )
+                .is_ok());
+            let snapshot_path = if source.exists() {
+                source.clone()
+            } else {
+                wake_claim_path(&source)
+            };
+            let preservation_snapshot = (
+                retained.target.clone(),
+                retained.key.clone(),
+                retained.digest.clone(),
+                std::fs::read(snapshot_path).unwrap(),
+            );
+            assert_eq!(preservation_snapshot.3, content.as_bytes());
+            assert_eq!(poller.wake_workers.len(), 0);
+            assert_eq!(poller.wake_lanes.len(), 0);
+            assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+            assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+            let scenario_target = original.target.clone();
+            let scenario_key = original.key.clone();
+
+            // Phase 2: synthetic TEST-LOCAL discharge ONLY. This does not prove FS/SQL
+            // terminalization, peer submission, or P05 proof. Phase 1 alone proves retention.
+            assert_eq!(member.target, scenario_target);
+            assert!(!tracker.target_is_closing(&scenario_target));
+            tracker.settle_terminal(&scenario_target, &scenario_key, std::time::Instant::now());
+            // A leaked dispatch/provisional counter is not changed by settle_terminal.
+            // Each fresh probe uses the SAME tracker, target, generation and facts.
+            for sensitivity in 0..5 {
+                let dispatch = if sensitivity == 1 {
+                    Some(tracker.begin_delivery(&scenario_target).unwrap())
+                } else {
+                    None
+                };
+                let provisional = if sensitivity == 3 {
+                    Some(
+                        tracker
+                            .reserve_work(
+                                &scenario_target,
+                                &format!("diagnostic-held-{}", Uuid::new_v4()),
+                            )
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                };
+                let probe_key = format!("diagnostic-request-{}", Uuid::new_v4());
+                let probe_digest = "diagnostic-body";
+                let mut admission = tracker.reserve_work(&scenario_target, &probe_key).unwrap();
+                assert_eq!(admission.accept_durable(probe_digest), Ok(true));
+                drop(admission);
+                let probe_at =
+                    std::time::Instant::now() + Duration::from_secs(7200 + sensitivity * 60);
+                let context = tracker
+                    .reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        probe_key.clone(),
+                        probe_digest.into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                // Unit-returning API; successful register below validates submitted=true.
+                tracker.mark_request_submitted(&context, true);
+                let registered = tracker.register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: member.carrier_version,
+                    },
+                    probe_at,
+                );
+                if sensitivity == 3 {
+                    assert!(
+                        registered.is_err(),
+                        "retained real provisional admission must be detected"
+                    );
+                    tracker.settle_terminal(&scenario_target, &probe_key, probe_at);
+                    drop(provisional);
+                    drop(dispatch);
+                    continue;
+                }
+                registered.unwrap();
+                let context = tracker
+                    .admit_return(
+                        &member,
+                        &coordinator,
+                        format!("diagnostic-return-{}", Uuid::new_v4()),
+                        "diagnostic-return-body".into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                tracker
+                    .observe_return_success(ReturnDeliveryProof { context }, probe_at)
+                    .unwrap();
+                let ticket =
+                    tracker.select_ticket(member.session_id, probe_at + Duration::from_secs(30));
+                if sensitivity == 1 {
+                    assert!(
+                        ticket.is_err(),
+                        "retained real SAME-target dispatch must be detected"
+                    );
+                } else {
+                    assert!(ticket.is_ok(), "same-object final success proves dispatch/provisional/writer counters zero");
+                }
+                drop(dispatch);
+                drop(provisional);
+            }
+            // Synthetic tracker discharge leaves phase1 association/disk intact.
+            let retained_after = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&source)
+                .unwrap()
+                .clone();
+            assert!(retained_after.state.same_state(&tracker));
+            assert_eq!(
+                (
+                    retained_after.target,
+                    retained_after.key,
+                    retained_after.digest
+                ),
+                (
+                    preservation_snapshot.0,
+                    preservation_snapshot.1,
+                    preservation_snapshot.2
+                )
+            );
+            assert!(retained_after.delivery_context.is_none());
+            assert!(retained_after.return_context.is_none());
+            let path_after = if source.exists() {
+                source.clone()
+            } else {
+                wake_claim_path(&source)
+            };
+            assert_eq!(std::fs::read(path_after).unwrap(), preservation_snapshot.3);
+        }
     }
 
     /// (#1399 T12) A real Windows exclusive directory handle makes production
