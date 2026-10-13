@@ -56,6 +56,13 @@ impl From<&AgentBackendConfig> for SessionBackendKind {
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
     pub id: String,
+    #[serde(
+        default,
+        rename = "id_hash",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_agent_id_hash"
+    )]
+    pub id_hash: Option<String>,
     pub label: String,
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,6 +141,18 @@ where
         .as_ref()
         .and_then(Value::as_u64)
         .and_then(|raw| u32::try_from(raw).ok()))
+}
+
+/// Optional, non-authoritative metadata: preserve strings and ignore other JSON types.
+fn deserialize_agent_id_hash<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        Value::String(hash) => Some(hash),
+        _ => None,
+    }))
 }
 
 /// #2306 P1 - sort `agents` into their effective order and rewrite every
@@ -13185,6 +13204,97 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 #[cfg(test)]
 mod tests {
     #[test]
+    fn id_hash_schema_missing_null_and_nonstring_preserve_valid_settings() {
+        let baseline = serde_json::json!({
+            "defaultShell": "test-shell", "defaultShellArgs": [],
+            "agents": [{
+                "id": "custom-tool", "label": "Custom tool", "command": "tool --flag",
+                "color": "#123456", "envs": [{"key": "MODE", "value": "safe", "enabled": true}]
+            }]
+        });
+        let expected: super::AppSettings = serde_json::from_value(baseline.clone()).unwrap();
+        assert_eq!(expected.agents[0].id_hash, None);
+        for raw in [
+            serde_json::json!(null),
+            serde_json::json!(42),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!([]),
+            serde_json::json!(["hash"]),
+            serde_json::json!({}),
+            serde_json::json!({"hash": "value"}),
+        ] {
+            let mut supplied = baseline.clone();
+            supplied["agents"][0]["id_hash"] = raw.clone();
+            let decoded: super::AppSettings = serde_json::from_value(supplied).unwrap();
+            assert_eq!(decoded.agents[0].id_hash, None, "metadata {raw}");
+            assert_eq!(
+                serde_json::to_value(decoded).unwrap(),
+                serde_json::to_value(&expected).unwrap(),
+                "metadata {raw} must not change valid settings"
+            );
+        }
+
+        for malformed_agents in [
+            serde_json::json!({}),
+            serde_json::json!([null]),
+            serde_json::json!([{"id": "a", "label": "A", "command": 42, "color": "red", "id_hash": false}]),
+            serde_json::json!([{"id": "a", "label": "A", "command": "tool", "color": "red", "envs": {}, "id_hash": false}]),
+        ] {
+            let mut malformed = baseline.clone();
+            malformed["agents"] = malformed_agents;
+            assert!(serde_json::from_value::<super::AppSettings>(malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn id_hash_schema_serializes_literal_key_roundtrips_and_omits_none() {
+        let mut agent: super::AgentConfig = serde_json::from_value(serde_json::json!({
+            "id": "custom-tool", "label": "Custom tool", "command": "tool", "color": "red"
+        }))
+        .unwrap();
+        agent.id_hash = Some("cid1:example".to_string());
+        let encoded = serde_json::to_value(&agent).unwrap();
+        assert_eq!(encoded["id_hash"], "cid1:example");
+        assert!(encoded.get("idHash").is_none());
+        let decoded: super::AgentConfig = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(decoded.id, "custom-tool");
+        assert_eq!(decoded.id_hash.as_deref(), Some("cid1:example"));
+        assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+
+        agent.id_hash = None;
+        let encoded = serde_json::to_value(agent).unwrap();
+        assert!(encoded.get("id_hash").is_none());
+        assert!(encoded.get("idHash").is_none());
+    }
+
+    #[test]
+    fn id_hash_schema_ignores_camelcase_and_preserves_supplied_strings() {
+        let baseline = serde_json::json!({
+            "id": "custom-tool", "label": "Custom tool", "command": "tool", "color": "red",
+            "idHash": "ignored"
+        });
+        let decoded: super::AgentConfig = serde_json::from_value(baseline.clone()).unwrap();
+        assert_eq!(decoded.id_hash, None);
+        assert!(serde_json::to_value(decoded)
+            .unwrap()
+            .get("idHash")
+            .is_none());
+        for raw in ["", "not-a-hash", "cid1:forged", " arbitrary Ω "] {
+            let mut supplied = baseline.clone();
+            supplied["id_hash"] = serde_json::json!(raw);
+            let decoded: super::AgentConfig = serde_json::from_value(supplied).unwrap();
+            assert_eq!(decoded.id, "custom-tool");
+            assert_eq!(decoded.id_hash.as_deref(), Some(raw));
+            let encoded = serde_json::to_value(decoded).unwrap();
+            assert_eq!(encoded["id_hash"], raw);
+            assert!(encoded.get("idHash").is_none());
+        }
+    }
+
+    #[test]
     fn p03_readers_select_sidecar_without_migration_and_preserve_unrelated_on_conflict() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
@@ -17291,6 +17401,7 @@ mod tests {
                     preflight: None,
                     preflight_timeout_seconds: None,
                     id: format!("agent-{idx}"),
+                    id_hash: None,
                     label: (*label).to_string(),
                     command: (*command).to_string(),
                     color: "#000000".to_string(),
@@ -17395,6 +17506,7 @@ mod tests {
             preflight: None,
             preflight_timeout_seconds: None,
             id: "claude".to_string(),
+            id_hash: None,
             label: "Claude".to_string(),
             command: "claude".to_string(),
             color: "#fff".to_string(),
@@ -20882,6 +20994,7 @@ mod tests {
             preflight: None,
             preflight_timeout_seconds: None,
             id: id.to_string(),
+            id_hash: None,
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
@@ -24454,6 +24567,7 @@ mod tests {
                 preflight: None,
                 preflight_timeout_seconds: None,
                 id: "grok-1".to_string(),
+                id_hash: None,
                 label: "grok-1".to_string(),
                 command: "grok".to_string(),
                 color: "#000000".to_string(),
