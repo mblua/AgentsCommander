@@ -1801,7 +1801,17 @@ fn assert_p03_gitignore_partial_retry_mode(mode: usize) {
 }
 
 fn assert_p03_partial_room_layout(partial: &Path, ac: &Path) -> PathBuf {
-    assert!(partial.starts_with(ac) && partial.parent() == Some(ac));
+    let canonical_partial = std::fs::canonicalize(partial)
+        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", partial.display()));
+    let canonical_ac = std::fs::canonicalize(ac)
+        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", ac.display()));
+    assert!(
+        canonical_partial.starts_with(&canonical_ac)
+            && canonical_partial.parent() == Some(canonical_ac.as_path()),
+        "room {} must be a direct child of {}",
+        canonical_partial.display(),
+        canonical_ac.display()
+    );
     assert!(partial.join("messaging").is_dir());
     assert!(partial.join("room-shared").is_dir());
     assert_eq!(
@@ -1842,7 +1852,17 @@ fn assert_p03_healthy_room_layout(
     after_failure: &std::collections::BTreeSet<PathBuf>,
 ) {
     let ignore = ac.join(".gitignore");
-    assert!(healthy.starts_with(ac) && healthy.parent() == Some(ac));
+    let canonical_healthy = std::fs::canonicalize(healthy)
+        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", healthy.display()));
+    let canonical_ac = std::fs::canonicalize(ac)
+        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", ac.display()));
+    assert!(
+        canonical_healthy.starts_with(&canonical_ac)
+            && canonical_healthy.parent() == Some(canonical_ac.as_path()),
+        "room {} must be a direct child of {}",
+        canonical_healthy.display(),
+        canonical_ac.display()
+    );
     assert!(!after_failure.contains(healthy));
     assert!(std::fs::read_to_string(&ignore)
         .unwrap()
