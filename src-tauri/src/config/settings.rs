@@ -22501,6 +22501,15 @@ mod tests {
             assert!(!object.contains_key("responseCloseIdleSeconds"));
             object.insert("responseCloseEnabled".to_string(), Value::Bool(true));
             object.insert("responseCloseIdleSeconds".to_string(), Value::from(30));
+            // H02 adds backend-derived metadata; never rewrite the frozen control.
+            for raw in object.get_mut("agents").unwrap().as_array_mut().unwrap() {
+                assert!(raw.get("id_hash").is_none());
+                let agent: AgentConfig = serde_json::from_value(raw.clone()).unwrap();
+                raw.as_object_mut().unwrap().insert(
+                    "id_hash".to_string(),
+                    Value::String(configuration_identity(&agent.command, &agent.envs)),
+                );
+            }
             let sorted: BTreeMap<String, Value> =
                 object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             let expected = serde_json::to_string_pretty(&sorted).unwrap();

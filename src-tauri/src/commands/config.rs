@@ -7439,7 +7439,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         let state = state_for(settings_with_agents(&["a"]));
-        let incoming = settings_with_agents(&["a", "A"]);
+        let mut incoming = settings_with_agents(&["a", "A"]);
+        // Case-distinct stable IDs are legal; inputs must not introduce a
+        // duplicate configuration under the case-folded physical delta gate.
+        incoming.agents[1].command = "uppercase-id-tool".to_string();
 
         let written = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
             crate::config::settings::save_settings_to_path_preserving_project_paths(
@@ -7450,6 +7453,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(order_ids(&written.agents), ["a", "A"]);
+        assert_ne!(written.agents[0].id_hash, written.agents[1].id_hash);
     }
 
     #[tokio::test]
