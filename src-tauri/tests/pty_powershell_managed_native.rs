@@ -223,7 +223,32 @@ fn make_fixture() -> Fixture {
     }
     let project_paths_before = std::fs::read(&project_paths_path).expect("read seeded authority");
     let saved = save_settings(&settings).expect("seed isolated settings");
-    assert_eq!(saved.project_paths, settings.project_paths);
+    let canonical_repo_root = std::fs::canonicalize(&repo_root)
+        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", repo_root.display()));
+    let canonical_repo_root = canonical_repo_root.to_str().unwrap_or_else(|| {
+        panic!(
+            "canonical repo root is not UTF-8: {}",
+            canonical_repo_root.display()
+        )
+    });
+    let expected_project_path = if let Some(unc) = canonical_repo_root.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(drive_path) = canonical_repo_root.strip_prefix(r"\\?\") {
+        let bytes = drive_path.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\'
+        {
+            drive_path.to_string()
+        } else {
+            canonical_repo_root.to_string()
+        }
+    } else {
+        canonical_repo_root.to_string()
+    };
+    let expected_project_paths = vec![expected_project_path];
+    assert_eq!(saved.project_paths, expected_project_paths);
     assert_eq!(saved.default_shell, "powershell.exe");
     assert_eq!(saved.default_shell_args, vec!["-NoLogo".to_string()]);
     assert_eq!(
