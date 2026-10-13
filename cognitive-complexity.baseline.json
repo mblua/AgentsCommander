@@ -220,20 +220,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::deliver_peer_wake",
-      "sites": {
-        "windows": [
-          "c266d667407c"
-        ],
-        "linux": [
-          "c266d667407c"
-        ],
-        "macos": [
-          "c266d667407c"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::dispatch_pty_input_operation",
       "sites": {
         "windows": [
@@ -286,20 +272,6 @@
         ],
         "macos": [
           "dff40736a7a2"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::process_message_content",
-      "sites": {
-        "windows": [
-          "9cff13e57760"
-        ],
-        "linux": [
-          "9cff13e57760"
-        ],
-        "macos": [
-          "9cff13e57760"
         ]
       }
     },

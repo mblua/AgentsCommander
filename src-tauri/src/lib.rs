@@ -4492,6 +4492,11 @@ pub fn run(
     // One recovered operation store is shared by the filesystem poller and
     // both API start paths. A failure disables only privileged PTY input.
     let message_store_state = crate::api::message_store::MessageStoreState::initialize();
+    if let Ok(store) = &message_store_state.store {
+        store.bind_response_close(response_close.clone());
+    } else {
+        response_close.fail_closed();
+    }
     let pty_target_gate_state = message_store_state.target_gate_state();
 
     // #714/#1842/#2079 clipboard + global-shortcut plugins are referenced ONLY

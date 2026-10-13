@@ -298,12 +298,14 @@ where
     let mut processed = 0;
     for row in rows {
         let message = build_outbox_message(&row);
-        let result =
-            if crate::api::actuation::reject_if_root(&row.sender_fqn, &row.target_fqn).is_err() {
-                Err("root-agent is not reachable over DB send".to_string())
-            } else {
-                deliver(message).await
-            };
+        let reservation = store.begin_response_delivery(&row.target_fqn);
+        let result = if let Err(reason) = &reservation {
+            Err(reason.clone())
+        } else if crate::api::actuation::reject_if_root(&row.sender_fqn, &row.target_fqn).is_err() {
+            Err("root-agent is not reachable over DB send".to_string())
+        } else {
+            deliver(message).await
+        };
 
         match result {
             Ok(_) => {
@@ -314,7 +316,8 @@ where
             }
             Err(reason)
                 if crate::pty::menu_guard::is_menu_guard_deferred_error(&reason)
-                    || crate::pty::menu_guard::is_typing_hold_deferred_error(&reason) =>
+                    || crate::pty::menu_guard::is_typing_hold_deferred_error(&reason)
+                    || crate::api::message_store::is_response_closing_deferred(&reason) =>
             {
                 // #2336 - the typing hold shares the menu guard's recoverable
                 // "not yet" contract: release the lease without incrementing the
@@ -322,6 +325,8 @@ where
                 // word distinguishes the two causes.
                 let deferred_by = if crate::pty::menu_guard::is_menu_guard_deferred_error(&reason) {
                     "menu-guard-deferred"
+                } else if crate::api::message_store::is_response_closing_deferred(&reason) {
+                    "response-close-deferred"
                 } else {
                     "typing-hold-deferred"
                 };
