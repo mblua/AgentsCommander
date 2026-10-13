@@ -13159,8 +13159,8 @@ impl MailboxPoller {
                 let disposition = {
                     let mut save = |st: &crate::config::settings::AppSettings| {
                         let written = crate::config::settings::save_settings(st)?;
-                        written_settings = Some(written);
-                        Ok(())
+                        written_settings = Some(written.clone());
+                        Ok(written)
                     };
                     ca::process_coding_agent_request(
                         &path,
