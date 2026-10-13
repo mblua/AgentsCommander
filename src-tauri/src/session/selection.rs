@@ -2936,6 +2936,7 @@ async fn execute_restore_dormant<R: Runtime>(
     let id = Uuid::new_v4();
     let binding = PendingCreateBinding::new(id, Uuid::new_v4());
     let persisted = request.persisted;
+    let coding_agent_binding = persisted.binding_metadata()?;
     let exit_code = match persisted.status {
         Some(SessionStatus::Exited(code)) => code,
         _ => 0,
@@ -2981,11 +2982,17 @@ async fn execute_restore_dormant<R: Runtime>(
         // first post-restart tick (mirrors id/waiting_for_input/created_at above).
         context_percent: None,
     };
-    transaction
-        .manager()
-        .await
+    let manager = transaction.manager().await;
+    manager
         .insert_transaction_pending_record(session, binding)
         .await?;
+    if let Err(error) = manager
+        .install_pending_coding_agent_binding(binding, coding_agent_binding)
+        .await
+    {
+        manager.rollback_pending_create(binding).await?;
+        return Err(error);
+    }
     let witness = DormantRuntimeWitness::from_snapshot(transaction.runtime_snapshot(id))
         .ok_or_else(|| "restored dormant record is runtime-detached".to_string())?;
     let mut mutations = LifecycleMutations::default();
@@ -5311,6 +5318,73 @@ fn commit_selection_transition_with_carrier_permit() {
         let selection = manager.read().await.selection_payload().await;
         assert_eq!(selection.id(), Some(session.id));
         assert_eq!(selection.mode(), SelectionMode::Dormant);
+        coordinator.close_and_join().await;
+    }
+
+    #[tokio::test]
+    async fn derived_agent_id_binding_deferred_and_root_restore_install_before_publish() {
+        use crate::config::sessions_persistence::{
+            snapshot_sessions, CodingAgentBindingSeed, PersistedSession,
+        };
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(manager.clone(), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(manager.clone())
+            .manage(DetachedSessionsState::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(Arc::new(
+            LifecycleTestBackend::default(),
+        ))));
+        assert!(app.manage(pty));
+        coordinator.start(app.handle().clone()).unwrap();
+        let guard = coordinator.submit_restore_first().await.unwrap();
+        let transaction = guard.transaction(app.handle().clone());
+        for root in [false, true] {
+            let binding = Uuid::new_v4().to_string();
+            let old_runtime = Uuid::new_v4().to_string();
+            let seed = CodingAgentBindingSeed {
+                identity_revision: format!("r1:0:{}", "a".repeat(64)),
+                original_agent_id: "original".into(),
+            };
+            let origin = serde_json::json!({"sessionsPath":"C:/sessions.json","rawFileSHA256":"original-bytes","originalOrdinal":if root { 1 } else { 0 }});
+            let cwd = if root { "C:/root" } else { "C:/deferred" };
+            let info = transaction
+                .restore_dormant_inline(DormantRestoreRequest {
+                    persisted: PersistedSession {
+                        name: cwd.into(),
+                        shell: "shell".into(),
+                        working_directory: cwd.into(),
+                        agent_id: Some("original".into()),
+                        id: Some(old_runtime.clone()),
+                        created_at: Some("old-date".into()),
+                        coding_agent_binding_id: Some(binding.clone()),
+                        coding_agent_binding_seed: Some(seed.clone()),
+                        coding_agent_binding_origin: Some(origin.clone()),
+                        status: Some(SessionStatus::Exited(9)),
+                        ..Default::default()
+                    },
+                    working_directory: cwd.into(),
+                    is_coordinator: root,
+                    is_root_agent: root,
+                })
+                .await
+                .unwrap();
+            assert_ne!(info.id, old_runtime);
+            assert_ne!(info.created_at, "old-date");
+            let handle = manager.read().await.clone();
+            let snapshot = snapshot_sessions(&handle).await;
+            let row = snapshot
+                .iter()
+                .find(|row| row.id.as_deref() == Some(&info.id))
+                .unwrap();
+            assert_eq!(row.coding_agent_binding_id.as_ref(), Some(&binding));
+            assert_eq!(row.coding_agent_binding_seed.as_ref(), Some(&seed));
+            assert_eq!(row.coding_agent_binding_origin.as_ref(), Some(&origin));
+            assert_eq!(row.is_root_agent, root);
+        }
+        drop(transaction);
+        drop(guard);
         coordinator.close_and_join().await;
     }
 

@@ -7587,181 +7587,375 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_settings_keeps_live_archived_list_when_disk_key_absent() {
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let live_project = real_ac_project(temp.path(), "live-a");
-        let archived_project = real_ac_project(temp.path(), "archived-b");
-        write_settings_file_without_keys(
-            temp.path(),
-            &AppSettings {
-                project_paths: vec![live_project.clone()],
-                project_path: Some(live_project.clone()),
-                ..AppSettings::default()
-            },
-            &["archivedProjectPaths"],
-        );
-
-        let mut current = settings_with_single_agent();
-        current.project_paths = vec![live_project.to_string()];
-        current.project_path = Some(live_project.to_string());
-        current.archived_project_paths = vec![archived_project.to_string()];
-        let state = state_for(current.clone());
-        let payload = settings_payload_without_keys(&current, &["archivedProjectPaths"]);
-
-        let saved = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
-            crate::config::settings::save_settings_to_path_preserving_project_paths(
-                candidate,
-                &settings_path,
-            )
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(
-            saved.archived_project_paths,
-            vec![archived_project.to_string()]
-        );
-        assert!(session_retention_project_paths(&saved)
-            .unwrap()
-            .contains(&archived_project.to_string()));
-        {
-            let live = state.read().await;
-            assert_eq!(
-                live.archived_project_paths,
-                vec![archived_project.to_string()]
+    async fn update_settings_adopts_canonical_archive_without_resurrecting_absent_archive() {
+        for canonical in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let live_project = real_ac_project(temp.path(), "live-a");
+            let archived_project = real_ac_project(temp.path(), "archived-b");
+            write_settings_file_without_keys(
+                temp.path(),
+                &AppSettings {
+                    project_paths: vec![live_project.clone()],
+                    project_path: Some(live_project.clone()),
+                    ..AppSettings::default()
+                },
+                &["archivedProjectPaths"],
             );
+            let sidecar = temp.path().join("project-paths.json");
+            if canonical {
+                let mut managed: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+                for key in [
+                    "projectPath",
+                    "projectPathRelativeToInstance",
+                    "projectPaths",
+                    "projectPathsRelativeToInstance",
+                    "archivedProjectPaths",
+                    "archivedProjectPathsRelativeToInstance",
+                ] {
+                    managed.as_object_mut().unwrap().remove(key);
+                }
+                std::fs::write(&settings_path, serde_json::to_vec(&managed).unwrap()).unwrap();
+                std::fs::write(&sidecar, serde_json::to_vec(&serde_json::json!({
+                    "projectPath":live_project, "projectPathRelativeToInstance":null,
+                    "projectPaths":[live_project], "projectPathsRelativeToInstance":[null],
+                    "archivedProjectPaths":[archived_project], "archivedProjectPathsRelativeToInstance":[null]
+                })).unwrap()).unwrap();
+            }
+            let canonical_bytes = canonical.then(|| std::fs::read(&sidecar).unwrap());
+            let mut current = settings_with_single_agent();
+            current.project_paths = vec![live_project.clone()];
+            current.project_path = Some(live_project.clone());
+            current.archived_project_paths = vec![archived_project.clone()];
+            let state = state_for(current.clone());
+            let payload = settings_payload_without_keys(&current, &["archivedProjectPaths"]);
+            let saved =
+                persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+                    crate::config::settings::save_settings_to_path_preserving_project_paths(
+                        candidate,
+                        &settings_path,
+                    )
+                })
+                .await
+                .unwrap();
+            let disk = crate::config::settings::load_settings_from_path(&settings_path);
+            let live = state.read().await;
+            for adopted in [&saved, &*live, &disk] {
+                assert_single_project(adopted, &live_project);
+                if canonical {
+                    assert_eq!(
+                        adopted.archived_project_paths,
+                        vec![archived_project.clone()]
+                    );
+                } else {
+                    assert!(adopted.archived_project_paths.is_empty());
+                }
+                assert_eq!(
+                    session_retention_project_paths(adopted)
+                        .unwrap()
+                        .contains(&archived_project),
+                    canonical
+                );
+            }
+            let managed: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+            for key in [
+                "projectPath",
+                "projectPathRelativeToInstance",
+                "projectPaths",
+                "projectPathsRelativeToInstance",
+                "archivedProjectPaths",
+                "archivedProjectPathsRelativeToInstance",
+            ] {
+                assert!(
+                    managed.get(key).is_none(),
+                    "managed settings resurrected {key}"
+                );
+            }
+            if let Some(bytes) = canonical_bytes {
+                assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+            } else {
+                let raw: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+                for key in &[
+                    "archivedProjectPaths",
+                    "archivedProjectPathsRelativeToInstance",
+                ][..]
+                {
+                    assert!(raw.get(*key).is_none(), "raw authority resurrected {key}");
+                }
+            }
         }
-        let disk: AppSettings =
-            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
-        assert_eq!(
-            disk.archived_project_paths,
-            vec![archived_project.to_string()]
-        );
     }
 
     #[tokio::test]
-    async fn save_settings_draft_keeps_live_archived_list_when_disk_key_absent() {
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let live_project = real_ac_project(temp.path(), "live-a");
-        let archived_project = real_ac_project(temp.path(), "archived-b");
-        write_settings_file_without_keys(
-            temp.path(),
-            &AppSettings {
-                project_paths: vec![live_project.clone()],
-                project_path: Some(live_project.clone()),
-                ..AppSettings::default()
-            },
-            &["archivedProjectPaths"],
-        );
-
-        let mut current = settings_with_single_agent();
-        current.project_paths = vec![live_project.to_string()];
-        current.project_path = Some(live_project.to_string());
-        current.archived_project_paths = vec![archived_project.to_string()];
-        let state = state_for(current.clone());
-        let payload = settings_payload_without_keys(&current, &["archivedProjectPaths"]);
-
-        let (saved, _events) =
-            persist_settings_draft_update_with_saver(&state, payload, |candidate| {
-                crate::config::settings::save_settings_to_path_preserving_project_paths(
-                    candidate,
-                    &settings_path,
-                )
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(
-            saved.archived_project_paths,
-            vec![archived_project.to_string()]
-        );
-        assert!(session_retention_project_paths(&saved)
-            .unwrap()
-            .contains(&archived_project.to_string()));
-        {
-            let live = state.read().await;
-            assert_eq!(
-                live.archived_project_paths,
-                vec![archived_project.to_string()]
+    async fn save_settings_draft_adopts_canonical_archive_without_resurrecting_absent_archive() {
+        for canonical in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let live_project = real_ac_project(temp.path(), "live-a");
+            let archived_project = real_ac_project(temp.path(), "archived-b");
+            write_settings_file_without_keys(
+                temp.path(),
+                &AppSettings {
+                    project_paths: vec![live_project.clone()],
+                    project_path: Some(live_project.clone()),
+                    ..AppSettings::default()
+                },
+                &["archivedProjectPaths"],
             );
-        }
-        let disk: AppSettings =
-            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
-        assert_eq!(
-            disk.archived_project_paths,
-            vec![archived_project.to_string()]
-        );
-    }
-
-    #[tokio::test]
-    async fn update_settings_keeps_live_project_paths_when_settings_file_absent() {
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let live_project = real_ac_project(temp.path(), "live-a");
-
-        let mut current = settings_with_single_agent();
-        current.project_paths = vec![live_project.clone()];
-        current.project_path = Some(live_project.clone());
-        let state = state_for(current.clone());
-        let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
-
-        let saved = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
-            crate::config::settings::save_settings_to_path_preserving_project_paths(
-                candidate,
-                &settings_path,
-            )
-        })
-        .await
-        .unwrap();
-
-        assert_single_project(&saved, &live_project);
-        assert!(session_retention_project_paths(&saved)
-            .unwrap()
-            .contains(&live_project));
-        {
+            let sidecar = temp.path().join("project-paths.json");
+            if canonical {
+                let mut managed: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+                for key in [
+                    "projectPath",
+                    "projectPathRelativeToInstance",
+                    "projectPaths",
+                    "projectPathsRelativeToInstance",
+                    "archivedProjectPaths",
+                    "archivedProjectPathsRelativeToInstance",
+                ] {
+                    managed.as_object_mut().unwrap().remove(key);
+                }
+                std::fs::write(&settings_path, serde_json::to_vec(&managed).unwrap()).unwrap();
+                std::fs::write(&sidecar, serde_json::to_vec(&serde_json::json!({
+                    "projectPath":live_project, "projectPathRelativeToInstance":null,
+                    "projectPaths":[live_project], "projectPathsRelativeToInstance":[null],
+                    "archivedProjectPaths":[archived_project], "archivedProjectPathsRelativeToInstance":[null]
+                })).unwrap()).unwrap();
+            }
+            let canonical_bytes = canonical.then(|| std::fs::read(&sidecar).unwrap());
+            let mut current = settings_with_single_agent();
+            current.project_paths = vec![live_project.clone()];
+            current.project_path = Some(live_project.clone());
+            current.archived_project_paths = vec![archived_project.clone()];
+            let state = state_for(current.clone());
+            let payload = settings_payload_without_keys(&current, &["archivedProjectPaths"]);
+            let (saved, _events) =
+                persist_settings_draft_update_with_saver(&state, payload, |candidate| {
+                    crate::config::settings::save_settings_to_path_preserving_project_paths(
+                        candidate,
+                        &settings_path,
+                    )
+                })
+                .await
+                .unwrap();
+            let disk = crate::config::settings::load_settings_from_path(&settings_path);
             let live = state.read().await;
-            assert_single_project(&live, &live_project);
+            for adopted in [&saved, &*live, &disk] {
+                assert_single_project(adopted, &live_project);
+                if canonical {
+                    assert_eq!(
+                        adopted.archived_project_paths,
+                        vec![archived_project.clone()]
+                    );
+                } else {
+                    assert!(adopted.archived_project_paths.is_empty());
+                }
+                assert_eq!(
+                    session_retention_project_paths(adopted)
+                        .unwrap()
+                        .contains(&archived_project),
+                    canonical
+                );
+            }
+            let managed: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+            for key in [
+                "projectPath",
+                "projectPathRelativeToInstance",
+                "projectPaths",
+                "projectPathsRelativeToInstance",
+                "archivedProjectPaths",
+                "archivedProjectPathsRelativeToInstance",
+            ] {
+                assert!(
+                    managed.get(key).is_none(),
+                    "managed settings resurrected {key}"
+                );
+            }
+            if let Some(bytes) = canonical_bytes {
+                assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+            } else {
+                let raw: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+                for key in &[
+                    "archivedProjectPaths",
+                    "archivedProjectPathsRelativeToInstance",
+                ][..]
+                {
+                    assert!(raw.get(*key).is_none(), "raw authority resurrected {key}");
+                }
+            }
         }
-        let disk: AppSettings =
-            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
-        assert_single_project(&disk, &live_project);
     }
 
     #[tokio::test]
-    async fn save_settings_draft_keeps_live_project_paths_when_settings_file_absent() {
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let live_project = real_ac_project(temp.path(), "live-a");
-
-        let mut current = settings_with_single_agent();
-        current.project_paths = vec![live_project.clone()];
-        current.project_path = Some(live_project.clone());
-        let state = state_for(current.clone());
-        let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
-
-        let (saved, _events) =
-            persist_settings_draft_update_with_saver(&state, payload, |candidate| {
-                crate::config::settings::save_settings_to_path_preserving_project_paths(
-                    candidate,
-                    &settings_path,
+    async fn update_settings_adopts_canonical_projects_without_resurrecting_absent_authority() {
+        for canonical in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let live_project = real_ac_project(temp.path(), "live-a");
+            let sidecar = temp.path().join("project-paths.json");
+            if canonical {
+                std::fs::write(
+                    &sidecar,
+                    serde_json::to_vec(&serde_json::json!({
+                        "projectPath":live_project, "projectPathRelativeToInstance":null,
+                        "projectPaths":[live_project], "projectPathsRelativeToInstance":[null],
+                        "archivedProjectPaths":[], "archivedProjectPathsRelativeToInstance":[]
+                    }))
+                    .unwrap(),
                 )
-            })
-            .await
-            .unwrap();
-
-        assert_single_project(&saved, &live_project);
-        assert!(session_retention_project_paths(&saved)
-            .unwrap()
-            .contains(&live_project));
-        {
+                .unwrap();
+            }
+            let canonical_bytes = canonical.then(|| std::fs::read(&sidecar).unwrap());
+            let mut current = settings_with_single_agent();
+            current.project_paths = vec![live_project.clone()];
+            current.project_path = Some(live_project.clone());
+            let state = state_for(current.clone());
+            let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
+            let saved =
+                persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+                    crate::config::settings::save_settings_to_path_preserving_project_paths(
+                        candidate,
+                        &settings_path,
+                    )
+                })
+                .await
+                .unwrap();
+            let disk = crate::config::settings::load_settings_from_path(&settings_path);
             let live = state.read().await;
-            assert_single_project(&live, &live_project);
+            for adopted in [&saved, &*live, &disk] {
+                if canonical {
+                    assert_single_project(adopted, &live_project);
+                } else {
+                    assert!(adopted.project_paths.is_empty());
+                    assert!(adopted.project_path.is_none());
+                }
+                assert_eq!(
+                    session_retention_project_paths(adopted)
+                        .unwrap()
+                        .contains(&live_project),
+                    canonical
+                );
+            }
+            let managed: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+            for key in [
+                "projectPath",
+                "projectPathRelativeToInstance",
+                "projectPaths",
+                "projectPathsRelativeToInstance",
+                "archivedProjectPaths",
+                "archivedProjectPathsRelativeToInstance",
+            ] {
+                assert!(
+                    managed.get(key).is_none(),
+                    "managed settings resurrected {key}"
+                );
+            }
+            if let Some(bytes) = canonical_bytes {
+                assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+            } else {
+                let raw: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+                for key in &[
+                    "projectPath",
+                    "projectPathRelativeToInstance",
+                    "projectPaths",
+                    "projectPathsRelativeToInstance",
+                ][..]
+                {
+                    assert!(raw.get(*key).is_none(), "raw authority resurrected {key}");
+                }
+            }
         }
-        let disk: AppSettings =
-            crate::config::settings::load_settings_from_path(std::path::Path::new(&settings_path));
-        assert_single_project(&disk, &live_project);
+    }
+
+    #[tokio::test]
+    async fn save_settings_draft_adopts_canonical_projects_without_resurrecting_absent_authority() {
+        for canonical in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let live_project = real_ac_project(temp.path(), "live-a");
+            let sidecar = temp.path().join("project-paths.json");
+            if canonical {
+                std::fs::write(
+                    &sidecar,
+                    serde_json::to_vec(&serde_json::json!({
+                        "projectPath":live_project, "projectPathRelativeToInstance":null,
+                        "projectPaths":[live_project], "projectPathsRelativeToInstance":[null],
+                        "archivedProjectPaths":[], "archivedProjectPathsRelativeToInstance":[]
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+            let canonical_bytes = canonical.then(|| std::fs::read(&sidecar).unwrap());
+            let mut current = settings_with_single_agent();
+            current.project_paths = vec![live_project.clone()];
+            current.project_path = Some(live_project.clone());
+            let state = state_for(current.clone());
+            let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
+            let (saved, _events) =
+                persist_settings_draft_update_with_saver(&state, payload, |candidate| {
+                    crate::config::settings::save_settings_to_path_preserving_project_paths(
+                        candidate,
+                        &settings_path,
+                    )
+                })
+                .await
+                .unwrap();
+            let disk = crate::config::settings::load_settings_from_path(&settings_path);
+            let live = state.read().await;
+            for adopted in [&saved, &*live, &disk] {
+                if canonical {
+                    assert_single_project(adopted, &live_project);
+                } else {
+                    assert!(adopted.project_paths.is_empty());
+                    assert!(adopted.project_path.is_none());
+                }
+                assert_eq!(
+                    session_retention_project_paths(adopted)
+                        .unwrap()
+                        .contains(&live_project),
+                    canonical
+                );
+            }
+            let managed: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+            for key in [
+                "projectPath",
+                "projectPathRelativeToInstance",
+                "projectPaths",
+                "projectPathsRelativeToInstance",
+                "archivedProjectPaths",
+                "archivedProjectPathsRelativeToInstance",
+            ] {
+                assert!(
+                    managed.get(key).is_none(),
+                    "managed settings resurrected {key}"
+                );
+            }
+            if let Some(bytes) = canonical_bytes {
+                assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+            } else {
+                let raw: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+                for key in &[
+                    "projectPath",
+                    "projectPathRelativeToInstance",
+                    "projectPaths",
+                    "projectPathsRelativeToInstance",
+                ][..]
+                {
+                    assert!(raw.get(*key).is_none(), "raw authority resurrected {key}");
+                }
+            }
+        }
     }
 
     #[tokio::test]

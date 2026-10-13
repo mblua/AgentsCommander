@@ -10,6 +10,8 @@ Current deterministic mode: use `agentscommander_testeable.exe` with explicit pl
 
 Use only a fresh disposable/release `agentscommander_testeable.exe` identity. Do not manually delete or hand-edit files outside `.agentscommander_testeable` and `agentscommander_testeable`. The GUI must be closed before `test-reset --confirm-testeable`. If there is no documented safe method to create invalid settings, `SET-006` must be marked `BLOCKED` during execution.
 
+Project persistence uses `project-paths.json` beside managed settings. Keep raw disk snapshots separate from filtered runtime IPC lists. Only legacy-migration inputs carry project fields in settings; successful extraction removes all six keys. These instructions are not execution results.
+
 Required evidence categories for this suite: before and after screenshots, settings JSON snapshots if available, before and after directory listings for reset, `window-info` or process evidence proving the GUI is closed before reset, and restart evidence for persistence checks.
 
 ## Execution Log
@@ -144,7 +146,7 @@ Preconditions:
 Steps:
 
 1. Capture the project/room list before restart.
-2. Save any available settings or project registration snapshot for the testable identity.
+2. Save `project-paths.json` from the testable identity for raw project registration; settings snapshots cover unrelated preferences.
 3. Close `AC [TESTEABLE]` normally.
 4. Relaunch `agentscommander_testeable.exe --app` with deterministic placement.
 5. Run `agentscommander_testeable.exe window-info` and save the output.
@@ -158,10 +160,10 @@ The disposable project/room registration persists or restores according to docum
 Evidence Required:
 
 - `SET-003-pre-restart-projects.png`.
-- Optional `SET-003-pre-restart-settings.30.instance.no-git.json`.
+- Optional `SET-003-pre-restart-project-paths.json`.
 - `SET-003-post-window-info.json`.
 - `SET-003-post-restart-projects.png`.
-- Optional `SET-003-post-restart-settings.30.instance.no-git.json`.
+- Optional `SET-003-post-restart-project-paths.json`.
 
 Pass/Fail Criteria:
 
@@ -288,21 +290,22 @@ PASS if a documented safe method is used and recovery/error behavior is clear an
 
 Purpose:
 
-Verify that registering active and archived projects writes all six project fields in `settings.30.instance.no-git.json` with correctly aligned companion arrays, portable companions in `/`-separated form, and a `null` companion for a cross-drive/share project.
+Verify that registering active and archived projects writes all six project fields in `project-paths.json` with correctly aligned companion arrays, portable companions in `/`-separated form, and a `null` companion for a cross-drive/share project.
 
 Preconditions:
 
 - Depends on SET-001.
 - A disposable testable identity with at least one disposable AC project on the same drive/share as the binary, and, if available, one disposable project on a different drive or UNC share.
-- Read-only inspection of the disposable `settings.30.instance.no-git.json` is available.
+- Read-only inspection of the disposable `project-paths.json` is available.
 
 Steps:
 
 1. Register one disposable project on the binary's drive/share through the UI or CLI.
 2. If a second drive/share is available, register a disposable project located there.
 3. Archive one registered project so the archived arrays are populated.
-4. Capture a `settings.30.instance.no-git.json` snapshot and inspect the six fields: `projectPath`, `projectPathRelativeToInstance`, `projectPaths`, `projectPathsRelativeToInstance`, `archivedProjectPaths`, `archivedProjectPathsRelativeToInstance`.
-5. Confirm each companion array has the same length and order as its absolute array, companion strings use `/` separators, and the cross-drive/share project (if present) has a `null` companion while keeping its absolute path.
+4. Capture a `project-paths.json` snapshot and inspect the six fields: `projectPath`, `projectPathRelativeToInstance`, `projectPaths`, `projectPathsRelativeToInstance`, `archivedProjectPaths`, `archivedProjectPathsRelativeToInstance`.
+5. Inspect managed settings separately and confirm none of the six project keys remains.
+6. Confirm each companion array has the same length and order as its absolute array, companion strings use `/` separators, and the cross-drive/share project (if present) has a `null` companion while keeping its absolute path.
 
 Expected Result:
 
@@ -310,46 +313,25 @@ All six fields are present, companion arrays are index-aligned with their absolu
 
 Evidence Required:
 
-- `SET-007-settings-snapshot.json` showing the six fields.
+- `SET-007-project-paths-snapshot.json` showing the six fields.
 - Notes mapping each companion slot to its absolute entry, including the `null` cross-drive/share slot when tested.
 
 Pass/Fail Criteria:
 
-PASS if all six fields are present and aligned and the `null` cross-drive/share case is correct (or noted as untested when no second drive/share exists). PARTIAL if fields are correct but the cross-drive/share case could not be exercised. FAIL if arrays are misaligned, a companion is absolute or backslash-separated, or a same-drive project stores `null`. BLOCKED if `settings.30.instance.no-git.json` cannot be inspected.
+PASS if all six fields are present and aligned and the `null` cross-drive/share case is correct (or noted as untested when no second drive/share exists). PARTIAL if fields are correct but the cross-drive/share case could not be exercised. FAIL if arrays are misaligned, a companion is absolute or backslash-separated, or a same-drive project stores `null`. BLOCKED if `project-paths.json` cannot be inspected.
 
-### SET-008: Legacy, new, and mixed schemas all load
+### SET-008: Raw extraction, paired and mixed records
 
-Purpose:
+Status: PENDING - not run in this documentation change.
 
-Verify that a legacy absolute-only `settings.30.instance.no-git.json`, a fully paired new-schema file, and a mixed file (some entries paired, some companion-absent) all load their projects, and that a legacy entry gains a companion only after a validating operation.
+Use only the closed disposable testable identity and disposable projects. Preserve initial files/absence, prepare each variant in its own disposable state and restore it afterwards. Record input/output bytes and hashes.
 
-Preconditions:
+1. Legacy input: sidecar absent, valid settings containing absolute-only project fields, including an unresolved path or singular-only record. Capture the original settings bytes. A read-only CLI project load must leave both data files unchanged, create no migration backup and generate no root token; a lock artifact may appear.
+2. Start the managed app and close it. Confirm the fixed migration backup equals the exact original settings bytes, the sidecar preserves the original raw six-key values and settings contains none of those keys. Check raw extraction separately from later validating reconciliation that adds companions. Unresolved registrations remain on disk even when absent from runtime lists.
+3. Repeat a managed load and compare the sidecar and fixed backup: completed extraction must not repeat or overwrite the backup.
+4. Prepare sidecar variant B with fully paired records and settings without project keys; confirm valid projects load. Prepare variant C with aligned arrays containing null companions and a legacy singular-only carrier; confirm valid entries survive. Absent companions remain valid legacy metadata.
 
-- The testable GUI is closed.
-- The test edits only the disposable testable identity's `settings.30.instance.no-git.json` under `.agentscommander_testeable`.
-- Two or more disposable AC projects exist on disk for registration in each variant.
-
-Steps:
-
-1. Prepare variant A (legacy): `settings.30.instance.no-git.json` with `projectPaths` populated and no companion fields at all.
-2. Launch the testable app, confirm the projects load, then close it. Confirm the file still has no companion fields (loading alone does not migrate).
-3. Trigger a validating operation (register or archive a project through the UI/CLI) and confirm a companion is then added for the reconciled entries.
-4. Prepare variant B (new): `settings.30.instance.no-git.json` with fully aligned companion arrays. Launch, confirm the projects load, close.
-5. Prepare variant C (mixed): `projectPaths` with an aligned companion array where one slot is `null` and one legacy singular-only carrier is present. Launch, confirm every valid entry loads and no entry is dropped.
-
-Expected Result:
-
-Each schema variant loads its valid projects; a legacy file gains companions only after a validating operation, not from a plain load.
-
-Evidence Required:
-
-- The three input `settings.30.instance.no-git.json` variants (or diffs) captured before launch.
-- Post-launch sidebar screenshots for each variant.
-- Post-operation `settings.30.instance.no-git.json` snapshot for variant A showing companions added only after the validating operation.
-
-Pass/Fail Criteria:
-
-PASS if all three variants load correctly and legacy migration happens only after a validating operation. PARTIAL if loading is correct but one migration snapshot is missing. FAIL if any valid project fails to load, a plain load rewrites a legacy file, or a mixed entry is dropped. BLOCKED if the disposable `settings.30.instance.no-git.json` cannot be prepared safely.
+PASS requires raw preservation, exact-original backup, six-key cleanup, read-only loader behavior, idempotence and valid runtime selection for all variants. FAIL on data loss, loader-induced migration, backup overwrite or settings project-key resurrection. Missing evidence is PARTIAL; unsafe preparation/restoration is BLOCKED. Preserve input, output, CLI/log and sidebar evidence for each variant.
 
 ### SET-009: Misaligned companion is retained, not normalized
 
@@ -359,17 +341,17 @@ Verify that a structurally malformed project pair (a companion array whose lengt
 
 Preconditions:
 
-- The testable GUI is closed.
-- The test edits only the disposable testable identity's `settings.30.instance.no-git.json` under `.agentscommander_testeable`.
+- The testable GUI is closed; managed settings is valid and contains no project keys.
+- The test edits only the disposable testable identity's `project-paths.json` under `.agentscommander_testeable`.
 - A documented safe method exists to create the malformed disposable file. If not, mark this case `BLOCKED`.
 
 Steps:
 
-1. Capture a baseline `settings.30.instance.no-git.json` snapshot and its byte size/mtime.
+1. Capture a baseline `project-paths.json` snapshot and its byte size/mtime.
 2. Edit the disposable file so `projectPathsRelativeToInstance` has a different length than `projectPaths` (a misaligned companion).
 3. Launch the testable app.
 4. Confirm the malformed list produces no loaded projects from that list and the app reports the malformed condition rather than crashing.
-5. Without triggering a project mutation, capture the `settings.30.instance.no-git.json` bytes/mtime and confirm they are unchanged (no auto-normalization write).
+5. Without triggering a project mutation, capture the `project-paths.json` bytes/mtime and confirm they are unchanged (no auto-normalization write).
 6. Change one unrelated harmless setting and save; confirm the save succeeds and the malformed project fields are still present verbatim.
 7. Attempt a project mutation (open, archive, or remove); confirm it is refused while the malformed field is present.
 
@@ -388,41 +370,26 @@ Pass/Fail Criteria:
 
 PASS if the malformed pair is preserved, reported, and blocks mutation while unrelated saves succeed. PARTIAL if behavior is correct but one artifact is missing. FAIL if the file is normalized/overwritten, the malformed entry loads, a project mutation proceeds, or an unrelated save is blocked. BLOCKED if no safe method exists to create the malformed disposable file.
 
-### SET-010: Failed settings write leaves the file intact
+### SET-010: Migration failure, conflict and retry
 
-Purpose:
+Status: PENDING - not run in this documentation change.
 
-Verify that when a settings write cannot complete, the on-disk `settings.30.instance.no-git.json` is left unchanged, the app still uses the validated selected project paths for the current run, and the failure is reported as an actionable diagnostic.
+Use the closed disposable testable identity only. Preserve original files and absence, and restore them after each variant. A write-failure variant needs an existing documented safe way to deny the particular write; otherwise mark that variant BLOCKED. Do not add a fault harness or edit live configuration.
 
-Preconditions:
+| Variant | Expected result and evidence |
+|---|---|
+| Valid sidecar and differing legacy six-key projection | Report conflict; neither source is merged or overwritten. Requested unrelated settings/compare-and-set changes fail. Unavailable projects cannot authorize sessions, retention pruning or privileged operations. Capture both unchanged files and the error. |
+| Destination absent and fixed backup mismatches original settings bytes | Fail before destination publication; source and backup remain. Stop all processes, preserve the backup by a no-overwrite recovered-name rename, retain orphan temps, verify the intended legacy projection and retry. Capture the new complete fixed backup and cleanup. |
+| Destination valid, equal legacy remnants, historical backup differs | Cleanup succeeds without comparing the old backup, preserving unrelated settings values. Capture before/after files and unchanged backup. |
+| Destination publication succeeded, settings cleanup cannot complete | Report failure and retain destination/source. Restore writability and retry equal-remnant cleanup. Capture both files at failure and after retry; do not delete the published destination. |
+| Malformed JSON, duplicate keys, null root, unsafe or unreadable source | Reject the source; never fall back from an existing bad sidecar to legacy settings. Capture the diagnostic and preserved data. A valid empty sidecar object is the separate positive control. |
+| Shared lock held by another cooperating operation | A read-only CLI project load reports contention after its two-second timeout; retry after release succeeds without migration/data writes. Strict discovery errors precede peer JSON, target augmentation and outbox creation. Capture command output and both data-file hashes. |
 
-- The testable GUI is closed for setup.
-- The test operates only on the disposable testable identity directory.
-- A documented safe method exists to make the disposable settings directory or file temporarily unwritable. If not, mark this case `BLOCKED`.
+For projection conflict recovery, stop all AC/old processes, preserve both files, make the intended raw six-key projections equal and retry. For backup mismatch use `project-paths.pre-migration.recovered-<UTC>-<unique>.no-git.json`; retain `project-paths.pre-migration.no-git.json.<unique>.tmp` evidence. See [Recovery and upgrade safety](../reference/settings.md#recovery-and-upgrade-safety).
 
-Steps:
+Individual publications sync temp contents and the Unix parent directory, but the two-file migration is recoverable rather than one atomic commit. Do not infer a universal power-loss guarantee.
 
-1. With a disposable project registered, capture a baseline `settings.30.instance.no-git.json` snapshot and its bytes/mtime.
-2. Make the disposable settings directory or file unwritable using the documented safe method.
-3. Launch the app (or trigger an operation that would reconcile/write settings).
-4. Confirm the registered project still loads and is usable for this run from the validated selected path.
-5. Capture the `settings.30.instance.no-git.json` bytes/mtime and confirm they are unchanged.
-6. Capture the diagnostic warning/error and confirm it is actionable and does not claim a successful write.
-7. Restore writability and confirm a later save succeeds normally.
-
-Expected Result:
-
-A failed write leaves the file byte-identical, the project remains usable for the run via the in-memory selected path, and the failure surfaces as an actionable diagnostic without corrupting or partially writing the file.
-
-Evidence Required:
-
-- `SET-010-before.json` and `SET-010-after.json` (or byte/mtime comparison) showing no change.
-- Screenshot or log of the actionable failure diagnostic.
-- Evidence the project loaded despite the failed write.
-
-Pass/Fail Criteria:
-
-PASS if the file is unchanged, the project stays usable, and the diagnostic is actionable. PARTIAL if behavior is correct but one artifact is missing. FAIL if the file is truncated, partially written, or overwritten, or the failure is silent or misreported as success. BLOCKED if no safe method exists to make the disposable settings unwritable.
+PASS requires the expected error, preserved raw state and successful bounded recovery for each exercised variant. Missing evidence is PARTIAL; unsafe/unavailable setup is BLOCKED. Silent fallback, automatic union, overwritten fixed backup, partial cleanup reported as success or loss of the published destination is FAIL.
 
 ### SET-011: CLI and GUI interleaving preserves both pair forms
 
@@ -435,16 +402,17 @@ Preconditions:
 - Depends on SET-001.
 - The testable GUI is running for the interleaving steps.
 - Two or more disposable AC projects exist for registration.
-- Read-only inspection of the disposable `settings.30.instance.no-git.json` is available.
+- Read-only inspection of the disposable `project-paths.json` is available.
 
 Steps:
 
-1. With the GUI open and at least one project already registered, capture the baseline project list and `settings.30.instance.no-git.json`.
-2. Run a CLI `open-project` for a second disposable project against the same testable identity.
+1. With the GUI open and at least one project already registered, capture the baseline project list and `project-paths.json`.
+2. Run a CLI `open-project` for a second disposable project against the same testable identity; capture the resulting sidecar before the GUI save.
 3. In the GUI, perform an unrelated settings save (a harmless setting change).
-4. In the GUI, perform a project mutation (archive or unarchive an existing project).
-5. Capture the final `settings.30.instance.no-git.json` and project list.
-6. Confirm both projects remain registered, the CLI-registered entry survives, and every active and archived entry has an aligned absolute path and companion.
+4. Before the project mutation, compare sidecar bytes with the post-CLI snapshot: Preserve must leave them unchanged, and managed settings must contain none of the six project keys.
+5. In the GUI, perform a project mutation (archive or unarchive an existing project).
+6. Capture the final `project-paths.json` and project list.
+7. Confirm both projects remain registered, the CLI-registered entry survives, and every active and archived entry has an aligned absolute path and companion.
 
 Expected Result:
 
@@ -452,7 +420,7 @@ After the interleaving, no registration or companion is lost, the CLI-registered
 
 Evidence Required:
 
-- Baseline and final `settings.30.instance.no-git.json` snapshots.
+- Baseline and final `project-paths.json` snapshots.
 - Baseline and final project-list screenshots.
 - Notes confirming pair alignment for every active and archived entry.
 

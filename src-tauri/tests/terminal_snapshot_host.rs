@@ -255,6 +255,13 @@ impl HostLayout {
         let binary = copied_binary(&bundle);
         let stem = binary.file_stem().unwrap().to_string_lossy();
         let config = bundle.join(format!(".{stem}"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("settings.30.instance.no-git.json"),
+            r#"{"defaultShell":"powershell.exe","defaultShellArgs":[],"terminalSnapshotsEnabled":false,"agents":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(config.join("project-paths.json"), r#"{"projectPaths":[]}"#).unwrap();
         let root = config.join("ac-root-agent");
         let local = root.join(format!(".{stem}"));
         let outbox = local.join("outbox");
@@ -532,6 +539,20 @@ fn assert_one_ascii_line(bytes: &[u8]) {
 }
 
 fn assert_empty_protocol_directories(layout: &HostLayout) {
+    let config = layout.root.parent().unwrap();
+    let settings: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(config.join("settings.30.instance.no-git.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["terminalSnapshotsEnabled"], false);
+    assert!(settings.get("projectPaths").is_none());
+    assert_eq!(
+        std::fs::read(config.join("project-paths.json")).unwrap(),
+        br#"{"projectPaths":[]}"#
+    );
+    assert!(!config
+        .join("project-paths.pre-migration.no-git.json")
+        .exists());
     for directory in [&layout.request_directory, &layout.response_directory] {
         if directory.exists() {
             assert_eq!(std::fs::read_dir(directory).unwrap().count(), 0);

@@ -1,6 +1,6 @@
 # Settings reference
 
-For developers editing `settings.30.instance.no-git.json` by hand, or scripting AgentsCommander configuration. The full schema of the `settings.30.instance.no-git.json` file AC reads at startup.
+For developers editing `settings.30.instance.no-git.json` by hand, or scripting AgentsCommander configuration. This page covers managed settings and the separate project-registration file in current development builds; verify an older release before applying the extraction contract.
 
 ## File location
 
@@ -35,9 +35,10 @@ AgentsCommander keeps a bounded history of previous `settings.30.instance.no-git
 Recovery is a manual copy: while AgentsCommander is closed, copy the slot you want over `settings.30.instance.no-git.json`. The slots hold the same secrets as `settings.30.instance.no-git.json`, so treat them with the same care.
 
 > A slot is written without a temp-and-rename, so a crash during rotation can leave
-> `settings.30.instance.no-git.backup.1.json` truncated. AgentsCommander does not report a truncated
-> `settings.30.instance.no-git.json` as an error: it logs the parse failure and starts from default
-> settings, so a bad copy looks like a silently reset configuration, not a failure.
+> `settings.30.instance.no-git.backup.1.json` truncated. Project-source parse
+> failures do not produce usable empty project state: those errors fail closed.
+> A settings-history slot does not restore `project-paths.json`; restoring legacy
+> project keys can conflict with the current sidecar.
 > Before starting AgentsCommander, confirm the file you copied is complete and valid
 > JSON. If slot 1 is short or does not parse, use `settings.30.instance.no-git.backup.2.json`, which holds
 > the generation before it.
@@ -162,7 +163,7 @@ Lettered launch variants (`A`, `B`, `C`, ...) per coding agent. See [Coding Agen
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schemaVersion` | number | `2` | Schema version. Older pre-v2 profile fields are no longer read: they are ignored. Before any save drops them, AC keeps the original once as `settings.30.instance.no-git.pre-384-v1.json` and writes settings without them; the `open-project` and `new-project` CLI commands keep them and write no backup. |
+| `schemaVersion` | number | `2` | Schema version. Older pre-v2 profile fields are no longer read: they are ignored. Before any save drops them, AC keeps the original once as `settings.30.instance.no-git.pre-384-v1.json` and writes settings without them; `open-project` and `new-project` keep them and write no profile-migration backup. Their separate project extraction can create the project-migration backup described below. |
 | `profileSlots` | `{ <LETTER>: { label: string } }` | `{ "A": { "label": "" } }` | The defined profile letters. |
 | `defaultProfileByAgent` | `{ <agent>: <LETTER> }` | `{}` | Tier-4 fallback letter per agent matrix. Rarely set by hand. |
 | `profilesByAgent` | `{ <coding-agent-id>: { <LETTER>: ProfileCellConfig } }` | `{}` | The matrix: per coding agent, the cell for each letter. |
@@ -209,13 +210,15 @@ See [Terminal snapshots](../features/terminal-snapshots.md) for authorization, c
 
 ### Projects
 
-Each registered project is stored as a canonical absolute path and may also have a portable companion relative to the selected instance base. For an adjacent configuration that base is the native executable's directory. Under the `v0.33.0` and `main` resolver, an absolute public config override uses the override directory's parent; published `v0.30.3` has no such override. A home fallback or `main` relative override has no base. The three absolute fields and their three companions are index-aligned.
+The six fields below persist in **`project-paths.json`**, beside managed settings in the selected instance configuration directory. This single unsuffixed file has no layer, local override or variant. Raw values retain unresolved and conflicting registrations, array order, nulls and singular-only records. The sidebar is a filtered runtime view; IPC `AppSettings` still carries project fields. Unknown sidecar keys survive project writes but do not register projects.
+
+A validated registration uses a canonical absolute path and may have a portable companion relative to the selected instance base; raw migrated or unresolved values remain as recorded until reconciliation. For an adjacent configuration that base is the native executable's directory. Under the `v0.33.0` and `main` resolver, an absolute public config override uses the override directory's parent; published `v0.30.3` has no such override. A home fallback or `main` relative override has no base. The three absolute fields and their three companions are index-aligned.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `projectPath` | string \| null | `null` | Legacy single-project field: the first active registration's absolute path. Kept for backward compat. |
 | `projectPathRelativeToInstance` | string \| null | `null` | Companion of `projectPath`. Portable form relative to the selected instance base, or `null` when there is no portable form. |
-| `projectPaths` | string[] | `[]` | All active projects registered in the sidebar. New entries appended by `new-project` / `open-project`. |
+| `projectPaths` | string[] | `[]` | Raw active registrations, including entries that cannot currently load in the sidebar. New entries appended by `new-project` / `open-project`. |
 | `projectPathsRelativeToInstance` | (string \| null)[] | `[]` | Companion array of `projectPaths`: one slot per entry, same length and order. `null` where an entry has no portable form. |
 | `archivedProjectPaths` | string[] | `[]` | Absolute paths of archived (registered but hidden) projects. |
 | `archivedProjectPathsRelativeToInstance` | (string \| null)[] | `[]` | Companion array of `archivedProjectPaths`: same length and order. |
@@ -226,7 +229,7 @@ See [Project archiving](../features/project-archiving.md).
 
 **Array alignment.** Each plural companion array has exactly the same length and index meaning as its absolute array: slot `i` in `projectPathsRelativeToInstance` is the portable form of `projectPaths[i]`, or `null`. A length mismatch, an orphan companion (a companion present while its absolute field is absent), a wrong-typed field, or a non-null companion beside a `null` primary is structural corruption (see below).
 
-**Legacy migration.** A settings file written by an older build has the three absolute fields and no companions. AC loads it unchanged (absolute-only) and adds a companion only after that project successfully validates, at the first reconciliation boundary or an explicit register/archive operation. Absent companions are valid legacy metadata, never corruption.
+**Legacy companions.** Older records may have absolute fields without companions. Raw extraction copies those values unchanged. A later validating reconciliation or explicit register/archive operation can add companions. Absent companions remain valid legacy metadata; extraction and path reconciliation are separate steps.
 
 **Resolution at load (fail-closed).** On every load AC resolves and validates both candidates for each registration. Validation canonicalizes on the filesystem and requires an existing directory that is either a project containing `.ac/` or a legacy collection root with a project child. The per-registration outcome:
 
@@ -241,11 +244,45 @@ See [Project archiving](../features/project-archiving.md).
 
 "Same" and "different" are decided by filesystem identity, not string comparison, so symlinks and Windows case/alias spellings collapse to one directory. Only validated canonical absolute paths reach startup restoration, team discovery, archive/session gates, and the sidebar. Unresolved or conflicting entries are filtered from the runtime lists but preserved on disk.
 
-**Atomic reconciliation.** When a load selects a path whose companion must be added, repaired, or normalized, AC rewrites only the affected field group (active or archived) through the existing atomic writer (temp file plus rename with retry). Writes are atomic and never torn, but there is no `fsync`, so this is not a power-loss durability guarantee. Generic settings saves use a preserve mode that copies the six raw project fields from disk verbatim rather than rebuilding them, so an unrelated save can never re-pair, reorder, or drop project metadata. A structurally malformed project field blocks all project-list reconciliation and mutation while unrelated settings saves still succeed; the malformed bytes are retained and reported, not normalized.
+**Persistence and locking.** A project transaction holds the shared settings-file lock across fresh reads, migration, mutation, commit, revalidation and rollback. Reconciliation rewrites the affected active or archived group in the sidecar. Generic settings saves use Preserve: they keep sidecar bytes and strip the six project keys from settings output, including stale renderer drafts. Structurally malformed field values remain raw and block project mutation; unrelated saves and dedicated compare-and-set actions can succeed after raw migration. Source conflicts, unsafe reads, I/O or backup-publication failures block the requested save and report failure.
 
 **Archive pairing.** Archiving, unarchiving, and removing a project move or delete the whole pair (absolute plus companion) together, preserving array order. Archived entries carry their own companion array with the same alignment rules as the active one.
 
-**Downgrade.** An older AgentsCommander build ignores the companion fields and reads only the absolute fields, so a downgraded install still opens your projects. The caveat: if a dual-path conflict exists, the old build does not see it (it reads only the absolute side) and therefore loses the newer build's fail-closed protection for that registration. Resolve conflicts before downgrading.
+#### Source selection and migration
+
+When `project-paths.json` exists, it is the sole project authority. Missing destination permits transitional reads of the six legacy settings fields. A present `{}` is a valid empty project object and never falls back to legacy registrations. A `null` root, malformed JSON, duplicate keys, unreadable or unsafe files are rejected. Absent fields and explicit null field values retain their decoder semantics; they are not interchangeable. Remaining legacy fields must equal the sidecar's raw six-key projection, otherwise selection fails with `project_paths_conflict`. AC does not union or overwrite conflicting sources.
+
+GUI startup, managed app/daemon loads and explicit settings/project writer transactions migrate under the shared lock:
+
+1. With an absent destination and legacy project keys, write the exact original settings bytes to a unique `project-paths.pre-migration.no-git.json.<unique>.tmp`, sync and read them back, then rename to fixed `project-paths.pre-migration.no-git.json` only while that name is absent. An existing fixed backup must match the source bytes on this path; it is never overwritten.
+2. Publish the raw projection to `project-paths.json` and verify its projection by reading it back.
+3. Atomically remove the six keys from managed settings, preserving its other raw values. With no legacy keys, an absent destination initializes as `{}` without a migration backup.
+
+A valid destination with equal legacy remnants needs only verification and cleanup; it does not compare or read the historical backup. Cleanup failure retains both destination and source and reports an error. Retry completes equal-remnant cleanup; completed migration is a no-op. The backup is recovery evidence, never an alternate project source.
+
+Individual publications use unique create-new temps, regular-file/identity checks, synced file contents, atomic replacement with retries and Unix parent-directory sync. Migration across two files is recoverable, but does not commit both atomically or guarantee recovery from every power-loss scenario.
+
+#### Read-only consumers
+
+Local CLI project loaders and privileged project readers acquire the shared lock before source reads or existence checks and capture one consistent projection. Lock contention can fail after two seconds; retry after the other operation completes. These reads create no migration backup, repair/export no project state and generate no root token. A lock/config-directory artifact may still be created to serialize access.
+
+`list-peers`, `list-peers-lean`, `send` and `close-session` use strict loading for project selection; source errors abort before peer JSON, target augmentation or outbox creation. Token validation and `create-agent-matrix` use nonstrict loading; unavailable projects cannot authorize matrix creation. Team authorization uses captured registered paths before caller-root augmentation. Task coordinator discovery and incidental gitignore capture also leave project data untouched. A missing root token is generated at the next GUI startup; existing root/master and UUID session-token behavior remains.
+
+This is a loader policy: explicit message/task/room/settings writes still occur, and `open-project`/`new-project` migrate through registration transactions. New-project setup and gitignore capture finish before its write token. Requests handled by a running GUI/daemon use app-owned authority.
+
+Unavailable project state is an error, never a valid empty list for session retention, creation or privileged authorization. PTY and snapshot readers retain their existing limits and error codes; the snapshot disclosure gate stays in managed settings.
+
+Generated Root Agent context identifies the registered scope as `projectPaths` in `project-paths.json`. Direct app-configuration writes remain CLI-managed; the filename change grants no new write authority.
+
+#### Recovery and upgrade safety
+
+Stop every AC process, including old binaries, and preserve copies before manual recovery. These instructions are for the operator; they do not authorize an agent to edit live configuration.
+
+- **Projection conflict:** preserve both files, reconcile the intended six-key raw projections to equality and retry. Equal-remnant cleanup skips historical-backup comparison.
+- **Absent destination with a mismatched or partial fixed backup:** preserve the backup through a no-overwrite rename to `project-paths.pre-migration.recovered-<UTC>-<unique>.no-git.json`. Keep all orphan backup temps, verify the intended legacy projection and retry so AC creates a new complete fixed backup.
+- **Cleanup failure after destination publication:** keep both files, resolve the reported write failure and retry. Do not delete the published destination.
+
+Older binaries are unsupported after extraction: they read settings project fields that have been removed. There is no automatic downgrade export. Preserve the whole selected configuration directory before upgrading, including settings, sidecar and recovery evidence. Restoring a settings-history slot alone does not restore the sidecar and may reintroduce conflicting legacy fields.
 
 ### Resource monitor
 

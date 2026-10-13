@@ -157,38 +157,29 @@ enum NewProjectSettingsStore {
 }
 
 impl NewProjectSettingsStore {
-    fn refresh(&self, settings: &mut AppSettings) -> Result<(), ProjectError> {
-        let result = match self {
+    fn begin(
+        &self,
+        settings: &AppSettings,
+    ) -> Result<Option<crate::config::settings::ProjectPathsWriteTransaction>, ProjectError> {
+        let path = match self {
             #[cfg(test)]
-            Self::CallerOwned => Ok(()),
+            Self::CallerOwned => return Ok(None),
             #[cfg(test)]
-            Self::Path(path) => {
-                crate::config::settings::refresh_project_paths_from_path(settings, path)
-            }
+            Self::Path(path) => path.clone(),
             #[cfg(not(test))]
-            Self::Production => crate::config::settings::refresh_project_paths_from_disk(settings),
+            Self::Production => crate::config::settings::settings_path().ok_or_else(|| {
+                ProjectError::ProjectSettingsFailed {
+                    operation: "refresh",
+                    error: "Could not determine settings directory".to_string(),
+                }
+            })?,
         };
-        result.map_err(|error| ProjectError::ProjectSettingsFailed {
-            operation: "refresh",
-            error,
-        })
-    }
-
-    fn save(&self, settings: &AppSettings) -> Result<(), ProjectError> {
-        let result = match self {
-            #[cfg(test)]
-            Self::CallerOwned => Ok(()),
-            #[cfg(test)]
-            Self::Path(path) => {
-                crate::config::settings::save_settings_with_project_paths_to_path(settings, path)
-            }
-            #[cfg(not(test))]
-            Self::Production => crate::config::settings::save_settings_with_project_paths(settings),
-        };
-        result.map_err(|error| ProjectError::ProjectSettingsFailed {
-            operation: "persist",
-            error,
-        })
+        crate::config::settings::begin_project_paths_transaction_at_path(settings, &path)
+            .map(Some)
+            .map_err(|error| ProjectError::ProjectSettingsFailed {
+                operation: "refresh",
+                error,
+            })
     }
 }
 
@@ -204,35 +195,65 @@ fn register_new_project_with_store(
             on_publication,
         )
     })?;
-    store.refresh(settings)?;
-    let before_settings = settings.clone();
-    let result = commit_prepared_new_project(settings, &prepared);
-    if let Err(error) = prepared.revalidate() {
-        *settings = before_settings;
-        return Err(error);
+    let mut transaction = store.begin(settings)?;
+    let before_raw = transaction
+        .as_ref()
+        .map(|token| token.raw_project_projection())
+        .transpose()
+        .map_err(|error| ProjectError::ProjectSettingsFailed {
+            operation: "refresh",
+            error,
+        })?;
+    let mut candidate = match &transaction {
+        Some(token) => token.fresh_settings().clone(),
+        None => settings.clone(),
+    };
+    if let Some(token) = &transaction {
+        token
+            .refresh_raw_projects(&mut candidate)
+            .map_err(|error| ProjectError::ProjectSettingsFailed {
+                operation: "refresh",
+                error,
+            })?;
     }
-    // Save while the project gate is held when the historical CLI contract
-    // would save. Its caller-owned repeat is the same snapshot after this
-    // transaction and does not establish registration authority.
+    if crate::config::settings::project_state_has_structural(&candidate) {
+        return Err(ProjectError::ProjectSettingsFailed {
+            operation: "refresh",
+            error: "project metadata is malformed".to_string(),
+        });
+    }
+    let result = commit_prepared_new_project(&mut candidate, &prepared);
+    prepared.revalidate()?;
     let saved = result.created || result.registered;
     if saved {
-        store.save(settings)?;
+        crate::config::settings::resync_project_state_from_runtime(&mut candidate);
+        if let Some(token) = &mut transaction {
+            candidate = token
+                .commit_project_groups(&candidate, true, true)
+                .map_err(|error| ProjectError::ProjectSettingsFailed {
+                    operation: "persist",
+                    error,
+                })?;
+        }
     }
     if let Err(error) = prepared.revalidate() {
-        *settings = before_settings.clone();
         if saved {
-            if let Err(rollback_error) = store.save(&before_settings) {
-                return Err(ProjectError::ProjectSetupChanged(
-                    prepared.abs.clone(),
-                    format!(
-                        "{}; failed to roll back project registration settings: {}",
-                        error, rollback_error
-                    ),
-                ));
+            if let (Some(token), Some(raw)) = (&mut transaction, &before_raw) {
+                match token.restore_raw_project_projection(raw) {
+                    Ok(written) => *settings = written,
+                    Err(rollback_error) => {
+                        *settings = token.fresh_settings().clone();
+                        settings.project_paths_persistence_error = Some(rollback_error.clone());
+                        return Err(ProjectError::ProjectSetupChanged(prepared.abs.clone(),
+                            format!("{error}; failed to roll back project registration settings: {rollback_error}")));
+                    }
+                }
             }
         }
         return Err(error);
     }
+    *settings = candidate;
+    drop(transaction);
     prepared.release();
     Ok(result)
 }
@@ -2384,6 +2405,7 @@ mod tests {
     fn synchronous_new_project_refreshes_and_saves_disk_authoritative_settings() {
         let fix = FixtureRoot::new("proj-new-sync-settings");
         let settings_path = fix.path().join("settings.json");
+        std::fs::create_dir_all(fix.path().join("disk-only/.ac")).unwrap();
         let disk_only = fix.path().join("disk-only").to_string_lossy().to_string();
         let mut disk_settings = AppSettings {
             project_paths: vec![disk_only.clone()],
@@ -2408,14 +2430,28 @@ mod tests {
         .expect("gated synchronous registration");
 
         assert!(result.registered);
+        let expected_disk_only = super::display_canonical(
+            std::fs::canonicalize(&disk_only)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref(),
+        );
+        let expected_new_project = super::display_canonical(
+            std::fs::canonicalize(&result.path)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref(),
+        );
         assert_eq!(
             disk_settings.project_paths,
-            vec![disk_only.clone(), result.path.clone()]
+            vec![expected_disk_only, expected_new_project]
         );
         // #2716 (B3): the file no longer decodes as a whole `AppSettings` (its
         // `agents` moved to the agents file), so the written key is read raw.
-        let saved: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_path.with_file_name("project-paths.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             saved["projectPaths"],
             serde_json::json!([disk_only, result.path])
