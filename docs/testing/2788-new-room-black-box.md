@@ -89,13 +89,16 @@ for (const name of ['dev-alpha', 'dev-beta', 'ops']) {
 }
 fs.writeFileSync(path.join(root, 'settings.30.instance.no-git.json'), JSON.stringify({
   defaultShell: 'cmd.exe', defaultShellArgs: [], agents: [],
-  projectPath: project, projectPaths: [project], archivedProjectPaths: [],
   onboardingDismissed: true, roomNumberMask: '#', soundsEnabled: false,
   restoreCoordinatorWakeState: false, restartResumeWakeWorkingAgents: false,
   telegramBots: [], voiceToTextEnabled: false, coManagedEnabled: false,
   webServerEnabled: false, apiServerEnabled: false,
   npmUpdateNotificationsEnabled: false, remoteBlockingMenusEnabled: false,
   remoteAgentHelpEnabled: false
+}, null, 2) + '\n', { flag: 'wx' });
+// Registro canónico; el resto de la configuración permanece en settings.
+fs.writeFileSync(path.join(root, 'project-paths.json'), JSON.stringify({
+  projectPath: project, projectPaths: [project], archivedProjectPaths: []
 }, null, 2) + '\n', { flag: 'wx' });
 console.log(JSON.stringify({ binary: bin, configRoot: root, project,
   projectTestIdPart: project.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown',

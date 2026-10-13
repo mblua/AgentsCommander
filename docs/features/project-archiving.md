@@ -69,7 +69,9 @@ For several:
 
 The only control is `Got it`, and Escape does not close the dialog. **Confirming it acknowledges the notice; it does not perform or undo anything.** The restore already happened before you were told. If you did not want the project back, archive it again after closing the session that pulled it in.
 
-## Settings
+## Persistence
+
+The keys below live in `project-paths.json` in the selected instance configuration directory, beside managed settings. Active/archived operations move the raw pair there under the shared settings-file lock. Runtime settings still expose selected lists. A source error blocks the operation; unavailable registrations are not an empty list.
 
 | Key | What it controls |
 |---|---|
@@ -95,7 +97,7 @@ The count in front is the total, and `and <m> more` covers the ones past the fir
 
 **"The project got archived and I got `The project could not be restored automatically (<error>). Open Archived Projects to restore it.`"** This is the rare case: a session became live between AC's two checks, AC tried to roll the archive back, and the rollback itself failed. The project is archived and you did not want it archived. Open the **Archived projects** modal and press `Unarchive` on it. The blocker message that precedes that sentence tells you which sessions appeared.
 
-**"I archived a project and its files are gone."** Archiving does not touch files. It edits two lists in `settings.30.instance.no-git.json`. If files are missing, something else removed them; check the row in the modal for `Folder missing`, which means the registration now points at nothing.
+**"I archived a project and its files are gone."** Archiving does not touch files. It edits the active and archived pairs in `project-paths.json`. If files are missing, something else removed them; check the row in the modal for `Folder missing`, which means the registration now points at nothing.
 
 ## See also
 

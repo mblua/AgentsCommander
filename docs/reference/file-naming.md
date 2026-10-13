@@ -104,6 +104,20 @@ These names are not in the three tables above. Two replace an older name, and tw
 | `agents.30.instance.no-git.json` | The instance dir | Coding agents (`agents`) and their profiles (`codingAgentProfiles`), moved out of the instance settings file. |
 | `naming-migration.state.no-git.json` | The instance dir | The migration journal: what the migration renamed and set aside. It also marks the migration as done. |
 
+## Project registration and recovery files
+
+`project-paths.json` is a fixed, unsuffixed exception to the layer naming scheme. It lives beside managed settings in the selected instance configuration directory and has no overlay or variant.
+
+| Name | Purpose |
+|---|---|
+| `project-paths.json` | Canonical raw active/archived registrations and relative companions. |
+| `project-paths.json.*.tmp` | Unique atomic-publication temps. |
+| `project-paths.pre-migration.no-git.json` | Immutable exact-original settings backup for legacy extraction. |
+| `project-paths.pre-migration.no-git.json.*.tmp` | Backup-publication temps; retain orphan files as recovery evidence. |
+| `project-paths.pre-migration.recovered-*.no-git.json` | Operator-preserved backup copies after mismatch recovery. |
+
+All five names/patterns are ignored machine-local artifacts. Temps and recovery copies never act as sources or layers. Extraction leaves naming preflight, journal, log and lock contracts unchanged. See [Source selection and migration](settings.md#source-selection-and-migration) and [Recovery and upgrade safety](settings.md#recovery-and-upgrade-safety).
+
 ## Planned splits
 
 | From | To |
