@@ -1001,6 +1001,7 @@ pub(crate) mod load_probe_harness {
             preflight: None,
             preflight_timeout_seconds: None,
             id: format!("via-{command}"),
+            id_hash: None,
             label: format!("label-{command}"),
             command: command.to_string(),
             color: "#000000".to_string(),

@@ -15263,6 +15263,7 @@ mod tests {
             preflight: None,
             preflight_timeout_seconds: None,
             id: id.into(),
+            id_hash: None,
             label: label.into(),
             command: command.into(),
             color: "#10b981".into(),
