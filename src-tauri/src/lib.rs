@@ -2366,7 +2366,7 @@ pub(crate) fn spawn_restore_startup(
         // skipping the startup continuation. Mirrors the FinishGuard "never
         // wedge" rule from #1327.
         let body = std::panic::AssertUnwindSafe(async move {
-            let persisted = match persisted {
+            let mut persisted = match persisted {
                 Ok(persisted) => persisted,
                 Err(error) => {
                     log::error!(
@@ -2376,6 +2376,15 @@ pub(crate) fn spawn_restore_startup(
                     return;
                 }
             };
+            for ps in &mut persisted {
+                if let Err(error) = ps.capture_binding_seed(&settings_snapshot) {
+                    log::error!(
+                        "[restore] binding seed unavailable for '{}': {}",
+                        ps.name,
+                        error
+                    );
+                }
+            }
             let mut active_id = None;
             let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
 
@@ -2446,6 +2455,10 @@ pub(crate) fn spawn_restore_startup(
                                     "[root-agent] Skipping startup auto-create: no resolvable coding agent is configured"
                                 );
                             }
+                        }
+                        Some(ps) if ps.binding_metadata().is_err() => {
+                            log::error!("[restore] ambiguous Root binding; preserving recipe");
+                            failed_recoverable.push(ps.clone());
                         }
                         Some(ps) if should_wake_root_agent_on_restore(ps.status.as_ref()) => {
                             let existing_root = {
@@ -2589,6 +2602,8 @@ pub(crate) fn spawn_restore_startup(
                                         None,
                                         Some(ps.start_fresh_on_restore),
                                         None,
+                                        ps.binding_metadata()
+                                            .expect("restore binding validated before spawn"),
                                     )
                                     .await
                                     {
@@ -2732,6 +2747,11 @@ pub(crate) fn spawn_restore_startup(
                     continue;
                 }
 
+                if let Err(error) = ps.binding_metadata() {
+                    log::error!("[restore] invalid binding for '{}': {}", ps.name, error);
+                    failed_recoverable.push(ps.clone());
+                    continue;
+                }
                 // 14.4 - exit during restore: stop waking once shutdown
                 // is underway. The row rides in failed_recoverable so
                 // persist_merging_failed keeps it on disk for next boot
@@ -2924,6 +2944,8 @@ pub(crate) fn spawn_restore_startup(
                             )
                         })
                         .flatten(),
+                    ps.binding_metadata()
+                        .expect("restore binding validated before spawn"),
                 )
                 .await
                 {
@@ -4984,7 +5006,7 @@ pub fn run(
             // immediately.
             let mut persisted = load_startup_sessions(&restore_settings_snapshot, |paths| {
                 tauri::async_runtime::block_on(
-                    sessions_persistence::load_sessions_purging_outside_project_paths(paths),
+                    sessions_persistence::load_sessions_purging_outside_project_paths(paths, &restore_settings_snapshot),
                 )
             });
             if let Err(error) = &persisted {

@@ -362,6 +362,15 @@ pub(crate) fn rename_with_retry(tmp: &Path, dst: &Path) -> Result<(), (String, R
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedSession {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding_agent_binding_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding_agent_binding_seed: Option<CodingAgentBindingSeed>,
+    /// Original byte witness transported in RAM, never persisted.
+    #[serde(skip)]
+    pub coding_agent_binding_origin: Option<serde_json::Value>,
+    #[serde(skip)]
+    pub coding_agent_binding_conflict: bool,
     pub name: String,
     pub shell: String,
     pub shell_args: Vec<String>,
@@ -1324,18 +1333,125 @@ pub fn load_sessions() -> Vec<PersistedSession> {
     load_sessions_from_path(&path)
 }
 
-fn load_sessions_from_dir(dir: &Path) -> Vec<PersistedSession> {
+#[cfg(test)]
+pub(crate) fn load_sessions_from_dir(dir: &Path) -> Vec<PersistedSession> {
     load_sessions_from_path(&dir.join("sessions.json"))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingAgentBindingSeed {
+    pub identity_revision: String,
+    pub original_agent_id: String,
+}
+
+fn capture_binding_origins(path: &Path, bytes: &[u8], sessions: &mut [PersistedSession]) {
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    let mut counts = HashMap::new();
+    for ps in sessions.iter_mut() {
+        if ps.agent_id.is_some() {
+            ps.coding_agent_binding_id
+                .get_or_insert_with(|| Uuid::new_v4().to_string());
+        }
+        if let Some(id) = ps.coding_agent_binding_id.as_ref() {
+            let key = Uuid::parse_str(id)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|_| id.clone());
+            *counts.entry(key).or_insert(0usize) += 1;
+        }
+    }
+    for (ordinal, ps) in sessions.iter_mut().enumerate() {
+        if let Some(id) = ps.coding_agent_binding_id.as_ref() {
+            ps.coding_agent_binding_origin = Some(serde_json::json!({
+                "sessionsPath": path.to_string_lossy(),
+                "rawFileSHA256": digest,
+                "originalOrdinal": ordinal,
+            }));
+            let key = Uuid::parse_str(id)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|_| id.clone());
+            ps.coding_agent_binding_conflict = counts.get(&key).copied().unwrap_or(0) > 1;
+        }
+    }
+}
+
+impl PersistedSession {
+    pub(crate) fn binding_metadata(
+        &self,
+    ) -> Result<Option<crate::session::manager::CodingAgentBinding>, String> {
+        if self.coding_agent_binding_conflict {
+            return Err("duplicate_coding_agent_binding".to_string());
+        }
+        self.coding_agent_binding_id
+            .as_ref()
+            .map(|id| {
+                Uuid::parse_str(id).map_err(|_| "invalid_coding_agent_binding".to_string())?;
+                if self.coding_agent_binding_seed.as_ref().is_some_and(|seed| {
+                    seed.identity_revision.is_empty() || seed.original_agent_id.is_empty()
+                }) {
+                    return Err("invalid_coding_agent_binding_seed".to_string());
+                }
+                let seed = self
+                    .coding_agent_binding_seed
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|e| e.to_string())?;
+                Ok(crate::session::manager::CodingAgentBinding {
+                    id: id.clone(),
+                    seed,
+                    origin: self.coding_agent_binding_origin.clone(),
+                })
+            })
+            .transpose()
+    }
+
+    pub(crate) fn capture_binding_seed(
+        &mut self,
+        settings: &crate::config::settings::AppSettings,
+    ) -> Result<(), String> {
+        if self.coding_agent_binding_seed.is_none() {
+            if let Some(agent_id) = self.agent_id.as_ref() {
+                self.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
+                    identity_revision: crate::config::settings::bootstrap_binding_revision(
+                        settings, agent_id,
+                    )?,
+                    original_agent_id: agent_id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
+    load_sessions_from_path_with_settings(path, None)
+}
+
+fn load_sessions_from_path_with_settings(
+    path: &Path,
+    settings: Option<&super::settings::AppSettings>,
+) -> Vec<PersistedSession> {
     if !path.exists() {
         return vec![];
     }
 
     match std::fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<Vec<PersistedSession>>(&contents) {
-            Ok(sessions) => {
+            Ok(mut sessions) => {
+                capture_binding_origins(path, contents.as_bytes(), &mut sessions);
+                if let Some(settings) = settings {
+                    for ps in &mut sessions {
+                        if let Err(error) = ps.capture_binding_seed(settings) {
+                            log::error!(
+                                "[sessions] binding seed unavailable for '{}': {}",
+                                ps.name,
+                                error
+                            );
+                        }
+                    }
+                }
                 // Safety net: filter out [temp] sessions that should never survive a restart
                 let temp_count = sessions
                     .iter()
@@ -1456,6 +1572,7 @@ fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
 
 pub async fn load_sessions_purging_outside_project_paths(
     project_paths: &[String],
+    settings: &super::settings::AppSettings,
 ) -> Vec<PersistedSession> {
     let dir = match super::config_dir() {
         Some(d) => d,
@@ -1465,15 +1582,16 @@ pub async fn load_sessions_purging_outside_project_paths(
         }
     };
 
-    load_sessions_purging_outside_project_paths_in_dir(&dir, project_paths).await
+    load_sessions_purging_outside_project_paths_in_dir(&dir, project_paths, Some(settings)).await
 }
 
 async fn load_sessions_purging_outside_project_paths_in_dir(
     dir: &Path,
     project_paths: &[String],
+    settings: Option<&super::settings::AppSettings>,
 ) -> Vec<PersistedSession> {
-    match purge_sessions_outside_project_paths_in_dir(dir, project_paths).await {
-        Ok(filtered) => filtered,
+    match purge_sessions_outside_project_paths_in_dir_locked(dir, project_paths, settings).await {
+        Ok((_, filtered)) => filtered,
         Err(e) => {
             log::error!(
                 "Failed to rewrite sessions.json after orphan-session purge: {}",
@@ -1483,7 +1601,7 @@ async fn load_sessions_purging_outside_project_paths_in_dir(
             // atomicity contract because nothing is written back. Restore
             // reconciles on the next persist.
             match filter_sessions_for_project_paths_blocking(
-                load_sessions_from_dir(dir),
+                load_sessions_from_path_with_settings(&dir.join("sessions.json"), settings),
                 project_paths,
             )
             .await
@@ -1491,7 +1609,7 @@ async fn load_sessions_purging_outside_project_paths_in_dir(
                 Ok(filtered) => filtered,
                 Err(e) => {
                     log::error!("Failed to filter sessions after purge failure: {}", e);
-                    load_sessions_from_dir(dir)
+                    load_sessions_from_path_with_settings(&dir.join("sessions.json"), settings)
                 }
             }
         }
@@ -1503,7 +1621,7 @@ pub(crate) async fn purge_sessions_outside_project_paths_in_dir(
     project_paths: &[String],
 ) -> Result<Vec<PersistedSession>, String> {
     let (_before_len, filtered) =
-        purge_sessions_outside_project_paths_in_dir_locked(dir, project_paths).await?;
+        purge_sessions_outside_project_paths_in_dir_locked(dir, project_paths, None).await?;
     Ok(filtered)
 }
 
@@ -1534,9 +1652,18 @@ pub(crate) async fn purge_sessions_outside_project_paths_in_dir(
 async fn purge_sessions_outside_project_paths_in_dir_locked(
     dir: &Path,
     project_paths: &[String],
+    settings: Option<&super::settings::AppSettings>,
 ) -> Result<(usize, Vec<PersistedSession>), String> {
     let _guard = sessions_save_lock().lock().await;
-    let before = load_sessions_from_dir(dir);
+    let captured_settings;
+    let settings = match settings {
+        Some(settings) => settings,
+        None => {
+            captured_settings = super::settings::load_settings_for_cli();
+            &captured_settings
+        }
+    };
+    let before = load_sessions_from_path_with_settings(&dir.join("sessions.json"), Some(settings));
     let before_len = before.len();
     // §1295 site A: prepare runs in-lock (startup/settings-change only, rare
     // and accepted per S2's allowed branch), then handle(mgr=None) + a GUARDED
@@ -1583,6 +1710,14 @@ fn save_sessions_to_config_dir(sessions: &[PersistedSession]) -> Result<(), Stri
 /// `save_sessions`; the explicit `dir` parameter lets tests drive the
 /// persistence path through a `tempfile::tempdir()` without touching the
 /// process-wide `config_dir()` once-cell.
+#[cfg(test)]
+pub(crate) fn save_sessions_to_dir_for_test(
+    dir: &Path,
+    sessions: &[PersistedSession],
+) -> Result<(), String> {
+    save_sessions_to_dir(dir, sessions)
+}
+
 fn save_sessions_to_dir(dir: &Path, sessions: &[PersistedSession]) -> Result<(), String> {
     // #2716 (B3, 4.5b option S): while this directory's agents layer is unreadable,
     // suppress every sessions.json write so the file keeps its exact bytes. All
@@ -1680,6 +1815,19 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             }
         })
         .map(|s| PersistedSession {
+            coding_agent_binding_id: Uuid::parse_str(&s.id)
+                .ok()
+                .and_then(|id| aggregate.coding_agent_bindings.get(&id).cloned()),
+            coding_agent_binding_seed: Uuid::parse_str(&s.id)
+                .ok()
+                .and_then(|id| aggregate.coding_agent_bindings.get(&id))
+                .and_then(|id| aggregate.binding_seeds.get(id))
+                .and_then(|seed| serde_json::from_value(seed.clone()).ok()),
+            coding_agent_binding_origin: Uuid::parse_str(&s.id)
+                .ok()
+                .and_then(|id| aggregate.coding_agent_bindings.get(&id))
+                .and_then(|id| aggregate.binding_origins.get(id).cloned()),
+            coding_agent_binding_conflict: false,
             name: s.name.clone(),
             shell: s.shell.clone(),
             shell_args: strip_auto_injected_args(&s.shell, &s.shell_args),
@@ -1713,7 +1861,39 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
         })
         .collect();
 
-    deduplicate(all)
+    deduplicate_preserving_affected(
+        all,
+        &aggregate.failed_binding_recipes,
+        &aggregate.binding_origins,
+    )
+}
+
+fn deduplicate_preserving_affected(
+    sessions: Vec<PersistedSession>,
+    affected: &HashMap<String, serde_json::Value>,
+    origins: &HashMap<String, serde_json::Value>,
+) -> Vec<PersistedSession> {
+    let mut result = deduplicate(sessions);
+    for (binding, recipe) in affected {
+        if result
+            .iter()
+            .any(|row| row.coding_agent_binding_id.as_ref() == Some(binding))
+        {
+            continue;
+        }
+        match serde_json::from_value::<PersistedSession>(recipe.clone()) {
+            Ok(mut recipe) => {
+                recipe.coding_agent_binding_origin = origins.get(binding).cloned();
+                result.push(sanitize_failed_recoverable(&recipe));
+            }
+            Err(error) => log::error!(
+                "[sessions] invalid affected binding recipe {}: {}",
+                binding,
+                error
+            ),
+        }
+    }
+    result
 }
 
 /// Strip AC-managed provider args from saved shell arguments.
@@ -2012,8 +2192,23 @@ async fn persist_merging_failed_to_dir_for_project_paths_result(
     // SessionManager ONLY and silently drops failed-recoverable entries (§224
     // G5). Proper plumb of `failed_recoverable` into SessionManager is filed
     // as a follow-up.
+    let binding_failures = failed
+        .iter()
+        .filter_map(|ps| {
+            let binding = ps.binding_metadata().ok().flatten()?;
+            serde_json::to_value(sanitize_failed_recoverable(ps))
+                .ok()
+                .map(|recipe| (binding, recipe))
+        })
+        .collect();
+    mgr.refresh_failed_binding_recipes(binding_failures).await;
     snapshot.extend(failed.iter().map(sanitize_failed_recoverable));
-    let snapshot = deduplicate(snapshot);
+    let aggregate = mgr.aggregate_snapshot().await;
+    let snapshot = deduplicate_preserving_affected(
+        snapshot,
+        &aggregate.failed_binding_recipes,
+        &aggregate.binding_origins,
+    );
     let prep = match project_paths {
         Some(project_paths) => prepare_persist_snapshot(snapshot, project_paths).await?,
         None => PersistPreparation {
@@ -4536,6 +4731,7 @@ mod tests {
         let loaded = load_sessions_purging_outside_project_paths_in_dir(
             temp.path(),
             &["C:/projects/current".to_string()],
+            None,
         )
         .await;
 
@@ -6490,9 +6686,13 @@ mod tests {
         );
 
         // Writer two: the startup purge, which drops the row outside the project.
-        super::purge_sessions_outside_project_paths_in_dir_locked(temp.path(), &project_paths)
-            .await
-            .expect("a suppressed purge answers Ok");
+        super::purge_sessions_outside_project_paths_in_dir_locked(
+            temp.path(),
+            &project_paths,
+            None,
+        )
+        .await
+        .expect("a suppressed purge answers Ok");
         assert_eq!(
             b3_sha(&sessions_path),
             before,
@@ -6570,5 +6770,360 @@ mod tests {
             reread.iter().any(|row| row.name == "start-two"),
             "start two's write was suppressed"
         );
+    }
+}
+
+#[cfg(test)]
+mod derived_agent_binding_tests {
+    use super::*;
+
+    fn recipe(name: &str, cwd: &str) -> PersistedSession {
+        PersistedSession {
+            name: name.into(),
+            shell: "shell".into(),
+            working_directory: cwd.into(),
+            agent_id: Some("original".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_binding_legacy_loader_captures_raw_origin_before_transform() {
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        let mut rows = vec![
+            recipe("[temp] discard", "C:/discard"),
+            recipe("kept", "C:/kept"),
+        ];
+        rows[1].git_branch_source = Some("C:/source".into());
+        rows[1].git_branch_prefix = Some("source".into());
+        let bytes = serde_json::to_vec_pretty(&rows).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("codingAgentBindingId"));
+        std::fs::write(&path, &bytes).unwrap();
+        let loaded = load_sessions_from_path(&path);
+        assert_eq!(loaded.len(), 1);
+        let retained = &loaded[0];
+        assert!(Uuid::parse_str(retained.coding_agent_binding_id.as_ref().unwrap()).is_ok());
+        let origin = retained.coding_agent_binding_origin.as_ref().unwrap();
+        assert_eq!(origin["originalOrdinal"], 1);
+        assert_eq!(
+            origin["rawFileSHA256"],
+            format!("{:x}", Sha256::digest(&bytes))
+        );
+        assert_eq!(origin["sessionsPath"], path.to_string_lossy().as_ref());
+        assert_eq!(retained.git_repos.len(), 1);
+        let value = serde_json::to_value(retained).unwrap();
+        assert!(value.get("codingAgentBindingOrigin").is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn derived_agent_id_binding_legacy_seed_precedes_purge_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir
+            .path()
+            .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+        std::fs::write(
+            &settings_path,
+            serde_json::to_vec(&serde_json::json!({
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "agents": [{"id":"original","label":"Original","command":"claude","color":"#112233"}],
+                "rootToken": "fixture-token",
+            })).unwrap(),
+        )
+        .unwrap();
+        let settings = super::super::settings::load_settings_from_path(&settings_path);
+        let agent_id = settings.agents[0].id.clone();
+        let retained_cwd = dir.path().join("retained");
+        std::fs::create_dir(&retained_cwd).unwrap();
+        let mut retained = recipe("retained", &retained_cwd.to_string_lossy());
+        retained.agent_id = Some(agent_id.clone());
+        let rows = vec![recipe("removed", "Z:/outside-project"), retained];
+        std::fs::write(
+            dir.path().join("sessions.json"),
+            serde_json::to_vec(&rows).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sessions_purging_outside_project_paths_in_dir(
+            dir.path(),
+            &[retained_cwd.to_string_lossy().to_string()],
+            Some(&settings),
+        )
+        .await;
+        assert_eq!(loaded.len(), 1);
+        let loaded = &loaded[0];
+        assert_eq!(
+            loaded.coding_agent_binding_origin.as_ref().unwrap()["originalOrdinal"],
+            1
+        );
+        assert_eq!(
+            loaded
+                .coding_agent_binding_seed
+                .as_ref()
+                .unwrap()
+                .original_agent_id,
+            agent_id
+        );
+        let durable = load_sessions_raw_from_path(&dir.path().join("sessions.json"));
+        assert_eq!(
+            durable[0].coding_agent_binding_id,
+            loaded.coding_agent_binding_id
+        );
+        assert_eq!(
+            durable[0].coding_agent_binding_seed,
+            loaded.coding_agent_binding_seed
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_binding_explicit_id_seed_survive_loader_and_failed_sanitize() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ps = recipe("failed", "C:/failed");
+        ps.coding_agent_binding_id = Some(Uuid::new_v4().to_string());
+        ps.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
+            identity_revision: format!("r1:0:{}", "a".repeat(64)),
+            original_agent_id: "original".into(),
+        });
+        ps.id = Some(Uuid::new_v4().to_string());
+        ps.created_at = Some("old-runtime-date".into());
+        ps.status = Some(SessionStatus::Running);
+        ps.waiting_for_input = Some(true);
+        std::fs::write(
+            dir.path().join("sessions.json"),
+            serde_json::to_vec(&vec![ps.clone()]).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sessions_from_dir(dir.path());
+        assert_eq!(
+            loaded[0].coding_agent_binding_id,
+            ps.coding_agent_binding_id
+        );
+        assert_eq!(
+            loaded[0].coding_agent_binding_seed,
+            ps.coding_agent_binding_seed
+        );
+        let failed = sanitize_failed_recoverable(&loaded[0]);
+        assert!(
+            failed.id.is_none()
+                && failed.status.is_none()
+                && failed.created_at.is_none()
+                && failed.waiting_for_input.is_none()
+        );
+        assert_eq!(failed.coding_agent_binding_id, ps.coding_agent_binding_id);
+        assert_eq!(
+            failed.coding_agent_binding_seed,
+            ps.coding_agent_binding_seed
+        );
+        assert_eq!(
+            failed.binding_metadata().unwrap().unwrap().origin,
+            loaded[0].coding_agent_binding_origin
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_binding_duplicate_durable_rejects_before_dedup_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let binding = Uuid::new_v4().to_string();
+        let mut first = recipe("first", "C:/first");
+        first.coding_agent_binding_id = Some(binding.clone());
+        let mut second = recipe("second", "C:/second");
+        second.coding_agent_binding_id = Some(binding);
+        std::fs::write(
+            dir.path().join("sessions.json"),
+            serde_json::to_vec(&vec![first, second]).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sessions_from_dir(dir.path());
+        assert_eq!(loaded.len(), 2);
+        for ps in loaded {
+            assert_eq!(
+                ps.binding_metadata().unwrap_err(),
+                "duplicate_coding_agent_binding"
+            );
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_binding_unavailable_capture_keeps_raw_origin_and_recipe() {
+        use sha2::{Digest, Sha256};
+        for case in ["removed", "ambiguous", "unreadable"] {
+            let dir = tempfile::tempdir().unwrap();
+            let settings_path = dir
+                .path()
+                .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+            let row = serde_json::json!({"id":"original","label":"Original","command":"claude","color":"red"});
+            let agents = if case == "ambiguous" {
+                serde_json::json!([row.clone(), row])
+            } else {
+                serde_json::json!([])
+            };
+            std::fs::write(
+                &settings_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "defaultShell":"test-shell",
+                    "defaultShellArgs":[],
+                    "agents":agents,
+                    "rootToken":"fixture-token"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            if case == "unreadable" {
+                std::fs::write(
+                    dir.path()
+                        .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+                    b"invalid agents JSON",
+                )
+                .unwrap();
+            }
+            let settings = super::super::settings::load_settings_from_path(&settings_path);
+            let expected_error = match case {
+                "removed" => "coding_agent_binding_entry_missing_or_ambiguous",
+                "ambiguous" => "coding_agent_identity_duplicate",
+                _ => "coding_agent_identity_physical_unreadable",
+            };
+            assert_eq!(
+                super::super::settings::bootstrap_binding_revision(&settings, "original")
+                    .unwrap_err(),
+                expected_error
+            );
+            let path = dir.path().join("sessions.json");
+            let original = recipe(case, &dir.path().to_string_lossy());
+            let bytes = serde_json::to_vec(&vec![original.clone()]).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            let loaded = load_sessions_from_path_with_settings(&path, Some(&settings));
+            assert_eq!(loaded.len(), 1);
+            let ps = &loaded[0];
+            assert!(!ps.coding_agent_binding_conflict);
+            assert!(ps.coding_agent_binding_seed.is_none());
+            let binding = ps.binding_metadata().unwrap().unwrap();
+            assert!(Uuid::parse_str(&binding.id).is_ok());
+            assert!(binding.seed.is_none());
+            assert_eq!(binding.origin, ps.coding_agent_binding_origin);
+            let origin = binding.origin.as_ref().unwrap();
+            assert_eq!(origin["sessionsPath"], path.to_string_lossy().as_ref());
+            assert_eq!(
+                origin["rawFileSHA256"],
+                format!("{:x}", Sha256::digest(&bytes))
+            );
+            assert_eq!(origin["originalOrdinal"], 0);
+            assert_eq!(ps.shell, original.shell);
+            assert_eq!(ps.agent_id, original.agent_id);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            let failed = sanitize_failed_recoverable(ps);
+            assert_eq!(failed.coding_agent_binding_id, ps.coding_agent_binding_id);
+            assert_eq!(
+                failed.coding_agent_binding_origin,
+                ps.coding_agent_binding_origin
+            );
+            assert!(failed.coding_agent_binding_seed.is_none());
+            assert_eq!(failed.shell, original.shell);
+            let mut invalid = ps.clone();
+            invalid.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
+                identity_revision: String::new(),
+                original_agent_id: "original".into(),
+            });
+            invalid.capture_binding_seed(&settings).unwrap();
+            assert_eq!(
+                invalid.binding_metadata().unwrap_err(),
+                "invalid_coding_agent_binding_seed"
+            );
+            assert!(invalid
+                .coding_agent_binding_seed
+                .as_ref()
+                .unwrap()
+                .identity_revision
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_binding_missing_seed_has_no_label_or_timestamp_fallback() {
+        let mut ps = recipe("same label", "C:/same");
+        ps.coding_agent_binding_id = Some(Uuid::new_v4().to_string());
+        ps.created_at = Some("2026-10-13".into());
+        let binding = ps.binding_metadata().unwrap().unwrap();
+        assert_eq!(Some(&binding.id), ps.coding_agent_binding_id.as_ref());
+        assert!(binding.seed.is_none());
+        assert!(binding.origin.is_none());
+        ps.coding_agent_binding_id = Some("not-a-uuid".into());
+        assert_eq!(
+            ps.binding_metadata().unwrap_err(),
+            "invalid_coding_agent_binding"
+        );
+        ps.coding_agent_binding_id = Some(Uuid::new_v4().to_string());
+        ps.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
+            identity_revision: String::new(),
+            original_agent_id: "original".into(),
+        });
+        assert_eq!(
+            ps.binding_metadata().unwrap_err(),
+            "invalid_coding_agent_binding_seed"
+        );
+        assert_eq!(
+            ps.coding_agent_binding_seed
+                .as_ref()
+                .unwrap()
+                .identity_revision,
+            ""
+        );
+    }
+
+    #[tokio::test]
+    async fn derived_agent_id_binding_live_only_snapshot_keeps_only_receipt_affected_failure() {
+        let manager = SessionManager::new();
+        let mut failed = recipe("affected", "C:/affected");
+        let binding = Uuid::new_v4().to_string();
+        failed.coding_agent_binding_id = Some(binding.clone());
+        failed.coding_agent_binding_seed = Some(CodingAgentBindingSeed {
+            identity_revision: format!("r1:0:{}", "a".repeat(64)),
+            original_agent_id: "original".into(),
+        });
+        failed.id = Some("stale-runtime".into());
+        failed.status = Some(SessionStatus::Running);
+        manager
+            .enroll_failed_binding_recipe_for_test(
+                binding.clone(),
+                serde_json::to_value(&failed).unwrap(),
+            )
+            .await;
+        manager
+            .refresh_failed_binding_recipes(vec![(
+                crate::session::manager::CodingAgentBinding {
+                    id: Uuid::new_v4().to_string(),
+                    seed: None,
+                    origin: None,
+                },
+                serde_json::to_value(&failed).unwrap(),
+            )])
+            .await;
+        for _ in 0..2 {
+            let snapshot = snapshot_sessions(&manager).await;
+            assert_eq!(snapshot.len(), 1);
+            assert_eq!(snapshot[0].coding_agent_binding_id.as_ref(), Some(&binding));
+            assert_eq!(
+                snapshot[0].coding_agent_binding_seed,
+                failed.coding_agent_binding_seed
+            );
+            assert!(snapshot[0].id.is_none() && snapshot[0].status.is_none());
+            assert!(manager.list_sessions().await.is_empty());
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_binding_plain_legacy_shell_stays_unbound() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ps = recipe("plain", "C:/plain");
+        ps.agent_id = None;
+        std::fs::write(
+            dir.path().join("sessions.json"),
+            serde_json::to_vec(&vec![ps]).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sessions_from_dir(dir.path());
+        assert!(loaded[0].binding_metadata().unwrap().is_none());
+        assert!(loaded[0].coding_agent_binding_origin.is_none());
     }
 }

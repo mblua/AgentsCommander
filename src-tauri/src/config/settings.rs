@@ -5169,6 +5169,9 @@ pub struct AppSettings {
     /// draft can never carry or forge it. Set only through `set_agents_layer_state`.
     #[serde(skip, default)]
     pub(crate) agents_layer: AgentsLayerState,
+    /// Backend physical identity inputs captured before typed repair/defaulting.
+    #[serde(skip, default)]
+    pub(crate) coding_agent_identity_physical: Option<Arc<Value>>,
     /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
@@ -5879,6 +5882,7 @@ impl Default for AppSettings {
             project_paths_persistence_error: None,
             local_overlay_state: Arc::default(),
             agents_layer: AgentsLayerState::default(),
+            coding_agent_identity_physical: None,
             sidebar_style: default_sidebar_style(),
             selected_row_rail_width: default_selected_row_rail_width(),
             selected_row_rail_color: default_selected_row_rail_color(),
@@ -7628,6 +7632,20 @@ fn parse_settings_json_with_projection_labeled(
         replace_project_projection(object, projection);
     }
     let legacy_profiles = value.as_object().is_some_and(legacy_profiles_shape_present);
+    let physical_groups = io_path
+        .and_then(|path| {
+            read_agents_instance_file(&agents_instance_path(path))
+                .ok()
+                .flatten()
+        })
+        .map(|groups| {
+            groups
+                .keys()
+                .filter(|key| AGENTS_INSTANCE_KEYS.contains(&key.as_str()))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     // #2716 (B3): the agents file is layer 30, under the layer-50 overlay, so it is
     // merged into the raw base object here: after the detection above, so
     // `legacy_profiles` stays a property of the settings file, and before the
@@ -7656,6 +7674,8 @@ fn parse_settings_json_with_projection_labeled(
     if let (Some(object), Some(base)) = (value.as_object_mut(), &pre_merge) {
         restore_codex_home_carrier(object, base.get("codingAgentProfiles"));
     }
+    let mut identity_physical =
+        coding_agent_identity_physical_from_raw(&value, &physical_groups, &overlay);
     let unmerged = if overlay.is_empty() { None } else { pre_merge };
     // #1077: decode the six project fields and replace the three runtime fields
     // with the SELECTED canonical paths BEFORE deserializing the rest of
@@ -7681,6 +7701,14 @@ fn parse_settings_json_with_projection_labeled(
     let (mut settings, state) = match (decoded, unmerged) {
         (Ok(settings), _) => (settings, state),
         (Err(reason), Some(mut unmerged)) => {
+            identity_physical["agents"] = unmerged.get("agents").cloned().unwrap_or(Value::Null);
+            identity_physical["codingAgentProfiles"] = unmerged
+                .get("codingAgentProfiles")
+                .cloned()
+                .unwrap_or(Value::Null);
+            identity_physical["quotaSources"] =
+                unmerged.get("quotaSources").cloned().unwrap_or(Value::Null);
+            identity_physical["groupOwnership"]["overlayPaths"] = serde_json::json!([]);
             let base_state = apply_project_decode_to_value(
                 &mut unmerged,
                 base.as_deref(),
@@ -7693,6 +7721,7 @@ fn parse_settings_json_with_projection_labeled(
         (Err(reason), None) => return Err(reason),
     };
     settings.project_path_state = Arc::new(state);
+    settings.coding_agent_identity_physical = Some(Arc::new(identity_physical));
     // #2306 P1 - in-memory finalize over the merged view. It is deliberately not
     // part of `needs_save`: a legacy file with no ordinals must load without a
     // disk write or a backup rotation.
@@ -8205,6 +8234,193 @@ pub(crate) fn adopt_orphaned_profiles(settings: &mut AppSettings) -> bool {
         moved = true;
     }
     moved
+}
+
+/// Pure carrier construction from raw merged inputs, before typed repair.
+fn coding_agent_identity_physical_from_raw(
+    value: &Value,
+    physical_groups: &[String],
+    overlay: &LocalSettingsOverlay,
+) -> Value {
+    serde_json::json!({
+        "agents": value.get("agents"),
+        "codingAgentProfiles": value.get("codingAgentProfiles"),
+        "quotaSources": value.get("quotaSources"),
+        "groupOwnership": { "instanceGroups": physical_groups, "overlayPaths": overlay.owned_paths().iter().filter(|path| path.first().is_some_and(|key| ["agents", "codingAgentProfiles", "quotaSources"].contains(&key.as_str()))).collect::<Vec<_>>() },
+    })
+}
+
+/// Borrow the caller's settings file lock; never reenter a locking loader.
+/// Physical overlay bytes retain identity fields unknown to the typed view.
+fn coding_agent_identity_with_physical_overlay(
+    mut value: Value,
+    path: &Path,
+    physical_groups: &[String],
+) -> Value {
+    let unmerged = value.clone();
+    let base_profiles = value.get("codingAgentProfiles").cloned();
+    let overlay = LocalSettingsOverlay::load_and_merge(
+        path,
+        &mut value,
+        OVERLAY_INELIGIBLE_DISK_KEYS,
+        OVERLAY_INELIGIBLE_LEGACY_KEYS,
+        OVERLAY_DERIVED_ID_CLOSURES,
+    );
+    restore_codex_home_carrier(value.as_object_mut().unwrap(), base_profiles.as_ref());
+    // Match the loader's undecodable-overlay rule without using its repaired
+    // typed value as identity authority. The fallback is the raw physical base.
+    if !overlay.is_empty() {
+        let mut decode_value = value.clone();
+        apply_project_decode_to_value(
+            &mut decode_value,
+            production_instance_base().as_deref(),
+            &projects::FsCandidateResolver,
+        );
+        if serde_json::from_value::<AppSettings>(decode_value).is_err() {
+            return coding_agent_identity_physical_from_raw(
+                &unmerged,
+                physical_groups,
+                &LocalSettingsOverlay::default(),
+            );
+        }
+    }
+    coding_agent_identity_physical_from_raw(&value, physical_groups, &overlay)
+}
+
+/// Refresh clone-based state replacements while borrowing their file lock.
+/// Unavailable raw inputs clear transition evidence rather than retaining a stale seed source.
+fn refresh_coding_agent_identity_at_locked_path(settings: &mut AppSettings, path: &Path) {
+    let captured = (|| {
+        let Some(object) =
+            read_disk_object_for_write_typed(path, SettingsSaveStage::PreserveDiskGate)?
+        else {
+            return Ok(None);
+        };
+        let groups = read_agents_instance_file(&agents_instance_path(path));
+        let layer = match &groups {
+            Ok(_) => AgentsLayerState::Readable,
+            Err(reason) => AgentsLayerState::Unreadable {
+                path: agents_instance_path(path),
+                reason: reason.clone(),
+            },
+        };
+        let mut value = Value::Object(object);
+        let groups = groups
+            .ok()
+            .flatten()
+            .map(|groups| agents_instance_groups(&groups))
+            .unwrap_or_default();
+        let physical_groups = groups.keys().cloned().collect::<Vec<_>>();
+        value.as_object_mut().unwrap().extend(groups);
+        let raw = coding_agent_identity_with_physical_overlay(value, path, &physical_groups);
+        Ok::<_, SettingsSaveError>(Some((raw, layer)))
+    })();
+    match captured {
+        Ok(Some((raw, layer))) => {
+            settings.coding_agent_identity_physical = Some(Arc::new(raw));
+            set_agents_layer_state(settings, path, layer);
+        }
+        Ok(None) => settings.coding_agent_identity_physical = None,
+        Err(error) => {
+            log::warn!("[settings] binding physical refresh unavailable: {error:?}");
+            settings.coding_agent_identity_physical = None;
+        }
+    }
+}
+
+/// Canonical identity-only projection of backend physical inputs. Never infer
+/// authority from a client draft or from repaired/defaulted runtime rows.
+pub(crate) fn coding_agent_identity_projection_hash(
+    settings: &AppSettings,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    if settings.agents_layer.unreadable_path().is_some() {
+        return Err("coding_agent_identity_physical_unreadable".to_string());
+    }
+    let raw = settings
+        .coding_agent_identity_physical
+        .as_ref()
+        .ok_or_else(|| "coding_agent_identity_physical_missing".to_string())?;
+    let mut projection = raw.as_ref().clone();
+    let agents = projection
+        .get_mut("agents")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "coding_agent_identity_agents_missing".to_string())?;
+    let mut ids = HashSet::new();
+    for agent in agents.iter_mut() {
+        let object = agent
+            .as_object_mut()
+            .ok_or_else(|| "coding_agent_identity_invalid".to_string())?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "coding_agent_identity_invalid".to_string())?;
+        if !ids.insert(id.to_string()) {
+            return Err("coding_agent_identity_duplicate".to_string());
+        }
+        for key in ["order", "name", "label", "color"] {
+            object.remove(key);
+        }
+    }
+    agents.sort_by(|a, b| {
+        a.get("id")
+            .and_then(Value::as_str)
+            .cmp(&b.get("id").and_then(Value::as_str))
+    });
+    if let Some(slots) = projection
+        .get_mut("codingAgentProfiles")
+        .and_then(|profiles| profiles.get_mut("profileSlots"))
+        .and_then(Value::as_object_mut)
+    {
+        for slot in slots.values_mut() {
+            if let Some(slot) = slot.as_object_mut() {
+                slot.remove("label");
+            }
+        }
+    }
+    // serde_json's Map is sorted (no preserve_order feature); recurse explicitly
+    // so the revision contract remains canonical if that feature changes later.
+    fn canonical(value: &Value) -> Value {
+        match value {
+            Value::Object(object) => {
+                let sorted: BTreeMap<_, _> = object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), canonical(value)))
+                    .collect();
+                Value::Object(sorted.into_iter().collect())
+            }
+            Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
+            _ => value.clone(),
+        }
+    }
+    let bytes = serde_json::to_vec(&canonical(&projection)).map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+pub(crate) fn bootstrap_identity_revision(settings: &AppSettings) -> Result<String, String> {
+    coding_agent_identity_projection_hash(settings).map(|hash| format!("r1:0:{hash}"))
+}
+
+pub(crate) fn bootstrap_binding_revision(
+    settings: &AppSettings,
+    original_agent_id: &str,
+) -> Result<String, String> {
+    let revision = bootstrap_identity_revision(settings)?;
+    let rows = settings
+        .coding_agent_identity_physical
+        .as_ref()
+        .and_then(|raw| raw.get("agents"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "coding_agent_identity_agents_missing".to_string())?;
+    if rows
+        .iter()
+        .filter(|row| row.get("id").and_then(Value::as_str) == Some(original_agent_id))
+        .count()
+        != 1
+    {
+        return Err("coding_agent_binding_entry_missing_or_ambiguous".to_string());
+    }
+    Ok(revision)
 }
 
 /// #2450: record `identityByAgent[id]` for every agent actually written to the
@@ -8932,6 +9148,11 @@ fn load_settings_from_path_with_blocking_menus_publish(
         );
     }
 
+    // Startup migrations may move ownership or materialize profiles. Birth seeds
+    // must describe the post-migration physical inputs, never the provisional load.
+    settings.coding_agent_identity_physical = capture_project_settings(path, false)
+        .ok()
+        .and_then(|(captured, _, _)| captured.coding_agent_identity_physical);
     settings
 }
 
@@ -11240,6 +11461,7 @@ pub(crate) fn begin_project_paths_transaction_at_path(
         report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
     })?;
     transaction.fresh = current.clone();
+    refresh_coding_agent_identity_at_locked_path(&mut transaction.fresh, settings_path);
     let selected = select_project_source_locked(&transaction).map_err(|error| {
         report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
     })?;
@@ -11304,6 +11526,7 @@ impl ProjectPathsWriteTransaction {
             write_value_atomic(&Value::Object(object), &project_paths_path(&self.path))?;
             let selected = select_project_source_locked(self)?;
             let mut written = self.fresh.clone();
+            refresh_coding_agent_identity_at_locked_path(&mut written, &self.path);
             apply_selected_project_state(&mut written, &selected.projection);
             Ok(written)
         })();
@@ -11346,6 +11569,7 @@ impl ProjectPathsWriteTransaction {
         }
         let projection = select_project_source_locked(self)?.projection;
         let mut written = candidate.clone();
+        refresh_coding_agent_identity_at_locked_path(&mut written, &self.path);
         apply_selected_project_state(&mut written, &projection);
         Ok(written)
     }
@@ -11379,6 +11603,7 @@ impl ProjectPathsWriteTransaction {
                     let validated = select_project_source_locked(self)
                         .map(|selected| {
                             let mut settings = self.fresh.clone();
+                            refresh_coding_agent_identity_at_locked_path(&mut settings, &self.path);
                             apply_selected_project_state(&mut settings, &selected.projection);
                             settings
                         })
@@ -11937,8 +12162,11 @@ fn save_settings_value_locked(
     replace_project_projection(written_value.as_object_mut().unwrap(), &selected_projection);
     // #2716 (B3): the re-decode sees what a load would, the agents file's groups
     // in the base object, under the overlay reapplied below.
+    let physical_groups = agents_groups.keys().cloned().collect::<Vec<_>>();
     let base_profiles = agents_groups.get("codingAgentProfiles").cloned();
     restore_agents_groups_for_redecode(&mut written_value, agents_groups);
+    let identity_physical =
+        coding_agent_identity_with_physical_overlay(written_value.clone(), path, &physical_groups);
     // #1737: disk holds the base, memory holds the effective value. Without this the
     // caller would adopt base values for every overlay-owned key on the first save.
     if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
@@ -11964,6 +12192,7 @@ fn save_settings_value_locked(
         )
     })?;
     written.project_path_state = Arc::new(fresh_state);
+    written.coding_agent_identity_physical = Some(Arc::new(identity_physical));
     written.local_overlay_state = settings.local_overlay_state.clone();
     repair_loaded_response_close_settings(&mut written, &path.display().to_string());
     Ok(written)
@@ -12312,6 +12541,18 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     // order, under the overlay reapplied below. The decoded value is adopted and
     // written, so without it an empty `agents` would reach the agents file.
     let agents_layer = merge_agents_instance_file(settings_path, &mut value);
+    let physical_groups = read_agents_instance_file(&agents_instance_path(settings_path))
+        .ok()
+        .flatten()
+        .map(|groups| {
+            agents_instance_groups(&groups)
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let identity_physical =
+        coding_agent_identity_with_physical_overlay(value.clone(), settings_path, &physical_groups);
     let base_profiles = value.get("codingAgentProfiles").cloned();
     // #1737 (D17): re-apply the overlay to the disk-decoded object, so the
     // `disk_gate == enabled` early return does not hand the caller base values.
@@ -12327,6 +12568,7 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
         serde_json::from_value(value).map_err(|_| "settings_invalid".to_string())?;
     settings.project_path_state = Arc::new(state);
     set_agents_layer_state(&mut settings, settings_path, agents_layer);
+    settings.coding_agent_identity_physical = Some(Arc::new(identity_physical));
     // #2306 P1 - finalize before the caller's no-op return or direct write, so
     // both the returned and the written snapshot carry contiguous ordinals.
     // Overlay values stay in memory: `save_settings_value_locked` restores the
@@ -28320,4 +28562,300 @@ pub(crate) fn source_transition_test_locator(
     source: &SourceRef,
 ) -> Result<PathBuf, SourcePreparationError> {
     context.locator(source)
+}
+
+#[cfg(test)]
+mod derived_agent_binding_projection_tests {
+    use super::*;
+
+    fn physical_settings(dir: &Path, value: &Value) -> AppSettings {
+        let path = dir.join(SETTINGS_FILE_NAME);
+        std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        load_settings_from_path(&path)
+    }
+
+    #[test]
+    fn derived_agent_id_binding_projection_ignores_presentation_and_sorts_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = serde_json::json!({
+            "defaultShell": "test-shell",
+            "defaultShellArgs": [],
+            "agents": [
+                {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHome":false},
+                {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHome":false},
+            ],
+            "rootToken": "fixture-token",
+        });
+        let first = physical_settings(dir.path(), &original);
+        let revision = bootstrap_identity_revision(&first).unwrap();
+        let settings_path = dir.path().join(SETTINGS_FILE_NAME);
+        let agents_path = agents_instance_path(&settings_path);
+        // Capture the complete physical baseline BEFORE the presentation edit.
+        // Reusing the original legacy JSON would drop migrated profile ownership.
+        let mut after: Value =
+            serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+        let mut after_groups: Value =
+            serde_json::from_slice(&std::fs::read(&agents_path).unwrap()).unwrap();
+        let agents = after_groups["agents"].as_array_mut().unwrap();
+        assert!(!agents.is_empty());
+        assert_eq!(agents.len(), 2);
+        for row in agents.iter_mut() {
+            row["label"] = serde_json::json!("display changed");
+            row["color"] = serde_json::json!("red");
+            row["order"] = serde_json::json!(99);
+        }
+        agents.reverse();
+        after["rootToken"] = serde_json::json!("changed-root-token");
+        after["sidebarZoom"] = serde_json::json!(2.0);
+        // Preserve all profile/HOME/ownership groups and unknown fields verbatim.
+        std::fs::write(&agents_path, serde_json::to_vec(&after_groups).unwrap()).unwrap();
+        let second = physical_settings(dir.path(), &after);
+        let before_physical = first.coding_agent_identity_physical.as_ref().unwrap();
+        let after_physical = second.coding_agent_identity_physical.as_ref().unwrap();
+        for key in ["codingAgentProfiles", "quotaSources", "groupOwnership"] {
+            assert_eq!(
+                before_physical[key], after_physical[key],
+                "identity input {key} changed"
+            );
+        }
+        assert_eq!(bootstrap_identity_revision(&second).unwrap(), revision);
+    }
+
+    #[test]
+    fn derived_agent_id_binding_projection_changes_for_execution_home_and_quota() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = physical_settings(
+            dir.path(),
+            &serde_json::json!({
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "agents": [
+                    {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHome":false},
+                    {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHome":false},
+                ],
+                "rootToken": "fixture-token",
+            }),
+        );
+        let revision = bootstrap_identity_revision(&settings).unwrap();
+        let raw = settings
+            .coding_agent_identity_physical
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .clone();
+        for (key, value) in [
+            ("command", serde_json::json!("different-command")),
+            ("envs", serde_json::json!([{"key":"MODE","value":"other"}])),
+            ("isolatedHome", serde_json::json!(true)),
+        ] {
+            let mut changed = settings.clone();
+            let mut image = raw.clone();
+            image["agents"][0][key] = value;
+            changed.coding_agent_identity_physical = Some(Arc::new(image));
+            assert_ne!(
+                bootstrap_identity_revision(&changed).unwrap(),
+                revision,
+                "{key}"
+            );
+        }
+        let mut changed = settings.clone();
+        let mut image = raw;
+        image["quotaSources"] = serde_json::json!({"agent": {"source":"other"}});
+        changed.coding_agent_identity_physical = Some(Arc::new(image));
+        assert_ne!(bootstrap_identity_revision(&changed).unwrap(), revision);
+    }
+
+    #[test]
+    fn derived_agent_id_binding_save_narrow_and_cas_return_physical_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE_NAME);
+        physical_settings(
+            dir.path(),
+            &serde_json::json!({
+                "defaultShell":"test-shell",
+                "defaultShellArgs":[],
+                "agents": [{"id":"alpha","label":"Alpha","command":"claude","color":"red"}],
+                "rootToken":"fixture-token"
+            }),
+        );
+        // Unknown fields in an overlay-owned group must survive typed decode.
+        let overlay_path = path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+        std::fs::write(&overlay_path, serde_json::to_vec(&serde_json::json!({
+            "agents": [{"id":"alpha","label":"Overlay","command":"claude","color":"red","unknownIdentity":{"keep":7}}]
+        })).unwrap()).unwrap();
+        let mut current = load_settings_for_cli_from_path(&path);
+        assert_eq!(
+            current.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]
+                ["unknownIdentity"]["keep"],
+            7
+        );
+        assert!(current.local_overlay_state.owns_top_level("agents"));
+        let baseline = bootstrap_identity_revision(&current).unwrap();
+        for mode in 0..4 {
+            let before_bytes = (
+                std::fs::read(&path).unwrap(),
+                std::fs::read(agents_instance_path(&path)).unwrap(),
+                std::fs::read(&overlay_path).unwrap(),
+            );
+            current = match mode {
+                0 => save_settings_to_path_preserving_project_paths(&current, &path).unwrap(),
+                1 => set_main_window_placement_at_path(
+                    &current,
+                    &path,
+                    &WindowGeometry {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 800.0,
+                        height: 600.0,
+                    },
+                    MainWindowDisplayState::Normal,
+                )
+                .unwrap(),
+                2 => {
+                    compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, true, false)
+                        .unwrap()
+                }
+                _ => compare_and_set_terminal_snapshots_enabled_at_path(
+                    &current, &path, false, false,
+                )
+                .unwrap(),
+            };
+            if mode == 3 {
+                assert_eq!(
+                    before_bytes,
+                    (
+                        std::fs::read(&path).unwrap(),
+                        std::fs::read(agents_instance_path(&path)).unwrap(),
+                        std::fs::read(&overlay_path).unwrap(),
+                    )
+                );
+            }
+            let fresh = load_settings_for_cli_from_path(&path);
+            assert_eq!(
+                current.coding_agent_identity_physical,
+                fresh.coding_agent_identity_physical
+            );
+            assert_eq!(
+                bootstrap_binding_revision(&current, "alpha").unwrap(),
+                baseline
+            );
+            let raw = current.coding_agent_identity_physical.as_ref().unwrap();
+            assert_eq!(raw["agents"][0]["unknownIdentity"]["keep"], 7);
+            assert!(raw["groupOwnership"]["overlayPaths"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(["agents"])));
+        }
+        // A decode-invalid overlay uses the raw base, just as the live loader does.
+        std::fs::write(
+            &overlay_path,
+            serde_json::to_vec(&serde_json::json!({
+                "agents": [{"id":"alpha","label":"Overlay","command":"different","color":"red"}],
+                "sidebarZoom":"invalid"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let written = save_settings_to_path_preserving_project_paths(&current, &path).unwrap();
+        let fresh = load_settings_for_cli_from_path(&path);
+        assert_eq!(
+            written.coding_agent_identity_physical,
+            fresh.coding_agent_identity_physical
+        );
+        std::fs::remove_file(&overlay_path).unwrap();
+        current = load_settings_for_cli_from_path(&path);
+        let before_edit = bootstrap_binding_revision(&current, "alpha").unwrap();
+        current.agents[0].command = "claude --different-execution".into();
+        let written = save_settings_to_path_preserving_project_paths(&current, &path).unwrap();
+        let after_edit = bootstrap_binding_revision(&written, "alpha").unwrap();
+        assert_ne!(after_edit, before_edit);
+        assert_eq!(
+            after_edit,
+            bootstrap_binding_revision(&load_settings_for_cli_from_path(&path), "alpha").unwrap()
+        );
+        assert_eq!(
+            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]["command"],
+            "claude --different-execution"
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_binding_project_replacement_refreshes_physical_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE_NAME);
+        let current = physical_settings(
+            dir.path(),
+            &serde_json::json!({
+                "defaultShell":"test-shell",
+                "defaultShellArgs":[],
+                "agents": [{"id":"alpha","label":"Alpha","command":"claude","color":"red"}],
+                "rootToken":"fixture-token"
+            }),
+        );
+        let previous = bootstrap_binding_revision(&current, "alpha").unwrap();
+        let agents_path = agents_instance_path(&path);
+        let mut groups: Value =
+            serde_json::from_slice(&std::fs::read(&agents_path).unwrap()).unwrap();
+        groups["agents"][0]["unknownIdentity"] = serde_json::json!({"fresh":7});
+        std::fs::write(&agents_path, serde_json::to_vec(&groups).unwrap()).unwrap();
+        let actual = load_settings_for_cli_from_path(&path);
+        let revision = bootstrap_binding_revision(&actual, "alpha").unwrap();
+        assert_ne!(revision, previous);
+        let mut transaction = begin_project_paths_transaction_at_path(&current, &path).unwrap();
+        assert_eq!(
+            transaction.fresh_settings().coding_agent_identity_physical,
+            actual.coding_agent_identity_physical
+        );
+        let candidate = transaction.fresh_settings().clone();
+        let written = transaction
+            .commit_project_groups(&candidate, false, false)
+            .unwrap();
+        assert_eq!(
+            bootstrap_binding_revision(&written, "alpha").unwrap(),
+            revision
+        );
+        assert_eq!(
+            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]
+                ["unknownIdentity"]["fresh"],
+            7
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_binding_projection_missing_physical_never_uses_typed_fallback() {
+        assert!(bootstrap_identity_revision(&AppSettings::default()).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let settings = physical_settings(
+            dir.path(),
+            &serde_json::json!({
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "agents": [
+                    {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHome":false},
+                    {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHome":false},
+                ],
+                "rootToken": "fixture-token",
+            }),
+        );
+        let mut draft =
+            serde_json::from_value::<AppSettings>(serde_json::to_value(&settings).unwrap())
+                .unwrap();
+        assert!(bootstrap_identity_revision(&draft).is_err());
+        draft.coding_agent_identity_physical = settings.coding_agent_identity_physical.clone();
+        let mut image = draft
+            .coding_agent_identity_physical
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .clone();
+        let repeated = image["agents"][0].clone();
+        assert!(repeated.is_object());
+        image["agents"].as_array_mut().unwrap().push(repeated);
+        draft.coding_agent_identity_physical = Some(Arc::new(image));
+        assert!(bootstrap_identity_revision(&draft).is_err());
+        assert_eq!(
+            bootstrap_identity_revision(&draft).unwrap_err(),
+            "coding_agent_identity_duplicate"
+        );
+    }
 }
