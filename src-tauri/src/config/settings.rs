@@ -26440,9 +26440,11 @@ mod tests {
     fn hash_activation_seed(sidecar: bool) -> (tempfile::TempDir, std::path::PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let path = b3_settings_path(temp.path());
-        let mut settings = super::AppSettings::default();
-        settings.root_token = Some("hash-test-token".into());
-        settings.agents = vec![serde_json::from_value(b3_agent("alpha", "Incumbent")).unwrap()];
+        let mut settings = super::AppSettings {
+            root_token: Some("hash-test-token".into()),
+            agents: vec![serde_json::from_value(b3_agent("alpha", "Incumbent")).unwrap()],
+            ..super::AppSettings::default()
+        };
         super::validate_and_repair_settings(&mut settings).unwrap();
         super::normalize_agent_order(&mut settings.agents);
         let mut value = serde_json::to_value(settings).unwrap();
@@ -26463,6 +26465,9 @@ mod tests {
         };
         b3_write(&path, &value);
         b3_write(&b3_sidecar_path(temp.path()), &groups);
+        // The existing project migration publishes even an empty projection.
+        // Seed its destination before measuring hash-only read/rejection effects.
+        b3_write(&super::project_paths_path(&path), &serde_json::json!({}));
         (temp, path)
     }
 
@@ -26563,10 +26568,19 @@ mod tests {
             let (temp, path) = hash_activation_seed(true);
             let sidecar = b3_sidecar_path(temp.path());
             let mut raw = serde_json::Value::Object(b3_object(&sidecar));
-            raw["agents"] = bad;
+            raw["agents"] = bad.clone();
             b3_write(&sidecar, &raw);
             let before = hash_activation_files(temp.path());
-            assert!(super::load_settings_for_cli_strict_from_path(Some(&path)).is_err());
+            let error = super::read_agents_instance_file(&sidecar).unwrap_err();
+            assert!(error.contains("undecodable agents array"), "{bad}: {error}");
+            // Existing strict loading exposes an unreadable layer in a valid
+            // unrelated-settings snapshot; it does not always return Err.
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert!(
+                matches!(&loaded.agents_layer, super::AgentsLayerState::Unreadable { path: failed, .. } if failed == &sidecar),
+                "{bad}"
+            );
+            assert!(loaded.agents.is_empty(), "{bad}");
             assert!(super::save_settings_to_path_preserving_project_paths(
                 &super::AppSettings::default(),
                 &path

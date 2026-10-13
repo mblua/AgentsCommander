@@ -4866,10 +4866,21 @@ mod tests {
                 "agent-0".into(),
                 BTreeMap::from([("B".into(), "Profile sentinel".into())]),
             );
+        // HOME carrier is backend-owned physical state. A caller-only value
+        // is intentionally removed by the existing saver when disk has none.
+        std::fs::write(&path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
         let written = crate::config::settings::save_settings_to_path_preserving_project_paths(
             &settings, &path,
         )
         .unwrap();
+        assert_eq!(
+            written
+                .coding_agent_profiles
+                .codex_home_key_by_agent
+                .get("agent-0")
+                .map(String::as_str),
+            Some("physical-home")
+        );
         (temp, path, Arc::new(RwLock::new(written)))
     }
 
