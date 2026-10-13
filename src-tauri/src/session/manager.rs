@@ -2980,13 +2980,7 @@ impl SessionManager {
             match mutation {
                 FinalizeMutation::Live(binding, _) => {
                     state.pending_create.remove(&binding.session_id);
-                    if let Some(id) = state
-                        .coding_agent_bindings
-                        .get(&binding.session_id)
-                        .cloned()
-                    {
-                        state.failed_binding_recipes.remove(&id);
-                    }
+                    clear_failed_recipe_for_runtime_binding(&mut state, binding.session_id);
                     if let Some(record) = state.sessions.get_mut(&binding.session_id) {
                         if matches!(record.status, SessionStatus::Exited(_)) {
                             return Err(format!(
@@ -3001,13 +2995,7 @@ impl SessionManager {
                 }
                 FinalizeMutation::Dormant(binding, _, exit_code) => {
                     state.pending_create.remove(&binding.session_id);
-                    if let Some(id) = state
-                        .coding_agent_bindings
-                        .get(&binding.session_id)
-                        .cloned()
-                    {
-                        state.failed_binding_recipes.remove(&id);
-                    }
+                    clear_failed_recipe_for_runtime_binding(&mut state, binding.session_id);
                     if let Some(record) = state.sessions.get_mut(&binding.session_id) {
                         record.status = SessionStatus::Exited(exit_code);
                         result.finalized_rows.push(SessionInfo::from(&*record));
@@ -3492,6 +3480,12 @@ fn resolve_selection_commit_target(
     };
 
     Ok((target_mode, target_id, target_status))
+}
+
+fn clear_failed_recipe_for_runtime_binding(state: &mut SessionManagerState, runtime: Uuid) {
+    if let Some(id) = state.coding_agent_bindings.get(&runtime).cloned() {
+        state.failed_binding_recipes.remove(&id);
+    }
 }
 
 fn retire_coding_agent_binding(state: &mut SessionManagerState, runtime: Uuid) {
