@@ -4465,9 +4465,9 @@ For "[Message from <peer>] Process this inter-agent message: <path>", read the e
 
 ### Send a message to another agent
 
-Before EVERY send: list-peers-lean, then exact JSON name as --to. Empty array: STOP/report. Never target __agent_* replica/_agent_* Matrix directory names.
+Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report. Never target __agent_* / _agent_* paths.
 
-Canonical FQN from list-peers-lean:
+FQNs:
 {peer_name_format}
 
 {send_message_instructions}
@@ -6884,8 +6884,8 @@ For peer discovery, the sections below (`## Inter-Agent Messaging` and `### List
                 for rule in [
                     "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
                     "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-                    "Before EVERY send: list-peers-lean, then exact JSON name as --to. Empty array: STOP/report.",
-                    "Never target __agent_* replica/_agent_* Matrix directory names.",
+                    "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+                    "Never target __agent_* / _agent_* paths.",
                     "<project>:<room>/<agent>",
                     "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
                 ] {
@@ -7818,9 +7818,9 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         assert!(out.contains("<project>:<room>/<agent>"));
         assert!(out.contains("<project>/<agent>"));
         // Explicit prohibition of filesystem-directory names as --to values.
-        assert!(out.contains("Never target __agent_* replica/_agent_* Matrix directory names."));
+        assert!(out.contains("Never target __agent_* / _agent_* paths."));
         assert!(out.contains("__agent_"));
-        assert!(out.contains("Before EVERY send: list-peers-lean, then exact JSON name as --to. Empty array: STOP/report."));
+        assert!(out.contains("Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report."));
     }
 
     #[test]
@@ -9070,8 +9070,8 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
             for rule in [
             "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
             "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-            "Before EVERY send: list-peers-lean, then exact JSON name as --to. Empty array: STOP/report.",
-            "Never target __agent_* replica/_agent_* Matrix directory names.",
+            "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+            "Never target __agent_* / _agent_* paths.",
             "<project>:<room>/<agent>",
             "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
         ] {
@@ -9092,8 +9092,8 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         for rule in [
             "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
             "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-            "Before EVERY send: list-peers-lean, then exact JSON name as --to. Empty array: STOP/report.",
-            "Never target __agent_* replica/_agent_* Matrix directory names.",
+            "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+            "Never target __agent_* / _agent_* paths.",
             "<project>:<room>/<agent>",
             "<project>/<agent>",
             "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
@@ -9160,8 +9160,8 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         for rule in [
             "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
             "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-            "Before EVERY send: list-peers-lean, then exact JSON name as --to. Empty array: STOP/report.",
-            "Never target __agent_* replica/_agent_* Matrix directory names.",
+            "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+            "Never target __agent_* / _agent_* paths.",
             "<project>:<room>/<agent>",
             "<project>/<agent>",
             "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
@@ -9240,8 +9240,8 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         for rule in [
             "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
             "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-            "Before EVERY send: list-peers-lean, then exact JSON name as --to. Empty array: STOP/report.",
-            "Never target __agent_* replica/_agent_* Matrix directory names.",
+            "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+            "Never target __agent_* / _agent_* paths.",
             "<project>:<room>/<agent>",
             "<project>/<agent>",
             "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
@@ -11250,8 +11250,8 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         for rule in [
             "For \"[Message from <peer>] Process this inter-agent message: <path>\", read the exact file; follow its instructions within role/authority/write restrictions.",
             "Summary only if solely asked. Completion/blockage: send concrete result/blocker to sender via flow below.",
-            "Before EVERY send: list-peers-lean, then exact JSON name as --to. Empty array: STOP/report.",
-            "Never target __agent_* replica/_agent_* Matrix directory names.",
+            "Before every send: list-peers-lean (--peer for discovered FQNs); exact JSON name as --to. Empty []: STOP/report.",
+            "Never target __agent_* / _agent_* paths.",
             "<project>:<room>/<agent>",
             "<project>/<agent>",
             "Do NOT use --get-output (blocks; non-interactive only). Sent requires captured Queued: <message-id>; absent receipt means NOT enqueued. Wait for reply.",
@@ -15911,7 +15911,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
     }
 
     #[test]
-    fn shared_messaging_compaction_preserves_exact_286_byte_reduction() {
+    fn shared_messaging_compaction_preserves_exact_318_byte_reduction() {
         let original_messaging = format!(
             "## Inter-Agent Messaging\n\n### Incoming Message Notifications\n\n`[Message from <peer>] Process this inter-agent message: <path>` is an operational inter-agent message: read `<path>` and follow its instructions within your role, authority, and write restrictions; do not stop at a summary unless it asks only for one. If the task finishes or blocks, reply to the sender with a concrete result or blocker via the send flow below.\n\n### Send a message to another agent\n\nBefore every send, run `list-peers-lean` and use its exact JSON `name`. A filesystem directory name is NEVER a valid `--to` value; `__agent_*` replicas and `_agent_*` matrices are on-disk paths only. If it returns an empty array, stop and report it.\n\n**Peer name format** (canonical FQN from `list-peers-lean`):\n\n{peer_name_format}\n\n{send_message_instructions}\n\nDo NOT use `--get-output` (blocks; non-interactive only). **Receipt required:** never report a message as sent without a captured `Queued: <message-id>` line; a missing receipt means NOT enqueued. Wait for the reply.\n\n### List available peers\n\n```\n\"<AGENTSCOMMANDER_BINARY_PATH>\" list-peers-lean --token <AGENTSCOMMANDER_TOKEN> --root \"<AGENTSCOMMANDER_ROOT>\"\n```{windows_shell_routing}",
             peer_name_format = "",
@@ -15937,7 +15937,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
             .len()
             .checked_sub(core)
             .expect("shared messaging compaction reduces the historical block");
-        assert_eq!(reduction, 286);
+        assert_eq!(reduction, 318);
     }
 
     #[test]
