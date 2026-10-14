@@ -7489,7 +7489,11 @@ pub(crate) fn export_agents_to_instance_file(
     // #2716 (B3) r12n: the read, the existence check and the write are one
     // decision, so they run under the settings lock. It is released on return,
     // before the loader's own save takes it again.
-    let _lock = match SettingsFileLock::acquire(settings_path, std::time::Duration::from_secs(2)) {
+    let _lock = match SettingsFileLock::acquire_contextual(
+        settings_path,
+        std::time::Duration::from_secs(2),
+        "export_agents_to_instance_file",
+    ) {
         Ok(lock) => lock,
         Err(e) => {
             log::error!("[settings-migration] #2716 - {e}; nothing exported, nothing stripped");
@@ -7824,9 +7828,10 @@ fn parse_settings_json(
     match settings_path {
         None => parse_settings_json_with_projection(contents, source, None, None),
         Some(path) => {
-            let transaction = empty_project_transaction(path).map_err(|error| {
-                report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
-            })?;
+            let transaction =
+                empty_project_transaction(path, "parse_settings_json").map_err(|error| {
+                    report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+                })?;
             let selected = select_project_source_locked(&transaction).map_err(|error| {
                 report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
             })?;
@@ -8164,7 +8169,7 @@ fn capture_project_settings(
         .file_name()
         .ok_or_else(|| report(lock_error(SettingsSaveReason::LockIdentityRejected)))?;
     let physical = retained.identity().canonical_path.join(leaf);
-    let transaction = empty_project_transaction(&physical)
+    let transaction = empty_project_transaction(&physical, "capture_project_settings")
         .map_err(|error| report(error.with_capture_labels(path)))?;
     retained
         .verify_current()
@@ -11416,7 +11421,11 @@ fn select_project_source_at_labeled_path_with_limit(
 // Read-only selection acquires before even checking either source's existence.
 #[cfg(test)]
 fn select_project_source_at_path(path: &Path) -> Result<Map<String, Value>, SettingsSaveError> {
-    let lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
+    let lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "select_project_source_at_path",
+    )?;
     let transaction = ProjectPathsWriteTransaction {
         _lock: lock,
         path: path.to_path_buf(),
@@ -11666,11 +11675,17 @@ pub(crate) enum ProjectPathsRepairStage {
     Write,
 }
 
+#[track_caller]
 fn empty_project_transaction(
     path: &Path,
+    operation: &'static str,
 ) -> Result<ProjectPathsWriteTransaction, SettingsSaveError> {
     Ok(ProjectPathsWriteTransaction {
-        _lock: SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?,
+        _lock: SettingsFileLock::acquire_contextual(
+            path,
+            std::time::Duration::from_secs(2),
+            operation,
+        )?,
         path: path.to_path_buf(),
         fresh: AppSettings::default(),
         revalidated_after_failure: false,
@@ -11694,9 +11709,11 @@ pub(crate) fn begin_project_paths_transaction_at_path(
     current: &AppSettings,
     settings_path: &Path,
 ) -> Result<ProjectPathsWriteTransaction, String> {
-    let mut transaction = empty_project_transaction(settings_path).map_err(|error| {
-        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
-    })?;
+    let mut transaction =
+        empty_project_transaction(settings_path, "begin_project_paths_transaction_at_path")
+            .map_err(|error| {
+                report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+            })?;
     ensure_project_paths_migrated_locked(&transaction).map_err(|error| {
         report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
     })?;
@@ -11907,15 +11924,336 @@ pub(crate) fn repair_fresh_project_paths_at_path(
     }
 }
 
+// Diagnostic transport is prepared before kernel ownership. The worker is the
+// only place that formats or writes logs; an owner never waits for its sink.
+const SETTINGS_LOCK_DEBUG_CAPACITY: usize = 256;
+const SETTINGS_LOCK_DEBUG_PATH_BYTES: usize = 4096;
+static SETTINGS_LOCK_DEBUG_TRANSPORT: OnceLock<
+    Option<std::sync::mpsc::SyncSender<SettingsLockDebugEvent>>,
+> = OnceLock::new();
+static SETTINGS_LOCK_DEBUG_INSTANCE: OnceLock<uuid::Uuid> = OnceLock::new();
+static SETTINGS_LOCK_DEBUG_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+static SETTINGS_LOCK_DEBUG_LOST: AtomicU64 = AtomicU64::new(0);
+
+struct SettingsLockDebugContext {
+    instance: uuid::Uuid,
+    pid: u32,
+    attempt: u64,
+    operation: &'static str,
+    caller: &'static std::panic::Location<'static>,
+    thread: std::thread::ThreadId,
+    target: String,
+    sidecar: String,
+    path_truncated: bool,
+}
+
+struct SettingsLockDebugEvent {
+    context: Arc<SettingsLockDebugContext>,
+    phase: &'static str,
+    utc: chrono::DateTime<chrono::Utc>,
+    thread: std::thread::ThreadId,
+    preparation_ms: Option<f64>,
+    wait_ms: Option<f64>,
+    hold_ms: Option<f64>,
+    reason: Option<&'static str>,
+    raw_os_error: Option<i32>,
+}
+
+struct SettingsLockDebugAttempt {
+    context: Arc<SettingsLockDebugContext>,
+    sender: std::sync::mpsc::SyncSender<SettingsLockDebugEvent>,
+    started: std::time::Instant,
+    retry_started: Option<std::time::Instant>,
+    acquired_at: Option<std::time::Instant>,
+}
+
+// Bound the escaped representation, including quotes, without splitting UTF-8.
+// A truncated prefix is intentionally not a complete identity for a lock.
+fn settings_lock_debug_path(path: &Path) -> (String, bool) {
+    let mut escaped = String::with_capacity(SETTINGS_LOCK_DEBUG_PATH_BYTES);
+    escaped.push('"');
+    for character in path.to_string_lossy().chars() {
+        let piece = match character {
+            '"' => "\\\"".to_string(),
+            '\\' => "\\\\".to_string(),
+            '\n' => "\\n".to_string(),
+            '\r' => "\\r".to_string(),
+            '\t' => "\\t".to_string(),
+            c if c.is_control() => format!("\\u{:04x}", c as u32),
+            c => c.to_string(),
+        };
+        if escaped.len() + piece.len() + 1 > SETTINGS_LOCK_DEBUG_PATH_BYTES {
+            escaped.push('"');
+            return (escaped, true);
+        }
+        escaped.push_str(&piece);
+    }
+    escaped.push('"');
+    (escaped, false)
+}
+
+fn settings_lock_debug_transport(
+    slot: &OnceLock<Option<std::sync::mpsc::SyncSender<SettingsLockDebugEvent>>>,
+    enabled: bool,
+    spawn: impl FnOnce(std::sync::mpsc::Receiver<SettingsLockDebugEvent>) -> std::io::Result<()>,
+) -> Option<std::sync::mpsc::SyncSender<SettingsLockDebugEvent>> {
+    // In particular, INFO must not freeze None before a runtime change to DEBUG.
+    if !enabled {
+        return None;
+    }
+    slot.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(SETTINGS_LOCK_DEBUG_CAPACITY);
+        spawn(receiver).ok().map(|()| sender)
+    })
+    .clone()
+}
+
+fn settings_lock_debug_worker(receiver: std::sync::mpsc::Receiver<SettingsLockDebugEvent>) {
+    for event in receiver {
+        #[cfg(test)]
+        settings_lock_debug_test_before_emit(&event);
+        settings_lock_debug_emit(&event);
+        #[cfg(test)]
+        settings_lock_debug_test_after_emit(&event);
+    }
+}
+
+#[cfg(test)]
+struct SettingsLockDebugTestHooks {
+    gate_phase: &'static str,
+    gate_once: std::sync::atomic::AtomicBool,
+    gated: std::sync::mpsc::Sender<()>,
+    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    processed: std::sync::mpsc::Sender<serde_json::Value>,
+}
+
+#[cfg(test)]
+static SETTINGS_LOCK_DEBUG_TEST_HOOKS: OnceLock<SettingsLockDebugTestHooks> = OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn settings_lock_debug_test_before_emit(event: &SettingsLockDebugEvent) {
+    let Some(hooks) = SETTINGS_LOCK_DEBUG_TEST_HOOKS.get() else {
+        return;
+    };
+    if event.phase == hooks.gate_phase && hooks.gate_once.swap(false, Ordering::Relaxed) {
+        hooks.gated.send(()).expect("gate observer disconnected");
+        hooks
+            .resume
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("gate not resumed by harness");
+    }
+}
+
+#[cfg(test)]
+fn settings_lock_debug_test_after_emit(event: &SettingsLockDebugEvent) {
+    if let Some(hooks) = SETTINGS_LOCK_DEBUG_TEST_HOOKS.get() {
+        let _ = hooks.processed.send(serde_json::json!({
+            "phase": event.phase,
+            "instance": event.context.instance.to_string(),
+            "pid": event.context.pid,
+            "attempt": event.context.attempt,
+            "operation": event.context.operation,
+            "sidecar": event.context.sidecar,
+            "target": event.context.target,
+            "reason": event.reason,
+            "raw_os_error": event.raw_os_error,
+            "wait_ms": event.wait_ms,
+            "hold_ms": event.hold_ms,
+            "preparation_ms": event.preparation_ms,
+            "acquisition_thread": format!("{:?}", event.context.thread),
+            "event_thread": format!("{:?}", event.thread),
+            "event_utc": event.utc.to_rfc3339(),
+            "lost_events": SETTINGS_LOCK_DEBUG_LOST.load(Ordering::Relaxed),
+        }));
+    }
+}
+
+fn settings_lock_debug_emit(event: &SettingsLockDebugEvent) {
+    // Reevaluate effective app/CLI filtering after a potentially stalled sink.
+    if !log::log_enabled!(target: module_path!(), log::Level::Debug) {
+        return;
+    }
+    let context = &event.context;
+    log::debug!(target: module_path!(),
+        "settings-lock phase={} pid={} instance={} attempt={} operation={} origin={}:{}:{} acquisition_thread={:?} event_thread={:?} target={} sidecar={} path_truncated={} event_utc={} emitted_utc={} preparation_ms={:?} wait_ms={:?} hold_ms={:?} stage={} reason={:?} raw_os_error={:?} handle_closed={} lost_events={}",
+        event.phase, context.pid, context.instance, context.attempt,
+        context.operation, context.caller.file(), context.caller.line(),
+        context.caller.column(), context.thread, event.thread, context.target,
+        context.sidecar, context.path_truncated, event.utc.to_rfc3339(),
+        chrono::Utc::now().to_rfc3339(), event.preparation_ms, event.wait_ms,
+        event.hold_ms, if event.phase == "release" { "unlock" } else { "lock_acquire" }, event.reason, event.raw_os_error,
+        matches!(event.phase, "release" | "timeout" | "acquire-error"),
+        SETTINGS_LOCK_DEBUG_LOST.load(Ordering::Relaxed));
+}
+
+impl SettingsLockDebugAttempt {
+    fn prepare(
+        settings_path: &Path,
+        operation: &'static str,
+        caller: &'static std::panic::Location<'static>,
+    ) -> Option<Self> {
+        let sender = settings_lock_debug_transport(
+            &SETTINGS_LOCK_DEBUG_TRANSPORT,
+            log::log_enabled!(target: module_path!(), log::Level::Debug),
+            |receiver| {
+                std::thread::Builder::new()
+                    .name("settings-lock-debug".into())
+                    .spawn(move || settings_lock_debug_worker(receiver))
+                    .map(|_| ())
+            },
+        )?;
+        let attempt = SETTINGS_LOCK_DEBUG_ATTEMPT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .ok()?
+            + 1;
+        let (target, target_truncated) = settings_lock_debug_path(settings_path);
+        let lock_path = settings_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(SETTINGS_LOCK_FILE_NAME);
+        let (sidecar, sidecar_truncated) = settings_lock_debug_path(&lock_path);
+        let debug = Self {
+            context: Arc::new(SettingsLockDebugContext {
+                instance: *SETTINGS_LOCK_DEBUG_INSTANCE.get_or_init(uuid::Uuid::new_v4),
+                pid: std::process::id(),
+                attempt,
+                operation,
+                caller,
+                thread: std::thread::current().id(),
+                target,
+                sidecar,
+                path_truncated: target_truncated || sidecar_truncated,
+            }),
+            sender,
+            started: std::time::Instant::now(),
+            retry_started: None,
+            acquired_at: None,
+        };
+        debug.event("acquire-start", None, None);
+        Some(debug)
+    }
+
+    fn event(&self, phase: &'static str, reason: Option<&'static str>, raw_os_error: Option<i32>) {
+        self.event_at(phase, reason, raw_os_error, std::time::Instant::now());
+    }
+
+    fn event_at(
+        &self,
+        phase: &'static str,
+        reason: Option<&'static str>,
+        raw_os_error: Option<i32>,
+        at: std::time::Instant,
+    ) {
+        let event = SettingsLockDebugEvent {
+            context: Arc::clone(&self.context),
+            phase,
+            utc: chrono::Utc::now(),
+            thread: std::thread::current().id(),
+            preparation_ms: (phase != "acquire-start").then(|| {
+                self.retry_started
+                    .unwrap_or(at)
+                    .duration_since(self.started)
+                    .as_secs_f64()
+                    * 1000.0
+            }),
+            wait_ms: self.retry_started.map(|retry| {
+                self.acquired_at
+                    .unwrap_or(at)
+                    .duration_since(retry)
+                    .as_secs_f64()
+                    * 1000.0
+            }),
+            hold_ms: self
+                .acquired_at
+                .filter(|_| phase == "release")
+                .map(|acquired| at.duration_since(acquired).as_secs_f64() * 1000.0),
+            reason,
+            raw_os_error,
+        };
+        if self.sender.try_send(event).is_err() {
+            // Saturation avoids diagnostic counter wraparound too.
+            let _ = SETTINGS_LOCK_DEBUG_LOST.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |value| Some(value.saturating_add(1)),
+            );
+        }
+    }
+
+    fn failure(&self, error: &SettingsSaveError) {
+        let (reason, raw) = match &error.cause {
+            SettingsSaveCause::Io(source) => ("io_error", source.raw_os_error()),
+            SettingsSaveCause::Semantic(reason) => (reason.as_str(), None),
+            SettingsSaveCause::Json(_) => ("json_error", None),
+        };
+        self.event(
+            if reason == "lock_timed_out" {
+                "timeout"
+            } else {
+                "acquire-error"
+            },
+            Some(reason),
+            raw,
+        );
+    }
+}
+
 struct SettingsFileLock {
-    file: std::fs::File,
+    file: Option<std::fs::File>,
+    debug: Option<SettingsLockDebugAttempt>,
 }
 
 impl SettingsFileLock {
+    #[cfg(test)]
+    #[track_caller]
     fn acquire(
         settings_path: &Path,
         timeout: std::time::Duration,
     ) -> Result<Self, SettingsSaveError> {
+        Self::acquire_contextual(settings_path, timeout, "test-lock")
+    }
+
+    #[track_caller]
+    fn acquire_contextual(
+        settings_path: &Path,
+        timeout: std::time::Duration,
+        operation: &'static str,
+    ) -> Result<Self, SettingsSaveError> {
+        let mut debug = SettingsLockDebugAttempt::prepare(
+            settings_path,
+            operation,
+            std::panic::Location::caller(),
+        );
+        // Inner failure drops every opened file before a diagnostic is enqueued.
+        let file = match Self::acquire_file(settings_path, timeout, &mut debug) {
+            Ok(file) => file,
+            Err(error) => {
+                if let Some(debug) = &debug {
+                    debug.failure(&error);
+                }
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            file: Some(file),
+            debug,
+        })
+    }
+
+    fn acquire_file(
+        settings_path: &Path,
+        timeout: std::time::Duration,
+        debug: &mut Option<SettingsLockDebugAttempt>,
+    ) -> Result<std::fs::File, SettingsSaveError> {
         let parent = settings_path.parent().ok_or_else(|| {
             SettingsSaveError::semantic(
                 SettingsSaveStage::LockAcquire,
@@ -12023,17 +12361,19 @@ impl SettingsFileLock {
             )
         })?;
 
-        let deadline = std::time::Instant::now()
-            .checked_add(timeout)
-            .ok_or_else(|| {
-                SettingsSaveError::semantic(
-                    SettingsSaveStage::LockAcquire,
-                    settings_path,
-                    None,
-                    SettingsSaveReason::LockDeadlineOverflow,
-                    SettingsSaveLegacyOutward::SettingsLockUnavailable,
-                )
-            })?;
+        let retry_started = std::time::Instant::now();
+        if let Some(debug) = debug.as_mut() {
+            debug.retry_started = Some(retry_started);
+        }
+        let deadline = retry_started.checked_add(timeout).ok_or_else(|| {
+            SettingsSaveError::semantic(
+                SettingsSaveStage::LockAcquire,
+                settings_path,
+                None,
+                SettingsSaveReason::LockDeadlineOverflow,
+                SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            )
+        })?;
         loop {
             #[cfg(any(unix, windows))]
             let locked = try_lock_settings_file(&file).map_err(|source| {
@@ -12056,7 +12396,12 @@ impl SettingsFileLock {
                 )
             })?;
             if locked {
-                return Ok(Self { file });
+                let acquired_at = std::time::Instant::now();
+                if let Some(debug) = debug.as_mut() {
+                    debug.acquired_at = Some(acquired_at);
+                    debug.event("acquired", None, None);
+                }
+                return Ok(file);
             }
             if std::time::Instant::now() >= deadline {
                 return Err(SettingsSaveError::semantic(
@@ -12074,7 +12419,24 @@ impl SettingsFileLock {
 
 impl Drop for SettingsFileLock {
     fn drop(&mut self) {
-        unlock_settings_file(&self.file);
+        if let Some(file) = self.file.take() {
+            let unlock_at = std::time::Instant::now();
+            let result = unlock_settings_file(&file);
+            #[cfg(test)]
+            let result = if SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR.with(|flag| flag.replace(false)) {
+                Err(std::io::Error::from_raw_os_error(5))
+            } else {
+                result
+            };
+            drop(file);
+            if let Some(debug) = &self.debug {
+                let (reason, raw) = match result {
+                    Ok(()) => ("unlock_ok", None),
+                    Err(error) => ("unlock_error", error.raw_os_error()),
+                };
+                debug.event_at("release", Some(reason), raw, unlock_at);
+            }
+        }
     }
 }
 
@@ -12098,9 +12460,13 @@ fn try_lock_settings_file(file: &std::fs::File) -> std::io::Result<bool> {
 }
 
 #[cfg(unix)]
-fn unlock_settings_file(file: &std::fs::File) {
+fn unlock_settings_file(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
-    let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(windows)]
@@ -12133,11 +12499,15 @@ fn try_lock_settings_file(file: &std::fs::File) -> std::io::Result<bool> {
 }
 
 #[cfg(windows)]
-fn unlock_settings_file(file: &std::fs::File) {
+fn unlock_settings_file(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
     let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
-    let _ = unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) };
+    if unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -12146,7 +12516,9 @@ fn try_lock_settings_file(_file: &std::fs::File) -> Result<bool, SettingsSaveRea
 }
 
 #[cfg(not(any(unix, windows)))]
-fn unlock_settings_file(_file: &std::fs::File) {}
+fn unlock_settings_file(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
 
 /// #2348 - serialize one placement component with the same error shape as the
 /// whole-object serializer, so a (theoretically impossible) serialization failure
@@ -12194,7 +12566,11 @@ fn save_settings_value(
     path: &Path,
     mode: ProjectWriteMode,
 ) -> Result<AppSettings, SettingsSaveError> {
-    let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
+    let _lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "save_settings_value",
+    )?;
     #[cfg(test)]
     SETTINGS_PRESERVE_LOCK_HOOK.with(|hook| {
         if let Some(callback) = hook.borrow().as_ref() {
@@ -12458,8 +12834,12 @@ pub(crate) fn read_pty_input_project_paths_strict() -> Result<Option<Vec<String>
 fn read_pty_input_project_paths_strict_from_path(
     path: &Path,
 ) -> Result<Option<Vec<String>>, String> {
-    let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))
-        .map_err(|_| "unsafe_path".to_string())?;
+    let _lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "read_pty_input_project_paths_strict_from_path",
+    )
+    .map_err(|_| "unsafe_path".to_string())?;
     let selected =
         select_project_source_at_locked_path_with_limit(path, 1024 * 1024).map_err(|error| {
             match &error.legacy_outward {
@@ -12503,8 +12883,12 @@ pub(crate) async fn read_pty_input_project_paths_strict_offloaded(
 
 pub(crate) fn read_terminal_snapshot_project_paths_strict() -> Result<Vec<String>, String> {
     let path = settings_path().ok_or_else(|| "snapshot_settings_invalid".to_string())?;
-    let _lock = SettingsFileLock::acquire(&path, std::time::Duration::from_secs(2))
-        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let _lock = SettingsFileLock::acquire_contextual(
+        &path,
+        std::time::Duration::from_secs(2),
+        "read_terminal_snapshot_project_paths_strict",
+    )
+    .map_err(|_| "snapshot_settings_invalid".to_string())?;
     let selected = select_project_source_at_locked_path_with_limit(&path, 1024 * 1024)
         .map_err(|_| "snapshot_settings_invalid".to_string())?;
     if selected.legacy.is_none() && selected.destination.is_none() {
@@ -12570,8 +12954,12 @@ pub(crate) fn read_terminal_snapshot_security_settings_strict(
 fn read_terminal_snapshot_security_settings_strict_from_path(
     path: &Path,
 ) -> Result<TerminalSnapshotSecuritySettings, String> {
-    let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))
-        .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let _lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "read_terminal_snapshot_security_settings_strict_from_path",
+    )
+    .map_err(|_| "snapshot_settings_invalid".to_string())?;
     let selected = select_project_source_at_locked_path_with_limit(path, 1024 * 1024)
         .map_err(|_| "snapshot_settings_invalid".to_string())?;
     let object = selected
@@ -12663,7 +13051,11 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
             SettingsSaveReportSurface::TerminalSnapshotCompareAndSet,
         )
     };
-    let lock_guard = match SettingsFileLock::acquire(path, std::time::Duration::from_secs(2)) {
+    let lock_guard = match SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "compare_and_set_terminal_snapshots_enabled_at_path",
+    ) {
         Ok(lock_guard) => lock_guard,
         Err(error) => return Err(report_typed_persistence_failure(error)),
     };
@@ -12851,10 +13243,14 @@ pub(crate) fn set_main_window_placement_at_path(
     {
         return Err("main_window_placement_overlay_pinned".to_string());
     }
-    let _lock =
-        SettingsFileLock::acquire(path, std::time::Duration::from_secs(2)).map_err(|error| {
-            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
-        })?;
+    let _lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "set_main_window_placement_at_path",
+    )
+    .map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+    })?;
     save_settings_value_locked(
         current,
         path,
@@ -12869,9 +13265,10 @@ pub(crate) fn set_main_window_placement_at_path(
 }
 
 fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>, String> {
-    let transaction = empty_project_transaction(path).map_err(|error| {
-        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
-    })?;
+    let transaction =
+        empty_project_transaction(path, "read_project_paths_from_disk").map_err(|error| {
+            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+        })?;
     let selected = select_project_source_locked(&transaction).map_err(|error| {
         report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
     })?;
@@ -12989,10 +13386,14 @@ pub(crate) fn refresh_and_decode_project_paths_from_path(
     settings: &mut AppSettings,
     path: &Path,
 ) -> Result<(), String> {
-    let lock =
-        SettingsFileLock::acquire(path, std::time::Duration::from_secs(2)).map_err(|error| {
-            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
-        })?;
+    let lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "refresh_and_decode_project_paths_from_path",
+    )
+    .map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+    })?;
     let projection = (|| {
         read_disk_object_for_write_typed(path, SettingsSaveStage::ProjectPathsRefreshDiskGate)?;
         select_project_source_at_locked_path(path).map(|selected| selected.projection)
@@ -13426,6 +13827,663 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+    // Each logger scenario runs in its own process. No test installs or changes
+    // the logger of the parent harness or shares runtime filters with siblings.
+    const SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(15);
+
+    struct SettingsLockDebugChild {
+        process: std::process::Child,
+        input: std::process::ChildStdin,
+        receipts: std::sync::mpsc::Receiver<serde_json::Value>,
+        output_thread: Option<std::thread::JoinHandle<()>>,
+        config: tempfile::TempDir,
+    }
+
+    impl SettingsLockDebugChild {
+        fn start(
+            mode: &str,
+            path: &std::path::Path,
+            rust_log: Option<&str>,
+            level: Option<&str>,
+        ) -> Self {
+            use std::io::BufRead;
+            let config = tempfile::tempdir().unwrap();
+            if let Some(level) = level {
+                std::fs::write(
+                    config.path().join(super::SETTINGS_FILE_NAME),
+                    serde_json::json!({"logLevel": level}).to_string(),
+                )
+                .unwrap();
+            }
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "config::settings::tests::settings_lock_debug_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("AC_SETTINGS_LOCK_DEBUG_CHILD", mode)
+                .env("AC_SETTINGS_LOCK_DEBUG_FIXTURE", path)
+                .env("AGENTSCOMMANDER_CONFIG_DIR", config.path())
+                .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", config.path())
+                .env_remove("RUST_LOG")
+                .env("RUST_LOG_STYLE", "never")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            if let Some(rust_log) = rust_log {
+                command.env("RUST_LOG", rust_log);
+            }
+            let mut process = command.spawn().unwrap();
+            let input = process.stdin.take().unwrap();
+            let output = process.stdout.take().unwrap();
+            let (send, receipts) = std::sync::mpsc::channel();
+            let output_thread = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(output).lines() {
+                    let line = line.unwrap();
+                    // libtest may prefix the first line with its test label.
+                    if let Some((_, json)) = line.split_once("LOCK-RECEIPT ") {
+                        send.send(serde_json::from_str(json).unwrap()).unwrap();
+                    }
+                }
+            });
+            Self {
+                process,
+                input,
+                receipts,
+                output_thread: Some(output_thread),
+                config,
+            }
+        }
+
+        fn receipt(&self, phase: &str) -> serde_json::Value {
+            let receipt = self
+                .receipts
+                .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+                .unwrap_or_else(|error| panic!("missing {phase} receipt: {error}"));
+            assert_eq!(receipt["phase"], phase, "unexpected receipt: {receipt}");
+            receipt
+        }
+
+        fn command(&mut self, command: &str) {
+            use std::io::Write;
+            writeln!(self.input, "{command}").unwrap();
+            self.input.flush().unwrap();
+        }
+
+        fn finish(mut self) {
+            self.receipt("done");
+            let deadline = std::time::Instant::now() + SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT;
+            let status = loop {
+                if let Some(status) = self.process.try_wait().unwrap() {
+                    break status;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "child did not exit after done"
+                );
+                // Poll only process termination; event ordering uses receipts.
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            self.output_thread.take().unwrap().join().unwrap();
+            assert!(status.success());
+        }
+
+        fn log(&self) -> String {
+            std::fs::read_to_string(self.config.path().join("app.log")).unwrap()
+        }
+    }
+
+    impl Drop for SettingsLockDebugChild {
+        fn drop(&mut self) {
+            // Also reap a child after any harness assertion, never strand owners.
+            let _ = self.process.kill();
+            let _ = self.process.wait();
+        }
+    }
+
+    fn settings_lock_debug_receipt(value: &serde_json::Value) {
+        use std::io::Write;
+        println!("LOCK-RECEIPT {value}");
+        std::io::stdout().flush().unwrap();
+    }
+
+    fn settings_lock_debug_processed(
+        receiver: &std::sync::mpsc::Receiver<serde_json::Value>,
+        phase: &str,
+    ) -> serde_json::Value {
+        let event = receiver
+            .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+            .unwrap();
+        assert_eq!(event["phase"], phase);
+        for field in ["preparation_ms", "wait_ms", "hold_ms"] {
+            if let Some(value) = event[field].as_f64() {
+                assert!(value >= 0.0);
+            }
+        }
+        event
+    }
+
+    fn settings_lock_debug_assert_pair(acquired: &serde_json::Value, release: &serde_json::Value) {
+        for field in [
+            "instance",
+            "pid",
+            "attempt",
+            "operation",
+            "target",
+            "sidecar",
+        ] {
+            assert_eq!(acquired[field], release[field], "correlation field {field}");
+        }
+        assert!(release["hold_ms"].as_f64().unwrap() >= 0.0);
+    }
+
+    #[test]
+    fn settings_lock_debug_child() {
+        let Ok(mode) = std::env::var("AC_SETTINGS_LOCK_DEBUG_CHILD") else {
+            return;
+        };
+        let path =
+            std::path::PathBuf::from(std::env::var_os("AC_SETTINGS_LOCK_DEBUG_FIXTURE").unwrap());
+        let (processed_send, processed) = std::sync::mpsc::channel();
+        let (gated_send, gated) = std::sync::mpsc::channel();
+        let (resume, resume_recv) = std::sync::mpsc::channel();
+        let hooks = super::SettingsLockDebugTestHooks {
+            gate_phase: "acquired",
+            gate_once: std::sync::atomic::AtomicBool::new(matches!(
+                mode.as_str(),
+                "suppress" | "saturated"
+            )),
+            gated: gated_send,
+            resume: std::sync::Mutex::new(resume_recv),
+            processed: processed_send,
+        };
+        assert!(super::SETTINGS_LOCK_DEBUG_TEST_HOOKS.set(hooks).is_ok());
+        crate::logging::init_logger();
+        let config =
+            std::path::PathBuf::from(std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").unwrap());
+        let log = || std::fs::read_to_string(config.join("app.log")).unwrap();
+        match mode.as_str() {
+            "disabled" | "probe" => {
+                let guard = super::SettingsFileLock::acquire(&path, std::time::Duration::ZERO)
+                    .unwrap_or_else(|_| panic!("probe lock unavailable"));
+                drop(guard);
+                assert!(super::SETTINGS_LOCK_DEBUG_TRANSPORT.get().is_none());
+                assert!(processed.try_recv().is_err());
+                assert!(!log().contains("settings-lock phase="));
+                if mode == "probe" {
+                    settings_lock_debug_receipt(&serde_json::json!({"phase":"probe-ok"}));
+                }
+            }
+            "waiter" => {
+                let error = match super::SettingsFileLock::acquire(
+                    &path,
+                    std::time::Duration::from_secs(2),
+                ) {
+                    Ok(_) => panic!("waiter unexpectedly acquired"),
+                    Err(error) => error,
+                };
+                assert!(matches!(
+                    error.cause,
+                    super::SettingsSaveCause::Semantic(super::SettingsSaveReason::LockTimedOut)
+                ));
+                assert_eq!(
+                    error.legacy_outward.into_general_string(),
+                    super::SETTINGS_LOCK_UNAVAILABLE_CODE
+                );
+                settings_lock_debug_processed(&processed, "acquire-start");
+                let timeout = settings_lock_debug_processed(&processed, "timeout");
+                assert!(timeout["wait_ms"].as_f64().unwrap() >= 2000.0);
+                assert!(processed.try_recv().is_err());
+                settings_lock_debug_receipt(&timeout);
+            }
+            "owner" | "runtime" | "filter-on" => {
+                settings_lock_debug_owner_scenario(&mode, &path, &processed, &log)
+            }
+            "suppress" => {
+                settings_lock_debug_suppress_scenario(&path, &processed, &gated, &resume, &log)
+            }
+            "saturated" => {
+                settings_lock_debug_saturated_scenario(&path, &processed, &gated, &resume, &log)
+            }
+            "failures" => settings_lock_debug_failure_scenarios(&path, &processed),
+            _ => panic!("unknown child mode {mode}"),
+        }
+        settings_lock_debug_receipt(&serde_json::json!({"phase":"done"}));
+    }
+
+    fn settings_lock_debug_owner_scenario(
+        mode: &str,
+        path: &std::path::Path,
+        processed: &std::sync::mpsc::Receiver<serde_json::Value>,
+        log: &impl Fn() -> String,
+    ) {
+        if mode == "runtime" {
+            let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("initial INFO acquisition"));
+            drop(guard);
+            assert!(super::SETTINGS_LOCK_DEBUG_TRANSPORT.get().is_none());
+            assert!(processed.try_recv().is_err());
+            assert!(!log().contains("settings-lock phase="));
+            assert!(crate::logging::set_runtime_log_level("debug"));
+        }
+        if std::env::var_os("RUST_LOG").is_some() {
+            assert!(!crate::logging::set_runtime_log_level("error"));
+        }
+        let guard = super::empty_project_transaction(path, "capture_project_settings")
+            .unwrap_or_else(|_| panic!("owner acquisition"));
+        let start = settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        assert_eq!(start["attempt"], acquired["attempt"]);
+        assert_eq!(acquired["operation"], "capture_project_settings");
+        assert!(log().contains("settings-lock phase=acquired"));
+        assert!(!log().contains("PRIVATE-SETTINGS-SENTINEL"));
+        assert!(guard._lock.file.is_some());
+        settings_lock_debug_receipt(&acquired);
+        if mode != "filter-on" {
+            settings_lock_debug_wait_command("release");
+        }
+        drop(guard);
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        assert_eq!(release["reason"], "unlock_ok");
+        assert!(log().contains("settings-lock phase=release"));
+        settings_lock_debug_receipt(&release);
+        if mode == "runtime" {
+            let sender = super::SETTINGS_LOCK_DEBUG_TRANSPORT
+                .get()
+                .unwrap()
+                .as_ref()
+                .unwrap();
+            assert!(crate::logging::set_runtime_log_level("info"));
+            let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("INFO re-acquisition"));
+            assert!(guard.debug.is_none());
+            drop(guard);
+            assert!(crate::logging::set_runtime_log_level("debug"));
+            let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("DEBUG re-acquisition"));
+            // The same OnceLock sender/worker serves the next acquisition.
+            assert!(std::ptr::eq(
+                sender,
+                super::SETTINGS_LOCK_DEBUG_TRANSPORT
+                    .get()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+            ));
+            settings_lock_debug_processed(processed, "acquire-start");
+            settings_lock_debug_processed(processed, "acquired");
+            drop(guard);
+            settings_lock_debug_processed(processed, "release");
+        }
+    }
+
+    fn settings_lock_debug_suppress_scenario(
+        path: &std::path::Path,
+        processed: &std::sync::mpsc::Receiver<serde_json::Value>,
+        gated: &std::sync::mpsc::Receiver<()>,
+        resume: &std::sync::mpsc::Sender<()>,
+        log: &impl Fn() -> String,
+    ) {
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("suppress owner"));
+        settings_lock_debug_processed(processed, "acquire-start");
+        gated
+            .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+            .unwrap();
+        assert!(crate::logging::set_runtime_log_level("info"));
+        resume.send(()).unwrap();
+        settings_lock_debug_processed(processed, "acquired");
+        drop(guard);
+        settings_lock_debug_processed(processed, "release");
+        let logs = log();
+        assert!(logs.contains("settings-lock phase=acquire-start"));
+        assert!(!logs.contains("settings-lock phase=acquired"));
+        assert!(!logs.contains("settings-lock phase=release"));
+    }
+
+    fn settings_lock_debug_saturated_scenario(
+        path: &std::path::Path,
+        processed: &std::sync::mpsc::Receiver<serde_json::Value>,
+        gated: &std::sync::mpsc::Receiver<()>,
+        resume: &std::sync::mpsc::Sender<()>,
+        log: &impl Fn() -> String,
+    ) {
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("saturation owner"));
+        settings_lock_debug_processed(processed, "acquire-start");
+        gated
+            .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+            .unwrap();
+        let debug = guard.debug.as_ref().unwrap();
+        for _ in 0..super::SETTINGS_LOCK_DEBUG_CAPACITY + 10 {
+            debug.event("acquire-start", None, None);
+        }
+        assert_eq!(
+            super::SETTINGS_LOCK_DEBUG_LOST.load(super::Ordering::Relaxed),
+            10
+        );
+        drop(guard);
+        assert_eq!(
+            super::SETTINGS_LOCK_DEBUG_LOST.load(super::Ordering::Relaxed),
+            11
+        );
+        settings_lock_debug_receipt(&serde_json::json!({"phase":"closed-sink-blocked"}));
+        settings_lock_debug_wait_command("resume");
+        resume.send(()).unwrap();
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        assert_eq!(acquired["lost_events"], 11);
+        for _ in 0..super::SETTINGS_LOCK_DEBUG_CAPACITY {
+            settings_lock_debug_processed(processed, "acquire-start");
+        }
+        assert!(log().contains("lost_events=11"));
+    }
+
+    fn settings_lock_debug_wait_command(expected: &str) {
+        use std::io::BufRead;
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            std::io::stdin().lock().read_line(&mut line).unwrap();
+            let _ = send.send(line);
+        });
+        assert_eq!(
+            receive
+                .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+                .unwrap()
+                .trim(),
+            expected
+        );
+    }
+
+    fn settings_lock_debug_failure_scenarios(
+        path: &std::path::Path,
+        processed: &std::sync::mpsc::Receiver<serde_json::Value>,
+    ) {
+        // I/O failure during preparation has no acquired, and preserves outward.
+        let bad_parent = path.with_file_name("not-a-directory");
+        std::fs::write(&bad_parent, b"PRIVATE-SETTINGS-SENTINEL").unwrap();
+        let error = match super::SettingsFileLock::acquire(
+            &bad_parent.join("settings.json"),
+            std::time::Duration::ZERO,
+        ) {
+            Ok(_) => panic!("invalid parent accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.legacy_outward.into_general_string(),
+            super::SETTINGS_LOCK_UNAVAILABLE_CODE
+        );
+        settings_lock_debug_processed(processed, "acquire-start");
+        let failure = settings_lock_debug_processed(processed, "acquire-error");
+        assert_eq!(failure["reason"], "io_error");
+        assert!(failure["wait_ms"].is_null());
+        // An invalid sidecar is rejected with no acquired event.
+        let directory = path.with_file_name("invalid-sidecar");
+        std::fs::create_dir_all(directory.join(super::SETTINGS_LOCK_FILE_NAME)).unwrap();
+        assert!(super::SettingsFileLock::acquire(
+            &directory.join("settings.json"),
+            std::time::Duration::ZERO
+        )
+        .is_err());
+        settings_lock_debug_processed(processed, "acquire-start");
+        settings_lock_debug_processed(processed, "acquire-error");
+        std::fs::remove_dir_all(&directory).unwrap();
+        // Deadline overflow happens after opening. Windows rename additionally
+        // proves the no-share-delete handle was closed before the failure receipt.
+        assert!(super::SettingsFileLock::acquire(path, std::time::Duration::MAX).is_err());
+        settings_lock_debug_processed(processed, "acquire-start");
+        let failure = settings_lock_debug_processed(processed, "acquire-error");
+        assert_eq!(failure["reason"], "lock_deadline_overflow");
+        let sidecar = path.parent().unwrap().join(super::SETTINGS_LOCK_FILE_NAME);
+        let renamed = sidecar.with_extension("test-closed");
+        std::fs::rename(&sidecar, &renamed).unwrap();
+        std::fs::rename(&renamed, &sidecar).unwrap();
+        // Early return and unwinding both release before an immediate new owner.
+        let early = || -> Result<(), ()> {
+            let _guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("early owner"));
+            Err(())
+        };
+        assert!(early().is_err());
+        settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        assert!(std::panic::catch_unwind(|| {
+            let _guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("unwind owner"));
+            panic!("test unwind");
+        })
+        .is_err());
+        settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("unlock-error owner"));
+        settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        super::SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR.with(|flag| flag.set(true));
+        drop(guard);
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        assert_eq!(release["reason"], "unlock_error");
+        assert_eq!(release["raw_os_error"], 5);
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("closed failed unlock handle"));
+        settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        // Moving the guard preserves the original acquisition thread/context.
+        let dropper = std::thread::spawn(move || drop(guard));
+        dropper.join().unwrap();
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        assert_eq!(
+            release["acquisition_thread"],
+            acquired["acquisition_thread"]
+        );
+        assert_ne!(release["event_thread"], acquired["event_thread"]);
+        // The wrapper propagates each operation and the caller location.
+        for operation in ["capture_project_settings", "read_project_paths_from_disk"] {
+            let origin_line = line!() + 1;
+            let transaction = super::empty_project_transaction(path, operation)
+                .unwrap_or_else(|_| panic!("wrapper owner"));
+            assert_eq!(
+                transaction
+                    ._lock
+                    .debug
+                    .as_ref()
+                    .unwrap()
+                    .context
+                    .caller
+                    .line(),
+                origin_line
+            );
+            settings_lock_debug_processed(processed, "acquire-start");
+            let acquired = settings_lock_debug_processed(processed, "acquired");
+            assert_eq!(acquired["operation"], operation);
+            drop(transaction);
+            settings_lock_debug_processed(processed, "release");
+        }
+        super::SETTINGS_LOCK_DEBUG_ATTEMPT.store(u64::MAX, super::Ordering::Relaxed);
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("counter overflow changed lock result"));
+        assert!(guard.debug.is_none());
+        drop(guard);
+        assert!(processed.try_recv().is_err());
+    }
+
+    #[test]
+    fn settings_lock_debug_active_owner_and_runtime_info_to_debug() {
+        for mode in ["owner", "runtime"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let path = fixture.path().join("settings.json");
+            std::fs::write(&path, "PRIVATE-SETTINGS-SENTINEL").unwrap();
+            let mut owner = SettingsLockDebugChild::start(
+                mode,
+                &path,
+                (mode == "owner").then_some("debug"),
+                Some("info"),
+            );
+            let acquired = owner.receipt("acquired");
+            assert_eq!(acquired["pid"], owner.process.id());
+            assert!(uuid::Uuid::parse_str(acquired["instance"].as_str().unwrap()).is_ok());
+            assert_eq!(
+                acquired["sidecar"],
+                super::settings_lock_debug_path(
+                    &fixture.path().join(super::SETTINGS_LOCK_FILE_NAME)
+                )
+                .0
+            );
+            assert!(owner.log().contains("settings-lock phase=acquired"));
+            // A different target in the same parent must still contend on sidecar.
+            let waiter = SettingsLockDebugChild::start(
+                "waiter",
+                &fixture.path().join("other-settings.json"),
+                Some("debug"),
+                None,
+            );
+            let timeout = waiter.receipt("timeout");
+            assert_eq!(timeout["sidecar"], acquired["sidecar"]);
+            assert_ne!(timeout["instance"], acquired["instance"]);
+            assert_ne!(timeout["pid"], acquired["pid"]);
+            waiter.finish();
+            // Release is authorized only after the active owner's real log receipt.
+            owner.command("release");
+            let release = owner.receipt("release");
+            settings_lock_debug_assert_pair(&acquired, &release);
+            owner.finish();
+            let probe = SettingsLockDebugChild::start("probe", &path, Some("info"), None);
+            probe.receipt("probe-ok");
+            probe.finish();
+        }
+    }
+
+    #[test]
+    fn settings_lock_debug_filters_and_pending_suppression() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("settings.json");
+        for (rust_log, level) in [
+            (Some("info"), Some("debug")),
+            (Some("warn"), Some("debug")),
+            (Some("error"), Some("debug")),
+            (None, Some("info")),
+            (None, Some("warn")),
+            (None, Some("error")),
+            (None, None),
+        ] {
+            SettingsLockDebugChild::start("disabled", &path, rust_log, level).finish();
+        }
+        for (rust_log, level) in [(Some("debug"), Some("error")), (None, Some("debug"))] {
+            let child = SettingsLockDebugChild::start("filter-on", &path, rust_log, level);
+            child.receipt("acquired");
+            child.receipt("release");
+            child.finish();
+        }
+        SettingsLockDebugChild::start("suppress", &path, None, Some("debug")).finish();
+    }
+
+    #[test]
+    fn settings_lock_debug_stalled_sink_does_not_retain_kernel_lock() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("settings.json");
+        let mut owner = SettingsLockDebugChild::start("saturated", &path, Some("debug"), None);
+        owner.receipt("closed-sink-blocked");
+        let probe = SettingsLockDebugChild::start("probe", &path, Some("info"), None);
+        probe.receipt("probe-ok");
+        probe.finish();
+        owner.command("resume");
+        owner.finish();
+    }
+
+    #[test]
+    fn settings_lock_debug_failure_and_raii_events() {
+        let fixture = tempfile::tempdir().unwrap();
+        SettingsLockDebugChild::start(
+            "failures",
+            &fixture.path().join("settings.json"),
+            Some("debug"),
+            None,
+        )
+        .finish();
+    }
+
+    #[test]
+    fn settings_lock_debug_disabled_spawn_failure_and_disconnected_transport() {
+        let slot = std::sync::OnceLock::new();
+        assert!(
+            super::settings_lock_debug_transport(&slot, false, |_| panic!("disabled spawn"))
+                .is_none()
+        );
+        assert!(slot.get().is_none());
+        assert!(
+            super::settings_lock_debug_transport(&slot, true, |_| Err(std::io::Error::other(
+                "injected spawn failure"
+            )))
+            .is_none()
+        );
+        assert!(matches!(slot.get(), Some(None)));
+        assert!(
+            super::settings_lock_debug_transport(&slot, true, |_| panic!("spawn retry")).is_none()
+        );
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        drop(receiver);
+        let context = std::sync::Arc::new(super::SettingsLockDebugContext {
+            instance: uuid::Uuid::new_v4(),
+            pid: std::process::id(),
+            attempt: 1,
+            operation: "test-lock",
+            caller: std::panic::Location::caller(),
+            thread: std::thread::current().id(),
+            target: "test".into(),
+            sidecar: "test".into(),
+            path_truncated: false,
+        });
+        let debug = super::SettingsLockDebugAttempt {
+            context,
+            sender,
+            started: std::time::Instant::now(),
+            retry_started: None,
+            acquired_at: None,
+        };
+        let before = super::SETTINGS_LOCK_DEBUG_LOST.load(super::Ordering::Relaxed);
+        debug.event("acquire-start", None, None);
+        assert!(super::SETTINGS_LOCK_DEBUG_LOST.load(super::Ordering::Relaxed) > before);
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("settings.json");
+        let mut debug = Some(debug);
+        let file =
+            super::SettingsFileLock::acquire_file(&path, std::time::Duration::ZERO, &mut debug)
+                .unwrap_or_else(|_| panic!("disconnected diagnostics affected acquisition"));
+        drop(super::SettingsFileLock {
+            file: Some(file),
+            debug,
+        });
+        assert!(super::SettingsFileLock::acquire(&path, std::time::Duration::ZERO).is_ok());
+    }
+
+    #[test]
+    fn settings_lock_debug_paths_are_escaped_and_bounded() {
+        let (escaped, truncated) =
+            super::settings_lock_debug_path(std::path::Path::new("hello\n\r\t\"\\world"));
+        assert!(!truncated);
+        assert!(!escaped.contains('\n'));
+        assert!(escaped.contains("\\n"));
+        assert_eq!(
+            serde_json::from_str::<String>(&escaped).unwrap(),
+            "hello\n\r\t\"\\world"
+        );
+        let (escaped, truncated) =
+            super::settings_lock_debug_path(std::path::Path::new(&"🦀".repeat(4096)));
+        assert!(truncated);
+        assert!(escaped.len() <= super::SETTINGS_LOCK_DEBUG_PATH_BYTES);
+        assert!(serde_json::from_str::<String>(&escaped).is_ok());
+    }
+
     #[test]
     fn id_hash_schema_missing_null_and_nonstring_preserve_valid_settings() {
         let baseline = serde_json::json!({
@@ -13696,7 +14754,7 @@ mod tests {
         let writer_path = path.clone();
         let writer = std::thread::spawn(move || {
             attempt_tx.send(()).unwrap();
-            let token = super::empty_project_transaction(&writer_path).unwrap();
+            let token = super::empty_project_transaction(&writer_path, "test-lock").unwrap();
             owned_tx.send(()).unwrap();
             super::ensure_project_paths_migrated_locked(&token).unwrap();
         });
@@ -13732,7 +14790,7 @@ mod tests {
         let (release_tx, release_rx) = mpsc::channel();
         let writer_path = path.clone();
         let writer = std::thread::spawn(move || {
-            let token = super::empty_project_transaction(&writer_path).unwrap();
+            let token = super::empty_project_transaction(&writer_path, "test-lock").unwrap();
             super::ensure_project_paths_migrated_with(&token, &mut |stage, _| {
                 if stage == "destination_published" {
                     published_tx.send(()).unwrap();
@@ -14054,7 +15112,7 @@ mod tests {
         std::fs::create_dir_all(io.parent().unwrap()).unwrap();
         let original = br####"{"roomNumberMask":"###","projectPaths":["missing"],"projectPath":null,"projectPathsRelativeToInstance":[null],"archivedProjectPaths":["archived"]}"####;
         std::fs::write(&io, original).unwrap();
-        let _transaction = super::empty_project_transaction(&io).unwrap();
+        let _transaction = super::empty_project_transaction(&io, "test-lock").unwrap();
         super::ensure_project_paths_migrated_at_labeled_path(&io, &label, &mut |_, _| Ok(()))
             .unwrap();
         let backup =
