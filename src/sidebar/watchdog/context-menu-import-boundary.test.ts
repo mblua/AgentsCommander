@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 // #1871 section 10.4 - the catalogue imports no store, no ipc, no presentation
 // module and no other component: two EXACT ALLOWLISTS over raw source, on the
 // model of no-presentation-import.test.ts. Raw source is what makes this immune
@@ -21,11 +22,10 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const SELF = "sidebar/watchdog/context-menu-import-boundary.test.ts";
-const SOURCES = import.meta.glob<string>("../../**/*.{ts,tsx}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
+const SOURCES = Object.fromEntries(
+  Object.keys(import.meta.glob("../../**/*.{ts,tsx}"))
+    .map(key => [key, readFileSync(new URL(key, import.meta.url), "utf8")]),
+);
 
 const CONTEXT_MENU_DIR = "sidebar/components/context-menu/";
 

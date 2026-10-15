@@ -11,6 +11,7 @@ import { toastStore } from "../../shared/stores/toasts";
 
 const m = vi.hoisted(() => ({
   connection: { state: "connected" as "connected" | "disconnected", generation: 0 },
+  getConnection: vi.fn(),
   getSnapshot: vi.fn(),
   open: vi.fn(),
   newProject: vi.fn(),
@@ -21,7 +22,7 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("../../shared/ipc", () => ({
-  getTransportConnectionState: () => m.connection,
+  getTransportConnectionState: m.getConnection,
   TaskAPI: { getSnapshotAt: m.getSnapshot },
   ProjectAPI: {
     open: m.open,
@@ -96,6 +97,7 @@ describe("projectStore", () => {
     vi.clearAllMocks();
     projectStore.clear();
     m.connection = { state: "connected", generation: 0 };
+    m.getConnection.mockImplementation(() => m.connection);
     m.open.mockResolvedValue({ path: "C:\\Users\\Maria\\Project" });
     m.discover.mockResolvedValue({ workgroups: [], agents: [], teams: [], loops: [] });
   });
@@ -104,6 +106,71 @@ describe("projectStore", () => {
     projectStore.clear();
   });
 
+
+  it.each((["clear", "invalidate", "remove", "archive", "prune", "replace"] as const)
+    .flatMap(action => (["resolve", "reject"] as const).map(outcome => ({ action, outcome }))))(
+    "does not read transport for stale $outcome after $action", async ({ action, outcome }) => {
+        projectStore.clear();
+        const wg = makeWorkgroup("room-1", []);
+        const initial = taskSnapshot(wg.path);
+        m.getSnapshot.mockResolvedValue(initial);
+        await loadProjectWith([wg]);
+        await vi.waitFor(() => expect(projectStore.taskSnapshot(wg.path)).toBe(initial));
+        const old = deferred<TaskSnapshot>();
+        m.getSnapshot.mockReturnValueOnce(old.promise);
+        const pending = projectStore.refreshTaskSnapshot(wg.path);
+        const error = vi.spyOn(toastStore, "error");
+        try {
+          if (action === "clear") projectStore.clear();
+          else if (action === "invalidate") {
+            projectStore.invalidateTaskSnapshots();
+            m.getSnapshot.mockResolvedValueOnce(taskSnapshot(wg.path, { status: "new generation" }));
+            await projectStore.refreshTaskSnapshot(wg.path);
+          }
+          else if (action === "remove") await projectStore.removeProject(PROJECT_PATH);
+          else if (action === "archive") await projectStore.archiveProject(PROJECT_PATH);
+          else if (action === "prune") {
+            m.discover.mockResolvedValueOnce({ workgroups: [], agents: [], teams: [], loops: [] });
+            await projectStore.reloadProject(PROJECT_PATH);
+          } else {
+            m.getSnapshot.mockResolvedValueOnce(taskSnapshot(wg.path, { status: "replacement" }));
+            await projectStore.refreshTaskSnapshot(wg.path);
+          }
+          const reads = m.getConnection.mock.calls.length;
+          const snapshot = projectStore.taskSnapshot(wg.path);
+          const toasts = error.mock.calls.length;
+          if (outcome === "resolve") old.resolve(taskSnapshot(wg.path, { status: "stale" }));
+          else old.reject(new Error("stale failure"));
+          await pending;
+          expect(m.getConnection).toHaveBeenCalledTimes(reads);
+          expect(projectStore.taskSnapshot(wg.path)).toBe(snapshot);
+          expect(error).toHaveBeenCalledTimes(toasts);
+        } finally {
+          old.resolve(initial);
+          await pending;
+          error.mockRestore();
+        }
+    },
+  );
+
+  it.each(["connected", "disconnected", "generation"] as const)("checks transport for a current request after %s", async (change) => {
+    const wg = makeWorkgroup("room-1", []);
+    const initial = taskSnapshot(wg.path);
+    m.getSnapshot.mockResolvedValue(initial);
+    await loadProjectWith([wg]);
+    await vi.waitFor(() => expect(projectStore.taskSnapshot(wg.path)).toBe(initial));
+    const old = deferred<TaskSnapshot>();
+    m.getSnapshot.mockReturnValueOnce(old.promise);
+    const pending = projectStore.refreshTaskSnapshot(wg.path);
+    m.connection = change === "disconnected"
+      ? { state: "disconnected", generation: 0 }
+      : { state: "connected", generation: change === "generation" ? 1 : 0 };
+    const reads = m.getConnection.mock.calls.length;
+    old.resolve(initial);
+    await pending;
+    expect(m.getConnection).toHaveBeenCalledTimes(reads + 1);
+    expect(projectStore.taskSnapshot(wg.path)).toBe(change === "connected" ? initial : undefined);
+  });
 
   it("hydrates a no-session room and keeps status separate from its descriptor", async () => {
     const wg = makeWorkgroup("room-1", []);
@@ -182,6 +249,7 @@ describe("projectStore", () => {
     const wg = makeWorkgroup("room-1", []);
     await loadProjectWith([wg]);
     const error = vi.spyOn(toastStore, "error");
+    try {
     m.getSnapshot.mockRejectedValue(new Error("unreadable"));
     await projectStore.refreshTaskSnapshot(wg.path);
     await projectStore.refreshTaskSnapshot(wg.path);
@@ -193,7 +261,9 @@ describe("projectStore", () => {
     await projectStore.refreshTaskSnapshot(wg.path);
     expect(projectStore.taskSnapshot(wg.path)).toBeUndefined();
     expect(error).toHaveBeenCalledTimes(2);
-    error.mockRestore();
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("shares concurrent loadProject calls for equivalent paths", async () => {
