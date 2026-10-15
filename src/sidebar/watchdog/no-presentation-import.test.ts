@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 type PresentationModule = "session-status" | "replica-dot";
@@ -5,11 +6,10 @@ type PresentationModule = "session-status" | "replica-dot";
 const IMPORT_RE = /^\s*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm;
 const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["']([^"']+)["']/g;
 const SELF = "sidebar/watchdog/no-presentation-import.test.ts";
-const SOURCES = import.meta.glob<string>("../../**/*.{ts,tsx}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
+const SOURCES = Object.fromEntries(
+  Object.keys(import.meta.glob("../../**/*.{ts,tsx}"))
+    .map(key => [key, readFileSync(new URL(key, import.meta.url), "utf8")]),
+);
 
 const ALLOWED: Record<PresentationModule, string[]> = {
   "session-status": [

@@ -4208,7 +4208,7 @@ Only the `AGENTSCOMMANDER_*` environment variables above deliver session credent
 
 const DEFAULT_DELEGATED_TASK_REPORTING: &str = r#"## Delegated Task Reporting
 
-Completion or blockage requires an explicit reply to the orchestrator or peer with a concrete artifact or message. Never end in idle, wait, or working-false without that reply."#;
+When delegated work completes or blocks, explicitly reply to its assigner with a concrete artifact or message before going idle, waiting, or setting working-false."#;
 
 /// Root-only Golden-Rule additions (#558). Gated on `is_root_agent_path`
 /// (anti-spoof) at the single generation site; empty string for every other
@@ -5746,7 +5746,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(cases, 160);
+        assert_eq!(cases, 176);
         println!("issue_2832 custom-byte/state materialization cases: {cases}");
     }
 
@@ -9023,9 +9023,9 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
     #[test]
     fn default_context_documents_delegated_task_reporting() {
         let out = default_context("C:/tmp/fake-agent", None, &no_skill_section());
-        assert!(out.contains("Completion or blockage requires an explicit reply"));
+        assert!(out.contains("explicitly reply to its assigner"));
         assert!(out.contains("concrete artifact or message"));
-        assert!(out.contains("Never end in idle, wait, or working-false without that reply"));
+        assert!(out.contains("before going idle, waiting, or setting working-false"));
     }
 
     #[test]
@@ -11022,7 +11022,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         assert!(content.contains("## Core Concepts"));
         assert!(content.contains("**Team**: the logical capability and organization"));
         assert!(content.contains("**Room**: a runtime replica of a team for a specific task"));
-        assert!(content.contains("Completion or blockage requires an explicit reply"));
+        assert!(content.contains("explicitly reply to its assigner"));
         assert!(content.contains("# Orchestrator Context"));
         assert!(content.contains("You are the orchestrator for your team"));
         assert_eq!(
@@ -11102,7 +11102,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         let content = std::fs::read_to_string(materialized).expect("read materialized context");
 
         assert!(content.contains("# AgentsCommander Context"));
-        assert!(content.contains("Completion or blockage requires an explicit reply"));
+        assert!(content.contains("explicitly reply to its assigner"));
         assert!(content.contains("# Orchestrator Context"));
         assert!(content.contains("You are the orchestrator for your team"));
         assert_eq!(
@@ -11174,7 +11174,7 @@ Windows host session: invoke `C:\Program Files\Git\bin\bash.exe` directly for al
         let materialized_content =
             std::fs::read_to_string(materialized).expect("read materialized context");
         assert!(materialized_content.contains("# AgentsCommander Context"));
-        assert!(materialized_content.contains("Completion or blockage requires an explicit reply"));
+        assert!(materialized_content.contains("explicitly reply to its assigner"));
         assert_eq!(
             std::fs::read_to_string(&path).expect("read created agent template"),
             get_default_agent_template()
