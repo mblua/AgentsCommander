@@ -19,6 +19,7 @@ export default defineConfig({
         'src/sidebar/components/ac-discovery-fixture.ts',
         'src/sidebar/components/loop-summary-fixture.ts',
         'src/sidebar/components/restart-toast-harness.tsx',
+        'src/sidebar/components/settings/agentReorderDnd.testkit.ts',
       ],
       reporter: ['html', 'json', 'json-summary', 'text', 'text-summary'],
       reportsDirectory: process.env.COVERAGE_OUTPUT || 'artifacts/coverage/frontend',
