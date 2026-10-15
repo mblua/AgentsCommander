@@ -1253,6 +1253,10 @@ describe("tolerant configuration readers (#3019)", () => {
         expect(settings.codingAgentProfiles.profilesByAgent.agent.A.command).toBe(expected);
         expect(catalog[0].command).toBe(expected);
         expect(decodedReport.catalog[0].command).toBe(expected);
+        expect(Object.prototype.hasOwnProperty.call(settings.agents[0], "baseCommand")).toBe(false);
+        expect(Object.prototype.hasOwnProperty.call(settings.codingAgentProfiles.profilesByAgent.agent.A, "additionalArguments")).toBe(false);
+        expect(Object.prototype.hasOwnProperty.call(catalog[0], "baseCommand")).toBe(false);
+        expect(Object.prototype.hasOwnProperty.call(decodedReport.catalog[0], "baseCommand")).toBe(false);
         expect(settings.projectPathResolution).toEqual(raw.projectPathResolution);
         expect(settings).toMatchObject({ metadata: unrelated });
         expect(settings.agents[0]).toMatchObject({ metadata: unrelated });
@@ -1261,6 +1265,57 @@ describe("tolerant configuration readers (#3019)", () => {
         expect(decodedReport).toMatchObject({ metadata: unrelated, warnings: [], unavailable: null });
         expect(JSON.stringify({ raw, definition, report })).toBe(before);
         expect(JSON.stringify(returned)).toBe(returnedBefore);
+      } finally {
+        restore();
+      }
+    });
+
+    it.each(["canonical-only", "mixed"])("sends edited internal command without stale wire keys after %s read", async (shape) => {
+      const ipc = await import("./ipc");
+      const fake = new FakeTransport();
+      const historical = shape === "mixed" ? { command: "historical" } : {};
+      const metadata = { command: "nested command", baseCommand: "nested base", additionalArguments: "nested suffix" };
+      const raw = {
+        ...settingsSnapshot(),
+        agents: [{ id: "a", label: "Agent", color: "blue", envs: [], isolatedHome: false, ...historical, baseCommand: "base --old", metadata }],
+        codingAgentProfiles: {
+          ...baseSettings().codingAgentProfiles,
+          profilesByAgent: { a: { A: {
+            enabled: true, env: {}, notes: "keep", ...historical, additionalArguments: "--old", metadata,
+          } } },
+        },
+      };
+      fake.resolve("get_settings", response(raw));
+      fake.resolve("update_settings", undefined);
+      fake.resolve("save_settings_draft", undefined);
+      fake.resolve("update_coding_agent_profiles", undefined);
+      const before = JSON.stringify(raw);
+      const restore = ipc.__setTransportForTests(fake);
+      try {
+        const decoded = await ipc.SettingsAPI.get();
+        expect(decoded.agents[0].command).toBe("base --old");
+        expect(decoded.codingAgentProfiles.profilesByAgent.a.A.command).toBe("--old");
+        const profiles = {
+          ...decoded.codingAgentProfiles,
+          profilesByAgent: { a: { A: { ...decoded.codingAgentProfiles.profilesByAgent.a.A, command: "--edited" } } },
+        };
+        const edited = { ...decoded, agents: [{ ...decoded.agents[0], command: "base --edited" }], codingAgentProfiles: profiles };
+        await ipc.SettingsAPI.update(edited);
+        await ipc.SettingsAPI.saveDraft(edited);
+        await ipc.SettingsAPI.updateCodingAgentProfiles(profiles);
+        for (const [cmd, key] of [["update_settings", "newSettings"], ["save_settings_draft", "draft"]]) {
+          const sent = JSON.parse(JSON.stringify(fake.lastCall(cmd)?.args?.[key]));
+          expect(sent.agents[0].command).toBe("base --edited");
+          expect(Object.prototype.hasOwnProperty.call(sent.agents[0], "baseCommand")).toBe(false);
+          expect(sent.codingAgentProfiles.profilesByAgent.a.A.command).toBe("--edited");
+          expect(Object.prototype.hasOwnProperty.call(sent.codingAgentProfiles.profilesByAgent.a.A, "additionalArguments")).toBe(false);
+          expect(sent.agents[0].metadata).toEqual(metadata);
+          expect(sent.codingAgentProfiles.profilesByAgent.a.A.metadata).toEqual(metadata);
+        }
+        const sentProfiles = JSON.parse(JSON.stringify(fake.lastCall("update_coding_agent_profiles")?.args?.profiles));
+        expect(sentProfiles.profilesByAgent.a.A.command).toBe("--edited");
+        expect(Object.prototype.hasOwnProperty.call(sentProfiles.profilesByAgent.a.A, "additionalArguments")).toBe(false);
+        expect(JSON.stringify(raw)).toBe(before);
       } finally {
         restore();
       }

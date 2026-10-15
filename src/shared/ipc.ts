@@ -408,11 +408,15 @@ function selectConfigurationText(
 }
 
 function decodeBaseCommand<T extends AgentConfigWireInput | CodingAgentDefinitionWireInput>(input: T) {
-  return { ...input, command: selectConfigurationText(input, "baseCommand") };
+  const command = selectConfigurationText(input, "baseCommand");
+  const { baseCommand: _baseCommand, command: _command, ...rest } = input;
+  return { ...rest, command };
 }
 
 function decodeProfileCell(input: ProfileCellConfigWireInput) {
-  return { ...input, command: selectConfigurationText(input, "additionalArguments") };
+  const command = selectConfigurationText(input, "additionalArguments");
+  const { additionalArguments: _additionalArguments, command: _command, ...rest } = input;
+  return { ...rest, command };
 }
 
 function decodeProfiles(input: CodingAgentProfilesWireInput): CodingAgentProfilesConfig {
