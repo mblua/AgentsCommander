@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectPanel from "./ProjectPanel";
-import type { AcLoopSummary } from "../../shared/types";
+import type { AcLoopSummary, TaskSnapshot } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,
@@ -112,6 +112,44 @@ function setupProject(fake: FakeTransport): void {
   fake.resolve("discover_project", discoveryWithLoop(disabledLoop()));
 }
 
+function taskFixture(fake: FakeTransport) {
+  let latest: TaskSnapshot | undefined;
+  fake.onInvoke("task_get_snapshot_at", (args) => {
+    expect(args).toEqual({ workgroupRoot: workgroupPath });
+    latest = {
+      workgroupRoot: workgroupPath, task: null, taskTitle: "Loop automation",
+      description: "", status: null, revision: "legacy:0", statusRecord: null,
+      tailIncomplete: false,
+    };
+    return latest;
+  });
+  return {
+    current: () => projectStore.taskSnapshot(workgroupPath),
+    applied: async (previous?: TaskSnapshot) => {
+      await waitFor(() => {
+        expect(latest).toBeDefined();
+        expect(latest).not.toBe(previous);
+        expect(projectStore.taskSnapshot(workgroupPath)).toBe(latest);
+      });
+    },
+  };
+}
+
+async function actionFinished(root: HTMLElement, loopId: string) {
+  const suffix = `${automationIdPart(projectPath)}.${automationIdPart(loopId)}`;
+  const row = root.querySelector(`[data-ac-testid="loop.row.${suffix}"]`);
+  if (!(row instanceof HTMLElement)) throw new Error("Retained loop row not found");
+  contextMenu(row);
+  await waitFor(() => {
+    const action = document.body.querySelector(`[data-ac-testid="loop.action.delete.${suffix}"]`);
+    expect(action instanceof HTMLButtonElement && !action.disabled).toBe(true);
+  });
+  await waitFor(() => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(document.body.querySelector(`[data-ac-testid="loop.action.delete.${suffix}"]`)).toBeNull();
+  });
+}
+
 describe("ProjectPanel loop automation hooks", () => {
   let cleanupDom: (() => void) | null = null;
 
@@ -129,11 +167,13 @@ describe("ProjectPanel loop automation hooks", () => {
 
   it("keeps disabled loop rows context-menuable for automation", async () => {
     const fake = new FakeTransport();
+    const snapshots = taskFixture(fake);
     setupProject(fake);
 
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
+      await snapshots.applied();
 
       const projectId = automationIdPart(projectPath);
       const loopId = automationIdPart("weekday-standup");
@@ -165,17 +205,23 @@ describe("ProjectPanel loop automation hooks", () => {
         expect(deleteAction?.textContent?.trim()).toBe("Delete Loop");
       });
     } finally {
-      rendered.cleanup();
+      try {
+        projectStore.invalidateTaskSnapshots();
+      } finally {
+        rendered.cleanup();
+      }
     }
   });
 
   it("opens selector-addressable delete confirmation and keeps the loop on cancel", async () => {
     const fake = new FakeTransport();
+    const snapshots = taskFixture(fake);
     setupProject(fake);
 
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
+      await snapshots.applied();
 
       const projectId = automationIdPart(projectPath);
       const loopId = automationIdPart("weekday-standup");
@@ -208,12 +254,17 @@ describe("ProjectPanel loop automation hooks", () => {
       expect(rendered.root.querySelector(rowSelector)).toBeTruthy();
       expect(document.body.querySelector(cancelSelector)).toBeNull();
     } finally {
-      rendered.cleanup();
+      try {
+        projectStore.invalidateTaskSnapshots();
+      } finally {
+        rendered.cleanup();
+      }
     }
   });
 
   it("confirms loop delete through selectors and removes the visible loop", async () => {
     const fake = new FakeTransport();
+    const snapshots = taskFixture(fake);
     let deleted = false;
 
     fake.resolve("new_project", {
@@ -235,6 +286,7 @@ describe("ProjectPanel loop automation hooks", () => {
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
+      await snapshots.applied();
 
       const projectId = automationIdPart(projectPath);
       const loopId = automationIdPart("weekday-standup");
@@ -261,18 +313,25 @@ describe("ProjectPanel loop automation hooks", () => {
       if (!(confirmAction instanceof HTMLButtonElement)) {
         throw new Error("Loop delete confirm action not found");
       }
+      const initialSnapshot = snapshots.current();
       click(confirmAction);
 
       await waitFor(() => expect(fake.callsFor("delete_loop")).toHaveLength(1));
       await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeNull());
       expect(document.body.querySelector(confirmSelector)).toBeNull();
+      await snapshots.applied(initialSnapshot);
     } finally {
-      rendered.cleanup();
+      try {
+        projectStore.invalidateTaskSnapshots();
+      } finally {
+        rendered.cleanup();
+      }
     }
   });
 
   it("blocks opening loop delete while an unrelated loop action is in progress", async () => {
     const fake = new FakeTransport();
+    const snapshots = taskFixture(fake);
     const runNow = deferred();
     const primaryLoop = disabledLoop();
     const unrelatedLoop = dailyReportLoop();
@@ -298,6 +357,7 @@ describe("ProjectPanel loop automation hooks", () => {
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
+      await snapshots.applied();
 
       const projectId = automationIdPart(projectPath);
       const primaryLoopId = automationIdPart(primaryLoop.id);
@@ -339,16 +399,23 @@ describe("ProjectPanel loop automation hooks", () => {
       click(deleteAction);
       expect(document.body.querySelector(deleteDialogSelector)).toBeNull();
 
+      const beforeRun = snapshots.current();
       runNow.resolve();
-      await waitFor(() => expect(fake.callsFor("discover_project").length).toBeGreaterThanOrEqual(2));
+      await snapshots.applied(beforeRun);
+      await actionFinished(rendered.root, primaryLoop.id);
     } finally {
       runNow.resolve();
-      rendered.cleanup();
+      try {
+        projectStore.invalidateTaskSnapshots();
+      } finally {
+        rendered.cleanup();
+      }
     }
   });
 
   it("keeps loop delete cancel and Escape available during an unrelated loop action", async () => {
     const fake = new FakeTransport();
+    const snapshots = taskFixture(fake);
     const pendingRuns = [deferred(), deferred()];
     const primaryLoop = disabledLoop();
     const unrelatedLoop = dailyReportLoop();
@@ -421,6 +488,7 @@ describe("ProjectPanel loop automation hooks", () => {
 
     try {
       await projectStore.createAndLoad(projectPath);
+      await snapshots.applied();
       await waitFor(() => expect(rendered.root.querySelector(primaryRowSelector)).toBeTruthy());
       await waitFor(() => expect(rendered.root.querySelector(unrelatedRowSelector)).toBeTruthy());
 
@@ -438,8 +506,10 @@ describe("ProjectPanel loop automation hooks", () => {
       await waitFor(() => expect(document.body.querySelector(dialogSelector)).toBeNull());
       expect(fake.callsFor("delete_loop")).toHaveLength(0);
 
+      const beforeFirstRun = snapshots.current();
       pendingRuns[0].resolve();
-      await waitFor(() => expect(fake.callsFor("discover_project").length).toBeGreaterThanOrEqual(2));
+      await snapshots.applied(beforeFirstRun);
+      await actionFinished(rendered.root, unrelatedLoop.id);
 
       await openDeleteDialog();
       await startUnrelatedRun(2);
@@ -447,17 +517,24 @@ describe("ProjectPanel loop automation hooks", () => {
       await waitFor(() => expect(document.body.querySelector(dialogSelector)).toBeNull());
       expect(fake.callsFor("delete_loop")).toHaveLength(0);
 
+      const beforeSecondRun = snapshots.current();
       pendingRuns[1].resolve();
-      await waitFor(() => expect(fake.callsFor("discover_project").length).toBeGreaterThanOrEqual(3));
+      await snapshots.applied(beforeSecondRun);
+      await actionFinished(rendered.root, unrelatedLoop.id);
     } finally {
       pendingRuns[0].resolve();
       pendingRuns[1].resolve();
-      rendered.cleanup();
+      try {
+        projectStore.invalidateTaskSnapshots();
+      } finally {
+        rendered.cleanup();
+      }
     }
   });
 
   it("keeps loop delete cancel and Escape guarded while the current delete is in progress", async () => {
     const fake = new FakeTransport();
+    const snapshots = taskFixture(fake);
     const deletePending = deferred();
     const primaryLoop = disabledLoop();
     const unrelatedLoop = dailyReportLoop();
@@ -483,6 +560,7 @@ describe("ProjectPanel loop automation hooks", () => {
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
+      await snapshots.applied();
 
       const projectId = automationIdPart(projectPath);
       const primaryLoopId = automationIdPart(primaryLoop.id);
@@ -524,16 +602,24 @@ describe("ProjectPanel loop automation hooks", () => {
       click(cancelAction);
       expect(document.body.querySelector(dialogSelector)).toBeTruthy();
 
+      const beforeDelete = snapshots.current();
       deletePending.resolve();
       await waitFor(() => expect(document.body.querySelector(dialogSelector)).toBeNull());
+      await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeNull());
+      await snapshots.applied(beforeDelete);
     } finally {
       deletePending.resolve();
-      rendered.cleanup();
+      try {
+        projectStore.invalidateTaskSnapshots();
+      } finally {
+        rendered.cleanup();
+      }
     }
   });
 
   it("does not regress enabled loop row while a queued reload follows a stale response", async () => {
     const fake = new FakeTransport();
+    const snapshots = taskFixture(fake);
     let discoverCalls = 0;
     const staleReload = deferred<void>();
     const queuedReload = deferred<void>();
@@ -571,6 +657,7 @@ describe("ProjectPanel loop automation hooks", () => {
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
+      await snapshots.applied();
 
       const projectId = automationIdPart(projectPath);
       const loopId = automationIdPart("weekday-standup");
@@ -609,6 +696,7 @@ describe("ProjectPanel loop automation hooks", () => {
         );
       });
 
+      const beforeQueuedReload = snapshots.current();
       staleReload.resolve();
       await waitFor(() => expect(discoverCalls).toBe(3));
 
@@ -618,6 +706,8 @@ describe("ProjectPanel loop automation hooks", () => {
 
       queuedReload.resolve();
       await staleReloadPromise;
+      await snapshots.applied(beforeQueuedReload);
+      await actionFinished(rendered.root, "weekday-standup");
 
       await waitFor(() => {
         expect(discoverCalls).toBeGreaterThanOrEqual(3);
@@ -636,12 +726,19 @@ describe("ProjectPanel loop automation hooks", () => {
         expect(document.body.querySelector(toggleSelector)?.textContent?.trim()).toBe("Disable");
       });
     } finally {
-      rendered.cleanup();
+      staleReload.resolve();
+      queuedReload.resolve();
+      try {
+        projectStore.invalidateTaskSnapshots();
+      } finally {
+        rendered.cleanup();
+      }
     }
   });
 
   it("keeps the enabled loop summary visible when the queued follow-up reload fails", async () => {
     const fake = new FakeTransport();
+    const snapshots = taskFixture(fake);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     let discoverCalls = 0;
     const staleReload = deferred<void>();
@@ -673,6 +770,7 @@ describe("ProjectPanel loop automation hooks", () => {
     const rendered = renderWithFakeTransport(() => <ProjectPanel />, fake);
     try {
       await projectStore.createAndLoad(projectPath);
+      await snapshots.applied();
 
       const projectId = automationIdPart(projectPath);
       const loopId = automationIdPart("weekday-standup");
@@ -711,6 +809,9 @@ describe("ProjectPanel loop automation hooks", () => {
         );
       });
 
+      const beforeQueuedReload = snapshots.current();
+      expect(beforeQueuedReload).toBeDefined();
+      const snapshotCallsBeforeQueuedReload = fake.callsFor("task_get_snapshot_at").length;
       staleReload.resolve();
       await waitFor(() => expect(discoverCalls).toBe(3));
       expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
@@ -719,13 +820,22 @@ describe("ProjectPanel loop automation hooks", () => {
 
       queuedReload.resolve();
       await staleReloadPromise;
+      await actionFinished(rendered.root, "weekday-standup");
+      expect(projectStore.taskSnapshot(workgroupPath)).toBe(beforeQueuedReload);
+      expect(fake.callsFor("task_get_snapshot_at")).toHaveLength(snapshotCallsBeforeQueuedReload);
 
       expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
         "enabled",
       );
     } finally {
+      staleReload.resolve();
+      queuedReload.resolve();
       consoleError.mockRestore();
-      rendered.cleanup();
+      try {
+        projectStore.invalidateTaskSnapshots();
+      } finally {
+        rendered.cleanup();
+      }
     }
   });
 });
