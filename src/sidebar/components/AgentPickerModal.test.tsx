@@ -575,7 +575,7 @@ describe("AgentPickerModal", () => {
       );
       expect(text("agentPicker.provider.codex")).toContain("Codex");
       expect(target("agentPicker.profile.A").getAttribute("data-ac-profile-letter")).toBe("A");
-      expect(text("agentPicker.profile.A.pill")).toContain("CONFIGURED");
+      expect(text("agentPicker.profile.A.pill")).toBe("MATCH");
     } finally {
       dispose();
     }
