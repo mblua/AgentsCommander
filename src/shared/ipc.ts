@@ -36,6 +36,11 @@ import type {
   CodingAgentProfilesWireInput,
   SettingsSnapshotWireInput,
   CatalogReportWireInput,
+  CodingAgentDefinitionProjection,
+  ProfileCellConfigProjection,
+  CodingAgentProfilesProjection,
+  SettingsSnapshotProjection,
+  CatalogReportProjection,
   MoveCodingAgentDirection,
   MoveCodingAgentRequest,
   ReorderCodingAgentRequest,
@@ -391,7 +396,7 @@ function hasConfigurationContent(value: string): boolean {
 function selectConfigurationText(
   input: { command?: unknown; baseCommand?: unknown; additionalArguments?: unknown },
   key: "baseCommand" | "additionalArguments",
-): string {
+): string | undefined {
   const hasNew = Object.prototype.hasOwnProperty.call(input, key);
   const hasOld = Object.prototype.hasOwnProperty.call(input, "command");
   const current = input[key];
@@ -403,48 +408,77 @@ function selectConfigurationText(
   if (typeof legacy === "string" && hasConfigurationContent(legacy)) return legacy;
   if (typeof current === "string") return current;
   if (typeof legacy === "string") return legacy;
-  if (key === "additionalArguments") return "";
-  throw new Error("Invalid configuration: missing baseCommand or command.");
+  return undefined;
 }
 
-function decodeBaseCommand<T extends AgentConfigWireInput | CodingAgentDefinitionWireInput>(input: T) {
+function decodeBaseCommand<T extends AgentConfigWireInput | CodingAgentDefinitionWireInput>(
+  input: T,
+): Omit<T, "baseCommand" | "command"> & { command?: string } {
   const command = selectConfigurationText(input, "baseCommand");
+  if (!Object.prototype.hasOwnProperty.call(input, "baseCommand")) {
+    return input as Omit<T, "baseCommand" | "command"> & { command?: string };
+  }
   const { baseCommand: _baseCommand, command: _command, ...rest } = input;
-  return { ...rest, command };
+  return command === undefined ? rest : { ...rest, command };
 }
 
-function decodeProfileCell(input: ProfileCellConfigWireInput) {
+function decodeProfileCell(input: ProfileCellConfigWireInput): ProfileCellConfigProjection {
   const command = selectConfigurationText(input, "additionalArguments");
+  if (!Object.prototype.hasOwnProperty.call(input, "additionalArguments")) {
+    return input as ProfileCellConfigProjection;
+  }
   const { additionalArguments: _additionalArguments, command: _command, ...rest } = input;
-  return { ...rest, command };
+  return command === undefined ? rest : { ...rest, command };
 }
 
-function decodeProfiles(input: CodingAgentProfilesWireInput): CodingAgentProfilesConfig {
+function decodeProfiles(input: CodingAgentProfilesWireInput): CodingAgentProfilesProjection {
+  let changed = false;
+  const profilesByAgent = input.profilesByAgent && Object.fromEntries(
+    Object.entries(input.profilesByAgent).map(([agent, cells]) => {
+      let cellsChanged = false;
+      const projected = Object.fromEntries(Object.entries(cells).map(([slot, cell]) => {
+        const decoded = decodeProfileCell(cell);
+        if (decoded !== cell) cellsChanged = true;
+        return [slot, decoded];
+      }));
+      if (cellsChanged) changed = true;
+      return [agent, cellsChanged ? projected : cells];
+    }),
+  );
+  return changed ? { ...input, profilesByAgent } : input as CodingAgentProfilesProjection;
+}
+
+function decodeSettings(input: SettingsSnapshotWireInput): SettingsSnapshotProjection {
+  const agents = input.agents && input.agents.map(decodeBaseCommand);
+  const agentsChanged = agents?.some((agent, index) => agent !== input.agents![index]);
+  const codingAgentProfiles = input.codingAgentProfiles && decodeProfiles(input.codingAgentProfiles);
+  if (!agentsChanged && codingAgentProfiles === input.codingAgentProfiles) {
+    return input as SettingsSnapshotProjection;
+  }
   return {
     ...input,
-    profilesByAgent: Object.fromEntries(Object.entries(input.profilesByAgent).map(([agent, cells]) => [
-      agent,
-      Object.fromEntries(Object.entries(cells).map(([slot, cell]) => [slot, decodeProfileCell(cell)])),
-    ])),
-  };
+    ...(agentsChanged ? { agents } : {}),
+    ...(codingAgentProfiles !== input.codingAgentProfiles ? { codingAgentProfiles } : {}),
+  } as SettingsSnapshotProjection;
 }
 
-function decodeSettings(input: SettingsSnapshotWireInput): SettingsSnapshot {
-  return {
-    ...input,
-    agents: input.agents.map(decodeBaseCommand),
-    codingAgentProfiles: decodeProfiles(input.codingAgentProfiles),
-  };
+function decodeCatalog(input: CodingAgentDefinitionWireInput[]): CodingAgentDefinitionProjection[] {
+  const catalog = input.map(decodeBaseCommand);
+  return catalog.some((row, index) => row !== input[index])
+    ? catalog : input as CodingAgentDefinitionProjection[];
 }
 
-function decodeCatalogReport(input: CatalogReportWireInput): CatalogReport {
-  return { ...input, catalog: input.catalog.map(decodeBaseCommand) };
+function decodeCatalogReport(input: CatalogReportWireInput): CatalogReportProjection {
+  const catalog = input.catalog && decodeCatalog(input.catalog);
+  return catalog === input.catalog ? input as CatalogReportProjection : { ...input, catalog };
 }
 
 export const CodingAgentsAPI = {
-  getCatalog: () =>
+  // Trusted complete typed Rust response after field projection; unrelated fields
+  // are not runtime-validated. Partial fake payloads test projection only.
+  getCatalog: (): Promise<CodingAgentDefinition[]> =>
     transport.invoke<CodingAgentDefinitionWireInput[]>("get_coding_agent_catalog")
-      .then((catalog): CodingAgentDefinition[] => catalog.map(decodeBaseCommand)),
+      .then(input => decodeCatalog(input) as CodingAgentDefinition[]),
 
   welcomeStatus: (): Promise<CodingAgentWelcomeStatus[]> =>
     transport.invoke<CodingAgentWelcomeStatus[]>("get_coding_agent_welcome_status"),
@@ -452,8 +486,10 @@ export const CodingAgentsAPI = {
   install: (key: string): Promise<void> =>
     transport.invoke<void>("install_coding_agent", { key }),
 
-  getCatalogReport: () =>
-    transport.invoke<CatalogReportWireInput>("get_coding_agent_catalog_report").then(decodeCatalogReport),
+  // Trusted complete typed Rust response after field projection; unrelated fields
+  // are not runtime-validated. Partial fake payloads test projection only.
+  getCatalogReport: (): Promise<CatalogReport> =>
+    transport.invoke<CatalogReportWireInput>("get_coding_agent_catalog_report").then(input => decodeCatalogReport(input) as CatalogReport),
 
   listReseedableCommands: () =>
     transport.invoke<string[]>("list_reseedable_agent_commands"),
@@ -497,7 +533,11 @@ export const SettingsAPI = {
   // projectPathResolution). update/save-draft still take a plain AppSettings;
   // the extra report field riding along on a round-tripped object is ignored by
   // the backend (non-deny_unknown_fields) and cannot re-pair persisted state.
-  get: () => transport.invoke<SettingsSnapshotWireInput>("get_settings").then(decodeSettings),
+  // Trusted complete typed Rust response after field projection; unrelated fields
+  // are not runtime-validated. Partial fake payloads test projection only.
+  get: (): Promise<SettingsSnapshot> =>
+    transport.invoke<SettingsSnapshotWireInput>("get_settings")
+      .then(input => decodeSettings(input) as SettingsSnapshot),
   /** #2306 P3 - the narrow move command: only the requested adjacent swap is
    *  persisted; the resolved value is the backend's authoritative ordered ids. */
   moveCodingAgent: (request: MoveCodingAgentRequest) =>

@@ -3,6 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeTransport } from "./testing/fake-transport";
 import { baseSettings, settingsSnapshot } from "./testing/ui-harness";
 import { liveSelection, SESSION_A } from "./testing/session-selection";
+import type {
+  SettingsSnapshot, SettingsSnapshotProjection, CatalogReport, CatalogReportProjection,
+  CodingAgentDefinition, CodingAgentDefinitionProjection, ProfileCellConfig,
+} from "./types";
 
 describe("shared ipc transport seam", () => {
   afterEach(() => {
@@ -1246,20 +1250,20 @@ describe("tolerant configuration readers (#3019)", () => {
       fake.resolve("get_coding_agent_catalog_report", returned.report);
       const restore = ipc.__setTransportForTests(fake);
       try {
-        const settings = await ipc.SettingsAPI.get();
-        const catalog = await ipc.CodingAgentsAPI.getCatalog();
-        const decodedReport = await ipc.CodingAgentsAPI.getCatalogReport();
-        expect(settings.agents[0].command).toBe(expected);
-        expect(settings.codingAgentProfiles.profilesByAgent.agent.A.command).toBe(expected);
+        const settings: SettingsSnapshotProjection = await ipc.SettingsAPI.get();
+        const catalog: CodingAgentDefinitionProjection[] = await ipc.CodingAgentsAPI.getCatalog();
+        const decodedReport: CatalogReportProjection = await ipc.CodingAgentsAPI.getCatalogReport();
+        expect(settings.agents![0].command).toBe(expected);
+        expect(settings.codingAgentProfiles!.profilesByAgent!.agent.A.command).toBe(expected);
         expect(catalog[0].command).toBe(expected);
-        expect(decodedReport.catalog[0].command).toBe(expected);
-        expect(Object.prototype.hasOwnProperty.call(settings.agents[0], "baseCommand")).toBe(false);
-        expect(Object.prototype.hasOwnProperty.call(settings.codingAgentProfiles.profilesByAgent.agent.A, "additionalArguments")).toBe(false);
+        expect(decodedReport.catalog![0].command).toBe(expected);
+        expect(Object.prototype.hasOwnProperty.call(settings.agents![0], "baseCommand")).toBe(false);
+        expect(Object.prototype.hasOwnProperty.call(settings.codingAgentProfiles!.profilesByAgent!.agent.A, "additionalArguments")).toBe(false);
         expect(Object.prototype.hasOwnProperty.call(catalog[0], "baseCommand")).toBe(false);
-        expect(Object.prototype.hasOwnProperty.call(decodedReport.catalog[0], "baseCommand")).toBe(false);
+        expect(Object.prototype.hasOwnProperty.call(decodedReport.catalog![0], "baseCommand")).toBe(false);
         expect(settings.projectPathResolution).toEqual(raw.projectPathResolution);
         expect(settings).toMatchObject({ metadata: unrelated });
-        expect(settings.agents[0]).toMatchObject({ metadata: unrelated });
+        expect(settings.agents![0]).toMatchObject({ metadata: unrelated });
         expect(settings.codingAgentProfiles).toMatchObject({ metadata: unrelated });
         expect(catalog[0]).toMatchObject({ metadata: unrelated, updateCommands: ["update"] });
         expect(decodedReport).toMatchObject({ metadata: unrelated, warnings: [], unavailable: null });
@@ -1321,29 +1325,122 @@ describe("tolerant configuration readers (#3019)", () => {
       }
     });
 
-    it("defaults a missing profile command but rejects a missing required base", async () => {
+    it("preserves partial absence, empty cells and legacy identity", async () => {
       const ipc = await import("./ipc");
       const fake = new FakeTransport();
-      const raw = {
-        ...settingsSnapshot(), agents: [{ id: "a", command: "old" }],
-        codingAgentProfiles: {
-          ...baseSettings().codingAgentProfiles,
-          profilesByAgent: { a: { A: { enabled: false, env: {}, notes: "" } } },
-        },
-      };
-      fake.resolve("get_settings", response(raw));
       const restore = ipc.__setTransportForTests(fake);
       try {
-        expect((await ipc.SettingsAPI.get()).codingAgentProfiles.profilesByAgent.a.A.command).toBe("");
-        fake.resolve("get_settings", response({ ...raw, agents: [{ id: "a" }] }));
-        await expect(ipc.SettingsAPI.get()).rejects.toThrow("missing baseCommand");
-        fake.resolve("get_coding_agent_catalog", response([{ key: "a" }]));
-        fake.resolve("get_coding_agent_catalog_report", response({ catalog: [{ key: "a" }] }));
-        await expect(ipc.CodingAgentsAPI.getCatalog()).rejects.toThrow("missing baseCommand");
-        await expect(ipc.CodingAgentsAPI.getCatalogReport()).rejects.toThrow("missing baseCommand");
-      } finally {
-        restore();
-      }
+        for (const fixture of [{}, { agents: [] }, { codingAgentProfiles: {} }, {
+          agents: [{ id: "a", order: 2 }],
+          codingAgentProfiles: { profilesByAgent: { a: { A: {}, B: { command: "old" } } } },
+        }]) {
+          const raw = response(fixture);
+          fake.resolve("get_settings", raw);
+          const observed: SettingsSnapshotProjection = await ipc.SettingsAPI.get();
+          expect(observed).toBe(raw);
+          expect(observed).toEqual(fixture);
+        }
+        const catalog = response([{ key: "a" }, { command: "old" }, {}]);
+        fake.resolve("get_coding_agent_catalog", catalog);
+        const observed: CodingAgentDefinitionProjection[] = await ipc.CodingAgentsAPI.getCatalog();
+        expect(observed).toBe(catalog);
+        for (const fixture of [{}, { catalog: [] }, { catalog }]) {
+          const raw = response(fixture);
+          fake.resolve("get_coding_agent_catalog_report", raw);
+          const report: CatalogReportProjection = await ipc.CodingAgentsAPI.getCatalogReport();
+          expect(report).toBe(raw);
+        }
+      } finally { restore(); }
+    });
+
+    it("copies only changed leaves and ancestors without mutating input", async () => {
+      const ipc = await import("./ipc");
+      const raw = response({
+        agents: [{ id: "a", command: "old" }, { id: "b", baseCommand: "new" }],
+        codingAgentProfiles: { profilesByAgent: {
+          a: { A: { command: "old" }, B: {} },
+          b: { A: { additionalArguments: "--new" }, B: { command: "--old" } },
+        } }, metadata: { command: "untouched", additionalArguments: "metadata" },
+      });
+      const before = JSON.stringify(raw);
+      const fake = new FakeTransport();
+      fake.resolve("get_settings", raw);
+      const restore = ipc.__setTransportForTests(fake);
+      try {
+        const observed: SettingsSnapshotProjection = await ipc.SettingsAPI.get();
+        expect(observed).not.toBe(raw);
+        expect(observed.agents).not.toBe(raw.agents);
+        expect(observed.agents![0]).toBe(raw.agents[0]);
+        expect(observed.agents![1]).toEqual({ id: "b", command: "new" });
+        expect(observed.codingAgentProfiles).not.toBe(raw.codingAgentProfiles);
+        const profiles = observed.codingAgentProfiles!.profilesByAgent!;
+        expect(profiles).not.toBe(raw.codingAgentProfiles.profilesByAgent);
+        expect(profiles.a).toBe(raw.codingAgentProfiles.profilesByAgent.a);
+        expect(profiles.b).not.toBe(raw.codingAgentProfiles.profilesByAgent.b);
+        expect(profiles.b.A).toEqual({ command: "--new" });
+        expect(profiles.b.B).toBe(raw.codingAgentProfiles.profilesByAgent.b.B);
+        expect(observed).toMatchObject({ metadata: raw.metadata });
+        expect(JSON.stringify(raw)).toBe(before);
+      } finally { restore(); }
+    });
+
+    it.each(["legacy", "canonical"])("projects complete %s backend fixtures through complete APIs", async (shape) => {
+      const ipc = await import("./ipc");
+      const cell: ProfileCellConfig = { command: "--model x", enabled: true, env: { KEY: "value" }, notes: "keep" };
+      const agent = { id: "a", label: "Agent", color: "blue", command: "agent --base", envs: [], isolatedHome: false };
+      const definition: CodingAgentDefinition = {
+        key: "a", label: "Agent", description: "Description", color: "blue", command: "agent --base",
+        envs: [], isolatedHome: false, removable: true, updateCommands: ["update"], autoUpdate: false,
+      };
+      const expected: SettingsSnapshot = {
+        ...settingsSnapshot(), agents: [agent], codingAgentProfiles: {
+          ...baseSettings().codingAgentProfiles, profilesByAgent: { a: { A: cell } },
+        },
+      };
+      const report: CatalogReport = { catalog: [definition], primaryProjectRoot: "C:/Project", sourcePath: "catalog.json", warnings: [], unavailable: null };
+      const { command: base, ...agentRest } = agent;
+      const { command: catalogBase, ...definitionRest } = definition;
+      const { command: suffix, ...cellRest } = cell;
+      const wireDefinition = shape === "legacy" ? definition : { ...definitionRest, baseCommand: catalogBase };
+      const wire = shape === "legacy" ? expected : {
+        ...expected, agents: [{ ...agentRest, baseCommand: base }], codingAgentProfiles: {
+          ...expected.codingAgentProfiles, profilesByAgent: { a: { A: { ...cellRest, additionalArguments: suffix } } },
+        },
+      };
+      const fake = new FakeTransport();
+      fake.resolve("get_settings", response(wire));
+      fake.resolve("get_coding_agent_catalog", response([wireDefinition]));
+      fake.resolve("get_coding_agent_catalog_report", response({ ...report, catalog: [wireDefinition] }));
+      const restore = ipc.__setTransportForTests(fake);
+      try {
+        const settings: SettingsSnapshot = await ipc.SettingsAPI.get();
+        const catalog: CodingAgentDefinition[] = await ipc.CodingAgentsAPI.getCatalog();
+        const decodedReport: CatalogReport = await ipc.CodingAgentsAPI.getCatalogReport();
+        expect(settings).toEqual(expected);
+        expect(catalog).toEqual([definition]);
+        expect(decodedReport).toEqual(report);
+      } finally { restore(); }
+    });
+
+    it("rejects own undefined text before API promotion", async () => {
+      const ipc = await import("./ipc");
+      const fake = new FakeTransport();
+      const restore = ipc.__setTransportForTests(fake);
+      try {
+        // Own undefined survives structured objects; JSON cannot encode it.
+        for (const pair of [{ baseCommand: undefined, command: "valid" }, { baseCommand: "valid", command: undefined }]) {
+          fake.resolve("get_settings", { agents: [pair] });
+          fake.resolve("get_coding_agent_catalog", [pair]);
+          fake.resolve("get_coding_agent_catalog_report", { catalog: [pair] });
+          await expect(ipc.SettingsAPI.get()).rejects.toThrow("must be strings");
+          await expect(ipc.CodingAgentsAPI.getCatalog()).rejects.toThrow("must be strings");
+          await expect(ipc.CodingAgentsAPI.getCatalogReport()).rejects.toThrow("must be strings");
+        }
+        for (const cell of [{ additionalArguments: undefined, command: "valid" }, { additionalArguments: "valid", command: undefined }]) {
+          fake.resolve("get_settings", { codingAgentProfiles: { profilesByAgent: { a: { A: cell } } } });
+          await expect(ipc.SettingsAPI.get()).rejects.toThrow("must be strings");
+        }
+      } finally { restore(); }
     });
 
     it.each([null, false, 12, [], {}])("rejects malformed either spelling %j even with a valid peer", async (bad) => {
