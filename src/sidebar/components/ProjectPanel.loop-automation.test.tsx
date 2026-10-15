@@ -150,6 +150,105 @@ async function actionFinished(root: HTMLElement, loopId: string) {
   });
 }
 
+async function openLoopDeleteDialog({ root, rowSelector, deleteActionSelector }: {
+  root: HTMLElement;
+  rowSelector: string;
+  deleteActionSelector: string;
+}) {
+  const row = root.querySelector(rowSelector);
+  if (!(row instanceof HTMLElement)) {
+    throw new Error("Loop row not found");
+  }
+
+  contextMenu(row);
+  await waitFor(() => expect(document.body.querySelector(deleteActionSelector)).toBeTruthy());
+  const deleteAction = document.body.querySelector(deleteActionSelector);
+  if (!(deleteAction instanceof HTMLButtonElement)) {
+    throw new Error("Loop delete action not found");
+  }
+  click(deleteAction);
+}
+
+async function openLoopDeleteConfirmation({ root, rowSelector, deleteActionSelector, confirmSelector }: {
+  root: HTMLElement;
+  rowSelector: string;
+  deleteActionSelector: string;
+  confirmSelector: string;
+}) {
+  await openLoopDeleteDialog({ root, rowSelector, deleteActionSelector });
+
+  await waitFor(() => expect(document.body.querySelector(confirmSelector)).toBeTruthy());
+  const confirmAction = document.body.querySelector(confirmSelector);
+  if (!(confirmAction instanceof HTMLButtonElement)) {
+    throw new Error("Loop delete confirm action not found");
+  }
+  return confirmAction;
+}
+
+function installDiscoverySequence({ fake, responses }: {
+  fake: FakeTransport;
+  responses: AsyncGenerator<ReturnType<typeof discoveryWithLoop>, void, unknown>;
+}) {
+  fake.resolve("new_project", {
+    path: projectPath,
+    registered: true,
+    created: false,
+  });
+  const counter = { calls: 0 };
+  fake.onInvoke("discover_project", async () => {
+    counter.calls += 1;
+    const response = await responses.next();
+    return response.value ?? discoveryWithLoop(enabledLoop());
+  });
+  return counter;
+}
+
+async function enableLoopDuringStaleReload({ root, fake, loopId, discoveryCounter }: {
+  root: HTMLElement;
+  fake: FakeTransport;
+  loopId: string;
+  discoveryCounter: { calls: number };
+}) {
+  const projectId = automationIdPart(projectPath);
+  const encodedLoopId = automationIdPart(loopId);
+  const rowSelector = `[data-ac-testid="loop.row.${projectId}.${encodedLoopId}"]`;
+  const toggleSelector = `[data-ac-testid="loop.action.toggle.${projectId}.${encodedLoopId}"]`;
+
+  await waitFor(() => {
+    expect(root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+      "loop-disabled",
+    );
+  });
+
+  const staleReloadPromise = projectStore.reloadProject(projectPath);
+  await waitFor(() => expect(discoveryCounter.calls).toBe(2));
+
+  const row = root.querySelector(rowSelector);
+  if (!(row instanceof HTMLElement)) {
+    throw new Error("Loop row not found");
+  }
+  contextMenu(row);
+
+  await waitFor(() => {
+    expect(document.body.querySelector(toggleSelector)?.textContent?.trim()).toBe("Enable");
+  });
+
+  const enableAction = document.body.querySelector(toggleSelector);
+  if (!(enableAction instanceof HTMLButtonElement)) {
+    throw new Error("Loop toggle action not found");
+  }
+  click(enableAction);
+
+  await waitFor(() => expect(fake.callsFor("toggle_loop")).toHaveLength(1));
+  await waitFor(() => {
+    expect(root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
+      "enabled",
+    );
+  });
+
+  return { rowSelector, toggleSelector, staleReloadPromise };
+}
+
 describe("ProjectPanel loop automation hooks", () => {
   let cleanupDom: (() => void) | null = null;
 
@@ -230,18 +329,7 @@ describe("ProjectPanel loop automation hooks", () => {
       const cancelSelector = `[data-ac-testid="loop.delete.cancel.${projectId}.${loopId}"]`;
 
       await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeTruthy());
-      const row = rendered.root.querySelector(rowSelector);
-      if (!(row instanceof HTMLElement)) {
-        throw new Error("Loop row not found");
-      }
-
-      contextMenu(row);
-      await waitFor(() => expect(document.body.querySelector(deleteActionSelector)).toBeTruthy());
-      const deleteAction = document.body.querySelector(deleteActionSelector);
-      if (!(deleteAction instanceof HTMLButtonElement)) {
-        throw new Error("Loop delete action not found");
-      }
-      click(deleteAction);
+      await openLoopDeleteDialog({ root: rendered.root, rowSelector, deleteActionSelector });
 
       await waitFor(() => expect(document.body.querySelector(cancelSelector)).toBeTruthy());
       const cancelAction = document.body.querySelector(cancelSelector);
@@ -295,24 +383,9 @@ describe("ProjectPanel loop automation hooks", () => {
       const confirmSelector = `[data-ac-testid="loop.delete.confirm.${projectId}.${loopId}"]`;
 
       await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeTruthy());
-      const row = rendered.root.querySelector(rowSelector);
-      if (!(row instanceof HTMLElement)) {
-        throw new Error("Loop row not found");
-      }
-
-      contextMenu(row);
-      await waitFor(() => expect(document.body.querySelector(deleteActionSelector)).toBeTruthy());
-      const deleteAction = document.body.querySelector(deleteActionSelector);
-      if (!(deleteAction instanceof HTMLButtonElement)) {
-        throw new Error("Loop delete action not found");
-      }
-      click(deleteAction);
-
-      await waitFor(() => expect(document.body.querySelector(confirmSelector)).toBeTruthy());
-      const confirmAction = document.body.querySelector(confirmSelector);
-      if (!(confirmAction instanceof HTMLButtonElement)) {
-        throw new Error("Loop delete confirm action not found");
-      }
+      const confirmAction = await openLoopDeleteConfirmation({
+        root: rendered.root, rowSelector, deleteActionSelector, confirmSelector,
+      });
       const initialSnapshot = snapshots.current();
       click(confirmAction);
 
@@ -571,24 +644,9 @@ describe("ProjectPanel loop automation hooks", () => {
       const confirmSelector = `[data-ac-testid="loop.delete.confirm.${projectId}.${primaryLoopId}"]`;
 
       await waitFor(() => expect(rendered.root.querySelector(rowSelector)).toBeTruthy());
-      const row = rendered.root.querySelector(rowSelector);
-      if (!(row instanceof HTMLElement)) {
-        throw new Error("Loop row not found");
-      }
-
-      contextMenu(row);
-      await waitFor(() => expect(document.body.querySelector(deleteActionSelector)).toBeTruthy());
-      const deleteAction = document.body.querySelector(deleteActionSelector);
-      if (!(deleteAction instanceof HTMLButtonElement)) {
-        throw new Error("Loop delete action not found");
-      }
-      click(deleteAction);
-
-      await waitFor(() => expect(document.body.querySelector(confirmSelector)).toBeTruthy());
-      const confirmAction = document.body.querySelector(confirmSelector);
-      if (!(confirmAction instanceof HTMLButtonElement)) {
-        throw new Error("Loop delete confirm action not found");
-      }
+      const confirmAction = await openLoopDeleteConfirmation({
+        root: rendered.root, rowSelector, deleteActionSelector, confirmSelector,
+      });
       click(confirmAction);
       await waitFor(() => expect(fake.callsFor("delete_loop")).toHaveLength(1));
 
@@ -620,28 +678,17 @@ describe("ProjectPanel loop automation hooks", () => {
   it("does not regress enabled loop row while a queued reload follows a stale response", async () => {
     const fake = new FakeTransport();
     const snapshots = taskFixture(fake);
-    let discoverCalls = 0;
     const staleReload = deferred<void>();
     const queuedReload = deferred<void>();
 
-    fake.resolve("new_project", {
-      path: projectPath,
-      registered: true,
-      created: false,
-    });
-    fake.onInvoke("discover_project", async () => {
-      discoverCalls += 1;
-      if (discoverCalls === 1) return discoveryWithLoop(disabledLoop());
-      if (discoverCalls === 2) {
-        await staleReload.promise;
-        return discoveryWithLoop(disabledLoop());
-      }
-      if (discoverCalls === 3) {
-        await queuedReload.promise;
-        return discoveryWithLoop(enabledLoop());
-      }
-      return discoveryWithLoop(enabledLoop());
-    });
+    async function* responses() {
+      yield discoveryWithLoop(disabledLoop());
+      await staleReload.promise;
+      yield discoveryWithLoop(disabledLoop());
+      await queuedReload.promise;
+      yield discoveryWithLoop(enabledLoop());
+    }
+    const discoveryCounter = installDiscoverySequence({ fake, responses: responses() });
     fake.onInvoke("toggle_loop", (args) => {
       expect(args).toEqual({
         projectPath,
@@ -659,46 +706,12 @@ describe("ProjectPanel loop automation hooks", () => {
       await projectStore.createAndLoad(projectPath);
       await snapshots.applied();
 
-      const projectId = automationIdPart(projectPath);
-      const loopId = automationIdPart("weekday-standup");
-      const rowSelector = `[data-ac-testid="loop.row.${projectId}.${loopId}"]`;
-      const toggleSelector = `[data-ac-testid="loop.action.toggle.${projectId}.${loopId}"]`;
-
-      await waitFor(() => {
-        expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
-          "loop-disabled",
-        );
+      const { rowSelector, toggleSelector, staleReloadPromise } = await enableLoopDuringStaleReload({
+        root: rendered.root, fake, loopId: "weekday-standup", discoveryCounter,
       });
-
-      const staleReloadPromise = projectStore.reloadProject(projectPath);
-      await waitFor(() => expect(discoverCalls).toBe(2));
-
-      const row = rendered.root.querySelector(rowSelector);
-      if (!(row instanceof HTMLElement)) {
-        throw new Error("Loop row not found");
-      }
-      contextMenu(row);
-
-      await waitFor(() => {
-        expect(document.body.querySelector(toggleSelector)?.textContent?.trim()).toBe("Enable");
-      });
-
-      const enableAction = document.body.querySelector(toggleSelector);
-      if (!(enableAction instanceof HTMLButtonElement)) {
-        throw new Error("Loop toggle action not found");
-      }
-      click(enableAction);
-
-      await waitFor(() => expect(fake.callsFor("toggle_loop")).toHaveLength(1));
-      await waitFor(() => {
-        expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
-          "enabled",
-        );
-      });
-
       const beforeQueuedReload = snapshots.current();
       staleReload.resolve();
-      await waitFor(() => expect(discoverCalls).toBe(3));
+      await waitFor(() => expect(discoveryCounter.calls).toBe(3));
 
       expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
         "enabled",
@@ -710,7 +723,7 @@ describe("ProjectPanel loop automation hooks", () => {
       await actionFinished(rendered.root, "weekday-standup");
 
       await waitFor(() => {
-        expect(discoverCalls).toBeGreaterThanOrEqual(3);
+        expect(discoveryCounter.calls).toBeGreaterThanOrEqual(3);
         expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
           "enabled",
         );
@@ -740,28 +753,17 @@ describe("ProjectPanel loop automation hooks", () => {
     const fake = new FakeTransport();
     const snapshots = taskFixture(fake);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    let discoverCalls = 0;
     const staleReload = deferred<void>();
     const queuedReload = deferred<void>();
 
-    fake.resolve("new_project", {
-      path: projectPath,
-      registered: true,
-      created: false,
-    });
-    fake.onInvoke("discover_project", async () => {
-      discoverCalls += 1;
-      if (discoverCalls === 1) return discoveryWithLoop(disabledLoop());
-      if (discoverCalls === 2) {
-        await staleReload.promise;
-        return discoveryWithLoop(disabledLoop());
-      }
-      if (discoverCalls === 3) {
-        await queuedReload.promise;
-        throw new Error("queued reload failed");
-      }
-      return discoveryWithLoop(enabledLoop());
-    });
+    async function* responses() {
+      yield discoveryWithLoop(disabledLoop());
+      await staleReload.promise;
+      yield discoveryWithLoop(disabledLoop());
+      await queuedReload.promise;
+      throw new Error("queued reload failed");
+    }
+    const discoveryCounter = installDiscoverySequence({ fake, responses: responses() });
     fake.onInvoke("toggle_loop", () => ({
       summary: enabledLoop(),
       promptBody: "Short preview",
@@ -772,48 +774,14 @@ describe("ProjectPanel loop automation hooks", () => {
       await projectStore.createAndLoad(projectPath);
       await snapshots.applied();
 
-      const projectId = automationIdPart(projectPath);
-      const loopId = automationIdPart("weekday-standup");
-      const rowSelector = `[data-ac-testid="loop.row.${projectId}.${loopId}"]`;
-      const toggleSelector = `[data-ac-testid="loop.action.toggle.${projectId}.${loopId}"]`;
-
-      await waitFor(() => {
-        expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
-          "loop-disabled",
-        );
+      const { rowSelector, toggleSelector, staleReloadPromise } = await enableLoopDuringStaleReload({
+        root: rendered.root, fake, loopId: "weekday-standup", discoveryCounter,
       });
-
-      const staleReloadPromise = projectStore.reloadProject(projectPath);
-      await waitFor(() => expect(discoverCalls).toBe(2));
-
-      const row = rendered.root.querySelector(rowSelector);
-      if (!(row instanceof HTMLElement)) {
-        throw new Error("Loop row not found");
-      }
-      contextMenu(row);
-
-      await waitFor(() => {
-        expect(document.body.querySelector(toggleSelector)?.textContent?.trim()).toBe("Enable");
-      });
-
-      const enableAction = document.body.querySelector(toggleSelector);
-      if (!(enableAction instanceof HTMLButtonElement)) {
-        throw new Error("Loop toggle action not found");
-      }
-      click(enableAction);
-
-      await waitFor(() => expect(fake.callsFor("toggle_loop")).toHaveLength(1));
-      await waitFor(() => {
-        expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
-          "enabled",
-        );
-      });
-
       const beforeQueuedReload = snapshots.current();
       expect(beforeQueuedReload).toBeDefined();
       const snapshotCallsBeforeQueuedReload = fake.callsFor("task_get_snapshot_at").length;
       staleReload.resolve();
-      await waitFor(() => expect(discoverCalls).toBe(3));
+      await waitFor(() => expect(discoveryCounter.calls).toBe(3));
       expect(rendered.root.querySelector(rowSelector)?.getAttribute("data-ac-state")).toBe(
         "enabled",
       );
