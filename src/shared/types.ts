@@ -2237,3 +2237,31 @@ export interface AgentHelpFile {
   byCommand?: Record<string, AgentHelpEntry>;
   byAgent?: Record<string, AgentHelpEntry>;
 }
+
+/** Configuration wire DTOs; internal command members remain effective text.
+ * Both present input spellings require runtime string validation. */
+export type AgentConfigWire = Omit<AgentConfig, "command"> & { baseCommand: string };
+export type AgentConfigWireInput = Omit<AgentConfigWire, "baseCommand"> & {
+  baseCommand?: unknown;
+  command?: unknown;
+};
+export type CodingAgentDefinitionWire = Omit<CodingAgentDefinition, "command"> & { baseCommand: string };
+export type CodingAgentDefinitionWireInput = Omit<CodingAgentDefinitionWire, "baseCommand"> & {
+  baseCommand?: unknown;
+  command?: unknown;
+};
+export type ProfileCellConfigWire = Omit<ProfileCellConfig, "command"> & { additionalArguments: string };
+export type ProfileCellConfigWireInput = Omit<ProfileCellConfigWire, "additionalArguments"> & {
+  additionalArguments?: unknown;
+  command?: unknown;
+};
+export type CodingAgentProfilesWireInput = Omit<CodingAgentProfilesConfig, "profilesByAgent"> & {
+  profilesByAgent: Record<string, Record<string, ProfileCellConfigWireInput>>;
+};
+export type SettingsSnapshotWireInput = Omit<SettingsSnapshot, "agents" | "codingAgentProfiles"> & {
+  agents: AgentConfigWireInput[];
+  codingAgentProfiles: CodingAgentProfilesWireInput;
+};
+export type CatalogReportWireInput = Omit<CatalogReport, "catalog"> & {
+  catalog: CodingAgentDefinitionWireInput[];
+};

@@ -1169,3 +1169,153 @@ describe("loop ipc payload contract (#2289)", () => {
     ]);
   });
 });
+
+describe("tolerant configuration readers (#3019)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  // Literal oracle shared with P02: never derive expectations with trim or W.
+  const whitespace = [
+    "\u0009", "\u000A", "\u000B", "\u000C", "\u000D", "\u0020", "\u00A0", "\u1680",
+    "\u2000", "\u2001", "\u2002", "\u2003", "\u2004", "\u2005", "\u2006", "\u2007",
+    "\u2008", "\u2009", "\u200A", "\u2028", "\u2029", "\u202F", "\u205F", "\u3000", "\uFEFF",
+  ];
+  const selections: [Record<string, unknown>, string][] = [
+    [{ current: "new" }, "new"],
+    [{ command: "old" }, "old"],
+    [{ current: "new", command: "old" }, "new"],
+    [{ current: "", command: "old" }, "old"],
+    [{ current: " ", command: "old" }, "old"],
+    [{ current: "new", command: " " }, "new"],
+    [{ current: "", command: "" }, ""],
+    [{ current: " ", command: "\t" }, " "],
+    [{ current: "", command: "\t" }, ""],
+    [{ command: "\t" }, "\t"],
+    [{ current: "\u0085", command: "legacy" }, "\u0085"],
+    [{ current: "\uFEFF", command: "legacy" }, "legacy"],
+    [{ current: "legacy", command: "\u0085" }, "legacy"],
+    [{ current: "\uFEFF", command: "\u0085" }, "\u0085"],
+    [{ current: "legacy", command: "\uFEFF" }, "legacy"],
+    ...whitespace.flatMap((w): [Record<string, unknown>, string][] => [
+      [{ current: w, command: "legacy" }, "legacy"],
+      [{ current: w, command: "\t" }, w],
+    ]),
+    [{ current: whitespace.join(""), command: "legacy" }, "legacy"],
+    ...["\u0085", "\u180E", "\u200B", "\u{1F680}"].map((c): [Record<string, unknown>, string] => [
+      { current: `\t${c}\uFEFF`, command: "legacy" }, `\t${c}\uFEFF`,
+    ]),
+    [{ current: `${whitespace.join("")}new${whitespace.join("")}`, command: "legacy" },
+      `${whitespace.join("")}new${whitespace.join("")}`],
+  ];
+
+  function fields(pair: Record<string, unknown>, key: string) {
+    const { current, ...rest } = pair;
+    return Object.prototype.hasOwnProperty.call(pair, "current") ? { ...rest, [key]: current } : rest;
+  }
+
+  // Tauri resolves structured objects; WS resolves JSON-decoded response values.
+  describe.each(["tauri", "websocket"] as const)("%s-style responses", (style) => {
+    const response = <T,>(value: T): T => style === "websocket"
+      ? JSON.parse(JSON.stringify(value)) as T : value;
+
+    it.each(selections)("selects original text for %j", async (pair, expected) => {
+      const ipc = await import("./ipc");
+      const fake = new FakeTransport();
+      const base = fields(pair, "baseCommand");
+      const cell = { enabled: true, env: {}, notes: "note", ...fields(pair, "additionalArguments") };
+      const unrelated = { command: "unrelated", baseCommand: "also unrelated" };
+      const definition = { key: "agent", ...base, metadata: unrelated, updateCommands: ["update"] };
+      const raw = {
+        ...settingsSnapshot(),
+        agents: [{ id: "agent", ...base, metadata: unrelated }],
+        codingAgentProfiles: {
+          ...baseSettings().codingAgentProfiles,
+          profilesByAgent: { agent: { A: cell } },
+          metadata: unrelated,
+        },
+        metadata: unrelated,
+      };
+      const report = { catalog: [definition], warnings: [], unavailable: null, metadata: unrelated };
+      const before = JSON.stringify({ raw, definition, report });
+      const returned = response({ raw, catalog: [definition], report });
+      const returnedBefore = JSON.stringify(returned);
+      fake.resolve("get_settings", returned.raw);
+      fake.resolve("get_coding_agent_catalog", returned.catalog);
+      fake.resolve("get_coding_agent_catalog_report", returned.report);
+      const restore = ipc.__setTransportForTests(fake);
+      try {
+        const settings = await ipc.SettingsAPI.get();
+        const catalog = await ipc.CodingAgentsAPI.getCatalog();
+        const decodedReport = await ipc.CodingAgentsAPI.getCatalogReport();
+        expect(settings.agents[0].command).toBe(expected);
+        expect(settings.codingAgentProfiles.profilesByAgent.agent.A.command).toBe(expected);
+        expect(catalog[0].command).toBe(expected);
+        expect(decodedReport.catalog[0].command).toBe(expected);
+        expect(settings.projectPathResolution).toEqual(raw.projectPathResolution);
+        expect(settings).toMatchObject({ metadata: unrelated });
+        expect(settings.agents[0]).toMatchObject({ metadata: unrelated });
+        expect(settings.codingAgentProfiles).toMatchObject({ metadata: unrelated });
+        expect(catalog[0]).toMatchObject({ metadata: unrelated, updateCommands: ["update"] });
+        expect(decodedReport).toMatchObject({ metadata: unrelated, warnings: [], unavailable: null });
+        expect(JSON.stringify({ raw, definition, report })).toBe(before);
+        expect(JSON.stringify(returned)).toBe(returnedBefore);
+      } finally {
+        restore();
+      }
+    });
+
+    it("defaults a missing profile command but rejects a missing required base", async () => {
+      const ipc = await import("./ipc");
+      const fake = new FakeTransport();
+      const raw = {
+        ...settingsSnapshot(), agents: [{ id: "a", command: "old" }],
+        codingAgentProfiles: {
+          ...baseSettings().codingAgentProfiles,
+          profilesByAgent: { a: { A: { enabled: false, env: {}, notes: "" } } },
+        },
+      };
+      fake.resolve("get_settings", response(raw));
+      const restore = ipc.__setTransportForTests(fake);
+      try {
+        expect((await ipc.SettingsAPI.get()).codingAgentProfiles.profilesByAgent.a.A.command).toBe("");
+        fake.resolve("get_settings", response({ ...raw, agents: [{ id: "a" }] }));
+        await expect(ipc.SettingsAPI.get()).rejects.toThrow("missing baseCommand");
+        fake.resolve("get_coding_agent_catalog", response([{ key: "a" }]));
+        fake.resolve("get_coding_agent_catalog_report", response({ catalog: [{ key: "a" }] }));
+        await expect(ipc.CodingAgentsAPI.getCatalog()).rejects.toThrow("missing baseCommand");
+        await expect(ipc.CodingAgentsAPI.getCatalogReport()).rejects.toThrow("missing baseCommand");
+      } finally {
+        restore();
+      }
+    });
+
+    it.each([null, false, 12, [], {}])("rejects malformed either spelling %j even with a valid peer", async (bad) => {
+      const ipc = await import("./ipc");
+      const fake = new FakeTransport();
+      const restore = ipc.__setTransportForTests(fake);
+      try {
+        for (const pair of [{ current: bad, command: "valid" }, { current: "valid", command: bad }]) {
+          const base = fields(pair, "baseCommand");
+          fake.resolve("get_settings", response({ ...settingsSnapshot(), agents: [{ id: "a", ...base }] }));
+          fake.resolve("get_coding_agent_catalog", response([{ key: "a", ...base }]));
+          fake.resolve("get_coding_agent_catalog_report", response({ catalog: [{ key: "a", ...base }] }));
+          await expect(ipc.SettingsAPI.get()).rejects.toThrow("must be strings");
+          await expect(ipc.CodingAgentsAPI.getCatalog()).rejects.toThrow("must be strings");
+          await expect(ipc.CodingAgentsAPI.getCatalogReport()).rejects.toThrow("must be strings");
+          fake.resolve("get_settings", response({
+            ...settingsSnapshot(), agents: [],
+            codingAgentProfiles: {
+              ...baseSettings().codingAgentProfiles,
+              profilesByAgent: { a: { A: fields(pair, "additionalArguments") } },
+            },
+          }));
+          await expect(ipc.SettingsAPI.get()).rejects.toThrow("must be strings");
+        }
+      } finally {
+        restore();
+      }
+    });
+  });
+});

@@ -30,6 +30,12 @@ import type {
   AppSettings,
   MainWindowDisplayState,
   SettingsSnapshot,
+  AgentConfigWireInput,
+  CodingAgentDefinitionWireInput,
+  ProfileCellConfigWireInput,
+  CodingAgentProfilesWireInput,
+  SettingsSnapshotWireInput,
+  CatalogReportWireInput,
   MoveCodingAgentDirection,
   MoveCodingAgentRequest,
   ReorderCodingAgentRequest,
@@ -377,9 +383,64 @@ export const PtyAPI = {
     transport.invoke<{ rows: number; cols: number }>("get_pty_size", { sessionId }),
 };
 
+// Frozen selection set W; do not substitute runtime whitespace rules.
+function hasConfigurationContent(value: string): boolean {
+  return /[^\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/u.test(value);
+}
+
+function selectConfigurationText(
+  input: { command?: unknown; baseCommand?: unknown; additionalArguments?: unknown },
+  key: "baseCommand" | "additionalArguments",
+): string {
+  const hasNew = Object.prototype.hasOwnProperty.call(input, key);
+  const hasOld = Object.prototype.hasOwnProperty.call(input, "command");
+  const current = input[key];
+  const legacy = input.command;
+  if ((hasNew && typeof current !== "string") || (hasOld && typeof legacy !== "string")) {
+    throw new Error("Invalid configuration: command fields must be strings when present.");
+  }
+  if (typeof current === "string" && hasConfigurationContent(current)) return current;
+  if (typeof legacy === "string" && hasConfigurationContent(legacy)) return legacy;
+  if (typeof current === "string") return current;
+  if (typeof legacy === "string") return legacy;
+  if (key === "additionalArguments") return "";
+  throw new Error("Invalid configuration: missing baseCommand or command.");
+}
+
+function decodeBaseCommand<T extends AgentConfigWireInput | CodingAgentDefinitionWireInput>(input: T) {
+  return { ...input, command: selectConfigurationText(input, "baseCommand") };
+}
+
+function decodeProfileCell(input: ProfileCellConfigWireInput) {
+  return { ...input, command: selectConfigurationText(input, "additionalArguments") };
+}
+
+function decodeProfiles(input: CodingAgentProfilesWireInput): CodingAgentProfilesConfig {
+  return {
+    ...input,
+    profilesByAgent: Object.fromEntries(Object.entries(input.profilesByAgent).map(([agent, cells]) => [
+      agent,
+      Object.fromEntries(Object.entries(cells).map(([slot, cell]) => [slot, decodeProfileCell(cell)])),
+    ])),
+  };
+}
+
+function decodeSettings(input: SettingsSnapshotWireInput): SettingsSnapshot {
+  return {
+    ...input,
+    agents: input.agents.map(decodeBaseCommand),
+    codingAgentProfiles: decodeProfiles(input.codingAgentProfiles),
+  };
+}
+
+function decodeCatalogReport(input: CatalogReportWireInput): CatalogReport {
+  return { ...input, catalog: input.catalog.map(decodeBaseCommand) };
+}
+
 export const CodingAgentsAPI = {
   getCatalog: () =>
-    transport.invoke<CodingAgentDefinition[]>("get_coding_agent_catalog"),
+    transport.invoke<CodingAgentDefinitionWireInput[]>("get_coding_agent_catalog")
+      .then((catalog): CodingAgentDefinition[] => catalog.map(decodeBaseCommand)),
 
   welcomeStatus: (): Promise<CodingAgentWelcomeStatus[]> =>
     transport.invoke<CodingAgentWelcomeStatus[]>("get_coding_agent_welcome_status"),
@@ -388,7 +449,7 @@ export const CodingAgentsAPI = {
     transport.invoke<void>("install_coding_agent", { key }),
 
   getCatalogReport: () =>
-    transport.invoke<CatalogReport>("get_coding_agent_catalog_report"),
+    transport.invoke<CatalogReportWireInput>("get_coding_agent_catalog_report").then(decodeCatalogReport),
 
   listReseedableCommands: () =>
     transport.invoke<string[]>("list_reseedable_agent_commands"),
@@ -432,7 +493,7 @@ export const SettingsAPI = {
   // projectPathResolution). update/save-draft still take a plain AppSettings;
   // the extra report field riding along on a round-tripped object is ignored by
   // the backend (non-deny_unknown_fields) and cannot re-pair persisted state.
-  get: () => transport.invoke<SettingsSnapshot>("get_settings"),
+  get: () => transport.invoke<SettingsSnapshotWireInput>("get_settings").then(decodeSettings),
   /** #2306 P3 - the narrow move command: only the requested adjacent swap is
    *  persisted; the resolved value is the backend's authoritative ordered ids. */
   moveCodingAgent: (request: MoveCodingAgentRequest) =>
