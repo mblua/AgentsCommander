@@ -442,7 +442,7 @@ function decodeProfiles(input: CodingAgentProfilesWireInput): CodingAgentProfile
         return [slot, decoded];
       }));
       if (cellsChanged) changed = true;
-      return [agent, cellsChanged ? projected : cells];
+      return [agent, cellsChanged ? projected : cells as Record<string, ProfileCellConfigProjection>];
     }),
   );
   return changed ? { ...input, profilesByAgent } : input as CodingAgentProfilesProjection;
