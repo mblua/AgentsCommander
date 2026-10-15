@@ -13,6 +13,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::config::instance_artifacts::PTY_INPUT_LOCKS_DIR_NAME;
+use crate::pty::manager::{
+    ResponseCloseError, ResponseCloseState, WorkAdmission, WorkDeliveryReservation,
+};
 
 pub const DB_FILENAME: &str = crate::config::instance_artifacts::MESSAGE_BUS_DB_FILENAME;
 pub const INLINE_BODY_MAX_BYTES: usize = 256 * 1024;
@@ -69,8 +72,45 @@ pub struct MessageStore {
     path: PathBuf,
     conn: Arc<Mutex<rusqlite::Connection>>,
     maintenance_cursors: Arc<Mutex<PtyInputMaintenanceCursors>>,
+    response_close: Arc<std::sync::OnceLock<ResponseCloseState>>,
     #[cfg(test)]
     test_faults: Arc<Mutex<PtyInputStoreTestFaults>>,
+}
+
+/// Opaque delivery ownership; callers cannot reach the tracker through it.
+pub(crate) struct MessageDeliveryReservation {
+    _inner: Option<WorkDeliveryReservation>,
+}
+
+pub(crate) const RESPONSE_CLOSING_DEFERRED: &str = "response_close_deferred";
+
+pub(crate) fn is_response_closing_deferred(error: &str) -> bool {
+    matches!(
+        error,
+        RESPONSE_CLOSING_DEFERRED
+            | "PTY error: response_close_deferred"
+            | "PTY write failed: PTY error: response_close_deferred"
+    )
+}
+
+/// A failed or interrupted terminal persistence must not prove settlement.
+struct ResponseTerminalPersistence<'a> {
+    state: Option<&'a ResponseCloseState>,
+    completed: bool,
+}
+
+impl Drop for ResponseTerminalPersistence<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            if let Some(state) = self.state {
+                state.fail_closed();
+            }
+        }
+    }
+}
+
+fn response_work_key(plane: &str, sender: &str, op: &str) -> String {
+    format!("{}:{}:{}:{}", plane, sender.len(), sender, op)
 }
 
 #[derive(Default)]
@@ -721,6 +761,121 @@ fn try_stripe_lock_at(
 }
 
 impl MessageStore {
+    pub(crate) fn bind_response_close(&self, state: ResponseCloseState) {
+        if let Some(bound) = self.response_close.get() {
+            if !bound.same_state(&state) {
+                bound.fail_closed();
+                state.fail_closed();
+            }
+            return;
+        }
+        if self.response_close.set(state.clone()).is_err() {
+            state.fail_closed();
+            return;
+        }
+        let recovered = (|| -> Result<(), MessageStoreError> {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|_| MessageStoreError::StoreCorrupt)?;
+            for (table, plane, digest, statuses) in [
+                (
+                    "messages",
+                    "db",
+                    "body_sha256",
+                    "'queued','retry','delivering'",
+                ),
+                (
+                    "pty_input_operations",
+                    "pty",
+                    "request_fingerprint",
+                    "'queued','preparing','retry','actuating'",
+                ),
+            ] {
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT target_fqn,sender_fqn,op_id,{} FROM {} WHERE status IN ({})",
+                    digest, table, statuses
+                ))?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (target, sender, op, digest) = row?;
+                    let key = response_work_key(plane, &sender, &op);
+                    let mut admission = state
+                        .reserve_work(&target, &key)
+                        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+                    admission
+                        .accept_durable(&digest)
+                        .map_err(|_| MessageStoreError::StoreCorrupt)?;
+                }
+            }
+            Ok(())
+        })();
+        if recovered.is_err() {
+            state.fail_closed();
+        } else {
+            state.mark_work_bootstrapped();
+        }
+    }
+
+    pub(crate) fn response_target_is_closing(&self, target: &str) -> bool {
+        self.response_close
+            .get()
+            .is_some_and(|state| state.target_is_closing(target))
+    }
+
+    pub(crate) fn begin_response_delivery(
+        &self,
+        target: &str,
+    ) -> Result<MessageDeliveryReservation, String> {
+        let inner = match self.response_close.get() {
+            None => None,
+            Some(state) => match state.begin_delivery(target) {
+                Ok(reservation) => Some(reservation),
+                Err(ResponseCloseError::Unavailable) => None,
+                Err(ResponseCloseError::ClosingDeferred) => {
+                    return Err(RESPONSE_CLOSING_DEFERRED.to_string())
+                }
+                Err(error) => return Err(format!("response close admission: {:?}", error)),
+            },
+        };
+        Ok(MessageDeliveryReservation { _inner: inner })
+    }
+
+    fn reserve_response_work(&self, target: &str, key: &str) -> Option<WorkAdmission> {
+        let state = self.response_close.get()?;
+        match state.reserve_work(target, key) {
+            Ok(admission) => Some(admission),
+            Err(_) => {
+                state.fail_closed();
+                None
+            }
+        }
+    }
+
+    fn accept_response_work(&self, admission: &mut Option<WorkAdmission>, digest: &str) {
+        if admission
+            .as_mut()
+            .is_some_and(|admission| admission.accept_durable(digest).is_err())
+        {
+            if let Some(state) = self.response_close.get() {
+                state.fail_closed();
+            }
+        }
+    }
+
+    fn settle_response_row(&self, target: &str, key: &str) {
+        if let Some(state) = self.response_close.get() {
+            state.settle_terminal(target, key, std::time::Instant::now());
+        }
+    }
+
     pub fn at_config_dir() -> Result<Self, MessageStoreError> {
         let dir = crate::config::config_dir().ok_or(MessageStoreError::MissingConfigDir)?;
         Self::open(dir.join(DB_FILENAME))
@@ -747,6 +902,7 @@ impl MessageStore {
             path,
             conn: Arc::new(Mutex::new(conn)),
             maintenance_cursors: Arc::new(Mutex::new(PtyInputMaintenanceCursors::default())),
+            response_close: Arc::new(std::sync::OnceLock::new()),
             #[cfg(test)]
             test_faults: Arc::new(Mutex::new(PtyInputStoreTestFaults::default())),
         };
@@ -1509,6 +1665,8 @@ impl MessageStore {
             return Err(MessageStoreError::BodyTooLarge);
         }
 
+        let response_key = response_work_key("db", &req.sender_fqn, &req.op_id);
+        let mut response_admission = self.reserve_response_work(&req.target_fqn, &response_key);
         let now = Utc::now().to_rfc3339();
         let message_id = uuid::Uuid::new_v4().to_string();
         let body_sha256 = sha256_hex(req.body.as_bytes());
@@ -1560,10 +1718,24 @@ impl MessageStore {
                 })
             },
         )?;
+        if result.target_fqn != req.target_fqn {
+            response_admission = self.reserve_response_work(&result.target_fqn, &response_key);
+        }
+        let accepted_digest: String = tx.query_row(
+            "SELECT body_sha256 FROM messages WHERE message_id=?1",
+            [&result.message_id],
+            |row| row.get(0),
+        )?;
         if inserted > 0 {
             insert_audit(&tx, &result.message_id, STATUS_QUEUED, None, &now)?;
         }
         tx.commit()?;
+        if matches!(
+            result.status.as_str(),
+            STATUS_QUEUED | STATUS_RETRY | STATUS_DELIVERING
+        ) {
+            self.accept_response_work(&mut response_admission, &accepted_digest);
+        }
         Ok(result)
     }
 
@@ -1582,7 +1754,7 @@ impl MessageStore {
         let ids = {
             let mut stmt = tx.prepare(
                 r#"
-                SELECT message_id
+                SELECT message_id, target_fqn
                 FROM messages
                 WHERE (
                     status IN (?1, ?2) AND next_attempt_at <= ?3
@@ -1601,13 +1773,16 @@ impl MessageStore {
                     STATUS_DELIVERING,
                     limit as i64
                 ],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
 
         let mut leased = Vec::with_capacity(ids.len());
-        for id in ids {
+        for (id, target) in ids {
+            if self.response_target_is_closing(&target) {
+                continue;
+            }
             let changed = tx.execute(
                 r#"
                 UPDATE messages
@@ -1662,9 +1837,20 @@ impl MessageStore {
         message_id: &str,
         now: DateTime<Utc>,
     ) -> Result<(), MessageStoreError> {
+        let mut response_persistence = ResponseTerminalPersistence {
+            state: self.response_close.get(),
+            completed: false,
+        };
         let now_s = now.to_rfc3339();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        let response_row: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT target_fqn,sender_fqn,op_id FROM messages WHERE message_id=?1",
+                [message_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
         tx.execute(
             r#"
             UPDATE messages
@@ -1675,7 +1861,18 @@ impl MessageStore {
             params![STATUS_DELIVERED, now_s, message_id],
         )?;
         insert_audit(&tx, message_id, STATUS_DELIVERED, None, &now_s)?;
-        tx.commit()?;
+        if let Err(error) = tx.commit() {
+            if let Some(state) = self.response_close.get() {
+                state.fail_closed();
+            }
+            return Err(error.into());
+        }
+
+        if let Some(row) = response_row {
+            self.settle_response_row(&row.0, &response_work_key("db", &row.1, &row.2));
+        }
+
+        response_persistence.completed = true;
         Ok(())
     }
 
@@ -1686,9 +1883,20 @@ impl MessageStore {
         now: DateTime<Utc>,
         max_attempts: i64,
     ) -> Result<String, MessageStoreError> {
+        let mut response_persistence = ResponseTerminalPersistence {
+            state: self.response_close.get(),
+            completed: false,
+        };
         let now_s = now.to_rfc3339();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        let response_row: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT target_fqn,sender_fqn,op_id FROM messages WHERE message_id=?1",
+                [message_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
         let current_attempt: i64 = tx.query_row(
             "SELECT attempt FROM messages WHERE message_id = ?1",
             [message_id],
@@ -1718,7 +1926,18 @@ impl MessageStore {
             ],
         )?;
         insert_audit(&tx, message_id, next_status, Some(error), &now_s)?;
-        tx.commit()?;
+        if let Err(error) = tx.commit() {
+            if let Some(state) = self.response_close.get() {
+                state.fail_closed();
+            }
+            return Err(error.into());
+        }
+        if next_status == STATUS_POISONED {
+            if let Some(row) = response_row {
+                self.settle_response_row(&row.0, &response_work_key("db", &row.1, &row.2));
+            }
+        }
+        response_persistence.completed = true;
         Ok(next_status.to_string())
     }
 
@@ -2168,6 +2387,8 @@ impl MessageStore {
         let payload_sha256 = sha256_hex(&req.payload);
         let payload_bytes =
             i64::try_from(req.payload.len()).map_err(|_| MessageStoreError::StoreCorrupt)?;
+        let response_key = response_work_key("pty", &req.sender_fqn, &req.op_id);
+        let mut response_admission = self.reserve_response_work(&req.target_fqn, &response_key);
         let wall_now = Utc::now();
         for _ in 0..8 {
             let (_, scanned) = self.expire_pty_input_for_admission_page(wall_now)?;
@@ -2196,6 +2417,9 @@ impl MessageStore {
             let result = load_pty_result(&tx, &existing.injection_id)?
                 .ok_or(MessageStoreError::StoreCorrupt)?;
             tx.commit()?;
+            if !result.terminal {
+                self.accept_response_work(&mut response_admission, &req.request_fingerprint);
+            }
             return Ok(PtyInputEnqueueResult {
                 result,
                 duplicate: true,
@@ -2282,6 +2506,7 @@ impl MessageStore {
         let result =
             load_pty_result(&tx, &req.injection_id)?.ok_or(MessageStoreError::StoreCorrupt)?;
         tx.commit()?;
+        self.accept_response_work(&mut response_admission, &req.request_fingerprint);
         Ok(PtyInputEnqueueResult {
             result,
             duplicate: false,
@@ -2763,6 +2988,7 @@ impl MessageStore {
         )?;
         if attempt >= 5 {
             return terminalize_in_transaction(
+                self.response_close.get(),
                 tx,
                 injection_id,
                 PTY_STATUS_REJECTED,
@@ -2814,7 +3040,14 @@ impl MessageStore {
             .lock()
             .map_err(|_| MessageStoreError::StoreCorrupt)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        terminalize_in_transaction(tx, injection_id, status, reason, &now_s)?;
+        terminalize_in_transaction(
+            self.response_close.get(),
+            tx,
+            injection_id,
+            status,
+            reason,
+            &now_s,
+        )?;
         drop(conn);
         self.query_pty_input_by_injection(injection_id)?
             .ok_or(MessageStoreError::StoreCorrupt)
@@ -3676,12 +3909,22 @@ fn tombstone_matches(
 }
 
 fn terminalize_in_transaction(
+    response_close: Option<&ResponseCloseState>,
     tx: rusqlite::Transaction<'_>,
     injection_id: &str,
     status: &str,
     reason: Option<crate::phone::types::PtyInputReasonCode>,
     now: &str,
 ) -> Result<(), MessageStoreError> {
+    let mut response_persistence = ResponseTerminalPersistence {
+        state: response_close,
+        completed: false,
+    };
+    let response_row: (String, String, String) = tx.query_row(
+        "SELECT target_fqn,sender_fqn,op_id FROM pty_input_operations WHERE injection_id=?1",
+        [injection_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
     let public_status = match status {
         PTY_STATUS_INJECTED => crate::phone::types::PtyInputPublicStatus::Injected,
         PTY_STATUS_REJECTED => crate::phone::types::PtyInputPublicStatus::Rejected,
@@ -3712,7 +3955,20 @@ fn terminalize_in_transaction(
             if !tombstone_matches(&tx, injection_id)? {
                 return Err(MessageStoreError::StoreCorrupt);
             }
-            tx.commit()?;
+            if let Err(error) = tx.commit() {
+                if let Some(state) = response_close {
+                    state.fail_closed();
+                }
+                return Err(error.into());
+            }
+            if let Some(state) = response_close {
+                state.settle_terminal(
+                    &response_row.0,
+                    &response_work_key("pty", &response_row.1, &response_row.2),
+                    std::time::Instant::now(),
+                );
+            }
+            response_persistence.completed = true;
             return Ok(());
         }
         return Err(MessageStoreError::InvalidTransition);
@@ -3766,7 +4022,20 @@ fn terminalize_in_transaction(
     if !tombstone_matches(&tx, injection_id)? {
         return Err(MessageStoreError::StoreCorrupt);
     }
-    tx.commit()?;
+    if let Err(error) = tx.commit() {
+        if let Some(state) = response_close {
+            state.fail_closed();
+        }
+        return Err(error.into());
+    }
+    if let Some(state) = response_close {
+        state.settle_terminal(
+            &response_row.0,
+            &response_work_key("pty", &response_row.1, &response_row.2),
+            std::time::Instant::now(),
+        );
+    }
+    response_persistence.completed = true;
     Ok(())
 }
 
@@ -3886,6 +4155,87 @@ mod tests {
         }
     }
 
+    fn bootstrap_pty_status_fixture(store: &MessageStore, status: &str) -> (String, String, bool) {
+        let id = Uuid::new_v4().to_string();
+        let req = pty_request(&id, status);
+        let fingerprint = req.request_fingerprint.clone();
+        store.enqueue_pty_input(req).unwrap();
+        let at = Utc::now();
+        if matches!(
+            status,
+            "preparing" | "retry" | "actuating" | "injected" | "indeterminate"
+        ) {
+            assert!(store
+                .claim_pty_input(
+                    crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                    Some(&id),
+                    "bootstrap",
+                    at
+                )
+                .unwrap()
+                .is_some());
+        }
+        if status == "retry" {
+            store
+                .retry_pty_input(
+                    &id,
+                    "bootstrap",
+                    crate::phone::types::PtyInputReasonCode::MenuGuardBlocked,
+                    at,
+                )
+                .unwrap();
+        }
+        if matches!(status, "actuating" | "injected" | "indeterminate") {
+            store
+                .begin_pty_actuating(
+                    &id,
+                    "bootstrap",
+                    &Uuid::new_v4().to_string(),
+                    "localProcess",
+                    at,
+                )
+                .unwrap();
+        }
+        match status {
+            "injected" => {
+                store
+                    .terminalize_pty_input(
+                        &id,
+                        crate::phone::types::PtyInputPublicStatus::Injected,
+                        None,
+                        at,
+                    )
+                    .unwrap();
+            }
+            "rejected" => {
+                store
+                    .terminalize_pty_input(
+                        &id,
+                        crate::phone::types::PtyInputPublicStatus::Rejected,
+                        Some(crate::phone::types::PtyInputReasonCode::Busy),
+                        at,
+                    )
+                    .unwrap();
+            }
+            "indeterminate" => {
+                store
+                    .terminalize_pty_input(
+                        &id,
+                        crate::phone::types::PtyInputPublicStatus::Indeterminate,
+                        Some(crate::phone::types::PtyInputReasonCode::DaemonRestartAfterActuation),
+                        at,
+                    )
+                    .unwrap();
+            }
+            _ => {}
+        }
+        (
+            id,
+            fingerprint,
+            matches!(status, "queued" | "preparing" | "retry" | "actuating"),
+        )
+    }
+
     #[test]
     fn migration_creates_schema_and_enqueue_writes_row() {
         let store = store();
@@ -3894,11 +4244,192 @@ mod tests {
         assert!(!result.message_id.is_empty());
         assert_eq!(result.status, STATUS_QUEUED);
         assert_eq!(store.count_by_status(STATUS_QUEUED), 1);
+        let mut seeds = Vec::new();
+        for status in ["queued", "retry", "delivering", "delivered", "poisoned"] {
+            let row = store.enqueue(request(status, status)).unwrap();
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE messages SET status=?1 WHERE message_id=?2",
+                    params![status, row.message_id],
+                )
+                .unwrap();
+            seeds.push((
+                "db",
+                "proj:wg-1/a",
+                "proj:wg-1/b",
+                status.to_owned(),
+                sha256_hex(status.as_bytes()),
+                matches!(status, "queued" | "retry" | "delivering"),
+            ));
+        }
+        for status in [
+            "queued",
+            "preparing",
+            "retry",
+            "actuating",
+            "injected",
+            "rejected",
+            "indeterminate",
+        ] {
+            let (id, fingerprint, pending) = bootstrap_pty_status_fixture(&store, status);
+            seeds.push((
+                "pty",
+                "proj:wg-1-team/lead",
+                "proj:wg-1-team/dev",
+                id,
+                fingerprint,
+                pending,
+            ));
+        }
+        let tracker = ResponseCloseState::default();
+        for publisher in [
+            crate::pty::manager::ResponseClosePublisher::Manager,
+            crate::pty::manager::ResponseClosePublisher::Pty,
+            crate::pty::manager::ResponseClosePublisher::RawOutput,
+            crate::pty::manager::ResponseClosePublisher::Detector,
+            crate::pty::manager::ResponseClosePublisher::Menu,
+            crate::pty::manager::ResponseClosePublisher::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.apply_settings(true, 30, std::time::Instant::now());
+        assert_eq!(
+            tracker.try_enable_readiness(),
+            Err(crate::pty::manager::ResponseCloseError::Unavailable)
+        );
+        store.bind_response_close(tracker.clone());
+        assert_eq!(tracker.try_enable_readiness(), Ok(()));
+        store.bind_response_close(tracker.clone());
+        assert_eq!(tracker.try_enable_readiness(), Ok(()));
+        for (plane, sender, target, op, digest, pending) in seeds {
+            let now = std::time::Instant::now();
+            let member = crate::pty::manager::ResponseRouteIdentity {
+                target: target.into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = crate::pty::manager::ResponseRouteIdentity {
+                target: "proj:wg-1/coordinator".into(),
+                session_id: Uuid::new_v4(),
+                ..member.clone()
+            };
+            tracker.register_route(member.session_id, 1, now);
+            tracker.publish_manager_row(
+                member.session_id,
+                member.token,
+                member.generation,
+                member.carrier_version,
+                true,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(member.clone(), true, false, now);
+            let result = tracker.reserve_policy_candidate(
+                member,
+                coordinator,
+                response_work_key(plane, sender, &op),
+                digest,
+                now,
+            );
+            if pending {
+                assert!(result.is_ok(), "{plane}/{op}");
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(crate::pty::manager::ResponseCloseError::Unknown)
+                    ),
+                    "{plane}/{op}"
+                );
+            }
+        }
+        let other = ResponseCloseState::default();
+        store.bind_response_close(other.clone());
+        assert_eq!(
+            tracker.try_enable_readiness(),
+            Err(crate::pty::manager::ResponseCloseError::Unavailable)
+        );
+        assert_eq!(
+            other.try_enable_readiness(),
+            Err(crate::pty::manager::ResponseCloseError::Unavailable)
+        );
+        let broken = self::store();
+        broken
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE pty_input_operations;")
+            .unwrap();
+        let broken_tracker = ResponseCloseState::default();
+        for publisher in [
+            crate::pty::manager::ResponseClosePublisher::Manager,
+            crate::pty::manager::ResponseClosePublisher::Pty,
+            crate::pty::manager::ResponseClosePublisher::RawOutput,
+            crate::pty::manager::ResponseClosePublisher::Detector,
+            crate::pty::manager::ResponseClosePublisher::Menu,
+            crate::pty::manager::ResponseClosePublisher::Hold,
+        ] {
+            broken_tracker.bind_publisher(publisher);
+        }
+        broken.bind_response_close(broken_tracker.clone());
+        assert_eq!(
+            broken_tracker.try_enable_readiness(),
+            Err(crate::pty::manager::ResponseCloseError::Unavailable)
+        );
     }
 
     #[test]
     fn duplicate_sender_op_id_returns_existing_row() {
         let store = store();
+        let tracker = ResponseCloseState::default();
+        for publisher in [
+            crate::pty::manager::ResponseClosePublisher::Manager,
+            crate::pty::manager::ResponseClosePublisher::Pty,
+            crate::pty::manager::ResponseClosePublisher::RawOutput,
+            crate::pty::manager::ResponseClosePublisher::Detector,
+            crate::pty::manager::ResponseClosePublisher::Menu,
+            crate::pty::manager::ResponseClosePublisher::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.apply_settings(true, 30, std::time::Instant::now());
+        store.bind_response_close(tracker.clone());
+        assert_eq!(tracker.try_enable_readiness(), Ok(()));
+        let probe = |target: &str, key: &str, digest: &str| {
+            let now = std::time::Instant::now();
+            let member = crate::pty::manager::ResponseRouteIdentity {
+                target: target.into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = crate::pty::manager::ResponseRouteIdentity {
+                target: "proj:wg-1/coordinator".into(),
+                session_id: Uuid::new_v4(),
+                ..member.clone()
+            };
+            tracker.register_route(member.session_id, member.generation, now);
+            tracker.publish_manager_row(
+                member.session_id,
+                member.token,
+                member.generation,
+                member.carrier_version,
+                true,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(member.clone(), true, false, now);
+            tracker.reserve_policy_candidate(member, coordinator, key.into(), digest.into(), now)
+        };
+
         let first = store.enqueue(request("op1", "hello")).unwrap();
         let mut changed = request("op1", "changed");
         changed.target_fqn = "proj:wg-1/other".into();
@@ -3908,11 +4439,82 @@ mod tests {
         assert_eq!(first.target_fqn, second.target_fqn);
         assert!(second.duplicate);
         assert_eq!(store.count_by_status(STATUS_QUEUED), 1);
+        let key = response_work_key("db", "proj:wg-1/a", "op1");
+        assert!(probe(&first.target_fqn, &key, &sha256_hex(b"hello")).is_ok());
+        assert!(matches!(
+            probe("proj:wg-1/other", &key, &sha256_hex(b"changed")),
+            Err(crate::pty::manager::ResponseCloseError::Unknown)
+        ));
+        store.mark_delivered(&first.message_id, Utc::now()).unwrap();
+        assert!(matches!(
+            probe(&first.target_fqn, &key, &sha256_hex(b"hello")),
+            Err(crate::pty::manager::ResponseCloseError::Conflict)
+        ));
+        let duplicate = store.enqueue(request("op1", "hello")).unwrap();
+        assert!(duplicate.duplicate);
+        assert!(matches!(
+            probe(&first.target_fqn, &key, &sha256_hex(b"hello")),
+            Err(crate::pty::manager::ResponseCloseError::Conflict)
+        ));
+        let pty_id = Uuid::new_v4().to_string();
+        let operation = pty_request(&pty_id, "original");
+        let fingerprint = operation.request_fingerprint.clone();
+        let target = operation.target_fqn.clone();
+        let pty_key = response_work_key("pty", &operation.sender_fqn, &operation.op_id);
+        store.enqueue_pty_input(operation).unwrap();
+        assert!(probe(&target, &pty_key, &fingerprint).is_ok());
+        let mut collision = pty_request(&pty_id, "different");
+        collision.request_fingerprint = sha256_hex(b"different");
+        assert!(store.enqueue_pty_input(collision).is_err());
+        assert!(probe("proj:wg-1-team/dev", &pty_key, &fingerprint).is_ok());
     }
 
     #[test]
     fn lease_due_hides_active_lease_until_expiry_then_redelivers() {
         let store = store();
+        let tracker = ResponseCloseState::default();
+        for publisher in [
+            crate::pty::manager::ResponseClosePublisher::Manager,
+            crate::pty::manager::ResponseClosePublisher::Pty,
+            crate::pty::manager::ResponseClosePublisher::RawOutput,
+            crate::pty::manager::ResponseClosePublisher::Detector,
+            crate::pty::manager::ResponseClosePublisher::Menu,
+            crate::pty::manager::ResponseClosePublisher::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.apply_settings(true, 30, std::time::Instant::now());
+        store.bind_response_close(tracker.clone());
+        assert_eq!(tracker.try_enable_readiness(), Ok(()));
+        let probe = |target: &str, key: &str, digest: &str| {
+            let now = std::time::Instant::now();
+            let member = crate::pty::manager::ResponseRouteIdentity {
+                target: target.into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = crate::pty::manager::ResponseRouteIdentity {
+                target: "proj:wg-1/coordinator".into(),
+                session_id: Uuid::new_v4(),
+                ..member.clone()
+            };
+            tracker.register_route(member.session_id, member.generation, now);
+            tracker.publish_manager_row(
+                member.session_id,
+                member.token,
+                member.generation,
+                member.carrier_version,
+                true,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(member.clone(), true, false, now);
+            tracker.reserve_policy_candidate(member, coordinator, key.into(), digest.into(), now)
+        };
+
         let first = store.enqueue(request("op1", "hello")).unwrap();
         let now = Utc::now();
 
@@ -3942,14 +4544,102 @@ mod tests {
             .unwrap();
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].message_id, first.message_id);
+        let future = store.enqueue(request("future", "future-body")).unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE messages SET next_attempt_at=?1 WHERE message_id=?2",
+                params![
+                    (now + chrono::Duration::days(1)).to_rfc3339(),
+                    future.message_id
+                ],
+            )
+            .unwrap();
+        let outside = store.enqueue(request("outside", "outside-body")).unwrap();
+        let other = store.enqueue(request("other", "other-body")).unwrap();
+        let batch = store
+            .lease_due(
+                now + chrono::Duration::seconds(32),
+                1,
+                Duration::from_secs(30),
+                "limited",
+            )
+            .unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_ne!(batch[0].message_id, future.message_id);
+        assert!(
+            batch[0].message_id == outside.message_id || batch[0].message_id == other.message_id
+        );
+        for (op, body) in [
+            ("op1", "hello"),
+            ("future", "future-body"),
+            ("outside", "outside-body"),
+            ("other", "other-body"),
+        ] {
+            assert!(probe(
+                "proj:wg-1/b",
+                &response_work_key("db", "proj:wg-1/a", op),
+                &sha256_hex(body.as_bytes())
+            )
+            .is_ok());
+        }
     }
 
     #[test]
     fn delivered_retry_poison_and_reaper_transitions() {
         let store = store();
+        let tracker = ResponseCloseState::default();
+        for publisher in [
+            crate::pty::manager::ResponseClosePublisher::Manager,
+            crate::pty::manager::ResponseClosePublisher::Pty,
+            crate::pty::manager::ResponseClosePublisher::RawOutput,
+            crate::pty::manager::ResponseClosePublisher::Detector,
+            crate::pty::manager::ResponseClosePublisher::Menu,
+            crate::pty::manager::ResponseClosePublisher::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.apply_settings(true, 30, std::time::Instant::now());
+        store.bind_response_close(tracker.clone());
+        assert_eq!(tracker.try_enable_readiness(), Ok(()));
+        let probe = |target: &str, key: &str, digest: &str| {
+            let now = std::time::Instant::now();
+            let member = crate::pty::manager::ResponseRouteIdentity {
+                target: target.into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = crate::pty::manager::ResponseRouteIdentity {
+                target: "proj:wg-1/coordinator".into(),
+                session_id: Uuid::new_v4(),
+                ..member.clone()
+            };
+            tracker.register_route(member.session_id, member.generation, now);
+            tracker.publish_manager_row(
+                member.session_id,
+                member.token,
+                member.generation,
+                member.carrier_version,
+                true,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(member.clone(), true, false, now);
+            tracker.reserve_policy_candidate(member, coordinator, key.into(), digest.into(), now)
+        };
+
         let delivered = store.enqueue(request("op1", "ok")).unwrap();
         let retry = store.enqueue(request("op2", "retry")).unwrap();
         let now = Utc::now();
+        let delivered_key = response_work_key("db", "proj:wg-1/a", "op1");
+        let retry_key = response_work_key("db", "proj:wg-1/a", "op2");
+        assert!(probe(&delivered.target_fqn, &delivered_key, &sha256_hex(b"ok")).is_ok());
+        assert!(probe(&retry.target_fqn, &retry_key, &sha256_hex(b"retry")).is_ok());
 
         store.mark_delivered(&delivered.message_id, now).unwrap();
         assert_eq!(store.count_by_status(STATUS_DELIVERED), 1);
@@ -3958,6 +4648,7 @@ mod tests {
             .mark_delivery_failed(&retry.message_id, "boom", now, 2)
             .unwrap();
         assert_eq!(status, STATUS_RETRY);
+        assert!(probe(&retry.target_fqn, &retry_key, &sha256_hex(b"retry")).is_ok());
         let status = store
             .mark_delivery_failed(&retry.message_id, "boom again", now, 2)
             .unwrap();
@@ -3967,6 +4658,25 @@ mod tests {
             .reap_terminal_before(now + chrono::Duration::days(2))
             .unwrap();
         assert_eq!(deleted, 2);
+        assert!(matches!(
+            probe(&delivered.target_fqn, &delivered_key, &sha256_hex(b"ok")),
+            Err(crate::pty::manager::ResponseCloseError::Conflict)
+        ));
+        assert!(matches!(
+            probe(&retry.target_fqn, &retry_key, &sha256_hex(b"retry")),
+            Err(crate::pty::manager::ResponseCloseError::Conflict)
+        ));
+        let failed = store.enqueue(request("failure", "retained")).unwrap();
+        let failed_key = response_work_key("db", "proj:wg-1/a", "failure");
+        assert!(probe(&failed.target_fqn, &failed_key, &sha256_hex(b"retained")).is_ok());
+        store.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_terminal BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'controlled failure'); END;").unwrap();
+        assert!(store.mark_delivered(&failed.message_id, now).is_err());
+        assert_eq!(
+            tracker.try_enable_readiness(),
+            Err(crate::pty::manager::ResponseCloseError::Unavailable)
+        );
+        assert_eq!(store.count_by_status(STATUS_QUEUED), 1);
+        assert!(store.begin_response_delivery(&failed.target_fqn).is_ok());
     }
 
     #[test]
@@ -4361,10 +5071,64 @@ mod tests {
     #[test]
     fn ambiguous_actuation_commit_returns_no_payload_and_preserves_no_replay_state() {
         let store = store();
+        // ACTUATING is nonterminal: this tests pending/no replay, not a failure latch.
+        let tracker = ResponseCloseState::default();
+        store.bind_response_close(tracker.clone());
+        for publisher in [
+            crate::pty::manager::ResponseClosePublisher::Manager,
+            crate::pty::manager::ResponseClosePublisher::Pty,
+            crate::pty::manager::ResponseClosePublisher::RawOutput,
+            crate::pty::manager::ResponseClosePublisher::Detector,
+            crate::pty::manager::ResponseClosePublisher::Menu,
+            crate::pty::manager::ResponseClosePublisher::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.try_enable_readiness().unwrap();
+        let policy_now = std::time::Instant::now();
+        tracker.apply_settings(true, 30, policy_now);
+        let member = crate::pty::manager::ResponseRouteIdentity {
+            target: "proj:wg-1-team/dev".into(),
+            session_id: Uuid::new_v4(),
+            token: Uuid::new_v4(),
+            generation: 1,
+            carrier_version: 1,
+            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+        };
+        let coordinator = crate::pty::manager::ResponseRouteIdentity {
+            target: "proj:wg-1-team/lead".into(),
+            session_id: Uuid::new_v4(),
+            token: Uuid::new_v4(),
+            generation: 2,
+            ..member.clone()
+        };
+        for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+            tracker.register_route(identity.session_id, identity.generation, policy_now);
+            tracker.publish_manager_row(
+                identity.session_id,
+                identity.token,
+                identity.generation,
+                1,
+                eligible,
+                false,
+                policy_now,
+            );
+            tracker.publish_manager_facts(identity.clone(), eligible, false, policy_now);
+        }
         let id = Uuid::new_v4().to_string();
-        store
-            .enqueue_pty_input(pty_request(&id, "secret text"))
-            .unwrap();
+        let request = pty_request(&id, "secret text");
+        let key = response_work_key("pty", &request.sender_fqn, &request.op_id);
+        let digest = request.request_fingerprint.clone();
+        store.enqueue_pty_input(request).unwrap();
+        assert!(tracker
+            .reserve_policy_candidate(
+                member.clone(),
+                coordinator.clone(),
+                key.clone(),
+                digest.clone(),
+                policy_now
+            )
+            .is_ok());
         let now = Utc::now();
         store
             .claim_pty_input(
@@ -4402,6 +5166,29 @@ mod tests {
             )
             .unwrap();
         assert!(payload_is_null);
+        // Exact same healthy state/identities/key/digest, without re-enqueue or accept_durable.
+        assert!(tracker
+            .reserve_policy_candidate(member, coordinator, key, digest, std::time::Instant::now())
+            .is_ok());
+        assert!(store
+            .claim_pty_input(
+                crate::phone::types::PtyInputSourcePlane::ContainerApi,
+                Some(&id),
+                "replay",
+                Utc::now()
+            )
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            store.begin_pty_actuating(
+                &id,
+                "lease",
+                &Uuid::new_v4().to_string(),
+                "containerTransport",
+                Utc::now()
+            ),
+            Err(MessageStoreError::InvalidTransition)
+        ));
     }
 
     #[test]

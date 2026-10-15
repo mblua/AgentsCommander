@@ -221,9 +221,9 @@ fn the_inventory_is_the_certified_file_set() {
 #[test]
 fn p1_is_frozen() {
     let pin = Pin {
-        total: 119,
-        distinct: 111,
-        sha256: "B0A9148982049934CC1045D645C0CA92F61A09743680883FFF1471D50A869214",
+        total: 124,
+        distinct: 116,
+        sha256: "DF8A26FDF107A1810C1A8EF519EA4B71E4269A536648616FC4A22319D92C49DC",
         per_file: &[
             ("cli/list_peers.rs", 1),
             ("commands/ac_discovery.rs", 15),
@@ -231,9 +231,11 @@ fn p1_is_frozen() {
             ("commands/entity_creation.rs", 11),
             ("commands/session.rs", 12),
             ("config/agent_command.rs", 1),
-            ("config/coding_agent_profiles.rs", 33),
+            ("config/coding_agent_mutations.rs", 1),
+            ("config/coding_agent_profiles.rs", 36),
             ("config/replica_identity.rs", 5),
             ("config/root_agent.rs", 23),
+            ("config/settings.rs", 1),
             ("loops/delivery.rs", 4),
             ("phone/mailbox.rs", 8),
         ],
@@ -297,20 +299,23 @@ fn p5_is_frozen() {
 #[test]
 fn p6_is_frozen() {
     let pin = Pin {
-        total: 35,
-        distinct: 31,
-        sha256: "26377139EA84314CB1815708E1B2017153A82052FFFA3E25F69F443AB1A9978A",
+        total: 48,
+        distinct: 41,
+        sha256: "88461BC5FA6CE0D675ED21B4966F90D7A308BDF1A1330955A1F13CF55996F19C",
         per_file: &[
             ("commands/ac_discovery.rs", 1),
             ("commands/config.rs", 2),
             ("commands/entity_creation.rs", 4),
             ("commands/session.rs", 2),
             ("config/agent_config.rs", 8),
-            ("config/coding_agent_profiles.rs", 3),
+            ("config/coding_agent_mutations.rs", 9),
+            ("config/coding_agent_profiles.rs", 4),
             ("config/instance_artifacts.rs", 2),
+            ("config/local_config_io.rs", 2),
             ("config/naming_migration.rs", 4),
             ("config/replica_identity.rs", 3),
             ("config/root_agent.rs", 2),
+            ("config/settings.rs", 1),
             ("phone/mailbox.rs", 4),
         ],
     };
@@ -320,12 +325,12 @@ fn p6_is_frozen() {
 #[test]
 fn p7_is_frozen() {
     let pin = Pin {
-        total: 61,
-        distinct: 47,
-        sha256: "36749D1FEDEA30FD30A2F55A1F95DFB7712F7DE4FFE9581CAC4181C641E1AF8B",
+        total: 72,
+        distinct: 51,
+        sha256: "011F7555603963CFD29FB98CDCA609B758E7556FE57ADB4EBAF98BA986D9006A",
         per_file: &[
-            ("config/agent_config.rs", 34),
-            ("config/local_config_io.rs", 27),
+            ("config/agent_config.rs", 36),
+            ("config/local_config_io.rs", 36),
         ],
     };
     assert_frozen("P7", &line_census(P7, Scope::Owners), &pin);
@@ -334,12 +339,12 @@ fn p7_is_frozen() {
 #[test]
 fn p8_is_frozen() {
     let pin = Pin {
-        total: 203,
-        distinct: 156,
-        sha256: "2A3878CD17E4B0A414D7520057E316ECD929865B588DB352524330C671B265C0",
+        total: 204,
+        distinct: 157,
+        sha256: "A3B4CC23C5FF59F62A9345299396BA5A8C16B0728947CD3AA40799B8AD06A1F3",
         per_file: &[
             ("config/agent_config.rs", 168),
-            ("config/local_config_io.rs", 35),
+            ("config/local_config_io.rs", 36),
         ],
     };
     assert_frozen("P8", &line_census(QUOTED_KEY, Scope::Owners), &pin);

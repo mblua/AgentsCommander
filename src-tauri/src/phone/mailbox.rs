@@ -473,6 +473,7 @@ enum WakeDelivery<'a> {
         /// #2232 phase 7: display-only attribution for a Co-managed-origin
         /// message. False for every pre-existing caller.
         comanaged: bool,
+        response: Option<&'a ResponseWakeWork>,
     },
     InternalSystem {
         target: InternalSystemTarget,
@@ -1343,9 +1344,9 @@ async fn deliver_claimed_wake<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     claim: &Path,
     origin: &Path,
-    msg: &OutboxMessage,
+    validated: &ValidatedWake,
 ) -> Result<(), String> {
-    match delivery.deliver_wake(app, msg).await {
+    match delivery.deliver_validated_wake(app, validated, false).await {
         // `claim.parent()` is the outbox dir, so delivered/ is derived exactly
         // as it is today and the destination still comes from `msg.id`. The
         // delivered JSON carries the receipt annotation (#1635-2 D4).
@@ -2512,6 +2513,7 @@ pub(crate) fn err_is_pty_session_missing(e: &str) -> bool {
 fn classify_injection_error(error: &str) -> (log::Level, &'static str) {
     if crate::pty::menu_guard::is_menu_guard_deferred_error(error)
         || crate::pty::menu_guard::is_typing_hold_deferred_error(error)
+        || crate::api::message_store::is_response_closing_deferred(error)
     {
         (log::Level::Debug, "deferred")
     } else {
@@ -2522,6 +2524,7 @@ fn classify_injection_error(error: &str) -> (log::Level, &'static str) {
 pub(crate) fn is_deferred_internal_delivery_error(error: &str) -> bool {
     crate::pty::menu_guard::is_menu_guard_deferred_error(error)
         || crate::pty::menu_guard::is_typing_hold_deferred_error(error)
+        || crate::api::message_store::is_response_closing_deferred(error)
 }
 
 /// §224 D.3 — pure filter: session infos by exact-FQN match on
@@ -3211,9 +3214,43 @@ impl MailboxPoller {
     }
 }
 
+#[derive(Clone)]
+struct ResponseWakeWork {
+    state: crate::pty::manager::ResponseCloseState,
+    target: String,
+    key: String,
+    digest: String,
+    return_context: Option<crate::pty::manager::ReturnObservationContext>,
+    // P05 creates the nonce-bound context at the actual pre-write boundary.
+    #[allow(dead_code)]
+    delivery_context: Option<crate::pty::manager::ResponseDeliveryContext>,
+}
+
+struct ValidatedWake {
+    message: OutboxMessage,
+    response: Option<ResponseWakeWork>,
+}
+
+// Local stage payloads carry the existing facts and fallback ownership only.
+// A handled rejection remains terminal even when its archival result is Ok.
+type OutboxStage<T = ()> = Result<std::ops::ControlFlow<Result<(), String>, T>, String>;
+type OutboxAuthenticationFacts = (bool, bool, bool, bool, bool);
+type PeerWakeFallback = (
+    bool,
+    Option<Uuid>,
+    Option<String>,
+    Option<crate::session::session::SessionCommunication>,
+);
+type SpawnedPeerWake = (
+    Uuid,
+    Option<crate::config::agent_command::AgentSpawnCommand>,
+    ResolvedWakeAgentCommand,
+);
+
 pub struct MailboxPoller {
     poll_interval: std::time::Duration,
     retry_tracker: HashMap<PathBuf, RetryState>,
+    response_sources: Arc<Mutex<HashMap<PathBuf, ResponseWakeWork>>>,
     snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner,
     /// (#1399) Claim paths this process has handed off whose outcome has not yet
     /// been successfully settled by `drain_wake_outcomes`. Membership includes
@@ -3394,11 +3431,174 @@ impl Default for MailboxPoller {
 }
 
 impl MailboxPoller {
+    fn settle_response_source(&self, path: &Path, success: bool) {
+        let origin = wake_claim_origin(path).unwrap_or_else(|| path.to_path_buf());
+        let work = self
+            .response_sources
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&origin);
+        if let Some(work) = work {
+            let now = std::time::Instant::now();
+            work.state.settle_terminal(&work.target, &work.key, now);
+            if let Some(context) = work.return_context {
+                if success {
+                    let _ = work.state.observe_return_success(
+                        crate::pty::manager::ReturnDeliveryProof { context },
+                        now,
+                    );
+                } else {
+                    let _ = work.state.settle_return_terminal(&context, now);
+                }
+            }
+        }
+    }
+
+    async fn admit_response_source<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        authenticated: bool,
+        content: &str,
+    ) -> Option<ResponseWakeWork> {
+        let state = app
+            .try_state::<crate::pty::manager::ResponseCloseState>()?
+            .inner()
+            .clone();
+        let digest = crate::phone::types::sha256_hex(content.as_bytes());
+        if let Some(previous) = self
+            .response_sources
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(path)
+            .cloned()
+        {
+            if previous.digest != digest || previous.target != msg.to {
+                state.fail_closed();
+                return None;
+            }
+            return Some(previous);
+        }
+        let key = format!("fs:{}:{}", path.to_string_lossy(), msg.id);
+        let mut admission = match state.reserve_work(&msg.to, &key) {
+            Ok(admission) => admission,
+            Err(_) => {
+                state.fail_closed();
+                return None;
+            }
+        };
+        if admission.accept_durable(&digest).is_err() {
+            state.fail_closed();
+            return None;
+        }
+        drop(admission);
+        let mut work = ResponseWakeWork {
+            state: state.clone(),
+            target: msg.to.clone(),
+            key,
+            digest,
+            return_context: None,
+            delivery_context: None,
+        };
+        if authenticated {
+            let settings = app.state::<SettingsState>();
+            let settings = settings.read().await;
+            state.apply_settings(
+                settings.response_close_enabled,
+                settings.response_close_idle_seconds,
+                std::time::Instant::now(),
+            );
+            let coordinator =
+                teams::verified_wg_coordinator_target(&msg.to, &settings.project_paths);
+            drop(settings);
+            let same_room = msg.from.rsplit_once('/').map(|(room, _)| room)
+                == msg.to.rsplit_once('/').map(|(room, _)| room);
+            if coordinator.is_some() && same_room {
+                let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let manager = managers.read().await.clone();
+                let token = msg
+                    .token
+                    .as_deref()
+                    .and_then(|token| Uuid::parse_str(token).ok());
+                work.return_context = manager
+                    .with_response_close_facts(|snapshot| {
+                        let route = |target: &str| {
+                            let mut matches = snapshot.rows.iter().filter(|row| {
+                                !snapshot.pending_ids.contains(&row.id)
+                                    && sender_name_for_session_cwd_with_root_flag(
+                                        &row.working_directory,
+                                        row.is_root_agent,
+                                    ) == target
+                                    && !matches!(row.status, SessionStatus::Exited(_))
+                                    && row.backend_kind == SessionBackendKind::LocalProcess
+                            });
+                            let row = matches.next()?;
+                            if matches.next().is_some() {
+                                return None;
+                            }
+                            Some((
+                                crate::pty::manager::ResponseRouteIdentity {
+                                    target: target.to_string(),
+                                    session_id: row.id,
+                                    token: row.token,
+                                    generation: state.generation(row.id)?,
+                                    carrier_version: *snapshot.versions.get(&row.id)?,
+                                    backend: row.backend_kind,
+                                },
+                                row,
+                            ))
+                        };
+                        let (member, member_row) = route(&msg.from)?;
+                        let (coordinator, coordinator_row) = route(&msg.to)?;
+                        if member_row.is_coordinator
+                            || member_row.is_root_agent
+                            || member_row.agent_kind.is_none()
+                            || token != Some(member.token)
+                            || !coordinator_row.is_coordinator
+                            || coordinator_row.is_root_agent
+                        {
+                            return None;
+                        }
+                        let now = std::time::Instant::now();
+                        state.publish_manager_facts(
+                            member.clone(),
+                            true,
+                            crate::session::session::is_working(member_row),
+                            now,
+                        );
+                        state.publish_manager_facts(
+                            coordinator.clone(),
+                            false,
+                            crate::session::session::is_working(coordinator_row),
+                            now,
+                        );
+                        state
+                            .admit_return(
+                                &member,
+                                &coordinator,
+                                work.key.clone(),
+                                work.digest.clone(),
+                                now,
+                            )
+                            .ok()
+                    })
+                    .await;
+            }
+        }
+        self.response_sources
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(path.to_path_buf(), work.clone());
+        Some(work)
+    }
+
     pub fn new() -> Self {
         let (wake_outcomes_tx, wake_outcomes_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            response_sources: Arc::new(Mutex::new(HashMap::new())),
             snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             live_claims: std::collections::HashSet::new(),
             wake_lanes: Arc::new(crate::phone::wake_lanes::WakeLanes::default()),
@@ -3416,6 +3616,7 @@ impl MailboxPoller {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            response_sources: Arc::new(Mutex::new(HashMap::new())),
             snapshot_scanner: crate::phone::terminal_snapshot::SnapshotMailboxScanner::default(),
             live_claims: std::collections::HashSet::new(),
             wake_lanes: Arc::new(crate::phone::wake_lanes::WakeLanes::default()),
@@ -3437,6 +3638,7 @@ impl MailboxPoller {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
             retry_tracker: HashMap::new(),
+            response_sources: Arc::new(Mutex::new(HashMap::new())),
             snapshot_scanner:
                 crate::phone::terminal_snapshot::SnapshotMailboxScanner::delivery_only(),
             live_claims: std::collections::HashSet::new(),
@@ -3455,7 +3657,8 @@ impl MailboxPoller {
     /// equivalent to `&self` for the tail. Test hooks are carried across
     /// because `MailboxTestHooks` is `Arc`-based and `Clone`.
     fn delivery_poller(&self) -> Self {
-        let poller = Self::delivery_only();
+        let mut poller = Self::delivery_only();
+        poller.response_sources = self.response_sources.clone();
         #[cfg(test)]
         let poller = Self {
             test_hooks: self.test_hooks.clone(),
@@ -3566,7 +3769,7 @@ impl MailboxPoller {
             let Some(id) = origin.file_stem().and_then(|stem| stem.to_str()) else {
                 continue;
             };
-            // The receipt is the proof the delivery already completed. Share
+            // The receipt proves a terminal outcome, not successful delivery. Share
             // this predicate with the owned-outcome drain so both paths treat
             // a failed observation as pending rather than absence.
             let settled = match wake_claim_has_settled_receipt(&origin) {
@@ -3581,15 +3784,23 @@ impl MailboxPoller {
                 }
             };
             if settled {
+                // Preserve pending if an origin remains or its observation fails.
+                // Receipt recovery has no authenticated full-return delivery proof.
+                let origin_absent = matches!(origin.try_exists(), Ok(false));
                 // (#1399 R6) Keep the Result: `remove_file` fails under exactly
                 // the locked-handle condition that is ordinary on Windows, and
                 // a log line reporting an action that did not happen costs an
                 // hour in an incident. Self-heals on a later cycle either way.
                 match std::fs::remove_file(claim) {
-                    Ok(()) => log::warn!(
-                        "[mailbox] #1399 dropped unowned claim {} (receipt already present)",
-                        id
-                    ),
+                    Ok(()) => {
+                        if origin_absent {
+                            self.settle_response_source(&origin, false);
+                        }
+                        log::warn!(
+                            "[mailbox] #1399 dropped unowned claim {} (receipt already present)",
+                            id
+                        );
+                    }
                     Err(error) => log::warn!(
                         "[mailbox] #1399 could not drop unowned claim {}: {}",
                         id,
@@ -3622,12 +3833,44 @@ impl MailboxPoller {
     /// reclamation and this function in sequence on one task, nothing can
     /// observe that window. An await inside it would let reclamation treat the
     /// claim as unowned and rename it back under a live worker.
+    #[cfg(test)]
     fn claim_and_spawn_wake<R: tauri::Runtime>(
         &mut self,
         app: &tauri::AppHandle<R>,
         path: &Path,
         msg: OutboxMessage,
     ) -> WakeHandoff {
+        self.claim_and_spawn_validated_wake(
+            app,
+            path,
+            ValidatedWake {
+                message: msg,
+                response: None,
+            },
+        )
+    }
+
+    fn claim_and_spawn_validated_wake<R: tauri::Runtime>(
+        &mut self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        validated: ValidatedWake,
+    ) -> WakeHandoff {
+        let msg = &validated.message;
+        let response_delivery = validated
+            .response
+            .as_ref()
+            .map(|work| work.state.begin_delivery(&work.target));
+        let response_delivery = match response_delivery {
+            Some(Err(crate::pty::manager::ResponseCloseError::ClosingDeferred)) => {
+                return WakeHandoff::LaneBusy
+            }
+            Some(Err(crate::pty::manager::ResponseCloseError::Unavailable)) | None => None,
+            Some(Err(error)) => {
+                return WakeHandoff::ClaimFailed(format!("response close admission: {:?}", error))
+            }
+            Some(Ok(reservation)) => Some(reservation),
+        };
         // A queued or requeued outcome can outlive both its worker and lane.
         // Cap `live_claims` separately so pending reports cannot exceed the
         // same global limit.
@@ -3663,11 +3906,13 @@ impl MailboxPoller {
         let worker_claim = claim.clone();
         self.wake_workers.spawn(async move {
             let _reservation = reservation;
+            let _response_delivery = response_delivery;
             // (#1399 R1) RAII, for the same reason `_reservation` is: an
             // unwind must not be able to skip the report.
             let mut report = WakeOutcomeReport::new(outcomes, origin.clone());
             let outcome =
-                deliver_claimed_wake(&delivery, &worker_app, &worker_claim, &origin, &msg).await;
+                deliver_claimed_wake(&delivery, &worker_app, &worker_claim, &origin, &validated)
+                    .await;
             report.set(outcome);
         });
         // Inserted AFTER `spawn` returns: if `spawn` itself panicked, an
@@ -3775,6 +4020,12 @@ impl MailboxPoller {
 
             self.live_claims.remove(&claim);
             if claim_has_receipt {
+                // The claim was removed successfully after receipt observation.
+                // Never turn delivered-or-rejected into return success authority,
+                // or retire work while a restored origin remains actionable.
+                if !origin_present {
+                    self.settle_response_source(&path, false);
+                }
                 // Receipt-wins recovery is already the contract of general
                 // reclamation. Clear retry state and do not redeliver.
                 self.record_message_outcome(path, Ok(())).await;
@@ -4088,7 +4339,7 @@ impl MailboxPoller {
                     }
                     OutboxClassification::Standard(content) => content,
                 };
-                let mut deferred: Option<OutboxMessage> = None;
+                let mut deferred: Option<ValidatedWake> = None;
                 let outcome = self
                     .process_message_content(
                         app,
@@ -4103,7 +4354,7 @@ impl MailboxPoller {
                         // Validated and handed off (or the lane was busy): the
                         // retry state for `path` must survive until the worker
                         // reports.
-                        Some(msg) => match self.claim_and_spawn_wake(app, &path, msg) {
+                        Some(msg) => match self.claim_and_spawn_validated_wake(app, &path, msg) {
                             WakeHandoff::Spawned => {}
                             WakeHandoff::LaneBusy => {}
                             WakeHandoff::ClaimFailed(e) => {
@@ -4169,6 +4420,8 @@ impl MailboxPoller {
                     Some("menu guard")
                 } else if crate::pty::menu_guard::is_typing_hold_deferred_error(&e) {
                     Some("typing hold")
+                } else if crate::api::message_store::is_response_closing_deferred(&e) {
+                    Some("response close")
                 } else {
                     None
                 };
@@ -5524,6 +5777,10 @@ impl MailboxPoller {
         let target = match initial.target.clone() {
             Some(target) => target,
             None => return,
+        };
+        let _response_delivery = match store.begin_response_delivery(&target) {
+            Ok(reservation) => reservation,
+            Err(_) => return,
         };
         let target_gate = match &state.target_gate {
             Ok(gate) => Arc::clone(gate),
@@ -7129,11 +7386,66 @@ impl MailboxPoller {
         path: &Path,
         origin: OutboxOrigin,
         content: &str,
-        deferred_tail: Option<&mut Option<OutboxMessage>>,
+        deferred_tail: Option<&mut Option<ValidatedWake>>,
     ) -> Result<(), String> {
-        // The pre-phase-7 boolean, derived once: every pre-existing branch that
-        // only knew "app outbox or not" keeps its exact behaviour.
         let is_app_outbox = origin == OutboxOrigin::Master;
+        let (msg, outbox_project) = match self
+            .parse_and_normalize_outbox(app, path, origin, content)
+            .await?
+        {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        let authentication = match self.authenticate_outbox(app, path, &msg).await? {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        let () = match self
+            .dispatch_outbox_self_operation(
+                app,
+                path,
+                &msg,
+                origin,
+                is_app_outbox,
+                authentication.4,
+            )
+            .await?
+        {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        let () = match self
+            .authorize_outbox_route(app, path, &msg, origin, &outbox_project, authentication)
+            .await?
+        {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        let () = match self
+            .validate_outbox_action_and_mode(app, path, &msg, is_app_outbox)
+            .await?
+        {
+            std::ops::ControlFlow::Continue(value) => value,
+            std::ops::ControlFlow::Break(result) => return result,
+        };
+        self.deliver_outbox_tail(
+            app,
+            path,
+            msg,
+            content,
+            (origin, deferred_tail),
+            authentication,
+        )
+        .await
+    }
+
+    async fn parse_and_normalize_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        origin: OutboxOrigin,
+        content: &str,
+    ) -> OutboxStage<(OutboxMessage, Option<String>)> {
         // `let mut msg`: §AR2-norm below mutates `msg.from` / `msg.to` in place
         // as the SINGLE POINT OF TRUTH for canonicalization. Downstream code
         // (routing, action dispatch, injection, archival) reads the canonical
@@ -7152,7 +7464,9 @@ impl MailboxPoller {
         let outbox_project = match derive_project_from_outbox_path(path) {
             Ok(project) => project,
             Err(reason) => {
-                return self.reject_message(path, &msg, &reason).await;
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, &msg, &reason).await,
+                ));
             }
         };
 
@@ -7173,7 +7487,7 @@ impl MailboxPoller {
             if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
                 let derived = sender_name_for_session_cwd(&repo_path.to_string_lossy());
                 if !anti_spoof_accept(&msg.from, &derived) {
-                    return self
+                    return Ok(std::ops::ControlFlow::Break(self
                         .reject_message(
                             path,
                             &msg,
@@ -7182,7 +7496,7 @@ impl MailboxPoller {
                                 derived, msg.from
                             ),
                         )
-                        .await;
+                        .await));
                 }
                 expected_from = Some(derived);
             }
@@ -7218,6 +7532,25 @@ impl MailboxPoller {
         // augmentation — see #228 Step 1) resolve here too. Without this, the daemon
         // re-rejects with `UnknownQualified` even though the CLI side succeeded.
         // settings.json is NOT mutated. In-memory, this-message only. See #228 D1-a.
+        match self
+            .normalize_outbox_recipient(app, path, &mut msg, &outbox_project)
+            .await?
+        {
+            std::ops::ControlFlow::Continue(()) => {}
+            std::ops::ControlFlow::Break(result) => {
+                return Ok(std::ops::ControlFlow::Break(result))
+            }
+        }
+        Ok(std::ops::ControlFlow::Continue((msg, outbox_project)))
+    }
+
+    async fn normalize_outbox_recipient<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &mut OutboxMessage,
+        outbox_project: &Option<String>,
+    ) -> OutboxStage {
         if !msg.to.is_empty() {
             let mut paths = {
                 let cfg = app.state::<SettingsState>();
@@ -7244,13 +7577,115 @@ impl MailboxPoller {
                     }
                 }
                 Err(e) => {
-                    return self
-                        .reject_message(path, &msg, &format!("Unresolvable target: {}", e))
-                        .await;
+                    return Ok(std::ops::ControlFlow::Break(
+                        self.reject_message(path, msg, &format!("Unresolvable target: {}", e))
+                            .await,
+                    ));
                 }
             }
         }
 
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn authenticate_outbox_session<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        token_str: &str,
+    ) -> OutboxStage<(bool, bool)> {
+        let token_belongs_to_root_agent;
+        let saw_session_token;
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+
+        if let Ok(token_uuid) = Uuid::parse_str(token_str) {
+            match mgr.find_by_token(token_uuid).await {
+                None => {
+                    // Token is stale/invalid. Env-only credentials cannot be refreshed into
+                    // an already-running child process, so reject instead of injecting a new token.
+                    drop(mgr);
+                    if let Some(session_id) = self.find_active_session(app, &msg.from).await {
+                        log::warn!(
+                            "[mailbox] Stale token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
+                            msg.from,
+                            session_id
+                        );
+                    }
+                    return Ok(std::ops::ControlFlow::Break(self
+                        .reject_message(
+                            path,
+                            msg,
+                            "Invalid session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
+                        )
+                        .await));
+                }
+                Some(session) => {
+                    saw_session_token = true;
+                    token_belongs_to_root_agent = session.is_root_agent
+                        || crate::config::root_agent::is_root_agent_path(
+                            &session.working_directory,
+                        );
+                    // Anti-spoofing: verify msg.from matches the token's session CWD.
+                    // Post-§AR2-norm, msg.from is canonical FQN (or legacy unqualified
+                    // if expected_from was unavailable). Session-derived name uses the
+                    // canonical helper; comparison is exact equality.
+                    let session_name = sender_name_for_session_cwd_with_root_flag(
+                        &session.working_directory,
+                        token_belongs_to_root_agent,
+                    );
+                    if session_name != msg.from {
+                        log::warn!(
+                            "[mailbox] Token-root mismatch: token session='{}' but from='{}'",
+                            session_name,
+                            msg.from
+                        );
+                        return Ok(std::ops::ControlFlow::Break(
+                            self.reject_message(
+                                path,
+                                msg,
+                                &format!(
+                                    "Token-root mismatch: session is '{}' but message claims '{}'",
+                                    session_name, msg.from
+                                ),
+                            )
+                            .await,
+                        ));
+                    }
+                }
+            }
+        } else {
+            // Token is not a valid UUID. Env-only credentials cannot be refreshed
+            // into an already-running child process, so reject instead of injecting.
+            drop(mgr);
+            if let Some(session_id) = self.find_active_session(app, &msg.from).await {
+                log::warn!(
+                    "[mailbox] Malformed token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
+                    msg.from,
+                    session_id
+                );
+            }
+            return Ok(std::ops::ControlFlow::Break(self
+                .reject_message(
+                    path,
+                    msg,
+                    "Malformed session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
+                )
+                .await));
+        }
+        Ok(std::ops::ControlFlow::Continue((
+            token_belongs_to_root_agent,
+            saw_session_token,
+        )))
+    }
+
+    async fn authenticate_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+    ) -> OutboxStage<OutboxAuthenticationFacts> {
         // Check if token is the master token or root token (bypasses anti-spoofing + team validation)
         let is_master = if let Some(ref token_str) = msg.token {
             let master = app.state::<MasterToken>();
@@ -7270,86 +7705,39 @@ impl MailboxPoller {
         let mut saw_session_token = false;
 
         if !is_master {
-            // Validate session token if present (anti-spoofing)
-            if let Some(ref token_str) = msg.token {
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr = session_mgr.read().await;
-
-                if let Ok(token_uuid) = Uuid::parse_str(token_str) {
-                    match mgr.find_by_token(token_uuid).await {
-                        None => {
-                            // Token is stale/invalid. Env-only credentials cannot be refreshed into
-                            // an already-running child process, so reject instead of injecting a new token.
-                            drop(mgr);
-                            if let Some(session_id) = self.find_active_session(app, &msg.from).await
-                            {
-                                log::warn!(
-                                    "[mailbox] Stale token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
-                                    msg.from,
-                                    session_id
-                                );
-                            }
-                            return self
-                                .reject_message(
-                                    path,
-                                    &msg,
-                                    "Invalid session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
-                                )
-                                .await;
-                        }
-                        Some(session) => {
-                            saw_session_token = true;
-                            token_belongs_to_root_agent = session.is_root_agent
-                                || crate::config::root_agent::is_root_agent_path(
-                                    &session.working_directory,
-                                );
-                            // Anti-spoofing: verify msg.from matches the token's session CWD.
-                            // Post-§AR2-norm, msg.from is canonical FQN (or legacy unqualified
-                            // if expected_from was unavailable). Session-derived name uses the
-                            // canonical helper; comparison is exact equality.
-                            let session_name = sender_name_for_session_cwd_with_root_flag(
-                                &session.working_directory,
-                                token_belongs_to_root_agent,
-                            );
-                            if session_name != msg.from {
-                                log::warn!(
-                                    "[mailbox] Token-root mismatch: token session='{}' but from='{}'",
-                                    session_name, msg.from
-                                );
-                                return self.reject_message(
-                                    path,
-                                    &msg,
-                                    &format!(
-                                        "Token-root mismatch: session is '{}' but message claims '{}'",
-                                        session_name, msg.from
-                                    ),
-                                )
-                                .await;
-                            }
-                        }
+            if let Some(token_str) = msg.token.as_deref() {
+                match self
+                    .authenticate_outbox_session(app, path, msg, token_str)
+                    .await?
+                {
+                    std::ops::ControlFlow::Continue((root, saw)) => {
+                        token_belongs_to_root_agent = root;
+                        saw_session_token = saw;
                     }
-                } else {
-                    // Token is not a valid UUID. Env-only credentials cannot be refreshed
-                    // into an already-running child process, so reject instead of injecting.
-                    drop(mgr);
-                    if let Some(session_id) = self.find_active_session(app, &msg.from).await {
-                        log::warn!(
-                            "[mailbox] Malformed token from '{}' matches active session {}, but env-only credentials cannot be refreshed in-place",
-                            msg.from,
-                            session_id
-                        );
+                    std::ops::ControlFlow::Break(result) => {
+                        return Ok(std::ops::ControlFlow::Break(result))
                     }
-                    return self
-                        .reject_message(
-                            path,
-                            &msg,
-                            "Malformed session token. Env-only credentials cannot be refreshed into a live process; restart or respawn the sender session.",
-                        )
-                        .await;
                 }
             }
         }
+        Ok(std::ops::ControlFlow::Continue((
+            is_master,
+            root_agent_claim,
+            root_agent_recipient,
+            token_belongs_to_root_agent,
+            saw_session_token,
+        )))
+    }
 
+    async fn dispatch_outbox_self_operation<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        origin: OutboxOrigin,
+        is_app_outbox: bool,
+        saw_session_token: bool,
+    ) -> OutboxStage {
         // ── #2232 phase 7: the Co-managed origin may express exactly one thing ──
         // A wake carrying a pointer. `action` and `command` are rejected here,
         // before the pre-routing dispatch below, because `purge-wg` and
@@ -7363,13 +7751,14 @@ impl MailboxPoller {
                 msg.command,
                 msg.id
             );
-            return self
-                .reject_message(
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(
                     path,
-                    &msg,
+                    msg,
                     "Co-managed origin may carry only a wake; action and command are rejected",
                 )
-                .await;
+                .await,
+            ));
         }
 
         // ── #617 self-clear: token-authorized self-operation ──
@@ -7380,22 +7769,28 @@ impl MailboxPoller {
         // reject valid callers in no shared team. close-session stays in the
         // post-routing action block because it IS a cross-agent operation.
         if msg.action.as_deref() == Some(SELF_CLEAR_ACTION) {
-            return self.handle_self_clear(app, path, &msg, is_app_outbox).await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_self_clear(app, path, msg, is_app_outbox).await,
+            ));
         }
         if msg.action.as_deref() == Some(SELF_SWITCH_ACTION) {
-            return self
-                .handle_self_handoff_switch(app, path, &msg, is_app_outbox)
-                .await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_self_handoff_switch(app, path, msg, is_app_outbox)
+                    .await,
+            ));
         }
         // (#1632) Same pre-routing block, same reason: self-handoff-and-restart operates on the
         // CALLER'S OWN session and is authorized by token ownership, not by team reachability.
         if msg.action.as_deref() == Some(SELF_RESTART_ACTION) {
-            return self
-                .handle_self_restart(app, path, &msg, is_app_outbox)
-                .await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_self_restart(app, path, msg, is_app_outbox)
+                    .await,
+            ));
         }
         if msg.action.as_deref() == Some(RAISE_HAND_ACTION) {
-            return self.handle_raise_hand(app, path, &msg, is_app_outbox).await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_raise_hand(app, path, msg, is_app_outbox).await,
+            ));
         }
 
         // (#885 F-7) `purge-wg` dispatches pre-routing, after the anti-spoof block.
@@ -7408,136 +7803,208 @@ impl MailboxPoller {
         // resolve against ANY workgroup on disk. Root has no workgroup.
         if msg.action.as_deref() == Some(PURGE_WG_ACTION) {
             if !saw_session_token {
-                return self
-                    .reject_message(path, &msg, "purge-room requires a session token")
-                    .await;
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, msg, "purge-room requires a session token")
+                        .await,
+                ));
             }
-            return self.handle_purge_wg(app, path, &msg, is_app_outbox).await;
+            return Ok(std::ops::ControlFlow::Break(
+                self.handle_purge_wg(app, path, msg, is_app_outbox).await,
+            ));
         }
 
-        if origin == OutboxOrigin::CoManaged {
-            // #2232 phase 7: no token, no master path, no anti-spoof. The FQN in
-            // `from` is the credential and the destination check is the CLI's:
-            // Root through the verified-coordinator validator, everything else
-            // through `can_communicate`. An unreachable destination is rejected.
-            let mut paths = {
-                let cfg = app.state::<SettingsState>();
-                let c = cfg.read().await;
-                c.project_paths.clone()
-            };
-            // The queue lives under a room root, whose grandparent is the project
-            // directory; include it so a qualified coordinator FQN resolves even
-            // when the project is not in settings (session-derived rooms).
-            if let Some(project_dir) = crate::config::co_managed::room_root_for_path(path)
-                .and_then(|room_root| room_root.parent().map(|ac_root| ac_root.to_path_buf()))
-                .and_then(|ac_root| ac_root.parent().map(|project| project.to_path_buf()))
-            {
-                let canon_project = std::fs::canonicalize(&project_dir).ok();
-                let already_present = paths.iter().any(|p| match &canon_project {
-                    Some(canon_target) => {
-                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
-                    }
-                    None => std::path::Path::new(p) == project_dir,
-                });
-                if !already_present {
-                    paths.push(project_dir.to_string_lossy().to_string());
-                }
-            }
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
 
-            if root_agent_recipient {
-                if let Err(reason) = validate_coordinator_to_root_route(&msg.from, &paths) {
-                    return self.reject_message(path, &msg, reason).await;
-                }
-            } else {
-                let discovered_teams = teams::discover_teams();
-                if !self.can_reach(&msg.from, &msg.to, &discovered_teams) {
-                    log::warn!(
-                        "[mailbox] Co-managed routing check FAILED: '{}' cannot reach '{}'",
-                        msg.from,
-                        msg.to
-                    );
-                    return self
-                        .reject_message(path, &msg, "Sender cannot reach destination")
-                        .await;
-                }
+    async fn authorize_comanaged_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        root_agent_recipient: bool,
+    ) -> OutboxStage {
+        // #2232 phase 7: no token, no master path, no anti-spoof. The FQN in
+        // `from` is the credential and the destination check is the CLI's:
+        // Root through the verified-coordinator validator, everything else
+        // through `can_communicate`. An unreachable destination is rejected.
+        let mut paths = {
+            let cfg = app.state::<SettingsState>();
+            let c = cfg.read().await;
+            c.project_paths.clone()
+        };
+        // The queue lives under a room root, whose grandparent is the project
+        // directory; include it so a qualified coordinator FQN resolves even
+        // when the project is not in settings (session-derived rooms).
+        if let Some(project_dir) = crate::config::co_managed::room_root_for_path(path)
+            .and_then(|room_root| room_root.parent().map(|ac_root| ac_root.to_path_buf()))
+            .and_then(|ac_root| ac_root.parent().map(|project| project.to_path_buf()))
+        {
+            let canon_project = std::fs::canonicalize(&project_dir).ok();
+            let already_present = paths.iter().any(|p| match &canon_project {
+                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                None => std::path::Path::new(p) == project_dir,
+            });
+            if !already_present {
+                paths.push(project_dir.to_string_lossy().to_string());
             }
-            log::debug!(
-                "[mailbox] Co-managed routing check passed: '{}' -> '{}'",
-                msg.from,
-                msg.to
-            );
-        } else if root_agent_claim {
-            let mut paths = {
-                let cfg = app.state::<SettingsState>();
-                let c = cfg.read().await;
-                c.project_paths.clone()
-            };
-            if let Some(root_project) = outbox_project.as_ref() {
-                let canon_root_project = std::fs::canonicalize(root_project).ok();
-                let already_present = paths.iter().any(|p| match &canon_root_project {
-                    Some(canon_target) => {
-                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
-                    }
-                    None => p == root_project,
-                });
-                if !already_present {
-                    paths.push(root_project.clone());
-                }
-            }
+        }
 
-            if let Err(reason) = validate_root_sender_route(
-                &msg.to,
-                &paths,
-                is_master,
-                saw_session_token,
-                token_belongs_to_root_agent,
-            ) {
-                return self.reject_message(path, &msg, reason).await;
-            }
-            if let Err(reason) = validate_root_sender_payload(&msg) {
-                return self.reject_message(path, &msg, &reason).await;
-            }
-            log::debug!(
-                "[mailbox] Root Agent routing check passed: '{}' -> '{}'",
-                msg.from,
-                msg.to
-            );
-        } else if root_agent_recipient {
-            // #293 — coordinator → root recipient.
-            //
-            // Build the same effective_project_paths slice the root-sender
-            // branch uses (settings + the outbox file's WG-replica project
-            // walk-up) so verified_wg_coordinator_target sees the project
-            // where the outbox lives.
-            let mut paths = {
-                let cfg = app.state::<SettingsState>();
-                let c = cfg.read().await;
-                c.project_paths.clone()
-            };
-            if let Some(root_project) = outbox_project.as_ref() {
-                let canon_root_project = std::fs::canonicalize(root_project).ok();
-                let already_present = paths.iter().any(|p| match &canon_root_project {
-                    Some(canon_target) => {
-                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
-                    }
-                    None => p == root_project,
-                });
-                if !already_present {
-                    paths.push(root_project.clone());
-                }
-            }
-
-            // Master/root token does NOT bypass the verified-coordinator check
-            // for root-recipient: the URI is meaningful only when paired with
-            // a real coordinator identity, and the verified check is cheap.
+        if root_agent_recipient {
             if let Err(reason) = validate_coordinator_to_root_route(&msg.from, &paths) {
-                return self.reject_message(path, &msg, reason).await;
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, msg, reason).await,
+                ));
             }
-            log::debug!(
-                "[mailbox] Coordinator→Root routing check passed: '{}' -> '{}'",
-                msg.from,
-                msg.to
-            );
+        } else {
+            let discovered_teams = teams::discover_teams();
+            if !self.can_reach(&msg.from, &msg.to, &discovered_teams) {
+                log::warn!(
+                    "[mailbox] Co-managed routing check FAILED: '{}' cannot reach '{}'",
+                    msg.from,
+                    msg.to
+                );
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, msg, "Sender cannot reach destination")
+                        .await,
+                ));
+            }
+        }
+        log::debug!(
+            "[mailbox] Co-managed routing check passed: '{}' -> '{}'",
+            msg.from,
+            msg.to
+        );
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn authorize_root_sender_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        outbox_project: &Option<String>,
+        authentication: (bool, bool, bool),
+    ) -> OutboxStage {
+        let (is_master, saw_session_token, token_belongs_to_root_agent) = authentication;
+        let mut paths = {
+            let cfg = app.state::<SettingsState>();
+            let c = cfg.read().await;
+            c.project_paths.clone()
+        };
+        if let Some(root_project) = outbox_project.as_ref() {
+            let canon_root_project = std::fs::canonicalize(root_project).ok();
+            let already_present = paths.iter().any(|p| match &canon_root_project {
+                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                None => p == root_project,
+            });
+            if !already_present {
+                paths.push(root_project.clone());
+            }
+        }
+
+        if let Err(reason) = validate_root_sender_route(
+            &msg.to,
+            &paths,
+            is_master,
+            saw_session_token,
+            token_belongs_to_root_agent,
+        ) {
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(path, msg, reason).await,
+            ));
+        }
+        if let Err(reason) = validate_root_sender_payload(msg) {
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(path, msg, &reason).await,
+            ));
+        }
+        log::debug!(
+            "[mailbox] Root Agent routing check passed: '{}' -> '{}'",
+            msg.from,
+            msg.to
+        );
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn authorize_root_recipient_outbox<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        outbox_project: &Option<String>,
+    ) -> OutboxStage {
+        // #293 — coordinator → root recipient.
+        //
+        // Build the same effective_project_paths slice the root-sender
+        // branch uses (settings + the outbox file's WG-replica project
+        // walk-up) so verified_wg_coordinator_target sees the project
+        // where the outbox lives.
+        let mut paths = {
+            let cfg = app.state::<SettingsState>();
+            let c = cfg.read().await;
+            c.project_paths.clone()
+        };
+        if let Some(root_project) = outbox_project.as_ref() {
+            let canon_root_project = std::fs::canonicalize(root_project).ok();
+            let already_present = paths.iter().any(|p| match &canon_root_project {
+                Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+                None => p == root_project,
+            });
+            if !already_present {
+                paths.push(root_project.clone());
+            }
+        }
+
+        // Master/root token does NOT bypass the verified-coordinator check
+        // for root-recipient: the URI is meaningful only when paired with
+        // a real coordinator identity, and the verified check is cheap.
+        if let Err(reason) = validate_coordinator_to_root_route(&msg.from, &paths) {
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(path, msg, reason).await,
+            ));
+        }
+        log::debug!(
+            "[mailbox] Coordinator→Root routing check passed: '{}' -> '{}'",
+            msg.from,
+            msg.to
+        );
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn authorize_outbox_route<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        origin: OutboxOrigin,
+        outbox_project: &Option<String>,
+        authentication: OutboxAuthenticationFacts,
+    ) -> OutboxStage {
+        let (
+            is_master,
+            root_agent_claim,
+            root_agent_recipient,
+            token_belongs_to_root_agent,
+            saw_session_token,
+        ) = authentication;
+        if origin == OutboxOrigin::CoManaged {
+            return self
+                .authorize_comanaged_outbox(app, path, msg, root_agent_recipient)
+                .await;
+        } else if root_agent_claim {
+            return self
+                .authorize_root_sender_outbox(
+                    app,
+                    path,
+                    msg,
+                    outbox_project,
+                    (is_master, saw_session_token, token_belongs_to_root_agent),
+                )
+                .await;
+        } else if root_agent_recipient {
+            return self
+                .authorize_root_recipient_outbox(app, path, msg, outbox_project)
+                .await;
         } else if is_master {
             log::debug!(
                 "[mailbox] Master token used — bypassing team validation for {} -> {}",
@@ -7552,9 +8019,10 @@ impl MailboxPoller {
                     msg.from,
                     msg.to
                 );
-                return self
-                    .reject_message(path, &msg, "Sender cannot reach destination")
-                    .await;
+                return Ok(std::ops::ControlFlow::Break(
+                    self.reject_message(path, msg, "Sender cannot reach destination")
+                        .await,
+                ));
             }
             log::debug!(
                 "[mailbox] Routing check passed: '{}' -> '{}'",
@@ -7563,6 +8031,16 @@ impl MailboxPoller {
             );
         }
 
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn validate_outbox_action_and_mode<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: &OutboxMessage,
+        is_app_outbox: bool,
+    ) -> OutboxStage {
         // Action-based dispatch (close-session, etc.) — handled before mode-based delivery
         if let Some(ref action) = msg.action {
             match action.as_str() {
@@ -7573,14 +8051,16 @@ impl MailboxPoller {
                     // path). That derived path lands under
                     // <config_dir>/instances/<id>/responses/ which the CLI
                     // never polls, so writing there leaks orphan JSON files.
-                    return self
-                        .handle_close_session(app, path, &msg, is_app_outbox)
-                        .await;
+                    return Ok(std::ops::ControlFlow::Break(
+                        self.handle_close_session(app, path, msg, is_app_outbox)
+                            .await,
+                    ));
                 }
                 _ => {
-                    return self
-                        .reject_message(path, &msg, &format!("Unknown action '{}'", action))
-                        .await;
+                    return Ok(std::ops::ControlFlow::Break(
+                        self.reject_message(path, msg, &format!("Unknown action '{}'", action))
+                            .await,
+                    ));
                 }
             }
         }
@@ -7594,37 +8074,64 @@ impl MailboxPoller {
         // Only `wake` is supported. Defensive check for malformed outbox files
         // that might arrive from external (root-token) write paths.
         if mode != "wake" {
-            return self
-                .reject_message(
+            return Ok(std::ops::ControlFlow::Break(
+                self.reject_message(
                     path,
-                    &msg,
+                    msg,
                     &format!("Unsupported delivery mode '{}'. Valid: wake", mode),
                 )
-                .await;
+                .await,
+            ));
         }
+        Ok(std::ops::ControlFlow::Continue(()))
+    }
+
+    async fn deliver_outbox_tail<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        path: &Path,
+        msg: OutboxMessage,
+        content: &str,
+        delivery: (OutboxOrigin, Option<&mut Option<ValidatedWake>>),
+        authentication: OutboxAuthenticationFacts,
+    ) -> Result<(), String> {
+        let (origin, deferred_tail) = delivery;
+        let (is_master, _, _, token_belongs_to_root_agent, saw_session_token) = authentication;
+        let response = self
+            .admit_response_source(
+                app,
+                path,
+                &msg,
+                saw_session_token
+                    && !is_master
+                    && !token_belongs_to_root_agent
+                    && origin != OutboxOrigin::CoManaged
+                    && msg.command.is_none()
+                    && !msg.get_output
+                    && msg.pty_input.is_none(),
+                content,
+            )
+            .await;
+        let validated = ValidatedWake {
+            message: msg,
+            response,
+        };
         // #2232 phase 7: a Co-managed message is delivered inline with its
         // display attribution; it is never parked for the detached worker pool,
         // whose shared `deliver_wake` tail carries no attribution and must keep
         // its exact behaviour for every other origin.
         if origin == OutboxOrigin::CoManaged {
-            let annotated = self
-                .deliver_wake_with_attribution(
-                    app,
-                    &msg,
-                    WakeDeliveryOrigin::FilesystemPoller,
-                    true,
-                )
-                .await?;
+            let annotated = self.deliver_validated_wake(app, &validated, true).await?;
             return self.move_to_delivered(path, &annotated).await;
         }
         if let Some(slot) = deferred_tail {
-            *slot = Some(msg);
+            *slot = Some(validated);
             return Ok(());
         }
         // #1635-2 D4: write the annotated message so the `Delivered:` CLI
         // receipt can report the effective agent/profile. No-flag messages are
         // still byte-identical to today.
-        let annotated = self.deliver_wake(app, &msg).await?;
+        let annotated = self.deliver_validated_wake(app, &validated, false).await?;
 
         // Move to delivered/ with token stripped
         self.move_to_delivered(path, &annotated).await
@@ -7660,6 +8167,7 @@ impl MailboxPoller {
                 message: msg,
                 origin,
                 comanaged: false,
+                response: None,
             },
         )
         .await
@@ -7674,6 +8182,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
+        response: Option<&ResponseWakeWork>,
     ) -> Result<OutboxMessage, String> {
         self.deliver_wake_engine(
             app,
@@ -7681,6 +8190,7 @@ impl MailboxPoller {
                 message: msg,
                 origin,
                 comanaged,
+                response,
             },
         )
         .await
@@ -7691,18 +8201,50 @@ impl MailboxPoller {
     /// notice, cancellation, and guard capability are required for `InternalSystem`.
     /// Returns the annotated `OutboxMessage` for the `Delivered:` receipt; the
     /// internal-system arm builds its own envelope (it holds no serialized message).
+    async fn deliver_validated_wake<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        validated: &ValidatedWake,
+        comanaged: bool,
+    ) -> Result<OutboxMessage, String> {
+        if !comanaged && validated.response.is_none() {
+            return self.deliver_wake(app, &validated.message).await;
+        }
+        self.deliver_wake_with_attribution(
+            app,
+            &validated.message,
+            WakeDeliveryOrigin::FilesystemPoller,
+            comanaged,
+            validated.response.as_ref(),
+        )
+        .await
+    }
+
     async fn deliver_wake_engine<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         delivery: WakeDelivery<'_>,
     ) -> Result<OutboxMessage, String> {
+        let target_fqn = match &delivery {
+            WakeDelivery::Peer { message, .. } => message.to.as_str(),
+            WakeDelivery::InternalSystem { target, .. } => target.fqn(),
+        };
+        let _response_delivery =
+            match app.try_state::<crate::api::message_store::MessageStoreState>() {
+                Some(state) => match &state.store {
+                    Ok(store) => Some(store.begin_response_delivery(target_fqn)?),
+                    Err(_) => None,
+                },
+                None => None,
+            };
         match delivery {
             WakeDelivery::Peer {
                 message,
                 origin,
                 comanaged,
+                response,
             } => {
-                self.deliver_peer_wake(app, message, origin, comanaged)
+                self.deliver_peer_wake(app, message, origin, comanaged, response)
                     .await
             }
             WakeDelivery::InternalSystem {
@@ -7730,6 +8272,7 @@ impl MailboxPoller {
         msg: &OutboxMessage,
         origin: WakeDeliveryOrigin,
         comanaged: bool,
+        response: Option<&ResponseWakeWork>,
     ) -> Result<OutboxMessage, String> {
         // Parse a hand-authored logical action after process_message's
         // authorization/routing gates but before any recipient actuation.
@@ -7778,6 +8321,116 @@ impl MailboxPoller {
             }
         }
 
+        let fallback = match self
+            .select_peer_wake_candidate(
+                app,
+                msg,
+                (origin, comanaged),
+                response,
+                (parsed_remote_command.is_some(), flags_present),
+            )
+            .await?
+        {
+            std::ops::ControlFlow::Break(delivered) => return Ok(delivered),
+            std::ops::ControlFlow::Continue(fallback) => fallback,
+        };
+        self.deliver_peer_wake_fallback(
+            app,
+            msg,
+            (origin, comanaged),
+            response,
+            (parsed_remote_command.is_some(), flags_present),
+            fallback,
+        )
+        .await
+    }
+
+    async fn try_inject_peer_candidate<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        response: Option<&ResponseWakeWork>,
+        session_id: Uuid,
+        dispatch: (bool, bool),
+    ) -> Result<Option<OutboxMessage>, String> {
+        let (origin, comanaged) = delivery;
+        let (logical_command, flags_present) = dispatch;
+        if logical_command {
+            let shell = {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                mgr.get_session(session_id)
+                    .await
+                    .map(|session| session.shell)
+            };
+            let Some(shell) = shell else {
+                log::warn!(
+                    "[mailbox] wake: candidate {} vanished during logical-command preflight, trying next",
+                    session_id
+                );
+                return Ok(None);
+            };
+            if let Some(wire_value) = msg.command.as_deref() {
+                resolve_remote_pty_command(&shell, wire_value)?;
+            }
+        }
+
+        // (#1001 PR2 / B) Settle the live session to paste-ready before
+        // injecting. The MEASURED live-path drop is the still-starting
+        // case (100% here / 83% baseline, P2), which the alive_age
+        // Starting route closes via the #611 settle. The established
+        // fresh-idle guard is DEFENSIVE retention (bias-to-deliver, cannot
+        // drop - the cap always injects), not a measured-drop closer; the
+        // ~75% figure was PR1's COLD-SPAWN fresh-idle measurement, not this
+        // established path. Busy/mid-turn and long-idle sessions inject at
+        // once; only a freshly-idle established one waits the guard.
+        // Best-effort - a vanished session just falls through to the
+        // inject's own race handling below.
+        let settle = self.settle_live_before_inject(app, session_id).await;
+        match self
+            .inject_wake_into_pty(app, session_id, msg, (origin, comanaged), settle, response)
+            .await
+        {
+            Ok(()) => {
+                // #1635-2 D1: a live target cannot apply dispatch
+                // flags — deliver as today and annotate the receipt.
+                // A plain wake stays byte-identical (no annotation).
+                let mut delivered = msg.clone();
+                if flags_present {
+                    delivered.dispatch_not_applied = Some("live-target".to_string());
+                }
+                Ok(Some(delivered))
+            }
+            Err(e) if err_is_pty_session_missing(&e) => {
+                // Race: PTY died between `find_live_candidates`
+                // probe and `PtyManager::write`. Load-bearing
+                // safety net for the dropped per-iteration
+                // re-read (grinch G.M2). Try the next candidate.
+                // Flag the race for the post-loop AC5 promotion
+                // (grinch HIGH-1) — if every Inject candidate
+                // races to dead, the spawn-persistent fall-through
+                // must still set spawn_with_resume.
+                log::warn!(
+                    "[mailbox] wake: candidate {} died after liveness probe ({}), trying next",
+                    session_id,
+                    e
+                );
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn select_peer_wake_candidate<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        response: Option<&ResponseWakeWork>,
+        dispatch: (bool, bool),
+    ) -> Result<std::ops::ControlFlow<OutboxMessage, PeerWakeFallback>, String> {
+        let (logical_command, flags_present) = dispatch;
         // Whether the spawn-fallback should allow provider auto-resume.
         // Default false: cold wake — no SessionManager record at this CWD.
         // Promoted to true in two paths below: (a) RespawnExited deferred-
@@ -7796,10 +8449,6 @@ impl MailboxPoller {
         let mut pending_exited_communication: Option<
             crate::session::session::SessionCommunication,
         > = None;
-        // (#747) Set only when the deferred destroy FAILS: the orphan Exited
-        // record then still holds the restored hand and must be cleared once
-        // the replacement spawn succeeds (single-carrier rule, 5d).
-        let mut pending_exited_orphan_to_clear: Option<Uuid> = None;
         // HIGH-1 (Step-7 review): symmetric AC5 protection. Tracks whether
         // every iter'd Inject candidate hit the `err_is_pty_session_missing`
         // race arm — if so, the post-loop fall-through must still promote
@@ -7839,72 +8488,19 @@ impl MailboxPoller {
 
             match wake_action_for(status) {
                 WakeAction::Inject => {
-                    if parsed_remote_command.is_some() {
-                        let shell = {
-                            let session_mgr =
-                                app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                            let mgr = session_mgr.read().await;
-                            mgr.get_session(session_id)
-                                .await
-                                .map(|session| session.shell)
-                        };
-                        let Some(shell) = shell else {
-                            lost_inject_to_race = true;
-                            log::warn!(
-                                "[mailbox] wake: candidate {} vanished during logical-command preflight, trying next",
-                                session_id
-                            );
-                            continue;
-                        };
-                        if let Some(wire_value) = msg.command.as_deref() {
-                            resolve_remote_pty_command(&shell, wire_value)?;
-                        }
-                    }
-
-                    // (#1001 PR2 / B) Settle the live session to paste-ready before
-                    // injecting. The MEASURED live-path drop is the still-starting
-                    // case (100% here / 83% baseline, P2), which the alive_age
-                    // Starting route closes via the #611 settle. The established
-                    // fresh-idle guard is DEFENSIVE retention (bias-to-deliver, cannot
-                    // drop - the cap always injects), not a measured-drop closer; the
-                    // ~75% figure was PR1's COLD-SPAWN fresh-idle measurement, not this
-                    // established path. Busy/mid-turn and long-idle sessions inject at
-                    // once; only a freshly-idle established one waits the guard.
-                    // Best-effort - a vanished session just falls through to the
-                    // inject's own race handling below.
-                    let settle = self.settle_live_before_inject(app, session_id).await;
                     match self
-                        .inject_wake_into_pty(app, session_id, msg, origin, comanaged, settle)
-                        .await
+                        .try_inject_peer_candidate(
+                            app,
+                            msg,
+                            delivery,
+                            response,
+                            session_id,
+                            (logical_command, flags_present),
+                        )
+                        .await?
                     {
-                        Ok(()) => {
-                            // #1635-2 D1: a live target cannot apply dispatch
-                            // flags — deliver as today and annotate the receipt.
-                            // A plain wake stays byte-identical (no annotation).
-                            let mut delivered = msg.clone();
-                            if flags_present {
-                                delivered.dispatch_not_applied = Some("live-target".to_string());
-                            }
-                            return Ok(delivered);
-                        }
-                        Err(e) if err_is_pty_session_missing(&e) => {
-                            // Race: PTY died between `find_live_candidates`
-                            // probe and `PtyManager::write`. Load-bearing
-                            // safety net for the dropped per-iteration
-                            // re-read (grinch G.M2). Try the next candidate.
-                            // Flag the race for the post-loop AC5 promotion
-                            // (grinch HIGH-1) — if every Inject candidate
-                            // races to dead, the spawn-persistent fall-through
-                            // must still set spawn_with_resume.
-                            lost_inject_to_race = true;
-                            log::warn!(
-                                "[mailbox] wake: candidate {} died after liveness probe ({}), trying next",
-                                session_id,
-                                e
-                            );
-                            continue;
-                        }
-                        Err(e) => return Err(e),
+                        Some(delivered) => return Ok(std::ops::ControlFlow::Break(delivered)),
+                        None => lost_inject_to_race = true,
                     }
                 }
                 WakeAction::RespawnExited => {
@@ -7962,74 +8558,22 @@ impl MailboxPoller {
             );
         }
 
-        // No viable Inject candidate succeeded, so the fallback would spawn a
-        // persistent session. Root Agent remains user-launched only.
-        log::info!(
-            "[mailbox] wake: no active session for '{}', spawning persistent session",
-            msg.to
-        );
-        if crate::config::root_agent::is_root_agent_target(&msg.to) {
-            let restoring = app
-                .state::<Arc<crate::RestoreInProgress>>()
-                .0
-                .load(std::sync::atomic::Ordering::SeqCst);
-            return if restoring {
-                Err(format!(
-                    "Root Agent session not yet restored for '{}'; daemon restart in progress — will retry.",
-                    msg.to
-                ))
-            } else {
-                Err(format!(
-                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages — ask the user to launch it.",
-                    msg.to
-                ))
-            };
-        }
+        Ok(std::ops::ControlFlow::Continue((
+            spawn_with_resume,
+            pending_exited_destroy,
+            pending_exited_telegram_bot_id,
+            pending_exited_communication,
+        )))
+    }
 
-        // A logical action must be mapped against the exact carried spawn shell
-        // before an Exited record is destroyed or provider directories are made.
-        let mut spawn_plan = if parsed_remote_command.is_some() {
-            let plan = self.resolve_wake_spawn_plan(app, msg).await?;
-            if let Some(wire_value) = msg.command.as_deref() {
-                resolve_remote_pty_command(&plan.spawn_shell, wire_value)?;
-            }
-            Some(plan)
-        } else {
-            None
-        };
-
-        if let Some(exited_id) = pending_exited_destroy {
-            log::debug!(
-                "[mailbox] wake: executing deferred destroy for Exited candidate {}",
-                exited_id
-            );
-            if let Err(e) = self.destroy_exited_wake_session(app, exited_id).await {
-                // Best-effort. Orphan SessionManager record lingers until AC3's
-                // runtime-dedup path (`#223-fu1`) drains it. spawn-persistent
-                // below still fires with the correct spawn_with_resume flag.
-                // (grinch G.M5 option (c).)
-                log::error!(
-                    "[mailbox] wake: failed to destroy exited session {} (orphan will linger until AC3): {}",
-                    exited_id,
-                    e
-                );
-                // (#747) The orphan Exited record still holds its restored
-                // raised hand. Do NOT clear it here: if the spawn below also
-                // fails, the orphan must stay the sole carrier (the hand is
-                // not lost with the failed wake). Remember it so 5d moves the
-                // hand to the new session once the spawn succeeds.
-                pending_exited_orphan_to_clear = Some(exited_id);
-            }
-        }
-
-        // Normal messages retain their original ordering: resolve the plan only
-        // after any deferred Exited destroy. Logical actions already carry the
-        // read-only plan proven safe above.
-        if spawn_plan.is_none() {
-            spawn_plan = Some(self.resolve_wake_spawn_plan(app, msg).await?);
-        }
-        let plan = spawn_plan
-            .ok_or_else(|| "Internal error: wake spawn plan was not resolved".to_string())?;
+    async fn spawn_peer_wake_fallback<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        plan: ResolvedWakeSpawnPlan,
+        spawn_with_resume: bool,
+        flags_present: bool,
+    ) -> Result<SpawnedPeerWake, String> {
         let ResolvedWakeSpawnPlan {
             resolved_command,
             cwd,
@@ -8085,6 +8629,34 @@ impl MailboxPoller {
         let session_id =
             Uuid::parse_str(&info.id).map_err(|e| format!("Failed to parse session id: {}", e))?;
 
+        Ok((
+            session_id,
+            configured_spawn_for_annotation,
+            resolved_command,
+        ))
+    }
+
+    async fn finish_peer_wake_fallback<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        response: Option<&ResponseWakeWork>,
+        restored: (
+            Option<String>,
+            Option<Uuid>,
+            Option<crate::session::session::SessionCommunication>,
+        ),
+        spawned: (bool, SpawnedPeerWake),
+    ) -> Result<OutboxMessage, String> {
+        let (origin, comanaged) = delivery;
+        let (
+            pending_exited_telegram_bot_id,
+            mut pending_exited_orphan_to_clear,
+            mut pending_exited_communication,
+        ) = restored;
+        let (flags_present, (session_id, configured_spawn_for_annotation, resolved_command)) =
+            spawned;
         if pending_exited_telegram_bot_id.is_some() {
             self.attach_persisted_telegram_for_wake(
                 app,
@@ -8137,7 +8709,7 @@ impl MailboxPoller {
         let settle = self.wait_for_spawned_wake_idle(app, session_id).await?;
 
         // Inject message — interactive mode (session persists, user sees reply instructions)
-        self.inject_wake_into_pty(app, session_id, msg, origin, comanaged, settle)
+        self.inject_wake_into_pty(app, session_id, msg, (origin, comanaged), settle, response)
             .await?;
 
         // #1635-2 D4: the delivered JSON reports the effective agent and
@@ -8156,6 +8728,112 @@ impl MailboxPoller {
             }
         }
         Ok(delivered)
+    }
+
+    async fn deliver_peer_wake_fallback<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        msg: &OutboxMessage,
+        delivery: (WakeDeliveryOrigin, bool),
+        response: Option<&ResponseWakeWork>,
+        dispatch: (bool, bool),
+        fallback: PeerWakeFallback,
+    ) -> Result<OutboxMessage, String> {
+        let (logical_command, flags_present) = dispatch;
+        let (
+            spawn_with_resume,
+            pending_exited_destroy,
+            pending_exited_telegram_bot_id,
+            pending_exited_communication,
+        ) = fallback;
+        // (#747) Set only when the deferred destroy FAILS: the orphan Exited
+        // record then still holds the restored hand and must be cleared once
+        // the replacement spawn succeeds (single-carrier rule, 5d).
+        let mut pending_exited_orphan_to_clear: Option<Uuid> = None;
+        // No viable Inject candidate succeeded, so the fallback would spawn a
+        // persistent session. Root Agent remains user-launched only.
+        log::info!(
+            "[mailbox] wake: no active session for '{}', spawning persistent session",
+            msg.to
+        );
+        if crate::config::root_agent::is_root_agent_target(&msg.to) {
+            let restoring = app
+                .state::<Arc<crate::RestoreInProgress>>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst);
+            return if restoring {
+                Err(format!(
+                    "Root Agent session not yet restored for '{}'; daemon restart in progress — will retry.",
+                    msg.to
+                ))
+            } else {
+                Err(format!(
+                    "No live Root Agent session for '{}'. The Root Agent must be running locally to receive messages — ask the user to launch it.",
+                    msg.to
+                ))
+            };
+        }
+
+        // A logical action must be mapped against the exact carried spawn shell
+        // before an Exited record is destroyed or provider directories are made.
+        let mut spawn_plan = if logical_command {
+            let plan = self.resolve_wake_spawn_plan(app, msg).await?;
+            if let Some(wire_value) = msg.command.as_deref() {
+                resolve_remote_pty_command(&plan.spawn_shell, wire_value)?;
+            }
+            Some(plan)
+        } else {
+            None
+        };
+
+        if let Some(exited_id) = pending_exited_destroy {
+            log::debug!(
+                "[mailbox] wake: executing deferred destroy for Exited candidate {}",
+                exited_id
+            );
+            if let Err(e) = self.destroy_exited_wake_session(app, exited_id).await {
+                // Best-effort. Orphan SessionManager record lingers until AC3's
+                // runtime-dedup path (`#223-fu1`) drains it. spawn-persistent
+                // below still fires with the correct spawn_with_resume flag.
+                // (grinch G.M5 option (c).)
+                log::error!(
+                    "[mailbox] wake: failed to destroy exited session {} (orphan will linger until AC3): {}",
+                    exited_id,
+                    e
+                );
+                // (#747) The orphan Exited record still holds its restored
+                // raised hand. Do NOT clear it here: if the spawn below also
+                // fails, the orphan must stay the sole carrier (the hand is
+                // not lost with the failed wake). Remember it so 5d moves the
+                // hand to the new session once the spawn succeeds.
+                pending_exited_orphan_to_clear = Some(exited_id);
+            }
+        }
+
+        // Normal messages retain their original ordering: resolve the plan only
+        // after any deferred Exited destroy. Logical actions already carry the
+        // read-only plan proven safe above.
+        if spawn_plan.is_none() {
+            spawn_plan = Some(self.resolve_wake_spawn_plan(app, msg).await?);
+        }
+        let plan = spawn_plan
+            .ok_or_else(|| "Internal error: wake spawn plan was not resolved".to_string())?;
+        let spawned = self
+            .spawn_peer_wake_fallback(app, msg, plan, spawn_with_resume, flags_present)
+            .await?;
+        self.finish_peer_wake_fallback(
+            app,
+            msg,
+            delivery,
+            response,
+            (
+                pending_exited_telegram_bot_id,
+                pending_exited_orphan_to_clear,
+                pending_exited_communication,
+            ),
+            (flags_present, spawned),
+        )
+        .await
     }
 
     /// Deliver a validated AgentsCommander-generated notice through the existing wake,
@@ -8884,10 +9562,11 @@ impl MailboxPoller {
         app: &tauri::AppHandle<R>,
         session_id: Uuid,
         msg: &OutboxMessage,
-        origin: WakeDeliveryOrigin,
-        comanaged: bool,
+        attribution: (WakeDeliveryOrigin, bool),
         settle: SettleReadiness,
+        _response: Option<&ResponseWakeWork>,
     ) -> Result<(), String> {
+        let (origin, comanaged) = attribution;
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
             {
@@ -12810,6 +13489,7 @@ impl MailboxPoller {
 
         // Remove original
         std::fs::remove_file(path).map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+        self.settle_response_source(path, true);
 
         log::info!("[mailbox] Message {} moved to delivered/", msg.id);
         Ok(())
@@ -12842,6 +13522,7 @@ impl MailboxPoller {
 
         // Remove original
         std::fs::remove_file(path).map_err(|e| format!("Failed to remove outbox file: {}", e))?;
+        self.settle_response_source(path, false);
 
         log::warn!(
             "[mailbox] Message {} moved to rejected/: {}",
@@ -13159,8 +13840,8 @@ impl MailboxPoller {
                 let disposition = {
                     let mut save = |st: &crate::config::settings::AppSettings| {
                         let written = crate::config::settings::save_settings(st)?;
-                        written_settings = Some(written);
-                        Ok(())
+                        written_settings = Some(written.clone());
+                        Ok(written)
                     };
                     ca::process_coding_agent_request(
                         &path,
@@ -14582,6 +15263,7 @@ mod tests {
             preflight: None,
             preflight_timeout_seconds: None,
             id: id.into(),
+            id_hash: None,
             label: label.into(),
             command: command.into(),
             color: "#10b981".into(),
@@ -15008,6 +15690,149 @@ mod tests {
                 b"\r".to_vec()
             ]
         );
+        // Same real engine, same idle fixture, now committed Closing before enqueue.
+        let fixture = make_mailbox_fixture();
+        let app = fixture.app.handle().clone();
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        assert!(app.manage(tracker.clone()));
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        pty.lock().unwrap().bind_response_close(tracker.clone());
+        let (route, sender_id, target_id) =
+            seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+        let database = fixture._temp.path().join("shared-engine-closing.sqlite3");
+        let store =
+            Arc::new(crate::api::message_store::MessageStore::open(database.clone()).unwrap());
+        store.bind_response_close(tracker.clone());
+        use crate::pty::manager::{
+            ResponseClosePublisher, ResponseDeliveryProof, ResponseRouteIdentity,
+            ReturnDeliveryProof,
+        };
+        for publisher in [
+            ResponseClosePublisher::Manager,
+            ResponseClosePublisher::Pty,
+            ResponseClosePublisher::RawOutput,
+            ResponseClosePublisher::Detector,
+            ResponseClosePublisher::Menu,
+            ResponseClosePublisher::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.try_enable_readiness().unwrap();
+        let now = std::time::Instant::now() + Duration::from_secs(3600);
+        tracker.apply_settings(true, 30, now);
+        let member = ResponseRouteIdentity {
+            target: route.target.canonical_fqn.clone(),
+            session_id: target_id,
+            token: Uuid::new_v4(),
+            generation: tracker.generation(target_id).unwrap(),
+            carrier_version: 1,
+            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+        };
+        let coordinator = ResponseRouteIdentity {
+            target: route.sender.canonical_fqn.clone(),
+            session_id: sender_id,
+            token: Uuid::new_v4(),
+            generation: tracker.generation(sender_id).unwrap(),
+            ..member.clone()
+        };
+        for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+            tracker.publish_manager_row(
+                identity.session_id,
+                identity.token,
+                identity.generation,
+                1,
+                eligible,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+        }
+        tracker.observe_detector(target_id, false, now);
+        tracker.publish_menu(target_id, Some(false), now);
+        tracker.publish_hold(target_id, None, true, now);
+        let mut admission = tracker.reserve_work(&member.target, "request").unwrap();
+        admission.accept_durable("body").unwrap();
+        drop(admission);
+        let context = tracker
+            .reserve_policy_candidate(
+                member.clone(),
+                coordinator.clone(),
+                "request".into(),
+                "body".into(),
+                now,
+            )
+            .unwrap();
+        tracker.mark_request_submitted(&context, true);
+        tracker
+            .register_request(
+                ResponseDeliveryProof {
+                    context,
+                    member: member.clone(),
+                    coordinator: coordinator.clone(),
+                    published_carrier_version: 1,
+                },
+                now,
+            )
+            .unwrap();
+        let context = tracker
+            .admit_return(
+                &member,
+                &coordinator,
+                "return".into(),
+                "return-body".into(),
+                now,
+            )
+            .unwrap();
+        tracker
+            .observe_return_success(ReturnDeliveryProof { context }, now)
+            .unwrap();
+        let at = now + Duration::from_secs(30);
+        let ticket = tracker.select_ticket(target_id, at).unwrap();
+        PtyManager::authority_route_proof(&pty, target_id)
+            .unwrap()
+            .try_commit_response_close(&tracker, &ticket, at)
+            .unwrap();
+        assert!(tracker.target_is_closing(&member.target));
+        let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+        let injection_id =
+            enqueue_shared_pty_engine_operation(&store, &route, sender_id, b"must remain queued");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let snapshot = || {
+            connection.query_row("SELECT status,attempt,lease_owner,lease_until,payload,queued_at,updated_at,actuating_at,selected_session_id FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, i64>(1)?,r.get::<_, Option<String>>(2)?,r.get::<_, Option<String>>(3)?,r.get::<_, Option<Vec<u8>>>(4)?,r.get::<_, String>(5)?,r.get::<_, String>(6)?,r.get::<_, Option<String>>(7)?,r.get::<_, Option<String>>(8)?))).unwrap()
+        };
+        let before = snapshot();
+        let hooks = MailboxTestHooks::default();
+        MailboxPoller::new_with_test_hooks(hooks.clone())
+            .dispatch_pty_input_operation(
+                &app,
+                &state,
+                &injection_id,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            )
+            .await;
+        assert_eq!(snapshot(), before);
+        assert_eq!(before.0, "queued");
+        assert_eq!(before.1, 0);
+        assert!(shared_engine_writes(&app, target_id).is_empty());
+        assert!(hooks.inject_calls.lock().unwrap().is_empty());
+        assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        let key = format!(
+            "pty:{}:{}:{}",
+            route.sender.canonical_fqn.len(),
+            route.sender.canonical_fqn,
+            injection_id
+        );
+        let digest =
+            crate::phone::types::sha256_hex(format!("shared-engine:{injection_id}").as_bytes());
+        let mut duplicate = tracker.reserve_work(&member.target, &key).unwrap();
+        assert_eq!(duplicate.accept_durable(&digest), Ok(false));
+        assert_eq!(
+            duplicate.accept_durable("collision"),
+            Err(crate::pty::manager::ResponseCloseError::Conflict)
+        );
+        assert!(tracker.target_is_closing(&member.target));
     }
 
     #[tokio::test]
@@ -15219,6 +16044,300 @@ mod tests {
         assert!(shared_engine_writes(&app, target_id).is_empty());
         assert_eq!(state.target_gate.as_ref().unwrap().exact_entry_count(), 0);
         drop(held_permit);
+        // G: shutdown after one engine-future poll, NOT exact permit-wait proof.
+        // Legacy300ms above is unchanged and does not establish this new cut.
+        for shutdown_after_start in [true, false] {
+            use crate::pty::manager::{
+                ResponseClosePublisher, ResponseDeliveryProof, ResponseRouteIdentity,
+                ReturnDeliveryProof,
+            };
+            let fixture = make_mailbox_fixture();
+            let app = fixture.app.handle().clone();
+            assert!(app.manage(crate::shutdown::ShutdownSignal::new()));
+            let (route, sender_id, target_id) =
+                seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            let tracker = pty.lock().unwrap().response_close_state();
+            assert!(app.manage(tracker.clone()));
+            let manager = {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = state.read().await;
+                guard.clone()
+            };
+            let member_row = manager.get_session(target_id).await.unwrap();
+            let coordinator_row = manager.get_session(sender_id).await.unwrap();
+            let member = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_TO.into(),
+                session_id: target_id,
+                token: member_row.token,
+                generation: tracker.generation(target_id).unwrap(),
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_FROM.into(),
+                session_id: sender_id,
+                token: coordinator_row.token,
+                generation: tracker.generation(sender_id).unwrap(),
+                ..member.clone()
+            };
+            let path = fixture._temp.path().join("one-poll-shutdown.sqlite3");
+            let store =
+                Arc::new(crate::api::message_store::MessageStore::open(path.clone()).unwrap());
+            store.bind_response_close(tracker.clone());
+            let state = crate::api::message_store::MessageStoreState::ready(Arc::clone(&store));
+
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            tracker.apply_settings(true, 30, now);
+            for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+                tracker.register_route(identity.session_id, identity.generation, now);
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    identity.carrier_version,
+                    eligible,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+            }
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+
+            let held_permit = if shutdown_after_start {
+                Some(
+                    PtyManager::acquire_input_writer(&pty, target_id)
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let injection_id = enqueue_shared_pty_engine_operation(
+                &store,
+                &route,
+                sender_id,
+                b"one-poll durable body",
+            );
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let original = conn.query_row("SELECT sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, String>(5)?))).unwrap();
+            assert_eq!(original.1, member.target);
+            let scenario_target = original.1.clone();
+            let scenario_key = format!("pty:{}:{}:{}", original.0.len(), original.0, original.2);
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    scenario_key.clone(),
+                    original.3.clone(),
+                    now
+                )
+                .is_ok());
+            let hooks = MailboxTestHooks::default();
+            let poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+            let mut engine = Box::pin(poller.dispatch_pty_input_operation(
+                &app,
+                &state,
+                &injection_id,
+                crate::phone::types::PtyInputSourcePlane::HostCli,
+                None,
+            ));
+            if shutdown_after_start {
+                let waker = std::task::Waker::noop();
+                let mut context = std::task::Context::from_waker(waker);
+                assert!(matches!(
+                    std::future::Future::poll(engine.as_mut(), &mut context),
+                    std::task::Poll::Pending
+                ));
+                app.state::<crate::shutdown::ShutdownSignal>().trigger();
+            }
+            tokio::time::timeout(Duration::from_secs(10), engine)
+                .await
+                .expect("engine must finish; timeout is failure");
+            assert_eq!(state.target_gate.as_ref().unwrap().exact_entry_count(), 0);
+            drop(held_permit);
+            // Phase1 durable snapshot precedes synthetic counter diagnostic.
+            let preserved = conn.query_row("SELECT sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, String>(5)?))).unwrap();
+            assert_eq!(
+                (&preserved.0, &preserved.1, &preserved.2, &preserved.3),
+                (&original.0, &original.1, &original.2, &original.3)
+            );
+            assert_eq!(tracker.generation(target_id), Some(member.generation));
+            assert!(!tracker.target_is_closing(&scenario_target));
+            if shutdown_after_start {
+                assert!(matches!(
+                    preserved.5.as_str(),
+                    "queued" | "preparing" | "retry" | "actuating"
+                ));
+                assert_eq!(preserved.4, original.4);
+                assert!(tracker
+                    .reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        scenario_key.clone(),
+                        original.3.clone(),
+                        now
+                    )
+                    .is_ok());
+                assert!(shared_engine_writes(&app, target_id).is_empty());
+            } else {
+                assert_eq!(preserved.5, "injected");
+                assert_eq!(
+                    shared_engine_writes(&app, target_id),
+                    vec![
+                        b"one-poll durable body".to_vec(),
+                        b"\r".to_vec(),
+                        b"\r".to_vec()
+                    ]
+                );
+                assert!(matches!(
+                    tracker.reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        scenario_key.clone(),
+                        original.3.clone(),
+                        now
+                    ),
+                    Err(crate::pty::manager::ResponseCloseError::Conflict)
+                ));
+            }
+            assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+            assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+            let preservation_snapshot = preserved.clone();
+            assert_eq!(preservation_snapshot.1, scenario_target);
+            // Same facts/generation after ordinary engine changes; no counter resets.
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            tracker.publish_manager_row(
+                member.session_id,
+                member.token,
+                member.generation,
+                member.carrier_version,
+                true,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(member.clone(), true, false, now);
+            tracker.publish_manager_row(
+                coordinator.session_id,
+                coordinator.token,
+                coordinator.generation,
+                coordinator.carrier_version,
+                false,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(coordinator.clone(), false, false, now);
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+
+            // Phase 2: synthetic TEST-LOCAL discharge ONLY. This does not prove FS/SQL
+            // terminalization, peer submission, or P05 proof. Phase 1 alone proves retention.
+            assert_eq!(member.target, scenario_target);
+            assert!(!tracker.target_is_closing(&scenario_target));
+            tracker.settle_terminal(&scenario_target, &scenario_key, std::time::Instant::now());
+            // A leaked dispatch/provisional counter is not changed by settle_terminal.
+            // Each fresh probe uses the SAME tracker, target, generation and facts.
+            for sensitivity in 0..5 {
+                let dispatch = if sensitivity == 1 {
+                    Some(tracker.begin_delivery(&scenario_target).unwrap())
+                } else {
+                    None
+                };
+                let provisional = if sensitivity == 3 {
+                    Some(
+                        tracker
+                            .reserve_work(
+                                &scenario_target,
+                                &format!("diagnostic-held-{}", Uuid::new_v4()),
+                            )
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                };
+                let probe_key = format!("diagnostic-request-{}", Uuid::new_v4());
+                let probe_digest = "diagnostic-body";
+                let mut admission = tracker.reserve_work(&scenario_target, &probe_key).unwrap();
+                assert_eq!(admission.accept_durable(probe_digest), Ok(true));
+                drop(admission);
+                let probe_at =
+                    std::time::Instant::now() + Duration::from_secs(7200 + sensitivity * 60);
+                let context = tracker
+                    .reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        probe_key.clone(),
+                        probe_digest.into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                // Unit-returning API; successful register below validates submitted=true.
+                tracker.mark_request_submitted(&context, true);
+                let registered = tracker.register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: member.carrier_version,
+                    },
+                    probe_at,
+                );
+                if sensitivity == 3 {
+                    assert!(
+                        registered.is_err(),
+                        "retained real provisional admission must be detected"
+                    );
+                    tracker.settle_terminal(&scenario_target, &probe_key, probe_at);
+                    drop(provisional);
+                    drop(dispatch);
+                    continue;
+                }
+                registered.unwrap();
+                let context = tracker
+                    .admit_return(
+                        &member,
+                        &coordinator,
+                        format!("diagnostic-return-{}", Uuid::new_v4()),
+                        "diagnostic-return-body".into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                tracker
+                    .observe_return_success(ReturnDeliveryProof { context }, probe_at)
+                    .unwrap();
+                let ticket =
+                    tracker.select_ticket(member.session_id, probe_at + Duration::from_secs(30));
+                if sensitivity == 1 {
+                    assert!(
+                        ticket.is_err(),
+                        "retained real SAME-target dispatch must be detected"
+                    );
+                } else {
+                    assert!(ticket.is_ok(), "same-object final success proves dispatch/provisional/writer counters zero");
+                }
+                drop(dispatch);
+                drop(provisional);
+            }
+
+            // Diagnostic leaves the phase1 SQL snapshot byte-identical.
+            let after = conn.query_row("SELECT sender_fqn,target_fqn,op_id,request_fingerprint,payload,status FROM pty_input_operations WHERE injection_id=?1", [&injection_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<Vec<u8>>>(4)?, row.get::<_, String>(5)?))).unwrap();
+            assert_eq!(after, preservation_snapshot);
+        }
     }
 
     #[tokio::test]
@@ -20362,6 +21481,7 @@ mod tests {
         ] {
             let fixture = make_mailbox_fixture();
             let app = app_handle(&fixture.app);
+            assert!(app.manage(crate::pty::manager::ResponseCloseState::default()));
             write_raise_hand_task_title(&fixture.sender_cwd, "Build the feature");
             let msg_id = format!("msg-rh-bad-token-{idx}");
             let rid = format!("rid-rh-bad-token-{idx}");
@@ -20381,7 +21501,92 @@ mod tests {
                 read_response_json(&fixture.sender_cwd, &rid).is_none(),
                 "bad token must not be converted into a false response"
             );
+            assert!(poller.response_sources.lock().unwrap().is_empty());
         }
+        // D: a real session token crosses the full validation/deferred handoff.
+        let fixture = make_mailbox_fixture();
+        let app = app_handle(&fixture.app);
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        assert!(app.manage(tracker.clone()));
+        let (_, token) =
+            seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running).await;
+        app.state::<SettingsState>()
+            .write()
+            .await
+            .project_paths
+            .push(fixture.sender_cwd.to_string_lossy().to_string());
+        let path = write_wake_message(
+            &fixture.sender_cwd,
+            "valid-token-deferred",
+            "2026-07-15T00:00:03+00:00",
+        );
+        let mut message = wake_message_to_target();
+        message.id = "valid-token-deferred".into();
+        message.token = Some(token.to_string());
+        let content = serde_json::to_string_pretty(&message).unwrap();
+        std::fs::write(&path, &content).unwrap();
+        let hooks = MailboxTestHooks::default();
+        let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        let mut slot = None;
+        poller
+            .process_message_content(
+                &app,
+                &path,
+                OutboxOrigin::Replica,
+                &content,
+                Some(&mut slot),
+            )
+            .await
+            .unwrap();
+        let validated = slot.expect("valid authenticated envelope reaches deferred slot");
+        assert_eq!(
+            validated.message.token.as_deref(),
+            Some(token.to_string().as_str())
+        );
+        let work = validated
+            .response
+            .as_ref()
+            .expect("validated carrier retains admission")
+            .clone();
+        assert!(work.state.same_state(&tracker));
+        assert_eq!(work.target, validated.message.to);
+        assert_eq!(
+            work.key,
+            format!("fs:{}:{}", path.to_string_lossy(), message.id)
+        );
+        assert_eq!(
+            work.digest,
+            crate::phone::types::sha256_hex(content.as_bytes())
+        );
+        assert!(work.delivery_context.is_none());
+        {
+            let sources = poller.response_sources.lock().unwrap();
+            let retained = &sources[&path];
+            assert!(retained.state.same_state(&work.state));
+            assert_eq!(
+                (&retained.target, &retained.key, &retained.digest),
+                (&work.target, &work.key, &work.digest)
+            );
+            assert!(retained.delivery_context.is_none());
+        }
+        poller.live_claims.insert(wake_claim_path(&path));
+        assert!(matches!(
+            poller.claim_and_spawn_validated_wake(&app, &path, validated),
+            WakeHandoff::LaneBusy
+        ));
+        let sources = poller.response_sources.lock().unwrap();
+        let retained = &sources[&path];
+        assert!(retained.state.same_state(&tracker));
+        assert_eq!(
+            (&retained.target, &retained.key, &retained.digest),
+            (&work.target, &work.key, &work.digest)
+        );
+        assert!(retained.delivery_context.is_none());
+        assert!(path.exists());
+        assert!(!wake_claim_path(&path).exists());
+        assert_eq!(poller.wake_workers.len(), 0);
+        assert_eq!(poller.wake_lanes.len(), 0);
+        assert!(hooks.spawn_calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -26778,6 +27983,56 @@ mod tests {
         );
     }
 
+    fn assert_reclaimed_response_work(
+        poller: &MailboxPoller,
+        tracker: &crate::pty::manager::ResponseCloseState,
+        member: &crate::pty::manager::ResponseRouteIdentity,
+        coordinator: &crate::pty::manager::ResponseRouteIdentity,
+        now: std::time::Instant,
+        cases: [(&PathBuf, bool); 4],
+    ) {
+        for (claim, retained) in cases {
+            let origin = wake_claim_origin(claim).unwrap();
+            let key = format!("fs:{}", origin.display());
+            let digest = crate::phone::types::sha256_hex(b"{}");
+            let candidate = tracker.reserve_policy_candidate(
+                member.clone(),
+                coordinator.clone(),
+                key.clone(),
+                digest.clone(),
+                now,
+            );
+            if retained {
+                assert!(
+                    candidate.is_ok(),
+                    "restored/live work remains pending with exact digest"
+                );
+                let sources = poller.response_sources.lock().unwrap();
+                let work = &sources[&origin];
+                assert!(work.state.same_state(tracker));
+                assert_eq!(work.target, member.target);
+                assert_eq!(work.key, key);
+                assert_eq!(work.digest, digest);
+                assert!(work.delivery_context.is_none());
+                assert!(work.return_context.is_none());
+            } else {
+                assert!(matches!(
+                    candidate,
+                    Err(crate::pty::manager::ResponseCloseError::Conflict)
+                ));
+                assert!(!poller
+                    .response_sources
+                    .lock()
+                    .unwrap()
+                    .contains_key(&origin));
+            }
+            // Receipt recovery never fabricates an ordinary return-success proof.
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
+        }
+    }
+
     /// (#1399 T3) Reclamation, all four branches: an unowned claim with no
     /// receipt is returned; a claim whose receipt exists is deleted without
     /// recreating the message (the no-double-delivery assertion, for both
@@ -26808,6 +28063,128 @@ mod tests {
             live.clone(),
         ];
 
+        // C: the same healthy tracker backs all four existing reclaim cases.
+        use crate::pty::manager::{
+            ResponseClosePublisher, ResponseCloseState, ResponseRouteIdentity,
+        };
+        let now = std::time::Instant::now() + Duration::from_secs(3600);
+        let tracker = ResponseCloseState::default();
+        for publisher in [
+            ResponseClosePublisher::Manager,
+            ResponseClosePublisher::Pty,
+            ResponseClosePublisher::RawOutput,
+            ResponseClosePublisher::Detector,
+            ResponseClosePublisher::Menu,
+            ResponseClosePublisher::Hold,
+        ] {
+            tracker.bind_publisher(publisher);
+        }
+        tracker.mark_work_bootstrapped();
+        tracker.try_enable_readiness().unwrap();
+        tracker.apply_settings(true, 30, now);
+        let member = ResponseRouteIdentity {
+            target: "project:room/member".into(),
+            session_id: Uuid::new_v4(),
+            token: Uuid::new_v4(),
+            generation: 1,
+            carrier_version: 1,
+            backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+        };
+        let coordinator = ResponseRouteIdentity {
+            target: "project:room/coordinator".into(),
+            session_id: Uuid::new_v4(),
+            token: Uuid::new_v4(),
+            generation: 2,
+            ..member.clone()
+        };
+        for identity in [&member, &coordinator] {
+            tracker.register_route(identity.session_id, identity.generation, now);
+            tracker.publish_manager_row(
+                identity.session_id,
+                identity.token,
+                identity.generation,
+                identity.carrier_version,
+                true,
+                false,
+                now,
+            );
+            tracker.publish_manager_facts(identity.clone(), true, false, now);
+        }
+        tracker.observe_detector(member.session_id, false, now);
+        tracker.publish_menu(member.session_id, Some(false), now);
+        tracker.publish_hold(member.session_id, None, true, now);
+        // Positive control only: this healthy fixture can arm a real pure ticket.
+        // No receipt/reclaim branch receives or manufactures this success proof.
+        let mut positive = tracker
+            .reserve_work(&member.target, "positive-request")
+            .unwrap();
+        positive.accept_durable("positive-body").unwrap();
+        drop(positive);
+        let context = tracker
+            .reserve_policy_candidate(
+                member.clone(),
+                coordinator.clone(),
+                "positive-request".into(),
+                "positive-body".into(),
+                now,
+            )
+            .unwrap();
+        tracker.mark_request_submitted(&context, true);
+        tracker
+            .register_request(
+                crate::pty::manager::ResponseDeliveryProof {
+                    context,
+                    member: member.clone(),
+                    coordinator: coordinator.clone(),
+                    published_carrier_version: member.carrier_version,
+                },
+                now,
+            )
+            .unwrap();
+        let context = tracker
+            .admit_return(
+                &member,
+                &coordinator,
+                "positive-return".into(),
+                "positive-return-body".into(),
+                now,
+            )
+            .unwrap();
+        tracker
+            .observe_return_success(crate::pty::manager::ReturnDeliveryProof { context }, now)
+            .unwrap();
+        assert!(tracker
+            .select_ticket(member.session_id, now + Duration::from_secs(30))
+            .is_ok());
+        for claim in &claims {
+            let origin = wake_claim_origin(claim).unwrap();
+            let key = format!("fs:{}", origin.display());
+            let digest = crate::phone::types::sha256_hex(std::fs::read(claim).unwrap().as_slice());
+            let mut admission = tracker.reserve_work(&member.target, &key).unwrap();
+            admission.accept_durable(&digest).unwrap();
+            drop(admission);
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    key.clone(),
+                    digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller.response_sources.lock().unwrap().insert(
+                origin,
+                ResponseWakeWork {
+                    state: tracker.clone(),
+                    target: member.target.clone(),
+                    key,
+                    digest,
+                    return_context: None,
+                    delivery_context: None,
+                },
+            );
+        }
+
         poller.reclaim_unowned_wake_claims(&outbox, &claims);
 
         assert!(!unowned.exists());
@@ -26818,6 +28195,19 @@ mod tests {
         assert!(!outbox.join("m-rejected.json").exists());
         assert!(live.exists());
         assert!(!outbox.join("m-live.json").exists());
+        assert_reclaimed_response_work(
+            &poller,
+            &tracker,
+            &member,
+            &coordinator,
+            now,
+            [
+                (&unowned, true),
+                (&delivered, false),
+                (&rejected, false),
+                (&live, true),
+            ],
+        );
     }
 
     /// (#1399 T4) The sort key is send time, not filename: an earlier timestamp
@@ -26986,10 +28376,12 @@ mod tests {
     /// undrained: `claim_and_spawn_wake` refuses, spawns nothing, and leaves
     /// the file untouched. Without the guard this returns Spawned and lands a
     /// second attempt inside one cycle.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn claim_and_spawn_refuses_while_the_previous_outcome_is_undrained() {
         let fixture = make_mailbox_fixture();
         let app = app_handle(&fixture.app);
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        assert!(app.manage(tracker.clone()));
         let hooks = MailboxTestHooks::default();
         let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
         let source = write_wake_message(
@@ -26997,6 +28389,15 @@ mod tests {
             "undrained-outcome",
             "2026-07-15T00:00:01+00:00",
         );
+        let message = wake_message_to_target();
+        let admitted = poller
+            .admit_response_source(&app, &source, &message, true, "authenticated body")
+            .await
+            .unwrap();
+        assert!(admitted.state.same_state(&tracker));
+        assert!(admitted.delivery_context.is_none());
+        let retained_key = admitted.key.clone();
+        let retained_digest = admitted.digest.clone();
         poller.live_claims.insert(wake_claim_path(&source));
 
         let handoff = poller.claim_and_spawn_wake(&app, &source, wake_message_to_target());
@@ -27007,6 +28408,12 @@ mod tests {
         assert!(source.exists());
         assert!(!wake_claim_path(&source).exists());
         assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+        {
+            let sources = poller.response_sources.lock().unwrap();
+            assert_eq!(sources[&source].key, retained_key);
+            assert_eq!(sources[&source].digest, retained_digest);
+            assert!(sources[&source].delivery_context.is_none());
+        }
 
         let capped_hooks = MailboxTestHooks::default();
         let mut capped_poller = MailboxPoller::new_with_test_hooks(capped_hooks.clone());
@@ -27032,12 +28439,442 @@ mod tests {
         assert!(capped_source.exists());
         assert!(!wake_claim_path(&capped_source).exists());
         assert!(capped_hooks.spawn_calls.lock().unwrap().is_empty());
+        // F: current-thread pre-poll cancellation; recovery is composition with C.
+        for cancelled in [true, false] {
+            let fixture = make_mailbox_fixture();
+            let app = app_handle(&fixture.app);
+            let session_id = add_mailbox_session_with_shell(
+                &app,
+                &fixture.target_cwd,
+                "wake-cancel",
+                "codex",
+                SessionStatus::Idle,
+            )
+            .await;
+
+            use crate::pty::manager::{
+                ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof,
+                ResponseRouteIdentity, ReturnDeliveryProof,
+            };
+            let tracker = ResponseCloseState::default();
+            assert!(app.manage(tracker.clone()));
+            let (coordinator_id, coordinator_token) =
+                seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running)
+                    .await;
+            let manager = {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = state.read().await;
+                guard.clone()
+            };
+            let target_row = manager.get_session(session_id).await.unwrap();
+            let member = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_TO.into(),
+                session_id,
+                token: target_row.token,
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_FROM.into(),
+                session_id: coordinator_id,
+                token: coordinator_token,
+                generation: 2,
+                ..member.clone()
+            };
+
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            tracker.apply_settings(true, 30, now);
+            for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+                tracker.register_route(identity.session_id, identity.generation, now);
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    identity.carrier_version,
+                    eligible,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+            }
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+
+            let hooks = MailboxTestHooks::default();
+            hooks.pty_presence.lock().unwrap().insert(session_id, true);
+            hooks
+                .inject_results
+                .lock()
+                .unwrap()
+                .push_back(Err("transient non-cancel twin".into()));
+            app.state::<SettingsState>()
+                .write()
+                .await
+                .project_paths
+                .push(fixture.sender_cwd.to_string_lossy().to_string());
+            let source = write_wake_message(
+                &fixture.sender_cwd,
+                "pre-poll-cancel",
+                "2026-07-15T00:00:04+00:00",
+            );
+            let content = std::fs::read_to_string(&source).unwrap();
+            let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+            let mut slot = None;
+            poller
+                .process_message_content(
+                    &app,
+                    &source,
+                    OutboxOrigin::Replica,
+                    &content,
+                    Some(&mut slot),
+                )
+                .await
+                .unwrap();
+            let validated = slot.unwrap();
+            let original = validated.response.as_ref().unwrap().clone();
+            assert_eq!(original.target, member.target);
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    original.key.clone(),
+                    original.digest.clone(),
+                    now
+                )
+                .is_ok());
+            assert!(matches!(
+                poller.claim_and_spawn_validated_wake(&app, &source, validated),
+                WakeHandoff::Spawned
+            ));
+            if cancelled {
+                poller.wake_workers.abort_all();
+            }
+            // First yield after abort; report construction lives inside the unpolled future.
+            poller.settle_wake_workers().await;
+            if cancelled {
+                assert!(!source.exists());
+                assert!(wake_claim_path(&source).is_file());
+                assert!(poller.live_claims.contains(&wake_claim_path(&source)));
+                assert!(!poller.retry_tracker.contains_key(&source));
+                assert!(hooks.inject_calls.lock().unwrap().is_empty());
+            } else {
+                assert!(source.is_file());
+                assert!(!wake_claim_path(&source).exists());
+                assert!(poller.live_claims.is_empty());
+                assert_eq!(
+                    poller
+                        .retry_tracker
+                        .get(&source)
+                        .map(|state| state.attempt_count),
+                    Some(1)
+                );
+                assert_eq!(hooks.inject_calls.lock().unwrap().as_slice(), &[session_id]);
+            }
+
+            // Phase 1: preservation before synthetic discharge. Exact pending proves
+            // that the scenario target has a work entry; no counters are inferred here.
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&source)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(
+                (&retained.target, &retained.key, &retained.digest),
+                (&original.target, &original.key, &original.digest)
+            );
+            assert_eq!(member.target, retained.target);
+            assert!(retained.delivery_context.is_none());
+            assert!(retained.return_context.is_none());
+            assert!(!tracker.target_is_closing(&member.target));
+            assert_eq!(
+                tracker.generation(member.session_id),
+                Some(member.generation)
+            );
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    original.key.clone(),
+                    original.digest.clone(),
+                    now
+                )
+                .is_ok());
+            let snapshot_path = if source.exists() {
+                source.clone()
+            } else {
+                wake_claim_path(&source)
+            };
+            let preservation_snapshot = (
+                retained.target.clone(),
+                retained.key.clone(),
+                retained.digest.clone(),
+                std::fs::read(snapshot_path).unwrap(),
+            );
+            assert_eq!(preservation_snapshot.3, content.as_bytes());
+            assert_eq!(poller.wake_workers.len(), 0);
+            assert_eq!(poller.wake_lanes.len(), 0);
+            assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+            assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+
+            let scenario_target = original.target.clone();
+            let scenario_key = original.key.clone();
+
+            // Phase 2: synthetic TEST-LOCAL discharge ONLY. This does not prove FS/SQL
+            // terminalization, peer submission, or P05 proof. Phase 1 alone proves retention.
+            assert_eq!(member.target, scenario_target);
+            assert!(!tracker.target_is_closing(&scenario_target));
+            tracker.settle_terminal(&scenario_target, &scenario_key, std::time::Instant::now());
+            // A leaked dispatch/provisional counter is not changed by settle_terminal.
+            // Each fresh probe uses the SAME tracker, target, generation and facts.
+            for sensitivity in 0..5 {
+                let dispatch = if sensitivity == 1 {
+                    Some(tracker.begin_delivery(&scenario_target).unwrap())
+                } else {
+                    None
+                };
+                let provisional = if sensitivity == 3 {
+                    Some(
+                        tracker
+                            .reserve_work(
+                                &scenario_target,
+                                &format!("diagnostic-held-{}", Uuid::new_v4()),
+                            )
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                };
+                let probe_key = format!("diagnostic-request-{}", Uuid::new_v4());
+                let probe_digest = "diagnostic-body";
+                let mut admission = tracker.reserve_work(&scenario_target, &probe_key).unwrap();
+                assert_eq!(admission.accept_durable(probe_digest), Ok(true));
+                drop(admission);
+                let probe_at =
+                    std::time::Instant::now() + Duration::from_secs(7200 + sensitivity * 60);
+                let context = tracker
+                    .reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        probe_key.clone(),
+                        probe_digest.into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                // Unit-returning API; successful register below validates submitted=true.
+                tracker.mark_request_submitted(&context, true);
+                let registered = tracker.register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: member.carrier_version,
+                    },
+                    probe_at,
+                );
+                if sensitivity == 3 {
+                    assert!(
+                        registered.is_err(),
+                        "retained real provisional admission must be detected"
+                    );
+                    tracker.settle_terminal(&scenario_target, &probe_key, probe_at);
+                    drop(provisional);
+                    drop(dispatch);
+                    continue;
+                }
+                registered.unwrap();
+                let context = tracker
+                    .admit_return(
+                        &member,
+                        &coordinator,
+                        format!("diagnostic-return-{}", Uuid::new_v4()),
+                        "diagnostic-return-body".into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                tracker
+                    .observe_return_success(ReturnDeliveryProof { context }, probe_at)
+                    .unwrap();
+                let ticket =
+                    tracker.select_ticket(member.session_id, probe_at + Duration::from_secs(30));
+                if sensitivity == 1 {
+                    assert!(
+                        ticket.is_err(),
+                        "retained real SAME-target dispatch must be detected"
+                    );
+                } else {
+                    assert!(ticket.is_ok(), "same-object final success proves dispatch/provisional/writer counters zero");
+                }
+                drop(dispatch);
+                drop(provisional);
+            }
+            // Synthetic tracker discharge leaves phase1 association/disk intact.
+            let retained_after = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&source)
+                .unwrap()
+                .clone();
+            assert!(retained_after.state.same_state(&tracker));
+            assert_eq!(
+                (
+                    retained_after.target,
+                    retained_after.key,
+                    retained_after.digest
+                ),
+                (
+                    preservation_snapshot.0,
+                    preservation_snapshot.1,
+                    preservation_snapshot.2
+                )
+            );
+            assert!(retained_after.delivery_context.is_none());
+            assert!(retained_after.return_context.is_none());
+            let path_after = if source.exists() {
+                source.clone()
+            } else {
+                wake_claim_path(&source)
+            };
+            assert_eq!(std::fs::read(path_after).unwrap(), preservation_snapshot.3);
+        }
     }
 
     /// (#1399 T7 / G4) The shared drain settles the full owned disk-state
     /// matrix directly and requeues each failed settlement exactly once.
     #[tokio::test]
     async fn owned_outcome_drain_settles_or_requeues_every_disk_state() {
+        let now = std::time::Instant::now() + Duration::from_secs(3600);
+        let prepare = || {
+            use crate::pty::manager::{
+                ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof,
+                ResponseRouteIdentity,
+            };
+            let tracker = ResponseCloseState::default();
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            tracker.apply_settings(true, 30, now);
+            let member = ResponseRouteIdentity {
+                target: "project:room/member".into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: "project:room/coordinator".into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 2,
+                ..member.clone()
+            };
+            for identity in [&member, &coordinator] {
+                tracker.register_route(identity.session_id, identity.generation, now);
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    1,
+                    true,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), true, false, now);
+            }
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+            let mut request = tracker.reserve_work(&member.target, "request").unwrap();
+            request.accept_durable("request-body").unwrap();
+            drop(request);
+            let context = tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    "request".into(),
+                    "request-body".into(),
+                    now,
+                )
+                .unwrap();
+            tracker.mark_request_submitted(&context, true);
+            tracker
+                .register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: 1,
+                    },
+                    now,
+                )
+                .unwrap();
+            let return_context = tracker
+                .admit_return(
+                    &member,
+                    &coordinator,
+                    "return".into(),
+                    "return-body".into(),
+                    now,
+                )
+                .unwrap();
+            let mut admission = tracker.reserve_work(&coordinator.target, "fs-key").unwrap();
+            assert_eq!(admission.accept_durable("fs-body"), Ok(true));
+            drop(admission);
+            let work = ResponseWakeWork {
+                state: tracker.clone(),
+                target: coordinator.target.clone(),
+                key: "fs-key".into(),
+                digest: "fs-body".into(),
+                return_context: Some(return_context),
+                delivery_context: None,
+            };
+            (tracker, member, coordinator, work)
+        };
+        // Positive twin: the same armable policy observes actual pure completion.
+        let (positive, member, _, work) = prepare();
+        let positive_poller = MailboxPoller::new();
+        let positive_path = PathBuf::from("positive.json");
+        positive_poller
+            .response_sources
+            .lock()
+            .unwrap()
+            .insert(positive_path.clone(), work);
+        positive_poller.settle_response_source(&positive_path, true);
+        assert!(positive
+            .select_ticket(member.session_id, now + Duration::from_secs(60))
+            .is_ok());
+
         // Restore succeeds: the origin is actionable before the Err is counted.
         {
             let temp = tempfile::TempDir::new().unwrap();
@@ -27047,6 +28884,21 @@ mod tests {
             let claim = wake_claim_path(&origin);
             std::fs::write(&claim, "{}").unwrap();
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             assert!(poller.live_claims.insert(claim.clone()));
             poller
                 .wake_outcomes_tx
@@ -27054,6 +28906,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(!claim.exists());
             assert!(origin.exists());
@@ -27083,6 +28967,21 @@ mod tests {
             std::fs::write(&claim, "{}").unwrap();
             std::fs::write(&receipt, "{}").unwrap();
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             poller.retry_tracker.insert(
                 origin.clone(),
                 RetryState {
@@ -27097,6 +28996,25 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(!poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(matches!(
+                pending,
+                Err(crate::pty::manager::ResponseCloseError::Conflict)
+            ));
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(receipt.exists());
             assert!(!claim.exists());
@@ -27106,6 +29024,82 @@ mod tests {
             assert!(!outbox
                 .join("rejected")
                 .join("claim-with-receipt.json")
+                .exists());
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+
+        // Claim plus receipt is authoritative and clears existing retry state.
+        {
+            let temp = tempfile::TempDir::new().unwrap();
+            let outbox = temp.path().join("outbox");
+            let rejected_dir = outbox.join("rejected");
+            std::fs::create_dir_all(&rejected_dir).unwrap();
+            let origin = outbox.join("claim-with-rejected-receipt.json");
+            let claim = wake_claim_path(&origin);
+            let receipt = rejected_dir.join("claim-with-rejected-receipt.json");
+            std::fs::write(&claim, "{}").unwrap();
+            std::fs::write(&receipt, "{}").unwrap();
+            let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
+            poller.retry_tracker.insert(
+                origin.clone(),
+                RetryState {
+                    attempt_count: 4,
+                    logged: true,
+                },
+            );
+            assert!(poller.live_claims.insert(claim.clone()));
+            poller
+                .wake_outcomes_tx
+                .send((origin.clone(), Err("receipt wins".to_string())))
+                .unwrap();
+
+            poller.drain_wake_outcomes().await;
+            assert!(!poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(matches!(
+                pending,
+                Err(crate::pty::manager::ResponseCloseError::Conflict)
+            ));
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
+
+            assert!(receipt.exists());
+            assert!(!claim.exists());
+            assert!(!origin.exists());
+            assert!(poller.live_claims.is_empty());
+            assert!(!poller.retry_tracker.contains_key(&origin));
+            assert!(!outbox
+                .join("delivered")
+                .join("claim-with-rejected-receipt.json")
                 .exists());
             assert!(matches!(
                 poller.wake_outcomes_rx.try_recv(),
@@ -27126,6 +29120,21 @@ mod tests {
             std::fs::write(&origin, "{}").unwrap();
             std::fs::write(&receipt, "{}").unwrap();
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             assert!(poller.live_claims.insert(claim.clone()));
             poller
                 .wake_outcomes_tx
@@ -27133,6 +29142,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(origin.exists());
             assert!(receipt.exists());
@@ -27166,6 +29207,21 @@ mod tests {
             std::fs::write(&claim, "{}").unwrap();
             let outcome = Err("restore remains pending".to_string());
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             poller.retry_tracker.insert(
                 origin.clone(),
                 RetryState {
@@ -27180,6 +29236,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(claim.is_file());
             assert!(origin.is_dir());
@@ -27210,6 +29298,21 @@ mod tests {
             std::fs::write(&receipt, "{}").unwrap();
             let outcome = Err("delete remains pending".to_string());
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             poller.retry_tracker.insert(
                 origin.clone(),
                 RetryState {
@@ -27224,6 +29327,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(claim.is_dir());
             assert!(receipt.exists());
@@ -27253,6 +29388,21 @@ mod tests {
             assert!(wake_claim_has_settled_receipt(&origin).is_err());
             let outcome = Err("observation remains pending".to_string());
             let mut poller = MailboxPoller::new();
+            let (tracker, member, coordinator, work) = prepare();
+            assert!(tracker
+                .reserve_policy_candidate(
+                    coordinator.clone(),
+                    member.clone(),
+                    work.key.clone(),
+                    work.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .insert(origin.clone(), work);
             poller.retry_tracker.insert(
                 origin.clone(),
                 RetryState {
@@ -27267,6 +29417,38 @@ mod tests {
                 .unwrap();
 
             poller.drain_wake_outcomes().await;
+            assert!(poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .contains_key(&origin));
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&origin)
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(retained.target, coordinator.target);
+            assert_eq!(retained.key, "fs-key");
+            assert_eq!(retained.digest, "fs-body");
+            assert!(retained.delivery_context.is_none());
+            tracker
+                .settle_return_terminal(retained.return_context.as_ref().unwrap(), now)
+                .unwrap();
+
+            let pending = tracker.reserve_policy_candidate(
+                coordinator.clone(),
+                member.clone(),
+                "fs-key".into(),
+                "fs-body".into(),
+                now,
+            );
+            assert!(pending.is_ok());
+            assert!(tracker
+                .select_ticket(member.session_id, now + Duration::from_secs(60))
+                .is_err());
 
             assert!(poller.live_claims.contains(&claim));
             let state = poller.retry_tracker.get(&origin).unwrap();
@@ -27289,47 +29471,316 @@ mod tests {
     /// the claim stays owned forever and reclamation skips it on every cycle.
     #[tokio::test]
     async fn panicking_worker_reports_through_the_guard_and_frees_the_ledger() {
-        let fixture = make_mailbox_fixture();
-        let app = app_handle(&fixture.app);
-        let session_id = add_mailbox_session_with_shell(
-            &app,
-            &fixture.target_cwd,
-            "wake-panic",
-            "codex",
-            SessionStatus::Idle,
-        )
-        .await;
-        let hooks = MailboxTestHooks::default();
-        hooks.pty_presence.lock().unwrap().insert(session_id, true);
-        hooks.panic_on_inject.lock().unwrap().insert(session_id);
-        {
-            let settings = app.state::<SettingsState>();
-            settings
-                .write()
-                .await
-                .project_paths
-                .push(fixture.sender_cwd.to_string_lossy().to_string());
-        }
-        let source = write_wake_message(
-            &fixture.sender_cwd,
-            "panicking-wake",
-            "2026-07-15T00:00:01+00:00",
-        );
-        let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+        for panic in [true, false] {
+            let fixture = make_mailbox_fixture();
+            let app = app_handle(&fixture.app);
+            let session_id = add_mailbox_session_with_shell(
+                &app,
+                &fixture.target_cwd,
+                "wake-panic",
+                "codex",
+                SessionStatus::Idle,
+            )
+            .await;
+            let hooks = MailboxTestHooks::default();
+            hooks.pty_presence.lock().unwrap().insert(session_id, true);
+            if panic {
+                hooks.panic_on_inject.lock().unwrap().insert(session_id);
+            }
+            hooks
+                .inject_results
+                .lock()
+                .unwrap()
+                .push_back(Err("transient twin failure".into()));
 
-        poller.poll(&app).await.unwrap();
-        poller.settle_wake_workers().await;
+            use crate::pty::manager::{
+                ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof,
+                ResponseRouteIdentity, ReturnDeliveryProof,
+            };
+            let tracker = ResponseCloseState::default();
+            assert!(app.manage(tracker.clone()));
+            let (coordinator_id, coordinator_token) =
+                seed_raise_hand_session(&app, &fixture.sender_cwd, true, SessionStatus::Running)
+                    .await;
+            let manager = {
+                let state = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let guard = state.read().await;
+                guard.clone()
+            };
+            let target_row = manager.get_session(session_id).await.unwrap();
+            let member = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_TO.into(),
+                session_id,
+                token: target_row.token,
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: CANONICAL_WAKE_FROM.into(),
+                session_id: coordinator_id,
+                token: coordinator_token,
+                generation: 2,
+                ..member.clone()
+            };
 
-        assert!(poller.live_claims.is_empty());
-        assert_eq!(
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            tracker.apply_settings(true, 30, now);
+            for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+                tracker.register_route(identity.session_id, identity.generation, now);
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    identity.carrier_version,
+                    eligible,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+            }
+            tracker.observe_detector(member.session_id, false, now);
+            tracker.publish_menu(member.session_id, Some(false), now);
+            tracker.publish_hold(member.session_id, None, true, now);
+
+            {
+                let settings = app.state::<SettingsState>();
+                settings
+                    .write()
+                    .await
+                    .project_paths
+                    .push(fixture.sender_cwd.to_string_lossy().to_string());
+            }
+            let source = write_wake_message(
+                &fixture.sender_cwd,
+                "panicking-wake",
+                "2026-07-15T00:00:01+00:00",
+            );
+            let mut poller = MailboxPoller::new_with_test_hooks(hooks.clone());
+
+            let content = std::fs::read_to_string(&source).unwrap();
+            let mut slot = None;
             poller
-                .retry_tracker
+                .process_message_content(
+                    &app,
+                    &source,
+                    OutboxOrigin::Replica,
+                    &content,
+                    Some(&mut slot),
+                )
+                .await
+                .unwrap();
+            let validated = slot.unwrap();
+            let original = validated.response.unwrap();
+            assert!(original.state.same_state(&tracker));
+            assert_eq!(original.target, member.target);
+            assert!(original.delivery_context.is_none());
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    original.key.clone(),
+                    original.digest.clone(),
+                    now
+                )
+                .is_ok());
+            poller.poll(&app).await.unwrap();
+            poller.settle_wake_workers().await;
+
+            assert!(poller.live_claims.is_empty());
+            assert_eq!(
+                poller
+                    .retry_tracker
+                    .get(&source)
+                    .map(|state| state.attempt_count),
+                Some(1)
+            );
+            assert!(!wake_claim_path(&source).exists());
+            assert!(source.exists());
+            // Phase 1: preservation before synthetic discharge. Exact pending proves
+            // that the scenario target has a work entry; no counters are inferred here.
+            let retained = poller
+                .response_sources
+                .lock()
+                .unwrap()
                 .get(&source)
-                .map(|state| state.attempt_count),
-            Some(1)
-        );
-        assert!(!wake_claim_path(&source).exists());
-        assert!(source.exists());
+                .unwrap()
+                .clone();
+            assert!(retained.state.same_state(&tracker));
+            assert_eq!(
+                (&retained.target, &retained.key, &retained.digest),
+                (&original.target, &original.key, &original.digest)
+            );
+            assert_eq!(member.target, retained.target);
+            assert!(retained.delivery_context.is_none());
+            assert!(retained.return_context.is_none());
+            assert!(!tracker.target_is_closing(&member.target));
+            assert_eq!(
+                tracker.generation(member.session_id),
+                Some(member.generation)
+            );
+            assert!(tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    original.key.clone(),
+                    original.digest.clone(),
+                    now
+                )
+                .is_ok());
+            let snapshot_path = if source.exists() {
+                source.clone()
+            } else {
+                wake_claim_path(&source)
+            };
+            let preservation_snapshot = (
+                retained.target.clone(),
+                retained.key.clone(),
+                retained.digest.clone(),
+                std::fs::read(snapshot_path).unwrap(),
+            );
+            assert_eq!(preservation_snapshot.3, content.as_bytes());
+            assert_eq!(poller.wake_workers.len(), 0);
+            assert_eq!(poller.wake_lanes.len(), 0);
+            assert!(hooks.spawn_calls.lock().unwrap().is_empty());
+            assert!(hooks.destroy_calls.lock().unwrap().is_empty());
+            assert!(matches!(
+                poller.wake_outcomes_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+            let scenario_target = original.target.clone();
+            let scenario_key = original.key.clone();
+
+            // Phase 2: synthetic TEST-LOCAL discharge ONLY. This does not prove FS/SQL
+            // terminalization, peer submission, or P05 proof. Phase 1 alone proves retention.
+            assert_eq!(member.target, scenario_target);
+            assert!(!tracker.target_is_closing(&scenario_target));
+            tracker.settle_terminal(&scenario_target, &scenario_key, std::time::Instant::now());
+            // A leaked dispatch/provisional counter is not changed by settle_terminal.
+            // Each fresh probe uses the SAME tracker, target, generation and facts.
+            for sensitivity in 0..5 {
+                let dispatch = if sensitivity == 1 {
+                    Some(tracker.begin_delivery(&scenario_target).unwrap())
+                } else {
+                    None
+                };
+                let provisional = if sensitivity == 3 {
+                    Some(
+                        tracker
+                            .reserve_work(
+                                &scenario_target,
+                                &format!("diagnostic-held-{}", Uuid::new_v4()),
+                            )
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                };
+                let probe_key = format!("diagnostic-request-{}", Uuid::new_v4());
+                let probe_digest = "diagnostic-body";
+                let mut admission = tracker.reserve_work(&scenario_target, &probe_key).unwrap();
+                assert_eq!(admission.accept_durable(probe_digest), Ok(true));
+                drop(admission);
+                let probe_at =
+                    std::time::Instant::now() + Duration::from_secs(7200 + sensitivity * 60);
+                let context = tracker
+                    .reserve_policy_candidate(
+                        member.clone(),
+                        coordinator.clone(),
+                        probe_key.clone(),
+                        probe_digest.into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                // Unit-returning API; successful register below validates submitted=true.
+                tracker.mark_request_submitted(&context, true);
+                let registered = tracker.register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: member.carrier_version,
+                    },
+                    probe_at,
+                );
+                if sensitivity == 3 {
+                    assert!(
+                        registered.is_err(),
+                        "retained real provisional admission must be detected"
+                    );
+                    tracker.settle_terminal(&scenario_target, &probe_key, probe_at);
+                    drop(provisional);
+                    drop(dispatch);
+                    continue;
+                }
+                registered.unwrap();
+                let context = tracker
+                    .admit_return(
+                        &member,
+                        &coordinator,
+                        format!("diagnostic-return-{}", Uuid::new_v4()),
+                        "diagnostic-return-body".into(),
+                        probe_at,
+                    )
+                    .unwrap();
+                tracker
+                    .observe_return_success(ReturnDeliveryProof { context }, probe_at)
+                    .unwrap();
+                let ticket =
+                    tracker.select_ticket(member.session_id, probe_at + Duration::from_secs(30));
+                if sensitivity == 1 {
+                    assert!(
+                        ticket.is_err(),
+                        "retained real SAME-target dispatch must be detected"
+                    );
+                } else {
+                    assert!(ticket.is_ok(), "same-object final success proves dispatch/provisional/writer counters zero");
+                }
+                drop(dispatch);
+                drop(provisional);
+            }
+            // Synthetic tracker discharge leaves phase1 association/disk intact.
+            let retained_after = poller
+                .response_sources
+                .lock()
+                .unwrap()
+                .get(&source)
+                .unwrap()
+                .clone();
+            assert!(retained_after.state.same_state(&tracker));
+            assert_eq!(
+                (
+                    retained_after.target,
+                    retained_after.key,
+                    retained_after.digest
+                ),
+                (
+                    preservation_snapshot.0,
+                    preservation_snapshot.1,
+                    preservation_snapshot.2
+                )
+            );
+            assert!(retained_after.delivery_context.is_none());
+            assert!(retained_after.return_context.is_none());
+            let path_after = if source.exists() {
+                source.clone()
+            } else {
+                wake_claim_path(&source)
+            };
+            assert_eq!(std::fs::read(path_after).unwrap(), preservation_snapshot.3);
+        }
     }
 
     /// (#1399 T12) A real Windows exclusive directory handle makes production

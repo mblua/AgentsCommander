@@ -31,6 +31,734 @@ use crate::config::settings::{
 };
 use crate::pty::backend::SessionBackendKind;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum IdentityTransitionReadState {
+    NotFound,
+    IntentStored,
+    Prepared,
+    RefPending,
+    Conflict,
+    Complete,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct IdentityTransitionRead {
+    pub(crate) state: IdentityTransitionReadState,
+    pub(crate) operation_id: Option<String>,
+    pub(crate) status: crate::config::settings::SourceTransitionStatus,
+    pub(crate) active: bool,
+}
+
+/// Read-only stable observation; never consolidates an equivalent source after.
+#[allow(dead_code)]
+pub(crate) fn get_identity_transition(
+    context: &crate::config::settings::SourceReadContext,
+    source: &crate::config::settings::SourceRef,
+    operation_id: &str,
+) -> Result<IdentityTransitionRead, crate::config::settings::SourceCoordinationError> {
+    use crate::config::settings::*;
+    let status = read_source_transition(context, source, operation_id)?;
+    let state = match &status.summary {
+        None => IdentityTransitionReadState::NotFound,
+        Some(summary) => {
+            let matches = match summary.phase {
+                SourceTransitionPhase::IntentStored | SourceTransitionPhase::Prepared => {
+                    status.source_revision_observed == summary.expected_source_revision
+                        || status.source_revision_observed == summary.after_source_revision
+                }
+                SourceTransitionPhase::SourcePublished | SourceTransitionPhase::Complete => {
+                    status.source_revision_observed == summary.after_source_revision
+                }
+            };
+            if !matches {
+                IdentityTransitionReadState::Conflict
+            } else {
+                match summary.phase {
+                    SourceTransitionPhase::IntentStored => {
+                        IdentityTransitionReadState::IntentStored
+                    }
+                    SourceTransitionPhase::Prepared => IdentityTransitionReadState::Prepared,
+                    SourceTransitionPhase::SourcePublished => {
+                        IdentityTransitionReadState::RefPending
+                    }
+                    SourceTransitionPhase::Complete => IdentityTransitionReadState::Complete,
+                }
+            }
+        }
+    };
+    Ok(IdentityTransitionRead {
+        state,
+        operation_id: status.summary.as_ref().map(|v| v.operation_id.clone()),
+        status,
+        active: source_protocol_active(),
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_TRANSITION_UUIDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+type SourceDurableCutState = (Option<(&'static str, usize)>, Vec<&'static str>);
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_DURABLE_CUT: std::cell::RefCell<SourceDurableCutState> = const { std::cell::RefCell::new((None, Vec::new())) };
+}
+
+/// Fail-only seam after real durability, outside every publisher/PAIR guard.
+fn source_durable_boundary(
+    _stage: &'static str,
+) -> Result<(), crate::config::settings::SourceCoordinationError> {
+    #[cfg(test)]
+    return SOURCE_DURABLE_CUT.with(|state| {
+        let mut state = state.borrow_mut();
+        state.1.push(_stage);
+        if let Some((stage, ordinal)) = state.0 {
+            if stage == _stage && state.1.iter().filter(|seen| **seen == stage).count() == ordinal {
+                state.0 = None;
+                return Err(crate::config::settings::SourceCoordinationError::Io(
+                    format!("durable cut: {_stage}"),
+                ));
+            }
+        }
+        Ok(())
+    });
+    #[cfg(not(test))]
+    Ok(())
+}
+
+#[cfg(test)]
+fn configure_source_durable_cut(cut: Option<(&'static str, usize)>) {
+    SOURCE_DURABLE_CUT.with(|state| *state.borrow_mut() = (cut, Vec::new()));
+}
+
+#[cfg(test)]
+thread_local! {
+    // Test-only pause outside validation: an external writer changes a real
+    // protected target between production's initial check and fence effect.
+    static SOURCE_FENCE_EFFECT_BARRIER: std::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn source_before_fence_boundary() -> Result<(), crate::config::settings::SourceCoordinationError> {
+    source_durable_boundary("beforeFence")?;
+    #[cfg(test)]
+    if let Some(barrier) = SOURCE_FENCE_EFFECT_BARRIER.with(|slot| slot.borrow_mut().take()) {
+        barrier.wait();
+        barrier.wait();
+    }
+    Ok(())
+}
+
+fn new_source_transition_id() -> String {
+    #[cfg(test)]
+    SOURCE_TRANSITION_UUIDS.with(|count| count.set(count.get() + 1));
+    uuid::Uuid::new_v4().to_string()
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct SourceResumeExpectation {
+    pub(crate) source: crate::config::settings::SourceRevision,
+    pub(crate) journal: crate::config::settings::SourceRevision,
+}
+
+/// Inactive gate precedes candidate parsing, UUID, write leases and sidecars.
+/// Reload is synchronous backend-local work only. It must not wait for IPC or
+/// frontend acknowledgement, await, dispatch a worker, or reacquire coordination
+/// leases. Any future activated caller must be reviewed against this contract.
+#[allow(dead_code)]
+pub(crate) fn commit_source_candidate(
+    settings: &AppSettings,
+    context: &crate::config::settings::SourceReadContext,
+    source: &crate::config::settings::SourceRef,
+    request_id: &str,
+    expected: &crate::config::settings::SourceRevision,
+    candidate: &serde_json::Value,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    if !crate::config::settings::source_protocol_active() {
+        return Err(SourceTransitionError::ActivationRequired);
+    }
+    commit_source_candidate_internal(
+        settings, context, source, request_id, expected, candidate, reload,
+    )
+}
+
+#[allow(dead_code)]
+fn commit_source_candidate_internal(
+    settings: &AppSettings,
+    context: &crate::config::settings::SourceReadContext,
+    source: &crate::config::settings::SourceRef,
+    request_id: &str,
+    expected: &crate::config::settings::SourceRevision,
+    candidate: &serde_json::Value,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    use crate::config::settings::*;
+    let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO)?;
+    let lease = SourceWriteContext::acquire(context, source, &identity)?;
+    let payload_digest = source_transition_digest(&(source, expected, candidate))?;
+    let (local_revision, journal) = read_own_source_journal(context)?;
+    // Request lookup precedes UUID creation and every effect.
+    if let Some(original) = journal
+        .intents
+        .values()
+        .find(|intent| intent.request_id == request_id)
+    {
+        if original.source != *source || original.payload_digest != payload_digest {
+            return Err(SourceCoordinationError::Invalid.into());
+        }
+        return Ok(get_identity_transition(
+            context,
+            source,
+            &original.operation_id,
+        )?);
+    }
+    // One incomplete operation fences this physical source, including source drift.
+    if let Some((id, _)) = journal.inventories.iter().find(|(id, inventory)| {
+        inventory.physical_source_key == lease.physical_source_key()
+            && journal
+                .progress
+                .get(*id)
+                .is_none_or(|p| p.receipt.is_none())
+    }) {
+        return Err(SourceTransitionError::Interrupted {
+            operation_id: id.clone(),
+            cause: Box::new(SourceCoordinationError::Pending.into()),
+        });
+    }
+    let snapshot = read_source_snapshot(context, source)?;
+    let origin_inputs = OriginInputs::capture(context)?;
+    let origin = LegacyCompatibilityOrigin::classify(&origin_inputs);
+    let mut capture =
+        capture_source_inventory(settings, &snapshot, &origin, lease.physical_source_key())?;
+    let prepared = prepare_source_candidate_with_original_links(
+        &snapshot,
+        expected,
+        candidate,
+        Some(&origin),
+        Some(capture.original_links()),
+    )?;
+    let mappings = source_original_mappings(&snapshot, &prepared)?;
+    let mut classifications = Vec::new();
+    for evidence in capture.original_targets() {
+        let target = &evidence.target;
+        let original = crate::config::coding_agent_profiles::SourceSelectionTarget {
+            root: target.root.clone(),
+            decisions: target.decisions.clone(),
+            state: target.state.clone(),
+            reservation: target.reservation.clone(),
+            physical_revision: target
+                .original_physical
+                .clone()
+                .ok_or(SourceCoordinationError::Invalid)?,
+        };
+        let affected = crate::config::coding_agent_profiles::source_target_is_affected(
+            &original, source, &mappings,
+        )?;
+        classifications.push((target.decisions.clone(), affected));
+    }
+    capture.classify(classifications)?;
+    prepared.revalidate_before_write(context)?;
+    let operation_id = new_source_transition_id();
+    // settings alone constructs original authorization, mapping and binding.
+    let authority = SourceInventoryProof::for_candidate(
+        crate::config::settings::SourceInventoryInputs {
+            settings,
+            context,
+            identity: &identity,
+            lease: &lease,
+        },
+        &snapshot,
+        &prepared,
+        &origin_inputs,
+        capture,
+        &operation_id,
+    )?;
+    let (witness, targets) = source_discovery_evidence(settings)?;
+    authority.verify_complete_discovery(&witness, &targets)?;
+    authority.verify_original_classification(&|target| {
+        let original = crate::config::coding_agent_profiles::SourceSelectionTarget {
+            root: target.root.clone(),
+            decisions: target.decisions.clone(),
+            state: target.state.clone(),
+            reservation: target.reservation.clone(),
+            physical_revision: target
+                .original_physical
+                .clone()
+                .ok_or(IdentityReferenceError::Conflict)?,
+        };
+        crate::config::coding_agent_profiles::source_target_is_affected(
+            &original,
+            source,
+            &authority.inventory().mappings,
+        )
+    })?;
+    let rediscover = || -> Result<(), SourceTransitionError> {
+        let (witness, targets) = source_discovery_evidence(settings)?;
+        authority.verify_complete_discovery(&witness, &targets)?;
+        Ok(())
+    };
+    let validate = || authority.validate(&identity, &lease, context);
+    source_durable_boundary("beforeIntent")?;
+    let intent = authority.stored_intent(&prepared, &operation_id, request_id, &payload_digest)?;
+    let journal_publication = update_own_source_journal_with_validation(
+        &identity,
+        &lease,
+        context,
+        &local_revision,
+        |journal| {
+            journal.intents.insert(operation_id.clone(), intent.clone());
+            journal
+                .inventories
+                .insert(operation_id.clone(), authority.inventory().clone());
+            journal
+                .progress
+                .insert(operation_id.clone(), SourceLocalProgress::default());
+            Ok(())
+        },
+        &validate,
+    );
+    if let Err(error) = journal_publication {
+        return match read_own_source_journal(context) {
+            Ok((_, observed))
+                if observed.intents.get(&operation_id) == Some(&intent)
+                    && observed.inventories.get(&operation_id) == Some(authority.inventory()) =>
+            {
+                Err(SourceTransitionError::Interrupted {
+                    operation_id,
+                    cause: Box::new(error.into()),
+                })
+            }
+            Ok(_) => Err(error.into()),
+            Err(uncertain) => Err(uncertain.into()),
+        };
+    }
+    let continuation = (|| -> Result<IdentityTransitionRead, SourceTransitionError> {
+        source_durable_boundary("intentInventory")?;
+        rediscover()?;
+        authority.verify_affected_before_fence()?;
+        source_before_fence_boundary()?;
+        validate()?;
+        authority.verify_affected_before_fence()?;
+        drive_identity_transition(
+            &identity,
+            &lease,
+            context,
+            &operation_id,
+            &authority,
+            &rediscover,
+            reload,
+        )
+    })();
+    continuation.map_err(|error| SourceTransitionError::Interrupted {
+        operation_id,
+        cause: Box::new(error),
+    })
+}
+
+/// Explicit recovery accepts only operation identity and physical CAS from a
+/// fresh observation. It never receives new paths, candidate bytes or roles.
+/// Reload obeys the same synchronous backend-local, nonblocking contract as Save;
+/// the Fn signature itself does not prove that an arbitrary callback is safe.
+#[allow(dead_code)]
+pub(crate) fn resume_identity_transition(
+    settings: &AppSettings,
+    context: &crate::config::settings::SourceReadContext,
+    source: &crate::config::settings::SourceRef,
+    operation_id: &str,
+    expected: &SourceResumeExpectation,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    if !crate::config::settings::source_protocol_active() {
+        return Err(SourceTransitionError::ActivationRequired);
+    }
+    resume_identity_transition_internal(settings, context, source, operation_id, expected, reload)
+}
+
+#[allow(dead_code)]
+fn resume_identity_transition_internal(
+    settings: &AppSettings,
+    context: &crate::config::settings::SourceReadContext,
+    source: &crate::config::settings::SourceRef,
+    operation_id: &str,
+    expected: &SourceResumeExpectation,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    use crate::config::settings::*;
+    let identity = IdentityWriteLease::acquire(context, std::time::Duration::ZERO)?;
+    let lease = SourceWriteContext::acquire(context, source, &identity)?;
+    let (local_revision, journal) = read_own_source_journal(context)?;
+    if expected.source != lease.source_revision()? || expected.journal != local_revision {
+        return Err(SourceCoordinationError::Stale.into());
+    }
+    if !journal.intents.contains_key(operation_id) {
+        return Err(SourceCoordinationError::NotFound.into());
+    }
+    let authority = SourceInventoryProof::for_resume(
+        SourceInventoryInputs {
+            settings,
+            context,
+            identity: &identity,
+            lease: &lease,
+        },
+        operation_id,
+        &journal,
+        &source_original_inventory_slots,
+    )?;
+    authority.verify_original_classification(&|target| {
+        let original = crate::config::coding_agent_profiles::SourceSelectionTarget {
+            root: target.root.clone(),
+            decisions: target.decisions.clone(),
+            state: target.state.clone(),
+            reservation: target.reservation.clone(),
+            physical_revision: target
+                .original_physical
+                .clone()
+                .ok_or(IdentityReferenceError::Conflict)?,
+        };
+        crate::config::coding_agent_profiles::source_target_is_affected(
+            &original,
+            source,
+            &authority.inventory().mappings,
+        )
+    })?;
+    let rediscover = || -> Result<(), SourceTransitionError> {
+        let (witness, targets) = source_discovery_evidence(settings)?;
+        authority.verify_complete_discovery(&witness, &targets)?;
+        Ok(())
+    };
+    drive_identity_transition(
+        &identity,
+        &lease,
+        context,
+        operation_id,
+        &authority,
+        &rediscover,
+        reload,
+    )
+    .map_err(|error| SourceTransitionError::Interrupted {
+        operation_id: operation_id.into(),
+        cause: Box::new(error),
+    })
+}
+
+fn source_original_inventory_slots(
+    target: &crate::config::settings::SourceInventoryTarget,
+) -> Result<
+    Vec<(
+        crate::config::settings::SourceOriginalSlot,
+        crate::config::settings::ConfigurationRef,
+    )>,
+    crate::config::settings::IdentityReferenceError,
+> {
+    let original = crate::config::coding_agent_profiles::SourceSelectionTarget {
+        root: target.root.clone(),
+        decisions: target.decisions.clone(),
+        state: target.state.clone(),
+        reservation: target.reservation.clone(),
+        physical_revision: target
+            .original_physical
+            .clone()
+            .ok_or(crate::config::settings::IdentityReferenceError::Conflict)?,
+    };
+    crate::config::coding_agent_profiles::source_original_slots(&original)
+}
+
+#[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
+pub(crate) enum SourceTransitionError {
+    #[error("sourceActivationRequired")]
+    ActivationRequired,
+    #[error("sourceTransitionPending: {operation_id}: {cause}")]
+    Interrupted {
+        operation_id: String,
+        cause: Box<SourceTransitionError>,
+    },
+    #[error(transparent)]
+    Coordination(#[from] crate::config::settings::SourceCoordinationError),
+    #[error(transparent)]
+    Pair(#[from] crate::config::settings::IdentityReferenceError),
+    #[error(transparent)]
+    Preparation(#[from] crate::config::settings::SourcePreparationError),
+}
+
+/// Progress never contains replacement images. PAIR remains recovery authority.
+/// Called only with settings-issued original inventory authority under C/source.
+#[allow(dead_code)]
+fn drive_identity_transition(
+    identity: &crate::config::settings::IdentityWriteLease,
+    lease: &crate::config::settings::SourceWriteContext,
+    context: &crate::config::settings::SourceReadContext,
+    operation_id: &str,
+    authority: &crate::config::settings::SourceInventoryProof,
+    rediscover: &dyn Fn() -> Result<(), SourceTransitionError>,
+    reload: &dyn Fn() -> Result<(), crate::config::settings::SourceCoordinationError>,
+) -> Result<IdentityTransitionRead, SourceTransitionError> {
+    use crate::config::coding_agent_profiles::{
+        apply_identity_reference_patch, prepare_identity_reference_patch,
+    };
+    use crate::config::settings::*;
+    let validate = || authority.validate(identity, lease, context);
+    rediscover()?;
+    validate()?;
+    let inventory = authority.inventory();
+    let (_, journal) = read_own_source_journal(context)?;
+    let intent = journal
+        .intents
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?
+        .clone();
+    if journal.inventories.get(operation_id) != Some(inventory)
+        || inventory.editor_id != identity.instance_id()
+        || inventory.source != *lease.source()
+        || inventory.physical_source_key != lease.physical_source_key()
+        || inventory.context_revision != lease.context_revision()
+        || inventory.mappings != intent.mappings
+    {
+        return Err(SourceCoordinationError::Unauthorized.into());
+    }
+    authority.inventory_digest()?;
+    let after = source_transition_digest_bytes(&intent.serialized_after);
+    let mut progress = journal
+        .progress
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?
+        .clone();
+    let persist =
+        |next: SourceLocalProgress| -> Result<SourceLocalProgress, SourceTransitionError> {
+            let (revision, original) = read_own_source_journal(context)?;
+            let prior = original
+                .progress
+                .get(operation_id)
+                .ok_or(SourceCoordinationError::Invalid)?
+                .clone();
+            update_own_source_journal_with_validation(
+                identity,
+                lease,
+                context,
+                &revision,
+                |journal| {
+                    if journal.progress.get(operation_id) != Some(&prior) {
+                        return Err(SourceCoordinationError::Stale);
+                    }
+                    journal.progress.insert(operation_id.into(), next.clone());
+                    Ok(())
+                },
+                &validate,
+            )?;
+            let (_, current) = read_own_source_journal(context)?;
+            let confirmed = current
+                .progress
+                .get(operation_id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            if confirmed != &next {
+                return Err(SourceCoordinationError::Stale.into());
+            }
+            Ok(confirmed.clone())
+        };
+    if progress.source_published && lease.source_revision()? != after {
+        return Err(SourceCoordinationError::Stale.into());
+    }
+    if !progress.packets_prepared {
+        source_before_fence_boundary()?;
+        authority.verify_affected_before_fence()?;
+        let mappings_digest = source_transition_digest(&inventory.mappings)?;
+        for target in &inventory.targets {
+            rediscover()?;
+            validate()?;
+            let indexed = progress
+                .packets
+                .iter()
+                .find(|row| row.target == target.decisions);
+            let packet = match recover_source_target_packet(
+                target,
+                operation_id,
+                lease.physical_source_key(),
+                &mappings_digest,
+                &validate,
+            )? {
+                Some(packet) => packet,
+                None if indexed.is_some() => return Err(IdentityReferenceError::Conflict.into()),
+                None => prepare_identity_reference_patch(
+                    &target.decisions,
+                    &IdentityReferenceRequest {
+                        operation_id: operation_id.into(),
+                        source_physical_key: lease.physical_source_key().into(),
+                        mappings_digest: mappings_digest.clone(),
+                        before_protected: target.before_protected.clone(),
+                    },
+                    &inventory.source,
+                    &inventory.mappings,
+                    &validate,
+                )?,
+            };
+            source_durable_boundary("packet")?;
+            let hashes = packet.protected_revision_digests()?;
+            let record = SourcePacketRecord {
+                target: target.decisions.clone(),
+                target_id: packet.physical_target_identity.clone(),
+                before_protected_revision: SourceRevision::Bytes {
+                    sha256: hashes[0].clone(),
+                },
+                after_protected_revision: SourceRevision::Bytes {
+                    sha256: hashes[1].clone(),
+                },
+                plan_digest: packet.plan_digest.clone(),
+            };
+            if let Some(indexed) = indexed {
+                if indexed != &record {
+                    return Err(IdentityReferenceError::Conflict.into());
+                }
+            } else {
+                progress.packets.push(record);
+                progress = persist(progress)?;
+            }
+        }
+        source_durable_boundary("allPackets")?;
+        progress.packets_prepared = true;
+        progress = persist(progress)?;
+    }
+    source_durable_boundary("prepared")?;
+    // Verify every ORIGINAL packet before recognizing/publishing source.
+    if progress.receipt.is_none() {
+        let mappings_digest = source_transition_digest(&inventory.mappings)?;
+        for row in &progress.packets {
+            let target = inventory
+                .targets
+                .iter()
+                .find(|t| t.decisions == row.target)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            let packet = recover_source_target_packet(
+                target,
+                operation_id,
+                lease.physical_source_key(),
+                &mappings_digest,
+                &validate,
+            )?
+            .ok_or(IdentityReferenceError::Conflict)?;
+            let hashes = packet.protected_revision_digests()?;
+            if packet.plan_digest != row.plan_digest
+                || packet.physical_target_identity != row.target_id
+                || row.before_protected_revision
+                    != (SourceRevision::Bytes {
+                        sha256: hashes[0].clone(),
+                    })
+                || row.after_protected_revision
+                    != (SourceRevision::Bytes {
+                        sha256: hashes[1].clone(),
+                    })
+            {
+                return Err(IdentityReferenceError::Conflict.into());
+            }
+        }
+    }
+    if !progress.source_published {
+        rediscover()?;
+        let publication =
+            publish_source_intent_with_validation(lease, context, &intent, &validate)?;
+        if publication.revision != after {
+            return Err(SourceCoordinationError::Stale.into());
+        }
+        let (_, current) = read_own_source_journal(context)?;
+        progress = current
+            .progress
+            .get(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?
+            .clone();
+        source_durable_boundary("sourceAfter")?;
+        validate()?;
+        if lease.source_revision()? != after {
+            return Err(SourceCoordinationError::Stale.into());
+        }
+        progress.source_published = true;
+        progress = persist(progress)?;
+    }
+    source_durable_boundary("sourcePublished")?;
+    rediscover()?;
+    for row in &progress.packets {
+        let target = inventory
+            .targets
+            .iter()
+            .find(|t| t.decisions == row.target)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if progress.receipt.is_some() {
+            verify_completed_source_target(target, row, &validate)?;
+        } else {
+            apply_identity_reference_patch(
+                &target.decisions,
+                &target.state,
+                &target.reservation,
+                operation_id,
+                &row.plan_digest,
+                &validate,
+            )?;
+        }
+        source_durable_boundary("ref")?;
+    }
+    if !progress.refs_verified {
+        progress.refs_verified = true;
+        progress = persist(progress)?;
+    }
+    source_durable_boundary("refsVerified")?;
+    validate()?;
+    reload()?;
+    validate()?;
+    if !progress.reloaded {
+        progress.reloaded = true;
+        progress = persist(progress)?;
+    }
+    source_durable_boundary("reloaded")?;
+    rediscover()?;
+    if lease.source_revision()? != after {
+        return Err(SourceCoordinationError::Stale.into());
+    }
+    if progress.receipt.is_none() {
+        // Final target verification precedes the sole complete receipt.
+        for row in &progress.packets {
+            let target = inventory
+                .targets
+                .iter()
+                .find(|t| t.decisions == row.target)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            verify_completed_source_target(target, row, &validate)?;
+        }
+        progress.receipt = Some(SourceReceipt {
+            operation_id: operation_id.into(),
+            source_revision: after,
+        });
+        progress = persist(progress)?;
+    }
+    source_durable_boundary("receipt")?;
+    for row in &progress.packets {
+        rediscover()?;
+        let target = inventory
+            .targets
+            .iter()
+            .find(|t| t.decisions == row.target)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        verify_completed_source_target(target, row, &validate)?;
+        let proof = source_complete_proof(lease, context, operation_id, &row.target_id, &validate)?;
+        release_identity_reference_pair_guarded(
+            &target.decisions,
+            &target.state,
+            &target.reservation,
+            &proof,
+            &validate,
+        )?;
+        source_durable_boundary("release")?;
+    }
+    Ok(get_identity_transition(
+        context,
+        lease.source(),
+        operation_id,
+    )?)
+}
+
 /// Subdirectory of the config dir holding pending coding-agent mutation requests.
 pub const CODING_AGENT_REQUESTS_DIR: &str =
     crate::config::instance_artifacts::CODING_AGENT_REQUESTS_DIR_NAME;
@@ -302,6 +1030,31 @@ pub fn apply_coding_agent_op(
     // config-seed dest, plus profile repair (A-cell bookkeeping for a new agent).
     // This is exactly what every existing writer enforces.
     validate_and_repair_settings(settings)?;
+    outcome_from_written(outcome, settings)
+}
+
+/// Select the final row by its stable ID after validation or persistence.
+/// Update intentionally retains the historical first-exact-ID selection.
+pub fn outcome_from_written(
+    mut outcome: CodingAgentOpOutcome,
+    written: &AppSettings,
+) -> Result<CodingAgentOpOutcome, String> {
+    if matches!(outcome.op, "add" | "update") {
+        let id = outcome
+            .agent
+            .as_ref()
+            .ok_or_else(|| "coding-agent outcome is missing its required row".to_string())?
+            .id
+            .clone();
+        outcome.agent = Some(
+            written
+                .agents
+                .iter()
+                .find(|agent| agent.id == id)
+                .ok_or_else(|| format!("written settings are missing agent '{id}'"))?
+                .clone(),
+        );
+    }
     Ok(outcome)
 }
 
@@ -606,7 +1359,7 @@ pub fn process_coding_agent_request(
     results_dir: &Path,
     now_ms: u64,
     settings: &mut AppSettings,
-    save: &mut dyn FnMut(&AppSettings) -> Result<(), String>,
+    save: &mut dyn FnMut(&AppSettings) -> Result<AppSettings, String>,
 ) -> RequestDisposition {
     // Claim: an atomic rename on the same volume. ENOENT means a timed-out CLI
     // already removed the request; never apply it.
@@ -641,7 +1394,7 @@ fn process_claimed(
     request_id: &str,
     now_ms: u64,
     settings: &mut AppSettings,
-    save: &mut dyn FnMut(&AppSettings) -> Result<(), String>,
+    save: &mut dyn FnMut(&AppSettings) -> Result<AppSettings, String>,
 ) -> RequestDisposition {
     let content = match std::fs::read_to_string(processing_path) {
         Ok(c) => c,
@@ -667,14 +1420,25 @@ fn process_claimed(
     }
     match apply_coding_agent_op(settings, &request.op) {
         Ok(outcome) => {
-            if let Err(e) = save(settings) {
-                write_reject(
-                    results_dir,
-                    request_id,
-                    format!("failed to persist settings: {e}"),
-                );
-                return RequestDisposition::Rejected;
-            }
+            let written = match save(settings) {
+                Ok(written) => written,
+                Err(e) => {
+                    write_reject(
+                        results_dir,
+                        request_id,
+                        format!("failed to persist settings: {e}"),
+                    );
+                    return RequestDisposition::Rejected;
+                }
+            };
+            let outcome = match outcome_from_written(outcome, &written) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    write_reject(results_dir, request_id, error);
+                    return RequestDisposition::Rejected;
+                }
+            };
+            *settings = written;
             let agent_id = outcome
                 .agent
                 .as_ref()
@@ -723,11 +1487,165 @@ mod tests {
     use crate::config::settings::CodingAgentEnvSource;
     use crate::pty::backend::SessionBackendKind;
 
+    #[test]
+    fn single_editor_inactive_gate() {
+        use crate::config::settings::{
+            list_active_sources, source_transition_effect_counts, SourceKind, SourceReadContext,
+            SourceRevision,
+        };
+        let root = crate::config::settings::source_transition_test_root();
+        let project = root.path().join("project");
+        let config = root.path().join("C");
+        std::fs::create_dir_all(project.join(".ac/coding-agents")).unwrap();
+        std::fs::create_dir(&config).unwrap();
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
+        let context =
+            SourceReadContext::from_settings(&settings, &config.join("settings.json")).unwrap();
+        let source = list_active_sources(&context)
+            .into_iter()
+            .find(|source| source.kind == SourceKind::CatalogPersonal)
+            .unwrap();
+        let before = source_transition_effect_counts();
+        let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+        let reloads = std::cell::Cell::new(0);
+        let reload = || {
+            reloads.set(reloads.get() + 1);
+            Ok(())
+        };
+        for candidate in [
+            serde_json::json!({"schemaVersion":2,"agents":[]}),
+            serde_json::Value::Null,
+        ] {
+            assert!(matches!(
+                commit_source_candidate(
+                    &settings,
+                    &context,
+                    &source,
+                    "request-1",
+                    &SourceRevision::Absent {},
+                    &candidate,
+                    &reload
+                ),
+                Err(SourceTransitionError::ActivationRequired)
+            ));
+        }
+        let expected = SourceResumeExpectation {
+            source: SourceRevision::Absent {},
+            journal: SourceRevision::Absent {},
+        };
+        for operation in ["operation-1", "unknown", ""] {
+            assert!(matches!(
+                resume_identity_transition(
+                    &settings, &context, &source, operation, &expected, &reload
+                ),
+                Err(SourceTransitionError::ActivationRequired)
+            ));
+        }
+        let status = get_identity_transition(&context, &source, "unknown").unwrap();
+        assert_eq!(status.state, IdentityTransitionReadState::NotFound);
+        assert_eq!(source_transition_effect_counts(), before);
+        assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+        assert_eq!(reloads.get(), 0);
+        assert_eq!(std::fs::read_dir(&config).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_dir(project.join(".ac/coding-agents"))
+                .unwrap()
+                .count(),
+            0
+        );
+        let mut ordinary = settings.clone();
+        let agent: AgentConfig = serde_json::from_value(serde_json::json!({
+            "id":"custom-ordinary","label":"Ordinary","color":"#123456","command":"ordinary-command"})).unwrap();
+        apply_coding_agent_op(&mut ordinary, &CodingAgentOp::Add { agent }).unwrap();
+        let saved = crate::config::settings::save_settings_to_path_preserving_project_paths(
+            &ordinary,
+            &config.join("settings.json"),
+        )
+        .unwrap();
+        assert!(saved
+            .agents
+            .iter()
+            .any(|agent| agent.id == "custom-ordinary"));
+        let registered: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                config.join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(registered["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|agent| agent["id"] == "custom-ordinary"));
+        assert_eq!(source_transition_effect_counts(), before);
+        assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+        assert!(crate::config::settings::read_own_source_journal(&context)
+            .unwrap()
+            .1
+            .intents
+            .is_empty());
+    }
+
+    #[test]
+    fn single_editor_status_unknown_inactive_zero_write_without_sidecars() {
+        use crate::config::settings::{SourceKind, SourceReadContext};
+        let root = crate::config::settings::source_transition_test_root();
+        let settings = AppSettings::default();
+        let context =
+            SourceReadContext::from_settings(&settings, &root.path().join("settings.json"))
+                .unwrap();
+        let source = crate::config::settings::list_active_sources(&context)
+            .into_iter()
+            .find(|source| source.kind == SourceKind::RegisteredInstance)
+            .unwrap();
+        for _ in 0..3 {
+            let read = get_identity_transition(&context, &source, "unknown-operation").unwrap();
+            assert_eq!(read.state, IdentityTransitionReadState::NotFound);
+            assert!(read.operation_id.is_none());
+            assert!(!read.active);
+            assert!(read.status.summary.is_none());
+            assert_eq!(
+                read.status.journal_revision,
+                crate::config::settings::SourceRevision::Absent {}
+            );
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn single_editor_status_invalid_present_journal_preserved_not_empty() {
+        use crate::config::settings::{SourceCoordinationError, SourceKind, SourceReadContext};
+        let root = crate::config::settings::source_transition_test_root();
+        let settings = AppSettings::default();
+        let context =
+            SourceReadContext::from_settings(&settings, &root.path().join("settings.json"))
+                .unwrap();
+        let source = crate::config::settings::list_active_sources(&context)
+            .into_iter()
+            .find(|source| source.kind == SourceKind::RegisteredInstance)
+            .unwrap();
+        let journal = root
+            .path()
+            .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
+        std::fs::write(&journal, b"{}").unwrap();
+        assert!(matches!(
+            get_identity_transition(&context, &source, "unknown-operation"),
+            Err(SourceCoordinationError::Invalid)
+        ));
+        assert_eq!(std::fs::read(&journal).unwrap(), b"{}");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
     fn agent(id: &str, label: &str, command: &str) -> AgentConfig {
         AgentConfig {
             preflight: None,
             preflight_timeout_seconds: None,
             id: id.to_string(),
+            id_hash: None,
             label: label.to_string(),
             command: command.to_string(),
             color: "#6366f1".to_string(),
@@ -781,7 +1699,7 @@ mod tests {
     #[test]
     fn issue_2859_preflight_request_save_path_rejects_zero_and_persists_valid_values() {
         for (timeout, accepted) in [(0, false), (60, true), (u32::MAX, true)] {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = crate::config::settings::source_transition_test_root();
             let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
             let results = requests.join(RESULTS_SUBDIR);
             let persisted = dir.path().join("saved.json");
@@ -792,7 +1710,8 @@ mod tests {
             let mut settings = AppSettings::default();
             let mut save = |settings: &AppSettings| {
                 std::fs::write(&persisted, serde_json::to_vec(settings).unwrap())
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                Ok(settings.clone())
             };
             let disposition =
                 process_coding_agent_request(&path, &results, 200, &mut settings, &mut save);
@@ -818,7 +1737,7 @@ mod tests {
 
     #[test]
     fn issue_2859_preflight_save_path_validates_dormant_profile_cells_before_save() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::config::settings::source_transition_test_root();
         let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
         let results = requests.join(RESULTS_SUBDIR);
         let mut settings = AppSettings::default();
@@ -843,9 +1762,9 @@ mod tests {
         );
         let mut saves = 0;
         let disposition =
-            process_coding_agent_request(&path, &results, 200, &mut settings, &mut |_| {
+            process_coding_agent_request(&path, &results, 200, &mut settings, &mut |st| {
                 saves += 1;
-                Ok(())
+                Ok(st.clone())
             });
         assert_eq!(disposition, RequestDisposition::Rejected);
         assert_eq!(saves, 0);
@@ -860,8 +1779,257 @@ mod tests {
         );
     }
 
-    fn noop_save() -> impl FnMut(&AppSettings) -> Result<(), String> {
-        |_s: &AppSettings| Ok(())
+    #[test]
+    fn id_hash_activation_apply_uses_final_command_env_and_metadata_exclusions() {
+        let mut settings = AppSettings::default();
+        let mut row = agent("stable", "Stable", "codex");
+        row.id_hash = Some("forged".into());
+        row.backend.image = Some("discard-local-image".into());
+        let added = apply_coding_agent_op(&mut settings, &add(row))
+            .unwrap()
+            .agent
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&added).unwrap(),
+            serde_json::to_value(&settings.agents[0]).unwrap()
+        );
+        assert!(added.backend.image.is_none());
+        let original_hash = added.id_hash.clone();
+        let metadata = AgentPatch {
+            label: Some("Renamed".into()),
+            color: Some("#abc123".into()),
+            isolated_home: Some(true),
+            ..Default::default()
+        };
+        let changed = apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "stable".into(),
+                patch: metadata,
+            },
+        )
+        .unwrap()
+        .agent
+        .unwrap();
+        assert_eq!(changed.id_hash, original_hash);
+        let disabled = CodingAgentEnv {
+            key: "MODE".into(),
+            value: "one".into(),
+            source: CodingAgentEnvSource::User,
+            enabled: false,
+        };
+        let updated = apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "stable".into(),
+                patch: AgentPatch {
+                    command: Some("codex x".into()),
+                    envs: Some(vec![disabled]),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap()
+        .agent
+        .unwrap();
+        assert_eq!(updated.id, "stable");
+        assert_eq!(
+            updated.id_hash,
+            Some(crate::config::settings::configuration_identity(
+                &updated.command,
+                &updated.envs
+            ))
+        );
+        assert_ne!(updated.id_hash, original_hash);
+        let disabled_hash = updated.id_hash;
+        settings.agents[0].envs[0].value = "two".into();
+        let updated = apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "stable".into(),
+                patch: AgentPatch::default(),
+            },
+        )
+        .unwrap()
+        .agent
+        .unwrap();
+        assert_ne!(updated.id_hash, disabled_hash);
+        let cleared = apply_coding_agent_op(
+            &mut settings,
+            &CodingAgentOp::Update {
+                id: "stable".into(),
+                patch: AgentPatch {
+                    envs: Some(vec![]),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap()
+        .agent
+        .unwrap();
+        assert!(cleared.envs.is_empty());
+        assert_eq!(
+            cleared.id_hash,
+            Some(crate::config::settings::configuration_identity(
+                "codex x",
+                &[]
+            ))
+        );
+    }
+
+    #[test]
+    fn id_hash_activation_queued_real_saver_result_tracks_written_and_reload() {
+        let dir = crate::config::settings::source_transition_test_root();
+        let settings_path = dir.path().join("settings.json");
+        let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
+        let results = requests.join(RESULTS_SUBDIR);
+        let mut settings = AppSettings::default();
+        let mut input = agent("stable", "Stable", "codex");
+        input.id_hash = Some("forged-input".into());
+        for (request_id, op) in [
+            ("add", add(input)),
+            (
+                "clear",
+                CodingAgentOp::Update {
+                    id: "stable".into(),
+                    patch: AgentPatch {
+                        envs: Some(vec![]),
+                        ..Default::default()
+                    },
+                },
+            ),
+            (
+                "remove",
+                CodingAgentOp::Remove {
+                    id: "stable".into(),
+                },
+            ),
+        ] {
+            let request = write_request_file(&requests, request_id, 100, op);
+            let mut captured = None;
+            let disposition = process_coding_agent_request(
+                &request,
+                &results,
+                200,
+                &mut settings,
+                &mut |candidate| {
+                    let mut physical = candidate.clone();
+                    if let Some(row) = physical.agents.first_mut() {
+                        // A real saver must be the authority even if its final inputs differ.
+                        row.command = "final-saver-command".into();
+                        row.id_hash = Some("forged-before-save".into());
+                    }
+                    let written =
+                        crate::config::settings::save_settings_to_path_preserving_project_paths(
+                            &physical,
+                            &settings_path,
+                        )?;
+                    captured = Some(written.clone());
+                    Ok(written)
+                },
+            );
+            assert!(matches!(disposition, RequestDisposition::Applied { .. }));
+            let result = read_coding_agent_result(&results, request_id).unwrap();
+            assert!(result.ok);
+            let written = captured.unwrap();
+            let reload = crate::config::settings::load_settings_from_path(&settings_path);
+            assert_eq!(
+                serde_json::to_value(&settings.agents).unwrap(),
+                serde_json::to_value(&written.agents).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&reload.agents).unwrap(),
+                serde_json::to_value(&written.agents).unwrap()
+            );
+            if request_id == "remove" {
+                assert!(result.agent.is_none());
+                assert_eq!(result.removed_id.as_deref(), Some("stable"));
+            } else {
+                assert_eq!(
+                    serde_json::to_value(result.agent.as_ref()).unwrap(),
+                    serde_json::to_value(written.agents.first()).unwrap()
+                );
+                assert_eq!(result.agent.unwrap().command, "final-saver-command");
+                let disk: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(
+                        dir.path()
+                            .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    disk["agents"][0]["id_hash"],
+                    written.agents[0].id_hash.clone().unwrap()
+                );
+            }
+            assert!(!request.exists() && !processing_path_for(&request).exists());
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_queued_errors_never_publish_success() {
+        for failure in [
+            "invalid-command",
+            "invalid-env",
+            "bad-disk",
+            "missing-written-row",
+        ] {
+            let dir = crate::config::settings::source_transition_test_root();
+            let path = dir.path().join("settings.json");
+            let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
+            let results = requests.join(RESULTS_SUBDIR);
+            let mut row = agent("stable", "Stable", "codex");
+            if failure == "invalid-command" {
+                row.command = "codex resume --last".into();
+            }
+            if failure == "invalid-env" {
+                row.envs = vec![CodingAgentEnv {
+                    key: "AGENTSCOMMANDER_TOKEN".into(),
+                    value: "bad".into(),
+                    source: CodingAgentEnvSource::User,
+                    enabled: true,
+                }];
+            }
+            let sidecar = dir
+                .path()
+                .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME);
+            if failure == "bad-disk" {
+                std::fs::write(&sidecar, b"{ malformed").unwrap();
+            }
+            let request = write_request_file(&requests, "rejected", 100, add(row));
+            let mut candidate = AppSettings::default();
+            let disposition = process_coding_agent_request(
+                &request,
+                &results,
+                200,
+                &mut candidate,
+                &mut |settings| {
+                    let mut physical = settings.clone();
+                    if failure == "missing-written-row" {
+                        physical.agents.clear();
+                    }
+                    crate::config::settings::save_settings_to_path_preserving_project_paths(
+                        &physical, &path,
+                    )
+                },
+            );
+            assert_eq!(disposition, RequestDisposition::Rejected, "{failure}");
+            let result = read_coding_agent_result(&results, "rejected").unwrap();
+            assert!(!result.ok && result.agent.is_none(), "{failure}");
+            assert!(result.error.is_some());
+            if failure == "bad-disk" {
+                assert_eq!(std::fs::read(&sidecar).unwrap(), b"{ malformed");
+            }
+            if failure.starts_with("invalid-") {
+                assert!(!path.exists() && !sidecar.exists());
+            }
+            assert!(!processing_path_for(&request).exists());
+        }
+    }
+
+    fn noop_save() -> impl FnMut(&AppSettings) -> Result<AppSettings, String> {
+        |s: &AppSettings| Ok(s.clone())
     }
 
     // ---- id / color validators ---------------------------------------------
@@ -1288,7 +2456,7 @@ mod tests {
 
     #[test]
     fn request_result_roundtrip_atomic() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::config::settings::source_transition_test_root();
         let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
         let req = CodingAgentRequest {
             request_id: "req1".into(),
@@ -1325,7 +2493,7 @@ mod tests {
     fn first_request_autocreates_results_dir() {
         // R4: brand-new tempdir, results/ does not exist; write_coding_agent_result
         // must create it.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::config::settings::source_transition_test_root();
         let results = dir
             .path()
             .join(CODING_AGENT_REQUESTS_DIR)
@@ -1367,7 +2535,7 @@ mod tests {
 
     #[test]
     fn handler_applies_and_writes_result_and_deletes_processing() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::config::settings::source_transition_test_root();
         let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
         let results = requests.join(RESULTS_SUBDIR);
         let path = write_request_file(
@@ -1382,7 +2550,7 @@ mod tests {
         let disp = {
             let mut save = |_s: &AppSettings| {
                 saved = true;
-                Ok(())
+                Ok(_s.clone())
             };
             process_coding_agent_request(&path, &results, 200, &mut settings, &mut save)
         };
@@ -1400,7 +2568,7 @@ mod tests {
 
     #[test]
     fn handler_applies_backend_image_patch_from_request_json() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::config::settings::source_transition_test_root();
         let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
         let results = requests.join(RESULTS_SUBDIR);
         let mut settings = AppSettings::default();
@@ -1437,7 +2605,7 @@ mod tests {
 
     #[test]
     fn handler_skips_when_request_already_removed() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::config::settings::source_transition_test_root();
         let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
         let results = requests.join(RESULTS_SUBDIR);
         std::fs::create_dir_all(&requests).unwrap();
@@ -1451,7 +2619,7 @@ mod tests {
 
     #[test]
     fn handler_rejects_expired_without_applying() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::config::settings::source_transition_test_root();
         let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
         let results = requests.join(RESULTS_SUBDIR);
         let path = write_request_file(
@@ -1477,7 +2645,7 @@ mod tests {
 
     #[test]
     fn handler_rejects_validation_error() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::config::settings::source_transition_test_root();
         let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
         let results = requests.join(RESULTS_SUBDIR);
         let path = write_request_file(&requests, "bad", 100, add(agent("BadId", "L", "claude")));
@@ -1496,7 +2664,7 @@ mod tests {
         // Apply an Add through the extracted per-request handler (the daemon-path
         // seam), then confirm the new agent is resolvable to a subsequent
         // `--launch` by id AND by label, and that a spawn command builds for it.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::config::settings::source_transition_test_root();
         let requests = dir.path().join(CODING_AGENT_REQUESTS_DIR);
         let results = requests.join(RESULTS_SUBDIR);
         let path = write_request_file(
@@ -1766,5 +2934,2916 @@ mod tests {
                 .unwrap();
         assert_eq!(ids, ["a", "b", "c"]);
         assert_eq!(positions_2306(&settings), [Some(0), Some(1), Some(2)]);
+    }
+}
+
+fn source_discovery_evidence(
+    settings: &AppSettings,
+) -> Result<
+    (
+        crate::config::settings::SourceDiscoveryWitness,
+        Vec<crate::config::settings::SourceDiscoveredTargetEvidence>,
+    ),
+    SourceTransitionError,
+> {
+    use crate::config::coding_agent_profiles::{discover_source_inventory, source_original_slots};
+    use crate::config::settings::{source_inventory_target, SourceDiscoveredTargetEvidence};
+    let (witness, targets) = discover_source_inventory(settings)?;
+    let mut evidence = Vec::new();
+    for target in targets {
+        let slots = source_original_slots(&target)?;
+        let inventory = source_inventory_target(
+            target.root,
+            target.decisions,
+            target.state,
+            target.reservation,
+            target.physical_revision,
+            slots
+                .iter()
+                .map(|(_, reference)| reference.clone())
+                .collect(),
+        )?;
+        evidence.push(SourceDiscoveredTargetEvidence {
+            target: inventory,
+            slots,
+            affected: false,
+        });
+    }
+    Ok((witness, evidence))
+}
+
+fn capture_source_inventory(
+    settings: &AppSettings,
+    snapshot: &crate::config::settings::RawSourceSnapshot,
+    origin: &crate::config::settings::LegacyCompatibilityOrigin,
+    physical_source_key: &str,
+) -> Result<crate::config::settings::SourceInventoryCapture, SourceTransitionError> {
+    use crate::config::settings::SourceInventoryCapture;
+    for _ in 0..=2 {
+        let (first_witness, first_targets) = source_discovery_evidence(settings)?;
+        let first = SourceInventoryCapture::capture(
+            first_witness.clone(),
+            first_targets.clone(),
+            snapshot,
+            origin,
+            physical_source_key,
+        )?;
+        let (second_witness, second_targets) = source_discovery_evidence(settings)?;
+        let second = SourceInventoryCapture::capture(
+            second_witness.clone(),
+            second_targets.clone(),
+            snapshot,
+            origin,
+            physical_source_key,
+        )?;
+        if first_witness == second_witness
+            && first_targets == second_targets
+            && first.same_original_capture(&second)
+        {
+            return Ok(first);
+        }
+    }
+    Err(crate::config::settings::SourcePreparationError::StaleRevision.into())
+}
+
+#[cfg(test)]
+mod tests_source_transition_driver {
+    use super::*;
+    use crate::config::settings::*;
+
+    fn r3_ready_fixture() -> (DriverFixture, String) {
+        let fixture = DriverFixture::new();
+        configure_source_durable_cut(Some(("prepared", 1)));
+        let result = commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "r3-original",
+            &SourceRevision::Absent {},
+            &DriverFixture::candidate(),
+            &|| Ok(()),
+        );
+        assert!(
+            matches!(result, Err(SourceTransitionError::Interrupted { .. })),
+            "r3 readiness result: {result:?}"
+        );
+        SOURCE_DURABLE_CUT.with(|cut| assert!(cut.borrow().0.is_none()));
+        configure_source_durable_cut(None);
+        let operation = fixture.operation();
+        assert_eq!(
+            get_identity_transition(&fixture.context, &fixture.source, &operation)
+                .unwrap()
+                .state,
+            IdentityTransitionReadState::Prepared
+        );
+        (fixture, operation)
+    }
+
+    fn r3_prepared_fixture() -> (DriverFixture, String, std::path::PathBuf) {
+        let (fixture, operation) = r3_ready_fixture();
+        let native = crate::config::local_config_io::source_checkpoint_native_calls();
+        {
+            let identity =
+                IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+            let lease =
+                SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+            let intent = read_own_source_intent(&fixture.context, &operation)
+                .unwrap()
+                .1
+                .unwrap();
+            let cut = || {
+                if read_own_source_journal(&fixture.context)
+                    .unwrap()
+                    .1
+                    .progress[&operation]
+                    .source_publication
+                    .is_some()
+                {
+                    Err(IdentityReferenceError::Conflict)
+                } else {
+                    Ok(())
+                }
+            };
+            assert!(
+                publish_source_intent_with_validation(&lease, &fixture.context, &intent, &cut)
+                    .is_err()
+            );
+            assert_eq!(lease.source_revision().unwrap(), SourceRevision::Absent {});
+        }
+        assert_eq!(
+            crate::config::local_config_io::source_checkpoint_native_calls(),
+            native
+        );
+        let journal = read_own_source_journal(&fixture.context).unwrap().1;
+        let proof = journal.progress[&operation]
+            .source_publication
+            .as_ref()
+            .unwrap();
+        let value = serde_json::to_value(proof).unwrap();
+        let target = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        let stage = target
+            .parent()
+            .unwrap()
+            .join(value["stageLeaf"].as_str().unwrap());
+        assert_eq!(
+            std::fs::read(&stage).unwrap(),
+            journal.intents[&operation].serialized_after
+        );
+        (fixture, operation, stage)
+    }
+
+    fn r3_assert_pending(fixture: &DriverFixture, operation: &str) {
+        let journal = read_own_source_journal(&fixture.context).unwrap().1;
+        let progress = &journal.progress[operation];
+        assert!(progress.packets_prepared && !progress.source_published);
+        assert!(!progress.refs_verified && !progress.reloaded && progress.receipt.is_none());
+    }
+
+    #[test]
+    fn single_editor_absent_foreign_identical_refusal() {
+        // Calibrate the last premove validation on this same synchronous path.
+        let (control, control_op, _) = r3_prepared_fixture();
+        let premove = std::cell::Cell::new(0);
+        let calls = std::cell::Cell::new(0);
+        {
+            let identity =
+                IdentityWriteLease::acquire(&control.context, std::time::Duration::ZERO).unwrap();
+            let lease =
+                SourceWriteContext::acquire(&control.context, &control.source, &identity).unwrap();
+            let intent = read_own_source_intent(&control.context, &control_op)
+                .unwrap()
+                .1
+                .unwrap();
+            let observe = || {
+                calls.set(calls.get() + 1);
+                if lease.source_revision().unwrap() == (SourceRevision::Absent {}) {
+                    premove.set(calls.get());
+                }
+                Ok(())
+            };
+            publish_source_intent_with_validation(&lease, &control.context, &intent, &observe)
+                .unwrap();
+        }
+        assert!(premove.get() > 0);
+        let (fixture, operation, stage) = r3_prepared_fixture();
+        let parent = crate::path_identity::retain_directory(stage.parent().unwrap()).unwrap();
+        let own_object = parent.verify_regular_file(&stage).unwrap();
+        let target = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        let after = original.intents[&operation].serialized_after.clone();
+        let native = crate::config::local_config_io::source_checkpoint_native_calls();
+        {
+            let identity =
+                IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+            let lease =
+                SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+            let calls = std::cell::Cell::new(0);
+            let interfere = || {
+                calls.set(calls.get() + 1);
+                if calls.get() == premove.get() {
+                    std::fs::write(&target, &after).unwrap();
+                }
+                Ok(())
+            };
+            assert!(publish_source_intent_with_validation(
+                &lease,
+                &fixture.context,
+                &original.intents[&operation],
+                &interfere
+            )
+            .is_err());
+            assert_eq!(
+                crate::config::local_config_io::source_checkpoint_native_calls(),
+                native + 1
+            );
+            let foreign = parent.verify_regular_file(&target).unwrap();
+            assert!(!crate::path_identity::same_object(&own_object, &foreign));
+            assert!(publish_source_intent_with_validation(
+                &lease,
+                &fixture.context,
+                &original.intents[&operation],
+                &|| Ok(())
+            )
+            .is_err());
+            assert_eq!(parent.verify_regular_file(&target).unwrap(), foreign);
+        }
+        for _ in 0..2 {
+            let reloads = std::cell::Cell::new(0);
+            assert!(resume_identity_transition_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                &operation,
+                &fixture.expectation(),
+                &|| {
+                    reloads.set(reloads.get() + 1);
+                    Ok(())
+                }
+            )
+            .is_err());
+            assert_eq!(reloads.get(), 0);
+            r3_assert_pending(&fixture, &operation);
+        }
+        assert_eq!(
+            crate::config::local_config_io::source_checkpoint_native_calls(),
+            native + 1
+        );
+        assert_eq!(
+            read_own_source_journal(&fixture.context).unwrap().1,
+            original
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), after);
+        assert_eq!(parent.verify_regular_file(&stage).unwrap(), own_object);
+        assert_eq!(std::fs::read(&stage).unwrap(), after);
+    }
+
+    #[test]
+    fn single_editor_absent_ownmove_restart() {
+        let (fixture, operation, stage) = r3_prepared_fixture();
+        let parent = crate::path_identity::retain_directory(stage.parent().unwrap()).unwrap();
+        let staged = parent.verify_regular_file(&stage).unwrap();
+        let target = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        let native = crate::config::local_config_io::source_checkpoint_native_calls();
+        {
+            let identity =
+                IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+            let lease =
+                SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+            let cut = || {
+                if target.exists() {
+                    Err(IdentityReferenceError::Conflict)
+                } else {
+                    Ok(())
+                }
+            };
+            assert!(publish_source_intent_with_validation(
+                &lease,
+                &fixture.context,
+                &original.intents[&operation],
+                &cut
+            )
+            .is_err());
+        }
+        assert!(!stage.exists());
+        assert!(crate::path_identity::same_object(
+            &staged,
+            &parent.verify_regular_file(&target).unwrap()
+        ));
+        r3_assert_pending(&fixture, &operation);
+        fixture.resume_at(&fixture.context, &operation).unwrap();
+        let complete = read_own_source_journal(&fixture.context).unwrap().1;
+        assert!(complete.progress[&operation].receipt.is_some());
+        assert_eq!(complete.intents[&operation], original.intents[&operation]);
+        assert_eq!(
+            complete.progress[&operation].source_publication,
+            original.progress[&operation].source_publication
+        );
+        assert_eq!(
+            crate::config::local_config_io::source_checkpoint_native_calls(),
+            native + 1
+        );
+    }
+
+    #[test]
+    fn single_editor_r3_checkpoint_same_stage() {
+        let (fixture, operation, stage) = r3_prepared_fixture();
+        let parent = crate::path_identity::retain_directory(stage.parent().unwrap()).unwrap();
+        let staged = parent.verify_regular_file(&stage).unwrap();
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        let bytes = &original.intents[&operation].serialized_after;
+        let native = crate::config::local_config_io::source_checkpoint_native_calls();
+        std::fs::write(&stage, b"{\"modified\":true}").unwrap();
+        assert!(fixture.resume_at(&fixture.context, &operation).is_err());
+        r3_assert_pending(&fixture, &operation);
+        assert_eq!(
+            crate::config::local_config_io::source_checkpoint_native_calls(),
+            native
+        );
+        std::fs::write(&stage, bytes).unwrap();
+        assert!(crate::path_identity::same_object(
+            &staged,
+            &parent.verify_regular_file(&stage).unwrap()
+        ));
+        let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+        fixture.resume_at(&fixture.context, &operation).unwrap();
+        let target = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        assert!(!stage.exists());
+        assert!(crate::path_identity::same_object(
+            &staged,
+            &parent.verify_regular_file(&target).unwrap()
+        ));
+        let complete = read_own_source_journal(&fixture.context).unwrap().1;
+        assert!(complete.progress[&operation].receipt.is_some());
+        assert_eq!(
+            complete.progress[&operation].source_publication,
+            original.progress[&operation].source_publication
+        );
+        assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+        assert_eq!(
+            crate::config::local_config_io::source_checkpoint_native_calls(),
+            native + 1
+        );
+    }
+
+    #[test]
+    fn single_editor_r3_stage_missing_replaced_modified() {
+        for mode in ["missing", "replaced", "modified"] {
+            let (fixture, operation, stage) = r3_prepared_fixture();
+            let journal = read_own_source_journal(&fixture.context).unwrap().1;
+            let parent = crate::path_identity::retain_directory(stage.parent().unwrap()).unwrap();
+            let own = parent.verify_regular_file(&stage).unwrap();
+            if mode == "modified" {
+                std::fs::write(&stage, b"{\"external\":true}").unwrap();
+            } else {
+                std::fs::rename(&stage, stage.with_extension("external-diagnostic")).unwrap();
+                if mode == "replaced" {
+                    std::fs::write(&stage, &journal.intents[&operation].serialized_after).unwrap();
+                    assert!(!crate::path_identity::same_object(
+                        &own,
+                        &parent.verify_regular_file(&stage).unwrap()
+                    ));
+                }
+            }
+            let before = std::fs::read(&stage).ok();
+            let native = crate::config::local_config_io::source_checkpoint_native_calls();
+            let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+            for _ in 0..2 {
+                assert!(fixture.resume_at(&fixture.context, &operation).is_err());
+            }
+            assert_eq!(
+                read_own_source_journal(&fixture.context).unwrap().1,
+                journal
+            );
+            assert_eq!(std::fs::read(&stage).ok(), before);
+            assert_eq!(
+                crate::config::local_config_io::source_checkpoint_native_calls(),
+                native
+            );
+            assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+            r3_assert_pending(&fixture, &operation);
+        }
+    }
+
+    #[test]
+    fn single_editor_r3_cas_error_classification() {
+        // Real Err-landed checkpoint is created by the existing validation cut.
+        let (after_fixture, after_operation, after_stage) = r3_prepared_fixture();
+        r3_assert_pending(&after_fixture, &after_operation);
+        assert!(after_stage.exists());
+        for mode in ["before", "other", "sticky"] {
+            let (fixture, operation) = r3_ready_fixture();
+            let before = read_own_source_journal(&fixture.context).unwrap();
+            let native = crate::config::local_config_io::source_checkpoint_native_calls();
+            let reached = std::cell::Cell::new(false);
+            let private_path = fixture
+                ._root
+                .path()
+                .join("C")
+                .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
+            {
+                let identity =
+                    IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO)
+                        .unwrap();
+                let lease =
+                    SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity)
+                        .unwrap();
+                let cut = || {
+                    let metadata_stage = std::fs::read_dir(private_path.parent().unwrap())
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .map(|e| e.path())
+                        .any(|p| {
+                            p.extension().is_some_and(|e| e == "tmp")
+                                && std::fs::read(&p).ok().is_some_and(|b| {
+                                    serde_json::from_slice::<serde_json::Value>(&b)
+                                        .ok()
+                                        .is_some_and(|v| {
+                                            v["progress"][&operation]["sourcePublication"]
+                                                .is_object()
+                                        })
+                                })
+                        });
+                    if metadata_stage && !reached.replace(true) {
+                        if mode == "other" {
+                            std::fs::write(&private_path, b"{broken").unwrap();
+                        }
+                        return Err(IdentityReferenceError::Conflict);
+                    }
+                    if mode == "sticky" && reached.get() {
+                        panic!("validation re-entered after sticky refusal");
+                    }
+                    Ok(())
+                };
+                assert!(publish_source_intent_with_validation(
+                    &lease,
+                    &fixture.context,
+                    &before.1.intents[&operation],
+                    &cut
+                )
+                .is_err());
+                assert!(reached.get());
+            }
+            assert_eq!(
+                crate::config::local_config_io::source_checkpoint_native_calls(),
+                native
+            );
+            if mode == "other" {
+                assert_eq!(std::fs::read(&private_path).unwrap(), b"{broken");
+            } else {
+                assert_eq!(read_own_source_journal(&fixture.context).unwrap(), before);
+                r3_assert_pending(&fixture, &operation);
+            }
+        }
+    }
+
+    #[test]
+    fn single_editor_r3_checkpointed_stage_never_unlinked() {
+        let (fixture, operation, stage) = r3_prepared_fixture();
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        let parent = crate::path_identity::retain_directory(stage.parent().unwrap()).unwrap();
+        let target = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        let owned = parent.verify_regular_file(&stage).unwrap();
+        let proof = original.progress[&operation]
+            .source_publication
+            .as_ref()
+            .unwrap();
+        let refusal = std::cell::Cell::new(false);
+        let validate = || {
+            if refusal.get() {
+                Err(IdentityReferenceError::Conflict)
+            } else {
+                Ok(())
+            }
+        };
+        let native = crate::config::local_config_io::source_checkpoint_native_calls();
+        {
+            let mut capability = crate::config::local_config_io::reopen_source_publication(
+                &parent,
+                &target,
+                &original.intents[&operation].serialized_after,
+                proof,
+                &validate,
+            )
+            .unwrap();
+            refusal.set(true);
+            assert!(capability.commit(&|| Ok(())).is_err());
+            refusal.set(false);
+            assert!(capability.commit(&|| Ok(())).is_err());
+        }
+        assert_eq!(parent.verify_regular_file(&stage).unwrap(), owned);
+        assert_eq!(
+            std::fs::read(&stage).unwrap(),
+            original.intents[&operation].serialized_after
+        );
+        assert!(!target.exists());
+        assert_eq!(
+            crate::config::local_config_io::source_checkpoint_native_calls(),
+            native
+        );
+        assert_eq!(
+            read_own_source_journal(&fixture.context).unwrap().1,
+            original
+        );
+    }
+
+    #[test]
+    fn single_editor_r3_stale_progress_preserves_proof() {
+        let (fixture, operation, _) = r3_prepared_fixture();
+        let identity =
+            IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+        let lease =
+            SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+        let (stale, original) = read_own_source_journal(&fixture.context).unwrap();
+        let private_path = fixture
+            ._root
+            .path()
+            .join("C")
+            .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
+        let mut bytes = std::fs::read(&private_path).unwrap();
+        bytes.push(10);
+        std::fs::write(&private_path, bytes).unwrap();
+        let fresh = read_own_source_journal(&fixture.context).unwrap().0;
+        for field in ["packets", "aggregate", "refs", "reload", "receipt"] {
+            assert_eq!(
+                update_own_source_journal_with_validation(
+                    &identity,
+                    &lease,
+                    &fixture.context,
+                    &stale,
+                    |journal| {
+                        let progress = journal.progress.get_mut(&operation).unwrap();
+                        match field {
+                            "packets" => progress.packets.clear(),
+                            "aggregate" => progress.packets_prepared = false,
+                            "refs" => progress.refs_verified = false,
+                            "reload" => progress.reloaded = true,
+                            _ => progress.receipt = None,
+                        }
+                        Ok(())
+                    },
+                    &|| Ok(())
+                ),
+                Err(SourceCoordinationError::Stale)
+            );
+        }
+        assert_eq!(
+            update_own_source_journal_with_validation(
+                &identity,
+                &lease,
+                &fixture.context,
+                &fresh,
+                |journal| {
+                    journal
+                        .progress
+                        .get_mut(&operation)
+                        .unwrap()
+                        .source_publication = None;
+                    Ok(())
+                },
+                &|| Ok(())
+            ),
+            Err(SourceCoordinationError::Invalid)
+        );
+        let current = read_own_source_journal(&fixture.context).unwrap().1;
+        assert_eq!(
+            current.progress[&operation].source_publication,
+            original.progress[&operation].source_publication
+        );
+        assert_eq!(current.intents, original.intents);
+
+        // The private journal spans sources; this lease's ledger does not.
+        // An unchanged proof belonging to another source remains valid.
+        let registered_path = fixture
+            ._root
+            .path()
+            .join("C")
+            .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME);
+        std::fs::write(&registered_path, b"{\"agents\":[]}").unwrap();
+        let other = list_active_sources(&fixture.context)
+            .into_iter()
+            .find(|source| source.kind == SourceKind::RegisteredInstance)
+            .unwrap();
+        assert_ne!(other, fixture.source);
+        let other_lease = SourceWriteContext::acquire(&fixture.context, &other, &identity).unwrap();
+        assert_eq!(
+            update_own_source_journal_with_validation(
+                &identity,
+                &other_lease,
+                &fixture.context,
+                &fresh,
+                |_| Ok(()),
+                &|| Ok(())
+            ),
+            Ok(fresh)
+        );
+        assert_eq!(
+            read_own_source_journal(&fixture.context).unwrap().1,
+            current
+        );
+    }
+
+    #[test]
+    fn single_editor_r3_legacy_none_before_after() {
+        for foreign_after in [false, true] {
+            let (fixture, operation) = r3_ready_fixture();
+            let journal = read_own_source_journal(&fixture.context).unwrap().1;
+            assert!(journal.progress[&operation].source_publication.is_none());
+            let legacy = serde_json::to_value(&journal.progress[&operation]).unwrap();
+            assert!(legacy.get("sourcePublication").is_none());
+            let native = crate::config::local_config_io::source_checkpoint_native_calls();
+            if foreign_after {
+                let target =
+                    source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+                std::fs::write(&target, &journal.intents[&operation].serialized_after).unwrap();
+                assert!(fixture.resume_at(&fixture.context, &operation).is_err());
+                assert_eq!(
+                    read_own_source_journal(&fixture.context).unwrap().1,
+                    journal
+                );
+                assert_eq!(
+                    crate::config::local_config_io::source_checkpoint_native_calls(),
+                    native
+                );
+                r3_assert_pending(&fixture, &operation);
+            } else {
+                fixture.resume_at(&fixture.context, &operation).unwrap();
+                let complete = read_own_source_journal(&fixture.context).unwrap().1;
+                assert!(complete.progress[&operation].source_publication.is_some());
+                assert!(complete.progress[&operation].receipt.is_some());
+                assert_eq!(
+                    crate::config::local_config_io::source_checkpoint_native_calls(),
+                    native + 1
+                );
+            }
+        }
+    }
+
+    struct DriverFixture {
+        _root: tempfile::TempDir,
+        settings: AppSettings,
+        context: SourceReadContext,
+        source: SourceRef,
+        project: std::path::PathBuf,
+    }
+
+    impl DriverFixture {
+        fn new() -> Self {
+            let root = crate::config::settings::source_transition_test_root();
+            let project = root.path().join("project");
+            let config = root.path().join("C");
+            std::fs::create_dir_all(project.join(".ac/coding-agents")).unwrap();
+            std::fs::create_dir(&config).unwrap();
+            let settings = AppSettings {
+                project_paths: vec![project.to_string_lossy().into_owned()],
+                ..AppSettings::default()
+            };
+            let context =
+                SourceReadContext::from_settings(&settings, &config.join("settings.json")).unwrap();
+            let source = list_active_sources(&context)
+                .into_iter()
+                .find(|source| source.kind == SourceKind::CatalogPersonal)
+                .unwrap();
+            Self {
+                _root: root,
+                settings,
+                context,
+                source,
+                project,
+            }
+        }
+        fn candidate() -> serde_json::Value {
+            serde_json::json!({"schemaVersion": 2, "agents": []})
+        }
+        fn start(&self, request: &str) -> IdentityTransitionRead {
+            let revision = read_source_snapshot(&self.context, &self.source)
+                .unwrap()
+                .snapshot
+                .revision;
+            commit_source_candidate_internal(
+                &self.settings,
+                &self.context,
+                &self.source,
+                request,
+                &revision,
+                &Self::candidate(),
+                &|| Ok(()),
+            )
+            .unwrap()
+        }
+        fn expectation(&self) -> SourceResumeExpectation {
+            let identity =
+                IdentityWriteLease::acquire(&self.context, std::time::Duration::ZERO).unwrap();
+            let lease =
+                SourceWriteContext::acquire(&self.context, &self.source, &identity).unwrap();
+            SourceResumeExpectation {
+                source: lease.source_revision().unwrap(),
+                journal: read_own_source_journal(&self.context).unwrap().0,
+            }
+        }
+        fn operation(&self) -> String {
+            read_own_source_journal(&self.context)
+                .unwrap()
+                .1
+                .intents
+                .keys()
+                .next()
+                .unwrap()
+                .clone()
+        }
+    }
+
+    #[test]
+    fn single_editor_complete_without_participants() {
+        let fixture = DriverFixture::new();
+        let reloads = std::cell::Cell::new(0);
+        let result = commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "request-empty",
+            &SourceRevision::Absent {},
+            &DriverFixture::candidate(),
+            &|| {
+                reloads.set(reloads.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let operation = fixture.operation();
+        let journal = read_own_source_journal(&fixture.context).unwrap().1;
+        assert!(journal.inventories[&operation].targets.is_empty());
+        let progress = &journal.progress[&operation];
+        assert!(progress.packets.is_empty());
+        assert!(progress.refs_verified && progress.reloaded && progress.receipt.is_some());
+        assert_eq!(reloads.get(), 1);
+        assert_ne!(result.state, IdentityTransitionReadState::NotFound);
+        // Real completed Resume must recognize after without calling the publisher.
+        let publishers = source_transition_effect_counts().1;
+        let expected = fixture.expectation();
+        resume_identity_transition_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            &operation,
+            &expected,
+            &|| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(source_transition_effect_counts().1, publishers);
+    }
+
+    #[test]
+    fn single_editor_driver_request_lookup_before_uuid_and_new_click_has_new_identity() {
+        let fixture = DriverFixture::new();
+        fixture.start("request-1");
+        let operation = fixture.operation();
+        let count = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+        commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "request-1",
+            &SourceRevision::Absent {},
+            &DriverFixture::candidate(),
+            &|| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), count);
+        assert!(matches!(
+            commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "request-1",
+                &SourceRevision::Absent {},
+                &serde_json::Value::Null,
+                &|| Ok(())
+            ),
+            Err(SourceTransitionError::Coordination(
+                SourceCoordinationError::Invalid
+            ))
+        ));
+        fixture.start("request-2");
+        let journal = read_own_source_journal(&fixture.context).unwrap().1;
+        assert_eq!(journal.intents.len(), 2);
+        assert!(journal.intents.contains_key(&operation));
+        assert_eq!(
+            SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get),
+            count + 1
+        );
+    }
+
+    #[test]
+    fn single_editor_driver_complete_resume_rejects_source_z_and_root_replacement() {
+        let fixture = DriverFixture::new();
+        fixture.start("request-z");
+        let operation = fixture.operation();
+        let source_path =
+            source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        std::fs::write(&source_path, b"{\"unrelated\":\"Z\"}").unwrap();
+        let expected = fixture.expectation();
+        let count = source_transition_effect_counts().1;
+        assert!(resume_identity_transition_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            &operation,
+            &expected,
+            &|| Ok(())
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read(&source_path).unwrap(),
+            b"{\"unrelated\":\"Z\"}"
+        );
+        assert_eq!(source_transition_effect_counts().1, count);
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        assert!(original.progress[&operation].receipt.is_some());
+    }
+    #[test]
+    fn single_editor_driver_actual_guard_cuts_preserve_original_and_resume_without_new_uuid() {
+        configure_source_factory_guard_cut(None);
+        let baseline = DriverFixture::new();
+        baseline.start("baseline");
+        let cuts = source_factory_guard_calls();
+        assert!(cuts > 0);
+        for cut in 1..=cuts {
+            let fixture = DriverFixture::new();
+            configure_source_factory_guard_cut(Some(cut));
+            let result = commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "request-cut",
+                &SourceRevision::Absent {},
+                &DriverFixture::candidate(),
+                &|| Ok(()),
+            );
+            assert!(
+                !source_factory_guard_cut_armed(),
+                "actual guard cut {cut} was not reached"
+            );
+            assert!(result.is_err(), "guard refusal was swallowed at cut {cut}");
+            configure_source_factory_guard_cut(None);
+            let (_, original) = read_own_source_journal(&fixture.context).unwrap();
+            if let Some((operation, intent)) = original.intents.iter().next() {
+                let operation = operation.clone();
+                let intent = intent.clone();
+                let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+                let expected = fixture.expectation();
+                resume_identity_transition_internal(
+                    &fixture.settings,
+                    &fixture.context,
+                    &fixture.source,
+                    &operation,
+                    &expected,
+                    &|| Ok(()),
+                )
+                .unwrap();
+                let recovered = read_own_source_journal(&fixture.context).unwrap().1;
+                assert_eq!(recovered.intents[&operation], intent);
+                assert_eq!(
+                    recovered.inventories[&operation],
+                    original.inventories[&operation]
+                );
+                assert!(recovered.progress[&operation].receipt.is_some());
+                assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+                let publisher_calls = source_transition_effect_counts().1;
+                let expected = fixture.expectation();
+                resume_identity_transition_internal(
+                    &fixture.settings,
+                    &fixture.context,
+                    &fixture.source,
+                    &operation,
+                    &expected,
+                    &|| Ok(()),
+                )
+                .unwrap();
+                assert_eq!(
+                    source_transition_effect_counts().1,
+                    publisher_calls,
+                    "completed after recognition republished at cut {cut}"
+                );
+            } else {
+                assert!(result.is_err());
+                // An admission may exist, but no operation/source may be invented.
+                assert_eq!(
+                    read_source_snapshot(&fixture.context, &fixture.source)
+                        .unwrap()
+                        .snapshot
+                        .revision,
+                    SourceRevision::Absent {}
+                );
+                assert!(original.inventories.is_empty() && original.progress.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn single_editor_driver_rename_allowed_but_replaced_discovery_object_rejected() {
+        let fixture = DriverFixture::new();
+        fixture.start("request-root");
+        let operation = fixture.operation();
+        let new_source = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        let canonical_project = std::fs::canonicalize(&fixture.project).unwrap();
+        let canonical_source = std::fs::canonicalize(&new_source).unwrap();
+        let relative_source = canonical_source
+            .strip_prefix(&canonical_project)
+            .unwrap()
+            .to_path_buf();
+        let old = fixture.project.with_file_name("original-project");
+        std::fs::rename(&fixture.project, &old).unwrap();
+        std::fs::create_dir_all(fixture.project.join(".ac/coding-agents")).unwrap();
+        let old_source = old.join(relative_source);
+        std::fs::copy(&old_source, &new_source).unwrap();
+        let expected = fixture.expectation();
+        let before = source_transition_effect_counts().1;
+        assert!(resume_identity_transition_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            &operation,
+            &expected,
+            &|| Ok(())
+        )
+        .is_err());
+        assert_eq!(source_transition_effect_counts().1, before);
+        std::fs::remove_file(&new_source).unwrap();
+    }
+
+    impl DriverFixture {
+        fn with_reference_targets() -> (
+            Self,
+            serde_json::Value,
+            std::path::PathBuf,
+            std::path::PathBuf,
+        ) {
+            let fixture = Self::new();
+            let before = serde_json::json!({"schemaVersion":2,"agents":[{
+                "key":"custom-k","label":"Custom K","description":"Owned","color":"#123456",
+                "command":"original-command","envs":[]}],
+                "codingAgentProfiles":{"custom-k":{"A":{"command":"--profile", "env":{}}}}});
+            let path = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+            std::fs::write(path, serde_json::to_vec(&before).unwrap()).unwrap();
+            let snapshot = read_source_snapshot(&fixture.context, &fixture.source).unwrap();
+            let selection = ConfigurationRef {
+                version: 1,
+                source: fixture.source.clone(),
+                calculated_id: configuration_identity("original-command", &[]),
+                requested_profile: Some("A".into()),
+                profile_calculated_id: Some(profile_identity(
+                    &snapshot.snapshot.profiles["custom-k"]["A"],
+                )),
+                legacy_entry_hint: Some("custom-k".into()),
+            };
+            let target = fixture.project.join(".ac/_agent_N");
+            let disjoint = fixture.project.join(".ac/_agent_U");
+            std::fs::create_dir(&target).unwrap();
+            std::fs::create_dir(&disjoint).unwrap();
+            std::fs::write(
+                target.join("config.json"),
+                serde_json::to_vec(&serde_json::json!({"unknown":null,
+                "tooling":{"configurationRef":selection.clone(), "unknown":{"keep":[null,false]}}}))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+                serde_json::to_vec(
+                    &serde_json::json!({"unknown":[null],"tooling":{"sourceReferences":[{
+                    "configurationRef":selection.clone(), "unknown":true}]}}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let mut foreign = selection;
+            foreign.source = list_active_sources(&fixture.context)
+                .into_iter()
+                .find(|source| source.kind == SourceKind::CatalogBase)
+                .unwrap();
+            std::fs::write(
+                disjoint.join("config.json"),
+                serde_json::to_vec(&serde_json::json!({"unknown":true,
+                "tooling":{"configurationRef":foreign}}))
+                .unwrap(),
+            )
+            .unwrap();
+            let mut candidate = before;
+            candidate["agents"][0]["command"] = serde_json::json!("updated-command");
+            (fixture, candidate, target, disjoint)
+        }
+    }
+
+    #[test]
+    fn single_editor_driver_actual_packet_changes_only_affected_target_then_releases_original() {
+        let (fixture, candidate, target, disjoint) = DriverFixture::with_reference_targets();
+        let untouched = std::fs::read(disjoint.join("config.json")).unwrap();
+        let revision = read_source_snapshot(&fixture.context, &fixture.source)
+            .unwrap()
+            .snapshot
+            .revision;
+        let reloads = std::cell::Cell::new(0);
+        commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "request-packet",
+            &revision,
+            &candidate,
+            &|| {
+                reloads.set(reloads.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let operation = fixture.operation();
+        let journal = read_own_source_journal(&fixture.context).unwrap().1;
+        assert_eq!(journal.inventories[&operation].targets.len(), 1);
+        assert_eq!(journal.progress[&operation].packets.len(), 1);
+        assert_eq!(journal.progress[&operation].packets.len(), 1);
+        assert!(journal.progress[&operation].receipt.is_some());
+        assert_eq!(reloads.get(), 1);
+        assert_eq!(
+            std::fs::read(disjoint.join("config.json")).unwrap(),
+            untouched
+        );
+        assert!(!disjoint
+            .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+            .exists());
+        let decisions: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(target.join("config.json")).unwrap()).unwrap();
+        let state: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let calculated = configuration_identity("updated-command", &[]);
+        assert_eq!(
+            decisions
+                .pointer("/tooling/configurationRef/calculatedId")
+                .and_then(serde_json::Value::as_str),
+            Some(calculated.as_str())
+        );
+        assert_eq!(
+            state
+                .pointer("/tooling/sourceReferences/0/configurationRef/calculatedId")
+                .and_then(serde_json::Value::as_str),
+            Some(calculated.as_str())
+        );
+        assert_eq!(decisions["unknown"], serde_json::Value::Null);
+        assert_eq!(state["unknown"], serde_json::json!([null]));
+        assert!(!target
+            .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+            .exists());
+        let publishers = source_transition_effect_counts().1;
+        let expected = fixture.expectation();
+        resume_identity_transition_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            &operation,
+            &expected,
+            &|| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(source_transition_effect_counts().1, publishers);
+    }
+
+    #[test]
+    fn single_editor_driver_nonempty_actual_pair_guard_cuts_resume_original_packets() {
+        configure_source_factory_guard_cut(None);
+        let (baseline, candidate, _, _) = DriverFixture::with_reference_targets();
+        let revision = read_source_snapshot(&baseline.context, &baseline.source)
+            .unwrap()
+            .snapshot
+            .revision;
+        commit_source_candidate_internal(
+            &baseline.settings,
+            &baseline.context,
+            &baseline.source,
+            "baseline-packet",
+            &revision,
+            &candidate,
+            &|| Ok(()),
+        )
+        .unwrap();
+        let cuts = source_factory_guard_calls();
+        assert!(cuts > 0);
+        for cut in 1..=cuts {
+            let (fixture, candidate, target, disjoint) = DriverFixture::with_reference_targets();
+            let source_before = read_source_snapshot(&fixture.context, &fixture.source)
+                .unwrap()
+                .snapshot
+                .revision;
+            let unrelated = std::fs::read(disjoint.join("config.json")).unwrap();
+            configure_source_factory_guard_cut(Some(cut));
+            let failed = commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "request-packet-cut",
+                &source_before,
+                &candidate,
+                &|| Ok(()),
+            );
+            assert!(
+                !source_factory_guard_cut_armed(),
+                "nonempty guard cut {cut} was not reached"
+            );
+            assert!(
+                failed.is_err(),
+                "nonempty guard refusal was swallowed at cut {cut}"
+            );
+            configure_source_factory_guard_cut(None);
+            let original = read_own_source_journal(&fixture.context)
+                .unwrap_or_else(|error| {
+                    let journal_path =
+                        fixture._root.path().join("C").join(
+                            crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME,
+                        );
+                    let raw =
+                        crate::path_identity::read_bounded_regular(&journal_path, 16 * 1024 * 1024)
+                            .map(|_| ());
+                    panic!(
+                        "nonempty guard cut {cut}: journal read {error:?}; bounded read {raw:?}"
+                    );
+                })
+                .1;
+            if let Some((operation, intent)) = original.intents.iter().next() {
+                let operation = operation.clone();
+                let intent = intent.clone();
+                let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+                let expected = fixture.expectation();
+                resume_identity_transition_internal(
+                    &fixture.settings,
+                    &fixture.context,
+                    &fixture.source,
+                    &operation,
+                    &expected,
+                    &|| Ok(()),
+                )
+                .unwrap();
+                let recovered = read_own_source_journal(&fixture.context).unwrap().1;
+                assert_eq!(recovered.intents[&operation], intent);
+                assert_eq!(
+                    recovered.inventories[&operation],
+                    original.inventories[&operation]
+                );
+                assert!(recovered.progress[&operation].receipt.is_some());
+                if let Some(packet) = original.progress[&operation].packets.first() {
+                    assert_eq!(&recovered.progress[&operation].packets[0], packet);
+                }
+                assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+                assert!(!target
+                    .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+                    .exists());
+                let calls = source_transition_effect_counts().1;
+                let expected = fixture.expectation();
+                resume_identity_transition_internal(
+                    &fixture.settings,
+                    &fixture.context,
+                    &fixture.source,
+                    &operation,
+                    &expected,
+                    &|| Ok(()),
+                )
+                .unwrap();
+                assert_eq!(source_transition_effect_counts().1, calls);
+            }
+            assert_eq!(
+                std::fs::read(disjoint.join("config.json")).unwrap(),
+                unrelated
+            );
+        }
+    }
+
+    #[test]
+    fn single_editor_driver_failed_reload_retains_pending_and_activity_max_through_release() {
+        let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
+        let revision = read_source_snapshot(&fixture.context, &fixture.source)
+            .unwrap()
+            .snapshot
+            .revision;
+        let state_path = target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+        let activity = "2026-10-11T06:00:00Z";
+        let failure = commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "request-reload",
+            &revision,
+            &candidate,
+            &|| {
+                // Real physical interleaving, outside PAIR and the validation callback.
+                let mut state: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+                state["tooling"]["lastAgentMessageAt"] = serde_json::json!(activity);
+                std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+                Err(SourceCoordinationError::Io("reload interrupted".into()))
+            },
+        );
+        assert!(matches!(
+            failure,
+            Err(SourceTransitionError::Interrupted { .. })
+        ));
+        let operation = fixture.operation();
+        let before = read_own_source_journal(&fixture.context).unwrap().1;
+        assert!(before.progress[&operation].refs_verified);
+        assert!(!before.progress[&operation].reloaded);
+        assert!(before.progress[&operation].receipt.is_none());
+        assert!(target
+            .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+            .exists());
+        let expected = fixture.expectation();
+        resume_identity_transition_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            &operation,
+            &expected,
+            &|| Ok(()),
+        )
+        .unwrap();
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(
+            state
+                .pointer("/tooling/lastAgentMessageAt")
+                .and_then(serde_json::Value::as_str),
+            Some(activity)
+        );
+        assert!(read_own_source_journal(&fixture.context)
+            .unwrap()
+            .1
+            .progress[&operation]
+            .receipt
+            .is_some());
+        assert!(!target
+            .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+            .exists());
+    }
+
+    #[test]
+    fn single_editor_original_factory_real_matrix_default_group_and_history_no_default() {
+        for matrix in ["N", "K"] {
+            let mut fixture = DriverFixture::new();
+            let config = fixture._root.path().join("C");
+            let target = fixture.project.join(".ac").join(format!("_agent_{matrix}"));
+            std::fs::create_dir(&target).unwrap();
+            let mut registered = serde_json::json!({"agents":[
+                {"id":"K","label":"Own","color":"#123456","command":"own-base"},
+                {"id":"J","label":"Other","color":"#123456","command":"other-base"}],
+                "codingAgentProfiles":{"schemaVersion":2,"profilesByAgent":{"K":{
+                    "A":{"command":"--alpha","env":{}},"B":{"command":"--beta","env":{}}},
+                    "J":{"A":{"command":"--other","env":{}}}},"defaultProfileByAgent":{},
+                    "identityByAgent":{"K":"legacy-k","J":"legacy-j"}}});
+            registered["codingAgentProfiles"]["defaultProfileByAgent"][matrix] =
+                serde_json::json!("B");
+            let mut settings_value = serde_json::to_value(&fixture.settings).unwrap();
+            settings_value["codingAgentProfiles"]["defaultProfileByAgent"][matrix] =
+                serde_json::json!("B");
+            fixture.settings = serde_json::from_value(settings_value.clone()).unwrap();
+            std::fs::write(
+                config.join("settings.json"),
+                serde_json::to_vec(&settings_value).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                config.join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+                serde_json::to_vec(&registered).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(config.join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+                serde_json::to_vec(&serde_json::json!({"codingAgentProfiles":{"defaultProfileByAgent":{(matrix):"B"},
+                    "profilesByAgent":{"K":{"B":{"command":"overlay-beta","env":{}}}}}})).unwrap()).unwrap();
+            fixture.context =
+                SourceReadContext::from_settings(&fixture.settings, &config.join("settings.json"))
+                    .unwrap();
+            fixture.source = list_active_sources(&fixture.context)
+                .into_iter()
+                .find(|source| source.kind == SourceKind::RegisteredInstance)
+                .unwrap();
+            let snapshot = read_source_snapshot(&fixture.context, &fixture.source).unwrap();
+            let inputs = OriginInputs::capture(&fixture.context).unwrap();
+            let origin = LegacyCompatibilityOrigin::classify(&inputs);
+            let identity =
+                IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+            let lease =
+                SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+            let selection = ConfigurationRef {
+                version: 1,
+                source: fixture.source.clone(),
+                calculated_id: configuration_identity("own-base", &[]),
+                requested_profile: Some("B".into()),
+                profile_calculated_id: Some(profile_identity(
+                    &snapshot.snapshot.profiles["K"]["B"],
+                )),
+                legacy_entry_hint: Some("K".into()),
+            };
+            let mut candidate = registered.clone();
+            candidate["codingAgentProfiles"]["profilesByAgent"]["K"]["B"]["command"] =
+                serde_json::json!("new-beta");
+            assert!(prepare_source_candidate(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &candidate,
+                Some(&origin)
+            )
+            .is_err());
+            std::fs::write(target.join("config.json"), serde_json::to_vec(&serde_json::json!({"tooling":{
+                "replicaSelectionDefault":{"codingAgentId":"K","profile":"B","configurationRef":selection.clone()}}})).unwrap()).unwrap();
+            let capture = capture_source_inventory(
+                &fixture.settings,
+                &snapshot,
+                &origin,
+                lease.physical_source_key(),
+            )
+            .unwrap();
+            prepare_source_candidate_with_original_links(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &candidate,
+                Some(&origin),
+                Some(capture.original_links()),
+            )
+            .unwrap();
+            let mut disjoint_j = registered.clone();
+            disjoint_j["agents"][1]["command"] = serde_json::json!("other-new-base");
+            prepare_source_candidate_with_original_links(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &disjoint_j,
+                Some(&origin),
+                Some(capture.original_links()),
+            )
+            .unwrap();
+            let mut direct_default = registered.clone();
+            direct_default["codingAgentProfiles"]["defaultProfileByAgent"][matrix] =
+                serde_json::json!("A");
+            prepare_source_candidate_with_original_links(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &direct_default,
+                Some(&origin),
+                Some(capture.original_links()),
+            )
+            .unwrap();
+
+            let overlay_path =
+                config.join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+            let overlay_before = std::fs::read(&overlay_path).unwrap();
+            let mut drift: serde_json::Value = serde_json::from_slice(&overlay_before).unwrap();
+            drift["logLevel"] = serde_json::json!("debug");
+            std::fs::write(&overlay_path, serde_json::to_vec(&drift).unwrap()).unwrap();
+            let changed_inputs = OriginInputs::capture(&fixture.context).unwrap();
+            let changed_origin = LegacyCompatibilityOrigin::classify(&changed_inputs);
+            assert!(prepare_source_candidate_with_original_links(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &candidate,
+                Some(&changed_origin),
+                Some(capture.original_links())
+            )
+            .is_err());
+            std::fs::write(&overlay_path, &overlay_before).unwrap();
+            let mut missing_letter = selection.clone();
+            missing_letter.requested_profile = None;
+            missing_letter.profile_calculated_id = None;
+            std::fs::write(target.join("config.json"), serde_json::to_vec(&serde_json::json!({"tooling":{
+                "replicaSelectionDefault":{"codingAgentId":"K","configurationRef":missing_letter}}})).unwrap()).unwrap();
+            let missing = capture_source_inventory(
+                &fixture.settings,
+                &snapshot,
+                &origin,
+                lease.physical_source_key(),
+            )
+            .unwrap();
+            assert!(prepare_source_candidate_with_original_links(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &candidate,
+                Some(&origin),
+                Some(missing.original_links())
+            )
+            .is_err());
+            let mut both: serde_json::Value = serde_json::from_slice(&overlay_before).unwrap();
+            both["codingAgentProfiles"]["profilesByAgent"]["K"]["A"] =
+                serde_json::json!({"command":"overlay-alpha","env":{}});
+            std::fs::write(&overlay_path, serde_json::to_vec(&both).unwrap()).unwrap();
+            let both_inputs = OriginInputs::capture(&fixture.context).unwrap();
+            let both_origin = LegacyCompatibilityOrigin::classify(&both_inputs);
+            let mut alpha = selection.clone();
+            alpha.requested_profile = Some("A".into());
+            alpha.profile_calculated_id =
+                Some(profile_identity(&snapshot.snapshot.profiles["K"]["A"]));
+            std::fs::write(target.join("config.json"), serde_json::to_vec(&serde_json::json!({"tooling":{
+                "replicaSelectionDefault":{"codingAgentId":"K","profile":"A","configurationRef":alpha}}})).unwrap()).unwrap();
+            let alpha_capture = capture_source_inventory(
+                &fixture.settings,
+                &snapshot,
+                &both_origin,
+                lease.physical_source_key(),
+            )
+            .unwrap();
+            assert!(
+                prepare_source_candidate_with_original_links(
+                    &snapshot,
+                    &snapshot.snapshot.revision,
+                    &candidate,
+                    Some(&both_origin),
+                    Some(alpha_capture.original_links())
+                )
+                .is_err(),
+                "A proof covered changed non-disjoint B"
+            );
+            std::fs::write(&overlay_path, &overlay_before).unwrap();
+            std::fs::write(target.join("config.json"), b"{}").unwrap();
+            std::fs::write(target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+                serde_json::to_vec(&serde_json::json!({"tooling":{"sourceReferences":[{"configurationRef":selection}]}})).unwrap()).unwrap();
+            let history = capture_source_inventory(
+                &fixture.settings,
+                &snapshot,
+                &origin,
+                lease.physical_source_key(),
+            )
+            .unwrap();
+            assert!(prepare_source_candidate_with_original_links(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &candidate,
+                Some(&origin),
+                Some(history.original_links())
+            )
+            .is_err());
+            std::fs::write(
+                target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+                b"{}",
+            )
+            .unwrap();
+            let replica = fixture
+                .project
+                .join(".ac/wg-7-proof")
+                .join(format!("__agent_{matrix}"));
+            std::fs::create_dir_all(&replica).unwrap();
+            let replica_selection = ConfigurationRef {
+                version: 1,
+                source: fixture.source.clone(),
+                calculated_id: configuration_identity("own-base", &[]),
+                requested_profile: Some("B".into()),
+                profile_calculated_id: Some(profile_identity(
+                    &snapshot.snapshot.profiles["K"]["B"],
+                )),
+                legacy_entry_hint: Some("K".into()),
+            };
+            std::fs::write(
+                replica.join("config.json"),
+                serde_json::to_vec(&serde_json::json!({
+                "identity":format!("../../_agent_{matrix}"),"tooling":{"replicaSelectionDefault":{
+                    "codingAgentId":"K","profile":"B","configurationRef":replica_selection}}}))
+                .unwrap(),
+            )
+            .unwrap();
+            let replica_capture = capture_source_inventory(
+                &fixture.settings,
+                &snapshot,
+                &origin,
+                lease.physical_source_key(),
+            )
+            .unwrap();
+            assert!(
+                prepare_source_candidate_with_original_links(
+                    &snapshot,
+                    &snapshot.snapshot.revision,
+                    &candidate,
+                    Some(&origin),
+                    Some(replica_capture.original_links())
+                )
+                .is_err(),
+                "replica minted Matrix Default proof"
+            );
+        }
+    }
+
+    impl DriverFixture {
+        fn resume_at(
+            &self,
+            context: &SourceReadContext,
+            operation: &str,
+        ) -> Result<IdentityTransitionRead, SourceTransitionError> {
+            let expected = {
+                let identity =
+                    IdentityWriteLease::acquire(context, std::time::Duration::ZERO).unwrap();
+                let lease = SourceWriteContext::acquire(context, &self.source, &identity).unwrap();
+                SourceResumeExpectation {
+                    source: lease.source_revision().unwrap(),
+                    journal: read_own_source_journal(context).unwrap().0,
+                }
+            };
+            resume_identity_transition_internal(
+                &self.settings,
+                context,
+                &self.source,
+                operation,
+                &expected,
+                &|| Ok(()),
+            )
+        }
+    }
+
+    #[test]
+    fn single_editor_crash_resume_original() {
+        let cuts = [
+            ("beforeIntent", 1),
+            ("intentInventory", 1),
+            ("beforeFence", 1),
+            ("packet", 1),
+            ("packet", 2),
+            ("allPackets", 1),
+            ("prepared", 1),
+            ("sourcePublished", 1),
+            ("ref", 1),
+            ("sourceAfter", 1),
+            ("refsVerified", 1),
+            ("reloaded", 1),
+            ("receipt", 1),
+            ("release", 1),
+        ];
+        let mut reached = 0;
+        for cut in cuts {
+            assert_source_durable_cut(cut);
+            reached += 1;
+        }
+        assert_eq!(reached, cuts.len(), "not all durable cuts completed");
+    }
+
+    fn assert_source_durable_cut(cut: (&'static str, usize)) {
+        let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
+        let second = target.parent().unwrap().join("_agent_second");
+        std::fs::create_dir(&second).unwrap();
+        for name in [
+            "config.json",
+            crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME,
+        ] {
+            std::fs::copy(target.join(name), second.join(name)).unwrap();
+        }
+        let revision = read_source_snapshot(&fixture.context, &fixture.source)
+            .unwrap()
+            .snapshot
+            .revision;
+        configure_source_durable_cut(Some(cut));
+        let result = commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "durable-boundary",
+            &revision,
+            &candidate,
+            &|| Ok(()),
+        );
+        assert!(result.is_err(), "unreached cut: {cut:?}");
+        SOURCE_DURABLE_CUT
+            .with(|state| assert!(state.borrow().0.is_none(), "cut was not reached: {cut:?}"));
+        configure_source_durable_cut(None);
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        if cut.0 == "beforeIntent" {
+            assert!(original.intents.is_empty());
+            assert!(!matches!(
+                result,
+                Err(SourceTransitionError::Interrupted { .. })
+            ));
+            assert_eq!(
+                read_source_snapshot(&fixture.context, &fixture.source)
+                    .unwrap()
+                    .snapshot
+                    .revision,
+                revision
+            );
+            let fresh_revision = read_source_snapshot(&fixture.context, &fixture.source)
+                .unwrap()
+                .snapshot
+                .revision;
+            commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "new-after-before-intent",
+                &fresh_revision,
+                &candidate,
+                &|| Ok(()),
+            )
+            .unwrap();
+            return;
+        }
+        let operation = fixture.operation();
+        assert!(
+            matches!(result, Err(SourceTransitionError::Interrupted { operation_id, .. }) if operation_id == operation)
+        );
+        assert_eq!(original.inventories[&operation].targets.len(), 2);
+        let observation =
+            get_identity_transition(&fixture.context, &fixture.source, &operation).unwrap();
+        assert_ne!(observation.state, IdentityTransitionReadState::NotFound);
+        assert_original_durable_packets(&[target.as_path(), second.as_path()], &operation);
+        if matches!(
+            cut.0,
+            "intentInventory" | "beforeFence" | "packet" | "allPackets" | "prepared"
+        ) {
+            assert_eq!(
+                read_source_snapshot(&fixture.context, &fixture.source)
+                    .unwrap()
+                    .snapshot
+                    .revision,
+                revision
+            );
+        }
+        let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+        fixture.resume_at(&fixture.context, &operation).unwrap();
+        let recovered = read_own_source_journal(&fixture.context).unwrap().1;
+        assert_eq!(recovered.intents[&operation], original.intents[&operation]);
+        assert_eq!(
+            recovered.inventories[&operation],
+            original.inventories[&operation]
+        );
+        assert_eq!(recovered.progress[&operation].packets.len(), 2);
+        assert!(recovered.progress[&operation].receipt.is_some());
+        assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+        for root in [&target, &second] {
+            assert!(!root
+                .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+                .exists());
+        }
+    }
+
+    fn assert_original_durable_packets(roots: &[&std::path::Path], operation: &str) {
+        for root in roots {
+            let reservation =
+                root.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME);
+            if reservation.exists() {
+                let packet: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(reservation).unwrap()).unwrap();
+                assert_eq!(packet["planImages"]["stages"].as_array().unwrap().len(), 5);
+                assert_eq!(packet["protectedImages"].as_array().unwrap().len(), 5);
+                assert!(packet.get("timestampFloor").is_some());
+                assert_eq!(packet["operationId"].as_str(), Some(operation));
+            }
+        }
+    }
+
+    #[test]
+    fn single_editor_driver_metadata_only_keeps_refs_bytes_and_runs_full_barrier() {
+        let (fixture, _, target, _) = DriverFixture::with_reference_targets();
+        let source_path =
+            source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        let mut candidate: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(source_path).unwrap()).unwrap();
+        candidate["agents"][0]["name"] = serde_json::json!("metadata renamed");
+        let decisions = std::fs::read(target.join("config.json")).unwrap();
+        let state =
+            std::fs::read(target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME))
+                .unwrap();
+        let before = read_source_snapshot(&fixture.context, &fixture.source)
+            .unwrap()
+            .snapshot
+            .revision;
+        let reloads = std::cell::Cell::new(0);
+        commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "metadata-only",
+            &before,
+            &candidate,
+            &|| {
+                reloads.set(reloads.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let journal = read_own_source_journal(&fixture.context).unwrap().1;
+        let operation = fixture.operation();
+        assert!(journal.inventories[&operation].targets.is_empty());
+        assert!(journal.progress[&operation].packets_prepared);
+        assert!(journal.progress[&operation].packets.is_empty());
+        assert!(journal.progress[&operation].receipt.is_some());
+        assert_eq!(reloads.get(), 1);
+        assert_eq!(
+            std::fs::read(target.join("config.json")).unwrap(),
+            decisions
+        );
+        assert_eq!(
+            std::fs::read(target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME))
+                .unwrap(),
+            state
+        );
+    }
+
+    #[test]
+    fn single_editor_all_authority_context_source_target_cas_failures() {
+        for drift in [
+            "protected",
+            "packet",
+            "history-index",
+            "source-Z",
+            "settings-binding",
+            "overlay-binding",
+        ] {
+            let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
+            let bound_settings_path = fixture
+                ._root
+                .path()
+                .join("C")
+                .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+            let settings_before = if drift == "settings-binding" {
+                let before = read_identity_reference_physical(&bound_settings_path).unwrap();
+                assert_eq!(
+                    before,
+                    IdentityReferencePhysicalState::Absent,
+                    "bound settings must be physically absent before capture"
+                );
+                Some(before)
+            } else {
+                None
+            };
+            let revision = read_source_snapshot(&fixture.context, &fixture.source)
+                .unwrap()
+                .snapshot
+                .revision;
+            configure_source_durable_cut(Some(("packet", 1)));
+            assert!(commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "authority-drift",
+                &revision,
+                &candidate,
+                &|| Ok(())
+            )
+            .is_err());
+            configure_source_durable_cut(None);
+            let operation = fixture.operation();
+            let original = read_own_source_journal(&fixture.context).unwrap().1;
+            let path = match drift {
+                "protected" => target.join("config.json"),
+                "packet" => {
+                    target.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+                }
+                "history-index" => {
+                    target.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
+                }
+                "source-Z" => {
+                    source_transition_test_locator(&fixture.context, &fixture.source).unwrap()
+                }
+                "settings-binding" => bound_settings_path,
+                _ => fixture
+                    ._root
+                    .path()
+                    .join("C")
+                    .join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+            };
+            let changed = match drift {
+                "packet" => b"{corrupt packet".to_vec(),
+                "history-index" => {
+                    let mut value: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    value["tooling"]["sourceReferences"]
+                        .as_array_mut()
+                        .unwrap()
+                        .insert(0, serde_json::json!({"unknown":"new slot"}));
+                    serde_json::to_vec(&value).unwrap()
+                }
+                "protected" => {
+                    let mut value: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    value["unknown"] = serde_json::json!("external protected drift");
+                    serde_json::to_vec(&value).unwrap()
+                }
+                "source-Z" => {
+                    serde_json::to_vec(&serde_json::json!({"schemaVersion":2,"agents":[]})).unwrap()
+                }
+                _ => br#"{"logLevel":"debug"}"#.to_vec(),
+            };
+            if let Some(before) = &settings_before {
+                assert_eq!(
+                    read_identity_reference_physical(&path).unwrap(),
+                    *before,
+                    "bound settings changed before external drift"
+                );
+                assert_ne!(
+                    IdentityReferencePhysicalState::from_bytes(changed.clone()),
+                    *before,
+                    "settings drift must change physical state"
+                );
+            }
+            std::fs::write(&path, &changed).unwrap();
+            if settings_before.is_some() {
+                assert_eq!(
+                    read_identity_reference_physical(&path).unwrap(),
+                    IdentityReferencePhysicalState::from_bytes(changed.clone()),
+                    "bound settings drift was not persisted exactly"
+                );
+            }
+            let publishers = source_transition_effect_counts().1;
+            assert!(
+                fixture.resume_at(&fixture.context, &operation).is_err(),
+                "drift accepted: {drift}"
+            );
+            assert_eq!(source_transition_effect_counts().1, publishers);
+            assert_eq!(std::fs::read(path).unwrap(), changed);
+            assert_eq!(
+                read_own_source_journal(&fixture.context).unwrap().1,
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn single_editor_resume_each_stale_physical_cas_rejects_before_effect() {
+        for stale in ["source", "journal"] {
+            let fixture = DriverFixture::new();
+            configure_source_durable_cut(Some(("intentInventory", 1)));
+            assert!(commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "prefence-CAS",
+                &SourceRevision::Absent {},
+                &DriverFixture::candidate(),
+                &|| Ok(())
+            )
+            .is_err());
+            configure_source_durable_cut(None);
+            let operation = fixture.operation();
+            let journal = read_own_source_journal(&fixture.context).unwrap().1;
+            let uuid_count = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+            assert!(matches!(
+                commit_source_candidate_internal(
+                    &fixture.settings,
+                    &fixture.context,
+                    &fixture.source,
+                    "different-prefence-request",
+                    &SourceRevision::Absent {},
+                    &DriverFixture::candidate(),
+                    &|| Ok(())
+                ),
+                Err(SourceTransitionError::Interrupted { .. })
+            ));
+            assert_eq!(
+                SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get),
+                uuid_count
+            );
+            let mut expected = fixture.expectation();
+            let wrong = SourceRevision::Bytes {
+                sha256: "0".repeat(64),
+            };
+            match stale {
+                "source" => expected.source = wrong,
+                "journal" => expected.journal = wrong,
+                _ => expected.journal = wrong,
+            }
+            let publishers = source_transition_effect_counts().1;
+            assert!(matches!(
+                resume_identity_transition_internal(
+                    &fixture.settings,
+                    &fixture.context,
+                    &fixture.source,
+                    &operation,
+                    &expected,
+                    &|| Ok(())
+                ),
+                Err(SourceTransitionError::Coordination(
+                    SourceCoordinationError::Stale
+                ))
+            ));
+            assert_eq!(source_transition_effect_counts().1, publishers);
+            assert_eq!(
+                read_own_source_journal(&fixture.context).unwrap().1,
+                journal
+            );
+        }
+    }
+
+    #[test]
+    fn single_editor_registered_source_after_restores_original_groups_two_targets() {
+        for matrix in ["N", "K"] {
+            let mut fixture = DriverFixture::new();
+            let config = fixture._root.path().join("C");
+            let target = fixture.project.join(".ac").join(format!("_agent_{matrix}"));
+            std::fs::create_dir(&target).unwrap();
+            let mut registered = serde_json::json!({"agents":[
+                {"id":"K","label":"Own","color":"#123456","command":"own-base"},
+                {"id":"J","label":"Other","color":"#123456","command":"other-base"}],
+                "codingAgentProfiles":{"schemaVersion":2,"profilesByAgent":{"K":{
+                    "A":{"command":"--alpha","env":{}},"B":{"command":"--beta","env":{}}},
+                    "J":{"A":{"command":"--other","env":{}}}},"defaultProfileByAgent":{},
+                    "identityByAgent":{"K":"legacy-k","J":"legacy-j"}}});
+            registered["codingAgentProfiles"]["defaultProfileByAgent"][matrix] =
+                serde_json::json!("B");
+            let mut settings_value = serde_json::to_value(&fixture.settings).unwrap();
+            settings_value["codingAgentProfiles"]["defaultProfileByAgent"][matrix] =
+                serde_json::json!("B");
+            fixture.settings = serde_json::from_value(settings_value.clone()).unwrap();
+            std::fs::write(
+                config.join("settings.json"),
+                serde_json::to_vec(&settings_value).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                config.join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+                serde_json::to_vec(&registered).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(config.join(crate::config::instance_artifacts::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+                serde_json::to_vec(&serde_json::json!({"codingAgentProfiles":{"defaultProfileByAgent":{(matrix):"B"},
+                    "profilesByAgent":{"K":{"B":{"command":"overlay-beta","env":{}}}}}})).unwrap()).unwrap();
+            fixture.context =
+                SourceReadContext::from_settings(&fixture.settings, &config.join("settings.json"))
+                    .unwrap();
+            fixture.source = list_active_sources(&fixture.context)
+                .into_iter()
+                .find(|source| source.kind == SourceKind::RegisteredInstance)
+                .unwrap();
+            let snapshot = read_source_snapshot(&fixture.context, &fixture.source).unwrap();
+            let identity =
+                IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+            let lease =
+                SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+            let selection = ConfigurationRef {
+                version: 1,
+                source: fixture.source.clone(),
+                calculated_id: configuration_identity("own-base", &[]),
+                requested_profile: Some("B".into()),
+                profile_calculated_id: Some(profile_identity(
+                    &snapshot.snapshot.profiles["K"]["B"],
+                )),
+                legacy_entry_hint: Some("K".into()),
+            };
+            let mut candidate = registered;
+            candidate["codingAgentProfiles"]["profilesByAgent"]["K"]["B"]["command"] =
+                serde_json::json!("new-beta");
+            std::fs::write(target.join("config.json"), serde_json::to_vec(&serde_json::json!({"tooling":{
+                "replicaSelectionDefault":{"codingAgentId":"K","profile":"B","configurationRef":selection.clone()}}})).unwrap()).unwrap();
+
+            let second = fixture.project.join(".ac/_agent_second");
+            std::fs::create_dir(&second).unwrap();
+            std::fs::write(
+                second.join("config.json"),
+                serde_json::to_vec(&serde_json::json!({"tooling":{
+                "codingAgentId":"K","configurationRef":selection},"unknown":{"keep":true}}))
+                .unwrap(),
+            )
+            .unwrap();
+            drop(lease);
+            drop(identity);
+            configure_source_durable_cut(Some(("sourceAfter", 1)));
+            assert!(commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "registered-source-after",
+                &snapshot.snapshot.revision,
+                &candidate,
+                &|| Ok(())
+            )
+            .is_err());
+            configure_source_durable_cut(None);
+            let operation = fixture.operation();
+            let original = read_own_source_journal(&fixture.context).unwrap().1;
+            assert_eq!(original.inventories[&operation].targets.len(), 2);
+            assert_ne!(
+                read_source_snapshot(&fixture.context, &fixture.source)
+                    .unwrap()
+                    .snapshot
+                    .revision,
+                snapshot.snapshot.revision
+            );
+            let publishers = source_transition_effect_counts().1;
+            let source_publications = source_transition_publication_counts()[2];
+            fixture.resume_at(&fixture.context, &operation).unwrap();
+            assert_eq!(
+                source_transition_publication_counts()[2],
+                source_publications
+            );
+            let recovered = read_own_source_journal(&fixture.context).unwrap().1;
+            assert_eq!(recovered.intents[&operation], original.intents[&operation]);
+            assert_eq!(
+                recovered.inventories[&operation],
+                original.inventories[&operation]
+            );
+            assert!(recovered.progress[&operation].receipt.is_some());
+            for root in [&target, &second] {
+                assert!(!root
+                    .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+                    .exists());
+            }
+            let calls = source_transition_effect_counts().1;
+            assert!(calls > publishers); // Progress/ack/receipt have real metadata publications.
+            fixture.resume_at(&fixture.context, &operation).unwrap();
+            assert_eq!(source_transition_effect_counts().1, calls);
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(second.join("config.json")).unwrap())
+                    .unwrap();
+            assert_eq!(value["unknown"]["keep"], serde_json::json!(true));
+        }
+    }
+
+    #[test]
+    fn single_editor_missing_corrupt_original_evidence_never_reconstructs_candidate() {
+        for corrupt in [false, true] {
+            let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
+            let before = read_source_snapshot(&fixture.context, &fixture.source)
+                .unwrap()
+                .snapshot
+                .revision;
+            configure_source_durable_cut(Some(("intentInventory", 1)));
+            assert!(commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "missing-original",
+                &before,
+                &candidate,
+                &|| Ok(())
+            )
+            .is_err());
+            configure_source_durable_cut(None);
+            let operation = fixture.operation();
+            let path = fixture
+                ._root
+                .path()
+                .join("C")
+                .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
+            if corrupt {
+                std::fs::write(&path, b"{corrupt original").unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            let identity =
+                IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+            let lease =
+                SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+            let local = if corrupt {
+                SourceRevision::Bytes {
+                    sha256: "0".repeat(64),
+                }
+            } else {
+                SourceRevision::Absent {}
+            };
+            let expected = SourceResumeExpectation {
+                source: lease.source_revision().unwrap(),
+                journal: local,
+            };
+            drop(lease);
+            drop(identity);
+            let publications = source_transition_effect_counts().1;
+            assert!(resume_identity_transition_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                &operation,
+                &expected,
+                &|| Ok(())
+            )
+            .is_err());
+            assert_eq!(source_transition_effect_counts().1, publications);
+            assert_eq!(
+                read_source_snapshot(&fixture.context, &fixture.source)
+                    .unwrap()
+                    .snapshot
+                    .revision,
+                before
+            );
+            assert!(!target
+                .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+                .exists());
+            if corrupt {
+                assert_eq!(std::fs::read(path).unwrap(), b"{corrupt original");
+            } else {
+                assert!(!path.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn single_editor_thread_oracles_require_worker_owned_observation() {
+        let parent = source_transition_effect_counts();
+        let worker = std::thread::spawn(|| {
+            let fixture = DriverFixture::new();
+            let before = source_transition_effect_counts();
+            let owning_thread = std::thread::current().id();
+            commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "worker-local",
+                &SourceRevision::Absent {},
+                &DriverFixture::candidate(),
+                &|| {
+                    assert_eq!(std::thread::current().id(), owning_thread);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let after = source_transition_effect_counts();
+            (before, after)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(source_transition_effect_counts(), parent);
+        assert!(worker.1 .0[0] > worker.0 .0[0]);
+        assert_eq!(worker.1 .0[1], worker.0 .0[1], "no source lock acquisition");
+        assert!(worker.1 .1 > worker.0 .1);
+    }
+
+    #[test]
+    fn single_editor_original_slot_parser_rejects_omitted_extra_and_changed_saved_slots() {
+        let (fixture, candidate, _, _) = DriverFixture::with_reference_targets();
+        let revision = fixture.expectation().source;
+        configure_source_durable_cut(Some(("intentInventory", 1)));
+        assert!(commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "slot-completeness",
+            &revision,
+            &candidate,
+            &|| Ok(())
+        )
+        .is_err());
+        configure_source_durable_cut(None);
+        let operation = fixture.operation();
+        let inventory = read_own_source_journal(&fixture.context)
+            .unwrap()
+            .1
+            .inventories[&operation]
+            .clone();
+        inventory
+            .verify_original_slots(&source_original_inventory_slots)
+            .unwrap();
+        for corruption in ["omitted", "extra", "changed"] {
+            let mut value = serde_json::to_value(&inventory).unwrap();
+            let target = value["originalEvidence"]["discovered"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|evidence| !evidence["slots"].as_array().unwrap().is_empty())
+                .unwrap();
+            let slots = target["slots"].as_array_mut().unwrap();
+            match corruption {
+                "omitted" => {
+                    slots.remove(0);
+                }
+                "extra" => {
+                    slots.push(slots[0].clone());
+                }
+                "changed" => {
+                    slots[0][1]["calculatedId"] = serde_json::json!("changed-id");
+                }
+                _ => unreachable!(),
+            }
+            let corrupt: SourceLocalInventory = serde_json::from_value(value).unwrap();
+            assert!(corrupt
+                .verify_original_slots(&source_original_inventory_slots)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn single_editor_production_save_and_resume_effect_guard_reject_actual_external_drift() {
+        for uncertain_target in [false, true] {
+            let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
+            let path = target.join("config.json");
+            let before = std::fs::read(&path).unwrap();
+            let mut value: serde_json::Value = serde_json::from_slice(&before).unwrap();
+            value["unknown"] = serde_json::json!("actual external fence-time drift");
+            let changed = if uncertain_target {
+                b"not JSON".to_vec()
+            } else {
+                serde_json::to_vec(&value).unwrap()
+            };
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let worker_barrier = barrier.clone();
+            let worker = std::thread::spawn(move || {
+                let revision = fixture.expectation().source;
+                SOURCE_FENCE_EFFECT_BARRIER.with(|slot| *slot.borrow_mut() = Some(worker_barrier));
+                let result = commit_source_candidate_internal(
+                    &fixture.settings,
+                    &fixture.context,
+                    &fixture.source,
+                    "real-fence-drift",
+                    &revision,
+                    &candidate,
+                    &|| Ok(()),
+                );
+                let error = result.unwrap_err().to_string();
+                if uncertain_target {
+                    assert!(error.contains("sourceIdentityUncertain"), "{error}");
+                }
+                (fixture, candidate)
+            });
+            barrier.wait();
+            std::fs::write(&path, &changed).unwrap();
+            barrier.wait();
+            let (fixture, _) = worker.join().unwrap();
+            let operation = fixture.operation();
+            let original = read_own_source_journal(&fixture.context).unwrap().1;
+            let assert_no_fence = |fixture: &DriverFixture| {
+                let identity =
+                    IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO)
+                        .unwrap();
+                let lease =
+                    SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity)
+                        .unwrap();
+                assert_eq!(
+                    lease.source_revision().unwrap(),
+                    original.intents[&operation].expected_revision
+                );
+                assert!(
+                    !read_own_source_journal(&fixture.context)
+                        .unwrap()
+                        .1
+                        .progress[&operation]
+                        .packets_prepared
+                );
+            };
+            assert_no_fence(&fixture);
+            assert_eq!(std::fs::read(&path).unwrap(), changed);
+            std::fs::write(&path, &before).unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let worker_barrier = barrier.clone();
+            let resume_operation = operation.clone();
+            let worker = std::thread::spawn(move || {
+                SOURCE_FENCE_EFFECT_BARRIER.with(|slot| *slot.borrow_mut() = Some(worker_barrier));
+                let error = fixture
+                    .resume_at(&fixture.context, &resume_operation)
+                    .unwrap_err()
+                    .to_string();
+                if uncertain_target {
+                    assert!(error.contains("sourceIdentityUncertain"), "{error}");
+                }
+                fixture
+            });
+            barrier.wait();
+            std::fs::write(&path, &changed).unwrap();
+            barrier.wait();
+            let fixture = worker.join().unwrap();
+            assert_no_fence(&fixture);
+            assert_eq!(
+                read_own_source_journal(&fixture.context).unwrap().1,
+                original
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), changed);
+            std::fs::write(&path, before).unwrap();
+            fixture.resume_at(&fixture.context, &operation).unwrap();
+            assert!(read_own_source_journal(&fixture.context)
+                .unwrap()
+                .1
+                .progress[&operation]
+                .receipt
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn single_editor_production_save_resume_before_fence_drift_preserves_original() {
+        let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
+        let revision = fixture.expectation().source;
+        configure_source_durable_cut(Some(("beforeFence", 1)));
+        assert!(commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "production-before-fence",
+            &revision,
+            &candidate,
+            &|| Ok(())
+        )
+        .is_err());
+        SOURCE_DURABLE_CUT.with(|state| assert!(state.borrow().0.is_none()));
+        configure_source_durable_cut(None);
+        let operation = fixture.operation();
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        let path = target.join("config.json");
+        let before = std::fs::read(&path).unwrap();
+        let mut changed: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        changed["unknown"] = serde_json::json!("drift after actual Save initial fence check");
+        let bytes = serde_json::to_vec(&changed).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let publishers = source_transition_effect_counts().1;
+        assert!(fixture.resume_at(&fixture.context, &operation).is_err());
+        assert_eq!(source_transition_effect_counts().1, publishers);
+        assert_eq!(
+            read_own_source_journal(&fixture.context).unwrap().1,
+            original
+        );
+        std::fs::write(&path, &before).unwrap();
+        // Actual Resume reaches its own production beforeFence boundary.
+        configure_source_durable_cut(Some(("beforeFence", 1)));
+        assert!(fixture.resume_at(&fixture.context, &operation).is_err());
+        SOURCE_DURABLE_CUT.with(|state| assert!(state.borrow().0.is_none()));
+        configure_source_durable_cut(None);
+        assert_eq!(
+            read_own_source_journal(&fixture.context).unwrap().1,
+            original
+        );
+        fixture.resume_at(&fixture.context, &operation).unwrap();
+        assert!(read_own_source_journal(&fixture.context)
+            .unwrap()
+            .1
+            .progress[&operation]
+            .receipt
+            .is_some());
+    }
+
+    #[test]
+    fn single_editor_backend_primary_context_drift_preserves_original_no_next_effect() {
+        let mut fixture = DriverFixture::new();
+        configure_source_durable_cut(Some(("intentInventory", 1)));
+        assert!(commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "primary-context",
+            &SourceRevision::Absent {},
+            &DriverFixture::candidate(),
+            &|| Ok(())
+        )
+        .is_err());
+        configure_source_durable_cut(None);
+        let operation = fixture.operation();
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        let expected = fixture.expectation();
+        let other = fixture._root.path().join("other-project");
+        std::fs::create_dir_all(other.join(".ac/coding-agents")).unwrap();
+        fixture
+            .settings
+            .project_paths
+            .insert(0, other.to_string_lossy().into_owned());
+        let changed = SourceReadContext::from_settings(
+            &fixture.settings,
+            &fixture._root.path().join("C/settings.json"),
+        )
+        .unwrap();
+        let publishers = source_transition_effect_counts().1;
+        assert!(resume_identity_transition_internal(
+            &fixture.settings,
+            &changed,
+            &fixture.source,
+            &operation,
+            &expected,
+            &|| Ok(())
+        )
+        .is_err());
+        assert_eq!(source_transition_effect_counts().1, publishers);
+        assert_eq!(
+            read_own_source_journal(&fixture.context).unwrap().1,
+            original
+        );
+    }
+
+    fn existing_prepared(cut: &'static str) -> (DriverFixture, String, std::path::PathBuf) {
+        let (fixture, candidate, target, _) = DriverFixture::with_reference_targets();
+        let before = fixture.expectation().source;
+        configure_source_durable_cut(Some((cut, 1)));
+        let result = commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "existing-original",
+            &before,
+            &candidate,
+            &|| Ok(()),
+        );
+        assert!(
+            matches!(result, Err(SourceTransitionError::Interrupted { .. })),
+            "{result:?}"
+        );
+        SOURCE_DURABLE_CUT.with(|state| assert!(state.borrow().0.is_none()));
+        configure_source_durable_cut(None);
+        let operation = fixture.operation();
+        assert!(
+            read_own_source_journal(&fixture.context).unwrap().1.intents[&operation]
+                .before_bytes
+                .is_some()
+        );
+        (fixture, operation, target)
+    }
+
+    #[test]
+    fn single_editor_existing_after_equivalent_resume() {
+        for distinct_object in [false, true] {
+            let (fixture, operation, target) = existing_prepared("sourceAfter");
+            let path = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+            let original = read_own_source_journal(&fixture.context).unwrap().1;
+            let after = original.intents[&operation].serialized_after.clone();
+            let parent = crate::path_identity::retain_directory(path.parent().unwrap()).unwrap();
+            let published = parent.verify_regular_file(&path).unwrap();
+            if distinct_object {
+                std::fs::rename(&path, path.with_extension("original-diagnostic")).unwrap();
+                std::fs::write(&path, &after).unwrap();
+                assert!(!crate::path_identity::same_object(
+                    &published,
+                    &parent.verify_regular_file(&path).unwrap()
+                ));
+            }
+            let before = source_transition_publication_counts()[2];
+            let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+            let fresh = SourceReadContext::from_settings(
+                &fixture.settings,
+                &fixture._root.path().join("C/settings.json"),
+            )
+            .unwrap();
+            assert_eq!(
+                get_identity_transition(&fresh, &fixture.source, &operation)
+                    .unwrap()
+                    .state,
+                IdentityTransitionReadState::Prepared
+            );
+            assert_eq!(
+                read_own_source_journal(&fresh).unwrap().1,
+                original,
+                "status never consolidates"
+            );
+            fixture.resume_at(&fresh, &operation).unwrap();
+            let complete = read_own_source_journal(&fresh).unwrap().1;
+            assert_eq!(complete.intents[&operation], original.intents[&operation]);
+            assert_eq!(
+                complete.inventories[&operation],
+                original.inventories[&operation]
+            );
+            assert_eq!(
+                complete.progress[&operation].packets,
+                original.progress[&operation].packets
+            );
+            let progress = &complete.progress[&operation];
+            assert!(
+                progress.source_published
+                    && progress.refs_verified
+                    && progress.reloaded
+                    && progress.receipt.is_some()
+            );
+            assert!(
+                progress.source_publication.is_none(),
+                "existing equivalence has no ownership witness"
+            );
+            assert_eq!(
+                source_transition_publication_counts()[2],
+                before,
+                "zero second source publication"
+            );
+            assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+            assert_eq!(std::fs::read(path).unwrap(), after);
+            assert!(!target
+                .join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME)
+                .exists());
+        }
+    }
+
+    #[test]
+    fn single_editor_existing_after_divergent_refusal() {
+        for drift in ["bytes", "context", "parent", "irregular"] {
+            let (fixture, operation, target) = existing_prepared("sourceAfter");
+            let path = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+            let before = read_own_source_journal(&fixture.context).unwrap().1;
+            let decisions = std::fs::read(target.join("config.json")).unwrap();
+            let mut context = fixture.context.clone();
+            match drift {
+                "bytes" => std::fs::write(&path, b"{\"external\":\"Z\"}").unwrap(),
+                "context" => {
+                    let other = fixture._root.path().join("changed-project");
+                    std::fs::create_dir_all(other.join(".ac/coding-agents")).unwrap();
+                    let mut settings = fixture.settings.clone();
+                    settings
+                        .project_paths
+                        .insert(0, other.to_string_lossy().into_owned());
+                    context = SourceReadContext::from_settings(
+                        &settings,
+                        &fixture._root.path().join("C/settings.json"),
+                    )
+                    .unwrap();
+                }
+                "parent" => {
+                    let parent = path.parent().unwrap();
+                    std::fs::rename(parent, parent.with_extension("original-parent-diagnostic"))
+                        .unwrap();
+                    std::fs::create_dir(parent).unwrap();
+                    std::fs::write(&path, &before.intents[&operation].serialized_after).unwrap();
+                }
+                _ => {
+                    std::fs::remove_file(&path).unwrap();
+                    std::fs::create_dir(&path).unwrap();
+                }
+            }
+            let source = std::fs::read(&path)
+                .map(|bytes| source_transition_digest_bytes(&bytes))
+                .unwrap_or_else(|_| {
+                    source_transition_digest_bytes(&before.intents[&operation].serialized_after)
+                });
+            let expected = SourceResumeExpectation {
+                source,
+                journal: read_own_source_journal(&context).unwrap().0,
+            };
+            let reloads = std::cell::Cell::new(0);
+            let effects = source_transition_publication_counts();
+            assert!(resume_identity_transition_internal(
+                &fixture.settings,
+                &context,
+                &fixture.source,
+                &operation,
+                &expected,
+                &|| {
+                    reloads.set(reloads.get() + 1);
+                    Ok(())
+                }
+            )
+            .is_err());
+            assert_eq!(source_transition_publication_counts(), effects);
+            assert_eq!(reloads.get(), 0);
+            assert_eq!(read_own_source_journal(&fixture.context).unwrap().1, before);
+            assert_eq!(
+                std::fs::read(target.join("config.json")).unwrap(),
+                decisions
+            );
+        }
+    }
+
+    #[test]
+    fn single_editor_source_changed_refusal() {
+        for cut in [
+            "intentInventory",
+            "prepared",
+            "sourcePublished",
+            "ref",
+            "reloaded",
+            "receipt",
+        ] {
+            let (fixture, operation, target) = existing_prepared(cut);
+            let path = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+            let original = read_own_source_journal(&fixture.context).unwrap().1;
+            let before_target = std::fs::read(target.join("config.json")).unwrap();
+            let bytes = if original.progress[&operation].source_published {
+                original.intents[&operation].before_bytes.clone().unwrap()
+            } else {
+                b"{\"external\":\"Z\"}".to_vec()
+            };
+            std::fs::write(&path, bytes).unwrap();
+            let effects = source_transition_publication_counts();
+            assert!(fixture.resume_at(&fixture.context, &operation).is_err());
+            assert_eq!(
+                source_transition_publication_counts(),
+                effects,
+                "never republish after source_published"
+            );
+            assert_eq!(
+                read_own_source_journal(&fixture.context).unwrap().1,
+                original
+            );
+            assert_eq!(
+                std::fs::read(target.join("config.json")).unwrap(),
+                before_target
+            );
+        }
+    }
+
+    #[test]
+    fn single_editor_status_compatibility() {
+        let fixture = DriverFixture::new();
+        let private = fixture
+            ._root
+            .path()
+            .join("C")
+            .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
+        for bytes in [
+            b"{broken".as_slice(),
+            b"{}",
+            b"{\"schemaVersion\":1,\"intents\":{},\"inventories\":{},\"progress\":{}}",
+            b"{\"schemaVersion\":3,\"intents\":{},\"inventories\":{},\"progress\":{}}",
+        ] {
+            std::fs::write(&private, bytes).unwrap();
+            let effects = source_transition_effect_counts();
+            assert!(get_identity_transition(&fixture.context, &fixture.source, "unknown").is_err());
+            assert_eq!(std::fs::read(&private).unwrap(), bytes);
+            assert_eq!(source_transition_effect_counts(), effects);
+        }
+        std::fs::remove_file(&private).unwrap();
+        let path = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        let legacy = path
+            .parent()
+            .unwrap()
+            .join(crate::config::instance_artifacts::SOURCE_CATALOG_PERSONAL_LEDGER_NAME);
+        std::fs::write(&legacy, b"legacy-relevant-diagnostic").unwrap();
+        let effects = source_transition_effect_counts();
+        assert!(get_identity_transition(&fixture.context, &fixture.source, "unknown").is_err());
+        assert_eq!(
+            std::fs::read(&legacy).unwrap(),
+            b"legacy-relevant-diagnostic"
+        );
+        assert_eq!(source_transition_effect_counts(), effects);
+        std::fs::remove_file(&legacy).unwrap();
+        let absent = get_identity_transition(&fixture.context, &fixture.source, "unknown").unwrap();
+        assert_eq!(absent.state, IdentityTransitionReadState::NotFound);
+        assert_eq!(absent.status.journal_revision, SourceRevision::Absent {});
+        let other_source = list_active_sources(&fixture.context)
+            .into_iter()
+            .find(|s| s.kind == SourceKind::CatalogProject)
+            .unwrap();
+        let unrelated_path =
+            source_transition_test_locator(&fixture.context, &other_source).unwrap();
+        // If both kinds share a parent, the source-specific legacy leaf still isolates diagnosis.
+        let unrelated = unrelated_path
+            .parent()
+            .unwrap()
+            .join(crate::config::instance_artifacts::SOURCE_CATALOG_PROJECT_LEDGER_NAME);
+        std::fs::write(&unrelated, b"unrelated-legacy").unwrap();
+        assert_eq!(
+            get_identity_transition(&fixture.context, &fixture.source, "unknown")
+                .unwrap()
+                .state,
+            IdentityTransitionReadState::NotFound
+        );
+        assert_eq!(std::fs::read(unrelated).unwrap(), b"unrelated-legacy");
+    }
+
+    #[test]
+    fn single_editor_original_local_journal_immutable_and_missing_inventory_refusal() {
+        let (fixture, operation, target) = existing_prepared("sourcePublished");
+        let identity =
+            IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+        let lease =
+            SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+        let (revision, original) = read_own_source_journal(&fixture.context).unwrap();
+        for field in [
+            "intent",
+            "inventory",
+            "packet",
+            "prepared",
+            "published",
+            "receipt",
+        ] {
+            let result = update_own_source_journal_with_validation(
+                &identity,
+                &lease,
+                &fixture.context,
+                &revision,
+                |journal| {
+                    match field {
+                        "intent" => {
+                            journal
+                                .intents
+                                .get_mut(&operation)
+                                .unwrap()
+                                .serialized_after
+                                .push(b' ');
+                        }
+                        "inventory" => {
+                            journal.inventories.remove(&operation);
+                        }
+                        "packet" => {
+                            journal
+                                .progress
+                                .get_mut(&operation)
+                                .unwrap()
+                                .packets
+                                .clear();
+                        }
+                        "prepared" => {
+                            journal
+                                .progress
+                                .get_mut(&operation)
+                                .unwrap()
+                                .packets_prepared = false
+                        }
+                        "published" => {
+                            journal
+                                .progress
+                                .get_mut(&operation)
+                                .unwrap()
+                                .source_published = false
+                        }
+                        _ => {
+                            journal.progress.get_mut(&operation).unwrap().receipt =
+                                Some(SourceReceipt {
+                                    operation_id: operation.clone(),
+                                    source_revision: revision.clone(),
+                                })
+                        }
+                    }
+                    Ok(())
+                },
+                &|| Ok(()),
+            );
+            assert!(result.is_err(), "mutation accepted: {field}");
+            assert_eq!(
+                read_own_source_journal(&fixture.context).unwrap().1,
+                original
+            );
+        }
+        drop(lease);
+        drop(identity);
+        let private = fixture
+            ._root
+            .path()
+            .join("C")
+            .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
+        let mut damaged = serde_json::to_value(&original).unwrap();
+        damaged["inventories"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&operation);
+        let bytes = serde_json::to_vec(&damaged).unwrap();
+        std::fs::write(&private, &bytes).unwrap();
+        let expected = SourceResumeExpectation {
+            source: source_transition_digest_bytes(&original.intents[&operation].serialized_after),
+            journal: source_transition_digest_bytes(&bytes),
+        };
+        let decision = std::fs::read(target.join("config.json")).unwrap();
+        assert!(resume_identity_transition_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            &operation,
+            &expected,
+            &|| Ok(())
+        )
+        .is_err());
+        assert_eq!(std::fs::read(private).unwrap(), bytes);
+        assert_eq!(std::fs::read(target.join("config.json")).unwrap(), decision);
+    }
+    #[test]
+    fn single_editor_original_inventory_topology_and_local_fence() {
+        let (fixture, operation, target) = existing_prepared("prepared");
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        let packet_path =
+            target.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME);
+        let packet = std::fs::read(&packet_path).unwrap();
+        let late = fixture.project.join(".ac/_agent_late");
+        std::fs::create_dir(&late).unwrap();
+        std::fs::write(late.join("config.json"), b"{}").unwrap();
+        let effects = source_transition_publication_counts();
+        assert!(fixture.resume_at(&fixture.context, &operation).is_err());
+        assert_eq!(
+            read_own_source_journal(&fixture.context).unwrap().1,
+            original
+        );
+        assert_eq!(std::fs::read(&packet_path).unwrap(), packet);
+        assert_eq!(source_transition_publication_counts(), effects);
+        let result = commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "fresh-request-blocked",
+            &fixture.expectation().source,
+            &DriverFixture::candidate(),
+            &|| Ok(()),
+        );
+        assert!(
+            matches!(result, Err(SourceTransitionError::Interrupted { operation_id, .. }) if operation_id == operation)
+        );
+        assert_eq!(
+            read_own_source_journal(&fixture.context).unwrap().1,
+            original
+        );
+        std::fs::remove_file(late.join("config.json")).unwrap();
+        std::fs::remove_dir(&late).unwrap();
+        let complete = fixture.resume_at(&fixture.context, &operation).unwrap();
+        assert_eq!(complete.state, IdentityTransitionReadState::Complete);
+        let journal = read_own_source_journal(&fixture.context).unwrap().1;
+        assert_eq!(journal.intents[&operation], original.intents[&operation]);
+        assert_eq!(
+            journal.inventories[&operation],
+            original.inventories[&operation]
+        );
+        assert_eq!(
+            journal.progress[&operation].packets,
+            original.progress[&operation].packets
+        );
+    }
+
+    #[test]
+    fn single_editor_source_context_physical_key_and_uncertainty() {
+        let fixture = DriverFixture::new();
+        let path = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        let identity =
+            IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+        let counts = source_transition_effect_counts().0;
+        let lease =
+            SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+        let key = lease.physical_source_key().to_owned();
+        assert_eq!(source_transition_effect_counts().0[1], counts[1]);
+        std::fs::write(&path, b"{}").unwrap();
+        lease.revalidate(&fixture.context).unwrap();
+        let replacement = path.with_extension("replacement");
+        std::fs::write(&replacement, b"{\"replacement\":true}").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        let fresh =
+            SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+        assert_eq!(fresh.physical_source_key(), key);
+        let alias_settings = fixture._root.path().join("C/./settings.json");
+        let alias = SourceReadContext::from_settings(&fixture.settings, &alias_settings).unwrap();
+        assert_eq!(
+            SourceWriteContext::acquire(&alias, &fixture.source, &identity)
+                .unwrap()
+                .physical_source_key(),
+            key
+        );
+        let foreign = fixture._root.path().join("foreign-C");
+        std::fs::create_dir(&foreign).unwrap();
+        let foreign_context =
+            SourceReadContext::from_settings(&fixture.settings, &foreign.join("settings.json"))
+                .unwrap();
+        assert!(matches!(
+            SourceWriteContext::acquire(&foreign_context, &fixture.source, &identity),
+            Err(SourceCoordinationError::Unauthorized)
+        ));
+        let hardlink = path.with_extension("hardlink");
+        std::fs::hard_link(&path, &hardlink).unwrap();
+        assert!(SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"replacement\":true}");
+    }
+
+    #[test]
+    fn single_editor_pending_physical_source_isolation() {
+        let fixture = DriverFixture::new();
+        let registered = serde_json::json!({"agents":[
+            {"id":"K","label":"Own","color":"#123456","command":"own-base"},
+            {"id":"J","label":"Other","color":"#123456","command":"other-base"}],
+            "codingAgentProfiles":{"schemaVersion":2,"profilesByAgent":{"K":{
+                "A":{"command":"--alpha","env":{}},"B":{"command":"--beta","env":{}}},
+                "J":{"A":{"command":"--other","env":{}}}},"defaultProfileByAgent":{},
+                "identityByAgent":{"K":"legacy-k","J":"legacy-j"}}});
+        let registered_path = fixture
+            ._root
+            .path()
+            .join("C")
+            .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME);
+        std::fs::write(&registered_path, serde_json::to_vec(&registered).unwrap()).unwrap();
+        let other = list_active_sources(&fixture.context)
+            .into_iter()
+            .find(|source| source.kind == SourceKind::RegisteredInstance)
+            .unwrap();
+        assert_ne!(other, fixture.source);
+        let snapshot = read_source_snapshot(&fixture.context, &other).unwrap();
+        assert!(snapshot.snapshot.capabilities.editable_save);
+        let revision = snapshot.snapshot.revision;
+        let mut candidate_b: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registered_path).unwrap()).unwrap();
+        candidate_b["agents"][0]["command"] = serde_json::json!("updated-own-base");
+        configure_source_durable_cut(Some(("intentInventory", 1)));
+        assert!(commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &fixture.source,
+            "personal-prefence",
+            &SourceRevision::Absent {},
+            &DriverFixture::candidate(),
+            &|| Ok(())
+        )
+        .is_err());
+        configure_source_durable_cut(None);
+        let original = read_own_source_journal(&fixture.context).unwrap().1;
+        let original_a_bytes: Vec<_> = original
+            .intents
+            .iter()
+            .map(|(id, intent)| {
+                (
+                    id.clone(),
+                    serde_json::to_vec(intent).unwrap(),
+                    serde_json::to_vec(&original.inventories[id]).unwrap(),
+                )
+            })
+            .collect();
+        commit_source_candidate_internal(
+            &fixture.settings,
+            &fixture.context,
+            &other,
+            "base-independent",
+            &revision,
+            &candidate_b,
+            &|| Ok(()),
+        )
+        .unwrap();
+        let after = read_own_source_journal(&fixture.context).unwrap().1;
+        for (id, intent) in &original.intents {
+            assert_eq!(after.intents.get(id), Some(intent));
+            assert_eq!(after.inventories.get(id), original.inventories.get(id));
+        }
+        for (id, intent_bytes, inventory_bytes) in original_a_bytes {
+            assert_eq!(
+                serde_json::to_vec(&after.intents[&id]).unwrap(),
+                intent_bytes
+            );
+            assert_eq!(
+                serde_json::to_vec(&after.inventories[&id]).unwrap(),
+                inventory_bytes
+            );
+        }
+        assert_eq!(after.intents.len(), 2);
+        assert!(after
+            .intents
+            .values()
+            .any(|intent| intent.source == fixture.source));
+        assert!(after.intents.values().any(|intent| intent.source == other));
     }
 }

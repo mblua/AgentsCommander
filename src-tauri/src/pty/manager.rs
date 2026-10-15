@@ -19,6 +19,1594 @@ use crate::telegram::manager::OutputSenderMap;
 
 pub(crate) use crate::pty::output::TerminalOutputAttachError;
 
+// Runtime-only authority. No persisted lease, filesystem, settings or transport callouts.
+#[derive(Clone, Default)]
+pub(crate) struct ResponseCloseState {
+    inner: Arc<Mutex<ResponseCloseInner>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ResponseClosePublisher {
+    Manager = 1,
+    Pty = 2,
+    RawOutput = 4,
+    Detector = 8,
+    Menu = 16,
+    Hold = 32,
+}
+
+#[derive(Default)]
+struct ResponseCloseInner {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    ready: bool,
+    publishers: u8,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    work_bootstrapped: bool,
+    enabled: bool,
+    seconds: u32,
+    settings_epoch: u64,
+    failed: bool,
+    routes: HashMap<Uuid, ResponseCloseRoute>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    work: HashMap<String, ResponseCloseWork>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    create_owners: HashMap<String, HashMap<Uuid, bool>>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    next_return_sequence: u64,
+    unknown_spawns: usize,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    terminal_returns: HashMap<(ResponseRouteIdentity, ResponseRouteIdentity, String), String>,
+}
+
+#[derive(Default)]
+struct ResponseCloseWork {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    provisional: usize,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    dispatch: usize,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pending: HashMap<String, String>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    terminal: HashMap<String, String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ResponseRouteIdentity {
+    pub target: String,
+    pub session_id: Uuid,
+    pub token: Uuid,
+    pub generation: u64,
+    pub carrier_version: u64,
+    pub backend: SessionBackendKind,
+}
+
+#[derive(Clone)]
+struct ResponseClosePolicy {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    nonce: Uuid,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    member: ResponseRouteIdentity,
+    coordinator: ResponseRouteIdentity,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    work_epoch: u64,
+    settings_epoch: u64,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    request_key: String,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    request_digest: String,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    opened_at: std::time::Instant,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    submitted: bool,
+    registered_at: Option<std::time::Instant>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    success_at: Option<std::time::Instant>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    returns: HashMap<String, (String, u64)>,
+    selected: Option<Uuid>,
+}
+
+struct ResponseCloseRoute {
+    generation: u64,
+    facts: Option<ResponseRouteIdentity>,
+    eligible: bool,
+    manager_token: Option<Uuid>,
+    manager_version: u64,
+    manager_working: Option<bool>,
+    detector_working: Option<bool>,
+    menu_blocked: Option<bool>,
+    hold_until: Option<std::time::Instant>,
+    hold_known: bool,
+    hold_window: Option<std::time::Duration>,
+    held: std::collections::HashSet<String>,
+    writers: usize,
+    work_epoch: u64,
+    activity_version: u64,
+    last_change: std::time::Instant,
+    policy: Option<ResponseClosePolicy>,
+    closing: Option<Uuid>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    closing_target: Option<String>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    committed_binding: Option<ResponseCloseCommittedBinding>,
+}
+
+impl ResponseCloseRoute {
+    fn touch(&mut self, now: std::time::Instant) -> bool {
+        self.last_change = self.last_change.max(now);
+        if let Some(policy) = &mut self.policy {
+            policy.selected = None;
+        }
+        if let Some(next) = self.activity_version.checked_add(1) {
+            self.activity_version = next;
+            true
+        } else {
+            self.policy = None;
+            false
+        }
+    }
+    fn invalidate(&mut self, now: std::time::Instant) -> bool {
+        self.policy = None;
+        if let Some(next) = self.work_epoch.checked_add(1) {
+            self.work_epoch = next;
+            self.touch(now)
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseCloseError {
+    ClosingDeferred,
+    Unknown,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    Conflict,
+    Unavailable,
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct WorkAdmission {
+    state: ResponseCloseState,
+    target: String,
+    key: String,
+    active: bool,
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct WorkDeliveryReservation {
+    state: ResponseCloseState,
+    target: String,
+}
+
+pub(crate) struct WriterAdmission {
+    counted: bool,
+    state: ResponseCloseState,
+    session_id: Uuid,
+    generation: u64,
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct CreateOwnerReservation {
+    state: ResponseCloseState,
+    target: String,
+    nonce: Uuid,
+    classification: CreateClassification,
+}
+
+/// P05 supplies current ALL-scopes classification under the publication permit.
+/// A reservation records ownership; it does not prove protection or identity.
+#[derive(Clone)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) enum CreateClassification {
+    Foreign {
+        publication_epoch: u64,
+    },
+    Protected {
+        identity: ResponseRouteIdentity,
+        // Dormant until P05 integration; remove with real callers.
+        #[allow(dead_code)]
+        publication_epoch: u64,
+    },
+    Preparing {
+        owner_nonce: Uuid,
+        identity: ResponseRouteIdentity,
+        // Dormant until P05 integration; remove with real callers.
+        #[allow(dead_code)]
+        publication_epoch: u64,
+    },
+    Unknown,
+}
+
+impl CreateOwnerReservation {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn classification(&self) -> &CreateClassification {
+        &self.classification
+    }
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) enum CreateAdmission {
+    Reserved(CreateOwnerReservation),
+    ClosingDeferred,
+    WaitingIdentity,
+}
+
+#[derive(Clone)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct ResponseDeliveryContext {
+    session_id: Uuid,
+    nonce: Uuid,
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct ResponseDeliveryProof {
+    pub context: ResponseDeliveryContext,
+    pub member: ResponseRouteIdentity,
+    pub coordinator: ResponseRouteIdentity,
+    pub published_carrier_version: u64,
+}
+
+#[derive(Clone)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct ReturnObservationContext {
+    settings_epoch: u64,
+    sequence: u64,
+    session_id: Uuid,
+    nonce: Uuid,
+    key: String,
+    digest: String,
+    member: ResponseRouteIdentity,
+    coordinator: ResponseRouteIdentity,
+    work_epoch: u64,
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct ReturnDeliveryProof {
+    pub context: ReturnObservationContext,
+}
+
+#[derive(Clone)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct ResponseCloseTicket {
+    session_id: Uuid,
+    generation: u64,
+    nonce: Uuid,
+    selection_nonce: Uuid,
+    work_epoch: u64,
+    activity_version: u64,
+    carrier_version: u64,
+    settings_epoch: u64,
+    member: ResponseRouteIdentity,
+}
+
+/// Incarnation is the exact UUID/token/generation tuple; backend kind and the
+/// checked generation identify the frozen backend route. Version stays at commit.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ResponseCloseCommittedBinding {
+    pub member: ResponseRouteIdentity,
+    pub close_nonce: Uuid,
+}
+
+impl ResponseCloseTicket {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn committed_binding(&self) -> ResponseCloseCommittedBinding {
+        ResponseCloseCommittedBinding {
+            member: self.member.clone(),
+            close_nonce: self.selection_nonce,
+        }
+    }
+}
+
+/// These are owned facts from P05's latest guarded manager/Confirmed checkpoint
+/// validation. P03 never performs I/O or imports its publication/effect types.
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct ResponseCloseCurrentSettlement {
+    pub current_carrier_version: u64,
+    pub confirmed_carrier_version: u64,
+    pub checkpoint_nonce: Uuid,
+    pub current_checkpoint_nonce: Uuid,
+    pub publication_epoch: u64,
+    pub current_publication_epoch: u64,
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) enum ResponseCloseSettlementOutcome {
+    Dormant {
+        exact_backend_absent: bool,
+        all_effects_completed: bool,
+        retained_exited_confirmed: bool,
+        selection_settled: bool,
+    },
+    ReopenAfterKillFailure {
+        terminal_kill_failure: bool,
+        all_effects_terminal: bool,
+        original_backend_alive: bool,
+        original_manager_identity_intact: bool,
+    },
+}
+
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct ResponseCloseSettlementEvidence {
+    pub committed_binding: ResponseCloseCommittedBinding,
+    pub current_settlement: ResponseCloseCurrentSettlement,
+    pub outcome: ResponseCloseSettlementOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct StaleOrInvalidSettlement;
+
+impl ResponseCloseInner {
+    fn target_is_closing(&self, target: &str) -> bool {
+        self.routes
+            .values()
+            .any(|route| route.closing.is_some() && route.closing_target.as_deref() == Some(target))
+    }
+}
+
+impl ResponseCloseState {
+    pub(crate) fn bind_publisher(&self, publisher: ResponseClosePublisher) {
+        let _ = self.with_inner(|inner| inner.publishers |= publisher as u8);
+    }
+    pub(crate) fn publishers_bound(&self) -> bool {
+        self.with_inner(|inner| inner.publishers == 63)
+            .unwrap_or(false)
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn mark_work_bootstrapped(&self) {
+        let _ = self.with_inner(|inner| inner.work_bootstrapped = true);
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn try_enable_readiness(&self) -> Result<(), ResponseCloseError> {
+        self.with_inner(|inner| {
+            if inner.publishers != 63 || !inner.work_bootstrapped {
+                return Err(ResponseCloseError::Unavailable);
+            }
+            inner.ready = true;
+            Ok(())
+        })?
+    }
+    pub(crate) fn fail_closed(&self) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.failed = true;
+        for route in inner.routes.values_mut() {
+            route.policy = None;
+        }
+    }
+    // Publish primitive row facts under the manager guard, preserving the P03 API.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn publish_manager_row(
+        &self,
+        id: Uuid,
+        token: Uuid,
+        generation: u64,
+        version: u64,
+        eligible: bool,
+        working: bool,
+        now: std::time::Instant,
+    ) {
+        let _ = self.with_inner(|inner| {
+            let Some(route) = inner
+                .routes
+                .get_mut(&id)
+                .filter(|r| r.generation == generation)
+            else {
+                return;
+            };
+            if route.manager_token != Some(token)
+                || route.manager_version != version
+                || route.eligible != eligible
+            {
+                if !route.invalidate(now) {
+                    inner.failed = true;
+                }
+                route.facts = None;
+            } else if route.manager_working != Some(working) && !route.touch(now) {
+                inner.failed = true;
+            }
+            route.manager_token = Some(token);
+            route.manager_version = version;
+            route.manager_working = Some(working);
+            route.eligible = eligible;
+        });
+    }
+    fn uuid_closing(&self, id: Uuid) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .routes
+            .get(&id)
+            .is_some_and(|route| route.closing.is_some())
+    }
+    fn begin_unresolved_spawn(&self) {
+        let _ = self.with_inner(|inner| {
+            let Some(next) = inner.unknown_spawns.checked_add(1) else {
+                inner.failed = true;
+                return;
+            };
+            inner.unknown_spawns = next;
+            for route in inner.routes.values_mut() {
+                if !route.touch(std::time::Instant::now()) {
+                    inner.failed = true;
+                }
+            }
+        });
+    }
+    fn end_unresolved_spawn(&self) {
+        let _ = self.with_inner(|inner| {
+            let Some(next) = inner.unknown_spawns.checked_sub(1) else {
+                inner.failed = true;
+                return;
+            };
+            inner.unknown_spawns = next;
+            for route in inner.routes.values_mut() {
+                if !route.touch(std::time::Instant::now()) {
+                    inner.failed = true;
+                }
+            }
+        });
+    }
+    pub(crate) fn wiring_identity(&self) -> usize {
+        Arc::as_ptr(&self.inner) as usize
+    }
+    pub(crate) fn same_state(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+    fn with_inner<R>(
+        &self,
+        f: impl FnOnce(&mut ResponseCloseInner) -> R,
+    ) -> Result<R, ResponseCloseError> {
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poison) => {
+                let mut inner = poison.into_inner();
+                inner.failed = true;
+                return Err(ResponseCloseError::Unavailable);
+            }
+        };
+        if inner.failed {
+            return Err(ResponseCloseError::Unavailable);
+        }
+        Ok(f(&mut inner))
+    }
+    pub(crate) fn apply_settings(&self, enabled: bool, seconds: u32, now: std::time::Instant) {
+        let _ = self.with_inner(|inner| {
+            if inner.enabled == enabled && inner.seconds == seconds {
+                return;
+            }
+            let Some(epoch) = inner.settings_epoch.checked_add(1) else {
+                inner.failed = true;
+                return;
+            };
+            inner.settings_epoch = epoch;
+            inner.enabled = enabled && (1..=3600).contains(&seconds);
+            inner.seconds = seconds;
+            for route in inner.routes.values_mut() {
+                if !inner.enabled {
+                    route.policy = None;
+                } else if let Some(policy) = &mut route.policy {
+                    if policy.registered_at.is_some() {
+                        policy.settings_epoch = epoch;
+                    } else {
+                        route.policy = None;
+                    }
+                }
+                if !route.touch(now) {
+                    inner.failed = true;
+                }
+            }
+        });
+    }
+    pub(crate) fn register_route(&self, id: Uuid, generation: u64, now: std::time::Instant) {
+        let _ = self.with_inner(|inner| {
+            // A route still Closing is never reopened by registration.
+            if inner.routes.get(&id).is_some_and(|r| r.closing.is_some()) {
+                inner.failed = true;
+                return;
+            }
+            inner.routes.insert(
+                id,
+                ResponseCloseRoute {
+                    generation,
+                    facts: None,
+                    eligible: false,
+                    manager_token: None,
+                    manager_version: 0,
+                    manager_working: None,
+                    detector_working: None,
+                    menu_blocked: None,
+                    hold_until: None,
+                    hold_known: false,
+                    hold_window: None,
+                    held: Default::default(),
+                    writers: 0,
+                    work_epoch: 0,
+                    activity_version: 0,
+                    last_change: now,
+                    policy: None,
+                    closing: None,
+                    closing_target: None,
+                    committed_binding: None,
+                },
+            );
+        });
+    }
+    pub(crate) fn remove_route(&self, id: Uuid, generation: u64) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner
+                .routes
+                .get_mut(&id)
+                .filter(|r| r.generation == generation)
+            {
+                route.policy = None;
+                route.facts = None;
+                route.eligible = false;
+                // Keep committed Closing until its effect owner settles it.
+                if route.closing.is_none() {
+                    inner.routes.remove(&id);
+                }
+            }
+        });
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn publish_manager_facts(
+        &self,
+        identity: ResponseRouteIdentity,
+        eligible: bool,
+        working: bool,
+        now: std::time::Instant,
+    ) {
+        let _ = self.with_inner(|inner| {
+            let Some(route) = inner.routes.get_mut(&identity.session_id) else {
+                return;
+            };
+            if route.generation != identity.generation
+                || route.manager_token != Some(identity.token)
+                || route.manager_version != identity.carrier_version
+            {
+                return;
+            }
+            let identity_changed = route.facts.as_ref() != Some(&identity);
+            let changed_id = identity.session_id;
+            if identity_changed || route.eligible != eligible {
+                if !route.invalidate(now) {
+                    inner.failed = true;
+                }
+            } else if route.manager_working != Some(working) && !route.touch(now) {
+                inner.failed = true;
+            }
+            route.facts = Some(identity);
+            route.eligible = eligible;
+            route.manager_working = Some(working);
+            if identity_changed {
+                for dependent in inner.routes.values_mut().filter(|r| {
+                    r.policy
+                        .as_ref()
+                        .is_some_and(|p| p.coordinator.session_id == changed_id)
+                }) {
+                    if !dependent.invalidate(now) {
+                        inner.failed = true;
+                    }
+                }
+            }
+        });
+    }
+    pub(crate) fn invalidate_manager_row(&self, id: Uuid, now: std::time::Instant) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner.routes.get_mut(&id) {
+                route.facts = None;
+                route.eligible = false;
+                if !route.invalidate(now) {
+                    inner.failed = true;
+                }
+            }
+            for route in inner.routes.values_mut() {
+                if route
+                    .policy
+                    .as_ref()
+                    .is_some_and(|p| p.coordinator.session_id == id)
+                    && !route.invalidate(now)
+                {
+                    inner.failed = true;
+                }
+            }
+        });
+    }
+    pub(crate) fn observe_raw_output(&self, id: Uuid, now: std::time::Instant) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner.routes.get_mut(&id) {
+                if !route.touch(now) {
+                    inner.failed = true;
+                }
+            }
+        });
+    }
+    pub(crate) fn observe_detector(&self, id: Uuid, working: bool, now: std::time::Instant) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner.routes.get_mut(&id) {
+                if route.detector_working != Some(working) && !route.touch(now) {
+                    inner.failed = true;
+                }
+                route.detector_working = Some(working);
+            }
+        });
+    }
+    pub(crate) fn publish_menu(&self, id: Uuid, blocked: Option<bool>, now: std::time::Instant) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner.routes.get_mut(&id) {
+                if route.menu_blocked != blocked && !route.touch(now) {
+                    inner.failed = true;
+                }
+                route.menu_blocked = blocked;
+            }
+        });
+    }
+    pub(crate) fn publish_hold(
+        &self,
+        id: Uuid,
+        until: Option<std::time::Instant>,
+        known: bool,
+        now: std::time::Instant,
+    ) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner.routes.get_mut(&id) {
+                if (route.hold_until, route.hold_known) != (until, known) && !route.touch(now) {
+                    inner.failed = true;
+                }
+                route.hold_until = until;
+                route.hold_known = known;
+            }
+        });
+    }
+    pub(crate) fn publish_held_key(
+        &self,
+        id: Uuid,
+        key: &str,
+        held: bool,
+        now: std::time::Instant,
+    ) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner.routes.get_mut(&id) {
+                let changed = if held {
+                    route.held.insert(key.to_owned())
+                } else {
+                    route.held.remove(key)
+                };
+                if changed && !route.touch(now) {
+                    inner.failed = true;
+                }
+            }
+        });
+    }
+    pub(crate) fn generation(&self, id: Uuid) -> Option<u64> {
+        self.with_inner(|inner| inner.routes.get(&id).map(|r| r.generation))
+            .ok()
+            .flatten()
+    }
+    pub(crate) fn is_closing(&self, id: Uuid, generation: u64) -> Result<bool, ResponseCloseError> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        inner
+            .routes
+            .get(&id)
+            .filter(|route| route.generation == generation)
+            .map(|route| route.closing.is_some())
+            .or_else(|| inner.failed.then_some(false))
+            .ok_or(ResponseCloseError::Unknown)
+    }
+    pub(crate) fn publish_typing_key(
+        &self,
+        id: Uuid,
+        window: Option<std::time::Duration>,
+        now: std::time::Instant,
+    ) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner.routes.get_mut(&id) {
+                if !route.touch(now) {
+                    inner.failed = true;
+                }
+                match window.and_then(|window| now.checked_add(window).map(|end| (window, end))) {
+                    Some((window, end)) => {
+                        let known =
+                            route.hold_known && route.hold_window.is_none_or(|old| old == window);
+                        route.hold_until = Some(route.hold_until.map_or(end, |old| old.max(end)));
+                        route.hold_window = Some(window);
+                        route.hold_known = known;
+                    }
+                    None => route.hold_known = false,
+                }
+            }
+        });
+    }
+    pub(crate) fn refresh_hold_snapshot(
+        &self,
+        id: Uuid,
+        window: std::time::Duration,
+        closed: bool,
+        now: std::time::Instant,
+    ) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner.routes.get_mut(&id) {
+                if !closed {
+                    if !route.hold_known || route.hold_until.is_some() {
+                        route.hold_until = None;
+                        route.hold_known = true;
+                        if !route.touch(now) {
+                            inner.failed = true;
+                        }
+                    }
+                } else if route.hold_window != Some(window)
+                    || route.hold_until.is_none_or(|end| now > end)
+                {
+                    // A changed window or unseen manual episode has no timestamp
+                    // authority here. Block until the upper snapshot observes open.
+                    route.hold_known = false;
+                    if !route.touch(now) {
+                        inner.failed = true;
+                    }
+                }
+                route.hold_window = Some(window);
+            }
+        });
+    }
+    pub(crate) fn reserve_hold_change(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<WriterAdmission>, ResponseCloseError> {
+        let Some(generation) = self.generation(id) else {
+            return Ok(None);
+        };
+        self.reserve_writer_inner(id, generation, false).map(Some)
+    }
+    fn reserve_writer_inner(
+        &self,
+        id: Uuid,
+        generation: u64,
+        invalidate: bool,
+    ) -> Result<WriterAdmission, ResponseCloseError> {
+        // Tracker failure disables feature closing, but does not break ordinary
+        // input. A committed Closing is retained even when its mutex poisons.
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poison) => {
+                let mut inner = poison.into_inner();
+                inner.failed = true;
+                inner
+            }
+        };
+        let failed = inner.failed;
+        if failed
+            && !inner
+                .routes
+                .get(&id)
+                .is_some_and(|r| r.generation == generation && r.closing.is_some())
+        {
+            return Ok(WriterAdmission {
+                state: self.clone(),
+                session_id: id,
+                generation,
+                counted: false,
+            });
+        }
+        let route = inner
+            .routes
+            .get_mut(&id)
+            .filter(|r| r.generation == generation)
+            .ok_or(ResponseCloseError::Unknown)?;
+        if route.closing.is_some() {
+            return Err(ResponseCloseError::ClosingDeferred);
+        }
+        if failed {
+            return Ok(WriterAdmission {
+                state: self.clone(),
+                session_id: id,
+                generation,
+                counted: false,
+            });
+        }
+        let Some(next) = route.writers.checked_add(1) else {
+            inner.failed = true;
+            return Ok(WriterAdmission {
+                state: self.clone(),
+                session_id: id,
+                generation,
+                counted: false,
+            });
+        };
+        route.writers = next;
+        let now = std::time::Instant::now();
+        if !(if invalidate {
+            route.invalidate(now)
+        } else {
+            route.touch(now)
+        }) {
+            inner.failed = true;
+        }
+        Ok(WriterAdmission {
+            state: self.clone(),
+            session_id: id,
+            generation,
+            counted: true,
+        })
+    }
+    pub(crate) fn reserve_writer(
+        &self,
+        id: Uuid,
+        generation: u64,
+    ) -> Result<WriterAdmission, ResponseCloseError> {
+        self.reserve_writer_inner(id, generation, true)
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn reserve_work(
+        &self,
+        target: &str,
+        key: &str,
+    ) -> Result<WorkAdmission, ResponseCloseError> {
+        self.with_inner(|inner| {
+            let work = inner.work.entry(target.to_owned()).or_default();
+            if work.pending.contains_key(key) || work.terminal.contains_key(key) {
+                return Ok(WorkAdmission {
+                    state: self.clone(),
+                    target: target.to_owned(),
+                    key: key.to_owned(),
+                    active: false,
+                });
+            }
+            let Some(next) = work.provisional.checked_add(1) else {
+                inner.failed = true;
+                return Err(ResponseCloseError::Unavailable);
+            };
+            work.provisional = next;
+            for route in inner
+                .routes
+                .values_mut()
+                .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == target))
+            {
+                if !route.touch(std::time::Instant::now()) {
+                    inner.failed = true;
+                }
+            }
+            Ok(WorkAdmission {
+                state: self.clone(),
+                target: target.to_owned(),
+                key: key.to_owned(),
+                active: true,
+            })
+        })?
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn settle_terminal(&self, target: &str, key: &str, now: std::time::Instant) {
+        let _ = self.with_inner(|inner| {
+            let work = inner.work.entry(target.to_owned()).or_default();
+            let Some(digest) = work.pending.remove(key) else {
+                return;
+            };
+            work.terminal.insert(key.to_owned(), digest);
+            for route in inner
+                .routes
+                .values_mut()
+                .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == target))
+            {
+                if !route.touch(now) {
+                    inner.failed = true;
+                }
+            }
+        });
+    }
+    pub(crate) fn target_is_closing(&self, target: &str) -> bool {
+        let inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poison) => {
+                let mut inner = poison.into_inner();
+                inner.failed = true;
+                inner
+            }
+        };
+        inner.target_is_closing(target)
+    }
+
+    pub(crate) fn begin_delivery(
+        &self,
+        target: &str,
+    ) -> Result<WorkDeliveryReservation, ResponseCloseError> {
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poison) => {
+                let mut inner = poison.into_inner();
+                inner.failed = true;
+                inner
+            }
+        };
+        if inner.target_is_closing(target) {
+            return Err(ResponseCloseError::ClosingDeferred);
+        }
+        if inner.failed {
+            return Err(ResponseCloseError::Unavailable);
+        }
+        let work = inner.work.entry(target.to_owned()).or_default();
+        let Some(next) = work.dispatch.checked_add(1) else {
+            inner.failed = true;
+            return Err(ResponseCloseError::Unavailable);
+        };
+        work.dispatch = next;
+        drop(inner);
+        Ok(WorkDeliveryReservation {
+            state: self.clone(),
+            target: target.to_owned(),
+        })
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn reserve_create_owner(
+        &self,
+        target: &str,
+        nonce: Uuid,
+        classification: CreateClassification,
+    ) -> Result<CreateAdmission, ResponseCloseError> {
+        self.with_inner(|inner| {
+            if matches!(&classification, CreateClassification::Unknown) {
+                return Ok(CreateAdmission::WaitingIdentity);
+            }
+            if let CreateClassification::Protected { identity, .. }
+            | CreateClassification::Preparing { identity, .. } = &classification
+            {
+                if identity.target != target {
+                    return Err(ResponseCloseError::Conflict);
+                }
+            }
+            if inner.routes.values().any(|route| {
+                route.closing.is_some() && route.closing_target.as_deref() == Some(target)
+            }) {
+                return Ok(CreateAdmission::ClosingDeferred);
+            }
+            if matches!(
+                &classification,
+                CreateClassification::Preparing { owner_nonce, .. } if *owner_nonce != nonce
+            ) {
+                return Ok(CreateAdmission::ClosingDeferred);
+            }
+            let exclusive = !matches!(&classification, CreateClassification::Foreign { .. });
+            let owners = inner.create_owners.entry(target.to_owned()).or_default();
+            if owners.contains_key(&nonce) {
+                return Err(ResponseCloseError::Conflict);
+            }
+            // Foreign ownership is non-exclusive, including a retained core
+            // whose caller was cancelled. Never infer protection from owners.
+            if exclusive && owners.values().any(|exclusive| *exclusive) {
+                return Ok(CreateAdmission::ClosingDeferred);
+            }
+            owners.insert(nonce, exclusive);
+            for route in inner
+                .routes
+                .values_mut()
+                .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == target))
+            {
+                if !route.touch(std::time::Instant::now()) {
+                    inner.failed = true;
+                }
+            }
+            Ok(CreateAdmission::Reserved(CreateOwnerReservation {
+                state: self.clone(),
+                target: target.to_owned(),
+                nonce,
+                classification,
+            }))
+        })?
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn reserve_policy_candidate(
+        &self,
+        member: ResponseRouteIdentity,
+        coordinator: ResponseRouteIdentity,
+        key: String,
+        digest: String,
+        now: std::time::Instant,
+    ) -> Result<ResponseDeliveryContext, ResponseCloseError> {
+        self.with_inner(|inner| {
+            if !inner.ready || !inner.work_bootstrapped || !inner.enabled {
+                return Err(ResponseCloseError::Unavailable);
+            }
+            if inner
+                .work
+                .get(&member.target)
+                .is_some_and(|w| w.terminal.contains_key(&key))
+            {
+                return Err(ResponseCloseError::Conflict);
+            }
+            if !inner
+                .work
+                .get(&member.target)
+                .is_some_and(|w| w.pending.get(&key) == Some(&digest))
+            {
+                return Err(ResponseCloseError::Unknown);
+            }
+            let route = inner
+                .routes
+                .get_mut(&member.session_id)
+                .ok_or(ResponseCloseError::Unknown)?;
+            if route.facts.as_ref() != Some(&member) || !route.eligible || route.closing.is_some() {
+                return Err(ResponseCloseError::Unknown);
+            }
+            let nonce = Uuid::new_v4();
+            route.policy = Some(ResponseClosePolicy {
+                nonce,
+                member: member.clone(),
+                coordinator,
+                work_epoch: route.work_epoch,
+                settings_epoch: inner.settings_epoch,
+                request_key: key,
+                request_digest: digest,
+                opened_at: now,
+                submitted: false,
+                registered_at: None,
+                success_at: None,
+                returns: HashMap::new(),
+                selected: None,
+            });
+            Ok(ResponseDeliveryContext {
+                session_id: member.session_id,
+                nonce,
+            })
+        })?
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn mark_request_submitted(
+        &self,
+        context: &ResponseDeliveryContext,
+        submitted: bool,
+    ) {
+        let _ = self.with_inner(|inner| {
+            if let Some(route) = inner.routes.get_mut(&context.session_id) {
+                if route
+                    .policy
+                    .as_ref()
+                    .is_some_and(|p| p.nonce == context.nonce)
+                {
+                    if submitted {
+                        route.policy.as_mut().unwrap().submitted = true;
+                    } else {
+                        route.policy = None;
+                    }
+                }
+            }
+        });
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn register_request(
+        &self,
+        proof: ResponseDeliveryProof,
+        now: std::time::Instant,
+    ) -> Result<(), ResponseCloseError> {
+        self.with_inner(|inner| {
+            if !inner.ready || !inner.enabled {
+                return Err(ResponseCloseError::Unavailable);
+            }
+            let route = inner
+                .routes
+                .get_mut(&proof.context.session_id)
+                .ok_or(ResponseCloseError::Unknown)?;
+            let policy = route
+                .policy
+                .as_mut()
+                .filter(|p| p.nonce == proof.context.nonce)
+                .ok_or(ResponseCloseError::Unknown)?;
+            let work = inner.work.entry(policy.member.target.clone()).or_default();
+            let valid = policy.submitted
+                && policy.member == proof.member
+                && policy.coordinator == proof.coordinator
+                && policy.settings_epoch == inner.settings_epoch
+                && policy.work_epoch == route.work_epoch
+                && proof.published_carrier_version == policy.member.carrier_version
+                && route.writers == 0
+                && work.provisional == 0
+                && work.pending.keys().all(|key| key == &policy.request_key);
+            if !valid {
+                route.policy = None;
+                return Err(ResponseCloseError::Unknown);
+            }
+            work.pending.remove(&policy.request_key);
+            work.terminal
+                .insert(policy.request_key.clone(), policy.request_digest.clone());
+            policy.registered_at = Some(now);
+            route.last_change = route.last_change.max(now);
+            Ok(())
+        })?
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn admit_return(
+        &self,
+        member: &ResponseRouteIdentity,
+        coordinator: &ResponseRouteIdentity,
+        key: String,
+        digest: String,
+        now: std::time::Instant,
+    ) -> Result<ReturnObservationContext, ResponseCloseError> {
+        self.with_inner(|inner| {
+            if !inner.ready || !inner.enabled {
+                return Err(ResponseCloseError::Unavailable);
+            }
+            let terminal_key = (member.clone(), coordinator.clone(), key.clone());
+            if let Some(previous) = inner.terminal_returns.get(&terminal_key) {
+                return Err(if previous == &digest {
+                    ResponseCloseError::Unknown
+                } else {
+                    ResponseCloseError::Conflict
+                });
+            }
+            if !inner
+                .routes
+                .get(&member.session_id)
+                .is_some_and(|r| r.facts.as_ref() == Some(member))
+                || !inner
+                    .routes
+                    .get(&coordinator.session_id)
+                    .is_some_and(|r| r.facts.as_ref() == Some(coordinator))
+            {
+                return Err(ResponseCloseError::Unknown);
+            }
+            let route = inner
+                .routes
+                .get_mut(&member.session_id)
+                .ok_or(ResponseCloseError::Unknown)?;
+            let policy = route.policy.as_mut().ok_or(ResponseCloseError::Unknown)?;
+            if policy.member != *member
+                || policy.coordinator != *coordinator
+                || now < policy.opened_at
+                || policy.settings_epoch != inner.settings_epoch
+            {
+                return Err(ResponseCloseError::Unknown);
+            }
+            let sequence = if let Some((old, sequence)) = policy.returns.get(&key) {
+                if old != &digest {
+                    return Err(ResponseCloseError::Conflict);
+                }
+                *sequence
+            } else {
+                let Some(sequence) = inner.next_return_sequence.checked_add(1) else {
+                    inner.failed = true;
+                    return Err(ResponseCloseError::Unavailable);
+                };
+                inner.next_return_sequence = sequence;
+                policy
+                    .returns
+                    .insert(key.clone(), (digest.clone(), sequence));
+                policy.selected = None;
+                route.last_change = route.last_change.max(now);
+                sequence
+            };
+            Ok(ReturnObservationContext {
+                session_id: member.session_id,
+                nonce: policy.nonce,
+                key,
+                digest,
+                member: member.clone(),
+                coordinator: coordinator.clone(),
+                work_epoch: route.work_epoch,
+                settings_epoch: inner.settings_epoch,
+                sequence,
+            })
+        })?
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn observe_return_success(
+        &self,
+        proof: ReturnDeliveryProof,
+        now: std::time::Instant,
+    ) -> Result<(), ResponseCloseError> {
+        self.settle_return(&proof.context, true, now)
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn settle_return_terminal(
+        &self,
+        context: &ReturnObservationContext,
+        now: std::time::Instant,
+    ) -> Result<(), ResponseCloseError> {
+        self.settle_return(context, false, now)
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    fn settle_return(
+        &self,
+        context: &ReturnObservationContext,
+        success: bool,
+        now: std::time::Instant,
+    ) -> Result<(), ResponseCloseError> {
+        self.with_inner(|inner| {
+            let terminal_key = (
+                context.member.clone(),
+                context.coordinator.clone(),
+                context.key.clone(),
+            );
+            if let Some(digest) = inner.terminal_returns.get(&terminal_key) {
+                return if digest == &context.digest {
+                    Ok(())
+                } else {
+                    Err(ResponseCloseError::Conflict)
+                };
+            }
+            // Terminal dedupe survives disarm or successor registration. A
+            // stale context may settle its source but cannot arm that successor.
+            inner
+                .terminal_returns
+                .insert(terminal_key, context.digest.clone());
+            let route = inner
+                .routes
+                .get_mut(&context.session_id)
+                .ok_or(ResponseCloseError::Unknown)?;
+            let policy = route
+                .policy
+                .as_mut()
+                .filter(|p| {
+                    p.nonce == context.nonce
+                        && p.member == context.member
+                        && p.coordinator == context.coordinator
+                        && p.work_epoch == context.work_epoch
+                })
+                .ok_or(ResponseCloseError::Unknown)?;
+            let (digest, sequence) = policy
+                .returns
+                .get(&context.key)
+                .ok_or(ResponseCloseError::Unknown)?;
+            if digest != &context.digest || *sequence != context.sequence {
+                return Err(ResponseCloseError::Conflict);
+            }
+            policy.returns.remove(&context.key);
+            if success && context.settings_epoch == inner.settings_epoch {
+                policy.success_at = Some(policy.success_at.map_or(now, |old| old.max(now)));
+            }
+            policy.selected = None;
+            route.last_change = route.last_change.max(now);
+            Ok(())
+        })?
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    fn safe(
+        inner: &ResponseCloseInner,
+        route: &ResponseCloseRoute,
+        now: std::time::Instant,
+    ) -> bool {
+        let Some(policy) = &route.policy else {
+            return false;
+        };
+        let Some(registered) = policy.registered_at else {
+            return false;
+        };
+        let Some(success) = policy.success_at else {
+            return false;
+        };
+        let work_safe = inner
+            .work
+            .get(&policy.member.target)
+            .is_none_or(|w| w.provisional == 0 && w.dispatch == 0 && w.pending.is_empty());
+        inner.unknown_spawns == 0
+            && inner.ready
+            && inner.work_bootstrapped
+            && inner.enabled
+            && (1..=3600).contains(&inner.seconds)
+            && !inner.failed
+            && route.closing.is_none()
+            && route.eligible
+            && route.facts.as_ref() == Some(&policy.member)
+            && inner
+                .routes
+                .get(&policy.coordinator.session_id)
+                .is_some_and(|r| r.facts.as_ref() == Some(&policy.coordinator))
+            && route.manager_working == Some(false)
+            && route.detector_working == Some(false)
+            && route.menu_blocked == Some(false)
+            && route.hold_known
+            && route.hold_until.is_none_or(|end| now > end)
+            && route.held.is_empty()
+            && route.writers == 0
+            && work_safe
+            && !inner.create_owners.contains_key(&policy.member.target)
+            && policy.returns.is_empty()
+            && policy.settings_epoch == inner.settings_epoch
+            && policy.work_epoch == route.work_epoch
+            && now.saturating_duration_since(
+                registered
+                    .max(success)
+                    .max(route.last_change)
+                    .max(route.hold_until.unwrap_or(registered)),
+            ) >= std::time::Duration::from_secs(u64::from(inner.seconds))
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn select_ticket(
+        &self,
+        id: Uuid,
+        now: std::time::Instant,
+    ) -> Result<ResponseCloseTicket, ResponseCloseError> {
+        self.with_inner(|inner| {
+            let route = inner.routes.get(&id).ok_or(ResponseCloseError::Unknown)?;
+            if !Self::safe(inner, route, now) {
+                return Err(ResponseCloseError::Unknown);
+            }
+            let route = inner.routes.get_mut(&id).unwrap();
+            let policy = route.policy.as_mut().unwrap();
+            let selection_nonce = Uuid::new_v4();
+            policy.selected = Some(selection_nonce);
+            Ok(ResponseCloseTicket {
+                session_id: id,
+                generation: route.generation,
+                nonce: policy.nonce,
+                selection_nonce,
+                work_epoch: route.work_epoch,
+                activity_version: route.activity_version,
+                carrier_version: policy.member.carrier_version,
+                settings_epoch: inner.settings_epoch,
+                member: policy.member.clone(),
+            })
+        })?
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    fn try_commit_response_close(
+        &self,
+        ticket: &ResponseCloseTicket,
+        now: std::time::Instant,
+    ) -> Result<Uuid, ResponseCloseError> {
+        self.with_inner(|inner| {
+            let route = inner
+                .routes
+                .get(&ticket.session_id)
+                .ok_or(ResponseCloseError::Unknown)?;
+            if !Self::safe(inner, route, now)
+                || route.generation != ticket.generation
+                || route.work_epoch != ticket.work_epoch
+                || route.activity_version != ticket.activity_version
+                || inner.settings_epoch != ticket.settings_epoch
+                || !route.policy.as_ref().is_some_and(|p| {
+                    p.nonce == ticket.nonce
+                        && p.selected == Some(ticket.selection_nonce)
+                        && p.member.carrier_version == ticket.carrier_version
+                        && p.member == ticket.member
+                })
+            {
+                return Err(ResponseCloseError::Unknown);
+            }
+            let route = inner.routes.get_mut(&ticket.session_id).unwrap();
+            route.closing = Some(ticket.selection_nonce);
+            route.closing_target = route
+                .policy
+                .as_ref()
+                .map(|policy| policy.member.target.clone());
+            route.committed_binding = Some(ticket.committed_binding());
+            route.policy = None;
+            Ok(ticket.selection_nonce)
+        })?
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn finish_response_close(
+        &self,
+        ticket: &ResponseCloseTicket,
+        evidence: ResponseCloseSettlementEvidence,
+    ) -> Result<(), StaleOrInvalidSettlement> {
+        self.with_inner(|inner| {
+            let route = inner
+                .routes
+                .get(&ticket.session_id)
+                .ok_or(StaleOrInvalidSettlement)?;
+            let binding = ticket.committed_binding();
+            let current = &evidence.current_settlement;
+            if evidence.committed_binding != binding
+                || route.committed_binding.as_ref() != Some(&binding)
+                || route.closing != Some(binding.close_nonce)
+                || route.closing_target.as_deref() != Some(binding.member.target.as_str())
+                || route.generation != binding.member.generation
+                || route.manager_token != Some(binding.member.token)
+                || route.manager_version != current.current_carrier_version
+                || current.current_carrier_version < binding.member.carrier_version
+                || current.confirmed_carrier_version != current.current_carrier_version
+                || current.checkpoint_nonce != current.current_checkpoint_nonce
+                || current.publication_epoch != current.current_publication_epoch
+            {
+                return Err(StaleOrInvalidSettlement);
+            }
+            match evidence.outcome {
+                ResponseCloseSettlementOutcome::Dormant {
+                    exact_backend_absent: true,
+                    all_effects_completed: true,
+                    retained_exited_confirmed: true,
+                    selection_settled: true,
+                } => {
+                    if route.manager_working != Some(false) || route.eligible {
+                        return Err(StaleOrInvalidSettlement);
+                    }
+                    inner.routes.remove(&ticket.session_id);
+                }
+                ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
+                    terminal_kill_failure: true,
+                    all_effects_terminal: true,
+                    original_backend_alive: true,
+                    original_manager_identity_intact: true,
+                } => {
+                    let route = inner.routes.get_mut(&ticket.session_id).unwrap();
+                    route.closing = None;
+                    route.closing_target = None;
+                    route.committed_binding = None;
+                    route.policy = None;
+                }
+                _ => return Err(StaleOrInvalidSettlement),
+            }
+            Ok(())
+        })
+        .map_err(|_| StaleOrInvalidSettlement)?
+    }
+}
+
+impl WorkAdmission {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn accept_durable(&mut self, digest: &str) -> Result<bool, ResponseCloseError> {
+        self.state.with_inner(|inner| {
+            let work = inner
+                .work
+                .get_mut(&self.target)
+                .ok_or(ResponseCloseError::Unknown)?;
+            if let Some(old) = work
+                .pending
+                .get(&self.key)
+                .or_else(|| work.terminal.get(&self.key))
+            {
+                if old != digest {
+                    return Err(ResponseCloseError::Conflict);
+                }
+                return Ok(false);
+            }
+            work.pending.insert(self.key.clone(), digest.to_owned());
+            for route in inner
+                .routes
+                .values_mut()
+                .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == self.target))
+            {
+                if !route.invalidate(std::time::Instant::now()) {
+                    inner.failed = true;
+                }
+            }
+            Ok(true)
+        })?
+    }
+}
+
+impl Drop for WorkAdmission {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.state.with_inner(|inner| {
+                if let Some(work) = inner.work.get_mut(&self.target) {
+                    work.provisional = work.provisional.saturating_sub(1);
+                }
+                for route in inner
+                    .routes
+                    .values_mut()
+                    .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == self.target))
+                {
+                    if !route.touch(std::time::Instant::now()) {
+                        inner.failed = true;
+                    }
+                }
+            });
+        }
+    }
+}
+impl Drop for WorkDeliveryReservation {
+    fn drop(&mut self) {
+        let _ = self.state.with_inner(|inner| {
+            if let Some(work) = inner.work.get_mut(&self.target) {
+                work.dispatch = work.dispatch.saturating_sub(1);
+            }
+            for route in inner
+                .routes
+                .values_mut()
+                .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == self.target))
+            {
+                if !route.touch(std::time::Instant::now()) {
+                    inner.failed = true;
+                }
+            }
+        });
+    }
+}
+impl Drop for WriterAdmission {
+    fn drop(&mut self) {
+        if !self.counted {
+            return;
+        }
+        let _ = self.state.with_inner(|inner| {
+            if let Some(route) = inner
+                .routes
+                .get_mut(&self.session_id)
+                .filter(|r| r.generation == self.generation)
+            {
+                route.writers = route.writers.saturating_sub(1);
+                if !route.touch(std::time::Instant::now()) {
+                    inner.failed = true;
+                }
+            }
+        });
+    }
+}
+impl Drop for CreateOwnerReservation {
+    fn drop(&mut self) {
+        let _ = self.state.with_inner(|inner| {
+            let removed = if let Some(owners) = inner.create_owners.get_mut(&self.target) {
+                let removed = owners.remove(&self.nonce).is_some();
+                if owners.is_empty() {
+                    inner.create_owners.remove(&self.target);
+                }
+                removed
+            } else {
+                false
+            };
+            if removed {
+                for route in inner
+                    .routes
+                    .values_mut()
+                    .filter(|r| r.facts.as_ref().is_some_and(|f| f.target == self.target))
+                {
+                    if !route.touch(std::time::Instant::now()) {
+                        inner.failed = true;
+                    }
+                }
+            }
+        });
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingSpawn {
     pub cwd: String,
@@ -76,6 +1664,7 @@ pub struct PtyInputPermit {
     route_lifecycle: Arc<std::sync::Mutex<()>>,
     backend: Arc<dyn PtyBackend>,
     _guard: tokio::sync::OwnedMutexGuard<()>,
+    _response_writer: WriterAdmission,
 }
 
 /// Generation and lifecycle ownership for final sender-route authorization.
@@ -132,6 +1721,7 @@ impl<'a> PtyRouteWriteGuard<'a> {
 }
 
 pub(crate) struct SpawnMark {
+    response_close: ResponseCloseState,
     registry: Arc<Mutex<SpawnRegistry>>,
     seq: u64,
 }
@@ -140,10 +1730,12 @@ impl Drop for SpawnMark {
     fn drop(&mut self) {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         registry.pending.remove(&self.seq);
+        self.response_close.end_unresolved_spawn();
     }
 }
 
 pub struct PtyManager {
+    response_close: ResponseCloseState,
     registry: Arc<Mutex<SpawnRegistry>>,
     local_backend: Arc<dyn PtyBackend>,
     container_backend: Arc<ContainerTransportBackend>,
@@ -172,6 +1764,13 @@ impl PtyTerminalOutputRoute {
 }
 
 impl PtyManager {
+    pub(crate) fn bind_response_close(&mut self, state: ResponseCloseState) {
+        state.bind_publisher(ResponseClosePublisher::Pty);
+        self.response_close = state;
+    }
+    pub(crate) fn response_close_state(&self) -> ResponseCloseState {
+        self.response_close.clone()
+    }
     pub fn new(
         output_senders: OutputSenderMap,
         idle_detector: Arc<IdleDetector>,
@@ -196,6 +1795,7 @@ impl PtyManager {
         debug_assert!(local_backend.as_any().is::<LocalProcessBackend>());
         debug_assert!(container_backend.as_any().is::<ContainerTransportBackend>());
         Self {
+            response_close: ResponseCloseState::default(),
             registry: Arc::new(Mutex::new(SpawnRegistry::default())),
             local_backend,
             container_backend,
@@ -207,6 +1807,7 @@ impl PtyManager {
         let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
         let idle_detector = IdleDetector::new(|_| {}, |_| {});
         Self {
+            response_close: ResponseCloseState::default(),
             registry: Arc::new(Mutex::new(SpawnRegistry::default())),
             local_backend,
             container_backend: Arc::new(ContainerTransportBackend::new(
@@ -224,6 +1825,7 @@ impl PtyManager {
         container_backend: Arc<ContainerTransportBackend>,
     ) -> Self {
         Self {
+            response_close: ResponseCloseState::default(),
             registry: Arc::new(Mutex::new(SpawnRegistry::default())),
             local_backend,
             container_backend,
@@ -297,6 +1899,9 @@ impl PtyManager {
             .registry
             .lock()
             .map_err(|_| AppError::PtyError("route_registry_poisoned".to_string()))?;
+        if self.response_close.uuid_closing(id) {
+            return Err(AppError::PtyError("response_close_deferred".to_string()));
+        }
         if registry.routes.contains_key(&id) {
             return Err(AppError::PtyError("duplicate_pty_route".to_string()));
         }
@@ -305,6 +1910,8 @@ impl PtyManager {
             .checked_add(1)
             .ok_or_else(|| AppError::PtyError("route_generation_overflow".to_string()))?;
         registry.next_route_generation = generation;
+        self.response_close
+            .register_route(id, generation, std::time::Instant::now());
         registry.routes.insert(
             id,
             RouteEntry {
@@ -340,12 +1947,14 @@ impl PtyManager {
                     .get(&id)
                     .is_some_and(|entry| entry.kind == kind && entry.generation == generation)
                 {
+                    self.response_close.remove_route(id, generation);
                     registry.routes.remove(&id);
                 }
             }
             Err(std::sync::TryLockError::WouldBlock) => {
                 log::debug!("[pty] route removal deferred for busy session {id}");
                 let registry = Arc::clone(&self.registry);
+                let response_close = self.response_close.clone();
                 std::thread::spawn(move || {
                     let _lifecycle_guard = deferred_lifecycle
                         .lock()
@@ -356,6 +1965,7 @@ impl PtyManager {
                         .get(&id)
                         .is_some_and(|entry| entry.kind == kind && entry.generation == generation)
                     {
+                        response_close.remove_route(id, generation);
                         registry.routes.remove(&id);
                     }
                 });
@@ -399,6 +2009,7 @@ impl PtyManager {
             .get(&id)
             .is_some_and(|entry| entry.kind == kind && entry.generation == generation)
         {
+            self.response_close.remove_route(id, generation);
             registry.routes.remove(&id);
         }
         Ok(())
@@ -472,6 +2083,10 @@ impl PtyManager {
     pub(crate) fn mark_spawning(&self, cwd: &str, label: &str) -> SpawnMark {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         let seq = registry.next_seq;
+        if registry.next_seq == u64::MAX {
+            self.response_close.fail_closed();
+        }
+        self.response_close.begin_unresolved_spawn();
         registry.next_seq = registry.next_seq.wrapping_add(1);
         registry.pending.insert(
             seq,
@@ -481,6 +2096,7 @@ impl PtyManager {
             },
         );
         SpawnMark {
+            response_close: self.response_close.clone(),
             registry: Arc::clone(&self.registry),
             seq,
         }
@@ -836,7 +2452,7 @@ pub async fn acquire_input_writer(
     manager: &Arc<std::sync::Mutex<PtyManager>>,
     session_id: Uuid,
 ) -> Result<PtyInputPermit, AppError> {
-    let (route_registry, input_gate, route_lifecycle, generation, backend) = {
+    let (route_registry, input_gate, route_lifecycle, generation, backend, response_close) = {
         let manager_guard = manager
             .lock()
             .map_err(|_| AppError::PtyError("pty_manager_poisoned".to_string()))?;
@@ -854,9 +2470,13 @@ pub async fn acquire_input_writer(
             Arc::clone(&entry.lifecycle_gate),
             entry.generation,
             manager_guard.backend_for_kind(entry.kind),
+            manager_guard.response_close.clone(),
         )
     };
 
+    let response_writer = response_close
+        .reserve_writer(session_id, generation)
+        .map_err(|_| AppError::PtyError("response_close_deferred".to_string()))?;
     let guard = input_gate.lock_owned().await;
     {
         let registry = route_registry
@@ -878,6 +2498,7 @@ pub async fn acquire_input_writer(
         route_lifecycle,
         backend,
         _guard: guard,
+        _response_writer: response_writer,
     })
 }
 
@@ -898,6 +2519,35 @@ fn acquire_route_lifecycle(
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
+    }
+}
+
+impl PtyAuthorityRouteProof {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn try_commit_response_close(
+        &self,
+        state: &ResponseCloseState,
+        ticket: &ResponseCloseTicket,
+        now: std::time::Instant,
+    ) -> Result<Uuid, ResponseCloseError> {
+        if self.session_id != ticket.session_id || self.route_generation != ticket.generation {
+            return Err(ResponseCloseError::Unknown);
+        }
+        let _lifecycle = self
+            .route_lifecycle
+            .try_lock()
+            .map_err(|_| ResponseCloseError::Unavailable)?;
+        let registry = self
+            .route_registry
+            .lock()
+            .map_err(|_| ResponseCloseError::Unavailable)?;
+        if !registry.routes.get(&self.session_id).is_some_and(|route| {
+            route.generation == self.route_generation && route.kind == ticket.member.backend
+        }) {
+            return Err(ResponseCloseError::Unknown);
+        }
+        state.try_commit_response_close(ticket, now)
     }
 }
 
@@ -1101,6 +2751,14 @@ pub fn lock_route_for_write(permit: &PtyInputPermit) -> Result<PtyRouteWriteGuar
             .routes
             .get(&permit.session_id)
             .ok_or_else(|| AppError::SessionNotFound(permit.session_id.to_string()))?;
+        if permit
+            ._response_writer
+            .state
+            .is_closing(permit.session_id, permit.route_generation)
+            .unwrap_or(true)
+        {
+            return Err(AppError::PtyError("response_close_deferred".to_string()));
+        }
         if current.generation != permit.route_generation {
             return Err(AppError::PtyError("stale_pty_route".to_string()));
         }
@@ -1138,6 +2796,14 @@ pub(crate) fn lock_route_for_verified_write<'a>(
             .verified_replica_anchor
             .as_ref()
             .is_some_and(|identity| crate::path_identity::same_object(identity, expected_replica));
+        if permit
+            ._response_writer
+            .state
+            .is_closing(permit.session_id, permit.route_generation)
+            .unwrap_or(true)
+        {
+            return Err(AppError::PtyError("response_close_deferred".to_string()));
+        }
         if current.generation != permit.route_generation
             || current.kind != expected_kind
             || !cwd_matches
@@ -1169,6 +2835,7 @@ impl Drop for PtyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[derive(Debug, PartialEq, Eq)]
     enum Call {
@@ -1694,6 +3361,429 @@ mod tests {
         drop(second);
     }
 
+    /// Includes store execute-failure and late-bind dispatcher recheck only;
+    /// the latter is neither valid startup order nor a production commit/admission race.
+    #[tokio::test]
+    async fn response_close_waiting_writer_is_counted_and_cancellation_releases_only_its_admission()
+    {
+        use std::future::Future;
+        let id = Uuid::new_v4();
+        let backend = Arc::new(RecordingBackend::default());
+        let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        manager
+            .lock()
+            .unwrap()
+            .try_record_route(id, SessionBackendKind::LocalProcess)
+            .unwrap();
+        let state = manager.lock().unwrap().response_close_state();
+        let first = PtyManager::acquire_input_writer(&manager, id)
+            .await
+            .unwrap();
+        let mut waiting = Box::pin(PtyManager::acquire_input_writer(&manager, id));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(waiting.as_mut().poll(&mut context).is_pending());
+        assert_eq!(state.inner.lock().unwrap().routes[&id].writers, 2);
+        drop(waiting);
+        assert_eq!(state.inner.lock().unwrap().routes[&id].writers, 1);
+        assert!(backend.calls().is_empty());
+        PtyManager::write_with_permit(&first, b"first").unwrap();
+        drop(first);
+        assert_eq!(state.inner.lock().unwrap().routes[&id].writers, 0);
+        assert_eq!(backend.calls(), vec![Call::Write(id, b"first".to_vec())]);
+        // Integrated store execute-failure oracle, not the SQL commit-failure branch.
+        use crate::api::message_store::{EnqueueRequest, MessageStore};
+        for fail_execute in [false, true] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("store-oracle.sqlite3");
+            let store = MessageStore::open(path.clone()).unwrap();
+            let tracker = ResponseCloseState::default();
+            store.bind_response_close(tracker.clone());
+            let row = store
+                .enqueue(EnqueueRequest {
+                    sender_fqn: "project:room/sender".into(),
+                    target_fqn: "project:room/member".into(),
+                    op_id: "store-oracle".into(),
+                    content_type: crate::api::message_store::DEFAULT_CONTENT_TYPE.into(),
+                    body: "durable-body".into(),
+                    source_plane: "api_inline".into(),
+                    source_ref: None,
+                })
+                .unwrap();
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            let snapshot = || {
+                connection.query_row("SELECT message_id,target_fqn,status,body,body_sha256,attempt,lease_owner,lease_until FROM messages WHERE message_id=?1", [&row.message_id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, i64>(5)?,r.get::<_, Option<String>>(6)?,r.get::<_, Option<String>>(7)?))).unwrap()
+            };
+            let before = snapshot();
+            let key = format!(
+                "db:{}:{}:{}",
+                "project:room/sender".len(),
+                "project:room/sender",
+                "store-oracle"
+            );
+            assert_eq!(
+                tracker.inner.lock().unwrap().work[&row.target_fqn].pending[&key],
+                before.4
+            );
+            let delivery = tracker.begin_delivery(&row.target_fqn).unwrap();
+            if fail_execute {
+                connection.execute_batch("CREATE TRIGGER fail_terminal BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'controlled execute failure'); END;").unwrap();
+                assert!(store
+                    .mark_delivered(&row.message_id, chrono::Utc::now())
+                    .is_err());
+                assert_eq!(snapshot(), before);
+                assert_eq!(before.2, "queued");
+                tracker.settle_terminal(&row.target_fqn, &key, std::time::Instant::now());
+                drop(delivery);
+                let inner = tracker.inner.lock().unwrap();
+                assert!(inner.failed);
+                assert_eq!(inner.work[&row.target_fqn].pending[&key], before.4);
+                assert!(!inner.work[&row.target_fqn].terminal.contains_key(&key));
+            } else {
+                store
+                    .mark_delivered(&row.message_id, chrono::Utc::now())
+                    .unwrap();
+                drop(delivery);
+                assert_eq!(snapshot().2, "delivered");
+                let inner = tracker.inner.lock().unwrap();
+                assert!(!inner.failed);
+                assert!(!inner.work[&row.target_fqn].pending.contains_key(&key));
+                assert_eq!(inner.work[&row.target_fqn].terminal[&key], before.4);
+            }
+        }
+
+        // C: PTY terminal persistence SQL failure before commit, not commit ambiguity.
+        for fail_execute in [false, true] {
+            use crate::phone::types::{
+                PtyInputPublicStatus, PtyInputReasonCode, PtyInputSourcePlane,
+            };
+            assert!(crate::phone::types::pty_input_reason_allowed_for_status(
+                PtyInputPublicStatus::Rejected,
+                Some(PtyInputReasonCode::Expired)
+            ));
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("pty-terminal-oracle.sqlite3");
+            let store = MessageStore::open(path.clone()).unwrap();
+            let tracker = ResponseCloseState::default();
+            store.bind_response_close(tracker.clone());
+            let id = Uuid::new_v4().to_string();
+            let issued = chrono::Utc::now();
+            store
+                .enqueue_pty_input(crate::api::message_store::PtyInputEnqueueRequest {
+                    injection_id: id.clone(),
+                    sender_fqn: "proj:wg-1-team/lead".into(),
+                    target_fqn: "proj:wg-1-team/dev".into(),
+                    op_id: id.clone(),
+                    nonce_sha256: "a".repeat(64),
+                    request_fingerprint: crate::phone::types::sha256_hex(b"pty-terminal-body"),
+                    confirmation_tag: Some("b".repeat(64)),
+                    requested_agent_id: None,
+                    payload: b"pty-terminal-body".to_vec(),
+                    source_plane: PtyInputSourcePlane::HostCli,
+                    sender_incarnation_fingerprint: "c".repeat(64),
+                    sender_identity_fingerprint: "d".repeat(64),
+                    target_identity_fingerprint: "e".repeat(64),
+                    authority_session_id: Uuid::new_v4().to_string(),
+                    authority_client_id: None,
+                    authority_client_generation: None,
+                    issued_at: crate::phone::types::canonical_pty_timestamp(issued),
+                    expires_at: crate::phone::types::canonical_pty_timestamp(
+                        issued + chrono::Duration::minutes(10),
+                    ),
+                })
+                .unwrap();
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            let snapshot = || {
+                connection.query_row("SELECT injection_id,sender_fqn,target_fqn,op_id,request_fingerprint,status,payload,attempt,lease_owner,lease_until,updated_at FROM pty_input_operations WHERE injection_id=?1", [&id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, String>(5)?,r.get::<_, Option<Vec<u8>>>(6)?,r.get::<_, i64>(7)?,r.get::<_, Option<String>>(8)?,r.get::<_, Option<String>>(9)?,r.get::<_, String>(10)?))).unwrap()
+            };
+            let before = snapshot();
+            let key = format!("pty:{}:{}:{}", before.1.len(), before.1, before.3);
+            assert_eq!(before.5, "queued");
+            assert_eq!(before.6.as_deref(), Some(b"pty-terminal-body".as_slice()));
+            assert_eq!(
+                tracker.inner.lock().unwrap().work[&before.2].pending[&key],
+                before.4
+            );
+            if fail_execute {
+                connection.execute_batch("CREATE TRIGGER fail_pty_terminal BEFORE UPDATE ON pty_input_operations BEGIN SELECT RAISE(ABORT, 'controlled precommit SQL failure'); END;").unwrap();
+                assert!(matches!(
+                    store.terminalize_pty_input(
+                        &id,
+                        PtyInputPublicStatus::Rejected,
+                        Some(PtyInputReasonCode::Expired),
+                        chrono::Utc::now()
+                    ),
+                    Err(crate::api::message_store::MessageStoreError::Sqlite(_))
+                ));
+                assert_eq!(snapshot(), before);
+                let inner = tracker.inner.lock().unwrap();
+                assert!(inner.failed);
+                assert_eq!(inner.work[&before.2].pending[&key], before.4);
+                assert!(!inner.work[&before.2].terminal.contains_key(&key));
+                let tombstones: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM pty_input_tombstones WHERE injection_id=?1",
+                        [&id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(tombstones, 0);
+            } else {
+                let result = store
+                    .terminalize_pty_input(
+                        &id,
+                        PtyInputPublicStatus::Rejected,
+                        Some(PtyInputReasonCode::Expired),
+                        chrono::Utc::now(),
+                    )
+                    .unwrap();
+                assert_eq!(result.status, PtyInputPublicStatus::Rejected);
+                assert!(result.terminal);
+                assert_eq!(result.reason.unwrap().code, PtyInputReasonCode::Expired);
+                let tombstone: (String, String) = connection.query_row("SELECT status,request_fingerprint FROM pty_input_tombstones WHERE injection_id=?1", [&id], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+                assert_eq!(tombstone, ("rejected".into(), before.4.clone()));
+                let inner = tracker.inner.lock().unwrap();
+                assert!(!inner.failed);
+                assert!(!inner.work[&before.2].pending.contains_key(&key));
+                assert_eq!(inner.work[&before.2].terminal[&key], before.4);
+            }
+        }
+
+        // Late-bind recheck only: not valid startup order or a production commit/admission race.
+        use crate::api::dispatcher::{dispatch_due_with, DispatcherConfig};
+        for closing in [false, true] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("late-bind-recheck.sqlite3");
+            let store = MessageStore::open(path.clone()).unwrap();
+            let backend = Arc::new(RecordingBackend::default());
+            let manager = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+            let tracker = manager.lock().unwrap().response_close_state();
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            let now = std::time::Instant::now() + Duration::from_secs(3600);
+            tracker.apply_settings(true, 30, now);
+            let member_id = Uuid::new_v4();
+            let coordinator_id = Uuid::new_v4();
+            for id in [member_id, coordinator_id] {
+                manager
+                    .lock()
+                    .unwrap()
+                    .try_record_route(id, SessionBackendKind::LocalProcess)
+                    .unwrap();
+            }
+            let member = ResponseRouteIdentity {
+                target: "project:room/member".into(),
+                session_id: member_id,
+                token: Uuid::new_v4(),
+                generation: tracker.generation(member_id).unwrap(),
+                carrier_version: 1,
+                backend: SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: "project:room/coordinator".into(),
+                session_id: coordinator_id,
+                token: Uuid::new_v4(),
+                generation: tracker.generation(coordinator_id).unwrap(),
+                ..member.clone()
+            };
+            for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+                tracker.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    1,
+                    eligible,
+                    false,
+                    now,
+                );
+                tracker.publish_manager_facts(identity.clone(), eligible, false, now);
+            }
+            tracker.observe_detector(member_id, false, now);
+            tracker.publish_menu(member_id, Some(false), now);
+            tracker.publish_hold(member_id, None, true, now);
+            let mut admission = tracker
+                .reserve_work(&member.target, "policy-request")
+                .unwrap();
+            admission.accept_durable("policy-body").unwrap();
+            drop(admission);
+            let context = tracker
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    "policy-request".into(),
+                    "policy-body".into(),
+                    now,
+                )
+                .unwrap();
+            tracker.mark_request_submitted(&context, true);
+            tracker
+                .register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: 1,
+                    },
+                    now,
+                )
+                .unwrap();
+            let context = tracker
+                .admit_return(&member, &coordinator, "ack".into(), "ack-body".into(), now)
+                .unwrap();
+            tracker
+                .observe_return_success(ReturnDeliveryProof { context }, now)
+                .unwrap();
+            let at = now + Duration::from_secs(30);
+            let ticket = tracker.select_ticket(member_id, at).unwrap();
+            if closing {
+                PtyManager::authority_route_proof(&manager, member_id)
+                    .unwrap()
+                    .try_commit_response_close(&tracker, &ticket, at)
+                    .unwrap();
+            }
+            let enqueue = |op: &str, target: &str, body: &str| {
+                store
+                    .enqueue(EnqueueRequest {
+                        sender_fqn: "project:room/sender".into(),
+                        target_fqn: target.into(),
+                        op_id: op.into(),
+                        content_type: crate::api::message_store::DEFAULT_CONTENT_TYPE.into(),
+                        body: body.into(),
+                        source_plane: "api_inline".into(),
+                        source_ref: None,
+                    })
+                    .unwrap()
+            };
+            let first = enqueue("first", &coordinator.target, "first-body");
+            let second = enqueue("second", &member.target, "second-body");
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            // Explicit stable order without clock sleeps or timestamp collisions.
+            connection
+                .execute(
+                    "UPDATE messages SET created_at='2000-01-01T00:00:00Z' WHERE message_id=?1",
+                    [&first.message_id],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE messages SET created_at='2000-01-01T00:00:01Z' WHERE message_id=?1",
+                    [&second.message_id],
+                )
+                .unwrap();
+            let snapshot = |id: &str| {
+                connection.query_row("SELECT message_id,target_fqn,status,body,body_sha256,attempt,lease_owner,lease_until,next_attempt_at,sender_fqn,last_error FROM messages WHERE message_id=?1", [id], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, i64>(5)?,r.get::<_, Option<String>>(6)?,r.get::<_, Option<String>>(7)?,r.get::<_, String>(8)?,r.get::<_, String>(9)?,r.get::<_, Option<String>>(10)?))).unwrap()
+            };
+            let before = snapshot(&second.message_id);
+            let first_key = format!(
+                "db:{}:{}:first",
+                "project:room/sender".len(),
+                "project:room/sender"
+            );
+            let second_key = format!(
+                "db:{}:{}:second",
+                "project:room/sender".len(),
+                "project:room/sender"
+            );
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let recorded = calls.clone();
+            let copy = store.clone();
+            let bound = tracker.clone();
+            let first_id = first.message_id.clone();
+            let dispatch_before = chrono::Utc::now();
+            let processed = dispatch_due_with(
+                &store,
+                chrono::Utc::now(),
+                &DispatcherConfig::default(),
+                move |message| {
+                    recorded.lock().unwrap().push(message.id.clone());
+                    if message.id == first_id {
+                        copy.bind_response_close(bound.clone());
+                        let inner = bound.inner.lock().unwrap();
+                        assert!(!inner.failed);
+                        assert!(inner.work_bootstrapped);
+                        assert_eq!(
+                            inner.work["project:room/coordinator"].pending[&first_key],
+                            crate::phone::types::sha256_hex(b"first-body")
+                        );
+                        assert_eq!(
+                            inner.work["project:room/member"].pending[&second_key],
+                            crate::phone::types::sha256_hex(b"second-body")
+                        );
+                    }
+                    async { Ok(()) }
+                },
+            )
+            .await
+            .unwrap();
+            let dispatch_after = chrono::Utc::now();
+            assert_eq!(processed, 2);
+            assert_eq!(snapshot(&first.message_id).2, "delivered");
+            let after = snapshot(&second.message_id);
+            if closing {
+                assert_eq!(*calls.lock().unwrap(), vec![first.message_id.clone()]);
+                assert_eq!(after.2, "queued");
+                assert_eq!(after.9, before.9);
+                assert_eq!(
+                    after.10.as_deref(),
+                    Some(crate::api::message_store::RESPONSE_CLOSING_DEFERRED)
+                );
+                let due = chrono::DateTime::parse_from_rfc3339(&after.8)
+                    .unwrap()
+                    .with_timezone(&chrono::Utc);
+                assert!(dispatch_before <= due && due <= dispatch_after);
+                let audit: (String, Option<String>) = connection.query_row("SELECT status,detail FROM message_audit WHERE message_id=?1 AND status='lease-released-deferred'", [&second.message_id], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+                assert_eq!(audit.0, "lease-released-deferred");
+                assert_eq!(
+                    audit.1.as_deref(),
+                    Some(crate::api::message_store::RESPONSE_CLOSING_DEFERRED)
+                );
+                assert_eq!(
+                    (after.0, after.1, after.3, after.4, after.5, after.6, after.7),
+                    (before.0, before.1, before.3, before.4, before.5, None, None)
+                );
+                assert!(tracker.target_is_closing(&member.target));
+                assert_eq!(
+                    tracker.inner.lock().unwrap().work[&member.target].pending[&format!(
+                        "db:{}:{}:second",
+                        "project:room/sender".len(),
+                        "project:room/sender"
+                    )],
+                    crate::phone::types::sha256_hex(b"second-body")
+                );
+            } else {
+                assert_eq!(
+                    *calls.lock().unwrap(),
+                    vec![first.message_id.clone(), second.message_id.clone()]
+                );
+                assert_eq!(after.2, "delivered");
+            }
+            assert!(backend.calls().is_empty());
+            // Separate bound-from-start SQL Closing filter, same positive twin.
+            let third = enqueue("bound-filter", &member.target, "filter-body");
+            let before = snapshot(&third.message_id);
+            let rows = store
+                .lease_due(chrono::Utc::now(), 10, Duration::from_secs(30), "filter")
+                .unwrap();
+            if closing {
+                assert!(rows.is_empty());
+                assert_eq!(snapshot(&third.message_id), before);
+            } else {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].message_id, third.message_id);
+                assert_eq!(rows[0].body, "filter-body");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn removed_and_recreated_route_invalidates_an_old_permit() {
         let id = Uuid::new_v4();
@@ -1911,5 +4001,1090 @@ mod tests {
         release_tx.send(()).expect("release spawn");
         spawn_task.await.expect("spawn task").expect("spawn ok");
         assert!(manager.lock().unwrap().has_session(id));
+    }
+}
+
+#[cfg(test)]
+mod response_close_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn response_close_readiness_requires_all_publishers_and_work_bootstrap() {
+        let state = ResponseCloseState::default();
+        assert_eq!(
+            state.try_enable_readiness(),
+            Err(ResponseCloseError::Unavailable)
+        );
+        for publisher in [
+            ResponseClosePublisher::Manager,
+            ResponseClosePublisher::Pty,
+            ResponseClosePublisher::RawOutput,
+            ResponseClosePublisher::Detector,
+            ResponseClosePublisher::Menu,
+            ResponseClosePublisher::Hold,
+        ] {
+            state.bind_publisher(publisher);
+        }
+        assert!(state.publishers_bound());
+        assert_eq!(
+            state.try_enable_readiness(),
+            Err(ResponseCloseError::Unavailable)
+        );
+        state.mark_work_bootstrapped();
+        assert_eq!(state.try_enable_readiness(), Ok(()));
+        state.fail_closed();
+        assert_eq!(
+            state.try_enable_readiness(),
+            Err(ResponseCloseError::Unavailable)
+        );
+        let other = ResponseCloseState::default();
+        assert!(!state.same_state(&other));
+        assert!(state.same_state(&state.clone()));
+    }
+
+    #[tokio::test]
+    async fn response_close_cancelled_delivery_keeps_durable_work_and_terminal_dedupe() {
+        let state = ResponseCloseState::default();
+        let mut admission = state.reserve_work("target", "request").unwrap();
+        assert_eq!(admission.accept_durable("digest"), Ok(true));
+        drop(admission);
+        let delivery = state.begin_delivery("target").unwrap();
+        drop(delivery);
+        {
+            let inner = state.inner.lock().unwrap();
+            assert_eq!(
+                inner.work["target"]
+                    .pending
+                    .get("request")
+                    .map(String::as_str),
+                Some("digest")
+            );
+            assert_eq!(inner.work["target"].dispatch, 0);
+            assert_eq!(inner.work["target"].provisional, 0);
+        }
+        state.settle_terminal("target", "request", Instant::now());
+        let mut duplicate = state.reserve_work("target", "request").unwrap();
+        assert_eq!(duplicate.accept_durable("digest"), Ok(false));
+        assert_eq!(
+            duplicate.accept_durable("collision"),
+            Err(ResponseCloseError::Conflict)
+        );
+        assert!(state.inner.lock().unwrap().work["target"]
+            .pending
+            .is_empty());
+        for wait_for_entry in [false, true] {
+            let state = ResponseCloseState::default();
+            let mut work = state.reserve_work("target", "cancelled").unwrap();
+            assert_eq!(work.accept_durable("durable-body"), Ok(true));
+            drop(work);
+            let delivery = state.begin_delivery("target").unwrap();
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (_release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+            let worker = tokio::spawn(async move {
+                let _delivery = delivery;
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+            });
+            if wait_for_entry {
+                tokio::time::timeout(Duration::from_secs(10), entered_rx)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            worker.abort();
+            assert!(worker.await.unwrap_err().is_cancelled());
+            let inner = state.inner.lock().unwrap();
+            assert_eq!(inner.work["target"].dispatch, 0);
+            assert_eq!(inner.work["target"].provisional, 0);
+            assert_eq!(inner.work["target"].pending["cancelled"], "durable-body");
+        }
+        let state = ResponseCloseState::default();
+        let mut work = state.reserve_work("failed-target", "failed-key").unwrap();
+        assert_eq!(work.accept_durable("failed-body"), Ok(true));
+        let delivery = state.begin_delivery("failed-target").unwrap();
+        assert_eq!(
+            state.inner.lock().unwrap().work["failed-target"].pending["failed-key"],
+            "failed-body"
+        );
+        state.fail_closed();
+        state.settle_terminal("failed-target", "failed-key", Instant::now());
+        drop(delivery);
+        drop(work);
+        let inner = state.inner.lock().unwrap();
+        assert!(inner.failed);
+        assert_eq!(
+            inner.work["failed-target"].pending["failed-key"],
+            "failed-body"
+        );
+        assert!(!inner.work["failed-target"]
+            .terminal
+            .contains_key("failed-key"));
+    }
+
+    #[test]
+    fn response_close_create_owner_drop_cannot_release_successor_nonce() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let (state, member, coordinator) = routes(now);
+        arm(&state, &member, &coordinator, now);
+        let first = Uuid::new_v4();
+        let foreign = || CreateClassification::Foreign {
+            publication_epoch: 1,
+        };
+        let protected_classification = || CreateClassification::Protected {
+            identity: member.clone(),
+            publication_epoch: 1,
+        };
+        let CreateAdmission::Reserved(owner) = state
+            .reserve_create_owner(&member.target, first, foreign())
+            .unwrap()
+        else {
+            panic!("Foreign ownership must progress");
+        };
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+        let successor = Uuid::new_v4();
+        let CreateAdmission::Reserved(successor_owner) = state
+            .reserve_create_owner(&member.target, successor, foreign())
+            .unwrap()
+        else {
+            panic!("retained Foreign core cannot defer another Foreign owner");
+        };
+        assert!(matches!(
+            state.reserve_create_owner(
+                &member.target,
+                Uuid::new_v4(),
+                CreateClassification::Unknown,
+            ),
+            Ok(CreateAdmission::WaitingIdentity)
+        ));
+        assert!(matches!(
+            state.reserve_create_owner(
+                &member.target,
+                Uuid::new_v4(),
+                CreateClassification::Preparing {
+                    owner_nonce: first,
+                    identity: member.clone(),
+                    publication_epoch: 1,
+                },
+            ),
+            Ok(CreateAdmission::ClosingDeferred)
+        ));
+        drop(owner);
+        assert_eq!(
+            state
+                .inner
+                .lock()
+                .unwrap()
+                .create_owners
+                .get(&member.target)
+                .and_then(|owners| owners.get(&successor)),
+            Some(&false)
+        );
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+        drop(successor_owner);
+        let CreateAdmission::Reserved(protected) = state
+            .reserve_create_owner(&member.target, first, protected_classification())
+            .unwrap()
+        else {
+            panic!("first protected owner");
+        };
+        assert!(matches!(
+            state.reserve_create_owner(&member.target, successor, protected_classification()),
+            Ok(CreateAdmission::ClosingDeferred)
+        ));
+        drop(protected);
+        assert!(!state
+            .inner
+            .lock()
+            .unwrap()
+            .create_owners
+            .contains_key(&member.target));
+        // Foreign does not demand a canonical FQN before legacy preflight.
+        let CreateAdmission::Reserved(alias) = state
+            .reserve_create_owner("legacy/alias", first, foreign())
+            .unwrap()
+        else {
+            panic!("legacy alias Foreign ownership");
+        };
+        assert!(matches!(
+            alias.classification(),
+            CreateClassification::Foreign {
+                publication_epoch: 1
+            }
+        ));
+        drop(alias);
+    }
+
+    #[test]
+    fn response_close_old_writer_drop_cannot_change_replacement_generation() {
+        let now = Instant::now();
+        let state = ResponseCloseState::default();
+        let id = Uuid::new_v4();
+        state.register_route(id, 1, now);
+        let old = state.reserve_writer(id, 1).unwrap();
+        state.remove_route(id, 1);
+        state.register_route(id, 2, now);
+        let new = state.reserve_writer(id, 2).unwrap();
+        drop(old);
+        assert_eq!(state.inner.lock().unwrap().routes[&id].writers, 1);
+        assert!(state.reserve_writer(id, 1).is_err());
+        drop(new);
+        assert_eq!(state.inner.lock().unwrap().routes[&id].writers, 0);
+    }
+
+    fn assert_offloaded_enqueue_consistency(
+        db_path: &std::path::Path,
+        tracker: &ResponseCloseState,
+        request: &crate::api::message_store::EnqueueRequest,
+        key: &str,
+        digest: &str,
+        cancelled: bool,
+    ) {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        let rows = {
+            let mut statement = conn.prepare("SELECT sender_fqn,target_fqn,op_id,body,body_sha256,content_type,source_plane,source_ref,status FROM messages WHERE sender_fqn=?1 AND op_id=?2").unwrap();
+            let rows = statement
+                .query_map(
+                    rusqlite::params![request.sender_fqn, request.op_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                            row.get::<_, String>(8)?,
+                        ))
+                    },
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        assert!(rows.len() <= 1, "duplicate sender/op row");
+        let inner = tracker.inner.lock().unwrap();
+        assert!(!inner.failed);
+        let work = inner.work.get(&request.target_fqn);
+        assert_eq!(work.map_or(0, |work| work.provisional), 0);
+        assert_eq!(work.map_or(0, |work| work.dispatch), 0);
+        assert!(!work.is_some_and(|work| work.terminal.contains_key(key)));
+        if let Some(row) = rows.first() {
+            assert_eq!(
+                row,
+                &(
+                    request.sender_fqn.clone(),
+                    request.target_fqn.clone(),
+                    request.op_id.clone(),
+                    request.body.clone(),
+                    digest.to_owned(),
+                    request.content_type.clone(),
+                    request.source_plane.clone(),
+                    request.source_ref.clone(),
+                    "queued".into()
+                )
+            );
+            assert_eq!(work.and_then(|work| work.pending.get(key)), Some(&row.4));
+        } else {
+            assert!(cancelled, "positive twin must publish a row");
+            assert!(work.is_none_or(|work| !work.pending.contains_key(key)));
+        }
+        drop(inner);
+        drop(conn);
+    }
+
+    #[test]
+    fn response_close_counter_overflow_disables_feature_but_preserves_ordinary_writer() {
+        let state = ResponseCloseState::default();
+        let id = Uuid::new_v4();
+        state.register_route(id, 1, Instant::now());
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .work
+            .entry("target".into())
+            .or_default()
+            .provisional = usize::MAX;
+        assert!(matches!(
+            state.reserve_work("target", "request"),
+            Err(ResponseCloseError::Unavailable)
+        ));
+        assert!(state.inner.lock().unwrap().failed);
+        assert!(state.reserve_writer(id, 1).is_ok());
+        let state = ResponseCloseState::default();
+        let delivery = state.begin_delivery("target").unwrap();
+        drop(delivery);
+        assert_eq!(state.inner.lock().unwrap().work["target"].dispatch, 0);
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .work
+            .get_mut("target")
+            .unwrap()
+            .dispatch = usize::MAX;
+        assert!(matches!(
+            state.begin_delivery("target"),
+            Err(ResponseCloseError::Unavailable)
+        ));
+        assert!(state.inner.lock().unwrap().failed);
+        assert!(matches!(
+            state.begin_delivery("other"),
+            Err(ResponseCloseError::Unavailable)
+        ));
+        // H: caller cancellation before/around blocking-worker start. Runtime
+        // shutdown may discard a queued job; either complete consistent branch
+        // is valid. This is not a post-commit publication-window barrier.
+        for cancelled in [true, false] {
+            use crate::api::message_store::{EnqueueRequest, MessageStore};
+            let temp = tempfile::TempDir::new().unwrap();
+            let db_path = temp.path().join("offloaded-cancel.sqlite3");
+            let store = MessageStore::open(db_path.clone()).unwrap();
+            let tracker = ResponseCloseState::default();
+            store.bind_response_close(tracker.clone());
+            let request = EnqueueRequest {
+                sender_fqn: "project:room/coordinator".into(),
+                target_fqn: "project:room/member".into(),
+                op_id: Uuid::new_v4().to_string(),
+                content_type: "text/plain".into(),
+                body: "offloaded durable body".into(),
+                source_plane: "test".into(),
+                source_ref: Some("same fixture".into()),
+            };
+            let key = format!(
+                "db:{}:{}:{}",
+                request.sender_fqn.len(),
+                request.sender_fqn,
+                request.op_id
+            );
+            let digest = crate::phone::types::sha256_hex(request.body.as_bytes());
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            if cancelled {
+                {
+                    let _entered = runtime.enter();
+                    let mut caller = Box::pin(store.enqueue_offloaded(request.clone()));
+                    let waker = std::task::Waker::noop();
+                    let mut context = std::task::Context::from_waker(waker);
+                    assert!(matches!(
+                        std::future::Future::poll(caller.as_mut(), &mut context),
+                        std::task::Poll::Pending
+                    ));
+                    drop(caller);
+                }
+            } else {
+                // Positive twin: the identical fixture really awaits enqueue.
+                let result = runtime
+                    .block_on(store.enqueue_offloaded(request.clone()))
+                    .unwrap();
+                assert!(!result.duplicate);
+                assert_eq!(result.target_fqn, request.target_fqn);
+            }
+            // No connection, state guard or runtime-enter guard is held here.
+            // Dropping the runtime joins running jobs, without forcing queued ones.
+            drop(runtime);
+            assert_offloaded_enqueue_consistency(
+                &db_path, &tracker, &request, &key, &digest, cancelled,
+            );
+        }
+    }
+
+    fn routes(
+        now: Instant,
+    ) -> (
+        ResponseCloseState,
+        ResponseRouteIdentity,
+        ResponseRouteIdentity,
+    ) {
+        let state = ResponseCloseState::default();
+        state.apply_settings(true, 30, now);
+        state.inner.lock().unwrap().ready = true;
+        state.mark_work_bootstrapped();
+        let member = ResponseRouteIdentity {
+            target: "project:room/member".into(),
+            session_id: Uuid::new_v4(),
+            token: Uuid::new_v4(),
+            generation: 1,
+            carrier_version: 1,
+            backend: SessionBackendKind::LocalProcess,
+        };
+        let coordinator = ResponseRouteIdentity {
+            target: "project:room/coordinator".into(),
+            session_id: Uuid::new_v4(),
+            token: Uuid::new_v4(),
+            generation: 2,
+            carrier_version: 1,
+            backend: SessionBackendKind::LocalProcess,
+        };
+        for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+            state.register_route(identity.session_id, identity.generation, now);
+            state.publish_manager_row(
+                identity.session_id,
+                identity.token,
+                identity.generation,
+                identity.carrier_version,
+                eligible,
+                false,
+                now,
+            );
+            state.publish_manager_facts(identity.clone(), eligible, false, now);
+        }
+        state.observe_detector(member.session_id, false, now);
+        state.publish_menu(member.session_id, Some(false), now);
+        state.publish_hold(member.session_id, None, true, now);
+        (state, member, coordinator)
+    }
+
+    fn candidate(
+        state: &ResponseCloseState,
+        member: &ResponseRouteIdentity,
+        coordinator: &ResponseRouteIdentity,
+        key: &str,
+        now: Instant,
+    ) -> ResponseDeliveryContext {
+        let mut work = state.reserve_work(&member.target, key).unwrap();
+        work.accept_durable(key).unwrap();
+        drop(work);
+        let writer = state
+            .reserve_writer(member.session_id, member.generation)
+            .unwrap();
+        let context = state
+            .reserve_policy_candidate(
+                member.clone(),
+                coordinator.clone(),
+                key.into(),
+                key.into(),
+                now,
+            )
+            .unwrap();
+        drop(writer);
+        context
+    }
+
+    fn register(
+        state: &ResponseCloseState,
+        member: &ResponseRouteIdentity,
+        coordinator: &ResponseRouteIdentity,
+        context: ResponseDeliveryContext,
+        now: Instant,
+    ) {
+        state.mark_request_submitted(&context, true);
+        assert!(state
+            .register_request(
+                ResponseDeliveryProof {
+                    context,
+                    member: member.clone(),
+                    coordinator: coordinator.clone(),
+                    published_carrier_version: member.carrier_version
+                },
+                now
+            )
+            .is_ok());
+    }
+
+    fn arm(
+        state: &ResponseCloseState,
+        member: &ResponseRouteIdentity,
+        coordinator: &ResponseRouteIdentity,
+        now: Instant,
+    ) {
+        let context = candidate(state, member, coordinator, "request", now);
+        register(state, member, coordinator, context, now);
+        let context = state
+            .admit_return(member, coordinator, "ack".into(), "ack".into(), now)
+            .unwrap();
+        state
+            .observe_return_success(ReturnDeliveryProof { context }, now)
+            .unwrap();
+    }
+
+    #[test]
+    fn response_close_readiness_is_disabled_even_with_enabled_settings() {
+        let now = Instant::now();
+        let (state, member, coordinator) = routes(now);
+        state.inner.lock().unwrap().ready = false;
+        assert!(state
+            .reserve_policy_candidate(member, coordinator, "req".into(), "digest".into(), now)
+            .is_err());
+    }
+
+    #[test]
+    fn response_close_coordinator_identity_change_and_restore_never_resurrects_policy() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let (state, member, coordinator) = routes(now);
+        arm(&state, &member, &coordinator, now);
+        let mut changed = coordinator.clone();
+        changed.target = "project:room/another-coordinator".into();
+        state.publish_manager_facts(changed, false, false, now);
+        state.publish_manager_facts(coordinator, false, false, now);
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+        assert!(state.inner.lock().unwrap().routes[&member.session_id]
+            .policy
+            .is_none());
+    }
+
+    #[test]
+    fn response_close_ordinary_ack_requires_full_interval_and_raw_output_revokes_ticket() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let nonce = ordinary_ack_dormant_settlement(now);
+        ordinary_ack_reopen_and_fresh_return(now, nonce);
+        for fault in ["healthy", "failed", "poison", "overflow"] {
+            let (state, member, coordinator) = routes(now);
+            arm(&state, &member, &coordinator, now);
+            let at = now + Duration::from_secs(30);
+            let ticket = state.select_ticket(member.session_id, at).unwrap();
+            let admission = state.reserve_work(&member.target, "before-commit").unwrap();
+            assert!(state.try_commit_response_close(&ticket, at).is_err());
+            drop(admission);
+            let delivery = state.begin_delivery(&member.target).unwrap();
+            assert!(state.select_ticket(member.session_id, at).is_err());
+            drop(delivery);
+            // Admission invalidates the old ticket. A fresh complete quiet interval is required.
+            let at = at + Duration::from_secs(30);
+            let ticket = state.select_ticket(member.session_id, at).unwrap();
+            let nonce = state.try_commit_response_close(&ticket, at).unwrap();
+            let mut work = state.reserve_work(&member.target, "after-commit").unwrap();
+            assert_eq!(work.accept_durable("body"), Ok(true));
+            drop(work);
+            state.remove_route(member.session_id, member.generation);
+            assert_eq!(
+                state.inner.lock().unwrap().routes[&member.session_id].closing,
+                Some(nonce)
+            );
+            match fault {
+                "failed" => state.fail_closed(),
+                "poison" => {
+                    let cloned = state.clone();
+                    assert!(std::thread::spawn(move || {
+                        let _guard = cloned.inner.lock().unwrap();
+                        panic!("controlled tracker poison");
+                    })
+                    .join()
+                    .is_err());
+                }
+                "overflow" => {
+                    state
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .work
+                        .get_mut(&member.target)
+                        .unwrap()
+                        .dispatch = usize::MAX
+                }
+                _ => {}
+            }
+            assert!(state.target_is_closing(&member.target));
+            assert!(!state.target_is_closing(&(member.target.clone() + "-other")));
+            assert!(matches!(
+                state.begin_delivery(&member.target),
+                Err(ResponseCloseError::ClosingDeferred)
+            ));
+            let inner = state.inner.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(inner.work[&member.target].pending["after-commit"], "body");
+            assert_eq!(inner.routes[&member.session_id].closing, Some(nonce));
+            assert_eq!(inner.failed, matches!(fault, "failed" | "poison"));
+            drop(inner);
+            if matches!(fault, "failed" | "poison") {
+                assert!(matches!(
+                    state.begin_delivery("unrelated"),
+                    Err(ResponseCloseError::Unavailable)
+                ));
+            } else {
+                drop(state.begin_delivery("unrelated").unwrap());
+            }
+        }
+    }
+
+    fn ordinary_ack_dormant_settlement(now: Instant) -> Uuid {
+        let (state, member, coordinator) = routes(now);
+        arm(&state, &member, &coordinator, now);
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(29))
+            .is_err());
+        let ticket = state
+            .select_ticket(member.session_id, now + Duration::from_secs(30))
+            .unwrap();
+        state.observe_raw_output(member.session_id, now + Duration::from_secs(30));
+        assert!(state
+            .try_commit_response_close(&ticket, now + Duration::from_secs(60))
+            .is_err());
+        assert!(!state
+            .is_closing(member.session_id, member.generation)
+            .unwrap());
+        let ticket = state
+            .select_ticket(member.session_id, now + Duration::from_secs(60))
+            .unwrap();
+        let nonce = state
+            .try_commit_response_close(&ticket, now + Duration::from_secs(60))
+            .unwrap();
+        assert!(matches!(
+            state.reserve_writer(member.session_id, member.generation),
+            Err(ResponseCloseError::ClosingDeferred)
+        ));
+        let mut pending = state.reserve_work(&member.target, "after-commit").unwrap();
+        assert_eq!(pending.accept_durable("retained-body"), Ok(true));
+        drop(pending);
+        assert!(matches!(
+            state.begin_delivery(&member.target),
+            Err(ResponseCloseError::ClosingDeferred)
+        ));
+        assert_eq!(
+            state.inner.lock().unwrap().work[&member.target]
+                .pending
+                .get("after-commit")
+                .map(String::as_str),
+            Some("retained-body")
+        );
+        state.observe_detector(member.session_id, true, now + Duration::from_secs(61));
+        state.apply_settings(false, 30, now + Duration::from_secs(62));
+        assert!(state
+            .is_closing(member.session_id, member.generation)
+            .unwrap());
+        assert_eq!(ticket.committed_binding().close_nonce, nonce);
+        let dormant = || ResponseCloseSettlementOutcome::Dormant {
+            exact_backend_absent: true,
+            all_effects_completed: true,
+            retained_exited_confirmed: true,
+            selection_settled: true,
+        };
+        let evidence = |version, outcome| {
+            let checkpoint_nonce = Uuid::new_v4();
+            ResponseCloseSettlementEvidence {
+                committed_binding: ticket.committed_binding(),
+                current_settlement: ResponseCloseCurrentSettlement {
+                    current_carrier_version: version,
+                    confirmed_carrier_version: version,
+                    checkpoint_nonce,
+                    current_checkpoint_nonce: checkpoint_nonce,
+                    publication_epoch: 2,
+                    current_publication_epoch: 2,
+                },
+                outcome,
+            }
+        };
+        // Same-UUID stable carrier changes advance current facts without
+        // relabelling the committed ticket or reviving its consumed lease.
+        state.publish_manager_row(
+            member.session_id,
+            member.token,
+            member.generation,
+            2,
+            false,
+            false,
+            now + Duration::from_secs(63),
+        );
+        assert_eq!(ticket.committed_binding().member.carrier_version, 1);
+        let mut stale = evidence(2, dormant());
+        stale.current_settlement.confirmed_carrier_version = 1;
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        assert_eq!(
+            state.finish_response_close(&ticket, evidence(1, dormant())),
+            Err(StaleOrInvalidSettlement)
+        );
+        let mut stale = evidence(2, dormant());
+        stale.current_settlement.current_checkpoint_nonce = Uuid::new_v4();
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        let mut stale = evidence(2, dormant());
+        stale.current_settlement.current_publication_epoch += 1;
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        let mut stale = evidence(2, dormant());
+        stale.committed_binding.member.backend = SessionBackendKind::ContainerTransport;
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        let mut stale = evidence(2, dormant());
+        stale.committed_binding.member.generation += 1;
+        assert_eq!(
+            state.finish_response_close(&ticket, stale),
+            Err(StaleOrInvalidSettlement)
+        );
+        // None facts are not proof of completion. Running, NotStarted or
+        // Ambiguous must be represented by false, not Completed(Err).
+        assert_eq!(
+            state.finish_response_close(
+                &ticket,
+                evidence(
+                    2,
+                    ResponseCloseSettlementOutcome::Dormant {
+                        exact_backend_absent: true,
+                        all_effects_completed: false,
+                        retained_exited_confirmed: true,
+                        selection_settled: true,
+                    },
+                ),
+            ),
+            Err(StaleOrInvalidSettlement)
+        );
+        assert!(state
+            .is_closing(member.session_id, member.generation)
+            .unwrap());
+        assert_eq!(
+            state.finish_response_close(&ticket, evidence(2, dormant())),
+            Ok(())
+        );
+        assert_eq!(
+            state.inner.lock().unwrap().work[&member.target].pending["after-commit"],
+            "retained-body"
+        );
+        nonce
+    }
+
+    fn ordinary_ack_reopen_and_fresh_return(now: Instant, nonce: Uuid) {
+        // Contrast kill failure: latest LIVE Confirmed carrier, no Exited or
+        // selection-clear claim. Every effect must still be terminal.
+        let (state, member, coordinator) = routes(now);
+        arm(&state, &member, &coordinator, now);
+        let ticket = state
+            .select_ticket(member.session_id, now + Duration::from_secs(30))
+            .unwrap();
+        state
+            .try_commit_response_close(&ticket, now + Duration::from_secs(30))
+            .unwrap();
+        state.publish_manager_row(
+            member.session_id,
+            member.token,
+            member.generation,
+            2,
+            true,
+            false,
+            now,
+        );
+        let reopen = |all_effects_terminal| ResponseCloseSettlementEvidence {
+            committed_binding: ticket.committed_binding(),
+            current_settlement: ResponseCloseCurrentSettlement {
+                current_carrier_version: 2,
+                confirmed_carrier_version: 2,
+                checkpoint_nonce: nonce,
+                current_checkpoint_nonce: nonce,
+                publication_epoch: 3,
+                current_publication_epoch: 3,
+            },
+            outcome: ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
+                terminal_kill_failure: true,
+                all_effects_terminal,
+                original_backend_alive: true,
+                original_manager_identity_intact: true,
+            },
+        };
+        assert_eq!(
+            state.finish_response_close(&ticket, reopen(false)),
+            Err(StaleOrInvalidSettlement)
+        );
+        assert!(state
+            .is_closing(member.session_id, member.generation)
+            .unwrap());
+        assert_eq!(state.finish_response_close(&ticket, reopen(true)), Ok(()));
+        assert!(!state
+            .is_closing(member.session_id, member.generation)
+            .unwrap());
+        assert!(state.begin_delivery(&member.target).is_ok());
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+        assert!(state
+            .try_commit_response_close(&ticket, now + Duration::from_secs(100))
+            .is_err());
+
+        let mut current_member = member.clone();
+        current_member.carrier_version = 2;
+        state.publish_manager_facts(current_member.clone(), true, false, now);
+        // Pure terminal-ledger replay cannot mint another candidate. P05/P06
+        // separately verify authenticated admission and on-disk receipt replay.
+        assert!(matches!(
+            state.reserve_policy_candidate(
+                current_member.clone(),
+                coordinator.clone(),
+                "request".into(),
+                "request".into(),
+                now + Duration::from_secs(100),
+            ),
+            Err(ResponseCloseError::Conflict)
+        ));
+
+        let new_request = candidate(
+            &state,
+            &current_member,
+            &coordinator,
+            "new-request",
+            now + Duration::from_secs(100),
+        );
+        register(
+            &state,
+            &current_member,
+            &coordinator,
+            new_request,
+            now + Duration::from_secs(100),
+        );
+        // Registration alone cannot reuse the old ACK or its idle interval.
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(200))
+            .is_err());
+        let returned_at = now + Duration::from_secs(200);
+        let fresh_return = state
+            .admit_return(
+                &current_member,
+                &coordinator,
+                "fresh-ack".into(),
+                "fresh-ack".into(),
+                returned_at,
+            )
+            .unwrap();
+        state
+            .observe_return_success(
+                ReturnDeliveryProof {
+                    context: fresh_return,
+                },
+                returned_at,
+            )
+            .unwrap();
+        assert!(matches!(
+            state.select_ticket(
+                member.session_id,
+                returned_at + Duration::from_secs(30) - Duration::from_nanos(1),
+            ),
+            Err(ResponseCloseError::Unknown)
+        ));
+        assert!(state
+            .select_ticket(member.session_id, returned_at + Duration::from_secs(30))
+            .is_ok());
+    }
+    #[test]
+    fn response_close_early_return_waits_for_complete_submission_and_registration() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let (state, member, coordinator) = routes(now);
+        let mut work = state.reserve_work(&member.target, "request").unwrap();
+        work.accept_durable("request").unwrap();
+        drop(work);
+        let writer = state
+            .reserve_writer(member.session_id, member.generation)
+            .unwrap();
+        let candidate = state
+            .reserve_policy_candidate(
+                member.clone(),
+                coordinator.clone(),
+                "request".into(),
+                "request".into(),
+                now,
+            )
+            .unwrap();
+        let early = state
+            .admit_return(
+                &member,
+                &coordinator,
+                "early".into(),
+                "early".into(),
+                now + Duration::from_secs(1),
+            )
+            .unwrap();
+        state
+            .observe_return_success(
+                ReturnDeliveryProof { context: early },
+                now + Duration::from_secs(2),
+            )
+            .unwrap();
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+        drop(writer);
+        register(
+            &state,
+            &member,
+            &coordinator,
+            candidate,
+            now + Duration::from_secs(20),
+        );
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(49))
+            .is_err());
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(50))
+            .is_ok());
+    }
+
+    #[test]
+    fn response_close_stale_return_and_failed_submission_never_arm_successor() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let (state, member, coordinator) = routes(now);
+        assert!(state
+            .admit_return(&member, &coordinator, "pre".into(), "pre".into(), now)
+            .is_err());
+        let old = candidate(&state, &member, &coordinator, "old", now);
+        let early = state
+            .admit_return(&member, &coordinator, "reply".into(), "reply".into(), now)
+            .unwrap();
+        state.mark_request_submitted(&old, false);
+        state.settle_terminal(&member.target, "old", now);
+        let next = candidate(&state, &member, &coordinator, "next", now);
+        register(&state, &member, &coordinator, next, now);
+        assert!(state
+            .observe_return_success(ReturnDeliveryProof { context: early }, now)
+            .is_err());
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+    }
+
+    #[test]
+    fn response_close_pending_returns_dedupe_and_out_of_order_settlement_restart_clock() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let (state, member, coordinator) = routes(now);
+        arm(&state, &member, &coordinator, now);
+        let a = state
+            .admit_return(
+                &member,
+                &coordinator,
+                "a".into(),
+                "a".into(),
+                now + Duration::from_secs(10),
+            )
+            .unwrap();
+        let b = state
+            .admit_return(
+                &member,
+                &coordinator,
+                "b".into(),
+                "b".into(),
+                now + Duration::from_secs(11),
+            )
+            .unwrap();
+        let duplicate = state
+            .admit_return(
+                &member,
+                &coordinator,
+                "b".into(),
+                "b".into(),
+                now + Duration::from_secs(12),
+            )
+            .unwrap();
+        assert_eq!(b.sequence, duplicate.sequence);
+        assert!(matches!(
+            state.admit_return(&member, &coordinator, "b".into(), "collision".into(), now),
+            Err(ResponseCloseError::Conflict)
+        ));
+        state
+            .observe_return_success(
+                ReturnDeliveryProof { context: b.clone() },
+                now + Duration::from_secs(20),
+            )
+            .unwrap();
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+        state
+            .settle_return_terminal(&a, now + Duration::from_secs(25))
+            .unwrap();
+        state
+            .observe_return_success(
+                ReturnDeliveryProof { context: b },
+                now + Duration::from_secs(40),
+            )
+            .unwrap();
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(54))
+            .is_err());
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(55))
+            .is_ok());
+    }
+
+    #[test]
+    fn response_close_unknown_hold_held_keys_and_native_busy_veto_delayed_manager_idle() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let (state, member, coordinator) = routes(now);
+        arm(&state, &member, &coordinator, now);
+        state.publish_hold(member.session_id, None, false, now);
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+        state.publish_hold(
+            member.session_id,
+            Some(now + Duration::from_secs(40)),
+            true,
+            now,
+        );
+        state.publish_held_key(member.session_id, "held", true, now);
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+        state.publish_held_key(
+            member.session_id,
+            "held",
+            false,
+            now + Duration::from_secs(50),
+        );
+        state.observe_detector(member.session_id, true, now + Duration::from_secs(51));
+        state.publish_manager_facts(member.clone(), true, false, now + Duration::from_secs(52));
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
+        state.observe_detector(member.session_id, false, now + Duration::from_secs(60));
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(89))
+            .is_err());
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(90))
+            .is_ok());
+    }
+
+    #[test]
+    fn response_close_setting_epoch_changes_revoke_tickets_and_old_return_success() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let (state, member, coordinator) = routes(now);
+        arm(&state, &member, &coordinator, now);
+        let old = state
+            .select_ticket(member.session_id, now + Duration::from_secs(30))
+            .unwrap();
+        let late = state
+            .admit_return(
+                &member,
+                &coordinator,
+                "late".into(),
+                "late".into(),
+                now + Duration::from_secs(31),
+            )
+            .unwrap();
+        state.apply_settings(true, 10, now + Duration::from_secs(32));
+        state
+            .observe_return_success(
+                ReturnDeliveryProof { context: late },
+                now + Duration::from_secs(33),
+            )
+            .unwrap();
+        assert!(state
+            .try_commit_response_close(&old, now + Duration::from_secs(100))
+            .is_err());
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(42))
+            .is_err());
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(43))
+            .is_ok());
+        state.apply_settings(true, 0, now + Duration::from_secs(44));
+        assert!(state
+            .select_ticket(member.session_id, now + Duration::from_secs(100))
+            .is_err());
     }
 }

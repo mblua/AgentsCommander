@@ -430,6 +430,8 @@ export interface AgentBackendConfig {
 
 export interface AgentConfig {
   id: string;
+  /** Backend-derived from final command/envs; informational, not authority or an alternate lookup. */
+  id_hash?: string;
   label: string;
   command: string;
   color: string;

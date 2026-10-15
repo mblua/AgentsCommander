@@ -33,8 +33,234 @@ impl PendingCreateBinding {
     }
 }
 
+/// The process publication gate is shared with P05 persistence. It holds no
+/// directory protection map or settings state.
+pub(crate) fn process_carrier_publication_gate() -> &'static Arc<tokio::sync::Mutex<()>> {
+    static GATE: std::sync::OnceLock<Arc<tokio::sync::Mutex<()>>> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+}
+
+pub(crate) struct CarrierMutationPermit {
+    gate: Arc<tokio::sync::Mutex<()>>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+pub(crate) async fn acquire_carrier_mutation_permit() -> CarrierMutationPermit {
+    let gate = process_carrier_publication_gate().clone();
+    let guard = gate.clone().lock_owned().await;
+    CarrierMutationPermit {
+        gate,
+        _guard: guard,
+    }
+}
+
+impl CarrierMutationPermit {
+    fn proves(&self) -> bool {
+        Arc::ptr_eq(&self.gate, process_carrier_publication_gate())
+    }
+}
+
+#[derive(Clone)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) struct CarrierSnapshot {
+    pub rows: Vec<Session>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub versions: HashMap<Uuid, u64>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub pending_ids: HashSet<Uuid>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub order: Vec<Uuid>,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub selection: SessionSelection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CarrierDisposition {
+    Protected,
+    Foreign,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    Unknown,
+}
+
+pub(crate) struct RaiseMutationReceipt {
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    uuid: Uuid,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    nonce: Uuid,
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    version: u64,
+}
+
+pub(crate) enum RaiseCarrierOutcome {
+    // Dormant until P05 integration; remove with real callers.
+    Changed(
+        SessionCommunication,
+        #[allow(dead_code)] RaiseMutationReceipt,
+    ),
+    AlreadyVisible(SessionCommunication),
+    NotRaisable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Dormant until P05 integration; remove with real callers.
+#[allow(dead_code)]
+pub(crate) enum RaiseRollbackOutcome {
+    Reverted,
+    Superseded,
+    Missing,
+}
+
+// Only pure comparisons and tracker publication run at guard disposal. No
+// manager callback, await, persistence or acquisition of the publication gate.
+struct CarrierStateWrite<'a> {
+    state: tokio::sync::RwLockWriteGuard<'a, SessionManagerState>,
+    before: HashMap<Uuid, Session>,
+    pending_before: HashSet<Uuid>,
+    selection_before: SessionSelection,
+    tracker: &'a crate::pty::manager::ResponseCloseState,
+}
+impl std::ops::Deref for CarrierStateWrite<'_> {
+    type Target = SessionManagerState;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+impl std::ops::DerefMut for CarrierStateWrite<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+fn stable_carrier_equal(a: &Session, b: &Session) -> bool {
+    a.id == b.id
+        && a.created_at == b.created_at
+        && a.token == b.token
+        && a.name == b.name
+        && a.working_directory == b.working_directory
+        && a.shell == b.shell
+        && a.shell_args == b.shell_args
+        && a.backend_kind == b.backend_kind
+        && a.effective_shell_args == b.effective_shell_args
+        && a.agent_id == b.agent_id
+        && a.agent_label == b.agent_label
+        && a.git_repos.len() == b.git_repos.len()
+        && a.git_repos
+            .iter()
+            .zip(&b.git_repos)
+            .all(|(a, b)| a.label == b.label && a.source_path == b.source_path)
+        && a.is_coordinator == b.is_coordinator
+        && a.is_root_agent == b.is_root_agent
+        && a.agent_kind == b.agent_kind
+        && a.requested_profile == b.requested_profile
+        && a.effective_profile == b.effective_profile
+        && a.profile_fallback_chain == b.profile_fallback_chain
+        && a.profile_fallback_applied == b.profile_fallback_applied
+        && a.match_tier == b.match_tier
+        && a.original_profile_letter == b.original_profile_letter
+        && a.effective_codex_home == b.effective_codex_home
+        && a.resolved_claude_projects_dir == b.resolved_claude_projects_dir
+        && a.profile_content_hash == b.profile_content_hash
+        && a.trusted_configured_spawn == b.trusted_configured_spawn
+        && a.telegram_bot_id == b.telegram_bot_id
+        && a.was_detached == b.was_detached
+        && a.start_fresh_on_restore == b.start_fresh_on_restore
+        && a.communication == b.communication
+        && matches!(a.status, SessionStatus::Active) == matches!(b.status, SessionStatus::Active)
+        && match (&a.status, &b.status) {
+            (SessionStatus::Exited(a), SessionStatus::Exited(b)) => a == b,
+            (SessionStatus::Exited(_), _) | (_, SessionStatus::Exited(_)) => false,
+            _ => true,
+        }
+}
+impl Drop for CarrierStateWrite<'_> {
+    fn drop(&mut self) {
+        let now = std::time::Instant::now();
+        let removed: Vec<Uuid> = self
+            .before
+            .keys()
+            .filter(|id| !self.state.sessions.contains_key(id))
+            .copied()
+            .collect();
+        for id in &removed {
+            self.tracker.invalidate_manager_row(*id, now);
+            // Retain the version tombstone: same-UUID recreation never resets it.
+            if let Some(next) = self
+                .state
+                .carrier_versions
+                .get(id)
+                .copied()
+                .unwrap_or(0)
+                .checked_add(1)
+            {
+                self.state.carrier_versions.insert(*id, next);
+            } else {
+                self.tracker.fail_closed();
+            }
+            self.state.raise_nonces.remove(id);
+        }
+        let rows: Vec<Session> = self.state.sessions.values().cloned().collect();
+        for row in rows {
+            let pending = self.state.pending_create.contains_key(&row.id);
+            let changed = self
+                .before
+                .get(&row.id)
+                .is_none_or(|old| !stable_carrier_equal(old, &row))
+                || self.pending_before.contains(&row.id) != pending
+                || ((self.selection_before.id() != self.state.selection.id()
+                    || self.selection_before.mode() != self.state.selection.mode())
+                    && (self.selection_before.id() == Some(row.id)
+                        || self.state.selection.id() == Some(row.id)));
+            let mut version = self
+                .state
+                .carrier_versions
+                .get(&row.id)
+                .copied()
+                .unwrap_or(0);
+            if changed {
+                self.tracker.invalidate_manager_row(row.id, now);
+                let Some(next) = version.checked_add(1) else {
+                    self.tracker.fail_closed();
+                    continue;
+                };
+                version = next;
+                self.state.carrier_versions.insert(row.id, version);
+                self.state.raise_nonces.remove(&row.id);
+            }
+            let Some(generation) = self.tracker.generation(row.id) else {
+                continue;
+            };
+            // Canonical verified target names are supplied by upper admission.
+            // This publisher preserves an existing verified target; it cannot
+            // promote a CWD/label into authenticated routing authority.
+            self.tracker.publish_manager_row(
+                row.id,
+                row.token,
+                generation,
+                version,
+                !pending
+                    && !row.is_coordinator
+                    && !row.is_root_agent
+                    && row.agent_kind.is_some()
+                    && !matches!(row.status, SessionStatus::Exited(_)),
+                crate::session::session::is_working(&row),
+                now,
+            );
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SessionManager {
+    response_close: crate::pty::manager::ResponseCloseState,
     state: Arc<RwLock<SessionManagerState>>,
 }
 
@@ -93,7 +319,20 @@ pub(crate) enum TerminalSnapshotFactsError {
     TooMany,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CodingAgentBinding {
+    pub id: String,
+    pub seed: Option<serde_json::Value>,
+    pub origin: Option<serde_json::Value>,
+}
+
 struct SessionManagerState {
+    coding_agent_bindings: HashMap<Uuid, String>,
+    binding_seeds: HashMap<String, serde_json::Value>,
+    binding_origins: HashMap<String, serde_json::Value>,
+    failed_binding_recipes: HashMap<String, serde_json::Value>,
+    carrier_versions: HashMap<Uuid, u64>,
+    raise_nonces: HashMap<Uuid, Uuid>,
     sessions: HashMap<Uuid, Session>,
     order: Vec<Uuid>,
     pending_create: HashMap<Uuid, Uuid>,
@@ -105,6 +344,10 @@ struct SessionManagerState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ManagerAggregateSnapshot {
+    pub coding_agent_bindings: HashMap<Uuid, String>,
+    pub binding_seeds: HashMap<String, serde_json::Value>,
+    pub binding_origins: HashMap<String, serde_json::Value>,
+    pub failed_binding_recipes: HashMap<String, serde_json::Value>,
     pub sessions: Vec<Session>,
     pub order: Vec<Uuid>,
     pub pending_ids: HashSet<Uuid>,
@@ -229,10 +472,83 @@ impl Default for SessionManager {
 }
 
 impl SessionManager {
+    pub(crate) fn with_response_close(state: crate::pty::manager::ResponseCloseState) -> Self {
+        state.bind_publisher(crate::pty::manager::ResponseClosePublisher::Manager);
+        Self {
+            response_close: state,
+            ..Self::new()
+        }
+    }
+    pub(crate) fn response_close_state(&self) -> crate::pty::manager::ResponseCloseState {
+        self.response_close.clone()
+    }
+    async fn carrier_state_write<'a>(
+        &'a self,
+        permit: &CarrierMutationPermit,
+    ) -> CarrierStateWrite<'a> {
+        assert!(permit.proves(), "foreign carrier mutation permit");
+        let state = self.state.write().await;
+        let before = state.sessions.clone();
+        let pending_before = state.pending_create.keys().copied().collect();
+        let selection_before = state.selection.clone();
+        CarrierStateWrite {
+            state,
+            before,
+            pending_before,
+            selection_before,
+            tracker: &self.response_close,
+        }
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) async fn with_current_carrier_snapshot<R>(
+        &self,
+        permit: &CarrierMutationPermit,
+        f: impl FnOnce(&CarrierSnapshot) -> R,
+    ) -> R {
+        assert!(permit.proves(), "foreign carrier snapshot permit");
+        let state = self.state.read().await;
+        let snapshot = CarrierSnapshot {
+            rows: state.sessions.values().cloned().collect(),
+            versions: state.carrier_versions.clone(),
+            pending_ids: state.pending_create.keys().copied().collect(),
+            order: state.order.clone(),
+            selection: state.selection.clone(),
+        };
+        f(&snapshot)
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) async fn with_response_close_facts<R>(
+        &self,
+        f: impl FnOnce(&CarrierSnapshot) -> R,
+    ) -> R {
+        let state = self.state.read().await;
+        let snapshot = CarrierSnapshot {
+            rows: state.sessions.values().cloned().collect(),
+            versions: state.carrier_versions.clone(),
+            pending_ids: state.pending_create.keys().copied().collect(),
+            order: state.order.clone(),
+            selection: state.selection.clone(),
+        };
+        f(&snapshot)
+    }
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) fn reserve_carrier_create_binding(&self) -> PendingCreateBinding {
+        PendingCreateBinding::new(Uuid::new_v4(), Uuid::new_v4())
+    }
     pub fn new() -> Self {
         let epoch = Uuid::new_v4();
         Self {
+            response_close: crate::pty::manager::ResponseCloseState::default(),
             state: Arc::new(RwLock::new(SessionManagerState {
+                coding_agent_bindings: HashMap::new(),
+                binding_seeds: HashMap::new(),
+                binding_origins: HashMap::new(),
+                failed_binding_recipes: HashMap::new(),
+                carrier_versions: HashMap::new(),
+                raise_nonces: HashMap::new(),
                 sessions: HashMap::new(),
                 order: Vec::new(),
                 pending_create: HashMap::new(),
@@ -317,8 +633,43 @@ impl SessionManager {
         is_coordinator: bool,
         backend_kind: SessionBackendKind,
     ) -> Result<Session, AppError> {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.insert_new_pending_session_with_carrier_permit(
+            &carrier_permit,
+            binding,
+            shell,
+            shell_args,
+            working_directory,
+            agent_id,
+            agent_label,
+            git_repos,
+            is_coordinator,
+            backend_kind,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_new_pending_session_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        shell: String,
+        shell_args: Vec<String>,
+        working_directory: String,
+        agent_id: Option<String>,
+        agent_label: Option<String>,
+        git_repos: Vec<SessionRepo>,
+        is_coordinator: bool,
+        backend_kind: SessionBackendKind,
+    ) -> Result<Session, AppError> {
         let id = binding.session_id;
-        let mut state = self.state.write().await;
+        let mut state = self.carrier_state_write(carrier_permit).await;
+        if state.sessions.contains_key(&id) {
+            return Err(AppError::Other(
+                "pending create binding already used".to_string(),
+            ));
+        }
         let name = format!("Session {}", state.next_number);
         state.next_number = state
             .next_number
@@ -371,8 +722,51 @@ impl SessionManager {
         Ok(session)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) async fn create_pending_session_with_binding_and_carrier_permit(
+        &self,
+        binding: PendingCreateBinding,
+        carrier_permit: &CarrierMutationPermit,
+        shell: String,
+        shell_args: Vec<String>,
+        working_directory: String,
+        agent_id: Option<String>,
+        agent_label: Option<String>,
+        git_repos: Vec<SessionRepo>,
+        is_coordinator: bool,
+        backend_kind: SessionBackendKind,
+    ) -> Result<Session, AppError> {
+        self.insert_new_pending_session_with_carrier_permit(
+            carrier_permit,
+            binding,
+            shell,
+            shell_args,
+            working_directory,
+            agent_id,
+            agent_label,
+            git_repos,
+            is_coordinator,
+            backend_kind,
+        )
+        .await
+    }
+
     pub async fn rename_session(&self, id: Uuid, name: String) -> Result<(), AppError> {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.rename_session_with_carrier_permit(&carrier_permit, id, name)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn rename_session_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        name: String,
+    ) -> Result<(), AppError> {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return Err(AppError::SessionNotFound(id.to_string()));
         }
@@ -389,8 +783,22 @@ impl SessionManager {
         binding: PendingCreateBinding,
         name: String,
     ) -> Result<(), AppError> {
-        self.update_pending(binding, |session| session.name = name)
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.rename_pending_session_with_carrier_permit(&carrier_permit, binding, name)
             .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn rename_pending_session_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        name: String,
+    ) -> Result<(), AppError> {
+        self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
+            session.name = name
+        })
+        .await
     }
 
     pub async fn list_sessions(&self) -> Vec<SessionInfo> {
@@ -427,7 +835,19 @@ impl SessionManager {
     }
 
     pub async fn set_is_root_agent(&self, id: Uuid, value: bool) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_is_root_agent_with_carrier_permit(&carrier_permit, id, value)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_is_root_agent_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        value: bool,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if !state.pending_create.contains_key(&id) {
             if let Some(session) = state.sessions.get_mut(&id) {
                 session.is_root_agent = value;
@@ -440,7 +860,19 @@ impl SessionManager {
         binding: PendingCreateBinding,
         value: bool,
     ) -> Result<(), AppError> {
-        self.update_pending(binding, |session| {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_pending_is_root_agent_with_carrier_permit(&carrier_permit, binding, value)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_pending_is_root_agent_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        value: bool,
+    ) -> Result<(), AppError> {
+        self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
             session.is_root_agent = value;
         })
         .await
@@ -577,8 +1009,19 @@ impl SessionManager {
     /// 55,816 `[session-state]` lines into the roughly 8,054 real transitions
     /// among them without changing any behavior.
     pub async fn mark_idle(&self, id: Uuid) {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.mark_idle_with_carrier_permit(&carrier_permit, id)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn mark_idle_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+    ) {
         let record = {
-            let mut state = self.state.write().await;
+            let mut state = self.carrier_state_write(carrier_permit).await;
             if state.pending_create.contains_key(&id) {
                 return;
             }
@@ -619,8 +1062,19 @@ impl SessionManager {
 
     /// Mirror of [`Self::mark_idle`]. See the emit-only note there.
     pub async fn mark_busy(&self, id: Uuid) {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.mark_busy_with_carrier_permit(&carrier_permit, id)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn mark_busy_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+    ) {
         let record = {
-            let mut state = self.state.write().await;
+            let mut state = self.carrier_state_write(carrier_permit).await;
             if state.pending_create.contains_key(&id) {
                 return;
             }
@@ -671,7 +1125,18 @@ impl SessionManager {
     /// and submitted: R7 and R8 both arm with nothing submitted. Idempotent, and never undone: see this phase's
     /// D2. Deliberately NOT called from `mark_busy`, whose output-driven caller would arm a startup repaint.
     pub async fn arm_agent_turn(&self, id: Uuid) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.arm_agent_turn_with_carrier_permit(&carrier_permit, id)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn arm_agent_turn_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -760,13 +1225,56 @@ impl SessionManager {
         F: FnOnce() -> bool,
         G: FnOnce(&Session, &crate::config::settings::AppSettings) -> bool,
     {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.prepare_pty_input_boundary_with_carrier_permit(
+            &carrier_permit,
+            id,
+            expected_target,
+            expected_backend,
+            authority_id,
+            expected_sender,
+            authority_backend,
+            authority_route,
+            permit,
+            idle_detector,
+            settings,
+            final_recipe_check,
+            final_external_check,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn prepare_pty_input_boundary_with_carrier_permit<'a, F, G>(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        expected_target: &crate::config::teams::VerifiedPtyInputIdentity,
+        expected_backend: SessionBackendKind,
+        authority_id: Uuid,
+        expected_sender: &crate::config::teams::VerifiedPtyInputIdentity,
+        authority_backend: SessionBackendKind,
+        authority_route: &'a crate::pty::manager::PtyAuthorityRouteProof,
+        permit: &'a crate::pty::manager::PtyInputPermit,
+        idle_detector: &crate::pty::idle_detector::IdleDetector,
+        settings: &crate::config::settings::SettingsState,
+        final_recipe_check: G,
+        final_external_check: F,
+    ) -> Result<
+        crate::pty::manager::PtyRouteWriteGuard<'a>,
+        crate::pty::idle_detector::PtyInputBoundaryFailure,
+    >
+    where
+        F: FnOnce() -> bool,
+        G: FnOnce(&Session, &crate::config::settings::AppSettings) -> bool,
+    {
         use crate::pty::idle_detector::PtyInputBoundaryFailure as Failure;
 
         let (route_guard, was_idle, activity) = {
             let settings_guard = Arc::clone(settings)
                 .try_read_owned()
                 .map_err(|_| Failure::RouteUnavailable)?;
-            let mut state = self.state.write().await;
+            let mut state = self.carrier_state_write(carrier_permit).await;
             if state.pending_create.contains_key(&id)
                 || state.pending_create.contains_key(&authority_id)
             {
@@ -954,18 +1462,38 @@ impl SessionManager {
         id: Uuid,
         updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Option<(bool, SessionCommunication)> {
-        let mut state = self.state.write().await;
-        if state.pending_create.contains_key(&id) {
-            return None;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        match self
+            .raise_hand_with_carrier_permit(&carrier_permit, id, updated_at)
+            .await
+        {
+            RaiseCarrierOutcome::Changed(communication, _) => Some((true, communication)),
+            RaiseCarrierOutcome::AlreadyVisible(communication) => Some((false, communication)),
+            RaiseCarrierOutcome::NotRaisable => None,
         }
-        let session = state.sessions.get_mut(&id)?;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn raise_hand_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RaiseCarrierOutcome {
+        let mut state = self.carrier_state_write(carrier_permit).await;
+        if state.pending_create.contains_key(&id) {
+            return RaiseCarrierOutcome::NotRaisable;
+        }
+        let Some(session) = state.sessions.get_mut(&id) else {
+            return RaiseCarrierOutcome::NotRaisable;
+        };
         if !session.is_coordinator || matches!(session.status, SessionStatus::Exited(_)) {
-            return None;
+            return RaiseCarrierOutcome::NotRaisable;
         }
 
         if let Some(existing) = session.communication.as_ref() {
             if existing.kind == SessionCommunicationKind::RaiseHand && existing.visible {
-                return Some((false, existing.clone()));
+                return RaiseCarrierOutcome::AlreadyVisible(existing.clone());
             }
         }
 
@@ -976,7 +1504,44 @@ impl SessionManager {
             message: None,
         };
         session.communication = Some(communication.clone());
-        Some((true, communication))
+        drop(state);
+        let mut state = self.state.write().await;
+        let nonce = Uuid::new_v4();
+        let version = state.carrier_versions.get(&id).copied().unwrap_or(0);
+        state.raise_nonces.insert(id, nonce);
+        RaiseCarrierOutcome::Changed(
+            communication,
+            RaiseMutationReceipt {
+                uuid: id,
+                nonce,
+                version,
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
+    pub(crate) async fn rollback_raise_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        receipt: RaiseMutationReceipt,
+    ) -> RaiseRollbackOutcome {
+        let mut state = self.carrier_state_write(carrier_permit).await;
+        let Some(session) = state.sessions.get(&receipt.uuid) else {
+            return RaiseRollbackOutcome::Missing;
+        };
+        if state.raise_nonces.get(&receipt.uuid) != Some(&receipt.nonce)
+            || state.carrier_versions.get(&receipt.uuid) != Some(&receipt.version)
+            || !session.communication.as_ref().is_some_and(|comm| {
+                comm.kind == SessionCommunicationKind::RaiseHand && comm.visible
+            })
+        {
+            return RaiseRollbackOutcome::Superseded;
+        }
+        state.sessions.get_mut(&receipt.uuid).unwrap().communication = None;
+        state.raise_nonces.remove(&receipt.uuid);
+        RaiseRollbackOutcome::Reverted
     }
 
     pub async fn clear_communication_if_kind(
@@ -984,7 +1549,19 @@ impl SessionManager {
         id: Uuid,
         kind: SessionCommunicationKind,
     ) -> bool {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.clear_communication_if_kind_with_carrier_permit(&carrier_permit, id, kind)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn clear_communication_if_kind_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        kind: SessionCommunicationKind,
+    ) -> bool {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return false;
         }
@@ -1009,7 +1586,20 @@ impl SessionManager {
         message: String,
         updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Option<(bool, SessionCommunication)> {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_blocked_menu_with_carrier_permit(&carrier_permit, id, message, updated_at)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_blocked_menu_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        message: String,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Option<(bool, SessionCommunication)> {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return None;
         }
@@ -1040,8 +1630,23 @@ impl SessionManager {
     /// #1646 / #1647 - Clears `session.communication` if currently `Some` with `kind == SessionCommunicationKind::BlockedMenu` and `visible == true`.
     /// Returns `true` if cleared.
     pub async fn clear_blocked_menu(&self, id: Uuid) -> bool {
-        self.clear_communication_if_kind(id, SessionCommunicationKind::BlockedMenu)
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.clear_blocked_menu_with_carrier_permit(&carrier_permit, id)
             .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn clear_blocked_menu_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+    ) -> bool {
+        self.clear_communication_if_kind_with_carrier_permit(
+            carrier_permit,
+            id,
+            SessionCommunicationKind::BlockedMenu,
+        )
+        .await
     }
 
     /// #2232 phase 7 - sets `session.communication` to `CoManaged` with the
@@ -1057,7 +1662,20 @@ impl SessionManager {
         message: String,
         updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Option<(bool, SessionCommunication)> {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_co_managed_with_carrier_permit(&carrier_permit, id, message, updated_at)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_co_managed_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        message: String,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Option<(bool, SessionCommunication)> {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return None;
         }
@@ -1098,8 +1716,23 @@ impl SessionManager {
     /// erase this user-visible pointer while the referenced message file stays
     /// on disk.
     pub async fn clear_co_managed(&self, id: Uuid) -> bool {
-        self.clear_communication_if_kind(id, SessionCommunicationKind::CoManaged)
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.clear_co_managed_with_carrier_permit(&carrier_permit, id)
             .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn clear_co_managed_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+    ) -> bool {
+        self.clear_communication_if_kind_with_carrier_permit(
+            carrier_permit,
+            id,
+            SessionCommunicationKind::CoManaged,
+        )
+        .await
     }
 
     /// (#747) Re-apply a persisted raise-hand onto a restored session record.
@@ -1115,10 +1748,22 @@ impl SessionManager {
         id: Uuid,
         communication: SessionCommunication,
     ) -> bool {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.restore_communication_with_carrier_permit(&carrier_permit, id, communication)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn restore_communication_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        communication: SessionCommunication,
+    ) -> bool {
         if communication.kind != SessionCommunicationKind::RaiseHand || !communication.visible {
             return false;
         }
-        let mut state = self.state.write().await;
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return false;
         }
@@ -1135,7 +1780,19 @@ impl SessionManager {
     /// (#630/#631) Stamp the durable resume intent. Used by the restart path and
     /// the restore wake/defer paths.
     pub async fn set_start_fresh_on_restore(&self, id: Uuid, value: bool) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_start_fresh_on_restore_with_carrier_permit(&carrier_permit, id, value)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_start_fresh_on_restore_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        value: bool,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -1149,7 +1806,19 @@ impl SessionManager {
         binding: PendingCreateBinding,
         value: bool,
     ) -> Result<(), AppError> {
-        self.update_pending(binding, |session| {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_pending_start_fresh_on_restore_with_carrier_permit(&carrier_permit, binding, value)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_pending_start_fresh_on_restore_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        value: bool,
+    ) -> Result<(), AppError> {
+        self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
             session.start_fresh_on_restore = value;
         })
         .await
@@ -1160,7 +1829,19 @@ impl SessionManager {
         binding: PendingCreateBinding,
         communication: SessionCommunication,
     ) -> Result<(), AppError> {
-        self.update_pending(binding, |session| {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_pending_communication_with_carrier_permit(&carrier_permit, binding, communication)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_pending_communication_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        communication: SessionCommunication,
+    ) -> Result<(), AppError> {
+        self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
             session.communication = Some(communication);
         })
         .await
@@ -1170,7 +1851,18 @@ impl SessionManager {
     /// Returns true ONLY on the `true -> false` transition, so the caller persists
     /// exactly once (not on every subsequent keystroke).
     pub async fn clear_start_fresh_on_restore_if_set(&self, id: Uuid) -> bool {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.clear_start_fresh_on_restore_if_set_with_carrier_permit(&carrier_permit, id)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn clear_start_fresh_on_restore_if_set_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+    ) -> bool {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return false;
         }
@@ -1193,7 +1885,18 @@ impl SessionManager {
     /// persists exactly once. Missing id -> false. Counterpart of
     /// `clear_start_fresh_on_restore_if_set` (re-arm direction).
     pub async fn set_start_fresh_on_restore_if_unset(&self, id: Uuid) -> bool {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_start_fresh_on_restore_if_unset_with_carrier_permit(&carrier_permit, id)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_start_fresh_on_restore_if_unset_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+    ) -> bool {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return false;
         }
@@ -1223,7 +1926,19 @@ impl SessionManager {
     /// half-applied state (`start_fresh_on_restore` already cleared while the hand
     /// was still raised). Mutating both fields atomically removes that window.
     pub async fn clear_user_input_transitions(&self, id: Uuid, clear_fresh: bool) -> (bool, bool) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.clear_user_input_transitions_with_carrier_permit(&carrier_permit, id, clear_fresh)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn clear_user_input_transitions_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        clear_fresh: bool,
+    ) -> (bool, bool) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return (false, false);
         }
@@ -1257,7 +1972,19 @@ impl SessionManager {
     /// Set the resolved coding-agent identity. Called once by
     /// `create_session_inner` immediately after `CodingAgentKind::detect`.
     pub async fn set_agent_kind(&self, id: Uuid, kind: Option<CodingAgentKind>) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_agent_kind_with_carrier_permit(&carrier_permit, id, kind)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_agent_kind_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        kind: Option<CodingAgentKind>,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -1271,8 +1998,22 @@ impl SessionManager {
         binding: PendingCreateBinding,
         kind: Option<CodingAgentKind>,
     ) -> Result<(), AppError> {
-        self.update_pending(binding, |session| session.agent_kind = kind)
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_pending_agent_kind_with_carrier_permit(&carrier_permit, binding, kind)
             .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_pending_agent_kind_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        kind: Option<CodingAgentKind>,
+    ) -> Result<(), AppError> {
+        self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
+            session.agent_kind = kind
+        })
+        .await
     }
 
     pub(crate) async fn set_pending_trusted_configured_spawn(
@@ -1280,7 +2021,23 @@ impl SessionManager {
         binding: PendingCreateBinding,
         trusted: bool,
     ) -> Result<(), AppError> {
-        self.update_pending(binding, |session| {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_pending_trusted_configured_spawn_with_carrier_permit(
+            &carrier_permit,
+            binding,
+            trusted,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_pending_trusted_configured_spawn_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        trusted: bool,
+    ) -> Result<(), AppError> {
+        self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
             session.trusted_configured_spawn = trusted;
         })
         .await
@@ -1299,7 +2056,37 @@ impl SessionManager {
         effective_codex_home: Option<String>,
         profile_content_hash: Option<String>,
     ) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_profile_metadata_with_carrier_permit(
+            &carrier_permit,
+            id,
+            requested_profile,
+            effective_profile,
+            profile_fallback_chain,
+            profile_fallback_applied,
+            match_tier,
+            original_profile_letter,
+            effective_codex_home,
+            profile_content_hash,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_profile_metadata_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        requested_profile: Option<String>,
+        effective_profile: Option<String>,
+        profile_fallback_chain: Vec<String>,
+        profile_fallback_applied: bool,
+        match_tier: Option<String>,
+        original_profile_letter: Option<String>,
+        effective_codex_home: Option<String>,
+        profile_content_hash: Option<String>,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -1328,7 +2115,37 @@ impl SessionManager {
         effective_codex_home: Option<String>,
         profile_content_hash: Option<String>,
     ) -> Result<(), AppError> {
-        self.update_pending(binding, |session| {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_pending_profile_metadata_with_carrier_permit(
+            &carrier_permit,
+            binding,
+            requested_profile,
+            effective_profile,
+            profile_fallback_chain,
+            profile_fallback_applied,
+            match_tier,
+            original_profile_letter,
+            effective_codex_home,
+            profile_content_hash,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_pending_profile_metadata_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        requested_profile: Option<String>,
+        effective_profile: Option<String>,
+        profile_fallback_chain: Vec<String>,
+        profile_fallback_applied: bool,
+        match_tier: Option<String>,
+        original_profile_letter: Option<String>,
+        effective_codex_home: Option<String>,
+        profile_content_hash: Option<String>,
+    ) -> Result<(), AppError> {
+        self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
             session.requested_profile = requested_profile;
             session.effective_profile = effective_profile;
             session.profile_fallback_chain = profile_fallback_chain;
@@ -1342,7 +2159,19 @@ impl SessionManager {
     }
 
     pub async fn set_resolved_claude_projects_dir(&self, id: Uuid, path: Option<PathBuf>) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_resolved_claude_projects_dir_with_carrier_permit(&carrier_permit, id, path)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_resolved_claude_projects_dir_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        path: Option<PathBuf>,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -1356,7 +2185,23 @@ impl SessionManager {
         binding: PendingCreateBinding,
         path: Option<PathBuf>,
     ) -> Result<(), AppError> {
-        self.update_pending(binding, |session| {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_pending_resolved_claude_projects_dir_with_carrier_permit(
+            &carrier_permit,
+            binding,
+            path,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_pending_resolved_claude_projects_dir_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        path: Option<PathBuf>,
+    ) -> Result<(), AppError> {
+        self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
             session.resolved_claude_projects_dir = path;
         })
         .await
@@ -1365,7 +2210,19 @@ impl SessionManager {
     /// Persisted Telegram ON/OFF state for the session. Some(bot_id) means the
     /// bridge should be reattached when the session is restored or woken.
     pub async fn set_telegram_bot_id(&self, id: Uuid, bot_id: Option<String>) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_telegram_bot_id_with_carrier_permit(&carrier_permit, id, bot_id)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_telegram_bot_id_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        bot_id: Option<String>,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -1390,7 +2247,19 @@ impl SessionManager {
     /// `attach_terminal` (→false). See plan §10 rule — the `WindowEvent::Destroyed`
     /// handler must NOT call this.
     pub async fn set_was_detached(&self, id: Uuid, detached: bool) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_was_detached_with_carrier_permit(&carrier_permit, id, detached)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_was_detached_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        detached: bool,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -1418,7 +2287,19 @@ impl SessionManager {
     /// session lifetime. Overwrites on re-call (defensive; not expected in
     /// normal flow).
     pub async fn set_effective_shell_args(&self, id: Uuid, args: Vec<String>) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_effective_shell_args_with_carrier_permit(&carrier_permit, id, args)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_effective_shell_args_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        args: Vec<String>,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -1432,7 +2313,19 @@ impl SessionManager {
         binding: PendingCreateBinding,
         args: Vec<String>,
     ) -> Result<(), AppError> {
-        self.update_pending(binding, |session| {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_pending_effective_shell_args_with_carrier_permit(&carrier_permit, binding, args)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_pending_effective_shell_args_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        args: Vec<String>,
+    ) -> Result<(), AppError> {
+        self.update_pending_with_carrier_permit(carrier_permit, binding, |session| {
             session.effective_shell_args = Some(args);
         })
         .await
@@ -1441,7 +2334,19 @@ impl SessionManager {
     /// Overwrite `git_repos` atomically. Bumps `git_repos_gen`. Invariant:
     /// callers preserve insertion order (replica config.json `repos` array order).
     pub async fn set_git_repos(&self, id: Uuid, repos: Vec<SessionRepo>) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_git_repos_with_carrier_permit(&carrier_permit, id, repos)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_git_repos_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        repos: Vec<SessionRepo>,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -1461,7 +2366,20 @@ impl SessionManager {
         repos: Vec<SessionRepo>,
         expected_gen: u64,
     ) -> bool {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_git_repos_if_gen_with_carrier_permit(&carrier_permit, id, repos, expected_gen)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_git_repos_if_gen_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        repos: Vec<SessionRepo>,
+        expected_gen: u64,
+    ) -> bool {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return false;
         }
@@ -1486,7 +2404,19 @@ impl SessionManager {
 
     /// Overwrite `is_coordinator`. Use after a team-config refresh.
     pub async fn set_is_coordinator(&self, id: Uuid, is_coordinator: bool) {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.set_is_coordinator_with_carrier_permit(&carrier_permit, id, is_coordinator)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn set_is_coordinator_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        id: Uuid,
+        is_coordinator: bool,
+    ) {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.pending_create.contains_key(&id) {
             return;
         }
@@ -1502,7 +2432,18 @@ impl SessionManager {
         &self,
         teams: &[crate::config::teams::DiscoveredTeam],
     ) -> Vec<(Uuid, bool)> {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.refresh_coordinator_flags_with_carrier_permit(&carrier_permit, teams)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn refresh_coordinator_flags_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        teams: &[crate::config::teams::DiscoveredTeam],
+    ) -> Vec<(Uuid, bool)> {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         let pending = state.pending_create.keys().copied().collect::<HashSet<_>>();
         let mut changes = Vec::new();
         for (id, s) in state
@@ -1527,7 +2468,18 @@ impl SessionManager {
         &self,
         updates: &[(String, Vec<SessionRepo>)],
     ) -> Vec<(Uuid, Vec<SessionRepo>)> {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.refresh_git_repos_for_sessions_with_carrier_permit(&carrier_permit, updates)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn refresh_git_repos_for_sessions_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        updates: &[(String, Vec<SessionRepo>)],
+    ) -> Vec<(Uuid, Vec<SessionRepo>)> {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         let pending = state.pending_create.keys().copied().collect::<HashSet<_>>();
         let mut changed = Vec::new();
         for (name, repos) in updates {
@@ -1755,6 +2707,10 @@ impl SessionManager {
             .filter_map(|id| state.sessions.get(id).cloned())
             .collect();
         ManagerAggregateSnapshot {
+            coding_agent_bindings: state.coding_agent_bindings.clone(),
+            binding_seeds: state.binding_seeds.clone(),
+            binding_origins: state.binding_origins.clone(),
+            failed_binding_recipes: state.failed_binding_recipes.clone(),
             sessions,
             order: state.order.clone(),
             pending_ids: state.pending_create.keys().copied().collect(),
@@ -1762,10 +2718,88 @@ impl SessionManager {
         }
     }
 
+    /// Only pending rows accept a birth binding; capture its seed before insertion.
+    pub(crate) async fn install_pending_coding_agent_binding(
+        &self,
+        pending: PendingCreateBinding,
+        binding: Option<CodingAgentBinding>,
+    ) -> Result<(), String> {
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut state = self.carrier_state_write(&permit).await;
+        if !binding_matches(&state, pending) {
+            return Err("pending coding-agent binding capability mismatch".to_string());
+        }
+        if let Some(binding) = binding {
+            Uuid::parse_str(&binding.id).map_err(|_| "invalid_coding_agent_binding".to_string())?;
+            if let Some(seed) = binding.seed.as_ref() {
+                let valid_seed = ["identityRevision", "originalAgentId"].iter().all(|key| {
+                    seed.get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.is_empty())
+                });
+                if !valid_seed {
+                    return Err("invalid_coding_agent_binding_seed".to_string());
+                }
+            }
+            if let (Some(before), Some(after)) =
+                (state.binding_seeds.get(&binding.id), binding.seed.as_ref())
+            {
+                if before != after {
+                    return Err("coding_agent_binding_seed_conflict".to_string());
+                }
+            }
+            if let Some(seed) = binding.seed {
+                state.binding_seeds.insert(binding.id.clone(), seed);
+            }
+            if let Some(origin) = binding.origin {
+                state.binding_origins.insert(binding.id.clone(), origin);
+            }
+            state
+                .coding_agent_bindings
+                .insert(pending.session_id, binding.id);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn coding_agent_binding(&self, id: Uuid) -> Option<CodingAgentBinding> {
+        let state = self.state.read().await;
+        let binding = state.coding_agent_bindings.get(&id)?;
+        Some(CodingAgentBinding {
+            id: binding.clone(),
+            seed: state.binding_seeds.get(binding).cloned(),
+            origin: state.binding_origins.get(binding).cloned(),
+        })
+    }
+
+    /// D09 enrolls receipt-affected failures; ordinary retention stays unchanged.
+    pub(crate) async fn refresh_failed_binding_recipes(
+        &self,
+        recipes: Vec<(CodingAgentBinding, serde_json::Value)>,
+    ) {
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut state = self.carrier_state_write(&permit).await;
+        for (binding, recipe) in recipes {
+            if let Some(seed) = binding.seed {
+                state
+                    .binding_seeds
+                    .entry(binding.id.clone())
+                    .or_insert(seed);
+            }
+            if let Some(origin) = binding.origin {
+                state.binding_origins.insert(binding.id.clone(), origin);
+            }
+            if let Some(affected) = state.failed_binding_recipes.get_mut(&binding.id) {
+                *affected = recipe;
+            }
+        }
+    }
+
     pub(crate) async fn contains_public_or_pending(&self, id: Uuid) -> bool {
         self.state.read().await.sessions.contains_key(&id)
     }
 
+    // Dormant until P05 integration; remove with real callers.
+    #[allow(dead_code)]
     async fn update_pending<F>(
         &self,
         binding: PendingCreateBinding,
@@ -1774,7 +2808,22 @@ impl SessionManager {
     where
         F: FnOnce(&mut Session),
     {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.update_pending_with_carrier_permit(&carrier_permit, binding, update)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn update_pending_with_carrier_permit<F>(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+        update: F,
+    ) -> Result<(), AppError>
+    where
+        F: FnOnce(&mut Session),
+    {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if !binding_matches(&state, binding) {
             return Err(AppError::Other(format!(
                 "pending create capability mismatch: {}",
@@ -1793,7 +2842,18 @@ impl SessionManager {
         &self,
         binding: PendingCreateBinding,
     ) -> Result<(), String> {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.rollback_pending_create_with_carrier_permit(&carrier_permit, binding)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn rollback_pending_create_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        binding: PendingCreateBinding,
+    ) -> Result<(), String> {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if !binding_matches(&state, binding) {
             if !state.sessions.contains_key(&binding.session_id) {
                 return Ok(());
@@ -1805,6 +2865,7 @@ impl SessionManager {
         }
         state.pending_create.remove(&binding.session_id);
         state.sessions.remove(&binding.session_id);
+        retire_coding_agent_binding(&mut state, binding.session_id);
         state.order.retain(|id| *id != binding.session_id);
         Ok(())
     }
@@ -1814,10 +2875,26 @@ impl SessionManager {
         session: Session,
         binding: PendingCreateBinding,
     ) -> Result<(), String> {
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.insert_transaction_pending_record_with_carrier_permit(
+            &carrier_permit,
+            session,
+            binding,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn insert_transaction_pending_record_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        session: Session,
+        binding: PendingCreateBinding,
+    ) -> Result<(), String> {
         if session.id != binding.session_id {
             return Err("transaction pending binding targets another session".to_string());
         }
-        let mut state = self.state.write().await;
+        let mut state = self.carrier_state_write(carrier_permit).await;
         if state.sessions.contains_key(&session.id) {
             return Err(format!("session already exists: {}", session.id));
         }
@@ -1838,197 +2915,42 @@ impl SessionManager {
         cause: SelectionCause,
         mutations: LifecycleMutations,
     ) -> Result<CommitResult, String> {
-        let mut state = self.state.write().await;
+        let carrier_permit = acquire_carrier_mutation_permit().await;
+        self.commit_selection_transition_with_carrier_permit(
+            &carrier_permit,
+            _capability,
+            decision,
+            cause,
+            mutations,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn commit_selection_transition_with_carrier_permit(
+        &self,
+        carrier_permit: &CarrierMutationPermit,
+        _capability: &CommitCapability,
+        decision: CommitDecision,
+        cause: SelectionCause,
+        mutations: LifecycleMutations,
+    ) -> Result<CommitResult, String> {
+        let mut state = self.carrier_state_write(carrier_permit).await;
         let old_selection = state.selection.clone();
         let old_id = old_selection.id();
         let old_mode = old_selection.mode();
 
-        validate_unique_ids("removal", mutations.removals.iter().copied())?;
-        validate_unique_ids(
-            "markExited",
-            mutations.mark_exited.iter().map(|(id, _)| *id),
+        let lifecycle_sets = validate_lifecycle_mutations(&state, &mutations)?;
+
+        let (target_mode, target_id, target_status) = resolve_selection_commit_target(
+            &state,
+            decision,
+            &mutations,
+            &lifecycle_sets,
+            &old_selection,
+            old_id,
+            old_mode,
         )?;
-        validate_unique_ids(
-            "detachedIntent",
-            mutations.detached_intent.iter().map(|(id, _)| *id),
-        )?;
-        validate_unique_ids(
-            "finalization",
-            mutations
-                .finalizations
-                .iter()
-                .map(|mutation| match mutation {
-                    FinalizeMutation::Live(binding, _)
-                    | FinalizeMutation::Dormant(binding, _, _) => binding.session_id,
-                }),
-        )?;
-
-        let removals = mutations.removals.iter().copied().collect::<HashSet<_>>();
-        let exits = mutations
-            .mark_exited
-            .iter()
-            .map(|(id, _)| *id)
-            .collect::<HashSet<_>>();
-        let finalizations = mutations
-            .finalizations
-            .iter()
-            .map(|mutation| match mutation {
-                FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
-                    binding.session_id
-                }
-            })
-            .collect::<HashSet<_>>();
-
-        if let Some(overlap) = removals.intersection(&exits).next() {
-            return Err(format!(
-                "lifecycle mutation remove+markExited conflict: {overlap}"
-            ));
-        }
-        if let Some(overlap) = removals.intersection(&finalizations).next() {
-            return Err(format!(
-                "lifecycle mutation remove+finalize conflict: {overlap}"
-            ));
-        }
-        if let Some(overlap) = exits.intersection(&finalizations).next() {
-            return Err(format!(
-                "lifecycle mutation markExited+finalize conflict: {overlap}"
-            ));
-        }
-        for id in removals.iter().chain(exits.iter()) {
-            if state.pending_create.contains_key(id) {
-                return Err(format!(
-                    "public lifecycle mutation cannot address pending create: {id}"
-                ));
-            }
-        }
-
-        for mutation in &mutations.finalizations {
-            match *mutation {
-                FinalizeMutation::Live(binding, witness) => {
-                    if !binding_matches(&state, binding) {
-                        return Err(format!(
-                            "create finalization capability mismatch: {}",
-                            binding.session_id
-                        ));
-                    }
-                    if witness.session_id != binding.session_id
-                        || !witness.has_pty
-                        || witness.detached
-                    {
-                        return Err(format!(
-                            "live create finalization has invalid runtime witness: {}",
-                            binding.session_id
-                        ));
-                    }
-                    let record = state.sessions.get(&binding.session_id).ok_or_else(|| {
-                        format!("pending create record missing: {}", binding.session_id)
-                    })?;
-                    if matches!(record.status, SessionStatus::Exited(_)) {
-                        return Err(format!(
-                            "live create finalization targets exited record: {}",
-                            binding.session_id
-                        ));
-                    }
-                }
-                FinalizeMutation::Dormant(binding, witness, _) => {
-                    if !binding_matches(&state, binding)
-                        || witness.session_id != binding.session_id
-                        || witness.detached
-                    {
-                        return Err(format!(
-                            "dormant create finalization has invalid capability/witness: {}",
-                            binding.session_id
-                        ));
-                    }
-                }
-            }
-        }
-
-        let projected_status = |id: Uuid| -> Option<SessionStatus> {
-            if removals.contains(&id) {
-                return None;
-            }
-            if let Some(mutation) = mutations
-                .finalizations
-                .iter()
-                .find(|mutation| match mutation {
-                    FinalizeMutation::Live(binding, _)
-                    | FinalizeMutation::Dormant(binding, _, _) => binding.session_id == id,
-                })
-            {
-                return Some(match mutation {
-                    FinalizeMutation::Live(_, _) => SessionStatus::Running,
-                    FinalizeMutation::Dormant(_, _, code) => SessionStatus::Exited(*code),
-                });
-            }
-            let current = state.sessions.get(&id)?.status.clone();
-            if matches!(current, SessionStatus::Exited(_)) {
-                return Some(current);
-            }
-            mutations
-                .mark_exited
-                .iter()
-                .find(|(candidate, _)| *candidate == id)
-                .map(|(_, code)| SessionStatus::Exited(*code))
-                .or(Some(current))
-        };
-
-        let (target_mode, target_id, target_status) = match decision {
-            CommitDecision::Keep => {
-                if old_id.is_some_and(|id| {
-                    removals.contains(&id)
-                        || exits.contains(&id)
-                        || mutations
-                            .detached_intent
-                            .iter()
-                            .any(|(candidate, detached)| *candidate == id && *detached)
-                }) {
-                    return Err(
-                        "Keep cannot remove, exit, or detach the selected record".to_string()
-                    );
-                }
-                (old_mode, old_id, old_selection.status().cloned())
-            }
-            CommitDecision::Clear => (SelectionMode::None, None, None),
-            CommitDecision::Live(witness) => {
-                let id = witness.session_id;
-                if !witness.has_pty || witness.detached {
-                    return Err(format!("live target has invalid runtime witness: {id}"));
-                }
-                if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
-                    return Err(format!("live target is still pending: {id}"));
-                }
-                if removals.contains(&id) {
-                    return Err(format!("live target is also removed: {id}"));
-                }
-                match projected_status(id) {
-                    Some(SessionStatus::Exited(_)) => {
-                        return Err(format!("live target is exited: {id}"));
-                    }
-                    Some(_) => {}
-                    None => return Err(format!("live target is missing: {id}")),
-                }
-                (SelectionMode::Live, Some(id), Some(SessionStatus::Active))
-            }
-            CommitDecision::Dormant(witness) => {
-                let id = witness.session_id;
-                if witness.detached {
-                    return Err(format!("dormant target is detached: {id}"));
-                }
-                if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
-                    return Err(format!("dormant target is still pending: {id}"));
-                }
-                if removals.contains(&id) {
-                    return Err(format!("dormant target is also removed: {id}"));
-                }
-                let status = projected_status(id)
-                    .ok_or_else(|| format!("dormant target is missing: {id}"))?;
-                if !matches!(status, SessionStatus::Exited(_)) {
-                    return Err(format!("dormant target is not exited: {id}"));
-                }
-                (SelectionMode::Dormant, Some(id), Some(status))
-            }
-        };
 
         let selection_changed = target_mode != old_mode
             || target_id != old_id
@@ -2058,6 +2980,7 @@ impl SessionManager {
             match mutation {
                 FinalizeMutation::Live(binding, _) => {
                     state.pending_create.remove(&binding.session_id);
+                    clear_failed_recipe_for_runtime_binding(&mut state, binding.session_id);
                     if let Some(record) = state.sessions.get_mut(&binding.session_id) {
                         if matches!(record.status, SessionStatus::Exited(_)) {
                             return Err(format!(
@@ -2072,6 +2995,7 @@ impl SessionManager {
                 }
                 FinalizeMutation::Dormant(binding, _, exit_code) => {
                     state.pending_create.remove(&binding.session_id);
+                    clear_failed_recipe_for_runtime_binding(&mut state, binding.session_id);
                     if let Some(record) = state.sessions.get_mut(&binding.session_id) {
                         record.status = SessionStatus::Exited(exit_code);
                         result.finalized_rows.push(SessionInfo::from(&*record));
@@ -2114,6 +3038,7 @@ impl SessionManager {
             if let Some(record) = state.sessions.remove(&id) {
                 state.order.retain(|candidate| *candidate != id);
                 state.pending_create.remove(&id);
+                retire_coding_agent_binding(&mut state, id);
                 result.removed_rows.push(SessionInfo::from(&record));
             } else {
                 result.missing_ids.push(id);
@@ -2193,19 +3118,7 @@ impl SessionManager {
         // reads back as absent or `Exited`, so `is_working` is false and nothing
         // is recorded. Such a session was never observably working. One promoted
         // to `Active` still reads as working and is recorded.
-        for id in finalized_live_ids {
-            if let Some(record) = state.sessions.get(&id) {
-                if crate::session::session::is_working(record) {
-                    result
-                        .activity
-                        .push(crate::config::activity_log::build_busy(
-                            id,
-                            record,
-                            crate::config::activity_log::BusyReason::SessionStart,
-                        ));
-                }
-            }
-        }
+        append_finalized_live_activity(&state, finalized_live_ids, &mut result);
 
         Ok(result)
     }
@@ -2229,11 +3142,59 @@ impl SessionManager {
     /// once with `AppError::SessionNotFound` and reports a now-missing row;
     /// one-shot, no retry loop (dev-rust caveat B).
     pub(crate) async fn remove_exited_sessions(&self, ids: &[Uuid]) -> usize {
-        let mut state = self.state.write().await;
+        let permit = acquire_carrier_mutation_permit().await;
+        self.remove_exited_sessions_with_carrier_permit(ids, &permit, |_, _| {
+            CarrierDisposition::Foreign
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn remove_exited_sessions_with_carrier_permit(
+        &self,
+        ids: &[Uuid],
+        permit: &CarrierMutationPermit,
+        mut classify: impl FnMut(&Session, u64) -> CarrierDisposition,
+    ) -> usize {
+        let mut state = self.carrier_state_write(permit).await;
+        let dispositions: HashMap<Uuid, CarrierDisposition> = state
+            .sessions
+            .iter()
+            .map(|(id, row)| {
+                (
+                    *id,
+                    classify(row, state.carrier_versions.get(id).copied().unwrap_or(0)),
+                )
+            })
+            .collect();
+        let clear_surviving = state.selection.id().is_some_and(|id| {
+            ids.contains(&id) && dispositions.get(&id) == Some(&CarrierDisposition::Protected)
+        });
+        let will_remove_selected = state.selection.id().is_some_and(|id| {
+            ids.contains(&id)
+                && dispositions.get(&id) == Some(&CarrierDisposition::Foreign)
+                && !state.pending_create.contains_key(&id)
+                && state
+                    .sessions
+                    .get(&id)
+                    .is_some_and(|row| matches!(row.status, SessionStatus::Exited(_)))
+        });
+        let next_revision = if clear_surviving || will_remove_selected {
+            let Some(next) = state.revision.checked_add(1) else {
+                self.response_close.fail_closed();
+                return 0;
+            };
+            next
+        } else {
+            state.revision
+        };
         let mut removed = 0usize;
-        let mut removed_selection = false;
+        let mut removed_selection = clear_surviving;
         let mut removed_ids: Vec<Uuid> = Vec::new();
         for &id in ids {
+            if dispositions.get(&id) != Some(&CarrierDisposition::Foreign) {
+                continue;
+            }
             let Some(session) = state.sessions.get(&id) else {
                 continue;
             };
@@ -2244,6 +3205,7 @@ impl SessionManager {
                 continue;
             }
             state.sessions.remove(&id);
+            retire_coding_agent_binding(&mut state, id);
             removed += 1;
             removed_ids.push(id);
             if state.selection.id() == Some(id) {
@@ -2256,12 +3218,20 @@ impl SessionManager {
                 .retain(|candidate| !removed_ids.contains(candidate));
         }
         if removed_selection {
-            state.revision += 1;
-            let next = state
-                .order
-                .iter()
-                .copied()
-                .find(|candidate| !state.pending_create.contains_key(candidate));
+            if clear_surviving {
+                if let Some(id) = state.selection.id() {
+                    if let Some(row) = state.sessions.get_mut(&id) {
+                        if row.status == SessionStatus::Active {
+                            row.status = SessionStatus::Running;
+                        }
+                    }
+                }
+            }
+            state.revision = next_revision;
+            let next = state.order.iter().copied().find(|candidate| {
+                !state.pending_create.contains_key(candidate)
+                    && dispositions.get(candidate) == Some(&CarrierDisposition::Foreign)
+            });
             if let Some(next_id) = next {
                 if let Some(session) = state.sessions.get_mut(&next_id) {
                     session.status = SessionStatus::Active;
@@ -2284,6 +3254,254 @@ impl SessionManager {
     }
 }
 
+fn append_finalized_live_activity(
+    state: &SessionManagerState,
+    finalized_live_ids: Vec<Uuid>,
+    result: &mut CommitResult,
+) {
+    for id in finalized_live_ids {
+        if let Some(record) = state.sessions.get(&id) {
+            if crate::session::session::is_working(record) {
+                result
+                    .activity
+                    .push(crate::config::activity_log::build_busy(
+                        id,
+                        record,
+                        crate::config::activity_log::BusyReason::SessionStart,
+                    ));
+            }
+        }
+    }
+}
+
+/// Lifecycle mutation sets in removals, exits, finalizations order.
+type LifecycleMutationSets = (HashSet<Uuid>, HashSet<Uuid>, HashSet<Uuid>);
+
+fn validate_lifecycle_mutations(
+    state: &SessionManagerState,
+    mutations: &LifecycleMutations,
+) -> Result<LifecycleMutationSets, String> {
+    validate_unique_ids("removal", mutations.removals.iter().copied())?;
+    validate_unique_ids(
+        "markExited",
+        mutations.mark_exited.iter().map(|(id, _)| *id),
+    )?;
+    validate_unique_ids(
+        "detachedIntent",
+        mutations.detached_intent.iter().map(|(id, _)| *id),
+    )?;
+    validate_unique_ids(
+        "finalization",
+        mutations
+            .finalizations
+            .iter()
+            .map(|mutation| match mutation {
+                FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
+                    binding.session_id
+                }
+            }),
+    )?;
+
+    let removals = mutations.removals.iter().copied().collect::<HashSet<_>>();
+    let exits = mutations
+        .mark_exited
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<HashSet<_>>();
+    let finalizations = mutations
+        .finalizations
+        .iter()
+        .map(|mutation| match mutation {
+            FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
+                binding.session_id
+            }
+        })
+        .collect::<HashSet<_>>();
+
+    if let Some(overlap) = removals.intersection(&exits).next() {
+        return Err(format!(
+            "lifecycle mutation remove+markExited conflict: {overlap}"
+        ));
+    }
+    if let Some(overlap) = removals.intersection(&finalizations).next() {
+        return Err(format!(
+            "lifecycle mutation remove+finalize conflict: {overlap}"
+        ));
+    }
+    if let Some(overlap) = exits.intersection(&finalizations).next() {
+        return Err(format!(
+            "lifecycle mutation markExited+finalize conflict: {overlap}"
+        ));
+    }
+    for id in removals.iter().chain(exits.iter()) {
+        if state.pending_create.contains_key(id) {
+            return Err(format!(
+                "public lifecycle mutation cannot address pending create: {id}"
+            ));
+        }
+    }
+
+    for mutation in &mutations.finalizations {
+        match *mutation {
+            FinalizeMutation::Live(binding, witness) => {
+                if !binding_matches(state, binding) {
+                    return Err(format!(
+                        "create finalization capability mismatch: {}",
+                        binding.session_id
+                    ));
+                }
+                if witness.session_id != binding.session_id || !witness.has_pty || witness.detached
+                {
+                    return Err(format!(
+                        "live create finalization has invalid runtime witness: {}",
+                        binding.session_id
+                    ));
+                }
+                let record = state.sessions.get(&binding.session_id).ok_or_else(|| {
+                    format!("pending create record missing: {}", binding.session_id)
+                })?;
+                if matches!(record.status, SessionStatus::Exited(_)) {
+                    return Err(format!(
+                        "live create finalization targets exited record: {}",
+                        binding.session_id
+                    ));
+                }
+            }
+            FinalizeMutation::Dormant(binding, witness, _) => {
+                if !binding_matches(state, binding)
+                    || witness.session_id != binding.session_id
+                    || witness.detached
+                {
+                    return Err(format!(
+                        "dormant create finalization has invalid capability/witness: {}",
+                        binding.session_id
+                    ));
+                }
+            }
+        }
+    }
+    Ok((removals, exits, finalizations))
+}
+
+fn resolve_selection_commit_target(
+    state: &SessionManagerState,
+    decision: CommitDecision,
+    mutations: &LifecycleMutations,
+    lifecycle_sets: &LifecycleMutationSets,
+    old_selection: &SessionSelection,
+    old_id: Option<Uuid>,
+    old_mode: SelectionMode,
+) -> Result<(SelectionMode, Option<Uuid>, Option<SessionStatus>), String> {
+    let (removals, exits, finalizations) = lifecycle_sets;
+
+    let projected_status = |id: Uuid| -> Option<SessionStatus> {
+        if removals.contains(&id) {
+            return None;
+        }
+        if let Some(mutation) = mutations
+            .finalizations
+            .iter()
+            .find(|mutation| match mutation {
+                FinalizeMutation::Live(binding, _) | FinalizeMutation::Dormant(binding, _, _) => {
+                    binding.session_id == id
+                }
+            })
+        {
+            return Some(match mutation {
+                FinalizeMutation::Live(_, _) => SessionStatus::Running,
+                FinalizeMutation::Dormant(_, _, code) => SessionStatus::Exited(*code),
+            });
+        }
+        let current = state.sessions.get(&id)?.status.clone();
+        if matches!(current, SessionStatus::Exited(_)) {
+            return Some(current);
+        }
+        mutations
+            .mark_exited
+            .iter()
+            .find(|(candidate, _)| *candidate == id)
+            .map(|(_, code)| SessionStatus::Exited(*code))
+            .or(Some(current))
+    };
+
+    let (target_mode, target_id, target_status) = match decision {
+        CommitDecision::Keep => {
+            if old_id.is_some_and(|id| {
+                removals.contains(&id)
+                    || exits.contains(&id)
+                    || mutations
+                        .detached_intent
+                        .iter()
+                        .any(|(candidate, detached)| *candidate == id && *detached)
+            }) {
+                return Err("Keep cannot remove, exit, or detach the selected record".to_string());
+            }
+            (old_mode, old_id, old_selection.status().cloned())
+        }
+        CommitDecision::Clear => (SelectionMode::None, None, None),
+        CommitDecision::Live(witness) => {
+            let id = witness.session_id;
+            if !witness.has_pty || witness.detached {
+                return Err(format!("live target has invalid runtime witness: {id}"));
+            }
+            if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
+                return Err(format!("live target is still pending: {id}"));
+            }
+            if removals.contains(&id) {
+                return Err(format!("live target is also removed: {id}"));
+            }
+            match projected_status(id) {
+                Some(SessionStatus::Exited(_)) => {
+                    return Err(format!("live target is exited: {id}"));
+                }
+                Some(_) => {}
+                None => return Err(format!("live target is missing: {id}")),
+            }
+            (SelectionMode::Live, Some(id), Some(SessionStatus::Active))
+        }
+        CommitDecision::Dormant(witness) => {
+            let id = witness.session_id;
+            if witness.detached {
+                return Err(format!("dormant target is detached: {id}"));
+            }
+            if state.pending_create.contains_key(&id) && !finalizations.contains(&id) {
+                return Err(format!("dormant target is still pending: {id}"));
+            }
+            if removals.contains(&id) {
+                return Err(format!("dormant target is also removed: {id}"));
+            }
+            let status =
+                projected_status(id).ok_or_else(|| format!("dormant target is missing: {id}"))?;
+            if !matches!(status, SessionStatus::Exited(_)) {
+                return Err(format!("dormant target is not exited: {id}"));
+            }
+            (SelectionMode::Dormant, Some(id), Some(status))
+        }
+    };
+
+    Ok((target_mode, target_id, target_status))
+}
+
+fn clear_failed_recipe_for_runtime_binding(state: &mut SessionManagerState, runtime: Uuid) {
+    if let Some(id) = state.coding_agent_bindings.get(&runtime).cloned() {
+        state.failed_binding_recipes.remove(&id);
+    }
+}
+
+fn retire_coding_agent_binding(state: &mut SessionManagerState, runtime: Uuid) {
+    if let Some(binding) = state.coding_agent_bindings.remove(&runtime) {
+        if !state
+            .coding_agent_bindings
+            .values()
+            .any(|id| id == &binding)
+            && !state.failed_binding_recipes.contains_key(&binding)
+        {
+            state.binding_seeds.remove(&binding);
+            state.binding_origins.remove(&binding);
+        }
+    }
+}
+
 fn binding_matches(state: &SessionManagerState, binding: PendingCreateBinding) -> bool {
     state.pending_create.get(&binding.session_id).copied() == Some(binding.nonce)
 }
@@ -2300,6 +3518,18 @@ fn validate_unique_ids(label: &str, ids: impl IntoIterator<Item = Uuid>) -> Resu
 
 #[cfg(test)]
 impl SessionManager {
+    pub(crate) async fn enroll_failed_binding_recipe_for_test(
+        &self,
+        binding: String,
+        recipe: serde_json::Value,
+    ) {
+        self.state
+            .write()
+            .await
+            .failed_binding_recipes
+            .insert(binding, recipe);
+    }
+
     pub async fn set_communication_for_test(&self, id: Uuid, communication: SessionCommunication) {
         if let Some(session) = self.state.write().await.sessions.get_mut(&id) {
             session.communication = Some(communication);
@@ -2494,6 +3724,7 @@ impl SessionManager {
         if state.sessions.remove(&id).is_none() {
             return Err(AppError::SessionNotFound(id.to_string()));
         }
+        retire_coding_agent_binding(&mut state, id);
         state.order.retain(|candidate| *candidate != id);
         if state.selection.id() != Some(id) {
             return Ok(None);
@@ -2526,6 +3757,148 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::selection::TrustedCreateIntent;
+
+    fn birth_binding() -> CodingAgentBinding {
+        CodingAgentBinding {
+            id: Uuid::new_v4().to_string(),
+            seed: Some(
+                serde_json::json!({"identityRevision": format!("r1:0:{}", "a".repeat(64)), "originalAgentId":"original"}),
+            ),
+            origin: Some(
+                serde_json::json!({"sessionsPath":"C:/sessions.json","rawFileSHA256":"witness","originalOrdinal":3}),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn derived_agent_id_binding_pending_rollback_retires_only_its_binding() {
+        let manager = SessionManager::new();
+        let (first, pending) = pending_fixture(&manager, false).await;
+        let (other, other_pending) = pending_fixture(&manager, false).await;
+        let birth = birth_binding();
+        let other_birth = birth_binding();
+        manager
+            .install_pending_coding_agent_binding(pending, Some(birth.clone()))
+            .await
+            .unwrap();
+        manager
+            .install_pending_coding_agent_binding(other_pending, Some(other_birth.clone()))
+            .await
+            .unwrap();
+        assert!(manager.aggregate_snapshot().await.sessions.is_empty());
+        manager.rollback_pending_create(pending).await.unwrap();
+        assert!(manager.coding_agent_binding(first.id).await.is_none());
+        assert_eq!(
+            manager.coding_agent_binding(other.id).await.unwrap().id,
+            other_birth.id
+        );
+        assert!(!manager
+            .aggregate_snapshot()
+            .await
+            .binding_seeds
+            .contains_key(&birth.id));
+        manager
+            .rollback_pending_create(other_pending)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn derived_agent_id_binding_failed_affected_survives_live_only_snapshot_until_success() {
+        let manager = SessionManager::new();
+        let birth = birth_binding();
+        let failed = serde_json::json!({
+            "name":"affected failure", "shell":"shell", "workingDirectory":"C:/failed", "shellArgs":[],
+            "agentId":"original", "codingAgentBindingId":birth.id, "codingAgentBindingSeed":birth.seed,
+        });
+        // Fixture represents enrollment by a receipt consumer (D09). D07 does
+        // not activate receipts or extend general failed-legacy retention.
+        manager
+            .state
+            .write()
+            .await
+            .failed_binding_recipes
+            .insert(birth.id.clone(), serde_json::to_value(&failed).unwrap());
+        manager
+            .refresh_failed_binding_recipes(vec![
+                (birth.clone(), failed.clone()),
+                (birth_binding(), failed.clone()),
+            ])
+            .await;
+        for _ in 0..2 {
+            let snapshot = manager.aggregate_snapshot().await;
+            assert_eq!(snapshot.failed_binding_recipes.len(), 1);
+            assert_eq!(snapshot.failed_binding_recipes[&birth.id], failed);
+            assert!(snapshot.sessions.is_empty());
+            assert!(manager.list_sessions().await.is_empty());
+        }
+        let (restored, pending) = pending_fixture(&manager, false).await;
+        manager
+            .install_pending_coding_agent_binding(pending, Some(birth))
+            .await
+            .unwrap();
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_dormant(pending, dormant_witness(restored.id), 7);
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Keep,
+                SelectionCause::Restore,
+                mutations,
+            )
+            .await
+            .unwrap();
+        assert!(manager
+            .aggregate_snapshot()
+            .await
+            .failed_binding_recipes
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn derived_agent_id_binding_ram_birth_aggregate_preserves_original_when_metadata_changes()
+    {
+        let manager = SessionManager::new();
+        let (session, pending) = pending_fixture(&manager, false).await;
+        let birth = birth_binding();
+        manager
+            .install_pending_coding_agent_binding(pending, Some(birth.clone()))
+            .await
+            .unwrap();
+        let live = live_witness(session.id);
+        let mut mutations = LifecycleMutations::default();
+        mutations.finalize_live(pending, live);
+        manager
+            .commit_selection_transition(
+                &CommitCapability::for_test(),
+                CommitDecision::Live(live),
+                SelectionCause::SessionCreated(TrustedCreateIntent::User),
+                mutations,
+            )
+            .await
+            .unwrap();
+        // Before a successful disk write, birth metadata remains owned by RAM.
+        // A later disk configuration cannot become this binding's birth seed.
+        manager
+            .state
+            .write()
+            .await
+            .sessions
+            .get_mut(&session.id)
+            .unwrap()
+            .agent_id = Some("reused-id-after-external-rekey".into());
+        let snapshot = manager.aggregate_snapshot().await;
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert_eq!(snapshot.coding_agent_bindings[&session.id], birth.id);
+        assert_eq!(
+            snapshot.binding_seeds[&birth.id]["originalAgentId"],
+            "original"
+        );
+        assert_eq!(
+            snapshot.binding_origins.get(&birth.id),
+            birth.origin.as_ref()
+        );
+    }
 
     #[test]
     fn terminal_snapshot_fact_debug_uses_only_structural_fields() {
@@ -5170,5 +6543,302 @@ mod tests {
             mgr.agent_stamp_target(agent.id).await,
             Some((agent.working_directory.clone(), "codex".to_string()))
         );
+    }
+}
+
+#[cfg(test)]
+mod response_close_carrier_tests {
+    use super::*;
+
+    async fn row(manager: &SessionManager, name: &str, coordinator: bool) -> Session {
+        manager
+            .create_session(
+                "shell".into(),
+                vec![],
+                name.into(),
+                None,
+                None,
+                vec![],
+                coordinator,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn response_close_f1_excludes_protected_unknown_and_pending_before_foreign_fallback() {
+        let manager = SessionManager::new();
+        let protected = row(&manager, "protected", false).await;
+        let unknown = row(&manager, "unknown", false).await;
+        let pending = manager
+            .insert_pending_session_for_test("pending".into())
+            .await;
+        let foreign = row(&manager, "foreign", false).await;
+        let selected = row(&manager, "selected", false).await;
+        manager.mark_exited(protected.id, 0).await;
+        manager.mark_exited(selected.id, 0).await;
+        manager.set_active_only(selected.id).await.unwrap();
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut classified = HashSet::new();
+        let removed = manager
+            .remove_exited_sessions_with_carrier_permit(
+                &[selected.id, protected.id],
+                &permit,
+                |row, _| {
+                    classified.insert(row.id);
+                    if row.id == protected.id {
+                        CarrierDisposition::Protected
+                    } else if row.id == unknown.id {
+                        CarrierDisposition::Unknown
+                    } else {
+                        CarrierDisposition::Foreign
+                    }
+                },
+            )
+            .await;
+        assert_eq!(removed, 1);
+        assert_eq!(classified.len(), 5);
+        assert!(classified.contains(&pending));
+        assert_eq!(manager.selection_payload().await.id(), Some(foreign.id));
+        assert!(matches!(
+            manager.get_session(protected.id).await.unwrap().status,
+            SessionStatus::Exited(0)
+        ));
+    }
+
+    #[tokio::test]
+    async fn response_close_f1_clear_surviving_protected_target_and_no_foreign_fallback() {
+        let manager = SessionManager::new();
+        let protected = row(&manager, "protected", false).await;
+        let other = row(&manager, "unknown", false).await;
+        let permit = acquire_carrier_mutation_permit().await;
+        let removed = manager
+            .remove_exited_sessions_with_carrier_permit(&[protected.id], &permit, |row, _| {
+                if row.id == protected.id {
+                    CarrierDisposition::Protected
+                } else {
+                    CarrierDisposition::Unknown
+                }
+            })
+            .await;
+        assert_eq!(removed, 0);
+        assert_eq!(
+            manager.selection_payload().await.mode(),
+            SelectionMode::None
+        );
+        assert!(manager.get_session(protected.id).await.is_some());
+        assert!(manager.get_session(other.id).await.is_some());
+        assert!(manager
+            .state
+            .read()
+            .await
+            .carrier_versions
+            .contains_key(&protected.id));
+    }
+
+    #[tokio::test]
+    async fn response_close_f1_without_protection_preserves_legacy_exited_fallback_order() {
+        let manager = SessionManager::new();
+        let first = row(&manager, "first", false).await;
+        let second = row(&manager, "second", false).await;
+        let selected = row(&manager, "selected", false).await;
+        manager.mark_exited(first.id, 0).await;
+        manager.mark_exited(selected.id, 0).await;
+        manager.set_active_only(selected.id).await.unwrap();
+        assert_eq!(manager.remove_exited_sessions(&[selected.id]).await, 1);
+        assert_eq!(manager.selection_payload().await.id(), Some(first.id));
+        assert_eq!(
+            manager.get_session(first.id).await.unwrap().status,
+            SessionStatus::Active
+        );
+        assert!(manager.get_session(second.id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn response_close_binder_waits_for_publication_before_exposing_identity_change() {
+        use std::future::Future;
+        let manager = SessionManager::new();
+        let session = row(&manager, "original", false).await;
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut mutation = std::pin::pin!(manager.rename_session(session.id, "updated".into()));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(mutation.as_mut().poll(&mut context).is_pending());
+        manager
+            .with_current_carrier_snapshot(&permit, |snapshot| {
+                assert_eq!(
+                    snapshot
+                        .rows
+                        .iter()
+                        .find(|r| r.id == session.id)
+                        .unwrap()
+                        .name,
+                    session.name
+                );
+            })
+            .await;
+        drop(permit);
+        mutation.await.unwrap();
+        assert_eq!(
+            manager.get_session(session.id).await.unwrap().name,
+            "updated"
+        );
+    }
+    #[tokio::test]
+    async fn response_close_carrier_versions_ignore_observations_noops_and_fail_closed_on_overflow()
+    {
+        let manager = SessionManager::new();
+        let session = row(&manager, "row", false).await;
+        manager
+            .set_git_repos(
+                session.id,
+                vec![SessionRepo {
+                    label: "repo".into(),
+                    source_path: "path".into(),
+                    branch: None,
+                    dirty: None,
+                }],
+            )
+            .await;
+        let before = manager.state.read().await.carrier_versions[&session.id];
+        manager
+            .set_git_repos(
+                session.id,
+                vec![SessionRepo {
+                    label: "repo".into(),
+                    source_path: "path".into(),
+                    branch: Some("branch".into()),
+                    dirty: Some(true),
+                }],
+            )
+            .await;
+        manager.set_context_percent(session.id, Some(20)).await;
+        manager.set_last_prompt(session.id, "prompt".into()).await;
+        manager
+            .rename_session(session.id, session.name.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.state.read().await.carrier_versions[&session.id],
+            before
+        );
+        manager.set_is_coordinator(session.id, true).await;
+        assert_eq!(
+            manager.state.read().await.carrier_versions[&session.id],
+            before + 1
+        );
+        manager
+            .state
+            .write()
+            .await
+            .carrier_versions
+            .insert(session.id, u64::MAX);
+        manager
+            .rename_session(session.id, "overflow".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.state.read().await.carrier_versions[&session.id],
+            u64::MAX
+        );
+        assert!(manager.response_close.generation(session.id).is_none());
+    }
+
+    #[tokio::test]
+    async fn response_close_raise_rollback_cannot_clear_successor_communication() {
+        let manager = SessionManager::new();
+        let session = row(&manager, "coordinator", true).await;
+        let permit = acquire_carrier_mutation_permit().await;
+        let RaiseCarrierOutcome::Changed(_, receipt) = manager
+            .raise_hand_with_carrier_permit(&permit, session.id, chrono::Utc::now())
+            .await
+        else {
+            panic!("expected raise");
+        };
+        manager
+            .clear_communication_if_kind_with_carrier_permit(
+                &permit,
+                session.id,
+                SessionCommunicationKind::RaiseHand,
+            )
+            .await;
+        let RaiseCarrierOutcome::Changed(_, successor) = manager
+            .raise_hand_with_carrier_permit(&permit, session.id, chrono::Utc::now())
+            .await
+        else {
+            panic!("expected successor");
+        };
+        assert_eq!(
+            manager
+                .rollback_raise_with_carrier_permit(&permit, receipt)
+                .await,
+            RaiseRollbackOutcome::Superseded
+        );
+        assert!(
+            manager
+                .get_session(session.id)
+                .await
+                .unwrap()
+                .communication
+                .unwrap()
+                .visible
+        );
+        assert_eq!(
+            manager
+                .rollback_raise_with_carrier_permit(&permit, successor)
+                .await,
+            RaiseRollbackOutcome::Reverted
+        );
+        assert!(manager
+            .get_session(session.id)
+            .await
+            .unwrap()
+            .communication
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn response_close_prepared_create_binding_and_borrowed_pending_aliases_keep_exact_uuid_nonce(
+    ) {
+        let manager = SessionManager::new();
+        let binding = manager.reserve_carrier_create_binding();
+        let permit = acquire_carrier_mutation_permit().await;
+        let session = manager
+            .create_pending_session_with_binding_and_carrier_permit(
+                binding,
+                &permit,
+                "shell".into(),
+                vec![],
+                "cwd".into(),
+                None,
+                None,
+                vec![],
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        assert_eq!(session.id, binding.session_id());
+        manager
+            .rename_pending_session_with_carrier_permit(&permit, binding, "pending".into())
+            .await
+            .unwrap();
+        assert!(manager
+            .rename_pending_session_with_carrier_permit(
+                &permit,
+                PendingCreateBinding::new(binding.session_id, Uuid::new_v4()),
+                "wrong".into()
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            manager.get_pending_session(binding).await.unwrap().name,
+            "pending"
+        );
+        manager
+            .rollback_pending_create_with_carrier_permit(&permit, binding)
+            .await
+            .unwrap();
+        assert!(!manager.contains_public_or_pending(session.id).await);
     }
 }

@@ -57,6 +57,7 @@ pub struct MenuGuardEvaluation {
 }
 
 pub struct MenuGuard {
+    response_close: Option<crate::pty::manager::ResponseCloseState>,
     sessions: Mutex<HashMap<Uuid, MenuGuardSessionState>>,
     compiled_patterns: Mutex<HashMap<String, Result<regex::Regex, String>>>,
     next_episode_id: AtomicU64,
@@ -66,6 +67,7 @@ pub struct MenuGuard {
 impl Default for MenuGuard {
     fn default() -> Self {
         Self {
+            response_close: None,
             sessions: Mutex::new(HashMap::new()),
             compiled_patterns: Mutex::new(HashMap::new()),
             next_episode_id: AtomicU64::new(1),
@@ -75,6 +77,26 @@ impl Default for MenuGuard {
 }
 
 impl MenuGuard {
+    pub(crate) fn with_response_close(
+        store: BlockingMenusStore,
+        state: crate::pty::manager::ResponseCloseState,
+    ) -> Self {
+        state.bind_publisher(crate::pty::manager::ResponseClosePublisher::Menu);
+        Self {
+            store,
+            response_close: Some(state),
+            ..Self::default()
+        }
+    }
+    pub(crate) fn response_close_state(&self) -> Option<&crate::pty::manager::ResponseCloseState> {
+        self.response_close.as_ref()
+    }
+    fn publish_response_menu(&self, id: Uuid, blocked: Option<bool>) {
+        if let Some(state) = &self.response_close {
+            state.publish_menu(id, blocked, std::time::Instant::now());
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -148,7 +170,7 @@ impl MenuGuard {
                 last_seen_stamp: None,
             });
 
-        match matched_entry {
+        let evaluation = match matched_entry {
             Some(config) => {
                 let is_same_pattern = state.matched_pattern.as_deref() == Some(&config.pattern);
                 if !is_same_pattern {
@@ -199,7 +221,9 @@ impl MenuGuard {
                     episode_id: state.episode_id,
                 }
             }
-        }
+        };
+        self.publish_response_menu(session_id, Some(state.is_blocked));
+        evaluation
     }
 
     pub fn resolve_current_episode(&self, session_id: Uuid) -> bool {
@@ -210,6 +234,7 @@ impl MenuGuard {
         if let Some(state) = sessions_guard.get_mut(&session_id) {
             state.suppressed_episode_id = Some(state.episode_id);
             state.is_blocked = false;
+            self.publish_response_menu(session_id, Some(false));
             true
         } else {
             false
@@ -227,6 +252,54 @@ impl MenuGuard {
             .unwrap_or(false)
     }
 
+    async fn clear_disabled_menus<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_mgr_state: &Arc<tokio::sync::RwLock<SessionManager>>,
+    ) {
+        let manager = { session_mgr_state.read().await.clone() };
+        let disabled_current_ids = manager
+            .list_sessions()
+            .await
+            .into_iter()
+            .filter_map(|row| Uuid::parse_str(&row.id).ok())
+            .collect::<Vec<_>>();
+        let blocked_sessions: Vec<Uuid> = {
+            let mut sessions = match self.sessions.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let mut ids = Vec::new();
+            for id in &disabled_current_ids {
+                self.publish_response_menu(*id, Some(false));
+            }
+            for (id, state) in sessions.iter_mut() {
+                if state.is_blocked || state.matched_pattern.is_some() {
+                    state.is_blocked = false;
+                    state.matched_pattern = None;
+                    state.matched_notification = None;
+                    state.suppressed_episode_id = None;
+                    self.publish_response_menu(*id, Some(false));
+                    ids.push(*id);
+                }
+            }
+            ids
+        };
+        if !blocked_sessions.is_empty() {
+            let session_mgr = { session_mgr_state.read().await.clone() };
+            for id in blocked_sessions {
+                if crate::config::sessions_persistence::clear_blocked_menu_and_persist(
+                    &session_mgr,
+                    id,
+                )
+                .await
+                {
+                    crate::session::selection::publish_session_communication(app, id, None);
+                }
+            }
+        }
+    }
+
     pub async fn scan_tick<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
         let Some(settings_state) = app.try_state::<SettingsState>() else {
             return;
@@ -239,36 +312,8 @@ impl MenuGuard {
         };
 
         if !settings.menu_guard_enabled {
-            let blocked_sessions: Vec<Uuid> = {
-                let mut sessions = match self.sessions.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
-                let mut ids = Vec::new();
-                for (id, state) in sessions.iter_mut() {
-                    if state.is_blocked || state.matched_pattern.is_some() {
-                        state.is_blocked = false;
-                        state.matched_pattern = None;
-                        state.matched_notification = None;
-                        state.suppressed_episode_id = None;
-                        ids.push(*id);
-                    }
-                }
-                ids
-            };
-            if !blocked_sessions.is_empty() {
-                let session_mgr = { session_mgr_state.read().await.clone() };
-                for id in blocked_sessions {
-                    if crate::config::sessions_persistence::clear_blocked_menu_and_persist(
-                        &session_mgr,
-                        id,
-                    )
-                    .await
-                    {
-                        crate::session::selection::publish_session_communication(app, id, None);
-                    }
-                }
-            }
+            self.clear_disabled_menus(app, session_mgr_state.inner())
+                .await;
             return;
         }
 
@@ -383,6 +428,7 @@ impl MenuGuard {
                         Err(p) => p.into_inner(),
                     };
                     sessions_guard.remove(&session_uuid);
+                    self.publish_response_menu(session_uuid, None);
                 }
                 ScreenRowsSince::Missing => {}
             }
@@ -640,6 +686,7 @@ mod tests {
             preflight: None,
             preflight_timeout_seconds: None,
             id: id.to_string(),
+            id_hash: None,
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
@@ -1100,5 +1147,26 @@ mod tests {
         ));
         let eval = guard.evaluate_logical_rows(Uuid::new_v4(), &pi_row(), &entries);
         assert!(eval.is_blocked);
+    }
+}
+
+#[cfg(test)]
+mod response_close_menu_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn response_close_menu_binding_preserves_shared_identity_and_resolves_episode() {
+        let state = crate::pty::manager::ResponseCloseState::default();
+        let menu =
+            MenuGuard::with_response_close(BlockingMenusStore::shipped_only(), state.clone());
+        assert!(menu.response_close_state().unwrap().same_state(&state));
+        let id = Uuid::new_v4();
+        state.register_route(id, 1, Instant::now());
+        let evaluation = menu.evaluate_logical_rows(id, &[], &[]);
+        assert!(!evaluation.is_blocked);
+        assert!(menu.resolve_current_episode(id));
+        assert!(!menu.is_blocked(id));
+        assert!(MenuGuard::new().response_close_state().is_none());
     }
 }

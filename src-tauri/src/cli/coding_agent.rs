@@ -282,6 +282,20 @@ fn cmd_catalog() -> Result<(), String> {
 // ---- mutation verbs --------------------------------------------------------
 
 fn cmd_add(a: AddArgs, gui_running: bool) -> Result<(), String> {
+    cmd_add_with_io(
+        a,
+        gui_running,
+        || resolve_catalog_for_cli(&load_settings_for_cli()),
+        dispatch_mutation,
+    )
+}
+
+fn cmd_add_with_io(
+    a: AddArgs,
+    gui_running: bool,
+    catalog: impl FnOnce() -> Result<Vec<CodingAgentDefinition>, String>,
+    dispatch: impl FnOnce(CodingAgentOp, bool, u64) -> Result<(), String>,
+) -> Result<(), String> {
     // R6: strict color/label checks apply ONLY to explicitly typed flags.
     if let Some(color) = &a.color {
         ops::validate_agent_color(color)?;
@@ -298,8 +312,7 @@ fn cmd_add(a: AddArgs, gui_running: bool) -> Result<(), String> {
         // #1967 P4 - resolve the persisted catalog like `cmd_catalog`. An
         // unavailable catalog aborts here, before any settings mutation; an
         // unknown key keeps the existing not-found error.
-        let settings = load_settings_for_cli();
-        let catalog = resolve_catalog_for_cli(&settings)?;
+        let catalog = catalog()?;
         let def = catalog.iter().find(|d| &d.key == key).ok_or_else(|| {
             let keys: Vec<&str> = catalog.iter().map(|d| d.key.as_str()).collect();
             format!(
@@ -349,7 +362,7 @@ fn cmd_add(a: AddArgs, gui_running: bool) -> Result<(), String> {
         None => ops::mint_agent_id(),
     };
 
-    dispatch_mutation(CodingAgentOp::Add { agent }, gui_running, confirm_timeout)
+    dispatch(CodingAgentOp::Add { agent }, gui_running, confirm_timeout)
 }
 
 fn cmd_update(a: UpdateArgs, gui_running: bool) -> Result<(), String> {
@@ -441,10 +454,19 @@ fn dispatch_mutation(
 /// GUI closed: strict load (R1) -> apply -> save. `save_settings` is the
 /// preserve-project-paths default (this op never touches the project list).
 fn dispatch_direct(op: CodingAgentOp) -> Result<(), String> {
-    let mut settings = load_settings_for_cli_strict()?;
-    let outcome = ops::apply_coding_agent_op(&mut settings, &op)?;
-    save_settings(&settings)?;
+    let settings = load_settings_for_cli_strict()?;
+    let outcome = apply_and_save_direct(settings, &op, save_settings)?;
     print_outcome(&outcome)
+}
+
+fn apply_and_save_direct(
+    mut settings: AppSettings,
+    op: &CodingAgentOp,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<CodingAgentOpOutcome, String> {
+    let outcome = ops::apply_coding_agent_op(&mut settings, op)?;
+    let written = save(&settings)?;
+    ops::outcome_from_written(outcome, &written)
 }
 
 /// GUI running: queue the request and wait on the result (R2/R3).
@@ -531,13 +553,16 @@ fn finish_daemon_result(result: CodingAgentResult) -> Result<(), String> {
 
 // ---- helpers ---------------------------------------------------------------
 
-fn print_outcome(outcome: &CodingAgentOpOutcome) -> Result<(), String> {
-    let json = if outcome.op == "remove" {
+fn outcome_json(outcome: &CodingAgentOpOutcome) -> serde_json::Value {
+    if outcome.op == "remove" {
         serde_json::json!({ "ok": true, "op": "remove", "id": outcome.removed_id })
     } else {
         serde_json::json!({ "ok": true, "op": outcome.op, "agent": outcome.agent })
-    };
-    print_json(&json)
+    }
+}
+
+fn print_outcome(outcome: &CodingAgentOpOutcome) -> Result<(), String> {
+    print_json(&outcome_json(outcome))
 }
 
 fn print_json<T: serde::Serialize>(value: &T) -> Result<(), String> {
@@ -552,6 +577,7 @@ fn blank_agent() -> AgentConfig {
         preflight: None,
         preflight_timeout_seconds: None,
         id: String::new(),
+        id_hash: None,
         label: String::new(),
         command: String::new(),
         color: DEFAULT_CUSTOM_COLOR.to_string(),
@@ -575,6 +601,7 @@ fn definition_to_agent_seed(def: &CodingAgentDefinition) -> AgentConfig {
         preflight: None,
         preflight_timeout_seconds: None,
         id: String::new(),
+        id_hash: None,
         label: def.label.clone(),
         command: def.command.clone(),
         color: def.color.clone(),
@@ -691,6 +718,96 @@ fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn id_hash_activation_cli_custom_and_catalog_flags_print_written_metadata() {
+        for catalog_seed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("settings.json");
+            write_cli_catalog(
+                dir.path(),
+                r##"[{"key":"sentinel","label":"Seed","description":"d","color":"#111","command":"seed-command","envs":[{"key":"SEED","value":"old"}],"isolatedHome":false,"removable":true}]"##,
+            );
+            let catalog_settings = settings_for(dir.path());
+            let mut args = add_args();
+            args.from_catalog = catalog_seed.then(|| "sentinel".into());
+            args.id = catalog_seed.then(|| "supplied-stable".into());
+            args.label = Some("Final label".into());
+            args.command = Some("final-command".into());
+            args.env = vec!["MODE=final-value".into()];
+            let mut printed = None;
+            cmd_add_with_io(
+                args,
+                false,
+                || resolve_catalog_for_cli(&catalog_settings),
+                |op, _, _| {
+                    let input_id = match &op {
+                        CodingAgentOp::Add { agent } => agent.id.clone(),
+                        _ => unreachable!(),
+                    };
+                    let outcome =
+                        apply_and_save_direct(AppSettings::default(), &op, |candidate| {
+                            assert_eq!(candidate.agents[0].command, "final-command");
+                            assert_eq!(
+                                candidate.agents[0].envs,
+                                parse_env_flags(&["MODE=final-value".into()]).unwrap()
+                            );
+                            let mut physical = candidate.clone();
+                            physical.agents[0].command = "published-command".into();
+                            physical.agents[0].id_hash = Some("forged-before-publish".into());
+                            save_at(&physical, &path)
+                        })?;
+                    assert_eq!(outcome.agent.as_ref().unwrap().id, input_id);
+                    printed = Some(outcome_json(&outcome));
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let payload = printed.unwrap();
+            let reload = crate::config::settings::load_settings_from_path(&path);
+            let row = &reload.agents[0];
+            assert_eq!(payload["agent"], serde_json::to_value(row).unwrap());
+            assert_eq!(row.command, "published-command");
+            assert_eq!(
+                row.envs,
+                parse_env_flags(&["MODE=final-value".into()]).unwrap()
+            );
+            assert_eq!(
+                row.id_hash,
+                Some(crate::config::settings::configuration_identity(
+                    &row.command,
+                    &row.envs
+                ))
+            );
+            if catalog_seed {
+                assert_eq!(row.id, "supplied-stable");
+            } else {
+                assert!(ops::validate_custom_agent_id(&row.id).is_ok());
+            }
+            assert!(payload["agent"].get("idHash").is_none());
+            let disk: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(
+                    dir.path()
+                        .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(disk["agents"][0]["id_hash"], payload["agent"]["id_hash"]);
+            let removed_id = row.id.clone();
+            let removed = apply_and_save_direct(
+                reload,
+                &CodingAgentOp::Remove { id: removed_id },
+                |candidate| save_at(candidate, &path),
+            )
+            .unwrap();
+            assert_eq!(outcome_json(&removed)["id"], payload["agent"]["id"]);
+        }
+    }
+
+    fn save_at(settings: &AppSettings, path: &Path) -> Result<AppSettings, String> {
+        crate::config::settings::save_settings_to_path_preserving_project_paths(settings, path)
+    }
 
     fn add_args() -> AddArgs {
         AddArgs {

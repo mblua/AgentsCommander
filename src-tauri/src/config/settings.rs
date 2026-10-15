@@ -56,6 +56,13 @@ impl From<&AgentBackendConfig> for SessionBackendKind {
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
     pub id: String,
+    #[serde(
+        default,
+        rename = "id_hash",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_agent_id_hash"
+    )]
+    pub id_hash: Option<String>,
     pub label: String,
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,6 +141,18 @@ where
         .as_ref()
         .and_then(Value::as_u64)
         .and_then(|raw| u32::try_from(raw).ok()))
+}
+
+/// Optional, non-authoritative metadata: preserve strings and ignore other JSON types.
+fn deserialize_agent_id_hash<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        Value::String(hash) => Some(hash),
+        _ => None,
+    }))
 }
 
 /// #2306 P1 - sort `agents` into their effective order and rewrite every
@@ -261,6 +280,9 @@ pub struct CodingAgentProfilesConfig {
     /// agent adopts (`adopt_orphaned_profiles`). Absent in an older file.
     #[serde(default)]
     pub identity_by_agent: BTreeMap<String, String>,
+    /// Backend-owned isolated Codex HOME leaves, retained independently of IDs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub codex_home_key_by_agent: BTreeMap<String, String>,
 }
 
 impl Default for CodingAgentProfilesConfig {
@@ -272,6 +294,7 @@ impl Default for CodingAgentProfilesConfig {
             profiles_by_agent: BTreeMap::new(),
             profile_labels_by_agent: BTreeMap::new(),
             identity_by_agent: BTreeMap::new(),
+            codex_home_key_by_agent: BTreeMap::new(),
         }
     }
 }
@@ -471,8 +494,100 @@ pub struct SourceSnapshot<Agent> {
     pub context_revision: String,
 }
 
-// #2895 P14: dormant source coordination primitives. The orchestrator owns
-// authorization, C-before-source acquisition and local inventory/PAIR work.
+// #2897 P03: compiled gate; no caller-controlled activation bypass.
+#[allow(dead_code)]
+pub(crate) const fn source_protocol_active() -> bool {
+    false
+}
+
+// Keep lower IO carriers behind the existing settings facade.
+#[allow(unused_imports)]
+pub(crate) use crate::config::local_config_io::{
+    PairCompleteProof as IdentityReferenceCompleteProof,
+    PairReservation as IdentityReferencePacket, PairReservationRequest as IdentityReferenceRequest,
+    PhysicalState as IdentityReferencePhysicalState, PreparedPairError as IdentityReferenceError,
+    ProtectedRevision as IdentityReferenceProtectedRevision,
+};
+
+/// PAIR layout belongs beside the physical identity-reference facade.
+#[allow(dead_code)]
+pub(crate) fn identity_reference_pair_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    (
+        root.join("config.json"),
+        root.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME),
+        root.join(crate::config::instance_artifacts::CONFIG_IDENTITY_RESERVATION_NAME),
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn read_identity_reference_physical(
+    path: &Path,
+) -> Result<IdentityReferencePhysicalState, IdentityReferenceError> {
+    crate::config::local_config_io::read_config_pair_physical(path)
+}
+
+#[allow(dead_code)]
+pub(crate) fn identity_reference_protected_revision(
+    tuple: &[IdentityReferencePhysicalState; 2],
+) -> Result<[IdentityReferenceProtectedRevision; 2], IdentityReferenceError> {
+    crate::config::local_config_io::protected_config_pair_revision(tuple)
+}
+
+#[allow(dead_code)]
+pub(crate) fn execute_identity_reference_pair_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<(), IdentityReferenceError> {
+    crate::config::local_config_io::execute_reserved_config_pair_guarded(
+        decisions,
+        state,
+        reservation,
+        operation_id,
+        validate,
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_identity_reference_pair_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    operation_id: &str,
+    plan_digest: &str,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<[IdentityReferencePhysicalState; 2], IdentityReferenceError> {
+    crate::config::local_config_io::verify_reserved_config_pair_guarded(
+        decisions,
+        state,
+        reservation,
+        operation_id,
+        plan_digest,
+        validate,
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn release_identity_reference_pair_guarded(
+    decisions: &Path,
+    state: &Path,
+    reservation: &Path,
+    proof: &IdentityReferenceCompleteProof,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<[IdentityReferencePhysicalState; 2], IdentityReferenceError> {
+    crate::config::local_config_io::release_reserved_config_pair_guarded(
+        decisions,
+        state,
+        reservation,
+        proof,
+        validate,
+    )
+}
+
+// Dormant single-editor source primitives. C serializes internal writes;
+// settings owns authorization, original inventory and the local journal.
 // No legacy loader, Save endpoint or transport invokes these primitives yet.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -487,6 +602,8 @@ pub(crate) enum SourceCoordinationError {
     Stale,
     #[error("journalInvalid")]
     Invalid,
+    #[error("notFound")]
+    NotFound,
     #[error("unauthorized")]
     Unauthorized,
     #[error("sourceCoordinationIo: {0}")]
@@ -494,20 +611,11 @@ pub(crate) enum SourceCoordinationError {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
-pub(crate) struct SourceParticipant {
-    pub(crate) membership_revision: u64,
-    pub(crate) inventory_digest: String,
-    pub(crate) capability_version: u32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
-pub(crate) enum SharedSourcePhase {
-    Preparing,
-    ParticipantsReady,
+pub(crate) enum SourceTransitionPhase {
+    IntentStored,
+    Prepared,
     SourcePublished,
     Complete,
 }
@@ -515,42 +623,12 @@ pub(crate) enum SharedSourcePhase {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
-pub(crate) struct SourceTargetCommitment {
+pub(crate) struct SourcePacketRecord {
+    pub(crate) target: PathBuf,
     pub(crate) target_id: String,
     pub(crate) before_protected_revision: SourceRevision,
     pub(crate) after_protected_revision: SourceRevision,
     pub(crate) plan_digest: String,
-    pub(crate) owner_instance_id: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
-pub(crate) struct SourceParticipantCommitment {
-    pub(crate) participant_id: String,
-    pub(crate) context_revision: String,
-    pub(crate) inventory_digest: String,
-    pub(crate) targets: Vec<SourceTargetCommitment>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
-pub(crate) struct SharedSourceOperation {
-    pub(crate) operation_id: String,
-    pub(crate) request_id: String,
-    pub(crate) payload_digest: String,
-    pub(crate) source: SourceRef,
-    pub(crate) expected_source_revision: SourceRevision,
-    pub(crate) after_source_revision: SourceRevision,
-    pub(crate) initiator_id: String,
-    pub(crate) initiator_intent_digest: String,
-    pub(crate) mappings: Vec<SourceIdentityMapping>,
-    pub(crate) participant_set: BTreeMap<String, SourceParticipant>,
-    pub(crate) commitments: BTreeMap<String, SourceParticipantCommitment>,
-    pub(crate) acks: BTreeMap<String, SourceRevision>,
-    pub(crate) phase: SharedSourcePhase,
-    pub(crate) receipt: Option<SharedSourceReceipt>,
 }
 
 // This is metadata only; original candidate bytes stay in the private Intent.
@@ -568,162 +646,9 @@ pub(crate) struct SourceIdentityMapping {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
-pub(crate) struct SharedSourceReceipt {
+pub(crate) struct SourceReceipt {
     pub(crate) operation_id: String,
     pub(crate) source_revision: SourceRevision,
-    pub(crate) participant_ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[allow(dead_code)]
-pub(crate) struct SharedSourceLedger {
-    pub(crate) schema_version: u32,
-    pub(crate) generation: u64,
-    pub(crate) physical_source_key: String,
-    pub(crate) participants: BTreeMap<String, SourceParticipant>,
-    pub(crate) operations: BTreeMap<String, SharedSourceOperation>,
-}
-
-#[allow(dead_code)]
-impl SharedSourceLedger {
-    fn empty(key: String) -> Self {
-        Self {
-            schema_version: 1,
-            generation: 0,
-            physical_source_key: key,
-            participants: BTreeMap::new(),
-            operations: BTreeMap::new(),
-        }
-    }
-
-    fn pending(&self) -> bool {
-        self.operations
-            .values()
-            .any(|op| op.phase != SharedSourcePhase::Complete)
-    }
-
-    fn validate(&self, key: &str) -> Result<(), SourceCoordinationError> {
-        if self.schema_version != 1 || self.physical_source_key != key {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        if self.participants.iter().any(|(id, p)| {
-            !coordination_digest(id)
-                || !coordination_digest(&p.inventory_digest)
-                || p.membership_revision == 0
-                || p.capability_version != 1
-        }) {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        let mut requests = HashSet::new();
-        let mut pending = 0;
-        for (id, op) in &self.operations {
-            if id != &op.operation_id
-                || !coordination_id(id)
-                || !coordination_id(&op.request_id)
-                || !requests.insert(&op.request_id)
-                || !coordination_digest(&op.payload_digest)
-                || !coordination_digest(&op.initiator_intent_digest)
-                || !valid_coordination_revision(&op.expected_source_revision)
-                || !matches!(op.after_source_revision, SourceRevision::Bytes { .. })
-                || !valid_coordination_revision(&op.after_source_revision)
-                || op.participant_set.iter().any(|(id, p)| {
-                    !coordination_digest(id)
-                        || !coordination_digest(&p.inventory_digest)
-                        || p.capability_version != 1
-                        || p.membership_revision == 0
-                })
-                || !op.participant_set.contains_key(&op.initiator_id)
-                || op.participant_set != self.participants
-                    && op.phase != SharedSourcePhase::Complete
-            {
-                return Err(SourceCoordinationError::Invalid);
-            }
-            for (participant, commitment) in &op.commitments {
-                let member = op
-                    .participant_set
-                    .get(participant)
-                    .ok_or(SourceCoordinationError::Invalid)?;
-                if &commitment.participant_id != participant
-                    || !coordination_digest(&commitment.context_revision)
-                    || commitment.inventory_digest != member.inventory_digest
-                {
-                    return Err(SourceCoordinationError::Invalid);
-                }
-                let mut targets = HashSet::new();
-                for target in &commitment.targets {
-                    if !coordination_digest(&target.target_id)
-                        || !coordination_digest(&target.plan_digest)
-                        || !targets.insert(&target.target_id)
-                        || !op.participant_set.contains_key(&target.owner_instance_id)
-                        || !valid_coordination_revision(&target.before_protected_revision)
-                        || !valid_coordination_revision(&target.after_protected_revision)
-                    {
-                        return Err(SourceCoordinationError::Invalid);
-                    }
-                }
-            }
-            // Overlapping target plans must be equivalent, including the first
-            // durable packet's owner. No takeover or offline-owner expiry.
-            let mut targets = BTreeMap::new();
-            for commitment in op.commitments.values() {
-                for target in &commitment.targets {
-                    if let Some(prior) = targets.insert(&target.target_id, target) {
-                        if prior != target {
-                            return Err(SourceCoordinationError::Invalid);
-                        }
-                    }
-                }
-            }
-            if op.acks.iter().any(|(participant, revision)| {
-                !op.commitments.contains_key(participant) || revision != &op.after_source_revision
-            }) {
-                return Err(SourceCoordinationError::Invalid);
-            }
-            let ready = op.commitments.len() == op.participant_set.len();
-            if ready
-                && targets.values().any(|target| {
-                    op.commitments
-                        .get(&target.owner_instance_id)
-                        .is_none_or(|owner| !owner.targets.contains(target))
-                })
-            {
-                return Err(SourceCoordinationError::Invalid);
-            }
-            match op.phase {
-                SharedSourcePhase::Preparing if !op.acks.is_empty() || op.receipt.is_some() => {
-                    return Err(SourceCoordinationError::Invalid);
-                }
-                SharedSourcePhase::ParticipantsReady
-                    if !ready || !op.acks.is_empty() || op.receipt.is_some() =>
-                {
-                    return Err(SourceCoordinationError::Invalid);
-                }
-                SharedSourcePhase::SourcePublished if !ready || op.receipt.is_some() => {
-                    return Err(SourceCoordinationError::Invalid);
-                }
-                SharedSourcePhase::Complete => {
-                    let expected = SharedSourceReceipt {
-                        operation_id: id.clone(),
-                        source_revision: op.after_source_revision.clone(),
-                        participant_ids: op.participant_set.keys().cloned().collect(),
-                    };
-                    if !ready
-                        || op.acks.len() != op.participant_set.len()
-                        || op.receipt.as_ref() != Some(&expected)
-                    {
-                        return Err(SourceCoordinationError::Invalid);
-                    }
-                }
-                _ => {}
-            }
-            pending += usize::from(op.phase != SharedSourcePhase::Complete);
-        }
-        if pending > 1 {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        Ok(())
-    }
 }
 
 fn coordination_digest(value: &str) -> bool {
@@ -754,10 +679,20 @@ pub(crate) struct IdentityWriteLease {
 }
 #[allow(dead_code)]
 impl IdentityWriteLease {
+    pub(crate) fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
     pub(crate) fn acquire(
         context: &SourceReadContext,
         timeout: std::time::Duration,
     ) -> Result<Self, SourceCoordinationError> {
+        #[cfg(test)]
+        SOURCE_COORDINATION_ACQUISITIONS.with(|count| {
+            let mut value = count.get();
+            value[0] += 1;
+            count.set(value);
+        });
         let parent = coordination_parent(&context.settings_path)?;
         let canonical = &parent.identity().canonical_path;
         let spelling = canonical
@@ -793,26 +728,35 @@ impl IdentityWriteLease {
 }
 
 #[allow(dead_code)]
-pub(crate) struct SourceCoordinationLease<'a> {
+pub(crate) struct SourceWriteContext<'a> {
     identity: &'a IdentityWriteLease,
-    _lock: crate::config::local_config_io::SidecarWriteLock,
     parent: crate::path_identity::RetainedDirectory,
     source_path: PathBuf,
-    ledger_path: PathBuf,
     source: SourceRef,
     context_revision: String,
     physical_source_key: String,
 }
 
 #[allow(dead_code)]
-impl<'a> SourceCoordinationLease<'a> {
+impl<'a> SourceWriteContext<'a> {
+    pub(crate) fn source(&self) -> &SourceRef {
+        &self.source
+    }
+
+    pub(crate) fn physical_source_key(&self) -> &str {
+        &self.physical_source_key
+    }
+
+    pub(crate) fn context_revision(&self) -> &str {
+        &self.context_revision
+    }
+
     /// Internal only: caller acquires C first and supplies backend context.
     /// Parent object + normalized basename stays stable over atomic replace.
     pub(crate) fn acquire(
         context: &SourceReadContext,
         source: &SourceRef,
         identity: &'a IdentityWriteLease,
-        timeout: std::time::Duration,
     ) -> Result<Self, SourceCoordinationError> {
         let own = coordination_parent(&context.settings_path)?;
         if !crate::path_identity::same_object(own.identity(), identity.parent.identity()) {
@@ -831,27 +775,17 @@ impl<'a> SourceCoordinationLease<'a> {
             .file_name()
             .ok_or(SourceCoordinationError::IdentityUncertain)?;
         let key = coordination_key(&parent.identity().object_id, name)?;
-        let ledger_name = source_ledger_name(source.kind);
-        let ledger_path = canonical.join(ledger_name);
-        let lock = crate::config::local_config_io::acquire_sidecar_write_lock(
-            &canonical.join(format!(".{ledger_name}.lock")),
-            timeout,
-            "sourceCoordinationTimeout",
-            "source coordination lock",
-        )
-        .map_err(SourceCoordinationError::Io)?;
+        // Legacy artifacts are diagnosed and preserved, never used as authority.
+        reject_legacy_source_ledger(&canonical.join(source_ledger_name(source.kind)))?;
         let lease = Self {
             identity,
-            _lock: lock,
             parent,
             source_path: canonical.join(name),
-            ledger_path,
             source: source.clone(),
             context_revision: context.revision.clone(),
             physical_source_key: key,
         };
         lease.revalidate(context)?;
-        lease.read_ledger()?;
         Ok(lease)
     }
 
@@ -872,6 +806,13 @@ impl<'a> SourceCoordinationLease<'a> {
         self.parent
             .verify_current()
             .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+        reject_legacy_source_ledger(
+            &self
+                .parent
+                .identity()
+                .canonical_path
+                .join(source_ledger_name(self.source.kind)),
+        )?;
         coordination_read(&self.source_path)?;
         Ok(())
     }
@@ -886,82 +827,13 @@ impl<'a> SourceCoordinationLease<'a> {
             .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
         Ok(coordination_read(&self.source_path)?.0)
     }
+}
 
-    pub(crate) fn read_ledger(
-        &self,
-    ) -> Result<(SourceRevision, SharedSourceLedger), SourceCoordinationError> {
-        self.parent
-            .verify_current()
-            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
-        let (revision, bytes) = coordination_read(&self.ledger_path)?;
-        let ledger = match bytes {
-            Some(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?
-            }
-            None => SharedSourceLedger::empty(self.physical_source_key.clone()),
-        };
-        ledger.validate(&self.physical_source_key)?;
-        if ledger
-            .operations
-            .values()
-            .any(|op| op.source != self.source)
-        {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        Ok((revision, ledger))
-    }
-
-    fn update<F>(
-        &self,
-        expected: &SourceRevision,
-        change: F,
-    ) -> Result<SourceRevision, SourceCoordinationError>
-    where
-        F: FnOnce(&mut SharedSourceLedger) -> Result<(), SourceCoordinationError>,
-    {
-        let (revision, mut ledger) = self.read_ledger()?;
-        if &revision != expected {
-            return Err(SourceCoordinationError::Stale);
-        }
-        let before = ledger.clone();
-        change(&mut ledger)?;
-        if ledger == before {
-            return Ok(revision);
-        }
-        ledger.generation = ledger
-            .generation
-            .checked_add(1)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        ledger.validate(&self.physical_source_key)?;
-        let mut bytes =
-            serde_json::to_vec_pretty(&ledger).map_err(|_| SourceCoordinationError::Invalid)?;
-        bytes.push(b'\n');
-        self.parent
-            .verify_current()
-            .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
-        let (observed, old) = coordination_read(&self.ledger_path)?;
-        if observed != revision {
-            return Err(SourceCoordinationError::Stale);
-        }
-        let physical = match old {
-            Some(old) => crate::config::local_config_io::PhysicalState::from_bytes(old),
-            None => crate::config::local_config_io::PhysicalState::Absent,
-        };
-        crate::config::local_config_io::publish_coordination_bytes(
-            &self.ledger_path,
-            &physical,
-            &bytes,
-        )
-        .map_err(|e| match e {
-            crate::config::local_config_io::PreparedPairError::Conflict => {
-                SourceCoordinationError::Stale
-            }
-            crate::config::local_config_io::PreparedPairError::InvalidPlan(_) => {
-                SourceCoordinationError::Invalid
-            }
-            other => SourceCoordinationError::Io(other.to_string()),
-        })?;
-        Ok(source_bytes_revision(&bytes))
+fn coordination_publication_error(error: IdentityReferenceError) -> SourceCoordinationError {
+    match error {
+        IdentityReferenceError::Conflict => SourceCoordinationError::Stale,
+        IdentityReferenceError::InvalidPlan(_) => SourceCoordinationError::Invalid,
+        other => SourceCoordinationError::Io(other.to_string()),
     }
 }
 
@@ -1018,154 +890,95 @@ fn coordination_read(
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn enroll_source_participant(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    instance_id: &str,
-    participant: SourceParticipant,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    if instance_id != lease.identity.instance_id {
-        return Err(SourceCoordinationError::Unauthorized);
+fn reject_legacy_source_ledger(path: &Path) -> Result<(), SourceCoordinationError> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(SourceCoordinationError::Io(error.to_string())),
+        Ok(_) => Err(SourceCoordinationError::Invalid),
     }
-    lease.update(expected, |ledger| {
-        if ledger.pending() {
-            return Err(SourceCoordinationError::Pending);
-        }
-        if let Some(old) = ledger.participants.get(instance_id) {
-            if old == &participant {
-                return Ok(());
-            }
-            if participant.membership_revision
-                != old
-                    .membership_revision
-                    .checked_add(1)
-                    .ok_or(SourceCoordinationError::Invalid)?
-            {
-                return Err(SourceCoordinationError::Stale);
-            }
-        } else if participant.membership_revision != 1 {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        ledger.participants.insert(instance_id.into(), participant);
-        Ok(())
-    })
 }
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct IdentityTransitionSummary {
     pub(crate) operation_id: String,
-    pub(crate) phase: SharedSourcePhase,
+    pub(crate) phase: SourceTransitionPhase,
     pub(crate) source: SourceRef,
     pub(crate) source_revision_observed: SourceRevision,
+    pub(crate) expected_source_revision: SourceRevision,
+    pub(crate) after_source_revision: SourceRevision,
     pub(crate) journal_revision: SourceRevision,
-    pub(crate) pending_participants: Vec<String>,
     pub(crate) mappings: Vec<SourceIdentityMapping>,
-    pub(crate) receipt: Option<SharedSourceReceipt>,
+    pub(crate) receipt: Option<SourceReceipt>,
 }
 
-/// Stable revisions are retained even before a fence or for an unknown operation.
 #[derive(Clone, Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) struct SharedTransitionStatus {
+pub(crate) struct SourceTransitionStatus {
     pub(crate) journal_revision: SourceRevision,
     pub(crate) source_revision_observed: SourceRevision,
     pub(crate) summary: Option<IdentityTransitionSummary>,
 }
 
-/// Read-only: no sidecar creation, enrollment, consolidation or recovery.
+/// Stable journal -> source -> journal observation; no write proofs or effects.
 #[allow(dead_code)]
-pub(crate) fn read_shared_transition(
+pub(crate) fn read_source_transition(
     context: &SourceReadContext,
     source: &SourceRef,
     operation_id: &str,
-) -> Result<SharedTransitionStatus, SourceCoordinationError> {
-    read_shared_transition_with_reader(context, source, operation_id, coordination_read)
-}
-
-fn read_shared_transition_with_reader(
-    context: &SourceReadContext,
-    source: &SourceRef,
-    operation_id: &str,
-    mut read: impl FnMut(
-        &std::path::Path,
-    ) -> Result<(SourceRevision, Option<Vec<u8>>), SourceCoordinationError>,
-) -> Result<SharedTransitionStatus, SourceCoordinationError> {
+) -> Result<SourceTransitionStatus, SourceCoordinationError> {
     let locator = context
         .locator(source)
         .map_err(|_| SourceCoordinationError::Unauthorized)?;
     let parent = coordination_parent(&locator)?;
-    let canonical = &parent.identity().canonical_path;
-    let name = locator
-        .file_name()
-        .ok_or(SourceCoordinationError::IdentityUncertain)?;
-    let key = coordination_key(&parent.identity().object_id, name)?;
-    let ledger_path = canonical.join(source_ledger_name(source.kind));
+    reject_legacy_source_ledger(
+        &parent
+            .identity()
+            .canonical_path
+            .join(source_ledger_name(source.kind)),
+    )?;
     for _ in 0..=2 {
-        let (revision, before) = read(&ledger_path)?;
-        let observed = read(&canonical.join(name))?.0;
-        if read(&ledger_path)?.0 != revision {
+        let (revision, journal) = read_own_source_journal(context)?;
+        let observed = coordination_read(&locator)?.0;
+        if read_own_source_journal(context)?.0 != revision {
             continue;
         }
         parent
             .verify_current()
             .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
-        let Some(bytes) = before else {
-            return Ok(SharedTransitionStatus {
-                journal_revision: revision,
-                source_revision_observed: observed,
-                summary: None,
-            });
-        };
-        let ledger: SharedSourceLedger =
-            serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?;
-        ledger.validate(&key)?;
-        let Some(op) = ledger.operations.get(operation_id) else {
-            return Ok(SharedTransitionStatus {
-                journal_revision: revision,
-                source_revision_observed: observed,
-                summary: None,
-            });
-        };
-        if &op.source != source {
-            return Err(SourceCoordinationError::Invalid);
-        }
-        let pending_participants = op
-            .participant_set
-            .keys()
-            .filter(|id| {
-                if matches!(
-                    op.phase,
-                    SharedSourcePhase::Preparing | SharedSourcePhase::ParticipantsReady
-                ) {
-                    !op.commitments.contains_key(*id)
-                } else {
-                    !op.acks.contains_key(*id)
+        let summary = match journal.intents.get(operation_id) {
+            None => None,
+            Some(intent) => {
+                if &intent.source != source {
+                    return Err(SourceCoordinationError::Unauthorized);
                 }
-            })
-            .cloned()
-            .collect();
-        return Ok(SharedTransitionStatus {
-            journal_revision: revision.clone(),
-            source_revision_observed: observed.clone(),
-            summary: Some(IdentityTransitionSummary {
-                operation_id: operation_id.into(),
-                phase: op.phase.clone(),
-                source: op.source.clone(),
-                source_revision_observed: observed,
-                journal_revision: revision,
-                pending_participants,
-                mappings: op.mappings.clone(),
-                receipt: op.receipt.clone(),
-            }),
+                let progress = journal
+                    .progress
+                    .get(operation_id)
+                    .ok_or(SourceCoordinationError::Invalid)?;
+                Some(IdentityTransitionSummary {
+                    operation_id: operation_id.into(),
+                    phase: progress.phase(),
+                    source: source.clone(),
+                    source_revision_observed: observed.clone(),
+                    expected_source_revision: intent.expected_revision.clone(),
+                    after_source_revision: source_bytes_revision(&intent.serialized_after),
+                    journal_revision: revision.clone(),
+                    mappings: intent.mappings.clone(),
+                    receipt: progress.receipt.clone(),
+                })
+            }
+        };
+        return Ok(SourceTransitionStatus {
+            journal_revision: revision,
+            source_revision_observed: observed,
+            summary,
         });
     }
     Err(SourceCoordinationError::Busy)
 }
 
-/// Private durable Intent. Stored by the later coordinator before fence. No
-/// shared metadata contains candidate bytes, authorized paths or credentials.
+/// Original private Intent. Persisted with inventory before any packet/source effect.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
@@ -1179,7 +992,7 @@ pub(crate) struct SourceStoredIntent {
     pub(crate) before_bytes: Option<Vec<u8>>,
     pub(crate) serialized_after: Vec<u8>,
     pub(crate) mappings: Vec<SourceIdentityMapping>,
-    pub(crate) initiator_id: String,
+    pub(crate) editor_id: String,
     pub(crate) context_revision: String,
     pub(crate) authorization_revision: String,
 }
@@ -1190,6 +1003,775 @@ pub(crate) struct SourceStoredIntent {
 pub(crate) struct SourcePrivateJournal {
     pub(crate) schema_version: u32,
     pub(crate) intents: BTreeMap<String, SourceStoredIntent>,
+    #[serde(default)]
+    pub(crate) inventories: BTreeMap<String, SourceLocalInventory>,
+    #[serde(default)]
+    pub(crate) progress: BTreeMap<String, SourceLocalProgress>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceDiscoveryWitness {
+    pub(crate) registry: Vec<String>,
+    pub(crate) parents: Vec<PathBuf>,
+    pub(crate) slots: Vec<(PathBuf, bool)>,
+    pub(crate) membership: Vec<(PathBuf, Vec<PathBuf>)>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_TRANSITION_PUBLICATIONS: std::cell::Cell<[usize; 3]> = const { std::cell::Cell::new([0; 3]) };
+    static SOURCE_COORDINATION_ACQUISITIONS: std::cell::Cell<[usize; 2]> = const { std::cell::Cell::new([0, 0]) };
+}
+
+/// Calling-thread oracle only: driver fixtures and local reload execute synchronously
+/// on this thread. A worker must return its own counts; these are not global totals.
+#[cfg(test)]
+pub(crate) fn source_transition_effect_counts() -> ([usize; 2], usize) {
+    (
+        SOURCE_COORDINATION_ACQUISITIONS.with(std::cell::Cell::get),
+        crate::config::local_config_io::source_guard_publication_calls(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn source_transition_publication_counts() -> [usize; 3] {
+    SOURCE_TRANSITION_PUBLICATIONS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn count_source_transition_publication(kind: usize) {
+    SOURCE_TRANSITION_PUBLICATIONS.with(|count| {
+        let mut next = count.get();
+        next[kind] += 1;
+        count.set(next);
+    });
+}
+
+/// Private locators are frozen by the backend's complete authorized inventory.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceInventoryTarget {
+    pub(crate) root: PathBuf,
+    pub(crate) root_object: (u64, u64),
+    pub(crate) decisions: PathBuf,
+    pub(crate) state: PathBuf,
+    pub(crate) reservation: PathBuf,
+    pub(crate) before_protected: [IdentityReferenceProtectedRevision; 2],
+    pub(crate) original_selections: Vec<ConfigurationRef>,
+    #[serde(default)]
+    pub(crate) original_physical: Option<[IdentityReferencePhysicalState; 2]>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceLocalInventory {
+    pub(crate) editor_id: String,
+    pub(crate) source: SourceRef,
+    pub(crate) physical_source_key: String,
+    pub(crate) context_revision: String,
+    pub(crate) authorization_revision: String,
+    pub(crate) authorized_roots: Vec<(PathBuf, (u64, u64))>,
+    pub(crate) targets: Vec<SourceInventoryTarget>,
+    pub(crate) mappings: Vec<SourceIdentityMapping>,
+    origin_binding: Option<OriginBinding>,
+    #[serde(default)]
+    original_evidence: Option<SourceOriginalInventoryEvidence>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceLocalProgress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_publication:
+        Option<crate::config::local_config_io::PreparedSourcePublication>,
+    pub(crate) packets: Vec<SourcePacketRecord>,
+    pub(crate) packets_prepared: bool,
+    pub(crate) source_published: bool,
+    pub(crate) refs_verified: bool,
+    pub(crate) reloaded: bool,
+    pub(crate) receipt: Option<SourceReceipt>,
+}
+
+impl SourceLocalProgress {
+    pub(crate) fn phase(&self) -> SourceTransitionPhase {
+        if self.receipt.is_some() {
+            SourceTransitionPhase::Complete
+        } else if self.source_published {
+            SourceTransitionPhase::SourcePublished
+        } else if self.packets_prepared {
+            SourceTransitionPhase::Prepared
+        } else {
+            SourceTransitionPhase::IntentStored
+        }
+    }
+}
+
+impl SourcePrivateJournal {
+    fn empty() -> Self {
+        Self {
+            schema_version: 2,
+            intents: BTreeMap::new(),
+            inventories: BTreeMap::new(),
+            progress: BTreeMap::new(),
+        }
+    }
+
+    fn validate(&self) -> Result<(), SourceCoordinationError> {
+        if self.schema_version != 2 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        if self.intents.keys().ne(self.inventories.keys())
+            || self.intents.keys().ne(self.progress.keys())
+        {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let mut pending_sources = HashSet::new();
+        for (id, inventory) in &self.inventories {
+            if self.progress.get(id).is_none_or(|p| p.receipt.is_none())
+                && !pending_sources.insert(&inventory.physical_source_key)
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+        }
+        let mut requests = std::collections::BTreeSet::new();
+        for (id, intent) in &self.intents {
+            if id != &intent.operation_id
+                || !coordination_id(id)
+                || intent.schema_version != 2
+                || !coordination_id(&intent.request_id)
+                || !requests.insert(&intent.request_id)
+                || !coordination_digest(&intent.payload_digest)
+                || !coordination_digest(&intent.editor_id)
+                || !coordination_digest(&intent.context_revision)
+                || !coordination_digest(&intent.authorization_revision)
+                || intent.source.context_root.is_empty()
+                || !valid_coordination_revision(&intent.expected_revision)
+                || intent.serialized_after.is_empty()
+                || intent
+                    .before_bytes
+                    .as_ref()
+                    .map(|bytes| source_bytes_revision(bytes))
+                    .unwrap_or(SourceRevision::Absent {})
+                    != intent.expected_revision
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+        }
+        for (id, inventory) in &self.inventories {
+            inventory.validate_original_evidence()?;
+            if !coordination_id(id)
+                || !coordination_digest(&inventory.editor_id)
+                || !coordination_digest(&inventory.physical_source_key)
+                || !coordination_digest(&inventory.context_revision)
+                || !coordination_digest(&inventory.authorization_revision)
+                || inventory.source.context_root.is_empty()
+                || inventory
+                    .authorized_roots
+                    .windows(2)
+                    .any(|pair| pair[0].0 >= pair[1].0)
+                || inventory
+                    .targets
+                    .windows(2)
+                    .any(|pair| pair[0].decisions >= pair[1].decisions)
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            for target in &inventory.targets {
+                if !target.root.is_absolute()
+                    || !target.decisions.is_absolute()
+                    || !target.state.is_absolute()
+                    || !target.reservation.is_absolute()
+                    || target.decisions.parent() != Some(target.root.as_path())
+                    || target.state.parent() != Some(target.root.as_path())
+                    || target.reservation.parent() != Some(target.root.as_path())
+                    || target.decisions == target.state
+                    || target.decisions == target.reservation
+                    || target.state == target.reservation
+                    || !inventory
+                        .authorized_roots
+                        .iter()
+                        .any(|(root, _)| target.root.starts_with(root))
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+            }
+            if let Some(intent) = self.intents.get(id) {
+                if intent.source != inventory.source
+                    || intent.mappings != inventory.mappings
+                    || intent.editor_id != inventory.editor_id
+                    || intent.context_revision != inventory.context_revision
+                    || intent.authorization_revision != inventory.authorization_revision
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+            }
+        }
+        for (id, progress) in &self.progress {
+            if let Some(proof) = &progress.source_publication {
+                let intent = self
+                    .intents
+                    .get(id)
+                    .ok_or(SourceCoordinationError::Invalid)?;
+                let digest = source_transition_digest(intent)?;
+                if intent.before_bytes.is_some() || !proof.validate_record(&digest) {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+            }
+            let inventory = self
+                .inventories
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            let mut targets = std::collections::BTreeSet::new();
+            for packet in &progress.packets {
+                if !targets.insert(&packet.target)
+                    || !inventory
+                        .targets
+                        .iter()
+                        .any(|target| target.decisions == packet.target)
+                    || !coordination_digest(&packet.target_id)
+                    || !coordination_digest(&packet.plan_digest)
+                    || !valid_coordination_revision(&packet.before_protected_revision)
+                    || !valid_coordination_revision(&packet.after_protected_revision)
+                    || inventory
+                        .targets
+                        .iter()
+                        .find(|target| target.decisions == packet.target)
+                        .is_none_or(|target| {
+                            !source_transition_digest(&target.before_protected).is_ok_and(
+                                |digest| {
+                                    packet.before_protected_revision
+                                        == (SourceRevision::Bytes { sha256: digest })
+                                },
+                            )
+                        })
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+            }
+            let intent = self
+                .intents
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            if progress.packets_prepared && progress.packets.len() != inventory.targets.len()
+                || progress.source_published
+                    && (!progress.packets_prepared
+                        || intent.before_bytes.is_none() && progress.source_publication.is_none())
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            if progress.refs_verified && !progress.source_published
+                || progress.reloaded && !progress.refs_verified
+                || progress.receipt.as_ref().is_some_and(|receipt| {
+                    receipt.operation_id != *id
+                        || !progress.reloaded
+                        || receipt.source_revision
+                            != source_bytes_revision(&intent.serialized_after)
+                })
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn own_source_journal_path(
+    context: &SourceReadContext,
+) -> Result<PathBuf, SourceCoordinationError> {
+    Ok(context
+        .settings_path
+        .parent()
+        .ok_or(SourceCoordinationError::Unauthorized)?
+        .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME))
+}
+
+pub(crate) fn read_own_source_journal(
+    context: &SourceReadContext,
+) -> Result<(SourceRevision, SourcePrivateJournal), SourceCoordinationError> {
+    let (revision, bytes) = coordination_read(&own_source_journal_path(context)?)?;
+    let journal = match bytes {
+        None => SourcePrivateJournal::empty(),
+        Some(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?
+        }
+    };
+    journal.validate()?;
+    let parent = coordination_parent(&context.settings_path)?;
+    let canonical = parent
+        .identity()
+        .canonical_path
+        .to_str()
+        .ok_or(SourceCoordinationError::IdentityUncertain)?;
+    let spelling = if cfg!(windows) {
+        canonical.to_lowercase()
+    } else {
+        canonical.to_owned()
+    };
+    let own_revision = source_bytes_revision(spelling.as_bytes());
+    let SourceRevision::Bytes { sha256: own_id } = own_revision else {
+        unreachable!()
+    };
+    if journal
+        .intents
+        .values()
+        .any(|intent| intent.editor_id != own_id)
+        || journal
+            .inventories
+            .values()
+            .any(|inventory| inventory.editor_id != own_id)
+    {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    parent
+        .verify_current()
+        .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+    Ok((revision, journal))
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct SourcePublicationObservation {
+    pub(crate) revision: SourceRevision,
+}
+
+/// The caller retains its original authority; exact after is recognized outside
+/// the publisher and is never interpreted as a rejected, effect-free attempt.
+#[allow(dead_code)]
+pub(crate) fn publish_source_intent_with_validation(
+    lease: &SourceWriteContext,
+    context: &SourceReadContext,
+    intent: &SourceStoredIntent,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<SourcePublicationObservation, SourceCoordinationError> {
+    if intent.source != lease.source
+        || intent.editor_id != lease.identity.instance_id
+        || intent.context_revision != lease.context_revision
+    {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    let after = source_bytes_revision(&intent.serialized_after);
+    let guard = || {
+        lease
+            .identity
+            .parent
+            .verify_current()
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        lease
+            .revalidate(context)
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        let revision = lease
+            .source_revision()
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        if revision != intent.expected_revision && revision != after {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        validate()
+    };
+    guard().map_err(coordination_publication_error)?;
+    let observed = lease.source_revision()?;
+    let before = match &intent.before_bytes {
+        None => IdentityReferencePhysicalState::Absent,
+        Some(bytes) => IdentityReferencePhysicalState::from_bytes(bytes.clone()),
+    };
+    let (mut private_revision, mut journal) = read_own_source_journal(context)?;
+    if journal.intents.get(&intent.operation_id) != Some(intent) {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    let inventory = journal
+        .inventories
+        .get(&intent.operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    if inventory.source != intent.source
+        || inventory.editor_id != intent.editor_id
+        || inventory.context_revision != intent.context_revision
+        || inventory.authorization_revision != intent.authorization_revision
+        || inventory.physical_source_key != lease.physical_source_key
+        || inventory.mappings != intent.mappings
+    {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    let progress = journal
+        .progress
+        .get(&intent.operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    if !progress.packets_prepared {
+        return Err(SourceCoordinationError::Pending);
+    }
+    let already_published = progress.source_published;
+    let initial_proof = progress.source_publication.clone();
+    let intent_digest = source_transition_digest(intent)?;
+    let ownership_required = intent.before_bytes.is_none();
+    if ownership_required && observed == after {
+        let proof = initial_proof
+            .as_ref()
+            .ok_or(SourceCoordinationError::Stale)?;
+        if !already_published {
+            crate::config::local_config_io::verify_prepared_source_target(
+                &lease.parent,
+                &lease.source_path,
+                &intent.serialized_after,
+                proof,
+                &guard,
+            )
+            .map_err(coordination_publication_error)?;
+        }
+    }
+    if observed == after {
+        if coordination_read(&lease.source_path)?.1.as_deref()
+            != Some(intent.serialized_after.as_slice())
+        {
+            return Err(SourceCoordinationError::Stale);
+        }
+        guard().map_err(coordination_publication_error)?;
+        return Ok(SourcePublicationObservation { revision: after });
+    }
+    if already_published {
+        return Err(SourceCoordinationError::Stale);
+    }
+    if ownership_required {
+        let mut capability = match initial_proof.as_ref() {
+            Some(proof) => crate::config::local_config_io::reopen_source_publication(
+                &lease.parent,
+                &lease.source_path,
+                &intent.serialized_after,
+                proof,
+                &guard,
+            ),
+            None => crate::config::local_config_io::prepare_source_publication(
+                &lease.parent,
+                &lease.source_path,
+                &intent.serialized_after,
+                &intent_digest,
+                &guard,
+            ),
+        }
+        .map_err(coordination_publication_error)?;
+        if initial_proof.is_none() {
+            let proof = capability.proof().clone();
+            let mut planned = journal.clone();
+            planned
+                .progress
+                .get_mut(&intent.operation_id)
+                .ok_or(SourceCoordinationError::Invalid)?
+                .source_publication = Some(proof.clone());
+            let checkpoint_guard = || capability.check();
+            let checkpoint = update_own_source_journal_for_publication(
+                lease.identity,
+                lease,
+                context,
+                &private_revision,
+                |journal| {
+                    journal
+                        .progress
+                        .get_mut(&intent.operation_id)
+                        .ok_or(SourceCoordinationError::Invalid)?
+                        .source_publication = Some(proof);
+                    Ok(())
+                },
+                &checkpoint_guard,
+                Some((&intent.operation_id, &capability)),
+            );
+            match checkpoint {
+                Ok(revision) => {
+                    capability.check().map_err(coordination_publication_error)?;
+                    let (confirmed_revision, confirmed) = read_own_source_journal(context)?;
+                    if confirmed_revision != revision || confirmed != planned {
+                        return Err(SourceCoordinationError::Stale);
+                    }
+                    private_revision = confirmed_revision;
+                    journal = confirmed;
+                }
+                Err(error) => {
+                    // Pure Err-before/Err-landed/other classification. Every
+                    // outcome retains the stage and returns the original error;
+                    // no native, unlink or second CAS follows an Err.
+                    if capability.check().is_ok() {
+                        if let Ok((revision, current)) = read_own_source_journal(context) {
+                            let _before_exact = revision == private_revision && current == journal;
+                            let _after_exact = current == planned;
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let checkpoint_guard = || {
+            guard()?;
+            let (revision, current) =
+                read_own_source_journal(context).map_err(|_| IdentityReferenceError::Conflict)?;
+            if revision != private_revision || current != journal {
+                return Err(IdentityReferenceError::Conflict);
+            }
+            Ok(())
+        };
+        #[cfg(test)]
+        count_source_transition_publication(2);
+        capability
+            .commit(&checkpoint_guard)
+            .map_err(coordination_publication_error)?;
+        return Ok(SourcePublicationObservation { revision: after });
+    }
+    #[cfg(test)]
+    count_source_transition_publication(2);
+    let publication =
+        crate::config::local_config_io::publish_source_coordination_bytes_with_validation(
+            &lease.source_path,
+            &before,
+            &intent.serialized_after,
+            &lease.parent,
+            &guard,
+        );
+    publication.result.map_err(coordination_publication_error)?;
+    // Validate authority again, then classify durable bytes even if the final
+    // publication check failed. No callback advances local progress or events.
+    guard().map_err(coordination_publication_error)?;
+    match lease.source_revision()? {
+        revision if revision == after => Ok(SourcePublicationObservation { revision }),
+        revision if revision == intent.expected_revision => Err(SourceCoordinationError::Stale),
+        _ => Err(SourceCoordinationError::Stale),
+    }
+}
+
+/// Pure record changes are redecoded before guarded CAS publication; callbacks
+/// borrow original proofs and never advance coordinator progress themselves.
+#[allow(dead_code)]
+pub(crate) fn update_own_source_journal_with_validation<F>(
+    identity: &IdentityWriteLease,
+    lease: &SourceWriteContext,
+    context: &SourceReadContext,
+    expected: &SourceRevision,
+    change: F,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<SourceRevision, SourceCoordinationError>
+where
+    F: FnOnce(&mut SourcePrivateJournal) -> Result<(), SourceCoordinationError>,
+{
+    update_own_source_journal_for_publication(
+        identity, lease, context, expected, change, validate, None,
+    )
+}
+
+fn update_own_source_journal_for_publication<F>(
+    identity: &IdentityWriteLease,
+    lease: &SourceWriteContext,
+    context: &SourceReadContext,
+    expected: &SourceRevision,
+    change: F,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+    prepared: Option<(
+        &str,
+        &crate::config::local_config_io::PreparedSourceCapability<'_>,
+    )>,
+) -> Result<SourceRevision, SourceCoordinationError>
+where
+    F: FnOnce(&mut SourcePrivateJournal) -> Result<(), SourceCoordinationError>,
+{
+    if !std::ptr::eq(identity, lease.identity) {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    let parent = coordination_parent(&context.settings_path)?;
+    if !crate::path_identity::same_object(parent.identity(), identity.parent.identity()) {
+        return Err(SourceCoordinationError::Unauthorized);
+    }
+    let guard = || {
+        identity
+            .parent
+            .verify_current()
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        lease
+            .revalidate(context)
+            .map_err(|_| IdentityReferenceError::Conflict)?;
+        validate()
+    };
+    guard().map_err(coordination_publication_error)?;
+    let path = own_source_journal_path(context)?;
+    let before = read_identity_reference_physical(&path).map_err(coordination_publication_error)?;
+    let (revision, mut journal) = read_own_source_journal(context)?;
+    if &revision != expected
+        || before
+            != read_identity_reference_physical(&path).map_err(coordination_publication_error)?
+    {
+        return Err(SourceCoordinationError::Stale);
+    }
+    let original = journal.clone();
+    change(&mut journal)?;
+    journal.validate()?;
+    if original
+        .intents
+        .iter()
+        .any(|(id, intent)| journal.intents.get(id) != Some(intent))
+        || original
+            .inventories
+            .iter()
+            .any(|(id, inventory)| journal.inventories.get(id) != Some(inventory))
+        || original
+            .progress
+            .keys()
+            .any(|id| !journal.progress.contains_key(id))
+    {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    for (id, previous) in &original.progress {
+        let next = journal
+            .progress
+            .get(id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if !next.packets.starts_with(&previous.packets)
+            || previous
+                .source_publication
+                .as_ref()
+                .is_some_and(|proof| next.source_publication.as_ref() != Some(proof))
+            || previous.packets_prepared && !next.packets_prepared
+            || previous.source_published && !next.source_published
+            || previous.refs_verified && !next.refs_verified
+            || previous.reloaded && !next.reloaded
+            || previous
+                .receipt
+                .as_ref()
+                .is_some_and(|receipt| next.receipt.as_ref() != Some(receipt))
+        {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    for (id, next) in &journal.progress {
+        if original
+            .progress
+            .get(id)
+            .and_then(|p| p.source_publication.as_ref())
+            .is_none()
+            && next.source_publication.is_some()
+        {
+            let (prepared_id, capability) = prepared.ok_or(SourceCoordinationError::Invalid)?;
+            let intent = journal
+                .intents
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            if prepared_id != id
+                || intent.source != lease.source
+                || next.source_publication.as_ref() != Some(capability.proof())
+                || !next.packets_prepared
+                || intent.editor_id != identity.instance_id
+                || intent.expected_revision != (SourceRevision::Absent {})
+                || lease.source_revision()? != (SourceRevision::Absent {})
+            {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            capability.check().map_err(coordination_publication_error)?;
+        }
+    }
+    for (id, next) in &journal.progress {
+        let previous = original.progress.get(id);
+        let publishing = next.source_published && previous.is_none_or(|p| !p.source_published);
+        let completing = next.receipt.is_some() && previous.is_none_or(|p| p.receipt.is_none());
+        if publishing || completing {
+            let intent = journal
+                .intents
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            let inventory = journal
+                .inventories
+                .get(id)
+                .ok_or(SourceCoordinationError::Invalid)?;
+            if intent.source != lease.source
+                || intent.editor_id != identity.instance_id
+                || inventory.physical_source_key != lease.physical_source_key
+                || coordination_read(&lease.source_path)?.1.as_deref()
+                    != Some(intent.serialized_after.as_slice())
+            {
+                return Err(SourceCoordinationError::Stale);
+            }
+            if publishing && intent.before_bytes.is_none() {
+                let proof = next
+                    .source_publication
+                    .as_ref()
+                    .ok_or(SourceCoordinationError::Invalid)?;
+                crate::config::local_config_io::verify_prepared_source_target(
+                    &lease.parent,
+                    &lease.source_path,
+                    &intent.serialized_after,
+                    proof,
+                    &guard,
+                )
+                .map_err(coordination_publication_error)?;
+            }
+        }
+    }
+    for (id, intent) in &journal.intents {
+        if original.intents.contains_key(id) {
+            continue;
+        }
+        if intent.editor_id != identity.instance_id
+            || intent.source != lease.source
+            || intent.context_revision != lease.context_revision
+            || lease.source_revision()? != intent.expected_revision
+        {
+            return Err(SourceCoordinationError::Stale);
+        }
+    }
+    for (id, inventory) in &journal.inventories {
+        if original.inventories.get(id) == Some(inventory) {
+            continue;
+        }
+        if inventory.editor_id != identity.instance_id
+            || inventory.source != lease.source
+            || inventory.physical_source_key != lease.physical_source_key
+            || inventory.context_revision != lease.context_revision
+        {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+        let intent = journal
+            .intents
+            .get(id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let evidence = inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if intent.editor_id != identity.instance_id
+            || intent.source != inventory.source
+            || intent.mappings != inventory.mappings
+            || intent.authorization_revision != inventory.authorization_revision
+            || evidence.expected_source != intent.expected_revision
+            || evidence.after_source != source_bytes_revision(&intent.serialized_after)
+            || evidence.inventory_digest
+                != source_inventory_digest(
+                    &inventory.editor_id,
+                    &inventory.source,
+                    &inventory.physical_source_key,
+                    &inventory.context_revision,
+                    &evidence.topology,
+                )?
+            || lease.source_revision()? != evidence.expected_source
+        {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+    }
+    if journal == original {
+        guard().map_err(coordination_publication_error)?;
+        return Ok(revision);
+    }
+    let mut bytes =
+        serde_json::to_vec_pretty(&journal).map_err(|_| SourceCoordinationError::Invalid)?;
+    bytes.push(b'\n');
+    let decoded: SourcePrivateJournal =
+        serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?;
+    decoded.validate()?;
+    if decoded != journal {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    #[cfg(test)]
+    count_source_transition_publication(1);
+    crate::config::local_config_io::publish_source_coordination_bytes_with_validation(
+        &path,
+        &before,
+        &bytes,
+        &identity.parent,
+        &guard,
+    )
+    .result
+    .map_err(coordination_publication_error)?;
+    Ok(source_bytes_revision(&bytes))
 }
 
 /// Lookup is restricted to the own C path derived from backend context. Status
@@ -1199,953 +1781,58 @@ pub(crate) fn read_own_source_intent(
     context: &SourceReadContext,
     operation_id: &str,
 ) -> Result<(SourceRevision, Option<SourceStoredIntent>), SourceCoordinationError> {
-    let path = context
-        .settings_path
-        .parent()
-        .ok_or(SourceCoordinationError::Unauthorized)?
-        .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
-    let (revision, bytes) = coordination_read(&path)?;
-    let Some(bytes) = bytes else {
-        return Ok((revision, None));
-    };
-    let journal: SourcePrivateJournal =
-        serde_json::from_slice(&bytes).map_err(|_| SourceCoordinationError::Invalid)?;
-    if journal.schema_version != 1 {
-        return Err(SourceCoordinationError::Invalid);
-    }
-    for (id, intent) in &journal.intents {
-        if id != &intent.operation_id || !coordination_id(id) || intent.schema_version != 1 {
-            return Err(SourceCoordinationError::Invalid);
-        }
-    }
+    let (revision, journal) = read_own_source_journal(context)?;
     Ok((revision, journal.intents.get(operation_id).cloned()))
 }
 
 #[allow(dead_code)]
-pub(crate) fn install_source_fence(
-    lease: &SourceCoordinationLease,
+pub(crate) fn source_complete_proof(
+    lease: &SourceWriteContext,
     context: &SourceReadContext,
-    expected_shared: &SourceRevision,
-    expected_intent: &SourceRevision,
     operation_id: &str,
-    current_authorization_revision: &str,
-) -> Result<SourceRevision, SourceCoordinationError> {
+    target_id: &str,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<IdentityReferenceCompleteProof, SourceCoordinationError> {
+    validate().map_err(coordination_publication_error)?;
     lease.revalidate(context)?;
-    let (revision, intent) = read_own_source_intent(context, operation_id)?;
-    if &revision != expected_intent {
-        return Err(SourceCoordinationError::Stale);
-    }
-    let intent = intent.ok_or(SourceCoordinationError::Invalid)?;
-    if intent.initiator_id != lease.identity.instance_id
+    let (_, journal) = read_own_source_journal(context)?;
+    let intent = journal
+        .intents
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    let inventory = journal
+        .inventories
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    let progress = journal
+        .progress
+        .get(operation_id)
+        .ok_or(SourceCoordinationError::Invalid)?;
+    if intent.editor_id != lease.identity.instance_id
         || intent.source != lease.source
-        || intent.context_revision != lease.context_revision
-        || intent.authorization_revision != current_authorization_revision
-        || !coordination_digest(current_authorization_revision)
-        || intent.serialized_after.is_empty()
-        || intent
-            .before_bytes
-            .as_ref()
-            .map(|b| source_bytes_revision(b))
-            .unwrap_or(SourceRevision::Absent {})
-            != intent.expected_revision
-        || lease.source_revision()? != intent.expected_revision
+        || inventory.physical_source_key != lease.physical_source_key
+        || coordination_read(&lease.source_path)?.1.as_deref()
+            != Some(intent.serialized_after.as_slice())
     {
         return Err(SourceCoordinationError::Stale);
     }
-    let bytes = serde_json::to_vec(&intent).map_err(|_| SourceCoordinationError::Invalid)?;
-    let SourceRevision::Bytes { sha256: digest } = source_bytes_revision(&bytes) else {
-        unreachable!()
-    };
-    lease.update(expected_shared, |ledger| {
-        if let Some(existing) = ledger.operations.get(operation_id) {
-            if existing.initiator_intent_digest == digest {
-                return Ok(());
-            }
-            return Err(SourceCoordinationError::Invalid);
-        }
-        if ledger.pending() {
-            return Err(SourceCoordinationError::Pending);
-        }
-        if !ledger.participants.contains_key(&intent.initiator_id) {
-            return Err(SourceCoordinationError::Unauthorized);
-        }
-        ledger.operations.insert(
-            operation_id.into(),
-            SharedSourceOperation {
-                operation_id: intent.operation_id.clone(),
-                request_id: intent.request_id.clone(),
-                payload_digest: intent.payload_digest.clone(),
-                source: intent.source.clone(),
-                expected_source_revision: intent.expected_revision.clone(),
-                after_source_revision: source_bytes_revision(&intent.serialized_after),
-                initiator_id: intent.initiator_id.clone(),
-                initiator_intent_digest: digest,
-                mappings: intent.mappings.clone(),
-                participant_set: ledger.participants.clone(),
-                commitments: BTreeMap::new(),
-                acks: BTreeMap::new(),
-                phase: SharedSourcePhase::Preparing,
-                receipt: None,
-            },
-        );
-        Ok(())
-    })
-}
-
-/// Called only after own inventory + all own packets + aggregate are durable;
-/// P15/P03 supply verified local evidence, never a transport DTO.
-#[allow(dead_code)]
-pub(crate) fn commit_source_participant(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    operation_id: &str,
-    commitment: SourceParticipantCommitment,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    if commitment.participant_id != lease.identity.instance_id {
-        return Err(SourceCoordinationError::Unauthorized);
-    }
-    if commitment.context_revision != lease.context_revision {
-        return Err(SourceCoordinationError::Stale);
-    }
-    if lease.source_revision()?
-        != lease
-            .read_ledger()?
-            .1
-            .operations
-            .get(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?
-            .expected_source_revision
-    {
-        return Err(SourceCoordinationError::Stale);
-    }
-    lease.update(expected, |ledger| {
-        let op = ledger
-            .operations
-            .get_mut(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        if let Some(old) = op.commitments.get(&commitment.participant_id) {
-            return if old == &commitment {
-                Ok(())
-            } else {
-                Err(SourceCoordinationError::Invalid)
-            };
-        }
-        if op.phase != SharedSourcePhase::Preparing {
-            return Err(SourceCoordinationError::Pending);
-        }
-        op.commitments
-            .insert(commitment.participant_id.clone(), commitment);
-        if op.commitments.len() == op.participant_set.len() {
-            op.phase = SharedSourcePhase::ParticipantsReady;
-        }
-        Ok(())
-    })
-}
-
-/// Reconciles the original source after publication (including lost progress).
-/// It does not publish source bytes or execute any PAIR writer itself.
-#[allow(dead_code)]
-pub(crate) fn recognize_source_published(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    operation_id: &str,
-    initiator: &str,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    let observed = lease.source_revision()?;
-    lease.update(expected, |ledger| {
-        let op = ledger
-            .operations
-            .get_mut(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        if op.initiator_id != initiator || initiator != lease.identity.instance_id {
-            return Err(SourceCoordinationError::Unauthorized);
-        }
-        if observed != op.after_source_revision {
-            return Err(SourceCoordinationError::Stale);
-        }
-        if op.phase == SharedSourcePhase::Preparing {
-            return Err(SourceCoordinationError::Pending);
-        }
-        if op.phase == SharedSourcePhase::ParticipantsReady {
-            op.phase = SharedSourcePhase::SourcePublished;
-        }
-        Ok(())
-    })
-}
-
-/// P03 calls this after verifying/reloading all own owner and observer targets.
-#[allow(dead_code)]
-pub(crate) fn ack_source_participant(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    operation_id: &str,
-    participant: &str,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    let observed = lease.source_revision()?;
-    lease.update(expected, |ledger| {
-        let op = ledger
-            .operations
-            .get_mut(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        if !matches!(
-            op.phase,
-            SharedSourcePhase::SourcePublished | SharedSourcePhase::Complete
-        ) {
-            return Err(SourceCoordinationError::Pending);
-        }
-        if participant != lease.identity.instance_id || !op.commitments.contains_key(participant) {
-            return Err(SourceCoordinationError::Unauthorized);
-        }
-        if observed != op.after_source_revision {
-            return Err(SourceCoordinationError::Stale);
-        }
-        op.acks.insert(participant.into(), observed);
-        Ok(())
-    })
-}
-
-#[allow(dead_code)]
-pub(crate) fn complete_shared_source(
-    lease: &SourceCoordinationLease,
-    expected: &SourceRevision,
-    operation_id: &str,
-    initiator: &str,
-) -> Result<SourceRevision, SourceCoordinationError> {
-    let observed = lease.source_revision()?;
-    lease.update(expected, |ledger| {
-        let op = ledger
-            .operations
-            .get_mut(operation_id)
-            .ok_or(SourceCoordinationError::Invalid)?;
-        if op.initiator_id != initiator || initiator != lease.identity.instance_id {
-            return Err(SourceCoordinationError::Unauthorized);
-        }
-        if observed != op.after_source_revision {
-            return Err(SourceCoordinationError::Stale);
-        }
-        if op.phase == SharedSourcePhase::Complete {
-            return Ok(());
-        }
-        if op.phase != SharedSourcePhase::SourcePublished
-            || op.acks.len() != op.participant_set.len()
-        {
-            return Err(SourceCoordinationError::Pending);
-        }
-        op.receipt = Some(SharedSourceReceipt {
-            operation_id: operation_id.into(),
-            source_revision: observed,
-            participant_ids: op.participant_set.keys().cloned().collect(),
-        });
-        op.phase = SharedSourcePhase::Complete;
-        Ok(())
-    })
-}
-
-#[cfg(test)]
-mod source_coordination_tests {
-    use super::*;
-    use std::time::Duration;
-
-    struct Fixture {
-        _root: tempfile::TempDir,
-        contexts: [SourceReadContext; 2],
-        source: SourceRef,
-    }
-    impl Fixture {
-        fn new() -> Self {
-            let root = tempfile::tempdir().unwrap();
-            let project = root.path().join("project");
-            std::fs::create_dir_all(project.join(".ac/coding-agents")).unwrap();
-            let contexts = ["C1", "C2"].map(|name| {
-                let config = root.path().join(name);
-                std::fs::create_dir(&config).unwrap();
-                let settings = AppSettings {
-                    project_paths: vec![project.to_string_lossy().into_owned()],
-                    ..AppSettings::default()
-                };
-                SourceReadContext::from_settings(&settings, &config.join(SETTINGS_FILE_NAME))
-                    .unwrap()
-            });
-            let source = contexts[0].source(SourceKind::CatalogPersonal);
-            Self {
-                _root: root,
-                contexts,
-                source,
-            }
-        }
-        fn member() -> SourceParticipant {
-            SourceParticipant {
-                membership_revision: 1,
-                inventory_digest: "b".repeat(64),
-                capability_version: 1,
-            }
-        }
-        fn intent(&self, identity: &IdentityWriteLease) -> SourceStoredIntent {
-            SourceStoredIntent {
-                schema_version: 1,
-                operation_id: "operation-1".into(),
-                request_id: "request-1".into(),
-                payload_digest: "c".repeat(64),
-                source: self.source.clone(),
-                expected_revision: SourceRevision::Absent {},
-                before_bytes: None,
-                serialized_after: b"{\"schemaVersion\":2,\"agents\":[]}".to_vec(),
-                mappings: vec![],
-                initiator_id: identity.instance_id.clone(),
-                context_revision: self.contexts[0].revision.clone(),
-                authorization_revision: "d".repeat(64),
-            }
-        }
-        fn store(&self, intent: SourceStoredIntent) -> SourceRevision {
-            let journal = SourcePrivateJournal {
-                schema_version: 1,
-                intents: BTreeMap::from([(intent.operation_id.clone(), intent)]),
-            };
-            let bytes = serde_json::to_vec(&journal).unwrap();
-            let path = self.contexts[0]
-                .settings_path
-                .parent()
-                .unwrap()
-                .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
-            crate::config::local_config_io::publish_coordination_bytes(
-                &path,
-                &crate::config::local_config_io::PhysicalState::Absent,
-                &bytes,
-            )
-            .unwrap();
-            source_bytes_revision(&bytes)
-        }
-        fn enroll(&self, index: usize) -> String {
-            let identity =
-                IdentityWriteLease::acquire(&self.contexts[index], Duration::ZERO).unwrap();
-            let lease = SourceCoordinationLease::acquire(
-                &self.contexts[index],
-                &self.source,
-                &identity,
-                Duration::ZERO,
-            )
-            .unwrap();
-            let revision = lease.read_ledger().unwrap().0;
-            enroll_source_participant(&lease, &revision, &identity.instance_id, Self::member())
-                .unwrap();
-            identity.instance_id.clone()
-        }
-        fn commitment(id: &str, context: &SourceReadContext) -> SourceParticipantCommitment {
-            SourceParticipantCommitment {
-                participant_id: id.into(),
-                context_revision: context.revision.clone(),
-                inventory_digest: "b".repeat(64),
-                targets: vec![],
-            }
-        }
-    }
-
-    #[test]
-    fn source_coordination_completion_rejects_other_instance_initiator_string() {
-        let f = Fixture::new();
-        let id = f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent = f.intent(&identity);
-        let intent_revision = f.store(intent.clone());
-        let shared = lease.read_ledger().unwrap().0;
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let shared = commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id, &f.contexts[0]),
-        )
-        .unwrap();
-        crate::config::local_config_io::publish_coordination_bytes(
-            &lease.source_path,
-            &crate::config::local_config_io::PhysicalState::Absent,
-            &intent.serialized_after,
-        )
-        .unwrap();
-        let shared = recognize_source_published(&lease, &shared, "operation-1", &id).unwrap();
-        let shared = ack_source_participant(&lease, &shared, "operation-1", &id).unwrap();
-        let before = std::fs::read(&lease.ledger_path).unwrap();
-        drop(lease);
-        drop(identity);
-        let identity = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id),
-            Err(SourceCoordinationError::Unauthorized)
-        );
-        assert_eq!(std::fs::read(&lease.ledger_path).unwrap(), before);
-        assert!(lease.read_ledger().unwrap().1.operations["operation-1"]
-            .receipt
-            .is_none());
-        drop(lease);
-        drop(identity);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        complete_shared_source(&lease, &shared, "operation-1", &id).unwrap();
-    }
-
-    #[test]
-    fn source_coordination_commitment_rejects_foreign_context_without_write() {
-        let f = Fixture::new();
-        let id = f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent_revision = f.store(f.intent(&identity));
-        let shared = lease.read_ledger().unwrap().0;
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let before = std::fs::read(&lease.ledger_path).unwrap();
-        let mut commitment = Fixture::commitment(&id, &f.contexts[0]);
-        commitment.context_revision = f.contexts[1].revision.clone();
-        assert_ne!(commitment.context_revision, lease.context_revision);
-        assert_eq!(
-            commit_source_participant(&lease, &shared, "operation-1", commitment),
-            Err(SourceCoordinationError::Stale)
-        );
-        assert_eq!(std::fs::read(&lease.ledger_path).unwrap(), before);
-        commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id, &f.contexts[0]),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn source_coordination_alias_uncertainty_rejects_hardlinked_source() {
-        let f = Fixture::new();
-        let path = f.contexts[0].locator(&f.source).unwrap();
-        std::fs::write(&path, b"{}").unwrap();
-        std::fs::hard_link(&path, path.with_extension("alias")).unwrap();
-        assert_eq!(
-            read_shared_transition(&f.contexts[0], &f.source, "operation-1").unwrap_err(),
-            SourceCoordinationError::IdentityUncertain
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
-    }
-    fn disk_image(
-        root: &std::path::Path,
-    ) -> BTreeMap<std::path::PathBuf, (Vec<u8>, std::time::SystemTime)> {
-        let mut image = BTreeMap::new();
-        for entry in std::fs::read_dir(root).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                image.extend(disk_image(&path));
-            } else {
-                image.insert(
-                    path.clone(),
-                    (
-                        std::fs::read(&path).unwrap_or_else(|error| {
-                            panic!("snapshot read {}: {error}", path.display())
-                        }),
-                        std::fs::metadata(&path).unwrap().modified().unwrap(),
-                    ),
-                );
-            }
-        }
-        image
-    }
-
-    #[test]
-    fn source_coordination_readonly_present_ledger_pending_and_missing_operation() {
-        let f = Fixture::new();
-        let id = f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent_revision = f.store(f.intent(&identity));
-        let shared = lease.read_ledger().unwrap().0;
-        drop(lease);
-        drop(identity);
-        // Snapshot every file, including sidecars, after releasing Windows byte-range locks.
-        // The prefence lookup retains the present ledger CAS without acquiring a lock.
-        let prefence_image = disk_image(f._root.path());
-        let prefence = read_shared_transition(&f.contexts[1], &f.source, "operation-1").unwrap();
-        assert_eq!(prefence.journal_revision, shared);
-        assert_eq!(prefence.source_revision_observed, SourceRevision::Absent {});
-        assert!(prefence.summary.is_none());
-        assert_eq!(disk_image(f._root.path()), prefence_image);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        assert_eq!(lease.read_ledger().unwrap().0, shared);
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let members = lease.read_ledger().unwrap().1.participants;
-        drop(lease);
-        drop(identity);
-        let before = disk_image(f._root.path());
-        for _ in 0..3 {
-            let status = read_shared_transition(&f.contexts[1], &f.source, "operation-1").unwrap();
-            assert_eq!(status.journal_revision, shared);
-            assert_eq!(
-                status.summary.unwrap().pending_participants,
-                vec![id.clone()]
-            );
-            let absent = read_shared_transition(&f.contexts[1], &f.source, "missing").unwrap();
-            assert_eq!(absent.journal_revision, shared);
-            assert!(absent.summary.is_none());
-        }
-        assert_eq!(disk_image(f._root.path()), before);
-        // Offline/drop and repeated status do not expire/unregister membership or the fence.
-        let identity = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let (revision, ledger) = lease.read_ledger().unwrap();
-        assert_eq!(revision, shared);
-        assert_eq!(ledger.participants, members);
-        assert_eq!(
-            ledger.operations["operation-1"].phase,
-            SharedSourcePhase::Preparing
-        );
-        assert_eq!(
-            enroll_source_participant(&lease, &shared, &identity.instance_id, Fixture::member()),
-            Err(SourceCoordinationError::Pending)
-        );
-    }
-
-    #[test]
-    fn source_coordination_readonly_churn_reports_busy_after_two_retries() {
-        let f = Fixture::new();
-        let mut reads = 0;
-        let result =
-            read_shared_transition_with_reader(&f.contexts[0], &f.source, "operation-1", |path| {
-                if path.file_name().unwrap() == source_ledger_name(f.source.kind) {
-                    reads += 1;
-                    let revision = if reads % 2 == 1 {
-                        SourceRevision::Absent {}
-                    } else {
-                        source_bytes_revision(b"{}")
-                    };
-                    Ok((revision, None))
-                } else {
-                    coordination_read(path)
-                }
-            });
-        assert_eq!(result.unwrap_err(), SourceCoordinationError::Busy);
-        assert_eq!(reads, 6);
-        assert_eq!(SourceCoordinationError::Busy.to_string(), "sourceBusy");
-        assert!(disk_image(f._root.path()).is_empty());
-    }
-
-    #[test]
-    fn source_coordination_readonly_navigation_zero_write() {
-        let f = Fixture::new();
-        let status = read_shared_transition(&f.contexts[0], &f.source, "operation-1").unwrap();
-        assert!(status.summary.is_none());
-        assert_eq!(status.journal_revision, SourceRevision::Absent {});
-        assert_eq!(status.source_revision_observed, SourceRevision::Absent {});
-        assert_eq!(
-            std::fs::read_dir(f.contexts[0].locator(&f.source).unwrap().parent().unwrap())
-                .unwrap()
-                .count(),
-            0
-        );
-        assert_eq!(
-            std::fs::read_dir(f.contexts[0].settings_path.parent().unwrap())
-                .unwrap()
-                .count(),
-            0
-        );
-    }
-
-    #[test]
-    fn source_coordination_same_source_distinct_instances_one_sidecar() {
-        let f = Fixture::new();
-        let c1 = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let c2 = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
-        assert_ne!(c1.instance_id, c2.instance_id);
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &c1, Duration::ZERO)
-                .unwrap();
-        assert!(
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &c2, Duration::ZERO)
-                .is_err()
-        );
-        let key = lease.physical_source_key.clone();
-        drop(lease);
-        let lease2 =
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &c2, Duration::ZERO)
-                .unwrap();
-        assert_eq!(key, lease2.physical_source_key);
-        assert!(
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &c1, Duration::ZERO)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn source_coordination_intent_stored_prefence_requires_original_cas() {
-        let f = Fixture::new();
-        f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let shared = lease.read_ledger().unwrap().0;
-        assert!(install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &SourceRevision::Absent {},
-            "operation-1",
-            &"d".repeat(64)
-        )
-        .is_err());
-        let intent = f.intent(&identity);
-        let revision = f.store(intent.clone());
-        assert_eq!(
-            read_own_source_intent(&f.contexts[0], "operation-1")
-                .unwrap()
-                .1,
-            Some(intent)
-        );
-        assert!(
-            read_shared_transition(&f.contexts[0], &f.source, "operation-1")
-                .unwrap()
-                .summary
-                .is_none()
-        );
-        assert!(install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &SourceRevision::Absent {},
-            "operation-1",
-            &"d".repeat(64)
-        )
-        .is_err());
-        install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        assert_eq!(lease.source_revision().unwrap(), SourceRevision::Absent {});
-        assert_eq!(
-            lease.read_ledger().unwrap().1.operations["operation-1"].phase,
-            SharedSourcePhase::Preparing
-        );
-    }
-
-    #[test]
-    fn source_coordination_offline_fence_survives_drop_and_late_enrollment() {
-        let f = Fixture::new();
-        let id1 = f.enroll(0);
-        let id2 = f.enroll(1);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent_revision = f.store(f.intent(&identity));
-        let shared = lease.read_ledger().unwrap().0;
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let shared = commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id1, &f.contexts[0]),
-        )
-        .unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id1),
-            Err(SourceCoordinationError::Stale)
-        );
-        assert_eq!(
-            enroll_source_participant(&lease, &shared, &id1, Fixture::member()),
-            Err(SourceCoordinationError::Pending)
-        );
-        drop(lease);
-        drop(identity);
-        let identity = IdentityWriteLease::acquire(&f.contexts[1], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[1], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let summary = read_shared_transition(&f.contexts[1], &f.source, "operation-1")
-            .unwrap()
-            .summary
-            .unwrap();
-        assert_eq!(summary.pending_participants, vec![id2.clone()]);
-        assert_eq!(summary.phase, SharedSourcePhase::Preparing);
-        let shared = commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id2, &f.contexts[1]),
-        )
-        .unwrap();
-        assert_eq!(
-            lease.read_ledger().unwrap().1.operations["operation-1"].phase,
-            SharedSourcePhase::ParticipantsReady
-        );
-        assert_eq!(
-            recognize_source_published(&lease, &shared, "operation-1", &id2),
-            Err(SourceCoordinationError::Unauthorized)
-        );
-    }
-
-    #[test]
-    fn source_coordination_global_complete_requires_all_acks_and_current_source() {
-        let f = Fixture::new();
-        let id = f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent = f.intent(&identity);
-        let intent_revision = f.store(intent.clone());
-        let shared = lease.read_ledger().unwrap().0;
-        let shared = install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let shared = commit_source_participant(
-            &lease,
-            &shared,
-            "operation-1",
-            Fixture::commitment(&id, &f.contexts[0]),
-        )
-        .unwrap();
-        crate::config::local_config_io::publish_coordination_bytes(
-            &lease.source_path,
-            &crate::config::local_config_io::PhysicalState::Absent,
-            &intent.serialized_after,
-        )
-        .unwrap();
-        let shared = recognize_source_published(&lease, &shared, "operation-1", &id).unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id),
-            Err(SourceCoordinationError::Pending)
-        );
-        let shared = ack_source_participant(&lease, &shared, "operation-1", &id).unwrap();
-        let shared = complete_shared_source(&lease, &shared, "operation-1", &id).unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id).unwrap(),
-            shared
-        );
-        assert!(lease.read_ledger().unwrap().1.operations["operation-1"]
-            .receipt
-            .is_some());
-        std::fs::write(&lease.source_path, b"{\"later\":true}").unwrap();
-        assert_eq!(
-            complete_shared_source(&lease, &shared, "operation-1", &id),
-            Err(SourceCoordinationError::Stale)
-        );
-    }
-
-    #[test]
-    fn source_coordination_invalid_ledger_preserved_and_stale_cas_no_write() {
-        let f = Fixture::new();
-        f.enroll(0);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let before = std::fs::read(&lease.ledger_path).unwrap();
-        assert_eq!(
-            enroll_source_participant(
-                &lease,
-                &SourceRevision::Absent {},
-                &identity.instance_id,
-                Fixture::member()
-            ),
-            Err(SourceCoordinationError::Stale)
-        );
-        assert_eq!(std::fs::read(&lease.ledger_path).unwrap(), before);
-        std::fs::write(&lease.ledger_path, b"{\"schemaVersion\":99}").unwrap();
-        assert_eq!(
-            read_shared_transition(&f.contexts[0], &f.source, "operation-1").unwrap_err(),
-            SourceCoordinationError::Invalid
-        );
-        drop(lease);
-        assert!(SourceCoordinationLease::acquire(
-            &f.contexts[0],
-            &f.source,
-            &identity,
-            Duration::ZERO
-        )
-        .is_err());
-        let path = f.contexts[0]
-            .locator(&f.source)
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join(source_ledger_name(f.source.kind));
-        assert_eq!(std::fs::read(path).unwrap(), b"{\"schemaVersion\":99}");
-    }
-
-    #[test]
-    fn source_coordination_alias_dot_and_absent_existing_replacement_key() {
-        let f = Fixture::new();
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let key = lease.physical_source_key.clone();
-        let source_path = lease.source_path.clone();
-        std::fs::write(&source_path, b"{}").unwrap();
-        let alias = coordination_parent(
-            &source_path
-                .parent()
-                .unwrap()
-                .join(".")
-                .join(source_path.file_name().unwrap()),
-        )
-        .unwrap();
-        assert_eq!(
-            key,
-            coordination_key(
-                &alias.identity().object_id,
-                source_path.file_name().unwrap()
-            )
-            .unwrap()
-        );
-        drop(lease);
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let before = crate::config::local_config_io::PhysicalState::from_bytes(b"{}".to_vec());
-        crate::config::local_config_io::publish_coordination_bytes(
-            &source_path,
-            &before,
-            b"{\"changed\":true}",
-        )
-        .unwrap();
-        assert_eq!(key, lease.physical_source_key);
-        lease.revalidate(&f.contexts[0]).unwrap();
-    }
-
-    #[test]
-    fn source_coordination_multiple_targets_observer_divergence_no_takeover() {
-        let f = Fixture::new();
-        let id1 = f.enroll(0);
-        let id2 = f.enroll(1);
-        let identity = IdentityWriteLease::acquire(&f.contexts[0], Duration::ZERO).unwrap();
-        let lease =
-            SourceCoordinationLease::acquire(&f.contexts[0], &f.source, &identity, Duration::ZERO)
-                .unwrap();
-        let intent_revision = f.store(f.intent(&identity));
-        let shared = lease.read_ledger().unwrap().0;
-        install_source_fence(
-            &lease,
-            &f.contexts[0],
-            &shared,
-            &intent_revision,
-            "operation-1",
-            &"d".repeat(64),
-        )
-        .unwrap();
-        let mut ledger = lease.read_ledger().unwrap().1;
-        let targets = ["e", "f"].map(|name| SourceTargetCommitment {
-            target_id: name.repeat(64),
-            before_protected_revision: SourceRevision::Absent {},
-            after_protected_revision: source_bytes_revision(b"{}"),
-            plan_digest: "a".repeat(64),
-            owner_instance_id: id1.clone(),
-        });
-        let op = ledger.operations.get_mut("operation-1").unwrap();
-        for (id, context) in [(&id1, &f.contexts[0]), (&id2, &f.contexts[1])] {
-            let mut commitment = Fixture::commitment(id, context);
-            commitment.targets = targets.to_vec();
-            op.commitments.insert(id.clone(), commitment);
-        }
-        op.phase = SharedSourcePhase::ParticipantsReady;
-        ledger.validate(&lease.physical_source_key).unwrap();
-        let valid = ledger.clone();
-        ledger
-            .operations
-            .get_mut("operation-1")
-            .unwrap()
-            .commitments
-            .get_mut(&id2)
-            .unwrap()
-            .targets[1]
-            .plan_digest = "b".repeat(64);
-        assert_eq!(
-            ledger.validate(&lease.physical_source_key),
-            Err(SourceCoordinationError::Invalid)
-        );
-        let mut ledger = valid.clone();
-        ledger
-            .operations
-            .get_mut("operation-1")
-            .unwrap()
-            .commitments
-            .get_mut(&id2)
-            .unwrap()
-            .targets[0]
-            .owner_instance_id = id2.clone();
-        assert_eq!(
-            ledger.validate(&lease.physical_source_key),
-            Err(SourceCoordinationError::Invalid)
-        );
-        let mut ledger = valid;
-        ledger
-            .operations
-            .get_mut("operation-1")
-            .unwrap()
-            .commitments
-            .get_mut(&id1)
-            .unwrap()
-            .targets
-            .clear();
-        assert_eq!(
-            ledger.validate(&lease.physical_source_key),
-            Err(SourceCoordinationError::Invalid)
-        );
-        assert_eq!(lease.source_revision().unwrap(), SourceRevision::Absent {});
-    }
+    let projection = serde_json::json!({
+        "schemaVersion":2, "operationId":operation_id, "phase":progress.phase(),
+        "physicalSourceKey":inventory.physical_source_key,
+        "afterSourceRevision":source_bytes_revision(&intent.serialized_after),
+        "packetsPrepared":progress.packets_prepared, "sourcePublished":progress.source_published,
+        "refsVerified":progress.refs_verified, "reloaded":progress.reloaded,
+        "packets":progress.packets, "receipt":progress.receipt
+    });
+    let source = serde_json::to_value(lease.source_revision()?)
+        .map_err(|_| SourceCoordinationError::Invalid)?;
+    IdentityReferenceCompleteProof::from_single_editor_complete(
+        &projection,
+        operation_id,
+        target_id,
+        &source,
+    )
+    .map_err(coordination_publication_error)
 }
 
 // #2893 P02: internal readers and pure preparations. No caller publishes these
@@ -2176,6 +1863,10 @@ pub(crate) enum SourcePreparationError {
 }
 
 #[allow(dead_code)] // Dormant until the later source protocol cuts.
+pub(crate) fn source_transition_digest_bytes(bytes: &[u8]) -> SourceRevision {
+    source_bytes_revision(bytes)
+}
+
 fn source_bytes_revision(bytes: &[u8]) -> SourceRevision {
     use sha2::{Digest, Sha256};
     SourceRevision::Bytes {
@@ -2386,6 +2077,15 @@ pub(crate) fn read_source_snapshot(
 ) -> Result<RawSourceSnapshot, SourcePreparationError> {
     let path = context.locator(source)?;
     let raw = OriginPhysicalInput::read(&path);
+    source_snapshot_from_original(context, source, raw)
+}
+
+fn source_snapshot_from_original(
+    context: &SourceReadContext,
+    source: &SourceRef,
+    raw: OriginPhysicalInput,
+) -> Result<RawSourceSnapshot, SourcePreparationError> {
+    context.locator(source)?;
     let revision = raw
         .revision()
         .ok_or(SourcePreparationError::OriginUnavailable)?;
@@ -2759,6 +2459,38 @@ impl LegacyCompatibilityOrigin {
         current_target: &[u8],
         matrix: Option<&str>,
     ) -> Result<LegacyOriginLinkProof, SourcePreparationError> {
+        let slot = if matrix.is_some() {
+            SourceOriginalSlot::MatrixDefault
+        } else {
+            SourceOriginalSlot::Decision
+        };
+        self.bind_original_selection_at(
+            snapshot,
+            selection,
+            original_source_revision,
+            original_context_revision,
+            original_target,
+            current_target,
+            matrix,
+            &slot,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_original_selection_at(
+        &self,
+        snapshot: &RawSourceSnapshot,
+        selection: &ConfigurationRef,
+        original_source_revision: &SourceRevision,
+        original_context_revision: &str,
+        original_target: &[u8],
+        current_target: &[u8],
+        matrix: Option<&str>,
+        slot: &SourceOriginalSlot,
+    ) -> Result<LegacyOriginLinkProof, SourcePreparationError> {
+        if matrix.is_some() != matches!(slot, SourceOriginalSlot::MatrixDefault) {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
         if original_target != current_target
             || selection.version != 1
             || selection.source != snapshot.snapshot.source
@@ -2771,11 +2503,7 @@ impl LegacyCompatibilityOrigin {
         }
         let target: Value = serde_json::from_slice(current_target)
             .map_err(|_| SourcePreparationError::OriginUnavailable)?;
-        let stored = if matrix.is_some() {
-            target.pointer("/tooling/replicaSelectionDefault/configurationRef")
-        } else {
-            target.pointer("/tooling/configurationRef")
-        };
+        let stored = slot.stored(&target);
         let stored: ConfigurationRef = serde_json::from_value(
             stored
                 .cloned()
@@ -3229,11 +2957,139 @@ fn validate_source_identity_groups(
 }
 
 #[allow(dead_code)] // Dormant until the later source protocol cuts.
+/// Grouping preserves each original selection's Entry/Profile/Default relation.
+/// Only the complete backend inventory factory may construct this aggregate.
+#[derive(Debug)]
+pub(crate) struct SourceOriginalProofAggregate {
+    originals: Vec<LegacyOriginLinkProof>,
+}
+
+fn require_source_original_units(
+    origin: &LegacyCompatibilityOrigin,
+    units: &std::collections::BTreeSet<LegacyOriginUnit>,
+    aggregate: Option<&SourceOriginalProofAggregate>,
+) -> Result<(), SourcePreparationError> {
+    let Some(aggregate) = aggregate else {
+        if unresolved_default_dependency(origin, units) {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        return origin.require_disjoint(units.iter().cloned());
+    };
+    if aggregate
+        .originals
+        .iter()
+        .any(|proof| proof.binding != origin.binding)
+    {
+        return Err(SourcePreparationError::StaleRevision);
+    }
+    for unit in units {
+        if origin.require_disjoint([unit.clone()]).is_ok() {
+            continue;
+        }
+        let mut covered = false;
+        for proof in aggregate
+            .originals
+            .iter()
+            .filter(|proof| proof.units.contains(unit))
+        {
+            // This model records binding and unit membership only; the per-unit
+            // loop rechecks those facts. Same-Default relation coherence is
+            // enforced below; distinct default/profile groups remain separate.
+            origin.require_legacy_units([unit.clone()], Some(proof))?;
+            covered = true;
+        }
+        if !covered {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+    }
+    let entry_or_profile = units.iter().any(|unit| {
+        matches!(
+            unit,
+            LegacyOriginUnit::Entry(_) | LegacyOriginUnit::Profile(_, _)
+        )
+    });
+    if !entry_or_profile {
+        return Ok(());
+    }
+    for default in origin
+        .represented
+        .iter()
+        .filter(|unit| matches!(unit, LegacyOriginUnit::Default(_)))
+    {
+        if origin.require_disjoint([default.clone()]).is_ok() {
+            continue;
+        }
+        let mut groups = aggregate
+            .originals
+            .iter()
+            .filter(|proof| proof.units.contains(default));
+        let group = groups
+            .next()
+            .ok_or(SourcePreparationError::LegacyOriginUnresolved)?;
+        if groups.any(|other| other.units != group.units) {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let keys: Vec<_> = group
+            .units
+            .iter()
+            .filter_map(|unit| match unit {
+                LegacyOriginUnit::Entry(key) => Some(key),
+                _ => None,
+            })
+            .collect();
+        if keys.len() != 1 {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let key = keys[0];
+        let profiles: Vec<_> = group
+            .units
+            .iter()
+            .filter_map(|unit| match unit {
+                LegacyOriginUnit::Profile(profile_key, letter) if profile_key == key => {
+                    Some(letter)
+                }
+                _ => None,
+            })
+            .collect();
+        if profiles.len() > 1 {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let changes_profile = units.iter().any(|unit| {
+            matches!(unit,
+            LegacyOriginUnit::Profile(profile_key, _) if profile_key == key)
+        });
+        // Missing original selected profile cannot prove disjunction for K/L.
+        if changes_profile && profiles.is_empty() {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        let linked_change = units.contains(&LegacyOriginUnit::Entry(key.clone()))
+            || profiles.iter().any(|letter| {
+                units.contains(&LegacyOriginUnit::Profile(key.clone(), (*letter).clone()))
+            })
+            || units.contains(default);
+        if linked_change {
+            origin.require_legacy_units([default.clone()], Some(group))?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
 pub(crate) fn prepare_source_candidate(
     snapshot: &RawSourceSnapshot,
     expected: &SourceRevision,
     candidate: &Value,
     origin: Option<&LegacyCompatibilityOrigin>,
+) -> Result<PreparedSourceCandidate, SourcePreparationError> {
+    prepare_source_candidate_with_original_links(snapshot, expected, candidate, origin, None)
+}
+
+pub(crate) fn prepare_source_candidate_with_original_links(
+    snapshot: &RawSourceSnapshot,
+    expected: &SourceRevision,
+    candidate: &Value,
+    origin: Option<&LegacyCompatibilityOrigin>,
+    proofs: Option<&SourceOriginalProofAggregate>,
 ) -> Result<PreparedSourceCandidate, SourcePreparationError> {
     if expected != &snapshot.snapshot.revision {
         return Err(SourcePreparationError::StaleRevision);
@@ -3278,10 +3134,7 @@ pub(crate) fn prepare_source_candidate(
             return Err(SourcePreparationError::StaleRevision);
         }
         let units = changed_origin_units(&before, candidate, origin);
-        if unresolved_default_dependency(origin, &units) {
-            return Err(SourcePreparationError::LegacyOriginUnresolved);
-        }
-        origin.require_disjoint(units)?;
+        require_source_original_units(origin, &units, proofs)?;
     }
     let mut candidate = candidate.clone();
     let key_name = if registered { "id" } else { "key" };
@@ -3335,10 +3188,7 @@ pub(crate) fn prepare_source_candidate(
     if registered {
         let origin = origin.ok_or(SourcePreparationError::OriginUnavailable)?;
         let units = changed_origin_units(&before, &candidate, origin);
-        if unresolved_default_dependency(origin, &units) {
-            return Err(SourcePreparationError::LegacyOriginUnresolved);
-        }
-        origin.require_disjoint(units)?;
+        require_source_original_units(origin, &units, proofs)?;
     }
     let mut serialized_after = serde_json::to_vec_pretty(&candidate)
         .map_err(|_| SourcePreparationError::InvalidCandidate)?;
@@ -4060,6 +3910,100 @@ mod independent_source_tests {
     }
 
     #[test]
+    fn legacy_origin_contract_shared_units_preserve_distinct_default_groups_and_order() {
+        let fixture = Fixture::new();
+        fixture
+            .overlay(&json!({"codingAgentProfiles":{"defaultProfileByAgent":{"N":"B","M":"A"}}}));
+        let (_, origin) = fixture.origin();
+        let snapshot = fixture.snapshot();
+        let (agents, profiles) = decode_registered_raw(&fixture.registered).unwrap();
+        let mut proofs = Vec::new();
+        for (matrix, letter) in [("N", "B"), ("M", "A")] {
+            let selection = ConfigurationRef {
+                version: 1,
+                source: snapshot.snapshot.source.clone(),
+                calculated_id: configuration_identity(&agents[0].command, &agents[0].envs),
+                requested_profile: Some(letter.into()),
+                profile_calculated_id: Some(profile_identity(
+                    &profiles.profiles_by_agent["K"][letter],
+                )),
+                legacy_entry_hint: Some("K".into()),
+            };
+            let bytes = serde_json::to_vec(
+                &json!({"tooling":{"replicaSelectionDefault":{"configurationRef":selection}}}),
+            )
+            .unwrap();
+            proofs.push(
+                origin
+                    .bind_original_selection(
+                        &snapshot,
+                        &selection,
+                        &snapshot.snapshot.revision,
+                        &snapshot.snapshot.context_revision,
+                        &bytes,
+                        &bytes,
+                        Some(matrix),
+                    )
+                    .unwrap(),
+            );
+        }
+        let units = [LegacyOriginUnit::Entry("K".into())].into_iter().collect();
+        let aggregate = SourceOriginalProofAggregate {
+            originals: proofs.clone(),
+        };
+        require_source_original_units(&origin, &units, Some(&aggregate)).unwrap();
+        proofs.reverse();
+        require_source_original_units(
+            &origin,
+            &units,
+            Some(&SourceOriginalProofAggregate {
+                originals: proofs.clone(),
+            }),
+        )
+        .unwrap();
+        // Keep the real M group covered. Add only a negative clone claiming N
+        // with M's different profile, so N coherence is the sole violated rule.
+        let mut conflicting_n = proofs[0].clone();
+        conflicting_n
+            .units
+            .remove(&LegacyOriginUnit::Default("M".into()));
+        conflicting_n
+            .units
+            .insert(LegacyOriginUnit::Default("N".into()));
+        proofs.push(conflicting_n);
+        let m = LegacyOriginUnit::Default("M".into());
+        assert!(proofs.iter().any(|proof| proof.units.contains(&m)));
+        let n = LegacyOriginUnit::Default("N".into());
+        let n_groups: Vec<_> = proofs
+            .iter()
+            .filter(|proof| proof.units.contains(&n))
+            .collect();
+        assert_eq!(n_groups.len(), 2);
+        assert_ne!(n_groups[0].units, n_groups[1].units);
+        origin
+            .require_legacy_units(
+                [m.clone()],
+                proofs.iter().find(|proof| proof.units.contains(&m)),
+            )
+            .unwrap();
+        for reverse in [false, true] {
+            if reverse {
+                proofs.reverse();
+            }
+            assert_eq!(
+                require_source_original_units(
+                    &origin,
+                    &units,
+                    Some(&SourceOriginalProofAggregate {
+                        originals: proofs.clone()
+                    })
+                ),
+                Err(SourcePreparationError::LegacyOriginUnresolved)
+            );
+        }
+    }
+
+    #[test]
     fn legacy_origin_contract_default_matrix_domain_requires_original_link() {
         let fixture = Fixture::new();
         for matrix in ["N", "K"] {
@@ -4447,6 +4391,13 @@ pub fn configuration_identity(command: &str, envs: &[CodingAgentEnv]) -> String 
     identity_digest("cid1:", &configuration_identity_preimage(command, envs))
 }
 
+/// Refresh informational metadata only; stable IDs and row order stay untouched.
+pub fn refresh_agent_id_hashes(agents: &mut [AgentConfig]) {
+    for agent in agents {
+        agent.id_hash = Some(configuration_identity(&agent.command, &agent.envs));
+    }
+}
+
 /// A configured empty cell has an identity; an absent cell has no identity.
 /// The base configuration ID and decorative profile letter are not inputs.
 pub fn profile_identity(profile: &ProfileCellConfig) -> String {
@@ -4539,6 +4490,172 @@ fn validate_identity_snapshot_with_digest(
                     requested_profile: Some(letter.clone()),
                 });
             }
+        }
+    }
+    Ok(())
+}
+
+// Canonical pair signatures deliberately omit labels, order and supplied hashes.
+// Counts retain repeated legacy rows, including repeated stable IDs.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum PhysicalIdentityViolation {
+    Configuration([(String, String); 2]),
+    Profile([(String, String, String); 2]),
+}
+
+fn physical_identity_violations(
+    groups: &Map<String, Value>,
+    configurations_editable: bool,
+    profiles_editable: bool,
+) -> Result<BTreeMap<PhysicalIdentityViolation, (usize, IdentityValidationError)>, String> {
+    let agents: Vec<AgentConfig> = groups
+        .get("agents")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let profiles: CodingAgentProfilesConfig = groups
+        .get("codingAgentProfiles")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let mut violations = BTreeMap::new();
+    let mut record = |key, error| {
+        let entry = violations.entry(key).or_insert((0usize, error));
+        entry.0 += 1;
+    };
+    if configurations_editable {
+        collect_configuration_identity_violations(&agents, &mut record);
+    }
+    if profiles_editable {
+        collect_profile_identity_violations(&agents, &profiles, &mut record);
+    }
+    Ok(violations)
+}
+
+fn collect_configuration_identity_violations(
+    agents: &[AgentConfig],
+    record: &mut impl FnMut(PhysicalIdentityViolation, IdentityValidationError),
+) {
+    let preimages: Vec<_> = agents
+        .iter()
+        .map(|agent| configuration_identity_preimage(&agent.command, &agent.envs))
+        .collect();
+    let hashes: Vec<_> = preimages
+        .iter()
+        .map(|p| identity_digest("cid1:", p))
+        .collect();
+    for (index, agent) in agents.iter().enumerate() {
+        for other in 0..index {
+            if hashes[index] != hashes[other] {
+                continue;
+            }
+            let mut pair = [
+                (agents[other].id.clone(), preimages[other].clone()),
+                (agent.id.clone(), preimages[index].clone()),
+            ];
+            pair.sort();
+            record(
+                PhysicalIdentityViolation::Configuration(pair),
+                IdentityValidationError {
+                    code: if preimages[index] == preimages[other] {
+                        IdentityValidationCode::DuplicateConfigurationIdentity
+                    } else {
+                        IdentityValidationCode::IdentityHashCollision
+                    },
+                    existing_name: agents[other].label.clone(),
+                    entry_hint: agent.id.clone(),
+                    requested_profile: None,
+                },
+            );
+        }
+    }
+}
+
+fn collect_profile_identity_violations(
+    agents: &[AgentConfig],
+    profiles: &CodingAgentProfilesConfig,
+    record: &mut impl FnMut(PhysicalIdentityViolation, IdentityValidationError),
+) {
+    let cells: Vec<_> = profiles
+        .profiles_by_agent
+        .iter()
+        .flat_map(|(id, cells)| {
+            cells
+                .iter()
+                .filter(|(letter, _)| is_valid_profile_letter(letter))
+                .map(move |(letter, cell)| {
+                    let preimage = profile_identity_preimage(cell);
+                    let hash = identity_digest("pid1:", &preimage);
+                    (id, letter, preimage, hash)
+                })
+        })
+        .collect();
+    for (index, (id, letter, preimage, hash)) in cells.iter().enumerate() {
+        for (old_id, old_letter, old_preimage, old_hash) in &cells[..index] {
+            if hash != old_hash || (id != old_id && preimage == old_preimage) {
+                continue;
+            }
+            let mut pair = [
+                (
+                    (*old_id).clone(),
+                    (*old_letter).clone(),
+                    old_preimage.clone(),
+                ),
+                ((*id).clone(), (*letter).clone(), preimage.clone()),
+            ];
+            pair.sort();
+            record(
+                PhysicalIdentityViolation::Profile(pair),
+                IdentityValidationError {
+                    code: if preimage == old_preimage {
+                        IdentityValidationCode::DuplicateProfileIdentity
+                    } else {
+                        IdentityValidationCode::IdentityHashCollision
+                    },
+                    existing_name: agents
+                        .iter()
+                        .find(|agent| &agent.id == *old_id)
+                        .map(|agent| agent.label.clone())
+                        .unwrap_or_else(|| (*old_id).clone()),
+                    entry_hint: (*id).clone(),
+                    requested_profile: Some((*letter).clone()),
+                },
+            );
+        }
+    }
+}
+
+fn validate_physical_identity_delta(
+    before: &Map<String, Value>,
+    after: &Map<String, Value>,
+    configurations_editable: bool,
+    profiles_editable: bool,
+) -> Result<(), String> {
+    let old = physical_identity_violations(before, configurations_editable, profiles_editable)?;
+    let new = physical_identity_violations(after, configurations_editable, profiles_editable)?;
+    for (signature, (count, mut error)) in new {
+        if count > old.get(&signature).map_or(0, |(count, _)| *count) {
+            // A prepended new row must still name an incumbent from BEFORE.
+            if let PhysicalIdentityViolation::Configuration(pair) = &signature {
+                let incumbent = before
+                    .get("agents")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|raw| serde_json::from_value::<AgentConfig>(raw.clone()).ok())
+                    .find(|agent| {
+                        pair.contains(&(
+                            agent.id.clone(),
+                            configuration_identity_preimage(&agent.command, &agent.envs),
+                        ))
+                    });
+                if let Some(incumbent) = incumbent {
+                    error.existing_name = incumbent.label;
+                }
+            }
+            return Err(error.to_string());
         }
     }
     Ok(())
@@ -5244,6 +5361,9 @@ pub struct AppSettings {
     /// draft can never carry or forge it. Set only through `set_agents_layer_state`.
     #[serde(skip, default)]
     pub(crate) agents_layer: AgentsLayerState,
+    /// Backend physical identity inputs captured before typed repair/defaulting.
+    #[serde(skip, default)]
+    pub(crate) coding_agent_identity_physical: Option<Arc<Value>>,
     /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
@@ -5954,6 +6074,7 @@ impl Default for AppSettings {
             project_paths_persistence_error: None,
             local_overlay_state: Arc::default(),
             agents_layer: AgentsLayerState::default(),
+            coding_agent_identity_physical: None,
             sidebar_style: default_sidebar_style(),
             selected_row_rail_width: default_selected_row_rail_width(),
             selected_row_rail_color: default_selected_row_rail_color(),
@@ -6613,6 +6734,16 @@ pub(crate) fn agent_help_shipped_path(settings_path: &Path) -> PathBuf {
 /// True when written. A hand edit is overwritten at the next start: the file is AC-owned.
 /// Never fails: a write error is logged and startup continues on the embedded constant.
 pub(crate) fn refresh_shipped_agent_help_file(settings_path: &Path) -> bool {
+    refresh_shipped_agent_help_file_with_publish(
+        settings_path,
+        &crate::config::local_config_io::publish_temp_config,
+    )
+}
+
+fn refresh_shipped_agent_help_file_with_publish(
+    settings_path: &Path,
+    publish: crate::config::local_config_io::ConfigPublisher<'_>,
+) -> bool {
     let path = agent_help_shipped_path(settings_path);
     let Ok(canonical) = pretty_json_bytes(shipped_agent_help()) else {
         return false;
@@ -6620,7 +6751,8 @@ pub(crate) fn refresh_shipped_agent_help_file(settings_path: &Path) -> bool {
     if matches!(std::fs::read(&path), Ok(existing) if existing == canonical) {
         return false;
     }
-    match crate::config::local_config_io::write_file_atomic(&path, &canonical) {
+    match crate::config::local_config_io::write_file_atomic_with_publish(&path, &canonical, publish)
+    {
         Ok(()) => {
             log::info!("[agent-help] wrote the shipped help to {}", path.display());
             true
@@ -6925,6 +7057,18 @@ pub(crate) fn export_blocking_menus_to_local_file(
     settings: &mut AppSettings,
     settings_path: &Path,
 ) -> bool {
+    export_blocking_menus_to_local_file_with_publish(
+        settings,
+        settings_path,
+        &crate::config::local_config_io::publish_temp_config,
+    )
+}
+
+fn export_blocking_menus_to_local_file_with_publish(
+    settings: &mut AppSettings,
+    settings_path: &Path,
+    publish: crate::config::local_config_io::ConfigPublisher<'_>,
+) -> bool {
     if settings.agents.iter().all(|a| a.blocking_menus.is_none()) {
         return false;
     }
@@ -7040,7 +7184,11 @@ pub(crate) fn export_blocking_menus_to_local_file(
         {
             return abort_blocking_menus_export(&local_path, &format!("the merged file {e}"));
         }
-        if let Err(e) = crate::config::local_config_io::write_file_atomic(&local_path, &bytes) {
+        if let Err(e) = crate::config::local_config_io::write_file_atomic_with_publish(
+            &local_path,
+            &bytes,
+            publish,
+        ) {
             return abort_blocking_menus_export(
                 &local_path,
                 &format!("could not write the file: {e}"),
@@ -7070,25 +7218,32 @@ fn agents_instance_path(settings_path: &Path) -> PathBuf {
 /// a JSON object, or holds a group that does not decode as its `AppSettings` field is
 /// an `Err`: callers keep what they have and never replace it.
 fn read_agents_instance_file(path: &Path) -> Result<Option<Map<String, Value>>, String> {
+    read_agents_instance_file_labeled(path, path)
+}
+
+fn read_agents_instance_file_labeled(
+    path: &Path,
+    label: &Path,
+) -> Result<Option<Map<String, Value>>, String> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+        Err(e) => return Err(format!("could not read {}: {e}", label.display())),
     };
     let map = match serde_json::from_str::<Value>(&contents) {
         Ok(Value::Object(map)) => map,
-        Ok(_) => return Err(format!("{} is not a JSON object", path.display())),
-        Err(e) => return Err(format!("{} is not valid JSON: {e}", path.display())),
+        Ok(_) => return Err(format!("{} is not a JSON object", label.display())),
+        Err(e) => return Err(format!("{} is not valid JSON: {e}", label.display())),
     };
     if let Some(agents) = map.get(AGENTS_INSTANCE_KEYS[0]) {
         serde_json::from_value::<Vec<AgentConfig>>(agents.clone())
-            .map_err(|e| format!("{} holds an undecodable agents array: {e}", path.display()))?;
+            .map_err(|e| format!("{} holds an undecodable agents array: {e}", label.display()))?;
     }
     if let Some(profiles) = map.get(AGENTS_INSTANCE_KEYS[1]) {
         serde_json::from_value::<CodingAgentProfilesConfig>(profiles.clone()).map_err(|e| {
             format!(
                 "{} holds an undecodable codingAgentProfiles object: {e}",
-                path.display()
+                label.display()
             )
         })?;
     }
@@ -7223,8 +7378,12 @@ fn set_agents_layer_state(
 /// #2716 (B3, option C) - the agents layer's state from the file alone, for the
 /// defaults fallback, where no merge result survives.
 fn agents_layer_state_at(settings_path: &Path) -> AgentsLayerState {
+    agents_layer_state_at_labeled(settings_path, settings_path)
+}
+
+fn agents_layer_state_at_labeled(io_path: &Path, settings_path: &Path) -> AgentsLayerState {
     let path = agents_instance_path(settings_path);
-    match read_agents_instance_file(&path) {
+    match read_agents_instance_file_labeled(&agents_instance_path(io_path), &path) {
         Ok(_) => AgentsLayerState::Readable,
         Err(reason) => AgentsLayerState::Unreadable { path, reason },
     }
@@ -7236,8 +7395,16 @@ fn agents_layer_state_at(settings_path: &Path) -> AgentsLayerState {
 /// the agent list and never every other setting. A corrupt file is logged, keeps
 /// the values already in `base`, and returns the unreadable state (option C).
 fn merge_agents_instance_file(settings_path: &Path, base: &mut Value) -> AgentsLayerState {
+    merge_agents_instance_file_labeled(settings_path, settings_path, base)
+}
+
+fn merge_agents_instance_file_labeled(
+    io_path: &Path,
+    settings_path: &Path,
+    base: &mut Value,
+) -> AgentsLayerState {
     let path = agents_instance_path(settings_path);
-    let state = match read_agents_instance_file(&path) {
+    let state = match read_agents_instance_file_labeled(&agents_instance_path(io_path), &path) {
         Ok(None) => AgentsLayerState::Readable,
         Ok(Some(sidecar)) => {
             if let Some(object) = base.as_object_mut() {
@@ -7322,7 +7489,11 @@ pub(crate) fn export_agents_to_instance_file(
     // #2716 (B3) r12n: the read, the existence check and the write are one
     // decision, so they run under the settings lock. It is released on return,
     // before the loader's own save takes it again.
-    let _lock = match SettingsFileLock::acquire(settings_path, std::time::Duration::from_secs(2)) {
+    let _lock = match SettingsFileLock::acquire_contextual(
+        settings_path,
+        std::time::Duration::from_secs(2),
+        "export_agents_to_instance_file",
+    ) {
         Ok(lock) => lock,
         Err(e) => {
             log::error!("[settings-migration] #2716 - {e}; nothing exported, nothing stripped");
@@ -7402,6 +7573,32 @@ fn restore_agents_groups_for_redecode(written: &mut Value, groups: Map<String, V
     }
 }
 
+/// Restore only the backend-owned carrier; ordinary profile edits still apply.
+/// Absence in the physical base removes a forged client/overlay carrier.
+fn restore_codex_home_carrier(out: &mut Map<String, Value>, base_profiles: Option<&Value>) {
+    const KEY: &str = "codexHomeKeyByAgent";
+    let carrier = base_profiles
+        .and_then(Value::as_object)
+        .and_then(|profiles| profiles.get(KEY));
+    if carrier.is_some() {
+        out.entry("codingAgentProfiles")
+            .or_insert_with(|| Value::Object(Map::new()));
+    }
+    if let Some(profiles) = out
+        .get_mut("codingAgentProfiles")
+        .and_then(Value::as_object_mut)
+    {
+        match carrier {
+            Some(value) => {
+                profiles.insert(KEY.to_string(), value.clone());
+            }
+            None => {
+                profiles.remove(KEY);
+            }
+        }
+    }
+}
+
 /// #2716 (B3) - the agents-file half of a save, run under the settings lock before
 /// the settings file is written. Returns the groups the agents file now holds, which
 /// are exactly the keys the caller may strip from `out`. `Reconcile` never writes the
@@ -7410,7 +7607,7 @@ fn save_agents_instance_file(
     settings: &AppSettings,
     path: &Path,
     mode: &ProjectWriteMode,
-    disk: Option<&Map<String, Value>>,
+    #[cfg(test)] disk: Option<&Map<String, Value>>,
     out: &Map<String, Value>,
     disk_gate_stage: SettingsSaveStage,
 ) -> Result<Map<String, Value>, SettingsSaveError> {
@@ -7428,9 +7625,29 @@ fn save_agents_instance_file(
         )
     })?;
     let existing_groups = existing.as_ref().map(agents_instance_groups);
-    let target = match mode {
-        ProjectWriteMode::Reconcile { .. } => match existing_groups {
-            Some(groups) => return Ok(groups),
+    // Read the physical base, never the request or its overlay. The legacy
+    // settings group remains authoritative only when the sidecar lacks it.
+    let legacy = if existing_groups.as_ref().is_some_and(|groups| {
+        AGENTS_INSTANCE_KEYS
+            .iter()
+            .all(|key| groups.contains_key(*key))
+    }) {
+        None
+    } else {
+        read_disk_object_for_write_typed(path, disk_gate_stage)?
+    };
+    let base_profiles = existing_groups
+        .as_ref()
+        .and_then(|groups| groups.get("codingAgentProfiles"))
+        .or_else(|| {
+            legacy
+                .as_ref()
+                .and_then(|disk| disk.get("codingAgentProfiles"))
+        });
+    let mut target = match mode {
+        #[cfg(test)]
+        ProjectWriteMode::Reconcile { .. } => match &existing_groups {
+            Some(groups) => groups.clone(),
             None => disk.map(agents_instance_groups).unwrap_or_default(),
         },
         ProjectWriteMode::Preserve => {
@@ -7453,12 +7670,57 @@ fn save_agents_instance_file(
                 };
                 groups.insert(key.to_string(), value);
             }
-            if existing_groups.as_ref() == Some(&groups) {
-                return Ok(groups);
-            }
             groups
         }
     };
+    restore_codex_home_carrier(&mut target, base_profiles);
+    let mut before = legacy
+        .as_ref()
+        .map(agents_instance_groups)
+        .unwrap_or_default();
+    if let Some(groups) = &existing_groups {
+        before.extend(groups.clone());
+    }
+    let editable_agents = matches!(mode, ProjectWriteMode::Preserve)
+        && !settings.local_overlay_state.owns_top_level("agents");
+    let editable_profiles = matches!(mode, ProjectWriteMode::Preserve)
+        && !settings
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles");
+    let rejected = |reason: String| {
+        SettingsSaveError::semantic(
+            disk_gate_stage,
+            &sidecar_path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    };
+    // Decode the final physical rows, but update only their raw metadata property.
+    // Retained overlay-owned groups have no new backfill or validation authority.
+    if editable_agents {
+        if let Some(rows) = target.get_mut("agents") {
+            let agents: Vec<AgentConfig> = serde_json::from_value(rows.clone())
+                .map_err(|error| rejected(error.to_string()))?;
+            for (raw, agent) in rows.as_array_mut().into_iter().flatten().zip(agents) {
+                if let Some(object) = raw.as_object_mut() {
+                    object.insert(
+                        "id_hash".to_string(),
+                        Value::String(configuration_identity(&agent.command, &agent.envs)),
+                    );
+                }
+            }
+        }
+    }
+    if editable_agents || editable_profiles {
+        let mut after = before.clone();
+        after.extend(target.clone());
+        validate_physical_identity_delta(&before, &after, editable_agents, editable_profiles)
+            .map_err(rejected)?;
+    }
+    if existing_groups.as_ref() == Some(&target) {
+        return Ok(target);
+    }
     if !target.is_empty() {
         write_agents_instance_file(&target, &sidecar_path)?;
     }
@@ -7557,19 +7819,82 @@ pub fn normalize_profile_letter(raw: &str) -> Option<String> {
 
 /// #1737 (D5): `settings_path` is `Some` on every production loader and `None` on
 /// the in-module test call sites. `None` means "no overlay lookup".
+#[cfg(test)]
 fn parse_settings_json(
     contents: &str,
     source: &str,
     settings_path: Option<&Path>,
 ) -> Result<(AppSettings, bool), String> {
+    match settings_path {
+        None => parse_settings_json_with_projection(contents, source, None, None),
+        Some(path) => {
+            let transaction =
+                empty_project_transaction(path, "parse_settings_json").map_err(|error| {
+                    report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+                })?;
+            let selected = select_project_source_locked(&transaction).map_err(|error| {
+                report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+            })?;
+            parse_settings_json_with_projection(
+                contents,
+                source,
+                Some(path),
+                Some(&selected.projection),
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+fn parse_settings_json_with_projection(
+    contents: &str,
+    source: &str,
+    settings_path: Option<&Path>,
+    projection: Option<&Map<String, Value>>,
+) -> Result<(AppSettings, bool), String> {
+    parse_settings_json_with_projection_labeled(
+        contents,
+        source,
+        settings_path,
+        settings_path,
+        projection,
+    )
+}
+
+fn parse_settings_json_with_projection_labeled(
+    contents: &str,
+    source: &str,
+    io_path: Option<&Path>,
+    settings_path: Option<&Path>,
+    projection: Option<&Map<String, Value>>,
+) -> Result<(AppSettings, bool), String> {
     let mut value: Value = serde_json::from_str(contents)
         .map_err(|e| format!("Failed to parse settings file: {}", e))?;
+    if let (Some(object), Some(projection)) = (value.as_object_mut(), projection) {
+        replace_project_projection(object, projection);
+    }
     let legacy_profiles = value.as_object().is_some_and(legacy_profiles_shape_present);
+    let physical_groups = io_path
+        .and_then(|path| {
+            read_agents_instance_file(&agents_instance_path(path))
+                .ok()
+                .flatten()
+        })
+        .map(|groups| {
+            groups
+                .keys()
+                .filter(|key| AGENTS_INSTANCE_KEYS.contains(&key.as_str()))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     // #2716 (B3): the agents file is layer 30, under the layer-50 overlay, so it is
     // merged into the raw base object here: after the detection above, so
     // `legacy_profiles` stays a property of the settings file, and before the
     // `pre_merge` clone, so the undecodable fallback carries its groups.
-    let agents_layer = settings_path.map(|p| merge_agents_instance_file(p, &mut value));
+    let agents_layer = io_path
+        .zip(settings_path)
+        .map(|(io, label)| merge_agents_instance_file_labeled(io, label, &mut value));
     // #1737 (D21): the clone must be taken BEFORE the merge, because the merge is
     // in place and the overlay's presence is not known until it returns. Gated on
     // `settings_path.is_some()`, which is true on all three production loaders and
@@ -7578,7 +7903,7 @@ fn parse_settings_json(
     // #1737 (D5): the merge point, after the legacy-shape detection and before the
     // project decode. Merging after the detection keeps the `legacy_profiles` flag
     // a property of the base file alone and makes the B7 cross-key edge impossible.
-    let mut overlay = match settings_path {
+    let mut overlay = match io_path {
         Some(p) => LocalSettingsOverlay::load_and_merge(
             p,
             &mut value,
@@ -7588,6 +7913,11 @@ fn parse_settings_json(
         ),
         None => LocalSettingsOverlay::default(),
     };
+    if let (Some(object), Some(base)) = (value.as_object_mut(), &pre_merge) {
+        restore_codex_home_carrier(object, base.get("codingAgentProfiles"));
+    }
+    let mut identity_physical =
+        coding_agent_identity_physical_from_raw(&value, &physical_groups, &overlay);
     let unmerged = if overlay.is_empty() { None } else { pre_merge };
     // #1077: decode the six project fields and replace the three runtime fields
     // with the SELECTED canonical paths BEFORE deserializing the rest of
@@ -7613,6 +7943,14 @@ fn parse_settings_json(
     let (mut settings, state) = match (decoded, unmerged) {
         (Ok(settings), _) => (settings, state),
         (Err(reason), Some(mut unmerged)) => {
+            identity_physical["agents"] = unmerged.get("agents").cloned().unwrap_or(Value::Null);
+            identity_physical["codingAgentProfiles"] = unmerged
+                .get("codingAgentProfiles")
+                .cloned()
+                .unwrap_or(Value::Null);
+            identity_physical["quotaSources"] =
+                unmerged.get("quotaSources").cloned().unwrap_or(Value::Null);
+            identity_physical["groupOwnership"]["overlayPaths"] = serde_json::json!([]);
             let base_state = apply_project_decode_to_value(
                 &mut unmerged,
                 base.as_deref(),
@@ -7625,10 +7963,12 @@ fn parse_settings_json(
         (Err(reason), None) => return Err(reason),
     };
     settings.project_path_state = Arc::new(state);
+    settings.coding_agent_identity_physical = Some(Arc::new(identity_physical));
     // #2306 P1 - in-memory finalize over the merged view. It is deliberately not
     // part of `needs_save`: a legacy file with no ordinals must load without a
     // disk write or a backup rotation.
     finalize_agent_order(&mut settings.agents);
+    refresh_agent_id_hashes(&mut settings.agents);
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
     if let (Some(p), Some(state)) = (settings_path, agents_layer) {
@@ -7681,7 +8021,19 @@ fn legacy_profiles_shape_present(root: &Map<String, Value>) -> bool {
 /// serialized defaults, so the file the following `needs_save` write creates holds
 /// exactly what a no-overlay fresh instance would have written and deleting the
 /// local file restores it.
-fn default_settings_with_overlay(settings_path: &Path, source: &str) -> AppSettings {
+#[cfg(test)]
+fn default_settings_with_overlay(settings_path: &Path, _source: &str) -> AppSettings {
+    match capture_project_settings(settings_path, false) {
+        Ok((settings, _, _)) => settings,
+        Err(error) => unavailable_project_settings(AppSettings::default(), error),
+    }
+}
+
+fn default_settings_with_overlay_captured(
+    settings_path: &Path,
+    source: &str,
+    projection: &Map<String, Value>,
+) -> AppSettings {
     // Total by construction: `AppSettings` is a struct with named fields, so serde
     // always produces an object. The arm exists so the function has no panic.
     let Ok(mut value @ Value::Object(_)) = serde_json::to_value(AppSettings::default()) else {
@@ -7694,18 +8046,32 @@ fn default_settings_with_overlay(settings_path: &Path, source: &str) -> AppSetti
         OVERLAY_INELIGIBLE_LEGACY_KEYS,
         OVERLAY_DERIVED_ID_CLOSURES,
     );
+    let agents_base = read_agents_instance_file(&agents_instance_path(settings_path))
+        .ok()
+        .flatten();
+    restore_codex_home_carrier(
+        value.as_object_mut().unwrap(),
+        agents_base
+            .as_ref()
+            .and_then(|base| base.get("codingAgentProfiles")),
+    );
     // Unconditionally, and BEFORE the early return: `is_empty()` is also true for a
     // REJECTED overlay, so returning first would swallow the very diagnostics D8
     // mandates on a malformed local file.
     report_overlay_diagnostics(source, &overlay);
-    if overlay.is_empty() {
-        return AppSettings::default();
-    }
+    replace_project_projection(value.as_object_mut().unwrap(), projection);
+    let state = apply_project_decode_to_value(
+        &mut value,
+        production_instance_base().as_deref(),
+        &projects::FsCandidateResolver,
+    );
     match serde_json::from_value::<AppSettings>(value) {
         Ok(mut settings) => {
+            settings.project_path_state = Arc::new(state);
             // #2306 P1 - same in-memory finalize as the normal parse, applied to
             // the defaults-plus-overlay view; still no write.
             finalize_agent_order(&mut settings.agents);
+            refresh_agent_id_hashes(&mut settings.agents);
             settings.local_overlay_state = Arc::new(overlay);
             repair_loaded_response_close_settings(&mut settings, source);
             settings
@@ -7724,6 +8090,207 @@ fn default_settings_with_overlay(settings_path: &Path, source: &str) -> AppSetti
             AppSettings::default()
         }
     }
+}
+
+fn replace_project_projection(object: &mut Map<String, Value>, projection: &Map<String, Value>) {
+    for key in [
+        FIELD_PROJECT_PATH,
+        FIELD_PROJECT_PATH_REL,
+        FIELD_PROJECT_PATHS,
+        FIELD_PROJECT_PATHS_REL,
+        FIELD_ARCHIVED,
+        FIELD_ARCHIVED_REL,
+    ] {
+        object.remove(key);
+    }
+    object.extend(projection.clone());
+}
+
+fn unavailable_project_settings(mut settings: AppSettings, error: String) -> AppSettings {
+    settings.project_paths.clear();
+    settings.project_path = None;
+    settings.archived_project_paths.clear();
+    settings.project_path_state = Arc::new(ProjectPathPersistenceState::default());
+    settings.project_paths_persistence_error = Some(error);
+    settings
+}
+
+#[cfg(test)]
+type SettingsPathHook = Option<Box<dyn Fn(&Path)>>;
+
+#[cfg(test)]
+thread_local! {
+    static PROJECT_SOURCE_CAPTURE_HOOK: std::cell::RefCell<SettingsPathHook> = std::cell::RefCell::new(None);
+    static SETTINGS_PRESERVE_LOCK_HOOK: std::cell::RefCell<SettingsPathHook> = std::cell::RefCell::new(None);
+}
+
+fn capture_project_settings(
+    path: &Path,
+    migrate: bool,
+) -> Result<(AppSettings, bool, Option<String>), String> {
+    let lock_error = |reason| {
+        SettingsSaveError::semantic(
+            SettingsSaveStage::LockAcquire,
+            path,
+            None,
+            reason,
+            SettingsSaveLegacyOutward::SettingsLockUnavailable,
+        )
+    };
+    let report = |error: SettingsSaveError| {
+        report_settings_save_error(
+            error.with_capture_labels(path),
+            SettingsSaveReportSurface::GeneralSettings,
+        )
+    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| report(lock_error(SettingsSaveReason::MissingParentDirectory)))?;
+    std::fs::create_dir_all(parent).map_err(|source| {
+        report(SettingsSaveError::io(
+            SettingsSaveStage::LockAcquire,
+            path,
+            None,
+            source,
+            SettingsSaveLegacyOutward::SettingsLockUnavailable,
+        ))
+    })?;
+    match crate::path_identity::verify_component_chain_reason(parent) {
+        Ok(()) | Err(crate::path_identity::PathRule::ComponentIsLink) => {}
+        Err(_) => return Err(report(lock_error(SettingsSaveReason::LockIdentityRejected))),
+    }
+    let physical_parent = std::fs::canonicalize(parent)
+        .map_err(|_| report(lock_error(SettingsSaveReason::LockIdentityRejected)))?;
+    // Windows retains a no-share-delete handle. Unix detects persistent
+    // replacement, not transient A -> B -> A absolute-path substitution.
+    let retained = crate::path_identity::retain_directory(&physical_parent)
+        .map_err(|_| report(lock_error(SettingsSaveReason::LockIdentityRejected)))?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| report(lock_error(SettingsSaveReason::LockIdentityRejected)))?;
+    let physical = retained.identity().canonical_path.join(leaf);
+    let transaction = empty_project_transaction(&physical, "capture_project_settings")
+        .map_err(|error| report(error.with_capture_labels(path)))?;
+    retained
+        .verify_current()
+        .map_err(|_| report(lock_error(SettingsSaveReason::LockIdentityRejected)))?;
+    #[cfg(test)]
+    PROJECT_SOURCE_CAPTURE_HOOK.with(|hook| {
+        if let Some(callback) = hook.borrow().as_ref() {
+            callback(path);
+        }
+    });
+    let migration_error = if migrate {
+        ensure_project_paths_migrated_at_labeled_path(&transaction.path, path, &mut |_, _| Ok(()))
+            .err()
+    } else {
+        None
+    };
+    let selected = match migration_error {
+        Some(error) => Err(error),
+        None => select_project_source_at_labeled_path_with_limit(
+            &transaction.path,
+            path,
+            16 * 1024 * 1024,
+        ),
+    };
+    let captured = (|| {
+        match selected {
+            Ok(selected) => match selected.legacy {
+                Some(legacy) => {
+                    let contents =
+                        String::from_utf8(legacy.bytes).map_err(|error| error.to_string())?;
+                    match parse_settings_json_with_projection_labeled(
+                        &contents,
+                        &path.to_string_lossy(),
+                        Some(&transaction.path),
+                        Some(path),
+                        Some(&selected.projection),
+                    ) {
+                        Ok((settings, legacy_profiles)) => {
+                            Ok((settings, legacy_profiles, Some(contents)))
+                        }
+                        Err(error) => {
+                            log::error!("{error}");
+                            // Selection succeeded; unrelated decode failure must not
+                            // mark the authoritative project source unavailable.
+                            let mut settings = default_settings_with_overlay_captured(
+                                &transaction.path,
+                                &path.to_string_lossy(),
+                                &selected.projection,
+                            );
+                            set_agents_layer_state(
+                                &mut settings,
+                                path,
+                                agents_layer_state_at_labeled(&transaction.path, path),
+                            );
+                            Ok((settings, false, None))
+                        }
+                    }
+                }
+                None => Ok((
+                    default_settings_with_overlay_captured(
+                        &transaction.path,
+                        &path.to_string_lossy(),
+                        &selected.projection,
+                    ),
+                    false,
+                    None,
+                )),
+            },
+            Err(error) => {
+                let message = report_settings_save_error(
+                    error.with_capture_labels(path),
+                    SettingsSaveReportSurface::GeneralSettings,
+                );
+                // Preserve readable unrelated values while exposing no project authorization.
+                let mut settings = read_raw_project_source_labeled_with_limit(
+                    &transaction.path,
+                    path,
+                    16 * 1024 * 1024,
+                    false,
+                )
+                .ok()
+                .flatten()
+                .and_then(|legacy| {
+                    let contents = String::from_utf8(legacy.bytes).ok()?;
+                    parse_settings_json_with_projection_labeled(
+                        &contents,
+                        &path.to_string_lossy(),
+                        Some(&transaction.path),
+                        Some(path),
+                        Some(&Map::new()),
+                    )
+                    .ok()
+                    .map(|pair| pair.0)
+                })
+                .unwrap_or_else(|| {
+                    default_settings_with_overlay_captured(
+                        &transaction.path,
+                        &path.to_string_lossy(),
+                        &Map::new(),
+                    )
+                });
+                set_agents_layer_state(
+                    &mut settings,
+                    path,
+                    agents_layer_state_at_labeled(&transaction.path, path),
+                );
+                Ok((unavailable_project_settings(settings, message), false, None))
+            }
+        }
+    })();
+    // Every fallback passes this check while the same lock is still held.
+    if retained.verify_current().is_err() {
+        let message = report(lock_error(SettingsSaveReason::LockIdentityRejected));
+        return match captured {
+            Ok((settings, _, _)) => {
+                Ok((unavailable_project_settings(settings, message), false, None))
+            }
+            Err(_) => Err(message),
+        };
+    }
+    captured
 }
 
 pub fn empty_profile_cell() -> ProfileCellConfig {
@@ -7911,6 +8478,193 @@ pub(crate) fn adopt_orphaned_profiles(settings: &mut AppSettings) -> bool {
         moved = true;
     }
     moved
+}
+
+/// Pure carrier construction from raw merged inputs, before typed repair.
+fn coding_agent_identity_physical_from_raw(
+    value: &Value,
+    physical_groups: &[String],
+    overlay: &LocalSettingsOverlay,
+) -> Value {
+    serde_json::json!({
+        "agents": value.get("agents"),
+        "codingAgentProfiles": value.get("codingAgentProfiles"),
+        "quotaSources": value.get("quotaSources"),
+        "groupOwnership": { "instanceGroups": physical_groups, "overlayPaths": overlay.owned_paths().iter().filter(|path| path.first().is_some_and(|key| ["agents", "codingAgentProfiles", "quotaSources"].contains(&key.as_str()))).collect::<Vec<_>>() },
+    })
+}
+
+/// Borrow the caller's settings file lock; never reenter a locking loader.
+/// Physical overlay bytes retain identity fields unknown to the typed view.
+fn coding_agent_identity_with_physical_overlay(
+    mut value: Value,
+    path: &Path,
+    physical_groups: &[String],
+) -> Value {
+    let unmerged = value.clone();
+    let base_profiles = value.get("codingAgentProfiles").cloned();
+    let overlay = LocalSettingsOverlay::load_and_merge(
+        path,
+        &mut value,
+        OVERLAY_INELIGIBLE_DISK_KEYS,
+        OVERLAY_INELIGIBLE_LEGACY_KEYS,
+        OVERLAY_DERIVED_ID_CLOSURES,
+    );
+    restore_codex_home_carrier(value.as_object_mut().unwrap(), base_profiles.as_ref());
+    // Match the loader's undecodable-overlay rule without using its repaired
+    // typed value as identity authority. The fallback is the raw physical base.
+    if !overlay.is_empty() {
+        let mut decode_value = value.clone();
+        apply_project_decode_to_value(
+            &mut decode_value,
+            production_instance_base().as_deref(),
+            &projects::FsCandidateResolver,
+        );
+        if serde_json::from_value::<AppSettings>(decode_value).is_err() {
+            return coding_agent_identity_physical_from_raw(
+                &unmerged,
+                physical_groups,
+                &LocalSettingsOverlay::default(),
+            );
+        }
+    }
+    coding_agent_identity_physical_from_raw(&value, physical_groups, &overlay)
+}
+
+/// Refresh clone-based state replacements while borrowing their file lock.
+/// Unavailable raw inputs clear transition evidence rather than retaining a stale seed source.
+fn refresh_coding_agent_identity_at_locked_path(settings: &mut AppSettings, path: &Path) {
+    let captured = (|| {
+        let Some(object) =
+            read_disk_object_for_write_typed(path, SettingsSaveStage::PreserveDiskGate)?
+        else {
+            return Ok(None);
+        };
+        let groups = read_agents_instance_file(&agents_instance_path(path));
+        let layer = match &groups {
+            Ok(_) => AgentsLayerState::Readable,
+            Err(reason) => AgentsLayerState::Unreadable {
+                path: agents_instance_path(path),
+                reason: reason.clone(),
+            },
+        };
+        let mut value = Value::Object(object);
+        let groups = groups
+            .ok()
+            .flatten()
+            .map(|groups| agents_instance_groups(&groups))
+            .unwrap_or_default();
+        let physical_groups = groups.keys().cloned().collect::<Vec<_>>();
+        value.as_object_mut().unwrap().extend(groups);
+        let raw = coding_agent_identity_with_physical_overlay(value, path, &physical_groups);
+        Ok::<_, SettingsSaveError>(Some((raw, layer)))
+    })();
+    match captured {
+        Ok(Some((raw, layer))) => {
+            settings.coding_agent_identity_physical = Some(Arc::new(raw));
+            set_agents_layer_state(settings, path, layer);
+        }
+        Ok(None) => settings.coding_agent_identity_physical = None,
+        Err(error) => {
+            log::warn!("[settings] binding physical refresh unavailable: {error:?}");
+            settings.coding_agent_identity_physical = None;
+        }
+    }
+}
+
+/// Canonical identity-only projection of backend physical inputs. Never infer
+/// authority from a client draft or from repaired/defaulted runtime rows.
+pub(crate) fn coding_agent_identity_projection_hash(
+    settings: &AppSettings,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    if settings.agents_layer.unreadable_path().is_some() {
+        return Err("coding_agent_identity_physical_unreadable".to_string());
+    }
+    let raw = settings
+        .coding_agent_identity_physical
+        .as_ref()
+        .ok_or_else(|| "coding_agent_identity_physical_missing".to_string())?;
+    let mut projection = raw.as_ref().clone();
+    let agents = projection
+        .get_mut("agents")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "coding_agent_identity_agents_missing".to_string())?;
+    let mut ids = HashSet::new();
+    for agent in agents.iter_mut() {
+        let object = agent
+            .as_object_mut()
+            .ok_or_else(|| "coding_agent_identity_invalid".to_string())?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "coding_agent_identity_invalid".to_string())?;
+        if !ids.insert(id.to_string()) {
+            return Err("coding_agent_identity_duplicate".to_string());
+        }
+        for key in ["order", "name", "label", "color"] {
+            object.remove(key);
+        }
+    }
+    agents.sort_by(|a, b| {
+        a.get("id")
+            .and_then(Value::as_str)
+            .cmp(&b.get("id").and_then(Value::as_str))
+    });
+    if let Some(slots) = projection
+        .get_mut("codingAgentProfiles")
+        .and_then(|profiles| profiles.get_mut("profileSlots"))
+        .and_then(Value::as_object_mut)
+    {
+        for slot in slots.values_mut() {
+            if let Some(slot) = slot.as_object_mut() {
+                slot.remove("label");
+            }
+        }
+    }
+    // serde_json's Map is sorted (no preserve_order feature); recurse explicitly
+    // so the revision contract remains canonical if that feature changes later.
+    fn canonical(value: &Value) -> Value {
+        match value {
+            Value::Object(object) => {
+                let sorted: BTreeMap<_, _> = object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), canonical(value)))
+                    .collect();
+                Value::Object(sorted.into_iter().collect())
+            }
+            Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
+            _ => value.clone(),
+        }
+    }
+    let bytes = serde_json::to_vec(&canonical(&projection)).map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+pub(crate) fn bootstrap_identity_revision(settings: &AppSettings) -> Result<String, String> {
+    coding_agent_identity_projection_hash(settings).map(|hash| format!("r1:0:{hash}"))
+}
+
+pub(crate) fn bootstrap_binding_revision(
+    settings: &AppSettings,
+    original_agent_id: &str,
+) -> Result<String, String> {
+    let revision = bootstrap_identity_revision(settings)?;
+    let rows = settings
+        .coding_agent_identity_physical
+        .as_ref()
+        .and_then(|raw| raw.get("agents"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "coding_agent_identity_agents_missing".to_string())?;
+    if rows
+        .iter()
+        .filter(|row| row.get("id").and_then(Value::as_str) == Some(original_agent_id))
+        .count()
+        != 1
+    {
+        return Err("coding_agent_binding_entry_missing_or_ambiguous".to_string());
+    }
+    Ok(revision)
 }
 
 /// #2450: record `identityByAgent[id]` for every agent actually written to the
@@ -8197,6 +8951,7 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     normalize_agent_backend_configs(settings)?;
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     validate_agent_commands(settings)?;
+    refresh_agent_id_hashes(&mut settings.agents);
     validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
     validate_sidebar_compact_hotkey(&settings.sidebar_compact_hotkey)?;
     validate_room_number_mask(&settings.room_number_mask)?;
@@ -8580,47 +9335,84 @@ pub fn load_settings() -> AppSettings {
 /// through the real loader instead of reproducing the loader in a test. No
 /// production caller outside this module.
 pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
-    let mut legacy_profiles_detected = false;
-    let mut legacy_profiles_contents: Option<String> = None;
-    let mut settings = if !path.exists() {
-        log::info!("No settings file found at {:?}, using defaults", path);
-        default_settings_with_overlay(path, &path.to_string_lossy())
-    } else {
-        match std::fs::read_to_string(path) {
-            Ok(contents) => {
-                match parse_settings_json(&contents, &path.to_string_lossy(), Some(path)) {
-                    Ok((s, legacy_profiles)) => {
-                        log::debug!("Loaded settings from {:?}", path);
-                        if legacy_profiles {
-                            legacy_profiles_detected = true;
-                            legacy_profiles_contents = Some(contents);
-                            log::warn!(
-                                "[settings-migration] #2015 legacy pre-v2 codingAgentProfiles fields are no longer supported and were ignored; v2 fields kept; original kept in {}",
-                                crate::config::instance_artifacts::SETTINGS_MIGRATION_BACKUP_384_V1_NAME
-                            );
-                        }
-                        s
-                    }
-                    Err(e) => {
-                        log::error!("{}", e);
-                        // #2716 (B3, option C) - write site three: the decode failed,
-                        // so the mark the merge computed was lost with the value;
-                        // without this the defaults would read as a valid empty list.
-                        let mut defaults =
-                            default_settings_with_overlay(path, &path.to_string_lossy());
-                        let state = agents_layer_state_at(path);
-                        set_agents_layer_state(&mut defaults, path, state);
-                        defaults
-                    }
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to read settings file: {}", e);
-                default_settings_with_overlay(path, &path.to_string_lossy())
-            }
+    load_settings_from_path_with_blocking_menus_publish(path, None)
+}
+
+fn load_settings_from_path_with_blocking_menus_publish(
+    path: &Path,
+    publish: Option<crate::config::local_config_io::ConfigPublisher<'_>>,
+) -> AppSettings {
+    let (mut settings, legacy_profiles_detected, legacy_profiles_contents) =
+        read_settings_for_startup(path);
+    if settings.project_paths_persistence_error.is_some() {
+        return settings;
+    }
+    apply_loaded_window_migrations(&mut settings);
+
+    // #248 migration — translates legacy startOnlyCoordinators (if present).
+    // Track whether the legacy field was on disk so we can fire a single save
+    // at the end of the function (Grinch Z3 — without this, upgrade users
+    // with an existing root_token never persist the migration and the legacy
+    // key lingers in settings.json, spamming the migration log on every launch).
+    let issue_248_migrated = settings.legacy_start_only_coordinators.is_some();
+    apply_issue_248_migration(&mut settings);
+
+    // Auto-generate root token if missing.
+    let mut needs_save = issue_248_migrated || legacy_profiles_detected;
+    let exported = match publish {
+        None => export_blocking_menus_to_local_file(&mut settings, path),
+        Some(publish) => {
+            export_blocking_menus_to_local_file_with_publish(&mut settings, path, publish)
         }
     };
+    if exported {
+        log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
+        needs_save = true;
+    }
+    if export_agents_to_instance_file(&mut settings, path) {
+        needs_save = true;
+    }
+    if adopt_orphaned_profiles(&mut settings) {
+        needs_save = true;
+    }
+    if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
+        log::info!("[settings-migration] repaired codingAgentProfiles invariants");
+        needs_save = true;
+    }
+    if settings.root_token.is_none() {
+        settings.root_token = Some(uuid::Uuid::new_v4().to_string());
+        log::info!("Generated new root token");
+        needs_save = true;
+    }
+    if needs_save {
+        persist_loaded_settings_migrations(
+            &mut settings,
+            path,
+            legacy_profiles_detected,
+            &legacy_profiles_contents,
+        );
+    }
 
+    // Startup migrations may move ownership or materialize profiles. Birth seeds
+    // must describe the post-migration physical inputs, never the provisional load.
+    settings.coding_agent_identity_physical = capture_project_settings(path, false)
+        .ok()
+        .and_then(|(captured, _, _)| captured.coding_agent_identity_physical);
+    settings
+}
+
+fn read_settings_for_startup(path: &Path) -> (AppSettings, bool, Option<String>) {
+    match capture_project_settings(path, true) {
+        Ok(captured) => captured,
+        Err(error) => {
+            let mut settings = AppSettings::default();
+            set_agents_layer_state(&mut settings, path, agents_layer_state_at(path));
+            (unavailable_project_settings(settings, error), false, None)
+        }
+    }
+}
+
+fn apply_loaded_window_migrations(settings: &mut AppSettings) {
     // 0.8.0 unified-window migration — seed main_* from legacy fields on first load
     // after upgrade. Runs BEFORE root_token auto-gen so the migrated values persist
     // via the same save. The deprecated `sidebar_geometry`/`terminal_geometry` fields
@@ -8664,77 +9456,49 @@ pub(crate) fn load_settings_from_path(path: &Path) -> AppSettings {
             "[settings-migration] seeded main_always_on_top from legacy sidebar_always_on_top"
         );
     }
+}
 
-    // #248 migration — translates legacy startOnlyCoordinators (if present).
-    // Track whether the legacy field was on disk so we can fire a single save
-    // at the end of the function (Grinch Z3 — without this, upgrade users
-    // with an existing root_token never persist the migration and the legacy
-    // key lingers in settings.json, spamming the migration log on every launch).
-    let issue_248_migrated = settings.legacy_start_only_coordinators.is_some();
-    apply_issue_248_migration(&mut settings);
-
-    // Auto-generate root token if missing.
-    let mut needs_save = issue_248_migrated || legacy_profiles_detected;
-    if export_blocking_menus_to_local_file(&mut settings, path) {
-        log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
-        needs_save = true;
-    }
-    if export_agents_to_instance_file(&mut settings, path) {
-        needs_save = true;
-    }
-    if adopt_orphaned_profiles(&mut settings) {
-        needs_save = true;
-    }
-    if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
-        log::info!("[settings-migration] repaired codingAgentProfiles invariants");
-        needs_save = true;
-    }
-    if settings.root_token.is_none() {
-        settings.root_token = Some(uuid::Uuid::new_v4().to_string());
-        log::info!("Generated new root token");
-        needs_save = true;
-    }
-    if needs_save {
-        let backup_ok = if legacy_profiles_detected {
-            match legacy_profiles_contents.as_deref() {
-                Some(contents) => match write_pre_384_v1_backup(path, contents) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        log::error!(
-                            "Failed to persist settings v2 migration backup; leaving settings.json untouched: {}",
-                            e
-                        );
-                        false
-                    }
-                },
-                None => true,
-            }
-        } else {
-            true
-        };
-        if backup_ok {
-            // #2306 P1 - the migration write is authorized, so persist explicit
-            // contiguous ordinals. Finalize already ran at load; this renumber is
-            // the write-side guarantee and cannot re-sort or revive stale values.
-            normalize_agent_order(&mut settings.agents);
-            // #1077: route the startup root-token/migration write through PRESERVE
-            // mode so it cannot erase project companions/conflicts before the
-            // first snapshot, and so a present-but-invalid file is never
-            // overwritten (the preserve writer's disk gate returns Err). On
-            // success adopt the fresh-decoded settings so runtime/hidden agree.
-            match save_settings_to_path_preserving_project_paths_typed(&settings, path) {
-                Ok(written) => settings = written,
-                Err(error) => {
-                    let _ = report_settings_save_error(
-                        error,
-                        SettingsSaveReportSurface::GeneralSettings,
+fn persist_loaded_settings_migrations(
+    settings: &mut AppSettings,
+    path: &Path,
+    legacy_profiles_detected: bool,
+    legacy_profiles_contents: &Option<String>,
+) {
+    let backup_ok = if legacy_profiles_detected {
+        match legacy_profiles_contents.as_deref() {
+            Some(contents) => match write_pre_384_v1_backup(path, contents) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::error!(
+                        "Failed to persist settings v2 migration backup; leaving settings.json untouched: {}",
+                        e
                     );
+                    false
                 }
+            },
+            None => true,
+        }
+    } else {
+        true
+    };
+    if backup_ok {
+        // #2306 P1 - the migration write is authorized, so persist explicit
+        // contiguous ordinals. Finalize already ran at load; this renumber is
+        // the write-side guarantee and cannot re-sort or revive stale values.
+        normalize_agent_order(&mut settings.agents);
+        // #1077: route the startup root-token/migration write through PRESERVE
+        // mode so it cannot erase project companions/conflicts before the
+        // first snapshot, and so a present-but-invalid file is never
+        // overwritten (the preserve writer's disk gate returns Err). On
+        // success adopt the fresh-decoded settings so runtime/hidden agree.
+        match save_settings_to_path_preserving_project_paths_typed(settings, path) {
+            Ok(written) => *settings = written,
+            Err(error) => {
+                let _ =
+                    report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings);
             }
         }
     }
-
-    settings
 }
 
 fn write_pre_384_v1_backup(settings_path: &Path, contents: &str) -> Result<(), String> {
@@ -8774,6 +9538,10 @@ fn settings_backup_path(settings_path: &Path, index: u32) -> PathBuf {
 /// temporary. Deliberate local mirror of
 /// `sessions_persistence::rotate_orphan_archive`.
 fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
+    rotate_settings_backups_labeled(settings_path, settings_path, previous)
+}
+
+fn rotate_settings_backups_labeled(settings_path: &Path, label: &Path, previous: &[u8]) {
     use std::io::Write as _;
     // D8: a non-regular slot is a user-placed symlink or directory; never follow
     // or clobber it.
@@ -8784,7 +9552,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
                 if !metadata.is_file() {
                     log::warn!(
                         "[settings] #2058 aborting backup rotation: slot {:?} is not a regular file",
-                        slot
+                        settings_backup_path(label, index)
                     );
                     return;
                 }
@@ -8793,7 +9561,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
             Err(error) => {
                 log::warn!(
                     "[settings] #2058 aborting backup rotation: stat of slot {:?} failed: {}",
-                    slot,
+                    settings_backup_path(label, index),
                     error
                 );
                 return;
@@ -8811,7 +9579,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
             Err(error) => {
                 log::warn!(
                     "[settings] #2058 aborting backup rotation: stat of slot {:?} failed: {}",
-                    from,
+                    settings_backup_path(label, index),
                     error
                 );
                 return;
@@ -8820,8 +9588,8 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
         if let Err(error) = std::fs::rename(&from, &to) {
             log::warn!(
                 "[settings] #2058 aborting backup rotation: rename {:?} -> {:?} failed: {}",
-                from,
-                to,
+                settings_backup_path(label, index),
+                settings_backup_path(label, index + 1),
                 error
             );
             return;
@@ -8848,7 +9616,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
             if let Err(error) = file.write_all(previous) {
                 log::warn!(
                     "[settings] #2058 aborting backup rotation: write to slot {:?} failed: {}",
-                    slot_one,
+                    settings_backup_path(label, 1),
                     error
                 );
                 return;
@@ -8857,7 +9625,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
         Err(error) => {
             log::warn!(
                 "[settings] #2058 aborting backup rotation: open of slot {:?} failed: {}",
-                slot_one,
+                settings_backup_path(label, 1),
                 error
             );
             return;
@@ -8866,7 +9634,7 @@ fn rotate_settings_backups(settings_path: &Path, previous: &[u8]) {
 
     log::info!(
         "[settings] #2058 archived the replaced settings to {:?}",
-        slot_one
+        settings_backup_path(label, 1)
     );
 }
 
@@ -8900,28 +9668,9 @@ pub fn load_settings_for_cli() -> AppSettings {
 /// #2716 (B3) - `load_settings_for_cli` at an explicit path, so a test can drive
 /// the CLI loader over a tempdir.
 fn load_settings_for_cli_from_path(path: &Path) -> AppSettings {
-    let mut settings = if !path.exists() {
-        log::info!("[cli] No settings file found at {:?}, using defaults", path);
-        default_settings_with_overlay(path, &path.to_string_lossy())
-    } else {
-        match std::fs::read_to_string(path) {
-            Ok(contents) => {
-                match parse_settings_json(&contents, &path.to_string_lossy(), Some(path)) {
-                    Ok((s, _migrated)) => {
-                        log::debug!("[cli] Loaded settings from {:?}", path);
-                        s
-                    }
-                    Err(e) => {
-                        log::error!("[cli] {}", e);
-                        default_settings_with_overlay(path, &path.to_string_lossy())
-                    }
-                }
-            }
-            Err(e) => {
-                log::error!("[cli] Failed to read settings file: {}", e);
-                default_settings_with_overlay(path, &path.to_string_lossy())
-            }
-        }
+    let mut settings = match capture_project_settings(path, false) {
+        Ok((settings, _, _)) => settings,
+        Err(error) => unavailable_project_settings(AppSettings::default(), error),
     };
 
     // 0.8.0 unified-window migration — must mirror `load_settings` exactly,
@@ -8985,26 +9734,13 @@ pub fn load_settings_for_cli_strict() -> Result<AppSettings, String> {
 /// drive the strict CLI loader over a tempdir.
 fn load_settings_for_cli_strict_from_path(path: Option<&Path>) -> Result<AppSettings, String> {
     let mut settings = match path {
-        // No home dir to locate settings.json: nothing to protect, and a later
-        // save would fail to resolve the dir anyway. Start from default.
         None => AppSettings::default(),
-        Some(path) if !path.exists() => {
-            default_settings_with_overlay(path, &path.to_string_lossy())
-        }
         Some(path) => {
-            let contents = std::fs::read_to_string(path).map_err(|e| {
-                format!(
-                    "settings.json exists at {} but could not be read ({e}); refusing to modify it - fix or remove the file first",
-                    path.display()
-                )
-            })?;
-            let (s, _migrated) =
-                parse_settings_json(&contents, &path.to_string_lossy(), Some(path)).map_err(|e| {
-                    format!(
-                        "settings.json exists but could not be parsed ({e}); refusing to modify it - fix or remove the file first"
-                    )
-                })?;
-            s
+            let (settings, _, _) = capture_project_settings(path, false).map_err(|error| format!("settings source could not be parsed or selected ({error}); refusing to modify it"))?;
+            if let Some(error) = &settings.project_paths_persistence_error {
+                return Err(format!("settings source could not be parsed or selected ({error}); refusing to modify it"));
+            }
+            settings
         }
     };
 
@@ -9587,7 +10323,11 @@ pub(crate) fn apply_project_decode_to_value(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProjectWriteMode {
     Preserve,
-    Reconcile { active: bool, archived: bool },
+    #[cfg(test)]
+    Reconcile {
+        active: bool,
+        archived: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9683,34 +10423,6 @@ fn write_archived_group(
     let (primary, companion) = rebuild_group_arrays(state.archived_pairs(), base);
     out.insert(FIELD_ARCHIVED.to_string(), Value::Array(primary));
     out.insert(FIELD_ARCHIVED_REL.to_string(), Value::Array(companion));
-}
-
-/// Copy a field from `disk` into `out`, preserving its present/absent bit.
-fn copy_or_remove(out: &mut Map<String, Value>, disk: &Map<String, Value>, key: &str) {
-    match disk.get(key) {
-        Some(v) => {
-            out.insert(key.to_string(), v.clone());
-        }
-        None => {
-            out.remove(key);
-        }
-    }
-}
-
-/// Whether the disk object has authoritative active truth (§4.1): `projectPaths`
-/// is an array, or (absent/null plural) `projectPath` is a string.
-fn active_has_disk_truth(disk: &Map<String, Value>) -> bool {
-    match disk.get(FIELD_PROJECT_PATHS) {
-        Some(Value::Array(_)) => true,
-        None | Some(Value::Null) => matches!(disk.get(FIELD_PROJECT_PATH), Some(Value::String(_))),
-        Some(_) => true, // wrong-typed: structural, but still "present" disk truth to preserve
-    }
-}
-
-/// Whether the disk object has authoritative archived truth: `archivedProjectPaths`
-/// is an array (or any present value to preserve).
-fn archived_has_disk_truth(disk: &Map<String, Value>) -> bool {
-    matches!(disk.get(FIELD_ARCHIVED), Some(v) if !v.is_null())
 }
 
 /// If `AppSettings` was constructed directly (empty hidden state) yet carries
@@ -9955,11 +10667,8 @@ impl SettingsSaveStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsSaveReason {
-    #[cfg(test)]
     ProjectPathsConflict,
-    #[cfg(test)]
     ProjectPathsBackupMismatch,
-    #[cfg(test)]
     ProjectPathsSourceRejected,
     LockTimedOut,
     LockDeadlineOverflow,
@@ -9985,11 +10694,8 @@ enum SettingsSaveReason {
 impl SettingsSaveReason {
     fn as_str(self) -> &'static str {
         match self {
-            #[cfg(test)]
             Self::ProjectPathsConflict => "project_paths_conflict",
-            #[cfg(test)]
             Self::ProjectPathsBackupMismatch => "project_paths_backup_mismatch",
-            #[cfg(test)]
             Self::ProjectPathsSourceRejected => "project_paths_source_rejected",
             Self::LockTimedOut => "lock_timed_out",
             Self::LockDeadlineOverflow => "lock_deadline_overflow",
@@ -10052,9 +10758,11 @@ impl SettingsSaveLegacyOutward {
 
 struct SettingsSaveError {
     stage: SettingsSaveStage,
-    target_path: std::path::PathBuf,
-    temp_path: Option<std::path::PathBuf>,
+    target_path: Box<PathBuf>,
+    temp_path: Option<Box<PathBuf>>,
     pid: u32,
+    display_target: Option<Box<PathBuf>>,
+    display_temp: Option<Box<PathBuf>>,
     cause: SettingsSaveCause,
     legacy_outward: SettingsSaveLegacyOutward,
 }
@@ -10069,9 +10777,11 @@ impl SettingsSaveError {
     ) -> Self {
         Self {
             stage,
-            target_path: target_path.to_path_buf(),
-            temp_path: temp_path.map(Path::to_path_buf),
+            target_path: Box::new(target_path.to_path_buf()),
+            temp_path: temp_path.map(|path| Box::new(path.to_path_buf())),
             pid: std::process::id(),
+            display_target: None,
+            display_temp: None,
             cause: SettingsSaveCause::Io(source),
             legacy_outward,
         }
@@ -10086,9 +10796,11 @@ impl SettingsSaveError {
     ) -> Self {
         Self {
             stage,
-            target_path: target_path.to_path_buf(),
-            temp_path: temp_path.map(Path::to_path_buf),
+            target_path: Box::new(target_path.to_path_buf()),
+            temp_path: temp_path.map(|path| Box::new(path.to_path_buf())),
             pid: std::process::id(),
+            display_target: None,
+            display_temp: None,
             cause: SettingsSaveCause::Json(source),
             legacy_outward,
         }
@@ -10103,12 +10815,27 @@ impl SettingsSaveError {
     ) -> Self {
         Self {
             stage,
-            target_path: target_path.to_path_buf(),
-            temp_path: temp_path.map(Path::to_path_buf),
+            target_path: Box::new(target_path.to_path_buf()),
+            temp_path: temp_path.map(|path| Box::new(path.to_path_buf())),
             pid: std::process::id(),
+            display_target: None,
+            display_temp: None,
             cause: SettingsSaveCause::Semantic(reason),
             legacy_outward,
         }
+    }
+
+    fn with_capture_labels(mut self, settings_label: &Path) -> Self {
+        self.display_target = self
+            .target_path
+            .file_name()
+            .map(|name| Box::new(settings_label.with_file_name(name)));
+        self.display_temp = self.temp_path.as_deref().and_then(|physical| {
+            physical
+                .file_name()
+                .map(|name| Box::new(settings_label.with_file_name(name)))
+        });
+        self
     }
 
     fn general_settings_diagnostic_code(&self) -> &'static str {
@@ -10149,8 +10876,14 @@ impl SettingsSaveError {
             stage: self.stage.as_str(),
             reason,
             pid: self.pid,
-            target_path: render_diagnostic_path(&self.target_path),
-            temp_path: self.temp_path.as_deref().map(render_diagnostic_path),
+            target_path: render_diagnostic_path(
+                self.display_target.as_deref().unwrap_or(&self.target_path),
+            ),
+            temp_path: self
+                .display_temp
+                .as_deref()
+                .or(self.temp_path.as_deref())
+                .map(|path| render_diagnostic_path(path)),
             source_kind,
             io_kind,
             raw_os_error,
@@ -10358,13 +11091,6 @@ fn report_settings_save_error(
     surface.into_outward_string(error)
 }
 
-fn read_disk_object_for_write(path: &Path) -> Result<Option<Map<String, Value>>, String> {
-    read_disk_object_for_write_typed(path, SettingsSaveStage::ProjectPathsRefreshDiskGate).map_err(
-        |error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings),
-    )
-}
-
-/// case the caller must NOT write (§4.1). A valid object is returned for reuse.
 fn read_disk_object_for_write_typed(
     path: &Path,
     stage: SettingsSaveStage,
@@ -10468,27 +11194,36 @@ fn validate_non_project_settings(disk: &Map<String, Value>) -> Result<(), String
 /// eligible project group(s) from `settings`' hidden state to `path`, returning
 /// the fresh-decoded settings. A structurally-corrupt or no-eligible-repair
 /// state performs no write and returns the settings unchanged.
+#[cfg(test)]
 pub(crate) fn reconcile_project_state_to_path(
     settings: &AppSettings,
     path: &Path,
     active: bool,
     archived: bool,
 ) -> Result<AppSettings, String> {
-    save_settings_value(
-        settings,
+    let mut transaction = begin_project_paths_transaction_at_path(settings, path)?;
+    let written = if project_state_has_structural(settings) {
+        transaction.fresh_settings().clone()
+    } else {
+        transaction.commit_project_groups(settings, active, archived)?
+    };
+    // Snapshot fixture helper only: preserve historical unrelated fixture seeding.
+    // Production project operations call the token's sidecar-only commit directly.
+    save_settings_value_locked(
+        &written,
         path,
         ProjectWriteMode::Reconcile { active, archived },
+        TerminalSnapshotGateWriteMode::Preserve,
+        MainWindowPlacementWriteMode::Preserve,
     )
     .map_err(|error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings))
 }
 
-// P02 remains dormant until the separately reviewed source-activation phase.
-#[cfg(test)]
+// Sole project registration authority; callers hold the shared settings lock.
 fn project_paths_path(settings_path: &Path) -> PathBuf {
     settings_path.with_file_name(super::instance_artifacts::PROJECT_PATHS_FILE_NAME)
 }
 
-#[cfg(test)]
 fn raw_project_projection(object: &Map<String, Value>) -> Map<String, Value> {
     [
         FIELD_PROJECT_PATH,
@@ -10507,9 +11242,17 @@ fn raw_project_projection(object: &Map<String, Value>) -> Map<String, Value> {
     .collect()
 }
 
-#[cfg(test)]
 fn project_migration_error(
     path: &Path,
+    stage: SettingsSaveStage,
+    reason: &str,
+) -> SettingsSaveError {
+    project_migration_error_labeled(path, path, stage, reason)
+}
+
+fn project_migration_error_labeled(
+    path: &Path,
+    label: &Path,
     stage: SettingsSaveStage,
     reason: &str,
 ) -> SettingsSaveError {
@@ -10525,12 +11268,15 @@ fn project_migration_error(
         path,
         None,
         kind,
-        SettingsSaveLegacyOutward::DiskRead(format!("{}: {reason}", path.display())),
+        SettingsSaveLegacyOutward::DiskRead(format!("{}: {reason}", label.display())),
     )
 }
 
-#[cfg(test)]
-fn read_project_source_bytes(path: &Path) -> Result<Option<Vec<u8>>, SettingsSaveError> {
+fn read_project_source_bytes_labeled_with_limit(
+    path: &Path,
+    label: &Path,
+    limit: usize,
+) -> Result<Option<Vec<u8>>, SettingsSaveError> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -10544,39 +11290,64 @@ fn read_project_source_bytes(path: &Path) -> Result<Option<Vec<u8>>, SettingsSav
         }
         Ok(_) => {}
     }
-    crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024)
+    crate::path_identity::read_bounded_regular(path, limit)
         .map(|(bytes, _)| Some(bytes))
         .map_err(|reason| {
-            project_migration_error(
+            project_migration_error_labeled(
                 path,
+                label,
                 SettingsSaveStage::ProjectPathsRefreshDiskGate,
                 &reason,
             )
         })
 }
 
-#[cfg(test)]
 #[derive(Debug)]
 struct RawProjectSource {
     object: Map<String, Value>,
     bytes: Vec<u8>,
 }
 
-#[cfg(test)]
 fn read_raw_project_source(path: &Path) -> Result<Option<RawProjectSource>, SettingsSaveError> {
-    let Some(bytes) = read_project_source_bytes(path)? else {
+    read_raw_project_source_with_limit(path, 16 * 1024 * 1024, false)
+}
+
+fn read_raw_project_source_with_limit(
+    path: &Path,
+    limit: usize,
+    legacy_settings_diagnostic: bool,
+) -> Result<Option<RawProjectSource>, SettingsSaveError> {
+    read_raw_project_source_labeled_with_limit(path, path, limit, legacy_settings_diagnostic)
+}
+
+fn read_raw_project_source_labeled_with_limit(
+    path: &Path,
+    label: &Path,
+    limit: usize,
+    legacy_settings_diagnostic: bool,
+) -> Result<Option<RawProjectSource>, SettingsSaveError> {
+    let Some(bytes) = read_project_source_bytes_labeled_with_limit(path, label, limit)? else {
         return Ok(None);
     };
     let value = crate::path_identity::parse_json_no_duplicates(&bytes).map_err(|reason| {
-        project_migration_error(
+        let mut error = project_migration_error_labeled(
             path,
+            label,
             SettingsSaveStage::ProjectPathsRefreshDiskGate,
             &reason,
-        )
+        );
+        if legacy_settings_diagnostic {
+            error.legacy_outward = SettingsSaveLegacyOutward::DiskRead(format!(
+                "settings.json exists but could not be parsed ({}: {reason}); refusing to modify it - fix or remove the file first",
+                label.display()
+            ));
+        }
+        error
     })?;
     let Value::Object(object) = value else {
-        return Err(project_migration_error(
+        return Err(project_migration_error_labeled(
             path,
+            label,
             SettingsSaveStage::ProjectPathsRefreshDiskGate,
             "project_paths_source_not_object",
         ));
@@ -10584,7 +11355,6 @@ fn read_raw_project_source(path: &Path) -> Result<Option<RawProjectSource>, Sett
     Ok(Some(RawProjectSource { object, bytes }))
 }
 
-#[cfg(test)]
 #[derive(Debug)]
 struct SelectedProjectSource {
     legacy: Option<RawProjectSource>,
@@ -10593,14 +11363,39 @@ struct SelectedProjectSource {
 }
 
 // Capture both immutable objects only while the original settings token is held.
-#[cfg(test)]
 fn select_project_source_locked(
     transaction: &ProjectPathsWriteTransaction,
 ) -> Result<SelectedProjectSource, SettingsSaveError> {
-    let path = &transaction.path;
-    let legacy = read_raw_project_source(path)?;
+    select_project_source_at_locked_path(&transaction.path)
+}
+
+fn select_project_source_at_locked_path(
+    path: &Path,
+) -> Result<SelectedProjectSource, SettingsSaveError> {
+    select_project_source_at_locked_path_with_limit(path, 16 * 1024 * 1024)
+}
+
+fn select_project_source_at_locked_path_with_limit(
+    path: &Path,
+    limit: usize,
+) -> Result<SelectedProjectSource, SettingsSaveError> {
+    select_project_source_at_labeled_path_with_limit(path, path, limit)
+}
+
+fn select_project_source_at_labeled_path_with_limit(
+    path: &Path,
+    label: &Path,
+    limit: usize,
+) -> Result<SelectedProjectSource, SettingsSaveError> {
+    let legacy = read_raw_project_source_labeled_with_limit(path, label, limit, true)?;
     let destination_path = project_paths_path(path);
-    let destination = read_raw_project_source(&destination_path)?;
+    let destination_label = project_paths_path(label);
+    let destination = read_raw_project_source_labeled_with_limit(
+        &destination_path,
+        &destination_label,
+        limit,
+        false,
+    )?;
     let legacy_projection = legacy
         .as_ref()
         .map(|source| raw_project_projection(&source.object))
@@ -10610,8 +11405,8 @@ fn select_project_source_locked(
         Some(source) => {
             let projection = raw_project_projection(&source.object);
             if !legacy_projection.is_empty() && legacy_projection != projection {
-                return Err(project_migration_error(&destination_path, SettingsSaveStage::ProjectPathsRefreshDiskGate,
-                    &format!("project_paths_conflict; source={}; destination={}; preserve both files and reconcile raw projections to equality", path.display(), destination_path.display())));
+                return Err(project_migration_error_labeled(&destination_path, &destination_label, SettingsSaveStage::ProjectPathsRefreshDiskGate,
+                    &format!("project_paths_conflict; source={}; destination={}; preserve both files and reconcile raw projections to equality", label.display(), destination_label.display())));
             }
             projection
         }
@@ -10626,7 +11421,11 @@ fn select_project_source_locked(
 // Read-only selection acquires before even checking either source's existence.
 #[cfg(test)]
 fn select_project_source_at_path(path: &Path) -> Result<Map<String, Value>, SettingsSaveError> {
-    let lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
+    let lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "select_project_source_at_path",
+    )?;
     let transaction = ProjectPathsWriteTransaction {
         _lock: lock,
         path: path.to_path_buf(),
@@ -10636,20 +11435,24 @@ fn select_project_source_at_path(path: &Path) -> Result<Map<String, Value>, Sett
     Ok(select_project_source_locked(&transaction)?.projection)
 }
 
-#[cfg(test)]
-fn publish_project_migration_backup(
+fn publish_project_migration_backup_labeled(
     settings_path: &Path,
+    label: &Path,
     bytes: &[u8],
     checkpoint: &mut impl FnMut(&str, &Path) -> Result<(), SettingsSaveError>,
 ) -> Result<(), SettingsSaveError> {
     use std::io::Write as _;
     let backup =
         settings_path.with_file_name(super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
+    let backup_label =
+        label.with_file_name(super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
     let mismatch = || {
-        project_migration_error(&backup, SettingsSaveStage::PostWriteVerify,
-        &format!("project_paths_backup_mismatch; source={}; destination={}; backup={}; stop all AC/old processes, preserve copies and orphan temps, rename backup without overwrite to project-paths.pre-migration.recovered-<UTC>-<unique>.no-git.json, verify intended legacy projection and retry", settings_path.display(), project_paths_path(settings_path).display(), backup.display()))
+        project_migration_error_labeled(&backup, &backup_label, SettingsSaveStage::PostWriteVerify,
+        &format!("project_paths_backup_mismatch; source={}; destination={}; backup={}; stop all AC/old processes, preserve copies and orphan temps, rename backup without overwrite to project-paths.pre-migration.recovered-<UTC>-<unique>.no-git.json, verify intended legacy projection and retry", label.display(), project_paths_path(label).display(), backup_label.display()))
     };
-    if let Some(existing) = read_project_source_bytes(&backup)? {
+    if let Some(existing) =
+        read_project_source_bytes_labeled_with_limit(&backup, &backup_label, 16 * 1024 * 1024)?
+    {
         return if existing == bytes {
             Ok(())
         } else {
@@ -10657,10 +11460,20 @@ fn publish_project_migration_backup(
         };
     }
     let parent = backup.parent().ok_or_else(|| {
-        project_migration_error(&backup, SettingsSaveStage::PrepareTarget, "missing parent")
+        project_migration_error_labeled(
+            &backup,
+            &backup_label,
+            SettingsSaveStage::PrepareTarget,
+            "missing parent",
+        )
     })?;
     crate::path_identity::verify_component_chain(parent).map_err(|reason| {
-        project_migration_error(&backup, SettingsSaveStage::PrepareTarget, &reason)
+        project_migration_error_labeled(
+            &backup,
+            &backup_label,
+            SettingsSaveStage::PrepareTarget,
+            &reason,
+        )
     })?;
     let mut name = backup.file_name().unwrap().to_os_string();
     name.push(format!(
@@ -10694,8 +11507,14 @@ fn publish_project_migration_backup(
     let mut file = options
         .open(&temp)
         .map_err(|error| io_error(SettingsSaveStage::TempCreate, error))?;
-    crate::path_identity::verify_opened_regular_file(&temp, &file, false)
-        .map_err(|reason| project_migration_error(&temp, SettingsSaveStage::TempVerify, &reason))?;
+    crate::path_identity::verify_opened_regular_file(&temp, &file, false).map_err(|reason| {
+        project_migration_error_labeled(
+            &temp,
+            &label.with_file_name(temp.file_name().unwrap()),
+            SettingsSaveStage::TempVerify,
+            &reason,
+        )
+    })?;
     let prefix = bytes.len() / 2;
     file.write_all(&bytes[..prefix])
         .map_err(|error| io_error(SettingsSaveStage::TempWrite, error))?;
@@ -10707,12 +11526,21 @@ fn publish_project_migration_backup(
         .map_err(|error| io_error(SettingsSaveStage::TempSync, error))?;
     checkpoint("backup_sync", &temp)?;
     drop(file);
-    if read_project_source_bytes(&temp)?.as_deref() != Some(bytes) {
+    if read_project_source_bytes_labeled_with_limit(
+        &temp,
+        &label.with_file_name(temp.file_name().unwrap()),
+        16 * 1024 * 1024,
+    )?
+    .as_deref()
+        != Some(bytes)
+    {
         return Err(mismatch());
     }
     checkpoint("backup_before_rename", &temp)?;
     // Never use the replacing atomic writer for the immutable fixed name.
-    if let Some(existing) = read_project_source_bytes(&backup)? {
+    if let Some(existing) =
+        read_project_source_bytes_labeled_with_limit(&backup, &backup_label, 16 * 1024 * 1024)?
+    {
         return if existing == bytes {
             Ok(())
         } else {
@@ -10720,7 +11548,11 @@ fn publish_project_migration_backup(
         };
     }
     if let Err(error) = std::fs::rename(&temp, &backup) {
-        match read_project_source_bytes(&backup)? {
+        match read_project_source_bytes_labeled_with_limit(
+            &backup,
+            &backup_label,
+            16 * 1024 * 1024,
+        )? {
             Some(existing) if existing == bytes => {}
             Some(_) => return Err(mismatch()),
             None => return Err(io_error(SettingsSaveStage::AtomicReplace, error)),
@@ -10730,17 +11562,19 @@ fn publish_project_migration_backup(
     std::fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| io_error(SettingsSaveStage::ParentDirectorySync, error))?;
-    if read_project_source_bytes(&backup)?.as_deref() != Some(bytes) {
+    if read_project_source_bytes_labeled_with_limit(&backup, &backup_label, 16 * 1024 * 1024)?
+        .as_deref()
+        != Some(bytes)
+    {
         return Err(mismatch());
     }
     checkpoint("backup_published", &backup)
 }
 
-#[cfg(test)]
 fn ensure_project_paths_migrated_locked(
     transaction: &ProjectPathsWriteTransaction,
 ) -> Result<(), SettingsSaveError> {
-    ensure_project_paths_migrated_with(transaction, &mut |_, _| Ok(()))
+    ensure_project_paths_migrated_at_locked_path(&transaction.path, &mut |_, _| Ok(()))
 }
 
 #[cfg(test)]
@@ -10748,39 +11582,67 @@ fn ensure_project_paths_migrated_with(
     transaction: &ProjectPathsWriteTransaction,
     checkpoint: &mut impl FnMut(&str, &Path) -> Result<(), SettingsSaveError>,
 ) -> Result<(), SettingsSaveError> {
-    let selected = select_project_source_locked(transaction)?;
-    let path = &transaction.path;
+    ensure_project_paths_migrated_at_locked_path(&transaction.path, checkpoint)
+}
+
+fn ensure_project_paths_migrated_at_locked_path(
+    path: &Path,
+    checkpoint: &mut impl FnMut(&str, &Path) -> Result<(), SettingsSaveError>,
+) -> Result<(), SettingsSaveError> {
+    ensure_project_paths_migrated_at_labeled_path(path, path, checkpoint)
+}
+
+fn ensure_project_paths_migrated_at_labeled_path(
+    path: &Path,
+    label: &Path,
+    checkpoint: &mut impl FnMut(&str, &Path) -> Result<(), SettingsSaveError>,
+) -> Result<(), SettingsSaveError> {
+    let selected = select_project_source_at_labeled_path_with_limit(path, label, 16 * 1024 * 1024)?;
     let destination = project_paths_path(path);
+    let destination_label = project_paths_path(label);
     let legacy_fields = selected
         .legacy
         .as_ref()
         .is_some_and(|source| !raw_project_projection(&source.object).is_empty());
     if selected.destination.is_none() {
         if legacy_fields {
-            publish_project_migration_backup(
+            publish_project_migration_backup_labeled(
                 path,
+                label,
                 &selected.legacy.as_ref().unwrap().bytes,
                 checkpoint,
             )?;
         }
         checkpoint("destination_before_write", &destination)?;
-        write_value_atomic(&Value::Object(selected.projection.clone()), &destination)?;
+        write_value_atomic_labeled(
+            &Value::Object(selected.projection.clone()),
+            &destination,
+            &destination_label,
+        )?;
         checkpoint("destination_published", &destination)?;
     }
     if !legacy_fields {
         return Ok(());
     }
     checkpoint("destination_readback", &destination)?;
-    let readback = read_raw_project_source(&destination)?.ok_or_else(|| {
-        project_migration_error(
+    let readback = read_raw_project_source_labeled_with_limit(
+        &destination,
+        &destination_label,
+        16 * 1024 * 1024,
+        false,
+    )?
+    .ok_or_else(|| {
+        project_migration_error_labeled(
             &destination,
+            &destination_label,
             SettingsSaveStage::PostWriteRead,
             "project_paths_destination_disappeared",
         )
     })?;
     if raw_project_projection(&readback.object) != selected.projection {
-        return Err(project_migration_error(
+        return Err(project_migration_error_labeled(
             &destination,
+            &destination_label,
             SettingsSaveStage::PostWriteVerify,
             "project_paths_readback_mismatch",
         ));
@@ -10791,9 +11653,9 @@ fn ensure_project_paths_migrated_with(
     for key in selected.projection.keys() {
         cleaned.remove(key);
     }
-    let written = write_value_atomic(&Value::Object(cleaned), path)?;
+    let written = write_value_atomic_labeled(&Value::Object(cleaned), path, label)?;
     if original.bytes != written {
-        rotate_settings_backups(path, &original.bytes);
+        rotate_settings_backups_labeled(path, label, &original.bytes);
     }
     checkpoint("cleanup_complete", path)
 }
@@ -10813,23 +11675,55 @@ pub(crate) enum ProjectPathsRepairStage {
     Write,
 }
 
+#[track_caller]
+fn empty_project_transaction(
+    path: &Path,
+    operation: &'static str,
+) -> Result<ProjectPathsWriteTransaction, SettingsSaveError> {
+    Ok(ProjectPathsWriteTransaction {
+        _lock: SettingsFileLock::acquire_contextual(
+            path,
+            std::time::Duration::from_secs(2),
+            operation,
+        )?,
+        path: path.to_path_buf(),
+        fresh: AppSettings::default(),
+        revalidated_after_failure: false,
+    })
+}
+
+fn apply_selected_project_state(settings: &mut AppSettings, projection: &Map<String, Value>) {
+    let state = decode_project_state(
+        projection,
+        production_instance_base().as_deref(),
+        &projects::FsCandidateResolver,
+    );
+    settings.project_paths = state.active_selected();
+    settings.project_path = state.selected_head.clone();
+    settings.archived_project_paths = state.archived_management_paths();
+    settings.project_path_state = Arc::new(state);
+    settings.project_paths_persistence_error = None;
+}
+
 pub(crate) fn begin_project_paths_transaction_at_path(
     current: &AppSettings,
     settings_path: &Path,
 ) -> Result<ProjectPathsWriteTransaction, String> {
-    let lock = SettingsFileLock::acquire(settings_path, std::time::Duration::from_secs(2))
-        .map_err(|error| {
-            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
-        })?;
-    let mut fresh = current.clone();
-    refresh_and_decode_project_paths_from_path(&mut fresh, settings_path)?;
-    fresh.project_paths_persistence_error = None;
-    Ok(ProjectPathsWriteTransaction {
-        _lock: lock,
-        path: settings_path.to_path_buf(),
-        fresh,
-        revalidated_after_failure: false,
-    })
+    let mut transaction =
+        empty_project_transaction(settings_path, "begin_project_paths_transaction_at_path")
+            .map_err(|error| {
+                report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+            })?;
+    ensure_project_paths_migrated_locked(&transaction).map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+    })?;
+    transaction.fresh = current.clone();
+    refresh_coding_agent_identity_at_locked_path(&mut transaction.fresh, settings_path);
+    let selected = select_project_source_locked(&transaction).map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+    })?;
+    apply_selected_project_state(&mut transaction.fresh, &selected.projection);
+    Ok(transaction)
 }
 
 impl ProjectPathsWriteTransaction {
@@ -10847,14 +11741,94 @@ impl ProjectPathsWriteTransaction {
             return Err(message.clone());
         }
         self.revalidated_after_failure = false;
-        let result = save_settings_value_locked(
-            candidate,
-            &self.path,
-            ProjectWriteMode::Reconcile { active, archived },
-            TerminalSnapshotGateWriteMode::Preserve,
-            MainWindowPlacementWriteMode::Preserve,
-        );
+        let result = self.write_project_groups(candidate, active, archived);
         self.handle_commit_result(result)
+    }
+
+    pub(crate) fn refresh_raw_projects(&self, settings: &mut AppSettings) -> Result<(), String> {
+        let selected = select_project_source_locked(self).map_err(|error| {
+            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+        })?;
+        apply_selected_project_state(settings, &selected.projection);
+        if settings.project_path_state.has_structural() {
+            return Err("project metadata is malformed".to_string());
+        }
+        if let Some(lists) = project_lists_from_projection(&selected.projection)? {
+            settings.project_paths = lists.project_paths;
+            settings.project_path = lists.project_path;
+            settings.archived_project_paths = lists.archived_project_paths.unwrap_or_default();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn raw_project_projection(&self) -> Result<Map<String, Value>, String> {
+        select_project_source_locked(self)
+            .map(|selected| selected.projection)
+            .map_err(|error| {
+                report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+            })
+    }
+
+    pub(crate) fn restore_raw_project_projection(
+        &mut self,
+        projection: &Map<String, Value>,
+    ) -> Result<AppSettings, String> {
+        let result = (|| {
+            let selected = select_project_source_locked(self)?;
+            let mut object = selected
+                .destination
+                .map(|source| source.object)
+                .unwrap_or_default();
+            replace_project_projection(&mut object, projection);
+            write_value_atomic(&Value::Object(object), &project_paths_path(&self.path))?;
+            let selected = select_project_source_locked(self)?;
+            let mut written = self.fresh.clone();
+            refresh_coding_agent_identity_at_locked_path(&mut written, &self.path);
+            apply_selected_project_state(&mut written, &selected.projection);
+            Ok(written)
+        })();
+        self.handle_commit_result(result)
+    }
+
+    fn write_project_groups(
+        &self,
+        candidate: &AppSettings,
+        active: bool,
+        archived: bool,
+    ) -> Result<AppSettings, SettingsSaveError> {
+        let selected = select_project_source_locked(self)?;
+        let destination = project_paths_path(&self.path);
+        let mut out = selected
+            .destination
+            .map(|source| source.object)
+            .unwrap_or_default();
+        let state = hidden_state_for_write(candidate);
+        if state.has_structural() {
+            return Err(project_migration_error(
+                &destination,
+                SettingsSaveStage::ReconcileDiskGate,
+                "project metadata is malformed",
+            ));
+        }
+        let base = production_instance_base();
+        if active && (state.runtime_authoritative || state.active_reconcile_eligible) {
+            write_active_group(&mut out, &state, base.as_deref());
+        }
+        if archived && (state.runtime_authoritative || state.archived_reconcile_eligible) {
+            write_archived_group(&mut out, &state, base.as_deref());
+        }
+        if out
+            != read_raw_project_source(&destination)?
+                .map(|source| source.object)
+                .unwrap_or_default()
+        {
+            write_value_atomic(&Value::Object(out), &destination)?;
+        }
+        let projection = select_project_source_locked(self)?.projection;
+        let mut written = candidate.clone();
+        refresh_coding_agent_identity_at_locked_path(&mut written, &self.path);
+        apply_selected_project_state(&mut written, &projection);
+        Ok(written)
     }
 
     fn handle_commit_result(
@@ -10883,27 +11857,19 @@ impl ProjectPathsWriteTransaction {
                 if uncertain {
                     // Re-read under this same lock; never roll back a write
                     // whose outcome cannot be established.
-                    let validated = read_disk_object_for_write(&self.path).and_then(|map| {
-                        let map =
-                            map.ok_or_else(|| "committed settings file is absent".to_string())?;
-                        let effective =
-                            match serde_json::to_value(&self.fresh).map_err(|error| {
-                                format!("project state serialization failed: {error}")
-                            })? {
-                                Value::Object(map) => map,
-                                _ => {
-                                    return Err(
-                                        "project state did not serialize as an object".to_string()
-                                    )
-                                }
-                            };
-                        decode_disk_settings_for_terminal_snapshot_cas(
-                            map,
-                            &self.path,
-                            &self.fresh.local_overlay_state,
-                            &effective,
-                        )
-                    });
+                    let validated = select_project_source_locked(self)
+                        .map(|selected| {
+                            let mut settings = self.fresh.clone();
+                            refresh_coding_agent_identity_at_locked_path(&mut settings, &self.path);
+                            apply_selected_project_state(&mut settings, &selected.projection);
+                            settings
+                        })
+                        .map_err(|error| {
+                            report_settings_save_error(
+                                error,
+                                SettingsSaveReportSurface::GeneralSettings,
+                            )
+                        });
                     match validated {
                         Ok(mut settings) => {
                             settings.local_overlay_state = self.fresh.local_overlay_state.clone();
@@ -10958,15 +11924,336 @@ pub(crate) fn repair_fresh_project_paths_at_path(
     }
 }
 
+// Diagnostic transport is prepared before kernel ownership. The worker is the
+// only place that formats or writes logs; an owner never waits for its sink.
+const SETTINGS_LOCK_DEBUG_CAPACITY: usize = 256;
+const SETTINGS_LOCK_DEBUG_PATH_BYTES: usize = 4096;
+static SETTINGS_LOCK_DEBUG_TRANSPORT: OnceLock<
+    Option<std::sync::mpsc::SyncSender<SettingsLockDebugEvent>>,
+> = OnceLock::new();
+static SETTINGS_LOCK_DEBUG_INSTANCE: OnceLock<uuid::Uuid> = OnceLock::new();
+static SETTINGS_LOCK_DEBUG_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+static SETTINGS_LOCK_DEBUG_LOST: AtomicU64 = AtomicU64::new(0);
+
+struct SettingsLockDebugContext {
+    instance: uuid::Uuid,
+    pid: u32,
+    attempt: u64,
+    operation: &'static str,
+    caller: &'static std::panic::Location<'static>,
+    thread: std::thread::ThreadId,
+    target: String,
+    sidecar: String,
+    path_truncated: bool,
+}
+
+struct SettingsLockDebugEvent {
+    context: Arc<SettingsLockDebugContext>,
+    phase: &'static str,
+    utc: chrono::DateTime<chrono::Utc>,
+    thread: std::thread::ThreadId,
+    preparation_ms: Option<f64>,
+    wait_ms: Option<f64>,
+    hold_ms: Option<f64>,
+    reason: Option<&'static str>,
+    raw_os_error: Option<i32>,
+}
+
+struct SettingsLockDebugAttempt {
+    context: Arc<SettingsLockDebugContext>,
+    sender: std::sync::mpsc::SyncSender<SettingsLockDebugEvent>,
+    started: std::time::Instant,
+    retry_started: Option<std::time::Instant>,
+    acquired_at: Option<std::time::Instant>,
+}
+
+// Bound the escaped representation, including quotes, without splitting UTF-8.
+// A truncated prefix is intentionally not a complete identity for a lock.
+fn settings_lock_debug_path(path: &Path) -> (String, bool) {
+    let mut escaped = String::with_capacity(SETTINGS_LOCK_DEBUG_PATH_BYTES);
+    escaped.push('"');
+    for character in path.to_string_lossy().chars() {
+        let piece = match character {
+            '"' => "\\\"".to_string(),
+            '\\' => "\\\\".to_string(),
+            '\n' => "\\n".to_string(),
+            '\r' => "\\r".to_string(),
+            '\t' => "\\t".to_string(),
+            c if c.is_control() => format!("\\u{:04x}", c as u32),
+            c => c.to_string(),
+        };
+        if escaped.len() + piece.len() + 1 > SETTINGS_LOCK_DEBUG_PATH_BYTES {
+            escaped.push('"');
+            return (escaped, true);
+        }
+        escaped.push_str(&piece);
+    }
+    escaped.push('"');
+    (escaped, false)
+}
+
+fn settings_lock_debug_transport(
+    slot: &OnceLock<Option<std::sync::mpsc::SyncSender<SettingsLockDebugEvent>>>,
+    enabled: bool,
+    spawn: impl FnOnce(std::sync::mpsc::Receiver<SettingsLockDebugEvent>) -> std::io::Result<()>,
+) -> Option<std::sync::mpsc::SyncSender<SettingsLockDebugEvent>> {
+    // In particular, INFO must not freeze None before a runtime change to DEBUG.
+    if !enabled {
+        return None;
+    }
+    slot.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(SETTINGS_LOCK_DEBUG_CAPACITY);
+        spawn(receiver).ok().map(|()| sender)
+    })
+    .clone()
+}
+
+fn settings_lock_debug_worker(receiver: std::sync::mpsc::Receiver<SettingsLockDebugEvent>) {
+    for event in receiver {
+        #[cfg(test)]
+        settings_lock_debug_test_before_emit(&event);
+        settings_lock_debug_emit(&event);
+        #[cfg(test)]
+        settings_lock_debug_test_after_emit(&event);
+    }
+}
+
+#[cfg(test)]
+struct SettingsLockDebugTestHooks {
+    gate_phase: &'static str,
+    gate_once: std::sync::atomic::AtomicBool,
+    gated: std::sync::mpsc::Sender<()>,
+    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    processed: std::sync::mpsc::Sender<serde_json::Value>,
+}
+
+#[cfg(test)]
+static SETTINGS_LOCK_DEBUG_TEST_HOOKS: OnceLock<SettingsLockDebugTestHooks> = OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn settings_lock_debug_test_before_emit(event: &SettingsLockDebugEvent) {
+    let Some(hooks) = SETTINGS_LOCK_DEBUG_TEST_HOOKS.get() else {
+        return;
+    };
+    if event.phase == hooks.gate_phase && hooks.gate_once.swap(false, Ordering::Relaxed) {
+        hooks.gated.send(()).expect("gate observer disconnected");
+        hooks
+            .resume
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("gate not resumed by harness");
+    }
+}
+
+#[cfg(test)]
+fn settings_lock_debug_test_after_emit(event: &SettingsLockDebugEvent) {
+    if let Some(hooks) = SETTINGS_LOCK_DEBUG_TEST_HOOKS.get() {
+        let _ = hooks.processed.send(serde_json::json!({
+            "phase": event.phase,
+            "instance": event.context.instance.to_string(),
+            "pid": event.context.pid,
+            "attempt": event.context.attempt,
+            "operation": event.context.operation,
+            "sidecar": event.context.sidecar,
+            "target": event.context.target,
+            "reason": event.reason,
+            "raw_os_error": event.raw_os_error,
+            "wait_ms": event.wait_ms,
+            "hold_ms": event.hold_ms,
+            "preparation_ms": event.preparation_ms,
+            "acquisition_thread": format!("{:?}", event.context.thread),
+            "event_thread": format!("{:?}", event.thread),
+            "event_utc": event.utc.to_rfc3339(),
+            "lost_events": SETTINGS_LOCK_DEBUG_LOST.load(Ordering::Relaxed),
+        }));
+    }
+}
+
+fn settings_lock_debug_emit(event: &SettingsLockDebugEvent) {
+    // Reevaluate effective app/CLI filtering after a potentially stalled sink.
+    if !log::log_enabled!(target: module_path!(), log::Level::Debug) {
+        return;
+    }
+    let context = &event.context;
+    log::debug!(target: module_path!(),
+        "settings-lock phase={} pid={} instance={} attempt={} operation={} origin={}:{}:{} acquisition_thread={:?} event_thread={:?} target={} sidecar={} path_truncated={} event_utc={} emitted_utc={} preparation_ms={:?} wait_ms={:?} hold_ms={:?} stage={} reason={:?} raw_os_error={:?} handle_closed={} lost_events={}",
+        event.phase, context.pid, context.instance, context.attempt,
+        context.operation, context.caller.file(), context.caller.line(),
+        context.caller.column(), context.thread, event.thread, context.target,
+        context.sidecar, context.path_truncated, event.utc.to_rfc3339(),
+        chrono::Utc::now().to_rfc3339(), event.preparation_ms, event.wait_ms,
+        event.hold_ms, if event.phase == "release" { "unlock" } else { "lock_acquire" }, event.reason, event.raw_os_error,
+        matches!(event.phase, "release" | "timeout" | "acquire-error"),
+        SETTINGS_LOCK_DEBUG_LOST.load(Ordering::Relaxed));
+}
+
+impl SettingsLockDebugAttempt {
+    fn prepare(
+        settings_path: &Path,
+        operation: &'static str,
+        caller: &'static std::panic::Location<'static>,
+    ) -> Option<Self> {
+        let sender = settings_lock_debug_transport(
+            &SETTINGS_LOCK_DEBUG_TRANSPORT,
+            log::log_enabled!(target: module_path!(), log::Level::Debug),
+            |receiver| {
+                std::thread::Builder::new()
+                    .name("settings-lock-debug".into())
+                    .spawn(move || settings_lock_debug_worker(receiver))
+                    .map(|_| ())
+            },
+        )?;
+        let attempt = SETTINGS_LOCK_DEBUG_ATTEMPT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .ok()?
+            + 1;
+        let (target, target_truncated) = settings_lock_debug_path(settings_path);
+        let lock_path = settings_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(SETTINGS_LOCK_FILE_NAME);
+        let (sidecar, sidecar_truncated) = settings_lock_debug_path(&lock_path);
+        let debug = Self {
+            context: Arc::new(SettingsLockDebugContext {
+                instance: *SETTINGS_LOCK_DEBUG_INSTANCE.get_or_init(uuid::Uuid::new_v4),
+                pid: std::process::id(),
+                attempt,
+                operation,
+                caller,
+                thread: std::thread::current().id(),
+                target,
+                sidecar,
+                path_truncated: target_truncated || sidecar_truncated,
+            }),
+            sender,
+            started: std::time::Instant::now(),
+            retry_started: None,
+            acquired_at: None,
+        };
+        debug.event("acquire-start", None, None);
+        Some(debug)
+    }
+
+    fn event(&self, phase: &'static str, reason: Option<&'static str>, raw_os_error: Option<i32>) {
+        self.event_at(phase, reason, raw_os_error, std::time::Instant::now());
+    }
+
+    fn event_at(
+        &self,
+        phase: &'static str,
+        reason: Option<&'static str>,
+        raw_os_error: Option<i32>,
+        at: std::time::Instant,
+    ) {
+        let event = SettingsLockDebugEvent {
+            context: Arc::clone(&self.context),
+            phase,
+            utc: chrono::Utc::now(),
+            thread: std::thread::current().id(),
+            preparation_ms: (phase != "acquire-start").then(|| {
+                self.retry_started
+                    .unwrap_or(at)
+                    .duration_since(self.started)
+                    .as_secs_f64()
+                    * 1000.0
+            }),
+            wait_ms: self.retry_started.map(|retry| {
+                self.acquired_at
+                    .unwrap_or(at)
+                    .duration_since(retry)
+                    .as_secs_f64()
+                    * 1000.0
+            }),
+            hold_ms: self
+                .acquired_at
+                .filter(|_| phase == "release")
+                .map(|acquired| at.duration_since(acquired).as_secs_f64() * 1000.0),
+            reason,
+            raw_os_error,
+        };
+        if self.sender.try_send(event).is_err() {
+            // Saturation avoids diagnostic counter wraparound too.
+            let _ = SETTINGS_LOCK_DEBUG_LOST.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |value| Some(value.saturating_add(1)),
+            );
+        }
+    }
+
+    fn failure(&self, error: &SettingsSaveError) {
+        let (reason, raw) = match &error.cause {
+            SettingsSaveCause::Io(source) => ("io_error", source.raw_os_error()),
+            SettingsSaveCause::Semantic(reason) => (reason.as_str(), None),
+            SettingsSaveCause::Json(_) => ("json_error", None),
+        };
+        self.event(
+            if reason == "lock_timed_out" {
+                "timeout"
+            } else {
+                "acquire-error"
+            },
+            Some(reason),
+            raw,
+        );
+    }
+}
+
 struct SettingsFileLock {
-    file: std::fs::File,
+    file: Option<std::fs::File>,
+    debug: Option<SettingsLockDebugAttempt>,
 }
 
 impl SettingsFileLock {
+    #[cfg(test)]
+    #[track_caller]
     fn acquire(
         settings_path: &Path,
         timeout: std::time::Duration,
     ) -> Result<Self, SettingsSaveError> {
+        Self::acquire_contextual(settings_path, timeout, "test-lock")
+    }
+
+    #[track_caller]
+    fn acquire_contextual(
+        settings_path: &Path,
+        timeout: std::time::Duration,
+        operation: &'static str,
+    ) -> Result<Self, SettingsSaveError> {
+        let mut debug = SettingsLockDebugAttempt::prepare(
+            settings_path,
+            operation,
+            std::panic::Location::caller(),
+        );
+        // Inner failure drops every opened file before a diagnostic is enqueued.
+        let file = match Self::acquire_file(settings_path, timeout, &mut debug) {
+            Ok(file) => file,
+            Err(error) => {
+                if let Some(debug) = &debug {
+                    debug.failure(&error);
+                }
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            file: Some(file),
+            debug,
+        })
+    }
+
+    fn acquire_file(
+        settings_path: &Path,
+        timeout: std::time::Duration,
+        debug: &mut Option<SettingsLockDebugAttempt>,
+    ) -> Result<std::fs::File, SettingsSaveError> {
         let parent = settings_path.parent().ok_or_else(|| {
             SettingsSaveError::semantic(
                 SettingsSaveStage::LockAcquire,
@@ -11074,17 +12361,19 @@ impl SettingsFileLock {
             )
         })?;
 
-        let deadline = std::time::Instant::now()
-            .checked_add(timeout)
-            .ok_or_else(|| {
-                SettingsSaveError::semantic(
-                    SettingsSaveStage::LockAcquire,
-                    settings_path,
-                    None,
-                    SettingsSaveReason::LockDeadlineOverflow,
-                    SettingsSaveLegacyOutward::SettingsLockUnavailable,
-                )
-            })?;
+        let retry_started = std::time::Instant::now();
+        if let Some(debug) = debug.as_mut() {
+            debug.retry_started = Some(retry_started);
+        }
+        let deadline = retry_started.checked_add(timeout).ok_or_else(|| {
+            SettingsSaveError::semantic(
+                SettingsSaveStage::LockAcquire,
+                settings_path,
+                None,
+                SettingsSaveReason::LockDeadlineOverflow,
+                SettingsSaveLegacyOutward::SettingsLockUnavailable,
+            )
+        })?;
         loop {
             #[cfg(any(unix, windows))]
             let locked = try_lock_settings_file(&file).map_err(|source| {
@@ -11107,7 +12396,12 @@ impl SettingsFileLock {
                 )
             })?;
             if locked {
-                return Ok(Self { file });
+                let acquired_at = std::time::Instant::now();
+                if let Some(debug) = debug.as_mut() {
+                    debug.acquired_at = Some(acquired_at);
+                    debug.event("acquired", None, None);
+                }
+                return Ok(file);
             }
             if std::time::Instant::now() >= deadline {
                 return Err(SettingsSaveError::semantic(
@@ -11125,7 +12419,24 @@ impl SettingsFileLock {
 
 impl Drop for SettingsFileLock {
     fn drop(&mut self) {
-        unlock_settings_file(&self.file);
+        if let Some(file) = self.file.take() {
+            let unlock_at = std::time::Instant::now();
+            let result = unlock_settings_file(&file);
+            #[cfg(test)]
+            let result = if SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR.with(|flag| flag.replace(false)) {
+                Err(std::io::Error::from_raw_os_error(5))
+            } else {
+                result
+            };
+            drop(file);
+            if let Some(debug) = &self.debug {
+                let (reason, raw) = match result {
+                    Ok(()) => ("unlock_ok", None),
+                    Err(error) => ("unlock_error", error.raw_os_error()),
+                };
+                debug.event_at("release", Some(reason), raw, unlock_at);
+            }
+        }
     }
 }
 
@@ -11149,9 +12460,13 @@ fn try_lock_settings_file(file: &std::fs::File) -> std::io::Result<bool> {
 }
 
 #[cfg(unix)]
-fn unlock_settings_file(file: &std::fs::File) {
+fn unlock_settings_file(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
-    let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(windows)]
@@ -11184,11 +12499,15 @@ fn try_lock_settings_file(file: &std::fs::File) -> std::io::Result<bool> {
 }
 
 #[cfg(windows)]
-fn unlock_settings_file(file: &std::fs::File) {
+fn unlock_settings_file(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
     let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
-    let _ = unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) };
+    if unsafe { UnlockFileEx(file.as_raw_handle(), 0, u32::MAX, u32::MAX, &mut overlapped) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -11197,7 +12516,9 @@ fn try_lock_settings_file(_file: &std::fs::File) -> Result<bool, SettingsSaveRea
 }
 
 #[cfg(not(any(unix, windows)))]
-fn unlock_settings_file(_file: &std::fs::File) {}
+fn unlock_settings_file(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
 
 /// #2348 - serialize one placement component with the same error shape as the
 /// whole-object serializer, so a (theoretically impossible) serialization failure
@@ -11245,7 +12566,17 @@ fn save_settings_value(
     path: &Path,
     mode: ProjectWriteMode,
 ) -> Result<AppSettings, SettingsSaveError> {
-    let _lock = SettingsFileLock::acquire(path, std::time::Duration::from_secs(2))?;
+    let _lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "save_settings_value",
+    )?;
+    #[cfg(test)]
+    SETTINGS_PRESERVE_LOCK_HOOK.with(|hook| {
+        if let Some(callback) = hook.borrow().as_ref() {
+            callback(path);
+        }
+    });
     save_settings_value_locked(
         settings,
         path,
@@ -11265,9 +12596,20 @@ fn save_settings_value_locked(
     terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
     main_window_placement_mode: MainWindowPlacementWriteMode,
 ) -> Result<AppSettings, SettingsSaveError> {
+    read_disk_object_for_write_typed(
+        path,
+        match &mode {
+            ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
+            #[cfg(test)]
+            ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
+        },
+    )?;
+    ensure_project_paths_migrated_at_locked_path(path, &mut |_, _| Ok(()))?;
+    let selected_projection = select_project_source_at_locked_path(path)?.projection;
     let base = production_instance_base();
     let disk_gate_stage = match &mode {
         ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
+        #[cfg(test)]
         ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
     };
     let disk_read = read_disk_object_and_contents_for_write_typed(path, disk_gate_stage)?;
@@ -11295,8 +12637,6 @@ fn save_settings_value_locked(
     // tuple is reduced to its object half.
     let previous_contents: Option<String> = disk_read.as_ref().map(|(_, c)| c.clone());
     let disk = disk_read.map(|(map, _)| map);
-    let state = hidden_state_for_write(settings);
-
     let serialize_object = || -> Result<Map<String, Value>, SettingsSaveError> {
         match serde_json::to_value(settings).map_err(|source| {
             let outward = format!("Failed to serialize settings: {source}");
@@ -11326,69 +12666,14 @@ fn save_settings_value_locked(
     // (or the live settings when the file is absent).
     let mut out: Map<String, Value> = match mode {
         ProjectWriteMode::Preserve => serialize_object()?,
+        #[cfg(test)]
         ProjectWriteMode::Reconcile { .. } => match &disk {
             Some(m) => m.clone(),
             None => serialize_object()?,
         },
     };
 
-    match mode {
-        ProjectWriteMode::Preserve => match &disk {
-            None => {
-                write_active_group(&mut out, &state, base.as_deref());
-                write_archived_group(&mut out, &state, base.as_deref());
-            }
-            Some(disk) => {
-                if active_has_disk_truth(disk) {
-                    copy_or_remove(&mut out, disk, FIELD_PROJECT_PATH);
-                    copy_or_remove(&mut out, disk, FIELD_PROJECT_PATH_REL);
-                    copy_or_remove(&mut out, disk, FIELD_PROJECT_PATHS);
-                    copy_or_remove(&mut out, disk, FIELD_PROJECT_PATHS_REL);
-                } else {
-                    write_active_group(&mut out, &state, base.as_deref());
-                }
-                if archived_has_disk_truth(disk) {
-                    copy_or_remove(&mut out, disk, FIELD_ARCHIVED);
-                    copy_or_remove(&mut out, disk, FIELD_ARCHIVED_REL);
-                } else {
-                    write_archived_group(&mut out, &state, base.as_deref());
-                }
-            }
-        },
-        ProjectWriteMode::Reconcile { active, archived } => {
-            let blocked = state.has_structural();
-            // A synthesized (runtime-authoritative) state writes its runtime
-            // groups verbatim, matching the pre-#1077 verbatim writer. A real
-            // decoded state rebuilds only a dirty+eligible group and otherwise
-            // copies disk raw to retain unresolved entries.
-            let write_active_from_state = active
-                && !blocked
-                && (state.runtime_authoritative || state.active_reconcile_eligible);
-            let write_archived_from_state = archived
-                && !blocked
-                && (state.runtime_authoritative || state.archived_reconcile_eligible);
-            // Active group.
-            if write_active_from_state {
-                write_active_group(&mut out, &state, base.as_deref());
-            } else if let Some(disk) = &disk {
-                copy_or_remove(&mut out, disk, FIELD_PROJECT_PATH);
-                copy_or_remove(&mut out, disk, FIELD_PROJECT_PATH_REL);
-                copy_or_remove(&mut out, disk, FIELD_PROJECT_PATHS);
-                copy_or_remove(&mut out, disk, FIELD_PROJECT_PATHS_REL);
-            } else {
-                write_active_group(&mut out, &state, base.as_deref());
-            }
-            // Archived group.
-            if write_archived_from_state {
-                write_archived_group(&mut out, &state, base.as_deref());
-            } else if let Some(disk) = &disk {
-                copy_or_remove(&mut out, disk, FIELD_ARCHIVED);
-                copy_or_remove(&mut out, disk, FIELD_ARCHIVED_REL);
-            } else {
-                write_archived_group(&mut out, &state, base.as_deref());
-            }
-        }
-    }
+    replace_project_projection(&mut out, &Map::new());
 
     // #1173: a whole-settings writer cannot opt in or re-enable an explicit
     // value, and a present malformed gate is an error. An absent file or a
@@ -11424,7 +12709,7 @@ fn save_settings_value_locked(
     // #2348: main-window placement is owned by the narrow placement command.
     // `Preserve` never regresses it: for each key independently, a PRESENT disk
     // value is authoritative, and an absent disk key leaves the caller value
-    // alone. Deliberately NOT `copy_or_remove`: an absent legacy `mainGeometry`
+    // alone. An absent legacy `mainGeometry`
     // must not erase the value the load-time migration synthesized in memory.
     // `Explicit` writes the pair exactly as the placement command received it.
     // Runs before `restore_base`, which stays the last writer over the base file.
@@ -11467,8 +12752,15 @@ fn save_settings_value_locked(
 
     // #2716 (B3): the agents file is written first; only the keys it now holds
     // leave `out`, in both modes. A failure returns before the settings write.
-    let agents_groups =
-        save_agents_instance_file(settings, path, &mode, disk.as_ref(), &out, disk_gate_stage)?;
+    let agents_groups = save_agents_instance_file(
+        settings,
+        path,
+        &mode,
+        #[cfg(test)]
+        disk.as_ref(),
+        &out,
+        disk_gate_stage,
+    )?;
     strip_agents_instance_keys(&mut out, &agents_groups);
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
@@ -11483,14 +12775,23 @@ fn save_settings_value_locked(
     }
 
     let mut written_value = value;
+    replace_project_projection(written_value.as_object_mut().unwrap(), &selected_projection);
     // #2716 (B3): the re-decode sees what a load would, the agents file's groups
     // in the base object, under the overlay reapplied below.
+    let physical_groups = agents_groups.keys().cloned().collect::<Vec<_>>();
+    let base_profiles = agents_groups.get("codingAgentProfiles").cloned();
     restore_agents_groups_for_redecode(&mut written_value, agents_groups);
+    let identity_physical =
+        coding_agent_identity_with_physical_overlay(written_value.clone(), path, &physical_groups);
     // #1737: disk holds the base, memory holds the effective value. Without this the
     // caller would adopt base values for every overlay-owned key on the first save.
     if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
         settings.local_overlay_state.reapply_from(effective, object);
     }
+    restore_codex_home_carrier(
+        written_value.as_object_mut().unwrap(),
+        base_profiles.as_ref(),
+    );
     let fresh_state = apply_project_decode_to_value(
         &mut written_value,
         base.as_deref(),
@@ -11506,7 +12807,9 @@ fn save_settings_value_locked(
             SettingsSaveLegacyOutward::ReDecode(outward),
         )
     })?;
+    refresh_agent_id_hashes(&mut written.agents);
     written.project_path_state = Arc::new(fresh_state);
+    written.coding_agent_identity_physical = Some(Arc::new(identity_physical));
     written.local_overlay_state = settings.local_overlay_state.clone();
     repair_loaded_response_close_settings(&mut written, &path.display().to_string());
     Ok(written)
@@ -11519,31 +12822,8 @@ pub(crate) struct DiskProjectLists {
     pub archived_project_paths: Option<Vec<String>>,
 }
 
-/// #778/#881: side-effect-free reader of ONLY the project lists from
-/// `settings.json` on disk. Under Design S those lists are disk-authoritative,
-/// so the default `save_settings` uses this to preserve whatever another process
-/// (a CLI verb, a second instance) wrote, and the list commands use it to
-/// reconcile before a deliberate mutation.
-///
-/// The outer `Option` means no disk truth at all: the file is absent, or
-/// `projectPaths` is absent/null. `archived_project_paths` has its own inner
-/// `Option`: absent/null means no disk truth for that list only, while
-/// `Some(vec![])` means disk explicitly says nothing is archived.
-///
-/// Error policy (grinch G2): a genuine `NotFound` yields `None` (fresh install:
-/// no disk truth to substitute). ANY other error (a transient os 5/32/33/1175
-/// lock, a permission failure, or unparseable JSON) returns `Err` so the caller
-/// ABORTS the save. The read runs BEFORE the #774 temp write, so disk is
-/// untouched and #774 is unaffected. For #778's threat model, aborting a
-/// geometry/theme save (retried later) beats silently dropping a project. A few
-/// tight retries absorb a transient lock without stacking latency onto
-/// `rename_with_retry`. This deliberately does NOT swallow-to-empty like
-/// `read_log_level_from_path`, whose transient-default is harmless.
-///
-/// G4a: `read_to_string` opens, reads, and CLOSES the handle before any write,
-/// so the later `MoveFileEx` rename cannot hit a sharing violation (os 32).
-/// MUST NOT call `load_settings` (it migrates, generates root_token, and
-/// re-saves: infinite recursion + side effects).
+/// Read-only privileged source capture. The shared settings lock covers both
+/// objects and their conflict evaluation; this reader never migrates or repairs.
 pub(crate) fn read_pty_input_project_paths_strict() -> Result<Option<Vec<String>>, String> {
     let Some(path) = settings_path() else {
         return Err("settings_unavailable".to_string());
@@ -11554,16 +12834,25 @@ pub(crate) fn read_pty_input_project_paths_strict() -> Result<Option<Vec<String>
 fn read_pty_input_project_paths_strict_from_path(
     path: &Path,
 ) -> Result<Option<Vec<String>>, String> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("unsafe_path".to_string()),
+    let _lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "read_pty_input_project_paths_strict_from_path",
+    )
+    .map_err(|_| "unsafe_path".to_string())?;
+    let selected =
+        select_project_source_at_locked_path_with_limit(path, 1024 * 1024).map_err(|error| {
+            match &error.legacy_outward {
+                SettingsSaveLegacyOutward::DiskRead(reason) if reason.ends_with("unsafe_path") => {
+                    "unsafe_path".to_string()
+                }
+                _ => "settings_invalid".to_string(),
+            }
+        })?;
+    if selected.legacy.is_none() && selected.destination.is_none() {
+        return Ok(None);
     }
-    let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)?;
-    let value = crate::path_identity::parse_json_no_duplicates(&bytes)?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| "settings_invalid".to_string())?;
+    let object = selected.projection;
     let Some(project_paths) = object.get("projectPaths") else {
         return Ok(Some(Vec::new()));
     };
@@ -11594,13 +12883,18 @@ pub(crate) async fn read_pty_input_project_paths_strict_offloaded(
 
 pub(crate) fn read_terminal_snapshot_project_paths_strict() -> Result<Vec<String>, String> {
     let path = settings_path().ok_or_else(|| "snapshot_settings_invalid".to_string())?;
-    let (bytes, _) = crate::path_identity::read_bounded_regular(&path, 1024 * 1024)
+    let _lock = SettingsFileLock::acquire_contextual(
+        &path,
+        std::time::Duration::from_secs(2),
+        "read_terminal_snapshot_project_paths_strict",
+    )
+    .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let selected = select_project_source_at_locked_path_with_limit(&path, 1024 * 1024)
         .map_err(|_| "snapshot_settings_invalid".to_string())?;
-    let value = crate::path_identity::parse_json_no_duplicates(&bytes)
-        .map_err(|_| "snapshot_settings_invalid".to_string())?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    if selected.legacy.is_none() && selected.destination.is_none() {
+        return Err("snapshot_settings_invalid".to_string());
+    }
+    let object = selected.projection;
     let Some(paths) = object.get(FIELD_PROJECT_PATHS) else {
         return Ok(Vec::new());
     };
@@ -11660,23 +12954,44 @@ pub(crate) fn read_terminal_snapshot_security_settings_strict(
 fn read_terminal_snapshot_security_settings_strict_from_path(
     path: &Path,
 ) -> Result<TerminalSnapshotSecuritySettings, String> {
-    let (bytes, _) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)
+    let _lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "read_terminal_snapshot_security_settings_strict_from_path",
+    )
+    .map_err(|_| "snapshot_settings_invalid".to_string())?;
+    let selected = select_project_source_at_locked_path_with_limit(path, 1024 * 1024)
         .map_err(|_| "snapshot_settings_invalid".to_string())?;
-    let value = crate::path_identity::parse_json_no_duplicates(&bytes)
-        .map_err(|_| "snapshot_settings_invalid".to_string())?;
-    let object = value
-        .as_object()
+    let object = selected
+        .legacy
+        .as_ref()
+        .map(|source| &source.object)
         .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
     let enabled = match object.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED) {
         Some(Value::Bool(enabled)) => *enabled,
         Some(_) => return Err("snapshot_settings_invalid".to_string()),
         None => true,
     };
-    let paths = object
-        .get(FIELD_PROJECT_PATHS)
-        .and_then(Value::as_array)
-        .filter(|paths| paths.len() <= 4_096)
-        .ok_or_else(|| "snapshot_settings_invalid".to_string())?;
+    let paths = match selected.projection.get(FIELD_PROJECT_PATHS) {
+        Some(value) => value
+            .as_array()
+            .filter(|paths| paths.len() <= 4_096)
+            .ok_or_else(|| "snapshot_settings_invalid".to_string())?,
+        None if [
+            FIELD_PROJECT_PATH,
+            FIELD_PROJECT_PATH_REL,
+            FIELD_PROJECT_PATHS_REL,
+        ]
+        .iter()
+        .all(|key| !selected.projection.contains_key(*key)) =>
+        {
+            return Ok(TerminalSnapshotSecuritySettings {
+                terminal_snapshots_enabled: enabled,
+                project_paths: Vec::new(),
+            });
+        }
+        None => return Err("snapshot_settings_invalid".to_string()),
+    };
     let mut project_paths = Vec::with_capacity(paths.len());
     let mut aggregate_bytes = 0usize;
     for value in paths {
@@ -11736,7 +13051,11 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
             SettingsSaveReportSurface::TerminalSnapshotCompareAndSet,
         )
     };
-    let lock_guard = match SettingsFileLock::acquire(path, std::time::Duration::from_secs(2)) {
+    let lock_guard = match SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "compare_and_set_terminal_snapshots_enabled_at_path",
+    ) {
         Ok(lock_guard) => lock_guard,
         Err(error) => return Err(report_typed_persistence_failure(error)),
     };
@@ -11747,6 +13066,10 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
             return Err(report_typed_persistence_failure(error));
         }
     };
+    if let Err(error) = ensure_project_paths_migrated_at_locked_path(path, &mut |_, _| Ok(())) {
+        drop(lock_guard);
+        return Err(report_typed_persistence_failure(error));
+    }
     let disk_file_absent = disk.is_none();
     // An absent file compares as the default-on value, but its absence is
     // tracked separately: the idempotent early return below may not report
@@ -11784,7 +13107,19 @@ fn compare_and_set_terminal_snapshots_enabled_at_path(
             &effective,
         )
         .map_err(|_| "terminal_snapshot_setting_save_failed".to_string())?,
-        None => current.clone(),
+        None => {
+            let mut fresh = current.clone();
+            let projection = select_project_source_at_locked_path(path)
+                .map_err(|error| {
+                    report_settings_save_error(
+                        error,
+                        SettingsSaveReportSurface::TerminalSnapshotCompareAndSet,
+                    )
+                })?
+                .projection;
+            apply_selected_project_state(&mut fresh, &projection);
+            fresh
+        }
     };
     candidate.local_overlay_state = current.local_overlay_state.clone();
     candidate.terminal_snapshots_enabled = enabled;
@@ -11831,10 +13166,27 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
 ) -> Result<AppSettings, String> {
     let base = production_instance_base();
     let mut value = Value::Object(object);
+    let selected = select_project_source_at_locked_path(settings_path).map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+    })?;
+    replace_project_projection(value.as_object_mut().unwrap(), &selected.projection);
     // #2716 (B3) 4.2b: the same merge as `parse_settings_json`, in the same layer
     // order, under the overlay reapplied below. The decoded value is adopted and
     // written, so without it an empty `agents` would reach the agents file.
     let agents_layer = merge_agents_instance_file(settings_path, &mut value);
+    let physical_groups = read_agents_instance_file(&agents_instance_path(settings_path))
+        .ok()
+        .flatten()
+        .map(|groups| {
+            agents_instance_groups(&groups)
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let identity_physical =
+        coding_agent_identity_with_physical_overlay(value.clone(), settings_path, &physical_groups);
+    let base_profiles = value.get("codingAgentProfiles").cloned();
     // #1737 (D17): re-apply the overlay to the disk-decoded object, so the
     // `disk_gate == enabled` early return does not hand the caller base values.
     // Pinned before the project decode, and therefore strictly before
@@ -11842,17 +13194,20 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     if let Value::Object(map) = &mut value {
         overlay.reapply_from(effective, map);
     }
+    restore_codex_home_carrier(value.as_object_mut().unwrap(), base_profiles.as_ref());
     let state =
         apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
     let mut settings: AppSettings =
         serde_json::from_value(value).map_err(|_| "settings_invalid".to_string())?;
     settings.project_path_state = Arc::new(state);
     set_agents_layer_state(&mut settings, settings_path, agents_layer);
+    settings.coding_agent_identity_physical = Some(Arc::new(identity_physical));
     // #2306 P1 - finalize before the caller's no-op return or direct write, so
     // both the returned and the written snapshot carry contiguous ordinals.
     // Overlay values stay in memory: `save_settings_value_locked` restores the
     // base `agents` array before writing the file.
     finalize_agent_order(&mut settings.agents);
+    refresh_agent_id_hashes(&mut settings.agents);
     repair_loaded_response_close_settings(&mut settings, &settings_path.display().to_string());
     Ok(settings)
 }
@@ -11888,10 +13243,14 @@ pub(crate) fn set_main_window_placement_at_path(
     {
         return Err("main_window_placement_overlay_pinned".to_string());
     }
-    let _lock =
-        SettingsFileLock::acquire(path, std::time::Duration::from_secs(2)).map_err(|error| {
-            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
-        })?;
+    let _lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "set_main_window_placement_at_path",
+    )
+    .map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+    })?;
     save_settings_value_locked(
         current,
         path,
@@ -11906,41 +13265,31 @@ pub(crate) fn set_main_window_placement_at_path(
 }
 
 fn read_project_paths_from_disk(path: &Path) -> Result<Option<DiskProjectLists>, String> {
-    // 1 initial attempt + up to 2 retries on a transient (non-NotFound) read error.
-    const READ_RETRY_BACKOFFS_MS: [u64; 2] = [10, 40];
-    let mut attempt = 0usize;
-    let contents = loop {
-        match std::fs::read_to_string(path) {
-            Ok(c) => break c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Fresh install / never-saved: no disk truth to preserve.
-                return Ok(None);
-            }
-            Err(e) => {
-                if attempt < READ_RETRY_BACKOFFS_MS.len() {
-                    std::thread::sleep(std::time::Duration::from_millis(
-                        READ_RETRY_BACKOFFS_MS[attempt],
-                    ));
-                    attempt += 1;
-                    continue;
-                }
-                return Err(format!(
-                    "Failed to read {} to preserve project_paths (aborting save to avoid dropping a project): {}",
-                    path.display(),
-                    e
-                ));
-            }
-        }
-    };
-    let value: serde_json::Value = serde_json::from_str(&contents).map_err(|e| {
-        format!(
-            "Failed to parse {} to preserve project_paths (aborting save to avoid dropping a project): {}",
-            path.display(),
-            e
-        )
+    let transaction =
+        empty_project_transaction(path, "read_project_paths_from_disk").map_err(|error| {
+            report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+        })?;
+    let selected = select_project_source_locked(&transaction).map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
     })?;
+    if selected.legacy.is_none() && selected.destination.is_none() {
+        return Ok(None);
+    }
+    project_lists_from_projection(&selected.projection)
+}
+
+fn project_lists_from_projection(
+    projection: &Map<String, Value>,
+) -> Result<Option<DiskProjectLists>, String> {
+    let value = Value::Object(projection.clone());
+    let path = Path::new("project-paths.json");
     let project_paths = match value.get("projectPaths") {
-        None | Some(serde_json::Value::Null) => return Ok(None),
+        None | Some(serde_json::Value::Null) => value
+            .get(FIELD_PROJECT_PATH)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .into_iter()
+            .collect(),
         // #881: non-string elements are dropped here, but rejected in the
         // archivedProjectPaths arm below. Deliberate. `projectPaths` only feeds
         // discovery; `archivedProjectPaths` feeds session retention, where a
@@ -12015,13 +13364,15 @@ pub(crate) fn refresh_project_paths_from_path(
     settings: &mut AppSettings,
     path: &Path,
 ) -> Result<(), String> {
-    if let Some(lists) = read_project_paths_from_disk(path)? {
+    let lists = read_project_paths_from_disk(path).inspect_err(|error| {
+        settings.project_paths_persistence_error = Some(error.clone());
+    })?;
+    if let Some(lists) = lists {
         settings.project_paths = lists.project_paths;
         settings.project_path = lists.project_path;
-        if let Some(archived) = lists.archived_project_paths {
-            settings.archived_project_paths = archived;
-        }
+        settings.archived_project_paths = lists.archived_project_paths.unwrap_or_default();
     }
+    settings.project_paths_persistence_error = None;
     Ok(())
 }
 
@@ -12030,18 +13381,28 @@ pub(crate) fn refresh_project_paths_from_path(
 /// SELECTED canonical paths and installing the fresh hidden pair state. Aborts
 /// (`Err`) on a present-but-invalid whole object; keeps the live runtime/hidden
 /// state when the file is absent.
+#[cfg(test)]
 pub(crate) fn refresh_and_decode_project_paths_from_path(
     settings: &mut AppSettings,
     path: &Path,
 ) -> Result<(), String> {
-    if let Some(map) = read_disk_object_for_write(path)? {
-        let base = production_instance_base();
-        let state = decode_project_state(&map, base.as_deref(), &projects::FsCandidateResolver);
-        settings.project_paths = state.active_selected();
-        settings.project_path = state.selected_head.clone();
-        settings.archived_project_paths = state.archived_management_paths();
-        settings.project_path_state = Arc::new(state);
-    }
+    let lock = SettingsFileLock::acquire_contextual(
+        path,
+        std::time::Duration::from_secs(2),
+        "refresh_and_decode_project_paths_from_path",
+    )
+    .map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+    })?;
+    let projection = (|| {
+        read_disk_object_for_write_typed(path, SettingsSaveStage::ProjectPathsRefreshDiskGate)?;
+        select_project_source_at_locked_path(path).map(|selected| selected.projection)
+    })();
+    drop(lock);
+    let projection = projection.map_err(|error| {
+        report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings)
+    })?;
+    apply_selected_project_state(settings, &projection);
     Ok(())
 }
 
@@ -12052,28 +13413,10 @@ pub(crate) fn project_state_has_structural(settings: &AppSettings) -> bool {
         || settings.project_path_state.has_structural()
 }
 
-/// Save settings to the app config directory (see config_dir()).
-///
-/// #778/#881: this is the DEFAULT writer and treats the project lists as
-/// disk-authoritative (Design S). It preserves whatever `project_paths`/
-/// `project_path`/`archived_project_paths` is currently on disk and discards this
-/// (possibly stale)
-/// in-memory candidate's copy, so ANY whole-object GUI save is fail-safe for the
-/// project lists: a project a CLI verb registered while the GUI ran is never
-/// clobbered. Deliberate list changes (the add/remove commands, the CLI verbs,
-/// the startup root_token/migration write) go through
-/// `save_settings_with_project_paths` instead.
-///
-/// The underlying write is the #774-hardened atomic tmp+rename
-/// (`save_settings_to_path`): a per-writer unique temp plus
-/// `sessions_persistence::rename_with_retry`. The disk read that preserves
-/// project lists runs first and closes its handle before that write (G4a).
-///
-/// G4b (accepted, documented): a remove/add racing another writer within the
-/// sub-millisecond window between this preserve-read and the rename could
-/// momentarily resurrect an entry; orders of magnitude smaller than the prior
-/// snapshot-age window. Airtight cross-process safety would need an advisory
-/// file lock (tracked separately), deliberately not added here.
+/// Save unrelated settings under the shared settings lock. Migration completes
+/// first; afterward the sidecar bytes are preserved exactly and all six project
+/// keys are excluded from managed settings. The returned runtime view is decoded
+/// from the authoritative sidecar, never from a renderer's project draft.
 pub fn save_settings(settings: &AppSettings) -> Result<AppSettings, String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join(SETTINGS_FILE_NAME);
@@ -12113,6 +13456,14 @@ fn project_atomic_checkpoint(
 /// (`temporary.sync_all()`), and the parent directory is fsynced on unix after
 /// the rename. The caller owns #2058 backup rotation of the returned bytes.
 fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSaveError> {
+    write_value_atomic_labeled(value, path, path)
+}
+
+fn write_value_atomic_labeled(
+    value: &Value,
+    path: &Path,
+    label: &Path,
+) -> Result<Vec<u8>, SettingsSaveError> {
     use std::io::Write as _;
 
     let dir = path.parent().ok_or_else(|| {
@@ -12344,7 +13695,7 @@ fn write_value_atomic(value: &Value, path: &Path) -> Result<Vec<u8>, SettingsSav
     }
     result?;
 
-    log::debug!("Saved settings to {:?}", path);
+    log::debug!("Saved settings to {:?}", label);
     Ok(json)
 }
 
@@ -12416,36 +13767,21 @@ fn replace_settings_file_atomic(source: &Path, destination: &Path) -> std::io::R
     std::fs::rename(source, destination)
 }
 
-/// #778/#881: EXPLICIT writer. Persists `project_paths`/`project_path` and
-/// `archived_project_paths` VERBATIM (the
-/// pre-#778 `save_settings` behavior, still #774-hardened). ONLY for deliberate
-/// list mutators that have already reconciled the list against disk: the add
-/// commands (`open_project`/`new_project`), the `remove_project` command, the two
-/// CLI verbs (which load fresh disk via `load_settings_for_cli`), and the startup
-/// root_token/migration save (whose `project_paths` was just loaded from disk).
+/// Snapshot fixture/migration writer only. Production operations own a token
+/// spanning fresh reads, mutation, sidecar commit, revalidation and rollback.
+#[cfg(test)]
 pub fn save_settings_with_project_paths(settings: &AppSettings) -> Result<(), String> {
     let dir = super::config_dir().ok_or("Could not determine home directory")?;
     let path = dir.join(SETTINGS_FILE_NAME);
     save_settings_with_project_paths_to_path(settings, &path)
 }
 
+#[cfg(test)]
 pub(crate) fn save_settings_with_project_paths_to_path(
     settings: &AppSettings,
     path: &Path,
 ) -> Result<(), String> {
-    // #1077: deliberate list mutators reconcile both groups from the hidden
-    // state (retaining unresolved/conflict entries value-for-value), so the
-    // now-filtered runtime lists cannot drop an unresolved project.
-    save_settings_value(
-        settings,
-        path,
-        ProjectWriteMode::Reconcile {
-            active: true,
-            archived: true,
-        },
-    )
-    .map(|_| ())
-    .map_err(|error| report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings))
+    reconcile_project_state_to_path(settings, path, true, true).map(|_| ())
 }
 
 /// #778/#881 + #1077: the preserve-disk wrapper behind the default
@@ -12491,6 +13827,1014 @@ pub type SettingsState = Arc<RwLock<AppSettings>>;
 
 #[cfg(test)]
 mod tests {
+    // Each logger scenario runs in its own process. No test installs or changes
+    // the logger of the parent harness or shares runtime filters with siblings.
+    const SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(15);
+
+    struct SettingsLockDebugChild {
+        process: std::process::Child,
+        input: std::process::ChildStdin,
+        receipts: std::sync::mpsc::Receiver<serde_json::Value>,
+        output_thread: Option<std::thread::JoinHandle<()>>,
+        config: tempfile::TempDir,
+    }
+
+    impl SettingsLockDebugChild {
+        fn start(
+            mode: &str,
+            path: &std::path::Path,
+            rust_log: Option<&str>,
+            level: Option<&str>,
+        ) -> Self {
+            use std::io::BufRead;
+            let config = tempfile::tempdir().unwrap();
+            if let Some(level) = level {
+                std::fs::write(
+                    config.path().join(super::SETTINGS_FILE_NAME),
+                    serde_json::json!({"logLevel": level}).to_string(),
+                )
+                .unwrap();
+            }
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "config::settings::tests::settings_lock_debug_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("AC_SETTINGS_LOCK_DEBUG_CHILD", mode)
+                .env("AC_SETTINGS_LOCK_DEBUG_FIXTURE", path)
+                .env("AGENTSCOMMANDER_CONFIG_DIR", config.path())
+                .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", config.path())
+                .env_remove("RUST_LOG")
+                .env("RUST_LOG_STYLE", "never")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            if let Some(rust_log) = rust_log {
+                command.env("RUST_LOG", rust_log);
+            }
+            let mut process = command.spawn().unwrap();
+            let input = process.stdin.take().unwrap();
+            let output = process.stdout.take().unwrap();
+            let (send, receipts) = std::sync::mpsc::channel();
+            let output_thread = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(output).lines() {
+                    let line = line.unwrap();
+                    // libtest may prefix the first line with its test label.
+                    if let Some((_, json)) = line.split_once("LOCK-RECEIPT ") {
+                        send.send(serde_json::from_str(json).unwrap()).unwrap();
+                    }
+                }
+            });
+            Self {
+                process,
+                input,
+                receipts,
+                output_thread: Some(output_thread),
+                config,
+            }
+        }
+
+        fn receipt(&self, phase: &str) -> serde_json::Value {
+            let receipt = self
+                .receipts
+                .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+                .unwrap_or_else(|error| panic!("missing {phase} receipt: {error}"));
+            assert_eq!(receipt["phase"], phase, "unexpected receipt: {receipt}");
+            receipt
+        }
+
+        fn command(&mut self, command: &str) {
+            use std::io::Write;
+            writeln!(self.input, "{command}").unwrap();
+            self.input.flush().unwrap();
+        }
+
+        fn finish(mut self) {
+            self.receipt("done");
+            let deadline = std::time::Instant::now() + SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT;
+            let status = loop {
+                if let Some(status) = self.process.try_wait().unwrap() {
+                    break status;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "child did not exit after done"
+                );
+                // Poll only process termination; event ordering uses receipts.
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            self.output_thread.take().unwrap().join().unwrap();
+            assert!(status.success());
+        }
+
+        fn log(&self) -> String {
+            std::fs::read_to_string(self.config.path().join("app.log")).unwrap()
+        }
+    }
+
+    impl Drop for SettingsLockDebugChild {
+        fn drop(&mut self) {
+            // Also reap a child after any harness assertion, never strand owners.
+            let _ = self.process.kill();
+            let _ = self.process.wait();
+        }
+    }
+
+    fn settings_lock_debug_receipt(value: &serde_json::Value) {
+        use std::io::Write;
+        println!("LOCK-RECEIPT {value}");
+        std::io::stdout().flush().unwrap();
+    }
+
+    fn settings_lock_debug_processed(
+        receiver: &std::sync::mpsc::Receiver<serde_json::Value>,
+        phase: &str,
+    ) -> serde_json::Value {
+        let event = receiver
+            .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+            .unwrap();
+        assert_eq!(event["phase"], phase);
+        for field in ["preparation_ms", "wait_ms", "hold_ms"] {
+            if let Some(value) = event[field].as_f64() {
+                assert!(value >= 0.0);
+            }
+        }
+        event
+    }
+
+    fn settings_lock_debug_assert_pair(acquired: &serde_json::Value, release: &serde_json::Value) {
+        for field in [
+            "instance",
+            "pid",
+            "attempt",
+            "operation",
+            "target",
+            "sidecar",
+        ] {
+            assert_eq!(acquired[field], release[field], "correlation field {field}");
+        }
+        assert!(release["hold_ms"].as_f64().unwrap() >= 0.0);
+    }
+
+    #[test]
+    fn settings_lock_debug_child() {
+        let Ok(mode) = std::env::var("AC_SETTINGS_LOCK_DEBUG_CHILD") else {
+            return;
+        };
+        let path =
+            std::path::PathBuf::from(std::env::var_os("AC_SETTINGS_LOCK_DEBUG_FIXTURE").unwrap());
+        let (processed_send, processed) = std::sync::mpsc::channel();
+        let (gated_send, gated) = std::sync::mpsc::channel();
+        let (resume, resume_recv) = std::sync::mpsc::channel();
+        let hooks = super::SettingsLockDebugTestHooks {
+            gate_phase: "acquired",
+            gate_once: std::sync::atomic::AtomicBool::new(matches!(
+                mode.as_str(),
+                "suppress" | "saturated"
+            )),
+            gated: gated_send,
+            resume: std::sync::Mutex::new(resume_recv),
+            processed: processed_send,
+        };
+        assert!(super::SETTINGS_LOCK_DEBUG_TEST_HOOKS.set(hooks).is_ok());
+        crate::logging::init_logger();
+        let config =
+            std::path::PathBuf::from(std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").unwrap());
+        let log = || std::fs::read_to_string(config.join("app.log")).unwrap();
+        match mode.as_str() {
+            "disabled" | "probe" => {
+                let guard = super::SettingsFileLock::acquire(&path, std::time::Duration::ZERO)
+                    .unwrap_or_else(|_| panic!("probe lock unavailable"));
+                drop(guard);
+                assert!(super::SETTINGS_LOCK_DEBUG_TRANSPORT.get().is_none());
+                assert!(processed.try_recv().is_err());
+                assert!(!log().contains("settings-lock phase="));
+                if mode == "probe" {
+                    settings_lock_debug_receipt(&serde_json::json!({"phase":"probe-ok"}));
+                }
+            }
+            "waiter" => {
+                let error = match super::SettingsFileLock::acquire(
+                    &path,
+                    std::time::Duration::from_secs(2),
+                ) {
+                    Ok(_) => panic!("waiter unexpectedly acquired"),
+                    Err(error) => error,
+                };
+                assert!(matches!(
+                    error.cause,
+                    super::SettingsSaveCause::Semantic(super::SettingsSaveReason::LockTimedOut)
+                ));
+                assert_eq!(
+                    error.legacy_outward.into_general_string(),
+                    super::SETTINGS_LOCK_UNAVAILABLE_CODE
+                );
+                settings_lock_debug_processed(&processed, "acquire-start");
+                let timeout = settings_lock_debug_processed(&processed, "timeout");
+                assert!(timeout["wait_ms"].as_f64().unwrap() >= 2000.0);
+                assert!(processed.try_recv().is_err());
+                settings_lock_debug_receipt(&timeout);
+            }
+            "owner" | "runtime" | "filter-on" => {
+                settings_lock_debug_owner_scenario(&mode, &path, &processed, &log)
+            }
+            "suppress" => {
+                settings_lock_debug_suppress_scenario(&path, &processed, &gated, &resume, &log)
+            }
+            "saturated" => {
+                settings_lock_debug_saturated_scenario(&path, &processed, &gated, &resume, &log)
+            }
+            "failures" => settings_lock_debug_failure_scenarios(&path, &processed),
+            _ => panic!("unknown child mode {mode}"),
+        }
+        settings_lock_debug_receipt(&serde_json::json!({"phase":"done"}));
+    }
+
+    fn settings_lock_debug_owner_scenario(
+        mode: &str,
+        path: &std::path::Path,
+        processed: &std::sync::mpsc::Receiver<serde_json::Value>,
+        log: &impl Fn() -> String,
+    ) {
+        if mode == "runtime" {
+            let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("initial INFO acquisition"));
+            drop(guard);
+            assert!(super::SETTINGS_LOCK_DEBUG_TRANSPORT.get().is_none());
+            assert!(processed.try_recv().is_err());
+            assert!(!log().contains("settings-lock phase="));
+            assert!(crate::logging::set_runtime_log_level("debug"));
+        }
+        if std::env::var_os("RUST_LOG").is_some() {
+            assert!(!crate::logging::set_runtime_log_level("error"));
+        }
+        let guard = super::empty_project_transaction(path, "capture_project_settings")
+            .unwrap_or_else(|_| panic!("owner acquisition"));
+        let start = settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        assert_eq!(start["attempt"], acquired["attempt"]);
+        assert_eq!(acquired["operation"], "capture_project_settings");
+        assert!(log().contains("settings-lock phase=acquired"));
+        assert!(!log().contains("PRIVATE-SETTINGS-SENTINEL"));
+        assert!(guard._lock.file.is_some());
+        settings_lock_debug_receipt(&acquired);
+        if mode != "filter-on" {
+            settings_lock_debug_wait_command("release");
+        }
+        drop(guard);
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        assert_eq!(release["reason"], "unlock_ok");
+        assert!(log().contains("settings-lock phase=release"));
+        settings_lock_debug_receipt(&release);
+        if mode == "runtime" {
+            let sender = super::SETTINGS_LOCK_DEBUG_TRANSPORT
+                .get()
+                .unwrap()
+                .as_ref()
+                .unwrap();
+            assert!(crate::logging::set_runtime_log_level("info"));
+            let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("INFO re-acquisition"));
+            assert!(guard.debug.is_none());
+            drop(guard);
+            assert!(crate::logging::set_runtime_log_level("debug"));
+            let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("DEBUG re-acquisition"));
+            // The same OnceLock sender/worker serves the next acquisition.
+            assert!(std::ptr::eq(
+                sender,
+                super::SETTINGS_LOCK_DEBUG_TRANSPORT
+                    .get()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+            ));
+            settings_lock_debug_processed(processed, "acquire-start");
+            settings_lock_debug_processed(processed, "acquired");
+            drop(guard);
+            settings_lock_debug_processed(processed, "release");
+        }
+    }
+
+    fn settings_lock_debug_suppress_scenario(
+        path: &std::path::Path,
+        processed: &std::sync::mpsc::Receiver<serde_json::Value>,
+        gated: &std::sync::mpsc::Receiver<()>,
+        resume: &std::sync::mpsc::Sender<()>,
+        log: &impl Fn() -> String,
+    ) {
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("suppress owner"));
+        settings_lock_debug_processed(processed, "acquire-start");
+        gated
+            .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+            .unwrap();
+        assert!(crate::logging::set_runtime_log_level("info"));
+        resume.send(()).unwrap();
+        settings_lock_debug_processed(processed, "acquired");
+        drop(guard);
+        settings_lock_debug_processed(processed, "release");
+        let logs = log();
+        assert!(logs.contains("settings-lock phase=acquire-start"));
+        assert!(!logs.contains("settings-lock phase=acquired"));
+        assert!(!logs.contains("settings-lock phase=release"));
+    }
+
+    fn settings_lock_debug_saturated_scenario(
+        path: &std::path::Path,
+        processed: &std::sync::mpsc::Receiver<serde_json::Value>,
+        gated: &std::sync::mpsc::Receiver<()>,
+        resume: &std::sync::mpsc::Sender<()>,
+        log: &impl Fn() -> String,
+    ) {
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("saturation owner"));
+        settings_lock_debug_processed(processed, "acquire-start");
+        gated
+            .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+            .unwrap();
+        let debug = guard.debug.as_ref().unwrap();
+        for _ in 0..super::SETTINGS_LOCK_DEBUG_CAPACITY + 10 {
+            debug.event("acquire-start", None, None);
+        }
+        assert_eq!(
+            super::SETTINGS_LOCK_DEBUG_LOST.load(super::Ordering::Relaxed),
+            10
+        );
+        drop(guard);
+        assert_eq!(
+            super::SETTINGS_LOCK_DEBUG_LOST.load(super::Ordering::Relaxed),
+            11
+        );
+        settings_lock_debug_receipt(&serde_json::json!({"phase":"closed-sink-blocked"}));
+        settings_lock_debug_wait_command("resume");
+        resume.send(()).unwrap();
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        assert_eq!(acquired["lost_events"], 11);
+        for _ in 0..super::SETTINGS_LOCK_DEBUG_CAPACITY {
+            settings_lock_debug_processed(processed, "acquire-start");
+        }
+        assert!(log().contains("lost_events=11"));
+    }
+
+    fn settings_lock_debug_wait_command(expected: &str) {
+        use std::io::BufRead;
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            std::io::stdin().lock().read_line(&mut line).unwrap();
+            let _ = send.send(line);
+        });
+        assert_eq!(
+            receive
+                .recv_timeout(SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT)
+                .unwrap()
+                .trim(),
+            expected
+        );
+    }
+
+    fn settings_lock_debug_failure_scenarios(
+        path: &std::path::Path,
+        processed: &std::sync::mpsc::Receiver<serde_json::Value>,
+    ) {
+        // I/O failure during preparation has no acquired, and preserves outward.
+        let bad_parent = path.with_file_name("not-a-directory");
+        std::fs::write(&bad_parent, b"PRIVATE-SETTINGS-SENTINEL").unwrap();
+        let error = match super::SettingsFileLock::acquire(
+            &bad_parent.join("settings.json"),
+            std::time::Duration::ZERO,
+        ) {
+            Ok(_) => panic!("invalid parent accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.legacy_outward.into_general_string(),
+            super::SETTINGS_LOCK_UNAVAILABLE_CODE
+        );
+        settings_lock_debug_processed(processed, "acquire-start");
+        let failure = settings_lock_debug_processed(processed, "acquire-error");
+        assert_eq!(failure["reason"], "io_error");
+        assert!(failure["wait_ms"].is_null());
+        // An invalid sidecar is rejected with no acquired event.
+        let directory = path.with_file_name("invalid-sidecar");
+        std::fs::create_dir_all(directory.join(super::SETTINGS_LOCK_FILE_NAME)).unwrap();
+        assert!(super::SettingsFileLock::acquire(
+            &directory.join("settings.json"),
+            std::time::Duration::ZERO
+        )
+        .is_err());
+        settings_lock_debug_processed(processed, "acquire-start");
+        settings_lock_debug_processed(processed, "acquire-error");
+        std::fs::remove_dir_all(&directory).unwrap();
+        // Deadline overflow happens after opening. Windows rename additionally
+        // proves the no-share-delete handle was closed before the failure receipt.
+        assert!(super::SettingsFileLock::acquire(path, std::time::Duration::MAX).is_err());
+        settings_lock_debug_processed(processed, "acquire-start");
+        let failure = settings_lock_debug_processed(processed, "acquire-error");
+        assert_eq!(failure["reason"], "lock_deadline_overflow");
+        let sidecar = path.parent().unwrap().join(super::SETTINGS_LOCK_FILE_NAME);
+        let renamed = sidecar.with_extension("test-closed");
+        std::fs::rename(&sidecar, &renamed).unwrap();
+        std::fs::rename(&renamed, &sidecar).unwrap();
+        // Early return and unwinding both release before an immediate new owner.
+        let early = || -> Result<(), ()> {
+            let _guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("early owner"));
+            Err(())
+        };
+        assert!(early().is_err());
+        settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        assert!(std::panic::catch_unwind(|| {
+            let _guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+                .unwrap_or_else(|_| panic!("unwind owner"));
+            panic!("test unwind");
+        })
+        .is_err());
+        settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("unlock-error owner"));
+        settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        super::SETTINGS_LOCK_DEBUG_TEST_UNLOCK_ERROR.with(|flag| flag.set(true));
+        drop(guard);
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        assert_eq!(release["reason"], "unlock_error");
+        assert_eq!(release["raw_os_error"], 5);
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("closed failed unlock handle"));
+        settings_lock_debug_processed(processed, "acquire-start");
+        let acquired = settings_lock_debug_processed(processed, "acquired");
+        // Moving the guard preserves the original acquisition thread/context.
+        let dropper = std::thread::spawn(move || drop(guard));
+        dropper.join().unwrap();
+        let release = settings_lock_debug_processed(processed, "release");
+        settings_lock_debug_assert_pair(&acquired, &release);
+        assert_eq!(
+            release["acquisition_thread"],
+            acquired["acquisition_thread"]
+        );
+        assert_ne!(release["event_thread"], acquired["event_thread"]);
+        // The wrapper propagates each operation and the caller location.
+        for operation in ["capture_project_settings", "read_project_paths_from_disk"] {
+            let origin_line = line!() + 1;
+            let transaction = super::empty_project_transaction(path, operation)
+                .unwrap_or_else(|_| panic!("wrapper owner"));
+            assert_eq!(
+                transaction
+                    ._lock
+                    .debug
+                    .as_ref()
+                    .unwrap()
+                    .context
+                    .caller
+                    .line(),
+                origin_line
+            );
+            settings_lock_debug_processed(processed, "acquire-start");
+            let acquired = settings_lock_debug_processed(processed, "acquired");
+            assert_eq!(acquired["operation"], operation);
+            drop(transaction);
+            settings_lock_debug_processed(processed, "release");
+        }
+        super::SETTINGS_LOCK_DEBUG_ATTEMPT.store(u64::MAX, super::Ordering::Relaxed);
+        let guard = super::SettingsFileLock::acquire(path, std::time::Duration::ZERO)
+            .unwrap_or_else(|_| panic!("counter overflow changed lock result"));
+        assert!(guard.debug.is_none());
+        drop(guard);
+        assert!(processed.try_recv().is_err());
+    }
+
+    #[test]
+    fn settings_lock_debug_active_owner_and_runtime_info_to_debug() {
+        for mode in ["owner", "runtime"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let path = fixture.path().join("settings.json");
+            std::fs::write(&path, "PRIVATE-SETTINGS-SENTINEL").unwrap();
+            let mut owner = SettingsLockDebugChild::start(
+                mode,
+                &path,
+                (mode == "owner").then_some("debug"),
+                Some("info"),
+            );
+            let acquired = owner.receipt("acquired");
+            assert_eq!(acquired["pid"], owner.process.id());
+            assert!(uuid::Uuid::parse_str(acquired["instance"].as_str().unwrap()).is_ok());
+            assert_eq!(
+                acquired["sidecar"],
+                super::settings_lock_debug_path(
+                    &fixture.path().join(super::SETTINGS_LOCK_FILE_NAME)
+                )
+                .0
+            );
+            assert!(owner.log().contains("settings-lock phase=acquired"));
+            // A different target in the same parent must still contend on sidecar.
+            let waiter = SettingsLockDebugChild::start(
+                "waiter",
+                &fixture.path().join("other-settings.json"),
+                Some("debug"),
+                None,
+            );
+            let timeout = waiter.receipt("timeout");
+            assert_eq!(timeout["sidecar"], acquired["sidecar"]);
+            assert_ne!(timeout["instance"], acquired["instance"]);
+            assert_ne!(timeout["pid"], acquired["pid"]);
+            waiter.finish();
+            // Release is authorized only after the active owner's real log receipt.
+            owner.command("release");
+            let release = owner.receipt("release");
+            settings_lock_debug_assert_pair(&acquired, &release);
+            owner.finish();
+            let probe = SettingsLockDebugChild::start("probe", &path, Some("info"), None);
+            probe.receipt("probe-ok");
+            probe.finish();
+        }
+    }
+
+    #[test]
+    fn settings_lock_debug_filters_and_pending_suppression() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("settings.json");
+        for (rust_log, level) in [
+            (Some("info"), Some("debug")),
+            (Some("warn"), Some("debug")),
+            (Some("error"), Some("debug")),
+            (None, Some("info")),
+            (None, Some("warn")),
+            (None, Some("error")),
+            (None, None),
+        ] {
+            SettingsLockDebugChild::start("disabled", &path, rust_log, level).finish();
+        }
+        for (rust_log, level) in [(Some("debug"), Some("error")), (None, Some("debug"))] {
+            let child = SettingsLockDebugChild::start("filter-on", &path, rust_log, level);
+            child.receipt("acquired");
+            child.receipt("release");
+            child.finish();
+        }
+        SettingsLockDebugChild::start("suppress", &path, None, Some("debug")).finish();
+    }
+
+    #[test]
+    fn settings_lock_debug_stalled_sink_does_not_retain_kernel_lock() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("settings.json");
+        let mut owner = SettingsLockDebugChild::start("saturated", &path, Some("debug"), None);
+        owner.receipt("closed-sink-blocked");
+        let probe = SettingsLockDebugChild::start("probe", &path, Some("info"), None);
+        probe.receipt("probe-ok");
+        probe.finish();
+        owner.command("resume");
+        owner.finish();
+    }
+
+    #[test]
+    fn settings_lock_debug_failure_and_raii_events() {
+        let fixture = tempfile::tempdir().unwrap();
+        SettingsLockDebugChild::start(
+            "failures",
+            &fixture.path().join("settings.json"),
+            Some("debug"),
+            None,
+        )
+        .finish();
+    }
+
+    #[test]
+    fn settings_lock_debug_disabled_spawn_failure_and_disconnected_transport() {
+        let slot = std::sync::OnceLock::new();
+        assert!(
+            super::settings_lock_debug_transport(&slot, false, |_| panic!("disabled spawn"))
+                .is_none()
+        );
+        assert!(slot.get().is_none());
+        assert!(
+            super::settings_lock_debug_transport(&slot, true, |_| Err(std::io::Error::other(
+                "injected spawn failure"
+            )))
+            .is_none()
+        );
+        assert!(matches!(slot.get(), Some(None)));
+        assert!(
+            super::settings_lock_debug_transport(&slot, true, |_| panic!("spawn retry")).is_none()
+        );
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        drop(receiver);
+        let context = std::sync::Arc::new(super::SettingsLockDebugContext {
+            instance: uuid::Uuid::new_v4(),
+            pid: std::process::id(),
+            attempt: 1,
+            operation: "test-lock",
+            caller: std::panic::Location::caller(),
+            thread: std::thread::current().id(),
+            target: "test".into(),
+            sidecar: "test".into(),
+            path_truncated: false,
+        });
+        let debug = super::SettingsLockDebugAttempt {
+            context,
+            sender,
+            started: std::time::Instant::now(),
+            retry_started: None,
+            acquired_at: None,
+        };
+        let before = super::SETTINGS_LOCK_DEBUG_LOST.load(super::Ordering::Relaxed);
+        debug.event("acquire-start", None, None);
+        assert!(super::SETTINGS_LOCK_DEBUG_LOST.load(super::Ordering::Relaxed) > before);
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("settings.json");
+        let mut debug = Some(debug);
+        let file =
+            super::SettingsFileLock::acquire_file(&path, std::time::Duration::ZERO, &mut debug)
+                .unwrap_or_else(|_| panic!("disconnected diagnostics affected acquisition"));
+        drop(super::SettingsFileLock {
+            file: Some(file),
+            debug,
+        });
+        assert!(super::SettingsFileLock::acquire(&path, std::time::Duration::ZERO).is_ok());
+    }
+
+    #[test]
+    fn settings_lock_debug_paths_are_escaped_and_bounded() {
+        let (escaped, truncated) =
+            super::settings_lock_debug_path(std::path::Path::new("hello\n\r\t\"\\world"));
+        assert!(!truncated);
+        assert!(!escaped.contains('\n'));
+        assert!(escaped.contains("\\n"));
+        assert_eq!(
+            serde_json::from_str::<String>(&escaped).unwrap(),
+            "hello\n\r\t\"\\world"
+        );
+        let (escaped, truncated) =
+            super::settings_lock_debug_path(std::path::Path::new(&"🦀".repeat(4096)));
+        assert!(truncated);
+        assert!(escaped.len() <= super::SETTINGS_LOCK_DEBUG_PATH_BYTES);
+        assert!(serde_json::from_str::<String>(&escaped).is_ok());
+    }
+
+    #[test]
+    fn id_hash_schema_missing_null_and_nonstring_preserve_valid_settings() {
+        let baseline = serde_json::json!({
+            "defaultShell": "test-shell", "defaultShellArgs": [],
+            "agents": [{
+                "id": "custom-tool", "label": "Custom tool", "command": "tool --flag",
+                "color": "#123456", "envs": [{"key": "MODE", "value": "safe", "enabled": true}]
+            }]
+        });
+        let expected: super::AppSettings = serde_json::from_value(baseline.clone()).unwrap();
+        assert_eq!(expected.agents[0].id_hash, None);
+        for raw in [
+            serde_json::json!(null),
+            serde_json::json!(42),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!([]),
+            serde_json::json!(["hash"]),
+            serde_json::json!({}),
+            serde_json::json!({"hash": "value"}),
+        ] {
+            let mut supplied = baseline.clone();
+            supplied["agents"][0]["id_hash"] = raw.clone();
+            let decoded: super::AppSettings = serde_json::from_value(supplied).unwrap();
+            assert_eq!(decoded.agents[0].id_hash, None, "metadata {raw}");
+            assert_eq!(
+                serde_json::to_value(decoded).unwrap(),
+                serde_json::to_value(&expected).unwrap(),
+                "metadata {raw} must not change valid settings"
+            );
+        }
+
+        for malformed_agents in [
+            serde_json::json!({}),
+            serde_json::json!([null]),
+            serde_json::json!([{"id": "a", "label": "A", "command": 42, "color": "red", "id_hash": false}]),
+            serde_json::json!([{"id": "a", "label": "A", "command": "tool", "color": "red", "envs": {}, "id_hash": false}]),
+        ] {
+            let mut malformed = baseline.clone();
+            malformed["agents"] = malformed_agents;
+            assert!(serde_json::from_value::<super::AppSettings>(malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn id_hash_schema_serializes_literal_key_roundtrips_and_omits_none() {
+        let mut agent: super::AgentConfig = serde_json::from_value(serde_json::json!({
+            "id": "custom-tool", "label": "Custom tool", "command": "tool", "color": "red"
+        }))
+        .unwrap();
+        agent.id_hash = Some("cid1:example".to_string());
+        let encoded = serde_json::to_value(&agent).unwrap();
+        assert_eq!(encoded["id_hash"], "cid1:example");
+        assert!(encoded.get("idHash").is_none());
+        let decoded: super::AgentConfig = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(decoded.id, "custom-tool");
+        assert_eq!(decoded.id_hash.as_deref(), Some("cid1:example"));
+        assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+
+        agent.id_hash = None;
+        let encoded = serde_json::to_value(agent).unwrap();
+        assert!(encoded.get("id_hash").is_none());
+        assert!(encoded.get("idHash").is_none());
+    }
+
+    #[test]
+    fn id_hash_schema_ignores_camelcase_and_preserves_supplied_strings() {
+        let baseline = serde_json::json!({
+            "id": "custom-tool", "label": "Custom tool", "command": "tool", "color": "red",
+            "idHash": "ignored"
+        });
+        let decoded: super::AgentConfig = serde_json::from_value(baseline.clone()).unwrap();
+        assert_eq!(decoded.id_hash, None);
+        assert!(serde_json::to_value(decoded)
+            .unwrap()
+            .get("idHash")
+            .is_none());
+        for raw in ["", "not-a-hash", "cid1:forged", " arbitrary Ω "] {
+            let mut supplied = baseline.clone();
+            supplied["id_hash"] = serde_json::json!(raw);
+            let decoded: super::AgentConfig = serde_json::from_value(supplied).unwrap();
+            assert_eq!(decoded.id, "custom-tool");
+            assert_eq!(decoded.id_hash.as_deref(), Some(raw));
+            let encoded = serde_json::to_value(decoded).unwrap();
+            assert_eq!(encoded["id_hash"], raw);
+            assert!(encoded.get("idHash").is_none());
+        }
+    }
+
+    #[test]
+    fn p03_readers_select_sidecar_without_migration_and_preserve_unrelated_on_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = real_ac_project_path(temp.path(), "A");
+        let b = real_ac_project_path(temp.path(), "B");
+        let legacy = serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPaths":[a],"projectPath":a});
+        std::fs::write(&path, legacy.to_string()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert_eq!(
+            super::load_settings_for_cli_strict_from_path(Some(&path))
+                .unwrap()
+                .project_paths,
+            vec![a.clone()]
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!super::project_paths_path(&path).exists());
+        std::fs::write(
+            super::project_paths_path(&path),
+            serde_json::json!({"projectPaths":[b]}).to_string(),
+        )
+        .unwrap();
+        assert!(super::load_settings_for_cli_strict_from_path(Some(&path)).is_err());
+        let failed = super::load_settings_for_cli_from_path(&path);
+        assert_eq!(failed.default_shell, "sentinel");
+        assert!(failed.project_paths.is_empty());
+        assert!(failed.project_paths_persistence_error.is_some());
+        let app = super::load_settings_from_path(&path);
+        assert!(app.project_paths_persistence_error.is_some());
+        assert!(app.root_token.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::write(
+            &path,
+            r#"{"defaultShell":"sentinel","defaultShellArgs":[],"agents":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::load_settings_for_cli_strict_from_path(Some(&path))
+                .unwrap()
+                .project_paths,
+            vec![b]
+        );
+        std::fs::write(super::project_paths_path(&path), b"{}").unwrap();
+        let mut stale = failed;
+        stale.project_paths = vec![a];
+        super::refresh_and_decode_project_paths_from_path(&mut stale, &path).unwrap();
+        assert!(stale.project_paths.is_empty());
+        assert!(stale.project_paths_persistence_error.is_none());
+        std::fs::remove_file(&path).unwrap();
+        assert!(super::load_settings_for_cli_strict_from_path(Some(&path))
+            .unwrap()
+            .project_paths
+            .is_empty());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn p03_preserve_and_cas_strip_six_keys_and_do_not_write_project_drafts() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = real_ac_project_path(temp.path(), "A");
+        let raw = serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPaths":[a],"projectPathsRelativeToInstance":[null],"projectPath":a,"projectPathRelativeToInstance":null,"archivedProjectPaths":[],"archivedProjectPathsRelativeToInstance":[],"defaultShell":"sentinel"});
+        std::fs::write(&path, raw.to_string()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        settings.project_paths = vec!["renderer draft".into()];
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        assert_eq!(written.project_paths, vec![a]);
+        let destination = super::project_paths_path(&path);
+        let sidecar = std::fs::read(&destination).unwrap();
+        assert_eq!(
+            std::fs::read(
+                path.with_file_name(
+                    super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME
+                )
+            )
+            .unwrap(),
+            original
+        );
+        let managed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(super::raw_project_projection(managed.as_object().unwrap()).is_empty());
+        let cas =
+            super::compare_and_set_terminal_snapshots_enabled_at_path(&written, &path, true, false)
+                .unwrap();
+        assert!(!cas.terminal_snapshots_enabled);
+        assert_eq!(std::fs::read(&destination).unwrap(), sidecar);
+        let security =
+            super::read_terminal_snapshot_security_settings_strict_from_path(&path).unwrap();
+        assert!(!security.terminal_snapshots_enabled);
+        assert_eq!(security.project_paths, cas.project_paths);
+        let managed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(super::raw_project_projection(managed.as_object().unwrap()).is_empty());
+        std::fs::write(&destination, r#"{"projectPaths":"wrong","unknown":"keep"}"#).unwrap();
+        let sidecar = std::fs::read(&destination).unwrap();
+        super::save_settings_to_path_preserving_project_paths(&cas, &path).unwrap();
+        assert_eq!(std::fs::read(destination).unwrap(), sidecar);
+    }
+
+    #[test]
+    fn p03_privileged_source_choice_and_disclosure_fail_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = "C:/authorized-A";
+        let b = "C:/legacy-B";
+        std::fs::write(&path, r#"{"terminalSnapshotsEnabled":false}"#).unwrap();
+        let destination = super::project_paths_path(&path);
+        std::fs::write(
+            &destination,
+            serde_json::json!({"projectPaths":[a]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            super::read_pty_input_project_paths_strict_from_path(&path).unwrap(),
+            Some(vec![a.into()])
+        );
+        let security =
+            super::read_terminal_snapshot_security_settings_strict_from_path(&path).unwrap();
+        assert!(!security.terminal_snapshots_enabled);
+        assert_eq!(security.project_paths, vec![a]);
+        std::fs::write(
+            &path,
+            serde_json::json!({"terminalSnapshotsEnabled":true,"projectPaths":[b]}).to_string(),
+        )
+        .unwrap();
+        assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+        assert!(super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err());
+        std::fs::write(&path, serde_json::json!({"projectPaths":[a]}).to_string()).unwrap();
+        assert_eq!(
+            super::read_terminal_snapshot_security_settings_strict_from_path(&path)
+                .unwrap()
+                .project_paths,
+            vec![a]
+        );
+        std::fs::write(&destination, b"{\"projectPaths\":[],\"projectPaths\":[]}").unwrap();
+        assert!(super::read_pty_input_project_paths_strict_from_path(&path).is_err());
+        std::fs::write(&path, b"{}").unwrap();
+        std::fs::write(&destination, b"{\"projectPaths\":null}").unwrap();
+        assert_eq!(
+            super::read_pty_input_project_paths_strict_from_path(&path).unwrap(),
+            Some(vec![])
+        );
+        assert!(super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err());
+    }
+
+    #[test]
+    fn p03_loader_reader_first_holds_lock_until_capture_and_decode() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = real_ac_project_path(temp.path(), "A");
+        std::fs::write(
+            &path,
+            serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPaths":[a]}).to_string(),
+        )
+        .unwrap();
+        let (captured_tx, captured_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let reader_path = path.clone();
+        let reader = std::thread::spawn(move || {
+            super::PROJECT_SOURCE_CAPTURE_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move |_| {
+                    captured_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                }))
+            });
+            let result = super::load_settings_for_cli_strict_from_path(Some(&reader_path));
+            super::PROJECT_SOURCE_CAPTURE_HOOK.with(|hook| *hook.borrow_mut() = None);
+            result.unwrap()
+        });
+        captured_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (owned_tx, owned_rx) = mpsc::channel();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            attempt_tx.send(()).unwrap();
+            let token = super::empty_project_transaction(&writer_path, "test-lock").unwrap();
+            owned_tx.send(()).unwrap();
+            super::ensure_project_paths_migrated_locked(&token).unwrap();
+        });
+        attempt_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(owned_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        assert!(!super::project_paths_path(&path).exists());
+        release_tx.send(()).unwrap();
+        let settings = reader.join().unwrap();
+        assert_eq!(settings.project_paths, vec![a.clone()]);
+        owned_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            super::load_settings_for_cli_strict_from_path(Some(&path))
+                .unwrap()
+                .project_paths,
+            vec![a]
+        );
+    }
+
+    #[test]
+    fn p03_loader_migrator_first_timeout_never_authorizes_and_retry_recovers() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = real_ac_project_path(temp.path(), "A");
+        std::fs::write(
+            &path,
+            serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPaths":[a]}).to_string(),
+        )
+        .unwrap();
+        let (published_tx, published_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            let token = super::empty_project_transaction(&writer_path, "test-lock").unwrap();
+            super::ensure_project_paths_migrated_with(&token, &mut |stage, _| {
+                if stage == "destination_published" {
+                    published_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                }
+                Ok(())
+            })
+            .unwrap();
+        });
+        published_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(super::load_settings_for_cli_strict_from_path(Some(&path)).is_err());
+        let failed = super::load_settings_for_cli_from_path(&path);
+        assert!(failed.project_paths.is_empty());
+        assert!(failed.project_paths_persistence_error.is_some());
+        release_tx.send(()).unwrap();
+        writer.join().unwrap();
+        let recovered = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        assert_eq!(recovered.project_paths, vec![a]);
+        assert!(recovered.project_paths_persistence_error.is_none());
+    }
+
+    #[test]
+    fn p03_setup_rollback_restores_exact_raw_projection_under_same_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let a = real_ac_project_path(temp.path(), "A");
+        let b = real_ac_project_path(temp.path(), "B");
+        let raw = serde_json::json!({"defaultShell":"sentinel","defaultShellArgs":[],"agents":[],"projectPath":a,"projectPaths":[a,"C:/missing"],"projectPathsRelativeToInstance":[null,null]});
+        std::fs::write(&path, raw.to_string()).unwrap();
+        let mut token =
+            super::begin_project_paths_transaction_at_path(&super::AppSettings::default(), &path)
+                .unwrap();
+        let before = token.raw_project_projection().unwrap();
+        let mut candidate = token.fresh_settings().clone();
+        token.refresh_raw_projects(&mut candidate).unwrap();
+        candidate.project_paths.push(b);
+        super::resync_project_state_from_runtime(&mut candidate);
+        token.commit_project_groups(&candidate, true, true).unwrap();
+        token.restore_raw_project_projection(&before).unwrap();
+        assert_eq!(token.raw_project_projection().unwrap(), before);
+        let managed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(super::raw_project_projection(managed.as_object().unwrap()).is_empty());
+    }
 
     #[test]
     fn project_migration_fault_reopen_and_backup_recovery() {
@@ -12681,6 +15025,290 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn p03_final_retained_root_check_rejects_persistent_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("selected");
+        std::fs::create_dir(&parent).unwrap();
+        let path = parent.join("settings.json");
+        let retired = temp.path().join("retired");
+        super::PROJECT_SOURCE_CAPTURE_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |path| {
+                let parent = path.parent().unwrap();
+                std::fs::rename(parent, &retired).unwrap();
+                std::fs::create_dir(parent).unwrap();
+                let mut replacement = serde_json::to_value(super::AppSettings::default()).unwrap();
+                replacement["roomNumberMask"] = serde_json::json!("###");
+                std::fs::write(path, serde_json::to_vec(&replacement).unwrap()).unwrap();
+            }));
+        });
+        let captured = super::capture_project_settings(&path, false);
+        super::PROJECT_SOURCE_CAPTURE_HOOK.with(|hook| *hook.borrow_mut() = None);
+        let (settings, _, original) = captured.unwrap();
+        assert_eq!(settings.room_number_mask, "###");
+        assert_eq!(
+            settings.project_paths_persistence_error.as_deref(),
+            Some(super::SETTINGS_LOCK_UNAVAILABLE_CODE)
+        );
+        assert!(settings.project_paths.is_empty());
+        assert!(original.is_none());
+        assert!(!super::project_paths_path(&path).exists());
+    }
+
+    #[test]
+    fn p03_capture_creates_fresh_parent_without_readonly_data_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fresh/nested/settings.json");
+        let (settings, _, _) = super::capture_project_settings(&path, false).unwrap();
+        assert!(settings.project_paths_persistence_error.is_none());
+        assert!(settings.project_paths.is_empty());
+        assert!(path.parent().unwrap().is_dir());
+        assert!(!path.exists());
+        assert!(!super::project_paths_path(&path).exists());
+    }
+
+    #[test]
+    fn p03_physical_agents_io_preserves_logical_registry_and_messages() {
+        let temp = tempfile::tempdir().unwrap();
+        let io = temp.path().join("physical/settings.json");
+        let label = temp.path().join("logical/settings.json");
+        std::fs::create_dir_all(io.parent().unwrap()).unwrap();
+        std::fs::write(super::agents_instance_path(&io), b"{broken").unwrap();
+        let projection = serde_json::Map::new();
+        let contents = serde_json::to_string(&super::AppSettings::default()).unwrap();
+        let (mut settings, _) = super::parse_settings_json_with_projection_labeled(
+            &contents,
+            &label.to_string_lossy(),
+            Some(&io),
+            Some(&label),
+            Some(&projection),
+        )
+        .unwrap();
+        assert_eq!(
+            settings.agents_layer.unreadable_path(),
+            Some(super::agents_instance_path(&label).as_path())
+        );
+        assert!(super::agents_layer_unreadable_for_dir(
+            label.parent().unwrap()
+        ));
+        assert!(!super::agents_layer_unreadable_for_dir(
+            io.parent().unwrap()
+        ));
+        if let super::AgentsLayerState::Unreadable { reason, .. } = &settings.agents_layer {
+            assert!(reason.contains(&super::agents_instance_path(&label).display().to_string()));
+            assert!(!reason.contains(&super::agents_instance_path(&io).display().to_string()));
+        } else {
+            panic!("physical unreadable agents layer was lost");
+        }
+        super::set_agents_layer_state(&mut settings, &label, super::AgentsLayerState::Readable);
+    }
+
+    #[test]
+    fn p03_labeled_migration_keeps_raw_bytes_and_logical_conflict_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let io = temp.path().join("physical/settings.json");
+        let label = temp.path().join("logical/settings.json");
+        std::fs::create_dir_all(io.parent().unwrap()).unwrap();
+        let original = br####"{"roomNumberMask":"###","projectPaths":["missing"],"projectPath":null,"projectPathsRelativeToInstance":[null],"archivedProjectPaths":["archived"]}"####;
+        std::fs::write(&io, original).unwrap();
+        let _transaction = super::empty_project_transaction(&io, "test-lock").unwrap();
+        super::ensure_project_paths_migrated_at_labeled_path(&io, &label, &mut |_, _| Ok(()))
+            .unwrap();
+        let backup =
+            io.with_file_name(crate::config::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME);
+        assert_eq!(std::fs::read(backup).unwrap(), original);
+        let cleaned: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&io).unwrap()).unwrap();
+        assert!(super::raw_project_projection(cleaned.as_object().unwrap()).is_empty());
+        assert_eq!(cleaned["roomNumberMask"], "###");
+        let selected =
+            super::select_project_source_at_labeled_path_with_limit(&io, &label, 16 * 1024 * 1024)
+                .unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(original).unwrap();
+        assert_eq!(
+            selected.projection,
+            super::raw_project_projection(raw.as_object().unwrap())
+        );
+        let before = std::fs::read(super::project_paths_path(&io)).unwrap();
+        super::ensure_project_paths_migrated_at_labeled_path(&io, &label, &mut |_, _| Ok(()))
+            .unwrap();
+        assert_eq!(
+            std::fs::read(super::project_paths_path(&io)).unwrap(),
+            before
+        );
+        std::fs::write(&io, br#"{"projectPaths":["other"]}"#).unwrap();
+        let error =
+            super::select_project_source_at_labeled_path_with_limit(&io, &label, 16 * 1024 * 1024)
+                .unwrap_err();
+        let message = error.legacy_outward.into_general_string();
+        assert!(message.contains(&label.display().to_string()));
+        assert!(message.contains(&super::project_paths_path(&label).display().to_string()));
+        assert!(!message.contains(&io.display().to_string()));
+    }
+
+    #[test]
+    fn selected_project_decode_fallback_retains_overlay_and_agents_state() {
+        for startup in [false, true] {
+            for unreadable in [false, true] {
+                assert_selected_project_decode_fallback_case(startup, unreadable);
+            }
+        }
+    }
+
+    fn assert_selected_project_decode_fallback_case(startup: bool, unreadable: bool) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let project = temp.path().join("A");
+        std::fs::create_dir_all(project.join(".ac")).unwrap();
+        let a = project.to_string_lossy().replace('\\', "/");
+        // Valid source object, unrelated typed field cannot decode.
+        let source = serde_json::to_vec(&serde_json::json!({
+            "rootToken":42,"projectPaths":[a],"projectPath":a
+        }))
+        .unwrap();
+        std::fs::write(&path, &source).unwrap();
+        let overlay_path = b3_overlay_path(temp.path());
+        let overlay = br####"{"roomNumberMask":"###"}"####;
+        std::fs::write(&overlay_path, overlay).unwrap();
+        let agents_path = super::agents_instance_path(&path);
+        let defaults = serde_json::to_value(super::AppSettings::default()).unwrap();
+        let agents = if unreadable {
+            b"{broken agents".to_vec()
+        } else {
+            serde_json::to_vec(&serde_json::json!({
+                "agents":defaults["agents"],
+                "codingAgentProfiles":defaults["codingAgentProfiles"]
+            }))
+            .unwrap()
+        };
+        std::fs::write(&agents_path, &agents).unwrap();
+        let (settings, legacy_profiles, original) = if startup {
+            super::read_settings_for_startup(&path)
+        } else {
+            super::capture_project_settings(&path, false).unwrap()
+        };
+        let expected = crate::config::projects::display_canonical(
+            std::fs::canonicalize(&project)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref(),
+        );
+        assert_eq!(settings.project_paths, vec![expected.clone()]);
+        assert_eq!(settings.project_path, Some(expected));
+        assert!(settings.project_paths_persistence_error.is_none());
+        assert_eq!(settings.room_number_mask, "###");
+        assert_eq!(settings.root_token, None);
+        assert!(!legacy_profiles);
+        assert!(original.is_none());
+        assert_eq!(
+            settings.agents_layer.unreadable_path().is_some(),
+            unreadable
+        );
+        assert_eq!(
+            super::agents_layer_unreadable_for_dir(temp.path()),
+            unreadable
+        );
+        assert_eq!(
+            super::try_with_agents_layer_publication_state(temp.path(), |flag| flag).unwrap(),
+            unreadable
+        );
+        assert_eq!(std::fs::read(&agents_path).unwrap(), agents);
+        assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay);
+        let sidecar = super::project_paths_path(&path);
+        if startup {
+            assert!(super::raw_project_projection(&b3_object(&path)).is_empty());
+        } else {
+            assert_eq!(std::fs::read(&path).unwrap(), source);
+            assert!(!sidecar.exists());
+            assert!(!temp
+                .path()
+                .join(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME)
+                .exists());
+        }
+        assert_selected_project_decode_fallback_preserve(
+            &settings,
+            &path,
+            &agents_path,
+            &agents,
+            &overlay_path,
+            overlay,
+        );
+    }
+
+    fn assert_selected_project_decode_fallback_preserve(
+        settings: &super::AppSettings,
+        path: &std::path::Path,
+        agents_path: &std::path::Path,
+        agents: &[u8],
+        overlay_path: &std::path::Path,
+        overlay: &[u8],
+    ) {
+        let sidecar = super::project_paths_path(path);
+        let before_sidecar = std::fs::read(&sidecar).ok();
+        match super::save_settings_to_path_preserving_project_paths_typed(settings, path) {
+            Ok(_) => {
+                assert_eq!(std::fs::read(agents_path).unwrap(), agents);
+                assert!(super::raw_project_projection(&b3_object(path)).is_empty());
+            }
+            Err(error) => {
+                eprintln!("P1 Preserve explicitly refused: {error:?}");
+                assert_eq!(std::fs::read(agents_path).unwrap(), agents);
+            }
+        }
+        if let Some(bytes) = before_sidecar {
+            assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+        }
+        assert_eq!(std::fs::read(overlay_path).unwrap(), overlay);
+    }
+
+    #[test]
+    fn unavailable_project_fallback_retains_agents_publication_mark() {
+        for unreadable in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            let source = br#"{"rootToken":42}"#;
+            let destination = b"{broken project source";
+            let agents = if unreadable {
+                b"{broken".as_slice()
+            } else {
+                b"{}".as_slice()
+            };
+            std::fs::write(&path, source).unwrap();
+            std::fs::write(super::project_paths_path(&path), destination).unwrap();
+            std::fs::write(super::agents_instance_path(&path), agents).unwrap();
+            for startup in [false, true] {
+                let (settings, _, _) = if startup {
+                    super::read_settings_for_startup(&path)
+                } else {
+                    super::capture_project_settings(&path, false).unwrap()
+                };
+                assert!(settings.project_paths_persistence_error.is_some());
+                assert!(settings.project_paths.is_empty());
+                assert!(settings.project_path.is_none());
+                assert_eq!(
+                    settings.agents_layer.unreadable_path().is_some(),
+                    unreadable
+                );
+                assert_eq!(
+                    super::try_with_agents_layer_publication_state(temp.path(), |flag| flag)
+                        .unwrap(),
+                    unreadable
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), source);
+                assert_eq!(
+                    std::fs::read(super::project_paths_path(&path)).unwrap(),
+                    destination
+                );
+                assert_eq!(
+                    std::fs::read(super::agents_instance_path(&path)).unwrap(),
+                    agents
+                );
+                assert!(settings.root_token.is_none());
+            }
+        }
+    }
+
     fn migration_wait_marker(root: &std::path::Path, name: &str) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !root.join(name).is_file() {
@@ -12750,6 +15378,14 @@ mod tests {
     }
 
     fn launch_migration_child(root: &std::path::Path, role: &str) -> MigrationChild {
+        launch_migration_child_with_path(root, role, &root.join("settings.json"))
+    }
+
+    fn launch_migration_child_with_path(
+        root: &std::path::Path,
+        role: &str,
+        path: &std::path::Path,
+    ) -> MigrationChild {
         let log = std::fs::File::create(root.join("child.log")).unwrap();
         let child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -12760,6 +15396,7 @@ mod tests {
             ])
             .env("AC_P02_CHILD_ROOT", root)
             .env("AC_P02_CHILD_ROLE", role)
+            .env("AC_P03_DATA_PATH", path)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::from(log.try_clone().unwrap()))
             .stdout(std::process::Stdio::from(log))
@@ -12783,6 +15420,10 @@ mod tests {
             b"P02 isolated process fixture"
         );
         let role = std::env::var("AC_P02_CHILD_ROLE").unwrap();
+        if role.starts_with("race-") {
+            project_archive_preserve_child(&root, &role);
+            return;
+        }
         assert!(matches!(
             role.as_str(),
             "hold" | "crash-backup-sync" | "crash-backup-published" | "crash-destination"
@@ -12813,6 +15454,248 @@ mod tests {
         .unwrap();
         migration_wait_marker(&root, "release-lock");
         drop(transaction);
+    }
+
+    // Separate control roots share one data path and actual native settings lock.
+    fn project_archive_preserve_child(root: &std::path::Path, role: &str) {
+        let path = std::path::PathBuf::from(std::env::var_os("AC_P03_DATA_PATH").unwrap());
+        assert!(path.is_absolute());
+        let data = path.parent().unwrap();
+        let draft: super::AppSettings =
+            serde_json::from_slice(&std::fs::read(data.join("stale-draft.json")).unwrap()).unwrap();
+        let target = std::fs::read_to_string(data.join("target.txt")).unwrap();
+        let holder = role.ends_with("-holder");
+        let preserve = role.starts_with("race-preserve-");
+        let unarchive = role.starts_with("race-unarchive-");
+        assert!(preserve || unarchive || role.starts_with("race-archive-"));
+        std::fs::write(root.join("ready"), b"ready").unwrap();
+        migration_wait_marker(root, "begin");
+        if preserve && holder {
+            let control = root.to_path_buf();
+            super::SETTINGS_PRESERVE_LOCK_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move |_| {
+                    std::fs::write(control.join("acquired"), b"Preserve lock owned").unwrap();
+                    migration_wait_marker(&control, "release");
+                }));
+            });
+        }
+        let operation = || -> Result<(), String> {
+            if preserve {
+                super::save_settings_to_path_preserving_project_paths_typed(&draft, &path)
+                    .map(|_| ())
+                    .map_err(|error| {
+                        super::report_settings_save_error(
+                            error,
+                            super::SettingsSaveReportSurface::GeneralSettings,
+                        )
+                    })
+            } else {
+                let mut transaction =
+                    super::begin_project_paths_transaction_at_path(&draft, &path)?;
+                if holder {
+                    std::fs::write(root.join("acquired"), b"project token owned").unwrap();
+                    migration_wait_marker(root, "release");
+                }
+                let mut candidate = transaction.fresh_settings().clone();
+                transaction.refresh_raw_projects(&mut candidate)?;
+                if unarchive {
+                    assert!(super::projects::unarchive_project_path(
+                        &mut candidate,
+                        &target
+                    ));
+                } else {
+                    assert!(super::projects::archive_project_path(
+                        &mut candidate,
+                        &target
+                    ));
+                }
+                super::resync_project_state_from_runtime(&mut candidate);
+                transaction.commit_project_groups(&candidate, true, true)?;
+                Ok(())
+            }
+        };
+        if !holder {
+            let source = std::fs::read(&path).unwrap();
+            let sidecar = std::fs::read(super::project_paths_path(&path)).unwrap();
+            let started = std::time::Instant::now();
+            let refused = operation().expect_err("held native lock must refuse competing writer");
+            assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+            assert_eq!(std::fs::read(&path).unwrap(), source);
+            assert_eq!(
+                std::fs::read(super::project_paths_path(&path)).unwrap(),
+                sidecar
+            );
+            std::fs::write(root.join("refused"), refused).unwrap();
+            migration_wait_marker(root, "retry");
+        }
+        let before = std::fs::read(super::project_paths_path(&path)).unwrap();
+        operation().unwrap();
+        if preserve {
+            assert_eq!(
+                std::fs::read(super::project_paths_path(&path)).unwrap(),
+                before
+            );
+        }
+        std::fs::write(root.join("done"), b"writer succeeded").unwrap();
+    }
+
+    #[test]
+    fn project_archive_unarchive_processes_race_typed_preserve_both_orders() {
+        for unarchive in [false, true] {
+            for preserve_first in [false, true] {
+                project_archive_preserve_case(unarchive, preserve_first);
+            }
+        }
+    }
+
+    fn project_archive_preserve_case(unarchive: bool, preserve_first: bool) {
+        let root = tempfile::tempdir().unwrap().keep();
+        let path = root.join("settings.json");
+        let a = root.join("A").to_string_lossy().replace('\\', "/");
+        let b = root.join("B").to_string_lossy().replace('\\', "/");
+        // Missing raw registrations exercise retained companion pairs.
+        assert!(!root.join("A").exists() && !root.join("B").exists());
+        let (active, archived, active_rel, archived_rel) = if unarchive {
+            (
+                serde_json::json!([b]),
+                serde_json::json!([a]),
+                serde_json::json!(["missing-companion-B"]),
+                serde_json::json!(["missing-companion-A"]),
+            )
+        } else {
+            (
+                serde_json::json!([a, b]),
+                serde_json::json!([]),
+                serde_json::json!(["missing-companion-A", "missing-companion-B"]),
+                serde_json::json!([]),
+            )
+        };
+        let mut managed = serde_json::to_value(super::AppSettings {
+            room_number_mask: "##".into(),
+            root_token: Some("fixture".into()),
+            ..super::AppSettings::default()
+        })
+        .unwrap();
+        super::replace_project_projection(
+            managed.as_object_mut().unwrap(),
+            &serde_json::Map::new(),
+        );
+        std::fs::write(&path, serde_json::to_vec(&managed).unwrap()).unwrap();
+        std::fs::write(
+            super::project_paths_path(&path),
+            serde_json::to_vec(&serde_json::json!({
+                "projectPaths":active,"projectPathsRelativeToInstance":active_rel,
+                "archivedProjectPaths":archived,
+                "archivedProjectPathsRelativeToInstance":archived_rel,
+                "projectPath": if unarchive { &b } else { &a },
+                "projectPathRelativeToInstance":null,"unknownSidecar":{"sentinel":29}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let draft = super::AppSettings {
+            project_paths: vec![a.clone(), b.clone()],
+            project_path: Some(a.clone()),
+            archived_project_paths: vec![b.clone()],
+            room_number_mask: "##".into(),
+            root_token: Some("fixture".into()),
+            ..super::AppSettings::default()
+        };
+        std::fs::write(
+            root.join("stale-draft.json"),
+            serde_json::to_vec(&draft).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(root.join("target.txt"), &a).unwrap();
+        let holder_root = root.join("holder");
+        let contender_root = root.join("contender");
+        for control in [&holder_root, &contender_root] {
+            std::fs::create_dir(control).unwrap();
+            std::fs::write(
+                control.join("isolated-fixture.marker"),
+                b"P02 isolated process fixture",
+            )
+            .unwrap();
+        }
+        let mutation = if unarchive {
+            "race-unarchive"
+        } else {
+            "race-archive"
+        };
+        let (holder_role, contender_role) = if preserve_first {
+            (
+                "race-preserve-holder".to_string(),
+                format!("{mutation}-contender"),
+            )
+        } else {
+            (
+                format!("{mutation}-holder"),
+                "race-preserve-contender".to_string(),
+            )
+        };
+        let mut holder = launch_migration_child_with_path(&holder_root, &holder_role, &path);
+        let mut contender =
+            launch_migration_child_with_path(&contender_root, &contender_role, &path);
+        migration_wait_marker(&holder_root, "ready");
+        migration_wait_marker(&contender_root, "ready");
+        std::fs::write(holder_root.join("begin"), b"begin").unwrap();
+        migration_wait_marker(&holder_root, "acquired");
+        let before_settings = std::fs::read(&path).unwrap();
+        let before_sidecar = std::fs::read(super::project_paths_path(&path)).unwrap();
+        std::fs::write(contender_root.join("begin"), b"begin").unwrap();
+        migration_wait_marker(&contender_root, "refused");
+        assert_eq!(std::fs::read(&path).unwrap(), before_settings);
+        assert_eq!(
+            std::fs::read(super::project_paths_path(&path)).unwrap(),
+            before_sidecar
+        );
+        std::fs::write(holder_root.join("release"), b"release").unwrap();
+        holder.finish();
+        std::fs::write(contender_root.join("retry"), b"retry").unwrap();
+        contender.finish();
+        let raw = b3_object(&super::project_paths_path(&path));
+        assert_eq!(
+            raw["projectPaths"],
+            if unarchive {
+                serde_json::json!([b, a])
+            } else {
+                serde_json::json!([b])
+            }
+        );
+        assert_eq!(
+            raw["archivedProjectPaths"],
+            if unarchive {
+                serde_json::json!([])
+            } else {
+                serde_json::json!([a])
+            }
+        );
+        assert_eq!(raw["projectPath"], serde_json::json!(b));
+        assert_eq!(raw["projectPathRelativeToInstance"], "missing-companion-B");
+        assert_eq!(
+            raw["projectPathsRelativeToInstance"],
+            if unarchive {
+                serde_json::json!(["missing-companion-B", null])
+            } else {
+                serde_json::json!(["missing-companion-B"])
+            }
+        );
+        assert_eq!(
+            raw["archivedProjectPathsRelativeToInstance"],
+            if unarchive {
+                serde_json::json!([])
+            } else {
+                serde_json::json!([null])
+            }
+        );
+        assert_eq!(raw["unknownSidecar"], serde_json::json!({"sentinel":29}));
+        let managed = b3_object(&path);
+        assert_eq!(managed["roomNumberMask"], "##");
+        assert!(super::raw_project_projection(&managed).is_empty());
+        eprintln!(
+            "P03 unarchive={unarchive}/Preserve-first={preserve_first} diagnostics {}",
+            root.display()
+        );
     }
 
     // Dormant writer control: same P01 token, migration before the requested
@@ -13179,6 +16062,11 @@ mod tests {
                 assert!(super::ensure_project_paths_migrated_locked(&transaction).is_err());
                 assert_eq!(std::fs::read(bad_path).unwrap(), bad);
                 if bad_destination {
+                    let error = super::select_project_source_locked(&transaction).unwrap_err();
+                    assert!(!error
+                        .legacy_outward
+                        .into_general_string()
+                        .contains("settings.json exists but could not be parsed"));
                     assert_eq!(std::fs::read(&path).unwrap(), bytes);
                 } else {
                     assert!(!destination.exists());
@@ -13245,7 +16133,8 @@ mod tests {
         let repaired = worker.join().unwrap();
         assert_eq!(repaired.project_paths.len(), 2);
         let disk: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(super::project_paths_path(&path)).unwrap())
+                .unwrap();
         assert_eq!(disk["projectPaths"].as_array().unwrap().len(), 2);
         assert!(repaired.project_paths_persistence_error.is_none());
     }
@@ -13284,7 +16173,8 @@ mod tests {
         let mut current = super::AppSettings::default();
         super::repair_fresh_project_paths_at_path(&mut current, &path).unwrap();
         let disk: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(super::project_paths_path(&path)).unwrap())
+                .unwrap();
         assert_eq!(disk["projectPaths"].as_array().unwrap().len(), 2);
         assert_eq!(disk["projectPaths"][1], missing);
         assert_eq!(current.project_paths.len(), 1);
@@ -13332,7 +16222,10 @@ mod tests {
         let published = serde_json::json!({"defaultShell": "test-shell", "defaultShellArgs": [], "agents": [], "projectPaths": [], "sidebarStyle": "published"});
         super::write_value_atomic(&published, &path).unwrap();
         assert!(transaction.handle_commit_result(Err(error())).is_err());
-        assert_eq!(transaction.fresh_settings().sidebar_style, "published");
+        assert_eq!(
+            transaction.fresh_settings().sidebar_style,
+            super::AppSettings::default().sidebar_style
+        );
         assert!(transaction
             .fresh_settings()
             .project_paths_persistence_error
@@ -13839,8 +16732,11 @@ mod tests {
                 assert!(std::ptr::eq(exposed_io, retained_source));
             }
             assert_eq!(error.stage, super::SettingsSaveStage::PreserveDiskGate);
-            assert_eq!(error.target_path, target);
-            assert_eq!(error.temp_path.as_deref(), Some(temporary.as_path()));
+            assert_eq!(error.target_path.as_path(), target.as_path());
+            assert_eq!(
+                error.temp_path.as_deref().map(|path| path.as_path()),
+                Some(temporary.as_path())
+            );
             assert_eq!(error.pid, std::process::id());
             assert_eq!(
                 error.general_settings_diagnostic_code(),
@@ -14275,7 +17171,7 @@ mod tests {
             _ => panic!("expected retained atomic replacement I/O source"),
         };
         assert!(source_raw.is_some());
-        assert_eq!(recorded_target, path);
+        assert_eq!(recorded_target.as_path(), path.as_path());
         assert_eq!(recorded_pid, std::process::id());
         assert_eq!(recorded_temp.parent(), Some(temp.path()));
         let temp_name = recorded_temp.file_name().unwrap().to_string_lossy();
@@ -14407,7 +17303,7 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn startup_preserve_failure_diagnostics_cover_all_save_triggers() {
+    fn startup_source_lock_failure_blocks_all_save_triggers() {
         for case in [
             "missing_root_token",
             "issue_248_migration",
@@ -14472,27 +17368,11 @@ mod tests {
             assert_eq!(fields["reason"], "lock_timed_out", "case {case}");
             assert_eq!(fields["temp_path"], "none", "case {case}");
             assert!(!records[0].contains(&format!("issue-1330-root-{case}")));
-            let loaded_value = serde_json::to_value(&loaded).unwrap();
-            match case {
-                "missing_root_token" => {
-                    assert!(loaded_value
-                        .get("rootToken")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|value| !value.is_empty()));
-                }
-                "issue_248_migration" => {
-                    assert_eq!(loaded_value["restoreCoordinatorWakeState"], true);
-                }
-                "coding_agent_profile_v1_to_v2" => {
-                    assert_eq!(loaded_value["codingAgentProfiles"]["schemaVersion"], 2);
-                }
-                "profile_repair" => {
-                    assert!(loaded_value["codingAgentProfiles"]["profileSlots"]
-                        .get("A")
-                        .is_some());
-                }
-                _ => unreachable!(),
-            }
+            // The source cannot be captured while another process owns the lock.
+            // Startup must expose no projects or generated privilege from defaults.
+            assert!(loaded.project_paths.is_empty());
+            assert!(loaded.project_paths_persistence_error.is_some());
+            assert!(loaded.root_token.is_none());
             drop(held_lock);
         }
     }
@@ -14923,6 +17803,39 @@ mod tests {
         assert!(strict.terminal_snapshots_enabled);
         assert_eq!(strict.project_paths, vec!["one"]);
 
+        // Empty active authority is valid only with all four active keys absent.
+        std::fs::write(&path, r#"{"terminalSnapshotsEnabled":true}"#).unwrap();
+        let destination = super::project_paths_path(&path);
+        for projection in [
+            r#"{}"#,
+            r#"{"archivedProjectPaths":["archived"]}"#,
+            r#"{"projectPaths":[]}"#,
+        ] {
+            std::fs::write(&destination, projection).unwrap();
+            let strict =
+                super::read_terminal_snapshot_security_settings_strict_from_path(&path).unwrap();
+            assert!(strict.terminal_snapshots_enabled);
+            assert!(strict.project_paths.is_empty());
+        }
+        for projection in [
+            r#"{"projectPath":"singular"}"#,
+            r#"{"projectPath":null}"#,
+            r#"{"projectPathRelativeToInstance":null}"#,
+            r#"{"projectPathsRelativeToInstance":[]}"#,
+            r#"{"projectPaths":null}"#,
+            r#"{"projectPaths":"scalar"}"#,
+            r#"{"projectPaths":[null]}"#,
+        ] {
+            std::fs::write(&destination, projection).unwrap();
+            assert!(
+                super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err(),
+                "{projection}"
+            );
+        }
+        std::fs::write(&destination, b"{}").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(super::read_terminal_snapshot_security_settings_strict_from_path(&path).is_err());
+
         const PATH_CANARY: &str = r"C:\PATH_1173_SETTINGS_N3X6\project";
         let structural = super::TerminalSnapshotSecuritySettings {
             terminal_snapshots_enabled: true,
@@ -15325,7 +18238,7 @@ mod tests {
         }
 
         #[test]
-        fn f2_gui_malformed_base_repairs_before_failed_token_migration_save() {
+        fn f2_gui_malformed_base_repairs_overlay_without_authorization_then_recovers() {
             for seconds in [0, 999999] {
                 let temp = tempfile::tempdir().unwrap();
                 let path = seed(temp.path(), None, Some(&overlay(seconds)));
@@ -15334,21 +18247,30 @@ mod tests {
                 let (records, _capture) = super::capture_settings_save_diagnostics();
                 let mut settings = load_settings_from_path(&path);
                 assert_repaired(&settings);
-                assert!(settings.root_token.is_some());
+                assert!(settings.root_token.is_none());
+                assert!(settings.project_paths_persistence_error.is_some());
+                assert!(settings.project_paths.is_empty());
+                assert!(settings.project_path.is_none());
                 assert!(settings
                     .local_overlay_state
                     .owns_top_level("responseCloseIdleSeconds"));
                 let records = records.borrow();
                 assert_eq!(records.len(), 1);
                 let fields = super::parse_settings_save_diagnostic(&records[0]);
-                assert_eq!(fields["stage"], "preserve_disk_gate");
+                assert_eq!(fields["stage"], "project_paths_refresh_disk_gate");
                 drop(records);
+                assert_eq!(disk_bytes(temp.path()), before);
                 settings.sidebar_zoom = 1.25;
                 validate_and_repair_settings(&mut settings).unwrap();
                 let error = save_settings_to_path_preserving_project_paths_typed(&settings, &path)
                     .unwrap_err();
                 assert_eq!(error.stage, SettingsSaveStage::PreserveDiskGate);
                 assert_eq!(disk_bytes(temp.path()), before);
+                std::fs::write(&path, serde_json::to_vec(&base_fixture()).unwrap()).unwrap();
+                let recovered = load_settings_from_path(&path);
+                assert_repaired(&recovered);
+                assert!(recovered.project_paths_persistence_error.is_none());
+                assert!(recovered.root_token.is_some());
             }
         }
 
@@ -15362,7 +18284,10 @@ mod tests {
                 let settings = load_settings_for_cli_from_path(&path);
                 assert_repaired(&settings);
                 assert!(settings.root_token.is_none());
-                assert!(load_settings_for_cli_strict_from_path(Some(&path)).is_err());
+                let error = load_settings_for_cli_strict_from_path(Some(&path)).unwrap_err();
+                assert!(error.contains("settings.json exists but could not be parsed"));
+                assert!(settings.project_paths_persistence_error.is_some());
+                assert!(settings.project_paths.is_empty());
                 assert_eq!(disk_bytes(temp.path()), before);
             }
             let temp = tempfile::tempdir().unwrap();
@@ -15757,6 +18682,7 @@ mod tests {
                     preflight: None,
                     preflight_timeout_seconds: None,
                     id: format!("agent-{idx}"),
+                    id_hash: None,
                     label: (*label).to_string(),
                     command: (*command).to_string(),
                     color: "#000000".to_string(),
@@ -15861,6 +18787,7 @@ mod tests {
             preflight: None,
             preflight_timeout_seconds: None,
             id: "claude".to_string(),
+            id_hash: None,
             label: "Claude".to_string(),
             command: "claude".to_string(),
             color: "#fff".to_string(),
@@ -17833,19 +20760,27 @@ mod tests {
     }
 
     #[test]
-    fn read_project_paths_from_disk_returns_none_when_key_absent() {
+    fn read_project_paths_from_disk_returns_empty_when_key_absent() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, r#"{"themeLight":true}"#).unwrap();
-        assert_eq!(super::read_project_paths_from_disk(&path).unwrap(), None);
+        assert!(super::read_project_paths_from_disk(&path)
+            .unwrap()
+            .unwrap()
+            .project_paths
+            .is_empty());
     }
 
     #[test]
-    fn read_project_paths_from_disk_returns_none_when_key_null() {
+    fn read_project_paths_from_disk_returns_empty_when_key_null() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, r#"{"projectPaths":null}"#).unwrap();
-        assert_eq!(super::read_project_paths_from_disk(&path).unwrap(), None);
+        assert!(super::read_project_paths_from_disk(&path)
+            .unwrap()
+            .unwrap()
+            .project_paths
+            .is_empty());
     }
 
     #[test]
@@ -18019,7 +20954,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_project_paths_from_path_keeps_live_archived_list_when_key_absent() {
+    fn refresh_project_paths_from_path_clears_stale_archived_when_authority_omits_key() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, r#"{"projectPaths":["A"],"projectPath":"A"}"#).unwrap();
@@ -18029,10 +20964,7 @@ mod tests {
 
         assert_eq!(settings.project_paths, vec!["A".to_string()]);
         assert_eq!(settings.project_path.as_deref(), Some("A"));
-        assert_eq!(
-            settings.archived_project_paths,
-            vec!["Archived".to_string()]
-        );
+        assert!(settings.archived_project_paths.is_empty());
     }
 
     #[test]
@@ -18076,7 +21008,7 @@ mod tests {
     }
 
     #[test]
-    fn save_settings_returns_caller_archived_list_when_disk_key_absent() {
+    fn save_settings_discards_archived_draft_when_authority_omits_key() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         let a = real_ac_project_path(temp.path(), "A");
@@ -18095,9 +21027,9 @@ mod tests {
             crate::config::settings::load_settings_from_path(std::path::Path::new(&path));
         assert_eq!(written.project_paths, vec![a.clone()]);
         assert_eq!(written.project_path.as_deref(), Some(a.as_str()));
-        // Disk had no archived key → materialize the caller's live archived list.
-        assert_eq!(written.archived_project_paths, vec![archived.clone()]);
-        assert_eq!(reloaded.archived_project_paths, vec![archived.clone()]);
+        // An absent authoritative group cannot be replaced by a caller draft.
+        assert!(written.archived_project_paths.is_empty());
+        assert!(reloaded.archived_project_paths.is_empty());
     }
 
     #[test]
@@ -19343,6 +22275,7 @@ mod tests {
             preflight: None,
             preflight_timeout_seconds: None,
             id: id.to_string(),
+            id_hash: None,
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
@@ -20626,6 +23559,15 @@ mod tests {
             assert!(!object.contains_key("responseCloseIdleSeconds"));
             object.insert("responseCloseEnabled".to_string(), Value::Bool(true));
             object.insert("responseCloseIdleSeconds".to_string(), Value::from(30));
+            // H02 adds backend-derived metadata; never rewrite the frozen control.
+            for raw in object.get_mut("agents").unwrap().as_array_mut().unwrap() {
+                assert!(raw.get("id_hash").is_none());
+                let agent: AgentConfig = serde_json::from_value(raw.clone()).unwrap();
+                raw.as_object_mut().unwrap().insert(
+                    "id_hash".to_string(),
+                    Value::String(configuration_identity(&agent.command, &agent.envs)),
+                );
+            }
             let sorted: BTreeMap<String, Value> =
                 object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             let expected = serde_json::to_string_pretty(&sorted).unwrap();
@@ -22192,7 +25134,17 @@ mod tests {
             std::fs::create_dir(&tmp_dir).unwrap();
             let seeded_bytes = std::fs::read(&path).unwrap();
 
-            let settings = load_settings_from_path(&path);
+            let settings = load_settings_from_path_with_blocking_menus_publish(
+                &path,
+                Some(&|tmp, target| {
+                    assert!(
+                        tmp.is_file(),
+                        "fresh staging acquired before injected refusal"
+                    );
+                    assert_eq!(target, blocking_menus_local_path(&path));
+                    Err("fixture temp config publish failure".into())
+                }),
+            );
 
             super::b3_assert_split_matches_seed(&path, &seeded_bytes, &[]);
             assert!(!blocking_menus_local_path(&path).exists());
@@ -22229,10 +25181,19 @@ mod tests {
             let path = seed(temp.path(), Some(&fixture_with(&seeded)), None);
             let seeded_bytes = std::fs::read(&path).unwrap();
 
+            let (mut settings, _, _) =
+                super::super::capture_project_settings(&path, false).unwrap();
+            assert!(super::super::export_blocking_menus_to_local_file(
+                &mut settings,
+                &path
+            ));
             let held = SettingsFileLock::acquire(&path, Duration::from_millis(50)).unwrap();
-            let settings = load_settings_from_path(&path);
+            assert!(
+                super::super::save_settings_to_path_preserving_project_paths(&settings, &path)
+                    .is_err()
+            );
 
-            // The `.local` write succeeded inside the export; the settings save failed.
+            // Export completed unlocked; the contended Preserve save refuses.
             let local = local_disk_object(&path);
             assert_eq!(
                 local["byAgent"]["mine"],
@@ -22896,6 +25857,7 @@ mod tests {
                 preflight: None,
                 preflight_timeout_seconds: None,
                 id: "grok-1".to_string(),
+                id_hash: None,
                 label: "grok-1".to_string(),
                 command: "grok".to_string(),
                 color: "#000000".to_string(),
@@ -23817,14 +26779,24 @@ mod tests {
         fn a_write_failure_is_swallowed() {
             let dir = tempfile::tempdir().unwrap();
             let settings_path = settings_path_in(&dir);
-            // The atomic writer's temp name; a directory there makes the write fail.
+            // Retain legacy debris; inject refusal at the real publisher after fresh acquisition.
             std::fs::create_dir(
                 dir.path()
                     .join(format!(".agent-help.json.{}.tmp", std::process::id())),
             )
             .unwrap();
 
-            assert!(!refresh_shipped_agent_help_file(&settings_path));
+            assert!(!refresh_shipped_agent_help_file_with_publish(
+                &settings_path,
+                &|tmp, target| {
+                    assert!(
+                        tmp.is_file(),
+                        "fresh staging acquired before injected refusal"
+                    );
+                    assert_eq!(target, agent_help_shipped_path(&settings_path));
+                    Err("fixture temp config publish failure".into())
+                },
+            ));
             assert!(!agent_help_shipped_path(&settings_path).exists());
         }
 
@@ -24174,6 +27146,269 @@ mod tests {
         }
     }
 
+    #[test]
+    fn derived_agent_id_home_legacy_roundtrip_omits_empty_carrier() {
+        let value = b3_legacy_fixture("Legacy", "Profile");
+        let settings: super::AppSettings = serde_json::from_value(value).unwrap();
+        assert!(settings
+            .coding_agent_profiles
+            .codex_home_key_by_agent
+            .is_empty());
+        let encoded = serde_json::to_value(&settings).unwrap();
+        assert!(encoded["codingAgentProfiles"]
+            .get("codexHomeKeyByAgent")
+            .is_none());
+        let roundtrip: super::AppSettings = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            serde_json::to_value(&roundtrip.agents).unwrap(),
+            serde_json::to_value(&settings.agents).unwrap()
+        );
+        assert_eq!(
+            roundtrip.coding_agent_profiles,
+            settings.coding_agent_profiles
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_home_whole_save_restores_sidecar_and_written() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let mut legacy = b3_legacy_fixture("Legacy", "Legacy P");
+        legacy["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+            serde_json::json!({"alpha": "wrong-legacy"});
+        b3_write(&path, &legacy);
+        let mut sidecar = b3_legacy_fixture("Sidecar", "Sidecar P");
+        let expected = serde_json::json!({"alpha": "original-home", "orphan": "retained"});
+        sidecar["codingAgentProfiles"]["codexHomeKeyByAgent"] = expected.clone();
+        b3_write(&b3_sidecar_path(temp.path()), &sidecar);
+        let mut request = super::load_settings_for_cli_from_path(&path);
+        request.coding_agent_profiles.codex_home_key_by_agent =
+            std::collections::BTreeMap::from([("alpha".to_string(), "forged".to_string())]);
+        // Negative control: the ordinary request serializer really carries the
+        // forgery. Removing backend restoration makes the assertions below fail.
+        assert_ne!(
+            serde_json::to_value(&request).unwrap()["codingAgentProfiles"]["codexHomeKeyByAgent"],
+            expected
+        );
+        request.agents[0].label = "Edited label".to_string();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&request, &path).unwrap();
+        assert_eq!(
+            b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]["codexHomeKeyByAgent"],
+            expected
+        );
+        assert_eq!(
+            serde_json::to_value(&written.coding_agent_profiles).unwrap()["codexHomeKeyByAgent"],
+            expected
+        );
+        assert_eq!(written.agents[0].label, "Edited label");
+        assert_eq!(b3_marker(&written).as_deref(), Some("Sidecar P"));
+    }
+
+    #[test]
+    fn derived_agent_id_home_absent_base_rejects_new_carrier() {
+        for present in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            if present {
+                b3_write(&path, &b3_legacy_fixture("Legacy", "Profile"));
+            }
+            let mut request = super::AppSettings::default();
+            request
+                .coding_agent_profiles
+                .codex_home_key_by_agent
+                .insert("alpha".to_string(), "forged".to_string());
+            let written =
+                super::save_settings_to_path_preserving_project_paths(&request, &path).unwrap();
+            assert!(written
+                .coding_agent_profiles
+                .codex_home_key_by_agent
+                .is_empty());
+            assert!(
+                b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]
+                    .get("codexHomeKeyByAgent")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_home_serializers_preserve_legacy_carrier() {
+        for reconcile in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            let mut legacy = b3_legacy_fixture("Legacy", "Profile");
+            legacy["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+                serde_json::json!({"alpha": "legacy-home"});
+            b3_write(&path, &legacy);
+            let mut request = super::load_settings_for_cli_from_path(&path);
+            request
+                .coding_agent_profiles
+                .codex_home_key_by_agent
+                .clear();
+            if reconcile {
+                super::save_settings_with_project_paths_to_path(&request, &path).unwrap();
+            } else {
+                super::save_settings_to_path_preserving_project_paths(&request, &path).unwrap();
+            }
+            assert_eq!(
+                b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]
+                    ["codexHomeKeyByAgent"],
+                legacy["codingAgentProfiles"]["codexHomeKeyByAgent"]
+            );
+            assert_eq!(
+                super::load_settings_for_cli_from_path(&path)
+                    .coding_agent_profiles
+                    .codex_home_key_by_agent
+                    .get("alpha")
+                    .map(String::as_str),
+                Some("legacy-home")
+            );
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_home_narrow_and_overlay_cannot_forge_written() {
+        for terminal in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            b3_write(&path, &b3_migrated_fixture());
+            let mut sidecar = b3_legacy_fixture("Sidecar", "Profile");
+            sidecar["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+                serde_json::json!({"alpha": "physical-home"});
+            b3_write(&b3_sidecar_path(temp.path()), &sidecar);
+            b3_write(
+                &b3_overlay_path(temp.path()),
+                &serde_json::json!({
+                    "codingAgentProfiles": {"codexHomeKeyByAgent": {"alpha": "overlay-forged"}}
+                }),
+            );
+            let mut request = super::load_settings_for_cli_from_path(&path);
+            assert_eq!(
+                request.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+                "physical-home"
+            );
+            request
+                .coding_agent_profiles
+                .codex_home_key_by_agent
+                .insert("alpha".to_string(), "client-forged".to_string());
+            let written = if terminal {
+                super::compare_and_set_terminal_snapshots_enabled_at_path(
+                    &request, &path, true, false,
+                )
+                .unwrap()
+            } else {
+                let geometry = super::WindowGeometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 800.0,
+                    height: 600.0,
+                };
+                super::set_main_window_placement_at_path(
+                    &request,
+                    &path,
+                    &geometry,
+                    super::MainWindowDisplayState::Normal,
+                )
+                .unwrap()
+            };
+            assert_eq!(
+                written.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+                "physical-home"
+            );
+            assert_eq!(
+                b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]
+                    ["codexHomeKeyByAgent"]["alpha"],
+                "physical-home"
+            );
+            // Terminal CAS also has an idempotent return without serialization.
+            let unchanged = super::compare_and_set_terminal_snapshots_enabled_at_path(
+                &request,
+                &path,
+                written.terminal_snapshots_enabled,
+                written.terminal_snapshots_enabled,
+            )
+            .unwrap();
+            assert_eq!(
+                unchanged.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+                "physical-home"
+            );
+        }
+    }
+
+    #[test]
+    fn derived_agent_id_home_load_uses_physical_origin_under_overlay() {
+        let physical = tempfile::tempdir().unwrap();
+        let logical = tempfile::tempdir().unwrap();
+        let io = b3_settings_path(physical.path());
+        let label = b3_settings_path(logical.path());
+        let mut source = b3_legacy_fixture("Physical", "Profile");
+        source["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+            serde_json::json!({"alpha": "physical-home"});
+        b3_write(&b3_sidecar_path(physical.path()), &source);
+        source["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+            serde_json::json!({"alpha": "logical-forged"});
+        b3_write(&b3_sidecar_path(logical.path()), &source);
+        b3_write(
+            &b3_overlay_path(physical.path()),
+            &serde_json::json!({"codingAgentProfiles": {"codexHomeKeyByAgent": {"alpha": "overlay-forged"}}}),
+        );
+        let contents = serde_json::to_string(&b3_migrated_fixture()).unwrap();
+        let (loaded, _) = super::parse_settings_json_with_projection_labeled(
+            &contents,
+            "physical-test",
+            Some(&io),
+            Some(&label),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+            "physical-home"
+        );
+        let default_loaded = super::default_settings_with_overlay_captured(
+            &io,
+            "physical-test",
+            &serde_json::Map::new(),
+        );
+        assert_eq!(
+            default_loaded.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+            "physical-home"
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_home_invalid_durable_leaf_survives_save_and_fails_use() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let mut source = b3_legacy_fixture("Codex", "Profile");
+        source["agents"][0]["command"] = serde_json::json!("codex");
+        source["agents"][0]["isolatedHome"] = serde_json::json!(true);
+        source["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+            serde_json::json!({"alpha": "../invalid"});
+        b3_write(&path, &source);
+        let mut request = super::load_settings_for_cli_from_path(&path);
+        request
+            .coding_agent_profiles
+            .codex_home_key_by_agent
+            .clear();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&request, &path).unwrap();
+        assert_eq!(
+            written.coding_agent_profiles.codex_home_key_by_agent["alpha"],
+            "../invalid"
+        );
+        assert!(crate::config::agent_command::resolve_agent_spawn_command(
+            &written,
+            "alpha",
+            None,
+            Some("A"),
+            false
+        )
+        .unwrap_err()
+        .contains("Invalid isolated Codex HOME key"));
+    }
+
     // #2716 (B3) - the agents file. Rows E4 to E20b of the phase plan.
 
     fn b3_agent(id: &str, label: &str) -> serde_json::Value {
@@ -24267,6 +27502,411 @@ mod tests {
         let bytes = serde_json::to_vec_pretty(&serde_json::Value::Object(groups)).unwrap();
         std::fs::write(b3_sidecar_path(dir), &bytes).unwrap();
         bytes
+    }
+
+    fn hash_activation_seed(sidecar: bool) -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let mut settings = super::AppSettings {
+            root_token: Some("hash-test-token".into()),
+            agents: vec![serde_json::from_value(b3_agent("alpha", "Incumbent")).unwrap()],
+            ..super::AppSettings::default()
+        };
+        super::validate_and_repair_settings(&mut settings).unwrap();
+        super::normalize_agent_order(&mut settings.agents);
+        let mut value = serde_json::to_value(settings).unwrap();
+        super::replace_project_projection(value.as_object_mut().unwrap(), &serde_json::Map::new());
+        value["agents"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("id_hash");
+        let groups = if sidecar {
+            let object = value.as_object_mut().unwrap();
+            serde_json::json!({
+                "agents": object.remove("agents").unwrap(),
+                "codingAgentProfiles": object.remove("codingAgentProfiles").unwrap()
+            })
+        } else {
+            // Avoid the independent startup export; exercise missing-group legacy fallback.
+            serde_json::json!({})
+        };
+        b3_write(&path, &value);
+        b3_write(&b3_sidecar_path(temp.path()), &groups);
+        // The existing project migration publishes even an empty projection.
+        // Seed its destination before measuring hash-only read/rejection effects.
+        b3_write(&super::project_paths_path(&path), &serde_json::json!({}));
+        (temp, path)
+    }
+
+    fn hash_activation_files(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file() && path.extension().is_none_or(|ext| ext != "lock"))
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn hash_activation_assert(settings: &super::AppSettings) {
+        for agent in &settings.agents {
+            assert_eq!(
+                agent.id_hash.as_ref(),
+                Some(&super::configuration_identity(&agent.command, &agent.envs))
+            );
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_three_loaders_derive_without_writes_or_backups() {
+        for sidecar in [false, true] {
+            let (temp, path) = hash_activation_seed(sidecar);
+            let before = hash_activation_files(temp.path());
+            for (loader, settings) in b3_all_loaders(&path) {
+                assert_eq!(settings.agents[0].id, "alpha", "{loader}");
+                hash_activation_assert(&settings);
+                assert_eq!(hash_activation_files(temp.path()), before, "{loader}");
+            }
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_direct_save_backfills_literal_and_reaches_fixed_point() {
+        for supplied in [None, Some("forged".to_string())] {
+            let (temp, path) = hash_activation_seed(false);
+            let mut settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            settings.agents[0].id_hash = supplied;
+            let written =
+                super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+            let raw = b3_object(&b3_sidecar_path(temp.path()));
+            assert_eq!(
+                raw["agents"][0]["id_hash"],
+                written.agents[0].id_hash.clone().unwrap()
+            );
+            assert!(raw["agents"][0].get("idHash").is_none());
+            assert_eq!(written.agents[0].id, "alpha");
+            let first = hash_activation_files(temp.path());
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            assert_eq!(hash_activation_files(temp.path()), first);
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_all_untrusted_metadata_is_replaced() {
+        for supplied in [
+            serde_json::Value::Null,
+            serde_json::json!(false),
+            serde_json::json!(42),
+            serde_json::json!(1.5),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!(""),
+            serde_json::json!("cid1:stale"),
+            serde_json::json!("forged"),
+        ] {
+            let (temp, path) = hash_activation_seed(true);
+            let sidecar = b3_sidecar_path(temp.path());
+            let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+            raw["agents"][0]["id_hash"] = supplied;
+            b3_write(&sidecar, &raw);
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            hash_activation_assert(&loaded);
+            let written =
+                super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            assert_eq!(
+                b3_object(&sidecar)["agents"][0]["id_hash"],
+                written.agents[0].id_hash.clone().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_malformed_real_fields_refuse_overwrite() {
+        for bad in [
+            serde_json::json!("not-array"),
+            serde_json::json!([{"id":"alpha","label":"A","color":"red","command":7}]),
+            serde_json::json!([{"id":"alpha","label":"A","color":"red","command":"tool","envs":{}}]),
+        ] {
+            let (temp, path) = hash_activation_seed(true);
+            let sidecar = b3_sidecar_path(temp.path());
+            let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+            raw["agents"] = bad.clone();
+            b3_write(&sidecar, &raw);
+            let before = hash_activation_files(temp.path());
+            let error = super::read_agents_instance_file(&sidecar).unwrap_err();
+            assert!(error.contains("undecodable agents array"), "{bad}: {error}");
+            // Existing strict loading exposes an unreadable layer in a valid
+            // unrelated-settings snapshot; it does not always return Err.
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert!(
+                matches!(&loaded.agents_layer, super::AgentsLayerState::Unreadable { path: failed, .. } if failed == &sidecar),
+                "{bad}"
+            );
+            assert!(loaded.agents.is_empty(), "{bad}");
+            assert!(super::save_settings_to_path_preserving_project_paths(
+                &super::AppSettings::default(),
+                &path
+            )
+            .is_err());
+            assert_eq!(hash_activation_files(temp.path()), before);
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_overlay_owned_physical_and_effective_remain_distinct() {
+        for sidecar in [false, true] {
+            let (temp, path) = hash_activation_seed(sidecar);
+            let physical_path = if sidecar {
+                b3_sidecar_path(temp.path())
+            } else {
+                path.clone()
+            };
+            let mut physical = serde_json::Value::Object(b3_object(&physical_path));
+            let physical_hash = if sidecar {
+                super::configuration_identity("claude", &[])
+            } else {
+                "retained-physical-metadata".into()
+            };
+            physical["agents"][0]["id_hash"] = serde_json::json!(physical_hash);
+            physical["agents"][0]["unknownRowField"] = serde_json::json!({"keep":9});
+            b3_write(&physical_path, &physical);
+            let raw_before = physical["agents"].clone();
+            let mut overlay = raw_before.clone();
+            overlay[0]["command"] = serde_json::json!("codex --different");
+            overlay[0]["envs"] =
+                serde_json::json!([{"key":"MODE","value":"effective","enabled":false}]);
+            overlay[0]["id_hash"] = serde_json::json!("forged-effective");
+            b3_write(
+                &b3_overlay_path(temp.path()),
+                &serde_json::json!({"agents":overlay}),
+            );
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            let written =
+                super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            hash_activation_assert(&written);
+            assert_eq!(written.agents[0].command, "codex --different");
+            assert_eq!(b3_object(&physical_path)["agents"], raw_before);
+            assert_eq!(written.agents[0].id, "alpha");
+            let reload = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert_eq!(
+                serde_json::to_value(&reload.agents).unwrap(),
+                serde_json::to_value(&written.agents).unwrap()
+            );
+            assert_ne!(
+                written.agents[0].id_hash.as_deref(),
+                Some(physical_hash.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn id_hash_activation_rejected_overlay_and_terminal_cas_derive_final_view() {
+        let (temp, path) = hash_activation_seed(true);
+        b3_write(
+            &b3_overlay_path(temp.path()),
+            &serde_json::json!({"defaultShellArgs":"bad"}),
+        );
+        let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        hash_activation_assert(&loaded);
+        assert!(loaded.local_overlay_state.rejection().is_some());
+        let mut stale = loaded.clone();
+        stale.agents[0].id_hash = Some("forged".into());
+        let unchanged = super::compare_and_set_terminal_snapshots_enabled_at_path(
+            &stale,
+            &path,
+            stale.terminal_snapshots_enabled,
+            stale.terminal_snapshots_enabled,
+        )
+        .unwrap();
+        hash_activation_assert(&unchanged);
+        let written = super::save_settings_to_path_preserving_project_paths(&stale, &path).unwrap();
+        hash_activation_assert(&written);
+        assert_eq!(
+            b3_object(&b3_sidecar_path(temp.path()))["agents"][0]["id_hash"],
+            written.agents[0].id_hash.clone().unwrap()
+        );
+    }
+
+    #[test]
+    fn id_hash_activation_main_publisher_failure_keeps_diagnostic_and_no_success() {
+        let (temp, path) = hash_activation_seed(true);
+        let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        let previous = std::fs::read(&path).unwrap();
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+            *slot.borrow_mut() = Some((path.clone(), super::SettingsSaveStage::AtomicReplace))
+        });
+        let result = super::save_settings_to_path_preserving_project_paths(&loaded, &path);
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        // Preserve the existing partial-publication behavior and report failure.
+        assert!(b3_object(&b3_sidecar_path(temp.path()))["agents"][0]["id_hash"].is_string());
+        hash_activation_assert(
+            &super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap(),
+        );
+    }
+
+    #[test]
+    fn id_hash_activation_legacy_duplicates_preserve_rows_multiplicity_and_allow_repair() {
+        let (temp, path) = hash_activation_seed(true);
+        let sidecar = b3_sidecar_path(temp.path());
+        let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+        let row = raw["agents"][0].clone();
+        raw["agents"].as_array_mut().unwrap().push(row.clone());
+        let mut third = row.clone();
+        third["id"] = serde_json::json!("beta");
+        third["command"] = serde_json::json!("unique-command");
+        raw["agents"].as_array_mut().unwrap().push(third);
+        b3_write(&sidecar, &raw);
+        let mut settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        settings.agents.reverse();
+        super::normalize_agent_order(&mut settings.agents);
+        settings.log_level = Some("debug".into());
+        let mut written =
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        assert_eq!(written.agents.iter().filter(|a| a.id == "alpha").count(), 2);
+        hash_activation_assert(&written);
+        let mut increased = written.clone();
+        increased.agents.push(serde_json::from_value(row).unwrap());
+        let before = hash_activation_files(temp.path());
+        assert!(
+            super::save_settings_to_path_preserving_project_paths(&increased, &path)
+                .unwrap_err()
+                .contains("DuplicateConfigurationIdentity")
+        );
+        assert_eq!(hash_activation_files(temp.path()), before);
+        written.agents[1].command = "repair-extra-character".into();
+        let repaired =
+            super::save_settings_to_path_preserving_project_paths(&written, &path).unwrap();
+        assert_eq!(repaired.agents.len(), 3);
+        written.agents.remove(1);
+        assert!(super::save_settings_to_path_preserving_project_paths(&written, &path).is_ok());
+    }
+
+    #[test]
+    fn id_hash_activation_delta_rejects_new_anagrams_and_allows_separate_files() {
+        let (_temp, path) = hash_activation_seed(true);
+        let mut settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        let mut duplicate = settings.agents[0].clone();
+        duplicate.id = "beta".into();
+        duplicate.label = "Requested".into();
+        duplicate.command = "eduacl".into(); // anagram of claude
+        settings.agents.push(duplicate);
+        let before = hash_activation_files(path.parent().unwrap());
+        let error =
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap_err();
+        assert!(error.contains("DuplicateConfigurationIdentity") && error.contains("Incumbent"));
+        assert_eq!(hash_activation_files(path.parent().unwrap()), before);
+        let fresh = tempfile::tempdir().unwrap();
+        let fresh_path = b3_settings_path(fresh.path());
+        assert!(
+            super::save_settings_to_path_preserving_project_paths(&settings, &fresh_path).is_err()
+        );
+        assert!(!fresh_path.exists() && !b3_sidecar_path(fresh.path()).exists());
+        settings.agents[1].command = "unique-extra-character".into();
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        settings.agents[1].command = "eduacl".into();
+        let before_edit = hash_activation_files(path.parent().unwrap());
+        assert!(
+            super::save_settings_to_path_preserving_project_paths(&settings, &path)
+                .unwrap_err()
+                .contains("Incumbent")
+        );
+        assert_eq!(hash_activation_files(path.parent().unwrap()), before_edit);
+        let (_other, other_path) = hash_activation_seed(true);
+        settings.agents.remove(0);
+        assert!(
+            super::save_settings_to_path_preserving_project_paths(&settings, &other_path).is_ok()
+        );
+    }
+
+    #[test]
+    fn id_hash_activation_profile_delta_preserves_history_and_rejects_new_pair() {
+        let (temp, path) = hash_activation_seed(true);
+        let sidecar = b3_sidecar_path(temp.path());
+        let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+        raw["codingAgentProfiles"]["profilesByAgent"]["alpha"] = serde_json::json!({
+            "A":{"command":"--one"},"B":{"command":"--one"},"C":{"command":"--two"}
+        });
+        let mut other = raw["agents"][0].clone();
+        other["id"] = serde_json::json!("beta");
+        other["command"] = serde_json::json!("distinct-command");
+        raw["agents"].as_array_mut().unwrap().push(other);
+        raw["codingAgentProfiles"]["profilesByAgent"]["beta"] =
+            serde_json::json!({"A":{"command":"--one"}});
+        b3_write(&sidecar, &raw);
+        let mut loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("beta")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .command = "--unrelated-edit".into();
+        loaded.agents[0].label = "Renamed".into();
+        super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .get_mut("C")
+            .unwrap()
+            .command = "--unique".into();
+        super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .get_mut("C")
+            .unwrap()
+            .command = "--one".into();
+        let before = hash_activation_files(temp.path());
+        let error =
+            super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap_err();
+        assert!(error.contains("DuplicateProfileIdentity") && error.contains("Renamed"));
+        assert_eq!(hash_activation_files(temp.path()), before);
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .remove("B");
+        loaded
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .remove("C");
+        assert!(super::save_settings_to_path_preserving_project_paths(&loaded, &path).is_ok());
+    }
+
+    #[test]
+    fn id_hash_activation_legacy_before_is_read_when_only_profiles_are_externalized() {
+        let (temp, path) = hash_activation_seed(false);
+        let mut base = serde_json::Value::Object(b3_object(&path));
+        let mut duplicate = base["agents"][0].clone();
+        duplicate["id"] = serde_json::json!("beta");
+        base["agents"].as_array_mut().unwrap().push(duplicate);
+        b3_write(
+            &b3_sidecar_path(temp.path()),
+            &serde_json::json!({
+                "codingAgentProfiles": base.as_object_mut().unwrap().remove("codingAgentProfiles").unwrap()
+            }),
+        );
+        b3_write(&path, &base);
+        let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        assert_eq!(written.agents.len(), 2);
+        hash_activation_assert(&written);
     }
 
     fn b3_all_loaders(path: &std::path::Path) -> Vec<(&'static str, super::AppSettings)> {
@@ -25256,6 +28896,1775 @@ mod tests {
         assert_eq!(
             b3_labels(&loaded),
             vec!["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()]
+        );
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn source_transition_digest<T: Serialize>(
+    value: &T,
+) -> Result<String, SourceCoordinationError> {
+    let bytes = serde_json::to_vec(value).map_err(|_| SourceCoordinationError::Invalid)?;
+    let SourceRevision::Bytes { sha256 } = source_bytes_revision(&bytes) else {
+        unreachable!()
+    };
+    Ok(sha256)
+}
+
+/// Validate the retained original packet with existing guarded PAIR verification.
+/// Pending is admissible here only after the primitive validates its reachable
+/// stage; it never licenses preparation of a replacement packet.
+#[allow(dead_code)]
+pub(crate) fn recover_source_target_packet(
+    target: &SourceInventoryTarget,
+    operation_id: &str,
+    source_key: &str,
+    mappings_digest: &str,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<Option<IdentityReferencePacket>, IdentityReferenceError> {
+    for _ in 0..=2 {
+        validate()?;
+        let physical = read_identity_reference_physical(&target.reservation)?;
+        let bytes = match &physical {
+            IdentityReferencePhysicalState::Absent => return Ok(None),
+            IdentityReferencePhysicalState::Bytes { bytes, .. } => bytes,
+        };
+        let packet: IdentityReferencePacket =
+            serde_json::from_slice(bytes).map_err(|_| IdentityReferenceError::Conflict)?;
+        let value: Value =
+            serde_json::from_slice(bytes).map_err(|_| IdentityReferenceError::Conflict)?;
+        if packet.operation_id != operation_id
+            || packet.source_physical_key != source_key
+            || value.get("mappingsDigest").and_then(Value::as_str) != Some(mappings_digest)
+        {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        let before_bytes = serde_json::to_vec(&target.before_protected)
+            .map_err(|error| IdentityReferenceError::Io(error.to_string()))?;
+        let before = source_bytes_revision(&before_bytes);
+        let hashes = packet.protected_revision_digests()?;
+        if before
+            != (SourceRevision::Bytes {
+                sha256: hashes[0].clone(),
+            })
+        {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        match verify_identity_reference_pair_guarded(
+            &target.decisions,
+            &target.state,
+            &target.reservation,
+            operation_id,
+            &packet.plan_digest,
+            validate,
+        ) {
+            Ok(_) | Err(IdentityReferenceError::Pending) => {}
+            Err(error) => return Err(error),
+        }
+        validate()?;
+        if read_identity_reference_physical(&target.reservation)? == physical {
+            return Ok(Some(packet));
+        }
+    }
+    Err(IdentityReferenceError::Conflict)
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_completed_source_target(
+    target: &SourceInventoryTarget,
+    commitment: &SourcePacketRecord,
+    validate: &dyn Fn() -> Result<(), IdentityReferenceError>,
+) -> Result<(), IdentityReferenceError> {
+    validate()?;
+    let original_before = serde_json::to_vec(&target.before_protected)
+        .map_err(|error| IdentityReferenceError::Io(error.to_string()))?;
+    if source_bytes_revision(&original_before) != commitment.before_protected_revision {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    let before = [
+        read_identity_reference_physical(&target.decisions)?,
+        read_identity_reference_physical(&target.state)?,
+    ];
+    let protected = identity_reference_protected_revision(&before)?;
+    let digest =
+        source_transition_digest(&protected).map_err(|_| IdentityReferenceError::Conflict)?;
+    if commitment.after_protected_revision != (SourceRevision::Bytes { sha256: digest }) {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    validate()?;
+    if before
+        != [
+            read_identity_reference_physical(&target.decisions)?,
+            read_identity_reference_physical(&target.state)?,
+        ]
+    {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceOriginalInventoryEvidence {
+    discovery: SourceDiscoveryWitness,
+    objects: Vec<(PathBuf, (u64, u64))>,
+    source_before: IdentityReferencePhysicalState,
+    expected_source: SourceRevision,
+    after_source: SourceRevision,
+    discovered: Vec<SourceDiscoveredTargetEvidence>,
+    topology: SourceMembershipTopology,
+    inventory_digest: String,
+}
+
+#[allow(dead_code)]
+pub(crate) fn source_inventory_target(
+    root: PathBuf,
+    decisions: PathBuf,
+    state: PathBuf,
+    reservation: PathBuf,
+    physical: [IdentityReferencePhysicalState; 2],
+    originals: Vec<ConfigurationRef>,
+) -> Result<SourceInventoryTarget, IdentityReferenceError> {
+    let identity = crate::path_identity::verify_directory(&root)
+        .map_err(IdentityReferenceError::Preparation)?;
+    if identity.canonical_path != root
+        || decisions.parent() != Some(root.as_path())
+        || state.parent() != Some(root.as_path())
+        || reservation.parent() != Some(root.as_path())
+    {
+        return Err(IdentityReferenceError::Conflict);
+    }
+    let before_protected = identity_reference_protected_revision(&physical)?;
+    Ok(SourceInventoryTarget {
+        root,
+        root_object: (identity.object_id.volume, identity.object_id.file),
+        decisions,
+        state,
+        reservation,
+        before_protected,
+        original_selections: originals,
+        original_physical: Some(physical),
+    })
+}
+
+pub(crate) fn source_original_mappings(
+    snapshot: &RawSourceSnapshot,
+    prepared: &PreparedSourceCandidate,
+) -> Result<Vec<SourceIdentityMapping>, SourcePreparationError> {
+    let registered = snapshot.snapshot.source.kind == SourceKind::RegisteredInstance;
+    let after: Value = serde_json::from_slice(&prepared.serialized_after)
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    let (after_agents, after_profiles) = if registered {
+        let (agents, profiles) = decode_registered_raw(&after)?;
+        (
+            agents
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?,
+            profiles.profiles_by_agent,
+        )
+    } else {
+        let catalog =
+            crate::config::coding_agents_catalog::parse_catalog_schema2(&prepared.serialized_after)
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+        (
+            catalog
+                .agents
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?,
+            catalog.coding_agent_profiles,
+        )
+    };
+    let key_field = if registered { "id" } else { "key" };
+    let old: BTreeMap<_, _> = snapshot
+        .snapshot
+        .agents
+        .iter()
+        .map(|agent| {
+            agent
+                .get(key_field)
+                .and_then(Value::as_str)
+                .map(|key| (key.to_owned(), agent))
+                .ok_or(SourcePreparationError::InvalidCandidate)
+        })
+        .collect::<Result<_, _>>()?;
+    let new: BTreeMap<_, _> = after_agents
+        .iter()
+        .map(|agent| {
+            agent
+                .get(key_field)
+                .and_then(Value::as_str)
+                .map(|key| (key.to_owned(), agent))
+                .ok_or(SourcePreparationError::InvalidCandidate)
+        })
+        .collect::<Result<_, _>>()?;
+    let calculated = |value: &&Value| -> Result<String, SourcePreparationError> {
+        let command = value
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or(SourcePreparationError::InvalidCandidate)?;
+        let envs: Vec<CodingAgentEnv> = value
+            .get("envs")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| SourcePreparationError::InvalidCandidate)?
+            .unwrap_or_default();
+        Ok(configuration_identity(command, &envs))
+    };
+    let keys: std::collections::BTreeSet<_> = old.keys().chain(new.keys()).cloned().collect();
+    let mut mappings = Vec::new();
+    for key in keys {
+        let old_calculated_id = old.get(&key).map(&calculated).transpose()?;
+        let new_calculated_id = new.get(&key).map(&calculated).transpose()?;
+        let old_cells = snapshot.snapshot.profiles.get(&key);
+        let new_cells = after_profiles.get(&key);
+        let letters: std::collections::BTreeSet<_> = old_cells
+            .into_iter()
+            .flat_map(|cells| cells.keys())
+            .chain(new_cells.into_iter().flat_map(|cells| cells.keys()))
+            .cloned()
+            .collect();
+        let profiles: BTreeMap<_, _> = letters
+            .into_iter()
+            .filter_map(|letter| {
+                let before = old_cells
+                    .and_then(|cells| cells.get(&letter))
+                    .map(profile_identity);
+                let after = new_cells
+                    .and_then(|cells| cells.get(&letter))
+                    .map(profile_identity);
+                (before != after).then_some((letter, (before, after)))
+            })
+            .collect();
+        if old_calculated_id != new_calculated_id || !profiles.is_empty() {
+            let unavailable = new_calculated_id.is_none()
+                || !registered
+                    && crate::config::coding_agents_catalog::BUILTIN_AGENT_SUPPORT
+                        .iter()
+                        .any(|(builtin, supported)| *builtin == key && !supported);
+            mappings.push(SourceIdentityMapping {
+                entry_hint: key,
+                old_calculated_id,
+                new_calculated_id,
+                profiles,
+                unavailable,
+            });
+        }
+    }
+    Ok(mappings)
+}
+
+type SourceMembershipTarget = (PathBuf, (u64, u64), PathBuf, PathBuf, PathBuf);
+
+/// Private, backend-validated topology; never a deserialized authority token.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceMembershipTopology {
+    registry: Vec<String>,
+    directories: Vec<(PathBuf, (u64, u64))>,
+    slots: Vec<(PathBuf, bool)>,
+    membership: Vec<(PathBuf, Vec<PathBuf>)>,
+    targets: Vec<SourceMembershipTarget>,
+    // Slot coordinate is structural: mutable selection values are excluded.
+    links: Vec<(PathBuf, String, SourceRef, String)>,
+}
+
+fn source_ref_tuple(
+    source: &SourceRef,
+) -> (SourceFamily, SourceRole, SourceScope, SourceKind, &str) {
+    (
+        source.family,
+        source.role,
+        source.scope,
+        source.kind,
+        &source.context_root,
+    )
+}
+
+fn source_inventory_projection(
+    editor: &str,
+    source: &SourceRef,
+    physical_source_key: &str,
+    context_revision: &str,
+    original: &SourceMembershipTopology,
+) -> Result<Vec<u8>, SourceCoordinationError> {
+    if editor.is_empty() || physical_source_key.is_empty() || context_revision.is_empty() {
+        return Err(SourceCoordinationError::Invalid);
+    }
+    // Registry order is policy-significant. Everything below is set-valued.
+    let mut topology = original.clone();
+    topology.directories.sort();
+    topology.directories.dedup();
+    topology.slots.sort();
+    topology.slots.dedup();
+    for (_, members) in &mut topology.membership {
+        members.sort();
+        members.dedup();
+    }
+    topology.membership.sort();
+    topology.membership.dedup();
+    topology.targets.sort();
+    topology.targets.dedup();
+    for pair in topology.directories.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    for pair in topology.slots.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    for pair in topology.membership.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    for pair in topology.targets.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    let mut links = topology
+        .links
+        .iter()
+        .map(|(root, slot, linked, key)| {
+            if slot.is_empty() || linked != source || key != physical_source_key {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            // Encode enum spellings via serde, not Debug or platform formatting.
+            serde_json::to_vec(&(root, slot, source_ref_tuple(linked), key))
+                .map(|bytes| ((root.clone(), slot.clone()), bytes))
+                .map_err(|_| SourceCoordinationError::Invalid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    links.sort();
+    links.dedup();
+    for pair in links.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(SourceCoordinationError::Invalid);
+        }
+    }
+    let links = links
+        .into_iter()
+        .map(|(_, bytes)| {
+            serde_json::from_slice::<Value>(&bytes).map_err(|_| SourceCoordinationError::Invalid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    serde_json::to_vec(&(
+        "p03-member-inventory-v1",
+        editor,
+        1u32,
+        source_ref_tuple(source),
+        physical_source_key,
+        context_revision,
+        topology.registry,
+        topology.directories,
+        topology.slots,
+        topology.membership,
+        topology.targets,
+        links,
+    ))
+    .map_err(|_| SourceCoordinationError::Invalid)
+}
+
+fn source_inventory_digest(
+    participant: &str,
+    source: &SourceRef,
+    physical_source_key: &str,
+    context_revision: &str,
+    topology: &SourceMembershipTopology,
+) -> Result<String, SourceCoordinationError> {
+    let bytes = source_inventory_projection(
+        participant,
+        source,
+        physical_source_key,
+        context_revision,
+        topology,
+    )?;
+    match source_bytes_revision(&bytes) {
+        SourceRevision::Bytes { sha256 } => Ok(sha256),
+        SourceRevision::Absent {} => Err(SourceCoordinationError::Invalid),
+    }
+}
+
+#[cfg(test)]
+mod source_inventory_projection_tests {
+    use super::*;
+
+    fn fixture() -> (SourceRef, SourceMembershipTopology) {
+        (
+            SourceRef {
+                family: SourceFamily::Agents,
+                role: SourceRole::Registered,
+                scope: SourceScope::Instance,
+                kind: SourceKind::RegisteredInstance,
+                context_root: "C".into(),
+            },
+            SourceMembershipTopology {
+                registry: vec!["P".into(), "Q".into()],
+                directories: vec![],
+                slots: vec![],
+                membership: vec![],
+                targets: vec![],
+                links: vec![],
+            },
+        )
+    }
+
+    #[test]
+    fn source_membership_fixed_encoding_vector_and_ordered_registry() {
+        let (source, mut topology) = fixture();
+        let bytes =
+            source_inventory_projection("C", &source, "source-key", "context", &topology).unwrap();
+        assert_eq!(bytes, br#"["p03-member-inventory-v1","C",1,["agents","registered","instance","registeredInstance","C"],"source-key","context",["P","Q"],[],[],[],[],[]]"#);
+        let before =
+            source_inventory_digest("C", &source, "source-key", "context", &topology).unwrap();
+        topology.registry.reverse();
+        assert_ne!(
+            before,
+            source_inventory_digest("C", &source, "source-key", "context", &topology).unwrap()
+        );
+    }
+
+    #[test]
+    fn source_membership_sets_permute_but_objects_slots_and_source_do_not() {
+        let (source, mut topology) = fixture();
+        topology.directories = vec![(PathBuf::from("b"), (1, 2)), (PathBuf::from("a"), (1, 1))];
+        topology.slots = vec![
+            (PathBuf::from("b/.ac"), false),
+            (PathBuf::from("a/.ac"), true),
+        ];
+        topology.links = vec![(
+            PathBuf::from("a"),
+            "state/sourceReferences/1/configurationRef".into(),
+            source.clone(),
+            "source-key".into(),
+        )];
+        let digest = |topology: &SourceMembershipTopology| {
+            source_inventory_digest("C", &source, "source-key", "context", topology).unwrap()
+        };
+        let before = digest(&topology);
+        topology.directories.reverse();
+        topology.slots.reverse();
+        assert_eq!(before, digest(&topology));
+        let mut replaced = topology.clone();
+        replaced.directories[0].1 .1 += 1;
+        assert_ne!(before, digest(&replaced));
+        let mut shifted = topology.clone();
+        shifted.links[0].1 = "state/sourceReferences/0/configurationRef".into();
+        assert_ne!(before, digest(&shifted));
+        let mut reassigned = topology.clone();
+        reassigned.links[0].2.context_root = "other".into();
+        assert_eq!(
+            source_inventory_projection("C", &source, "source-key", "context", &reassigned),
+            Err(SourceCoordinationError::Invalid)
+        );
+        let mut contradictory = topology.clone();
+        contradictory.slots.push((PathBuf::from("a/.ac"), false));
+        assert_eq!(
+            source_inventory_projection("C", &source, "source-key", "context", &contradictory),
+            Err(SourceCoordinationError::Invalid)
+        );
+    }
+}
+
+/// Backend semantic coordinate; history cannot manufacture matrix-default authority.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) enum SourceOriginalSlot {
+    Decision,
+    MatrixDefault,
+    ReplicaDefault,
+    HistoryKey(String),
+    HistoryIndex(usize),
+}
+
+impl SourceOriginalSlot {
+    fn stored<'a>(&self, target: &'a Value) -> Option<&'a Value> {
+        match self {
+            Self::Decision => target.pointer("/tooling/configurationRef"),
+            Self::MatrixDefault | Self::ReplicaDefault => {
+                target.pointer("/tooling/replicaSelectionDefault/configurationRef")
+            }
+            Self::HistoryKey(key) => target
+                .get("tooling")?
+                .get("codingAgents")?
+                .as_object()?
+                .get(key)?
+                .get("configurationRef"),
+            Self::HistoryIndex(index) => target
+                .get("tooling")?
+                .get("sourceReferences")?
+                .as_array()?
+                .get(*index)?
+                .get("configurationRef"),
+        }
+    }
+
+    fn coordinate(&self) -> String {
+        match self {
+            Self::Decision => "decision/configurationRef".into(),
+            Self::MatrixDefault | Self::ReplicaDefault => {
+                "decision/replicaSelectionDefault/configurationRef".into()
+            }
+            Self::HistoryKey(key) => format!(
+                "state/codingAgents/{}/configurationRef",
+                key.replace('~', "~0").replace('/', "~1")
+            ),
+            Self::HistoryIndex(index) => format!("state/sourceReferences/{index}/configurationRef"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceDiscoveredTargetEvidence {
+    pub(crate) target: SourceInventoryTarget,
+    pub(crate) slots: Vec<(SourceOriginalSlot, ConfigurationRef)>,
+    pub(crate) affected: bool,
+}
+
+pub(crate) struct SourceInventoryCapture {
+    discovery: SourceDiscoveryWitness,
+    objects: Vec<(PathBuf, (u64, u64))>,
+    discovered: Vec<SourceDiscoveredTargetEvidence>,
+    topology: SourceMembershipTopology,
+    original_links: SourceOriginalProofAggregate,
+    classified: bool,
+}
+
+impl SourceInventoryCapture {
+    pub(crate) fn capture(
+        discovery: SourceDiscoveryWitness,
+        mut discovered: Vec<SourceDiscoveredTargetEvidence>,
+        snapshot: &RawSourceSnapshot,
+        origin: &LegacyCompatibilityOrigin,
+        physical_source_key: &str,
+    ) -> Result<Self, SourcePreparationError> {
+        let invalid = || SourcePreparationError::LegacyOriginUnresolved;
+        let mut paths = discovery.parents.clone();
+        for (root, members) in &discovery.membership {
+            paths.push(root.clone());
+            paths.extend(members.iter().cloned());
+        }
+        paths.extend(
+            discovered
+                .iter()
+                .map(|evidence| evidence.target.root.clone()),
+        );
+        paths.sort();
+        paths.dedup();
+        let mut objects = Vec::new();
+        for path in paths {
+            let verified = crate::path_identity::verify_directory(&path).map_err(|_| invalid())?;
+            objects.push((
+                verified.canonical_path,
+                (verified.object_id.volume, verified.object_id.file),
+            ));
+        }
+        objects.sort();
+        objects.dedup();
+        if objects.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(invalid());
+        }
+        for (slot, present) in &discovery.slots {
+            if *present {
+                let verified =
+                    crate::path_identity::verify_directory(slot).map_err(|_| invalid())?;
+                if !objects.iter().any(|(path, object)| {
+                    path == &verified.canonical_path
+                        && *object == (verified.object_id.volume, verified.object_id.file)
+                }) {
+                    return Err(invalid());
+                }
+            } else {
+                let parent = slot.parent().ok_or_else(invalid)?;
+                crate::path_identity::verify_directory(parent).map_err(|_| invalid())?;
+                match std::fs::symlink_metadata(slot) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err(invalid()),
+                }
+            }
+        }
+        discovered.sort_by(|a, b| a.target.decisions.cmp(&b.target.decisions));
+        if discovered
+            .windows(2)
+            .any(|pair| pair[0].target.root == pair[1].target.root)
+        {
+            return Err(invalid());
+        }
+        let mut links = Vec::new();
+        let mut originals = Vec::new();
+        let mut defaults: BTreeMap<
+            String,
+            (PathBuf, std::collections::BTreeSet<LegacyOriginUnit>),
+        > = BTreeMap::new();
+        for evidence in &discovered {
+            let target = &evidence.target;
+            let physical = target.original_physical.as_ref().ok_or_else(invalid)?;
+            if identity_reference_protected_revision(physical).map_err(|_| invalid())?
+                != target.before_protected
+                || !objects
+                    .iter()
+                    .any(|(root, object)| root == &target.root && object == &target.root_object)
+            {
+                return Err(invalid());
+            }
+            for (slot, selection) in &evidence.slots {
+                if selection.version != 1 {
+                    return Err(invalid());
+                }
+                if matches!(
+                    slot,
+                    SourceOriginalSlot::MatrixDefault | SourceOriginalSlot::ReplicaDefault
+                ) {
+                    let name = target
+                        .root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(invalid)?;
+                    let matrix = name.starts_with("_agent_");
+                    let replica = name.starts_with("__agent_");
+                    if matrix != matches!(slot, SourceOriginalSlot::MatrixDefault)
+                        || replica != matches!(slot, SourceOriginalSlot::ReplicaDefault)
+                    {
+                        return Err(invalid());
+                    }
+                }
+                let side = match slot {
+                    SourceOriginalSlot::Decision
+                    | SourceOriginalSlot::MatrixDefault
+                    | SourceOriginalSlot::ReplicaDefault => 0,
+                    _ => 1,
+                };
+                let bytes = match &physical[side] {
+                    IdentityReferencePhysicalState::Bytes { bytes, .. } => bytes,
+                    _ => return Err(invalid()),
+                };
+                let raw: Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+                let stored: ConfigurationRef =
+                    serde_json::from_value(slot.stored(&raw).cloned().ok_or_else(invalid)?)
+                        .map_err(|_| invalid())?;
+                if stored != *selection {
+                    return Err(invalid());
+                }
+                if selection.source != snapshot.snapshot.source {
+                    continue;
+                }
+                links.push((
+                    target.root.clone(),
+                    slot.coordinate(),
+                    selection.source.clone(),
+                    physical_source_key.into(),
+                ));
+                if snapshot.snapshot.source.kind != SourceKind::RegisteredInstance {
+                    continue;
+                }
+                let matrix = if matches!(slot, SourceOriginalSlot::MatrixDefault) {
+                    // Only a real origin Matrix can own N. Replica/history never mint Default.
+                    let name = target
+                        .root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(invalid)?;
+                    Some(
+                        name.strip_prefix("_agent_")
+                            .filter(|name| !name.is_empty())
+                            .ok_or_else(invalid)?,
+                    )
+                } else {
+                    None
+                };
+                let proof = origin.bind_original_selection_at(
+                    snapshot,
+                    selection,
+                    &snapshot.snapshot.revision,
+                    &snapshot.snapshot.context_revision,
+                    bytes,
+                    bytes,
+                    matrix,
+                    slot,
+                )?;
+                if let Some(matrix) = matrix {
+                    let provenance = (target.root.clone(), proof.units.clone());
+                    if defaults
+                        .get(matrix)
+                        .is_some_and(|original| original != &provenance)
+                    {
+                        return Err(invalid());
+                    }
+                    defaults.insert(matrix.into(), provenance);
+                }
+                originals.push(proof);
+            }
+        }
+        let topology = SourceMembershipTopology {
+            registry: discovery.registry.clone(),
+            directories: objects.clone(),
+            slots: discovery.slots.clone(),
+            membership: discovery.membership.clone(),
+            targets: discovered
+                .iter()
+                .map(|e| {
+                    let t = &e.target;
+                    (
+                        t.root.clone(),
+                        t.root_object,
+                        t.decisions.clone(),
+                        t.state.clone(),
+                        t.reservation.clone(),
+                    )
+                })
+                .collect(),
+            links,
+        };
+        Ok(Self {
+            discovery,
+            objects,
+            discovered,
+            topology,
+            original_links: SourceOriginalProofAggregate { originals },
+            classified: false,
+        })
+    }
+
+    pub(crate) fn original_links(&self) -> &SourceOriginalProofAggregate {
+        &self.original_links
+    }
+}
+
+pub(crate) type SourceOriginalSlotParser<'a> = dyn Fn(
+        &SourceInventoryTarget,
+    ) -> Result<Vec<(SourceOriginalSlot, ConfigurationRef)>, IdentityReferenceError>
+    + 'a;
+
+pub(crate) struct SourceInventoryInputs<'borrow, 'identity> {
+    pub(crate) settings: &'borrow AppSettings,
+    pub(crate) context: &'borrow SourceReadContext,
+    pub(crate) identity: &'borrow IdentityWriteLease,
+    pub(crate) lease: &'borrow SourceWriteContext<'identity>,
+}
+
+/// Backend-only original operation authority. No retained discovery handles.
+pub(crate) struct SourceInventoryProof {
+    operation_id: String,
+    inventory: SourceLocalInventory,
+}
+
+impl SourceInventoryProof {
+    pub(crate) fn for_candidate(
+        inputs: SourceInventoryInputs<'_, '_>,
+        snapshot: &RawSourceSnapshot,
+        prepared: &PreparedSourceCandidate,
+        origin: &OriginInputs,
+        capture: SourceInventoryCapture,
+        operation_id: &str,
+    ) -> Result<Self, SourcePreparationError> {
+        let SourceInventoryInputs {
+            settings,
+            context,
+            identity,
+            lease,
+        } = inputs;
+        if !capture.classified
+            || SourceReadContext::from_settings(settings, &context.settings_path)? != *context
+            || capture.discovery.registry != settings.project_paths
+            || prepared.source != snapshot.snapshot.source
+            || prepared.source != *lease.source()
+        {
+            return Err(SourcePreparationError::ContextChanged);
+        }
+        prepared.revalidate_before_write(context)?;
+        origin.revalidate(context)?;
+        let inventory_digest = source_inventory_digest(
+            identity.instance_id(),
+            lease.source(),
+            lease.physical_source_key(),
+            lease.context_revision(),
+            &capture.topology,
+        )
+        .map_err(|_| SourcePreparationError::ContextChanged)?;
+        let mappings = source_original_mappings(snapshot, prepared)?;
+        let source_before = match &prepared.before_bytes {
+            Some(bytes) => IdentityReferencePhysicalState::from_bytes(bytes.clone()),
+            None => IdentityReferencePhysicalState::Absent,
+        };
+        let evidence = SourceOriginalInventoryEvidence {
+            discovery: capture.discovery,
+            objects: capture.objects.clone(),
+            source_before,
+            expected_source: prepared.expected_revision.clone(),
+            after_source: source_bytes_revision(&prepared.serialized_after),
+            discovered: capture.discovered.clone(),
+            topology: capture.topology,
+            inventory_digest,
+        };
+        let mut targets = Vec::new();
+        for classified in &capture.discovered {
+            if classified.affected {
+                let mut target = classified.target.clone();
+                // Original images have one durable location, in full evidence.
+                target.original_physical = None;
+                targets.push(target);
+            }
+        }
+        let mut inventory = SourceLocalInventory {
+            editor_id: identity.instance_id().into(),
+            source: prepared.source.clone(),
+            physical_source_key: lease.physical_source_key().into(),
+            context_revision: context.revision.clone(),
+            authorization_revision: String::new(),
+            authorized_roots: capture.objects,
+            targets,
+            mappings,
+            origin_binding: Some(origin.binding.clone()),
+            original_evidence: Some(evidence),
+        };
+        inventory.authorization_revision = source_transition_digest(&inventory)
+            .map_err(|_| SourcePreparationError::ContextChanged)?;
+        let proof = Self {
+            operation_id: operation_id.into(),
+            inventory,
+        };
+        proof
+            .validate(identity, lease, context)
+            .map_err(|_| SourcePreparationError::ContextChanged)?;
+        Ok(proof)
+    }
+
+    pub(crate) fn inventory(&self) -> &SourceLocalInventory {
+        &self.inventory
+    }
+
+    pub(crate) fn inventory_digest(&self) -> Result<&str, SourceCoordinationError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let actual = source_inventory_digest(
+            &self.inventory.editor_id,
+            &self.inventory.source,
+            &self.inventory.physical_source_key,
+            &self.inventory.context_revision,
+            &original.topology,
+        )?;
+        if actual != original.inventory_digest {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        Ok(&original.inventory_digest)
+    }
+
+    pub(crate) fn stored_intent(
+        &self,
+        prepared: &PreparedSourceCandidate,
+        operation_id: &str,
+        request_id: &str,
+        payload_digest: &str,
+    ) -> Result<SourceStoredIntent, SourceCoordinationError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if operation_id != self.operation_id
+            || prepared.source != self.inventory.source
+            || prepared.expected_revision != original.expected_source
+            || source_bytes_revision(&prepared.serialized_after) != original.after_source
+        {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        Ok(SourceStoredIntent {
+            schema_version: 2,
+            operation_id: operation_id.into(),
+            request_id: request_id.into(),
+            payload_digest: payload_digest.into(),
+            source: self.inventory.source.clone(),
+            expected_revision: prepared.expected_revision.clone(),
+            before_bytes: prepared.before_bytes.clone(),
+            serialized_after: prepared.serialized_after.clone(),
+            mappings: self.inventory.mappings.clone(),
+            editor_id: self.inventory.editor_id.clone(),
+            context_revision: self.inventory.context_revision.clone(),
+            authorization_revision: self.inventory.authorization_revision.clone(),
+        })
+    }
+
+    /// Pure segment guard: directory/object and original origin checks only.
+    /// Full enumeration is orchestrated outside PAIR by mutations.
+    pub(crate) fn validate(
+        &self,
+        identity: &IdentityWriteLease,
+        lease: &SourceWriteContext,
+        context: &SourceReadContext,
+    ) -> Result<(), IdentityReferenceError> {
+        #[cfg(test)]
+        source_factory_guard_cut()?;
+        let conflict = || IdentityReferenceError::Conflict;
+        let inventory = &self.inventory;
+        let original = inventory.original_evidence.as_ref().ok_or_else(conflict)?;
+        if identity.instance_id() != inventory.editor_id
+            || lease.source() != &inventory.source
+            || lease.physical_source_key() != inventory.physical_source_key
+            || context.revision != inventory.context_revision
+        {
+            return Err(conflict());
+        }
+        lease.revalidate(context).map_err(|_| conflict())?;
+        for (path, object) in &original.objects {
+            let current = crate::path_identity::verify_directory(path).map_err(|_| conflict())?;
+            if current.canonical_path != *path
+                || (current.object_id.volume, current.object_id.file) != *object
+            {
+                return Err(conflict());
+            }
+        }
+        for (slot, present) in &original.discovery.slots {
+            let exists = match std::fs::symlink_metadata(slot) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                _ => return Err(conflict()),
+            };
+            if exists != *present {
+                return Err(conflict());
+            }
+        }
+        let observed = OriginInputs::read(context);
+        let binding = inventory.origin_binding.as_ref().ok_or_else(conflict)?;
+        if observed.binding.context != binding.context
+            || observed.binding.settings != binding.settings
+            || observed.binding.overlay != binding.overlay
+        {
+            return Err(conflict());
+        }
+        let current_source = lease.source_revision().map_err(|_| conflict())?;
+        if current_source != original.expected_source && current_source != original.after_source {
+            return Err(conflict());
+        }
+        if current_source != original.expected_source {
+            let (_, journal) = read_own_source_journal(context).map_err(|_| conflict())?;
+            let intent = journal
+                .intents
+                .get(&self.operation_id)
+                .ok_or_else(conflict)?;
+            let progress = journal
+                .progress
+                .get(&self.operation_id)
+                .ok_or_else(conflict)?;
+            if !progress.packets_prepared
+                || intent.source != inventory.source
+                || intent.expected_revision != original.expected_source
+                || source_bytes_revision(&intent.serialized_after) != original.after_source
+                || intent.mappings != inventory.mappings
+                || intent.editor_id != identity.instance_id()
+            {
+                return Err(conflict());
+            }
+        }
+        if observed.binding.registered != binding.registered {
+            if inventory.source.kind != SourceKind::RegisteredInstance
+                || current_source != original.after_source
+                || observed.binding.registered.as_ref() != Some(&original.after_source)
+            {
+                return Err(conflict());
+            }
+            let (_, journal) = read_own_source_journal(context).map_err(|_| conflict())?;
+            let intent = journal
+                .intents
+                .get(&self.operation_id)
+                .ok_or_else(conflict)?;
+            if intent.source != inventory.source
+                || intent.expected_revision != original.expected_source
+                || source_bytes_revision(&intent.serialized_after) != original.after_source
+                || intent.mappings != inventory.mappings
+                || intent.editor_id != identity.instance_id()
+            {
+                return Err(conflict());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SourceInventoryCapture {
+    pub(crate) fn same_original_capture(&self, other: &Self) -> bool {
+        self.discovery == other.discovery
+            && self.objects == other.objects
+            && self.discovered == other.discovered
+            && self.topology == other.topology
+    }
+
+    pub(crate) fn original_targets(&self) -> &[SourceDiscoveredTargetEvidence] {
+        &self.discovered
+    }
+
+    pub(crate) fn classify(
+        &mut self,
+        classifications: Vec<(PathBuf, bool)>,
+    ) -> Result<(), SourcePreparationError> {
+        if classifications.len() != self.discovered.len() {
+            return Err(SourcePreparationError::LegacyOriginUnresolved);
+        }
+        for (evidence, (target, affected)) in self.discovered.iter_mut().zip(classifications) {
+            if evidence.target.decisions != target {
+                return Err(SourcePreparationError::LegacyOriginUnresolved);
+            }
+            evidence.affected = affected;
+        }
+        self.classified = true;
+        Ok(())
+    }
+}
+
+impl SourceLocalInventory {
+    fn validate_original_evidence(&self) -> Result<(), SourceCoordinationError> {
+        let Some(original) = &self.original_evidence else {
+            return Ok(());
+        };
+        let invalid = || SourceCoordinationError::Invalid;
+        let mut unsigned = self.clone();
+        unsigned.authorization_revision.clear();
+        if source_transition_digest(&unsigned)? != self.authorization_revision
+            || original.objects != self.authorized_roots
+            || original.topology.directories != original.objects
+            || original.topology.registry != original.discovery.registry
+            || original.topology.slots != original.discovery.slots
+            || original.topology.membership != original.discovery.membership
+            || self.origin_binding.is_none()
+        {
+            return Err(invalid());
+        }
+        let before = match &original.source_before {
+            IdentityReferencePhysicalState::Absent => SourceRevision::Absent {},
+            IdentityReferencePhysicalState::Bytes { bytes, .. } => {
+                if IdentityReferencePhysicalState::from_bytes(bytes.clone())
+                    != original.source_before
+                {
+                    return Err(invalid());
+                }
+                source_bytes_revision(bytes)
+            }
+        };
+        if before != original.expected_source
+            || source_inventory_digest(
+                &self.editor_id,
+                &self.source,
+                &self.physical_source_key,
+                &self.context_revision,
+                &original.topology,
+            )? != original.inventory_digest
+            || original
+                .discovered
+                .windows(2)
+                .any(|pair| pair[0].target.decisions >= pair[1].target.decisions)
+        {
+            return Err(invalid());
+        }
+        let mut selected = Vec::new();
+        let mut targets = Vec::new();
+        let mut links = Vec::new();
+        for evidence in &original.discovered {
+            let target = &evidence.target;
+            let physical = target.original_physical.as_ref().ok_or_else(invalid)?;
+            for image in physical {
+                if let IdentityReferencePhysicalState::Bytes { bytes, .. } = image {
+                    if &IdentityReferencePhysicalState::from_bytes(bytes.clone()) != image {
+                        return Err(invalid());
+                    }
+                }
+            }
+            if identity_reference_protected_revision(physical).map_err(|_| invalid())?
+                != target.before_protected
+                || !original
+                    .objects
+                    .iter()
+                    .any(|(path, object)| path == &target.root && object == &target.root_object)
+                || target.original_selections
+                    != evidence
+                        .slots
+                        .iter()
+                        .map(|(_, selection)| selection.clone())
+                        .collect::<Vec<_>>()
+            {
+                return Err(invalid());
+            }
+            targets.push((
+                target.root.clone(),
+                target.root_object,
+                target.decisions.clone(),
+                target.state.clone(),
+                target.reservation.clone(),
+            ));
+            for (slot, selection) in &evidence.slots {
+                if selection.source == self.source {
+                    links.push((
+                        target.root.clone(),
+                        slot.coordinate(),
+                        selection.source.clone(),
+                        self.physical_source_key.clone(),
+                    ));
+                }
+            }
+            if evidence.affected {
+                let mut target = target.clone();
+                target.original_physical = None;
+                selected.push(target);
+            }
+        }
+        if targets != original.topology.targets
+            || links != original.topology.links
+            || selected != self.targets
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify_original_slots(
+        &self,
+        parse: &SourceOriginalSlotParser<'_>,
+    ) -> Result<(), IdentityReferenceError> {
+        let original = self
+            .original_evidence
+            .as_ref()
+            .ok_or(IdentityReferenceError::Conflict)?;
+        for evidence in &original.discovered {
+            let slots = parse(&evidence.target)?;
+            if slots != evidence.slots
+                || slots
+                    .iter()
+                    .map(|(_, reference)| reference.clone())
+                    .collect::<Vec<_>>()
+                    != evidence.target.original_selections
+            {
+                return Err(IdentityReferenceError::Conflict);
+            }
+        }
+        Ok(())
+    }
+
+    /// Shared three-outcome reader: Ok(true) matches, Ok(false) is definite
+    /// protected mismatch, Err is uncertainty/invalid authority, never stale.
+    fn affected_original_protected_matches(&self) -> Result<bool, SourceCoordinationError> {
+        self.validate_original_evidence()?;
+        let original = self
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let mut matches = true;
+        for evidence in original
+            .discovered
+            .iter()
+            .filter(|evidence| evidence.affected)
+        {
+            let target = &evidence.target;
+            let identity = crate::path_identity::verify_directory(&target.root)
+                .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+            if (identity.object_id.volume, identity.object_id.file) != target.root_object {
+                return Err(SourceCoordinationError::IdentityUncertain);
+            }
+            let physical = [
+                read_identity_reference_physical(&target.decisions)
+                    .map_err(|_| SourceCoordinationError::IdentityUncertain)?,
+                read_identity_reference_physical(&target.state)
+                    .map_err(|_| SourceCoordinationError::IdentityUncertain)?,
+            ];
+            let protected = identity_reference_protected_revision(&physical)
+                .map_err(|_| SourceCoordinationError::IdentityUncertain)?;
+            matches &= protected == target.before_protected;
+        }
+        Ok(matches)
+    }
+}
+
+impl SourceInventoryProof {
+    pub(crate) fn for_resume(
+        inputs: SourceInventoryInputs<'_, '_>,
+        operation_id: &str,
+        journal: &SourcePrivateJournal,
+        parse_slots: &SourceOriginalSlotParser<'_>,
+    ) -> Result<Self, SourceCoordinationError> {
+        let SourceInventoryInputs {
+            settings,
+            context,
+            identity,
+            lease,
+        } = inputs;
+        let inventory = journal
+            .inventories
+            .get(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?
+            .clone();
+        // Recompute from original physical images BEFORE restoring any proof.
+        inventory
+            .verify_original_slots(parse_slots)
+            .map_err(|_| SourceCoordinationError::Invalid)?;
+        let original = inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if original.discovery.registry != settings.project_paths
+            || SourceReadContext::from_settings(settings, &context.settings_path)
+                .map_err(|_| SourceCoordinationError::Unauthorized)?
+                != *context
+        {
+            return Err(SourceCoordinationError::Unauthorized);
+        }
+        let mut unsigned = inventory.clone();
+        unsigned.authorization_revision.clear();
+        if source_transition_digest(&unsigned)? != inventory.authorization_revision {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let intent = journal
+            .intents
+            .get(operation_id)
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if intent.editor_id != identity.instance_id()
+            || intent.authorization_revision != inventory.authorization_revision
+            || intent.expected_revision != original.expected_source
+            || source_bytes_revision(&intent.serialized_after) != original.after_source
+            || intent.source != inventory.source
+            || intent.mappings != inventory.mappings
+        {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let proof = Self {
+            operation_id: operation_id.into(),
+            inventory,
+        };
+        proof.inventory_digest()?;
+        proof
+            .validate(identity, lease, context)
+            .map_err(|_| SourceCoordinationError::Stale)?;
+        proof.restore_original_links(context)?;
+        Ok(proof)
+    }
+
+    /// Replay the original pure patch over every discovered before image.
+    /// The callback is supplied by the orchestration owner, outside PAIR guards.
+    pub(crate) fn verify_original_classification(
+        &self,
+        classify: &dyn Fn(&SourceInventoryTarget) -> Result<bool, IdentityReferenceError>,
+    ) -> Result<(), IdentityReferenceError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(IdentityReferenceError::Conflict)?;
+        let mut selected = Vec::new();
+        for evidence in &original.discovered {
+            if classify(&evidence.target)? != evidence.affected {
+                return Err(IdentityReferenceError::Conflict);
+            }
+            if evidence.affected {
+                let mut target = evidence.target.clone();
+                target.original_physical = None;
+                selected.push(target);
+            }
+        }
+        if selected != self.inventory.targets {
+            return Err(IdentityReferenceError::Conflict);
+        }
+        Ok(())
+    }
+
+    /// Fence-only invariant; later PAIR progress legitimately changes revisions.
+    pub(crate) fn verify_affected_before_fence(&self) -> Result<(), SourceCoordinationError> {
+        if self.inventory.affected_original_protected_matches()? {
+            Ok(())
+        } else {
+            Err(SourceCoordinationError::Stale)
+        }
+    }
+
+    pub(crate) fn verify_complete_discovery(
+        &self,
+        witness: &SourceDiscoveryWitness,
+        current: &[SourceDiscoveredTargetEvidence],
+    ) -> Result<(), SourceCoordinationError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        if witness != &original.discovery || current.len() != original.discovered.len() {
+            return Err(SourceCoordinationError::Stale);
+        }
+        let mut links = Vec::new();
+        for (now_evidence, before_evidence) in current.iter().zip(&original.discovered) {
+            if !before_evidence.affected
+                && now_evidence.target.before_protected != before_evidence.target.before_protected
+            {
+                return Err(SourceCoordinationError::Stale);
+            }
+        }
+        for (now, before) in current.iter().zip(&original.discovered) {
+            let now = &now.target;
+            let before = &before.target;
+            if now.root != before.root
+                || now.root_object != before.root_object
+                || now.decisions != before.decisions
+                || now.state != before.state
+                || now.reservation != before.reservation
+            {
+                return Err(SourceCoordinationError::Stale);
+            }
+        }
+        for evidence in current {
+            for (slot, selection) in &evidence.slots {
+                if selection.source == self.inventory.source {
+                    links.push((
+                        evidence.target.root.clone(),
+                        slot.coordinate(),
+                        selection.source.clone(),
+                        self.inventory.physical_source_key.clone(),
+                    ));
+                }
+            }
+        }
+        let mut topology = original.topology.clone();
+        topology.links = links;
+        if source_inventory_digest(
+            &self.inventory.editor_id,
+            &self.inventory.source,
+            &self.inventory.physical_source_key,
+            &self.inventory.context_revision,
+            &topology,
+        )? != original.inventory_digest
+        {
+            return Err(SourceCoordinationError::Stale);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_FACTORY_GUARD_CUT: std::cell::Cell<(usize, Option<usize>)> = const { std::cell::Cell::new((0, None)) };
+}
+
+#[cfg(test)]
+pub(crate) fn configure_source_factory_guard_cut(fail_at: Option<usize>) {
+    SOURCE_FACTORY_GUARD_CUT.with(|state| state.set((0, fail_at)));
+}
+
+#[cfg(test)]
+pub(crate) fn source_factory_guard_calls() -> usize {
+    SOURCE_FACTORY_GUARD_CUT.with(|state| state.get().0)
+}
+
+#[cfg(test)]
+fn source_factory_guard_cut() -> Result<(), IdentityReferenceError> {
+    SOURCE_FACTORY_GUARD_CUT.with(|state| {
+        let (count, fail_at) = state.get();
+        let count = count + 1;
+        if fail_at == Some(count) {
+            state.set((count, None));
+            return Err(IdentityReferenceError::Conflict);
+        }
+        state.set((count, fail_at));
+        Ok(())
+    })
+}
+
+impl SourceInventoryProof {
+    /// Rebuild original proof groups from the SAME saved before source and target
+    /// images, after current source/packet authority has been independently checked.
+    fn restore_original_links(
+        &self,
+        context: &SourceReadContext,
+    ) -> Result<(), SourceCoordinationError> {
+        let original = self
+            .inventory
+            .original_evidence
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let raw = match &original.source_before {
+            IdentityReferencePhysicalState::Absent => OriginPhysicalInput::Absent,
+            IdentityReferencePhysicalState::Bytes { bytes, .. } => {
+                if IdentityReferencePhysicalState::from_bytes(bytes.clone())
+                    != original.source_before
+                {
+                    return Err(SourceCoordinationError::Invalid);
+                }
+                OriginPhysicalInput::Bytes(bytes.clone())
+            }
+        };
+        if raw.revision().as_ref() != Some(&original.expected_source) {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        let binding = self
+            .inventory
+            .origin_binding
+            .as_ref()
+            .ok_or(SourceCoordinationError::Invalid)?;
+        let mut inputs = OriginInputs::read(context);
+        if inputs.binding.settings != binding.settings
+            || inputs.binding.overlay != binding.overlay
+            || inputs.binding.context != binding.context
+        {
+            return Err(SourceCoordinationError::Stale);
+        }
+        if self.inventory.source.kind == SourceKind::RegisteredInstance {
+            if binding.registered.as_ref() != Some(&original.expected_source) {
+                return Err(SourceCoordinationError::Invalid);
+            }
+            inputs.registered = raw.clone();
+        } else if inputs.binding.registered != binding.registered {
+            return Err(SourceCoordinationError::Stale);
+        }
+        inputs.binding = binding.clone();
+        let origin = LegacyCompatibilityOrigin::classify(&inputs);
+        let snapshot = source_snapshot_from_original(context, &self.inventory.source, raw)
+            .map_err(|_| SourceCoordinationError::Invalid)?;
+        let captured = SourceInventoryCapture::capture(
+            original.discovery.clone(),
+            original.discovered.clone(),
+            &snapshot,
+            &origin,
+            &self.inventory.physical_source_key,
+        )
+        .map_err(|_| SourceCoordinationError::Invalid)?;
+        if captured.objects != original.objects || captured.topology != original.topology {
+            return Err(SourceCoordinationError::Stale);
+        }
+        let selected: Vec<_> = original
+            .discovered
+            .iter()
+            .filter(|target| target.affected)
+            .map(|record| {
+                let mut target = record.target.clone();
+                target.original_physical = None;
+                target
+            })
+            .collect();
+        if selected != self.inventory.targets {
+            return Err(SourceCoordinationError::Invalid);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn source_factory_guard_cut_armed() -> bool {
+    SOURCE_FACTORY_GUARD_CUT.with(|state| state.get().1.is_some())
+}
+
+#[cfg(test)]
+pub(crate) fn source_transition_test_root() -> tempfile::TempDir {
+    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/i2897-p03");
+    std::fs::create_dir_all(&scratch).unwrap();
+    tempfile::Builder::new()
+        .prefix("source-transition-")
+        .tempdir_in(scratch)
+        .unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn source_transition_test_locator(
+    context: &SourceReadContext,
+    source: &SourceRef,
+) -> Result<PathBuf, SourcePreparationError> {
+    context.locator(source)
+}
+
+#[cfg(test)]
+mod derived_agent_binding_projection_tests {
+    use super::*;
+
+    fn physical_settings(dir: &Path, value: &Value) -> AppSettings {
+        let path = dir.join(SETTINGS_FILE_NAME);
+        std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        load_settings_from_path(&path)
+    }
+
+    #[test]
+    fn derived_agent_id_binding_projection_ignores_presentation_and_sorts_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = serde_json::json!({
+            "defaultShell": "test-shell",
+            "defaultShellArgs": [],
+            "agents": [
+                {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHome":false},
+                {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHome":false},
+            ],
+            "rootToken": "fixture-token",
+        });
+        let first = physical_settings(dir.path(), &original);
+        let revision = bootstrap_identity_revision(&first).unwrap();
+        let settings_path = dir.path().join(SETTINGS_FILE_NAME);
+        let agents_path = agents_instance_path(&settings_path);
+        // Capture the complete physical baseline BEFORE the presentation edit.
+        // Reusing the original legacy JSON would drop migrated profile ownership.
+        let mut after: Value =
+            serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+        let mut after_groups: Value =
+            serde_json::from_slice(&std::fs::read(&agents_path).unwrap()).unwrap();
+        let agents = after_groups["agents"].as_array_mut().unwrap();
+        assert!(!agents.is_empty());
+        assert_eq!(agents.len(), 2);
+        for row in agents.iter_mut() {
+            row["label"] = serde_json::json!("display changed");
+            row["color"] = serde_json::json!("red");
+            row["order"] = serde_json::json!(99);
+        }
+        agents.reverse();
+        after["rootToken"] = serde_json::json!("changed-root-token");
+        after["sidebarZoom"] = serde_json::json!(2.0);
+        // Preserve all profile/HOME/ownership groups and unknown fields verbatim.
+        std::fs::write(&agents_path, serde_json::to_vec(&after_groups).unwrap()).unwrap();
+        let second = physical_settings(dir.path(), &after);
+        let before_physical = first.coding_agent_identity_physical.as_ref().unwrap();
+        let after_physical = second.coding_agent_identity_physical.as_ref().unwrap();
+        for key in ["codingAgentProfiles", "quotaSources", "groupOwnership"] {
+            assert_eq!(
+                before_physical[key], after_physical[key],
+                "identity input {key} changed"
+            );
+        }
+        assert_eq!(bootstrap_identity_revision(&second).unwrap(), revision);
+    }
+
+    #[test]
+    fn derived_agent_id_binding_projection_changes_for_execution_home_and_quota() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = physical_settings(
+            dir.path(),
+            &serde_json::json!({
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "agents": [
+                    {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHome":false},
+                    {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHome":false},
+                ],
+                "rootToken": "fixture-token",
+            }),
+        );
+        let revision = bootstrap_identity_revision(&settings).unwrap();
+        let raw = settings
+            .coding_agent_identity_physical
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .clone();
+        for (key, value) in [
+            ("command", serde_json::json!("different-command")),
+            ("envs", serde_json::json!([{"key":"MODE","value":"other"}])),
+            ("isolatedHome", serde_json::json!(true)),
+        ] {
+            let mut changed = settings.clone();
+            let mut image = raw.clone();
+            image["agents"][0][key] = value;
+            changed.coding_agent_identity_physical = Some(Arc::new(image));
+            assert_ne!(
+                bootstrap_identity_revision(&changed).unwrap(),
+                revision,
+                "{key}"
+            );
+        }
+        let mut changed = settings.clone();
+        let mut image = raw;
+        image["quotaSources"] = serde_json::json!({"agent": {"source":"other"}});
+        changed.coding_agent_identity_physical = Some(Arc::new(image));
+        assert_ne!(bootstrap_identity_revision(&changed).unwrap(), revision);
+    }
+
+    #[test]
+    fn derived_agent_id_binding_save_narrow_and_cas_return_physical_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE_NAME);
+        physical_settings(
+            dir.path(),
+            &serde_json::json!({
+                "defaultShell":"test-shell",
+                "defaultShellArgs":[],
+                "agents": [{"id":"alpha","label":"Alpha","command":"claude","color":"red"}],
+                "rootToken":"fixture-token"
+            }),
+        );
+        // Unknown fields in an overlay-owned group must survive typed decode.
+        let overlay_path = path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+        std::fs::write(&overlay_path, serde_json::to_vec(&serde_json::json!({
+            "agents": [{"id":"alpha","label":"Overlay","command":"claude","color":"red","unknownIdentity":{"keep":7}}]
+        })).unwrap()).unwrap();
+        let mut current = load_settings_for_cli_from_path(&path);
+        assert_eq!(
+            current.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]
+                ["unknownIdentity"]["keep"],
+            7
+        );
+        assert!(current.local_overlay_state.owns_top_level("agents"));
+        let baseline = bootstrap_identity_revision(&current).unwrap();
+        for mode in 0..4 {
+            let before_bytes = (
+                std::fs::read(&path).unwrap(),
+                std::fs::read(agents_instance_path(&path)).unwrap(),
+                std::fs::read(&overlay_path).unwrap(),
+            );
+            current = match mode {
+                0 => save_settings_to_path_preserving_project_paths(&current, &path).unwrap(),
+                1 => set_main_window_placement_at_path(
+                    &current,
+                    &path,
+                    &WindowGeometry {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 800.0,
+                        height: 600.0,
+                    },
+                    MainWindowDisplayState::Normal,
+                )
+                .unwrap(),
+                2 => {
+                    compare_and_set_terminal_snapshots_enabled_at_path(&current, &path, true, false)
+                        .unwrap()
+                }
+                _ => compare_and_set_terminal_snapshots_enabled_at_path(
+                    &current, &path, false, false,
+                )
+                .unwrap(),
+            };
+            if mode == 3 {
+                assert_eq!(
+                    before_bytes,
+                    (
+                        std::fs::read(&path).unwrap(),
+                        std::fs::read(agents_instance_path(&path)).unwrap(),
+                        std::fs::read(&overlay_path).unwrap(),
+                    )
+                );
+            }
+            let fresh = load_settings_for_cli_from_path(&path);
+            assert_eq!(
+                current.coding_agent_identity_physical,
+                fresh.coding_agent_identity_physical
+            );
+            assert_eq!(
+                bootstrap_binding_revision(&current, "alpha").unwrap(),
+                baseline
+            );
+            let raw = current.coding_agent_identity_physical.as_ref().unwrap();
+            assert_eq!(raw["agents"][0]["unknownIdentity"]["keep"], 7);
+            assert!(raw["groupOwnership"]["overlayPaths"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(["agents"])));
+        }
+        // A decode-invalid overlay uses the raw base, just as the live loader does.
+        std::fs::write(
+            &overlay_path,
+            serde_json::to_vec(&serde_json::json!({
+                "agents": [{"id":"alpha","label":"Overlay","command":"different","color":"red"}],
+                "sidebarZoom":"invalid"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let written = save_settings_to_path_preserving_project_paths(&current, &path).unwrap();
+        let fresh = load_settings_for_cli_from_path(&path);
+        assert_eq!(
+            written.coding_agent_identity_physical,
+            fresh.coding_agent_identity_physical
+        );
+        std::fs::remove_file(&overlay_path).unwrap();
+        current = load_settings_for_cli_from_path(&path);
+        let before_edit = bootstrap_binding_revision(&current, "alpha").unwrap();
+        current.agents[0].command = "claude --different-execution".into();
+        let written = save_settings_to_path_preserving_project_paths(&current, &path).unwrap();
+        let after_edit = bootstrap_binding_revision(&written, "alpha").unwrap();
+        assert_ne!(after_edit, before_edit);
+        assert_eq!(
+            after_edit,
+            bootstrap_binding_revision(&load_settings_for_cli_from_path(&path), "alpha").unwrap()
+        );
+        assert_eq!(
+            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]["command"],
+            "claude --different-execution"
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_binding_project_replacement_refreshes_physical_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE_NAME);
+        let current = physical_settings(
+            dir.path(),
+            &serde_json::json!({
+                "defaultShell":"test-shell",
+                "defaultShellArgs":[],
+                "agents": [{"id":"alpha","label":"Alpha","command":"claude","color":"red"}],
+                "rootToken":"fixture-token"
+            }),
+        );
+        let previous = bootstrap_binding_revision(&current, "alpha").unwrap();
+        let agents_path = agents_instance_path(&path);
+        let mut groups: Value =
+            serde_json::from_slice(&std::fs::read(&agents_path).unwrap()).unwrap();
+        groups["agents"][0]["unknownIdentity"] = serde_json::json!({"fresh":7});
+        std::fs::write(&agents_path, serde_json::to_vec(&groups).unwrap()).unwrap();
+        let actual = load_settings_for_cli_from_path(&path);
+        let revision = bootstrap_binding_revision(&actual, "alpha").unwrap();
+        assert_ne!(revision, previous);
+        let mut transaction = begin_project_paths_transaction_at_path(&current, &path).unwrap();
+        assert_eq!(
+            transaction.fresh_settings().coding_agent_identity_physical,
+            actual.coding_agent_identity_physical
+        );
+        let candidate = transaction.fresh_settings().clone();
+        let written = transaction
+            .commit_project_groups(&candidate, false, false)
+            .unwrap();
+        assert_eq!(
+            bootstrap_binding_revision(&written, "alpha").unwrap(),
+            revision
+        );
+        assert_eq!(
+            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]
+                ["unknownIdentity"]["fresh"],
+            7
+        );
+    }
+
+    #[test]
+    fn derived_agent_id_binding_projection_missing_physical_never_uses_typed_fallback() {
+        assert!(bootstrap_identity_revision(&AppSettings::default()).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let settings = physical_settings(
+            dir.path(),
+            &serde_json::json!({
+                "defaultShell": "test-shell",
+                "defaultShellArgs": [],
+                "agents": [
+                    {"id":"alpha","label":"Alpha","command":"claude","color":"#112233","isolatedHome":false},
+                    {"id":"beta","label":"Beta","command":"codex","color":"#445566","isolatedHome":false},
+                ],
+                "rootToken": "fixture-token",
+            }),
+        );
+        let mut draft =
+            serde_json::from_value::<AppSettings>(serde_json::to_value(&settings).unwrap())
+                .unwrap();
+        assert!(bootstrap_identity_revision(&draft).is_err());
+        draft.coding_agent_identity_physical = settings.coding_agent_identity_physical.clone();
+        let mut image = draft
+            .coding_agent_identity_physical
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .clone();
+        let repeated = image["agents"][0].clone();
+        assert!(repeated.is_object());
+        image["agents"].as_array_mut().unwrap().push(repeated);
+        draft.coding_agent_identity_physical = Some(Arc::new(image));
+        assert!(bootstrap_identity_revision(&draft).is_err());
+        assert_eq!(
+            bootstrap_identity_revision(&draft).unwrap_err(),
+            "coding_agent_identity_duplicate"
         );
     }
 }
