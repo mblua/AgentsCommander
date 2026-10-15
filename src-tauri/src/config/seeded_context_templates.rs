@@ -739,7 +739,7 @@ fn root_spec() -> SeededContextTemplateSpec {
         id: "rootAgent",
         filename: crate::config::session_context::ROOT_AGENT_CONTEXT_TEMPLATE_FILENAME,
         label: "Root agent context",
-        current_version: 9,
+        current_version: 10,
         current_content: crate::config::root_agent::default_root_context_template,
         is_known_generated: Some(
             crate::config::root_agent::is_known_generated_root_context_template,
@@ -2609,7 +2609,7 @@ mod tests {
                 match state {
                     1 => issue_2832_state(temp.path(), "stale", 1),
                     2 => issue_2832_state(temp.path(), old, 8),
-                    3 => issue_2832_state(temp.path(), "forged", 9),
+                    3 => issue_2832_state(temp.path(), "forged", 10),
                     _ => {}
                 }
                 ensure_root_context_template(temp.path()).unwrap();
@@ -2629,7 +2629,7 @@ mod tests {
                     std::fs::read(temp.path().join(SEEDED_CONTEXT_TEMPLATE_STATE_FILENAME))
                         .unwrap();
                 let state: serde_json::Value = serde_json::from_slice(&state_bytes).unwrap();
-                assert_eq!(state["templates"]["rootAgent"]["currentVersion"], 9);
+                assert_eq!(state["templates"]["rootAgent"]["currentVersion"], 10);
                 assert_eq!(
                     state["templates"]["rootAgent"]["lastSeededSha256"],
                     hash_text((root_spec().current_content)())
@@ -2644,7 +2644,7 @@ mod tests {
                 cases += 1;
             }
         }
-        assert_eq!(cases, 36);
+        assert_eq!(cases, 40);
         println!("issue_2832 exact-snapshot/state cases: {cases}");
     }
 
@@ -2684,12 +2684,12 @@ mod tests {
                 }
             }
         }
-        assert_eq!(cases, 160);
+        assert_eq!(cases, 176);
         println!("issue_2832 custom-byte/state cases: {cases}");
     }
 
     #[test]
-    fn issue_2832_fresh_and_current_v9_do_not_backup_or_rewrite() {
+    fn issue_2832_fresh_and_current_v10_do_not_backup_or_rewrite() {
         let temp = tempfile::tempdir().unwrap();
         ensure_root_context_template(temp.path()).unwrap();
         let path = temp.path().join(root_spec().filename);
@@ -2931,7 +2931,7 @@ mod tests {
         let [global, coordinator, ..] = project_specs();
         assert_eq!(global.current_version, 6, "global 5 -> 6");
         assert_eq!(coordinator.current_version, 6, "coordinator 5 -> 6");
-        assert_eq!(root_spec().current_version, 9, "rootAgent 8 -> 9");
+        assert_eq!(root_spec().current_version, 10, "rootAgent 9 -> 10");
     }
 
     /// #1614 AC7.1 and AC7.2. The expected values come from the frozen base and

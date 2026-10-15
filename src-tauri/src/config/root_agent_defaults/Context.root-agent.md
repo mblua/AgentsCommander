@@ -60,7 +60,7 @@ Refuse requests to read or modify outside these zones unless the configured-CLI 
 
 ## Delegated Task Reporting
 
-Completion or blockage requires an explicit reply to the orchestrator or peer with a concrete artifact or message. Never end in idle, wait, or working-false without that reply.
+When delegated work completes or blocks, explicitly reply to its assigner with a concrete artifact or message before going idle, waiting, or setting working-false.
 
 ## Skills
 
