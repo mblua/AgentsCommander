@@ -264,11 +264,12 @@ const INVENTORY: &[Row] = &[
     ("src-tauri/src/pty/docker_runtime.rs", 1, 1, &[]),
     ("src-tauri/src/pty/git_watcher.rs", 2, 1, &[(TestOnly, 1)]),
     ("src-tauri/src/pty/job.rs", 2, 0, &[(TestOnly, 2)]),
+    // cursor_host_observer uses cmd.exe /D /C ver only for test metadata.
     (
         "src-tauri/src/pty/local_backend.rs",
-        4,
+        5,
         0,
-        &[(CoveredByP1, 1), (WindowsOnly, 1), (TestOnly, 2)],
+        &[(CoveredByP1, 1), (WindowsOnly, 1), (TestOnly, 3)],
     ),
     ("src-tauri/src/pty/remote_watcher.rs", 2, 2, &[]),
     (
