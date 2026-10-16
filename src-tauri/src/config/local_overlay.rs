@@ -196,6 +196,68 @@ pub(crate) struct DerivedIdClosure {
     pub(crate) derived_prefix: &'static [&'static str],
 }
 
+type PairedLeafSelector = fn(&Map<String, Value>, &str) -> Result<Option<String>, String>;
+
+/// Caller-owned field knowledge; `*` traverses object members or array rows.
+#[derive(Clone, Copy)]
+pub(crate) struct PairedLeaf {
+    pub(crate) path: &'static [&'static str],
+    pub(crate) canonical: &'static str,
+    pub(crate) legacy: &'static str,
+    pub(crate) select: PairedLeafSelector,
+}
+
+fn resolve_pairs(
+    value: &mut Value,
+    pair: &PairedLeaf,
+    depth: usize,
+    path: &mut Vec<String>,
+    owned: &mut Vec<Vec<String>>,
+) -> Result<(), String> {
+    if depth == pair.path.len() {
+        if let Some(row) = value.as_object_mut() {
+            if row.contains_key(pair.canonical) || row.contains_key(pair.legacy) {
+                let selected = (pair.select)(row, pair.canonical)?;
+                for key in [pair.canonical, pair.legacy] {
+                    let mut leaf = path.clone();
+                    leaf.push(key.to_owned());
+                    owned.push(leaf);
+                }
+                row.remove(pair.legacy);
+                if let Some(selected) = selected {
+                    row.insert(pair.canonical.to_owned(), Value::String(selected));
+                }
+            }
+        }
+        return Ok(());
+    }
+    let segment = pair.path[depth];
+    if segment == "*" {
+        match value {
+            Value::Object(rows) => {
+                for (key, row) in rows {
+                    path.push(key.clone());
+                    resolve_pairs(row, pair, depth + 1, path, owned)?;
+                    path.pop();
+                }
+            }
+            Value::Array(rows) => {
+                for (index, row) in rows.iter_mut().enumerate() {
+                    path.push(index.to_string());
+                    resolve_pairs(row, pair, depth + 1, path, owned)?;
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    } else if let Some(child) = value.get_mut(segment) {
+        path.push(segment.to_owned());
+        resolve_pairs(child, pair, depth + 1, path, owned)?;
+        path.pop();
+    }
+    Ok(())
+}
+
 /// The rule string reported for a key dropped by the disk-authoritative table.
 pub(crate) const RULE_DISK_AUTHORITATIVE: &str = "disk-authoritative (D7a)";
 
@@ -284,6 +346,7 @@ impl LocalSettingsOverlay {
     /// they are reported with different `rule` strings. `derived` is the D13
     /// closure table. Absent, unusable or empty overlays return a value for which
     /// `is_empty()` is true and leave `base` untouched.
+    #[cfg(test)]
     pub(crate) fn load_and_merge(
         settings_path: &Path,
         base: &mut Value,
@@ -291,28 +354,48 @@ impl LocalSettingsOverlay {
         ineligible_legacy: &[&str],
         derived: &[DerivedIdClosure],
     ) -> Self {
+        Self::load_and_merge_paired(
+            settings_path,
+            base,
+            ineligible_disk,
+            ineligible_legacy,
+            derived,
+            &[],
+        )
+    }
+
+    pub(crate) fn load_and_merge_paired(
+        settings_path: &Path,
+        base: &mut Value,
+        ineligible_disk: &[&str],
+        ineligible_legacy: &[&str],
+        derived: &[DerivedIdClosure],
+        pairs: &[PairedLeaf],
+    ) -> Self {
         let path = settings_path.with_file_name(SETTINGS_LOCAL_FILE_NAME);
         let contents = match std::fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             Err(e) => return Self::rejected(OverlayRejection::Unreadable(e.to_string())),
         };
-        Self::from_overlay_bytes(
+        Self::from_overlay_bytes_paired(
             base,
             contents.as_bytes(),
             ineligible_disk,
             ineligible_legacy,
             derived,
+            pairs,
         )
     }
 
     /// The same loader over captured physical bytes, without a second IO read.
-    pub(crate) fn from_overlay_bytes(
+    pub(crate) fn from_overlay_bytes_paired(
         base: &mut Value,
         contents: &[u8],
         ineligible_disk: &[&str],
         ineligible_legacy: &[&str],
         derived: &[DerivedIdClosure],
+        pairs: &[PairedLeaf],
     ) -> Self {
         let value: Value = match serde_json::from_slice(contents) {
             Ok(value) => value,
@@ -321,17 +404,43 @@ impl LocalSettingsOverlay {
         let Value::Object(overlay) = value else {
             return Self::rejected(OverlayRejection::NotAnObject);
         };
-        Self::from_overlay_object(base, overlay, ineligible_disk, ineligible_legacy, derived)
+        Self::from_overlay_object_paired(
+            base,
+            overlay,
+            ineligible_disk,
+            ineligible_legacy,
+            derived,
+            pairs,
+        )
     }
 
     /// The pure core of `load_and_merge`, for tests and for callers that already
     /// hold the object.
+    #[cfg(test)]
     pub(crate) fn from_overlay_object(
+        base: &mut Value,
+        overlay: Map<String, Value>,
+        ineligible_disk: &[&str],
+        ineligible_legacy: &[&str],
+        derived: &[DerivedIdClosure],
+    ) -> Self {
+        Self::from_overlay_object_paired(
+            base,
+            overlay,
+            ineligible_disk,
+            ineligible_legacy,
+            derived,
+            &[],
+        )
+    }
+
+    pub(crate) fn from_overlay_object_paired(
         base: &mut Value,
         mut overlay: Map<String, Value>,
         ineligible_disk: &[&str],
         ineligible_legacy: &[&str],
         derived: &[DerivedIdClosure],
+        pairs: &[PairedLeaf],
     ) -> Self {
         let mut state = Self::default();
 
@@ -354,6 +463,23 @@ impl LocalSettingsOverlay {
             return state;
         }
 
+        let original_base = base.clone();
+        let mut pair_paths = Vec::new();
+        for pair in pairs {
+            if let Err(reason) = resolve_pairs(base, pair, 0, &mut Vec::new(), &mut Vec::new()) {
+                *base = original_base;
+                return Self::rejected(OverlayRejection::MergedValueUndecodable(reason));
+            }
+            let mut value = Value::Object(std::mem::take(&mut overlay));
+            if let Err(reason) =
+                resolve_pairs(&mut value, pair, 0, &mut Vec::new(), &mut pair_paths)
+            {
+                *base = original_base;
+                return Self::rejected(OverlayRejection::MergedValueUndecodable(reason));
+            }
+            overlay = value.as_object().expect("overlay object").clone();
+        }
+
         // The restore plan is captured against the base BEFORE the merge.
         let mut path = Vec::new();
         let mut plan: Vec<(Vec<String>, Option<Value>)> = Vec::new();
@@ -361,11 +487,18 @@ impl LocalSettingsOverlay {
             path.push(key.clone());
             collect(
                 &mut path,
-                base.as_object().and_then(|object| object.get(key)),
+                original_base.as_object().and_then(|object| object.get(key)),
                 value,
                 &mut plan,
             );
             path.pop();
+        }
+
+        for path in pair_paths {
+            if !plan.iter().any(|(existing, _)| existing == &path) {
+                let names: Vec<_> = path.iter().map(String::as_str).collect();
+                plan.push((path.clone(), value_at(&original_base, &names).cloned()));
+            }
         }
 
         // D13 pre-merge halves: the base's id set and the base subtree under the
