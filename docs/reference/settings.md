@@ -55,19 +55,19 @@ A minimal `settings.30.instance.no-git.json`:
     {
       "id": "claude",
       "label": "Claude Code",
-      "command": "claude",
+      "baseCommand": "claude",
       "color": "#E87B35"
     },
     {
       "id": "codex",
       "label": "Codex",
-      "command": "codex",
+      "baseCommand": "codex",
       "color": "#10A37F"
     },
     {
       "id": "antigravity",
       "label": "Antigravity",
-      "command": "agy",
+      "baseCommand": "agy",
       "color": "#4285F4"
     }
   ],
@@ -114,7 +114,7 @@ The catalog entry's own `autoUpdate` field is inert: only `agentAutoUpdateByComm
 |---|---|---|---|
 | `id` | string | — | Stable internal id. Used by `create-agent --launch <id>`. |
 | `label` | string | — | Display name in the launcher dropdown. |
-| `command` | string | — | Binary to spawn. Resolved against PATH unless absolute. |
+| `baseCommand` | string | — | Base command: executable or wrapper plus fixed arguments. The executable resolves against PATH unless absolute. |
 | `color` | string | — | CSS hex color for sidebar accent. |
 | `envs` | `CodingAgentEnv[]` | `[]` | Environment rows applied at spawn. See below. |
 | `isolatedHome` | bool | `false` | Provide an isolated `CODEX_HOME` at spawn (Codex). |
@@ -123,6 +123,16 @@ The catalog entry's own `autoUpdate` field is inert: only `agentAutoUpdateByComm
 | `blockingMenus` | `BlockingMenuEntry[]` \| absent | absent | Legacy. Moved to `blocking-menus.50.personal.no-git.json` on the first start after upgrade and then absent, unless the migration could not run (see [Menu guard](#menu-guard)); while present it applies as before. |
 | `backend` | `AgentBackendConfig` | `{ "kind": "local" }` | Runtime backend. See below. |
 | `configSeed` | `ConfigSeedConfig` \| absent | absent | Optional config-folder seed copied into each replica at spawn. Absent (the default) means no seeding. See [Config seed](../features/config-seed.md). |
+
+#### Command field compatibility
+
+Agent entries and catalog definitions use `baseCommand`; profile cells use `additionalArguments` (in settings `profilesByAgent` and catalog `codingAgentProfiles` maps). These positions also accept the legacy `command` key. Both present values must be strings: `null`, numbers, booleans, arrays and objects are errors, even when the other spelling is usable.
+
+Within each source layer, AC selects new text with content, then legacy text with content, then present new text, then present legacy text. It preserves the selected text unchanged. If neither key exists, the base command remains required and profile arguments default to `""`. Existing source precedence and validation still apply.
+
+Content means at least one code point outside this exact set W: U+0009–U+000D, U+0020, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF. U+0085, U+180E and U+200B count as content. If both strings contain only W, present new text wins, even when their whitespace differs. Clearing only the new field falls back to retained legacy content.
+
+Authorized saves write edited text only to the new key and retain the existing legacy key and value from the authoritative current source unchanged. They never update, delete or synthesize legacy copies; new-only entries stay new-only. Reads do not write cleanup. Source ownership and write protections remain unchanged. Retention supports version hopping, but older builds cannot read new-only entries or see new-field edits through an unchanged legacy value. The CLI `--command` flag keeps its name.
 
 `CodingAgentEnv`:
 
@@ -174,7 +184,7 @@ Lettered launch variants (`A`, `B`, `C`, ...) per coding agent. See [Coding Agen
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` | Whether the cell participates in resolution. |
-| `command` | string | `""` | Parameters appended to the agent's base command (not the binary). |
+| `additionalArguments` | string | `""` | Additional arguments appended to the agent's base command (not the binary). |
 | `env` | `{ string: string }` | `{}` | Per-cell env, overlaid on the agent env (profile wins on a key clash). |
 | `notes` | string | `""` | Free text. |
 

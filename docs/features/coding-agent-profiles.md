@@ -18,7 +18,7 @@ The word "profile" appears in three unrelated places in AgentsCommander. This pa
 
 | Term | What it means | Where it lives |
 |---|---|---|
-| **Path placeholder** | A `%AC_REPLICA_ROOT%`-style token you can use *inside* a profile cell's command or env. Not a kind of profile. | [Agent Matrix conventions §5](../agent-matrix-conventions.md#5-profile-path-placeholders) |
+| **Path placeholder** | A `%AC_REPLICA_ROOT%`-style token you can use *inside* a profile cell's additional arguments or env. Not a kind of profile. | [Agent Matrix conventions §5](../agent-matrix-conventions.md#5-profile-path-placeholders) |
 | **Tuned coding-agent integration** | A first-class `CodingAgentKind` (resume tokens, idle tuning) for one CLI. Independent of A/B/C. | [Coding agents](../integrations/coding-agents.md), `session/profile.rs::CodingAgentKind` |
 | **Profile (this page)** | A lettered launch variant of a coding agent, resolved from the profile matrix. | This page |
 
@@ -42,7 +42,7 @@ A cell holds four fields:
 | Field | Meaning |
 |---|---|
 | `enabled` | Whether this cell participates in resolution. A disabled cell is skipped (except `A`, which is always available). |
-| `command` | The extra parameters appended to the agent's base command. Params only, not the binary. See [The effective launch command](#the-effective-launch-command). |
+| `additionalArguments` | The extra arguments appended to the agent's base command. Params only, not the binary. See [The effective launch command](#the-effective-launch-command). |
 | `env` | Environment variables for this variant. Overlaid on the agent's base env, profile wins on a key clash. |
 | `notes` | Free text for your own reference. |
 
@@ -55,8 +55,8 @@ The matrix is keyed by **coding-agent id** (the row). Which *letter* a given age
 This runs the scenario from the top of the page end to end. It assumes a `claude` Coding Agent is already configured.
 
 1. Open **Settings -> Coding Agents** and find the `claude` row.
-2. Add profile **B** and set its params to `--effort max` (your "max effort" variant).
-3. Add profile **C** and set its params to a cheaper variant, for example `--model <small-model-id>`.
+2. Add profile **B** and set **Additional arguments** to `--effort max` (your "max effort" variant).
+3. Add profile **C** and set **Additional arguments** to a cheaper variant, for example `--model <small-model-id>`.
 4. Open the launch picker for that agent, pick profile **B**, and choose **Assign to this replica**. New sessions for that replica now start on B.
 5. Launch a session for that agent. It runs `claude --effort max`.
 6. To switch only that session to C, open the launch picker, pick profile **C**, and launch it without assigning to the replica. That choice applies to this launch only (tier 2), so the replica keeps B. You never edited a command by hand.
@@ -110,7 +110,7 @@ The command that actually starts is the agent's base command followed by the pro
 effective = "<agent base command> <profile cell params>"
 ```
 
-The base command (the binary, plus any fixed args) comes from the Coding Agent entry in `agents.30.instance.no-git.json`. The cell holds only the extra params. An empty side contributes nothing, and if both are empty the launch fails with `agent command is empty`.
+The **Base command** (`baseCommand`: the executable or wrapper, plus any fixed arguments) comes from the Coding Agent entry in `agents.30.instance.no-git.json`. The cell's **Additional arguments** field (`additionalArguments`) holds only the extra arguments. AC composes, expands and parses the combined launch text as before; fixed base arguments and wrappers still work. An empty side contributes nothing, and if both are empty the launch fails with `agent command is empty`.
 
 **Example.** Base command `claude-amp`, profile `B` params `--effort max --model <model-id>`:
 
@@ -120,11 +120,24 @@ claude-amp --effort max --model <model-id>
 
 Environment variables merge in layers: the agent's base env first, then the profile cell's env on top (profile wins on a clashing key), then any AC-generated env (such as an isolated `CODEX_HOME`). Path placeholders like `%AC_REPLICA_ROOT%` are allowed in either the base command or the cell and expand at launch; see [Agent Matrix conventions §5](../agent-matrix-conventions.md#5-profile-path-placeholders).
 
-> **Breaking change: a profile cell holds parameters, not a full command.** AC composes the cell after the base command. If a cell still contains the whole command (for example `claude --foo` on a `claude` base), it composes to `claude claude --foo`, which launches wrong or fails. There is **no automatic migration**. Move the binary into the Coding Agent command and keep only parameters in each cell. Re-check every existing profile cell after upgrading.
+> **Breaking change: a profile cell holds parameters, not a full command.** AC composes the cell after the base command. If a cell still contains the whole command (for example `claude --foo` on a `claude` base), it composes to `claude claude --foo`, which launches wrong or fails. There is **no automatic migration**. Move the binary into the Coding Agent **Base command** and keep only parameters in each cell. Re-check every existing profile cell after upgrading.
+
+The same cell JSON uses `additionalArguments` in settings `profilesByAgent` and catalog `codingAgentProfiles` maps:
+
+```json
+{
+  "enabled": true,
+  "additionalArguments": "--effort max --model <model-id>",
+  "env": {},
+  "notes": ""
+}
+```
+
+Legacy `command` remains readable in these cells and in agent base entries. Both present spellings must be strings. New text with content wins; otherwise legacy content wins, followed by present new and present legacy text, unchanged. Saves write the new field and retain the authoritative source's old key/value unchanged. Clearing only the new text therefore does not clear retained legacy content. See [Command field compatibility](../reference/settings.md#command-field-compatibility) for the exact content predicate, defaults and version-hopping limits.
 
 ## Drift: the "outdated" badge
 
-A profile's identity is positional (coding-agent id plus letter), so editing a cell's command or env does not, by itself, change which cell a running session is on. To catch the case where a running session's profile no longer matches its configuration, AC fingerprints the effective command and merged env at launch and compares it on demand.
+A profile's identity is positional (coding-agent id plus letter), so editing a cell's additional arguments or env does not, by itself, change which cell a running session is on. To catch the case where a running session's profile no longer matches its configuration, AC fingerprints the effective command and merged env at launch and compares it on demand.
 
 When the configuration drifts from what a session launched with, that session shows a clickable badge in the sidebar:
 
@@ -159,7 +172,7 @@ The full `codingAgentProfiles` schema (including `schemaVersion`) is in the [set
 
 **"I edited a profile and the running session did not change."** Drift is manual. Click the `⟳ outdated` badge on the session (or restart it) to relaunch with the new configuration.
 
-**"After upgrading, my agent launches the binary twice, or fails with `agent command is empty`."** The profile cell still holds a full command. Move the binary into the Coding Agent command and keep only parameters in the cell. See [the breaking-change note](#the-effective-launch-command).
+**"After upgrading, my agent launches the binary twice, or fails with `agent command is empty`."** The profile cell still holds a full command. Move the binary into the Coding Agent **Base command** and keep only parameters in the cell. See [the breaking-change note](#the-effective-launch-command).
 
 ## See also
 
