@@ -860,6 +860,14 @@ const ProjectPanel: Component = () => {
           bots: TelegramBotConfig[];
         } | null>(null);
         let replicaCtxMenuEpoch = 0;
+        // #3027 - the exact row that opened the replica menu. A fresh object per
+        // opening is the halo's identity: reclamps rewrite the menu object, so
+        // neither the menu nor the geometry can key the halo node.
+        const [replicaMenuOrigin, setReplicaMenuOrigin] = createSignal<{ el: HTMLElement } | null>(null);
+        const [haloBox, setHaloBox] = createSignal<{
+          clip: { left: number; top: number; width: number; height: number };
+          row: { left: number; top: number; width: number; height: number };
+        } | null>(null);
         // #1536 - inline TASK-title editor state (shared by both menu branches;
         // only one menu is ever open). titleEdit pins the raw wg.path + the
         // resolved live-session id at click time, so guards compare strings,
@@ -1372,6 +1380,7 @@ const ProjectPanel: Component = () => {
 
         const cleanupCtx = () => {
           advanceReplicaCtxMenuEpoch();
+          setReplicaMenuOrigin(null);
           cancelReplicaCtxMenuClose();
           if (dismissCtx) {
             window.removeEventListener("click", dismissCtx);
@@ -1387,6 +1396,73 @@ const ProjectPanel: Component = () => {
           setReplicaCtxMenu(null);
           cleanupCtx();
         };
+
+        // #3027 - the halo lives exactly while the replica menu is open, whatever
+        // path closes it.
+        const haloOrigin = createMemo(() => (replicaCtxMenu() ? replicaMenuOrigin() : null));
+        createEffect(on(haloOrigin, (o) => {
+          if (!o) {
+            setHaloBox(null);
+            if (replicaMenuOrigin()) setReplicaMenuOrigin(null);
+            return;
+          }
+          let raf: number | undefined;
+          const measure = () => {
+            raf = undefined;
+            if (haloOrigin() !== o) return;
+            const rect = o.el.getBoundingClientRect();
+            if (!o.el.isConnected || rect.width === 0 || rect.height === 0) {
+              closeReplicaCtxMenu();
+              return;
+            }
+            let left = 0;
+            let top = 0;
+            let right = window.innerWidth;
+            let bottom = window.innerHeight;
+            for (let p = o.el.parentElement; p && p !== document.body; p = p.parentElement) {
+              const cs = getComputedStyle(p);
+              if (cs.overflow === "visible" && cs.overflowX === "visible" && cs.overflowY === "visible") continue;
+              const r = p.getBoundingClientRect();
+              left = Math.max(left, r.left);
+              top = Math.max(top, r.top);
+              right = Math.min(right, r.right);
+              bottom = Math.min(bottom, r.bottom);
+            }
+            const visible =
+              Math.min(right, rect.right) > Math.max(left, rect.left) &&
+              Math.min(bottom, rect.bottom) > Math.max(top, rect.top);
+            if (!visible) {
+              closeReplicaCtxMenu();
+              return;
+            }
+            setHaloBox({
+              clip: { left, top, width: right - left, height: bottom - top },
+              row: { left: rect.left - left, top: rect.top - top, width: rect.width, height: rect.height },
+            });
+          };
+          const schedule = () => {
+            if (raf !== undefined) return;
+            raf = typeof window.requestAnimationFrame === "function"
+              ? window.requestAnimationFrame(measure)
+              : window.setTimeout(measure, 0);
+          };
+          const scrollOpts = { capture: true, passive: true } as const;
+          window.addEventListener("scroll", schedule, scrollOpts);
+          window.addEventListener("resize", schedule);
+          const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+          observer?.observe(o.el);
+          measure();
+          onCleanup(() => {
+            window.removeEventListener("scroll", schedule, scrollOpts);
+            window.removeEventListener("resize", schedule);
+            observer?.disconnect();
+            if (raf !== undefined) {
+              if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(raf);
+              else window.clearTimeout(raf);
+            }
+            setHaloBox(null);
+          });
+        }));
         const groupErrorPinned = () => groupFlyoutOpen() && groupFlyoutHasError();
         const scheduleReplicaCtxMenuClose = () => {
           cancelReplicaCtxMenuClose();
@@ -2727,6 +2803,7 @@ const ProjectPanel: Component = () => {
           resetGroupMenuState();
           resetTitleEditState(); // #1536 - opening any menu closes any in-flight editor
           closeRepoFlyout(); // #943 - the A->B switch never nulls replicaCtxMenu()
+          setReplicaMenuOrigin({ el: e.currentTarget as HTMLElement }); // #3027
           setReplicaCtxMenu({
             kind: "active",
             sessionId: session.id,
@@ -2768,6 +2845,7 @@ const ProjectPanel: Component = () => {
           resetGroupMenuState();
           resetTitleEditState(); // #1536 - opening any menu closes any in-flight editor
           closeRepoFlyout(); // #943 - the A->B switch never nulls replicaCtxMenu()
+          setReplicaMenuOrigin({ el: e.currentTarget as HTMLElement }); // #3027
           setReplicaCtxMenu({ kind: "inactive", wg, replica, x: e.clientX, y: e.clientY });
           startCoManagedMenu(wg, replica, null); // #2408
           resolveRepoRemotes(replicaRepoMenuEntries(wg, replica)); // #943 - one call per repo path
@@ -4242,6 +4320,37 @@ const ProjectPanel: Component = () => {
                 </div>
               </Portal>
             )}
+
+            {/* #3027 - decorative halo around the exact row that opened the replica
+                menu; keyed by opening so tracking only restyles the same node. */}
+            <Show when={haloOrigin()} keyed>
+              {(_origin) => (
+                <Portal>
+                  <Show when={haloBox()}>
+                    <div
+                      class="replica-menu-halo-clip"
+                      aria-hidden="true"
+                      style={{
+                        left: `${haloBox()!.clip.left}px`,
+                        top: `${haloBox()!.clip.top}px`,
+                        width: `${haloBox()!.clip.width}px`,
+                        height: `${haloBox()!.clip.height}px`,
+                      }}
+                    >
+                      <div
+                        class="replica-menu-halo"
+                        style={{
+                          left: `${haloBox()!.row.left}px`,
+                          top: `${haloBox()!.row.top}px`,
+                          width: `${haloBox()!.row.width}px`,
+                          height: `${haloBox()!.row.height}px`,
+                        }}
+                      />
+                    </div>
+                  </Show>
+                </Portal>
+              )}
+            </Show>
 
             {/* Replica context menu — full menu for green/live AND red/exited
                 (red adds the broom); gray (no session) gets Coding Agent + broom (#545) */}
