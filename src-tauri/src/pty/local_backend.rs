@@ -714,7 +714,7 @@ mod tests {
         ] {
             cases.push((bytes.to_vec(), bytes.to_vec(), 0));
         }
-        for opener in [b']', b'P', b'X', b'^', b'_'] {
+        for &opener in b"]PX^_" {
             for cancel in [false, true] {
                 let mut prefix = vec![27, opener];
                 prefix.extend_from_slice(b"literal\x1b[6n");
@@ -5273,7 +5273,7 @@ mod launch_witness_tests {
 /// `spawn_sync` runs the whole builder on the calling test thread. Headless:
 /// no `tauri::App` is built, so no GTK is needed on a display-less runner.
 #[cfg(all(test, unix))]
-mod issue_2683_spawn_sync_search_path_tests {
+mod spawn_sync_search_path_tests {
     use super::*;
     use crate::config::agent_path::SearchPathOverrideGuard;
     use crate::session::manager::SessionManager;
@@ -5495,8 +5495,7 @@ mod issue_2683_spawn_sync_search_path_tests {
         let mut spec = spawn_spec(executable.to_str().unwrap(), cwd.path());
         spec.args = vec![
             "--exact".into(),
-            "pty::local_backend::issue_2683_spawn_sync_search_path_tests::pty_3029_child_fixture"
-                .into(),
+            "pty::local_backend::spawn_sync_search_path_tests::pty_3029_child_fixture".into(),
             "--nocapture".into(),
             "--test-threads=1".into(),
         ];

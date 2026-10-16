@@ -1008,6 +1008,7 @@ impl SessionIoFanout {
     }
 
     /// #3029: the reader's own parser is the only cursor authority. No locks escape.
+    #[cfg(any(windows, test))]
     pub(crate) fn cursor_position_for_reader(
         &self,
         token: &PtyOutputRegistrationToken,
