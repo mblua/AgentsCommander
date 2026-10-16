@@ -37,7 +37,7 @@ jobs:
           printf 'COVERAGE_OUTPUT=%s\n' "$COVERAGE_OUTPUT" >> "$GITHUB_ENV"
 
       - name: Run complete frontend suite with coverage
-        run: npm test -- --coverage
+        run: npm test -- --coverage --maxWorkers=1
 
       - name: Validate frontend LCOV and record provenance
         shell: bash
