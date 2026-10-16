@@ -15,7 +15,10 @@
   <a href="https://github.com/mblua/AgentsCommander/stargazers"><img src="https://img.shields.io/github/stars/mblua/AgentsCommander?style=flat-square&color=00d4ff&label=stars" alt="GitHub stars" /></a>
   <a href="CODE_SIGNING_POLICY.md"><img src="https://img.shields.io/badge/code--signing-pending-00d4ff?style=flat-square&logo=windows" alt="Code signing pending" /></a>
   <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri%202-dea584?style=flat-square&logo=rust" alt="Built with Rust + Tauri 2" /></a>
+  <a href="https://app.codecov.io/gh/mblua/AgentsCommander/tree/main">Frontend coverage <img src="https://codecov.io/gh/mblua/AgentsCommander/branch/main/graph/badge.svg?flag=frontend" alt="Frontend coverage" /></a>
 </p>
+
+Frontend coverage shows the latest successfully processed frontend report. Badges can cache or lag; compare the report commit and date with `main`.
 
 <p align="center">
   <a href="#install-with-a-coding-agent"><b>Install with a Coding Agent</b></a>
