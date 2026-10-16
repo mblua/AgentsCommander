@@ -540,30 +540,42 @@ const ResourceMonitorApp: Component<ResourceMonitorAppProps> = (props) => {
     }
   };
 
-  onMount(async () => {
-    let resourcePreferences = DEFAULT_RESOURCE_PREFERENCES;
-    try {
-      const settings = await SettingsAPI.get();
-      resourcePreferences = {
-        resourceBackoffPolling: settings.resourceBackoffPolling,
-        resourceKeepLastSnapshot: settings.resourceKeepLastSnapshot,
-      };
-      if (!props.embedded) {
-        document.documentElement.classList.toggle("light-theme", settings.themeLight);
-      }
-    } catch (err) {
-      console.error("Failed to load resource-monitor settings:", err);
-    }
-
-    const stopPolling = resourceMonitorStore.startPolling({
-      activeIntervalMs: 2_000,
-      idleIntervalMs: 10_000,
-      backoffIntervalMs: 15_000,
-      backoffWhenIdle: resourcePreferences.resourceBackoffPolling,
-      keepLastSnapshot: resourcePreferences.resourceKeepLastSnapshot,
+  onMount(() => {
+    let disposed = false;
+    let ownedPolling: (() => void) | undefined;
+    onCleanup(() => {
+      disposed = true;
+      const release = ownedPolling;
+      ownedPolling = undefined;
+      release?.();
     });
-    void resourceMonitorStore.refresh();
-    onCleanup(stopPolling);
+    const initialize = async () => {
+      let resourcePreferences = DEFAULT_RESOURCE_PREFERENCES;
+      try {
+        const settings = await SettingsAPI.get();
+        resourcePreferences = {
+          resourceBackoffPolling: settings.resourceBackoffPolling,
+          resourceKeepLastSnapshot: settings.resourceKeepLastSnapshot,
+        };
+        if (disposed) return;
+        if (!props.embedded) {
+          document.documentElement.classList.toggle("light-theme", settings.themeLight);
+        }
+      } catch (err) {
+        console.error("Failed to load resource-monitor settings:", err);
+      }
+
+      if (disposed) return;
+      ownedPolling = resourceMonitorStore.startPolling({
+        activeIntervalMs: 2_000,
+        idleIntervalMs: 10_000,
+        backoffIntervalMs: 15_000,
+        backoffWhenIdle: resourcePreferences.resourceBackoffPolling,
+        keepLastSnapshot: resourcePreferences.resourceKeepLastSnapshot,
+      });
+      void resourceMonitorStore.refresh();
+    };
+    void initialize().catch(err => console.error("Failed to initialize resource monitor:", err));
   });
 
   const snapshot = () => resourceMonitorStore.snapshot;
