@@ -33279,8 +33279,13 @@ mod e2992_p41_owner_tests {
         snapshot.voice_to_text_enabled
     }
 
+    /// A complete, valid base: `defaultShell` and `defaultShellArgs` are required
+    /// fields, so a partial object is a present-but-undecodable base the owner
+    /// must refuse, never a fixture.
     fn voice(enabled: bool) -> Value {
-        json!({ "voiceToTextEnabled": enabled })
+        let mut base = serde_json::to_value(AppSettings::default()).unwrap();
+        base["voiceToTextEnabled"] = json!(enabled);
+        base
     }
 
     fn counts(owner: &SettingsOwner) -> [u64; 3] {
