@@ -786,12 +786,13 @@ pub enum CodingAgentOp {
 /// Partial update for `coding-agent update`. Every field is optional; only the
 /// provided ones change. `envs: Some(vec)` replaces the WHOLE env list
 /// (`Some(empty)` clears it, matching `update_coding_agent_env_settings`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "baseCommand")]
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
@@ -815,6 +816,64 @@ pub struct AgentPatch {
     pub container_image: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub clear_container_image: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentPatchWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, deserialize_with = "crate::config::settings::deserialize_present_command")]
+    pub command: Option<String>,
+    #[serde(default, rename = "baseCommand", deserialize_with = "crate::config::settings::deserialize_present_command")]
+    pub canonical_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envs: Option<Vec<CodingAgentEnv>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolated_home: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_filename: Option<String>,
+    #[serde(default)]
+    pub clear_instructions_filename: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_seed_dest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_seed_enabled: Option<bool>,
+    #[serde(default)]
+    pub clear_config_seed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_kind: Option<SessionBackendKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_image: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub clear_container_image: bool,
+}
+
+impl<'de> Deserialize<'de> for AgentPatch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = AgentPatchWire::deserialize(deserializer)?;
+        let command = crate::config::settings::select_configuration_command(wire.canonical_command.as_deref(), wire.command.as_deref()).map(str::to_owned);
+        Ok(Self {
+            label: wire.label,
+            command,
+            color: wire.color,
+            envs: wire.envs,
+            isolated_home: wire.isolated_home,
+            instructions_filename: wire.instructions_filename,
+            clear_instructions_filename: wire.clear_instructions_filename,
+            config_seed_dest: wire.config_seed_dest,
+            config_seed_enabled: wire.config_seed_enabled,
+            clear_config_seed: wire.clear_config_seed,
+            backend_kind: wire.backend_kind,
+            container_image: wire.container_image,
+            clear_container_image: wire.clear_container_image,
+        })
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -5845,5 +5904,31 @@ mod tests_source_transition_driver {
             .values()
             .any(|intent| intent.source == fixture.source));
         assert!(after.intents.values().any(|intent| intent.source == other));
+    }
+}
+
+#[cfg(test)]
+mod p02_patch_schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn p02_patch_presence_types_and_queue_canonical_wire() {
+        assert!(serde_json::from_value::<AgentPatch>(json!({})).unwrap().command.is_none());
+        let patch: AgentPatch = serde_json::from_value(json!({"baseCommand":"","command":"\t"})).unwrap();
+        assert_eq!(patch.command.as_deref(), Some(""));
+        let op = CodingAgentOp::Update { id: "own".into(), patch };
+        let wire = serde_json::to_value(&op).unwrap();
+        assert_eq!(wire["patch"]["baseCommand"], "");
+        assert!(wire["patch"].get("command").is_none());
+        let decoded: CodingAgentOp = serde_json::from_value(wire).unwrap();
+        match decoded { CodingAgentOp::Update { patch, .. } => assert_eq!(patch.command.as_deref(), Some("")), _ => panic!("update") }
+        for bad in [json!(null), json!(false), json!(9), json!([]), json!({})] {
+            for key in ["command", "baseCommand"] {
+                let mut pair = json!({"baseCommand":"new","command":"old"});
+                pair[key] = bad.clone();
+                assert!(serde_json::from_value::<AgentPatch>(pair).is_err());
+            }
+        }
     }
 }

@@ -262,7 +262,7 @@ pub struct InstallCommands {
 /// removable}` on the frontend. `removable`, `envs`, and `isolated_home` are
 /// serde-guaranteed present (the frontend types them as required);
 /// `instructions_filename` and `config_seed` are optional.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingAgentDefinition {
     /// Stable identity within the catalog. Must match `^[a-z0-9-]+$` and be
@@ -272,6 +272,7 @@ pub struct CodingAgentDefinition {
     pub label: String,
     pub description: String,
     pub color: String,
+    #[serde(rename = "baseCommand")]
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions_filename: Option<String>,
@@ -321,6 +322,63 @@ pub struct CodingAgentDefinition {
     /// and the managed revision hash is taken over this serialization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_commands: Option<InstallCommands>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodingAgentDefinitionWire {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    pub color: String,
+    #[serde(default, deserialize_with = "crate::config::settings::deserialize_present_command")]
+    pub command: Option<String>,
+    #[serde(default, rename = "baseCommand", deserialize_with = "crate::config::settings::deserialize_present_command")]
+    pub canonical_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_filename: Option<String>,
+    #[serde(default)]
+    pub envs: Vec<CodingAgentEnv>,
+    #[serde(default)]
+    pub isolated_home: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_seed: Option<ConfigSeedConfig>,
+    #[serde(default = "default_true")]
+    pub removable: bool,
+    #[serde(default)]
+    pub update_commands: Vec<String>,
+    #[serde(default)]
+    pub auto_update: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_burst: Option<IdleBurstConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_commands: Option<InstallCommands>,
+}
+
+impl<'de> Deserialize<'de> for CodingAgentDefinition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = CodingAgentDefinitionWire::deserialize(deserializer)?;
+        let command = crate::config::settings::select_configuration_command(wire.canonical_command.as_deref(), wire.command.as_deref()).ok_or_else(|| <D::Error as serde::de::Error>::missing_field("baseCommand"))?.to_owned();
+        Ok(Self {
+            key: wire.key,
+            label: wire.label,
+            description: wire.description,
+            color: wire.color,
+            command,
+            instructions_filename: wire.instructions_filename,
+            envs: wire.envs,
+            isolated_home: wire.isolated_home,
+            config_seed: wire.config_seed,
+            removable: wire.removable,
+            update_commands: wire.update_commands,
+            auto_update: wire.auto_update,
+            idle_burst: wire.idle_burst,
+            install_commands: wire.install_commands,
+        })
+    }
 }
 
 /// The manifest file shape: a schema version plus the ordered agent list.
@@ -962,6 +1020,7 @@ const KNOWN_DEFINITION_FIELDS: &[&str] = &[
     "description",
     "color",
     "command",
+    "baseCommand",
     "instructionsFilename",
     "envs",
     "isolatedHome",
@@ -1279,8 +1338,58 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// round trips reproduce the hash and a whitespace-only edit does not count as
 /// a data edit. `serde_json::Value` map iteration and raw bytes are never
 /// consulted.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyDefinitionHash<'a> {
+    key: &'a String,
+    label: &'a String,
+    description: &'a String,
+    color: &'a String,
+    command: &'a String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instructions_filename: &'a Option<String>,
+    #[serde(default)]
+    envs: &'a Vec<CodingAgentEnv>,
+    #[serde(default)]
+    isolated_home: &'a bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config_seed: &'a Option<ConfigSeedConfig>,
+    #[serde(default = "default_true")]
+    removable: &'a bool,
+    #[serde(default)]
+    update_commands: &'a Vec<String>,
+    #[serde(default)]
+    auto_update: &'a bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    idle_burst: &'a Option<IdleBurstConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    install_commands: &'a Option<InstallCommands>,
+}
+
+impl<'a> From<&'a CodingAgentDefinition> for LegacyDefinitionHash<'a> {
+    fn from(value: &'a CodingAgentDefinition) -> Self {
+        Self {
+            key: &value.key,
+            label: &value.label,
+            description: &value.description,
+            color: &value.color,
+            command: &value.command,
+            instructions_filename: &value.instructions_filename,
+            envs: &value.envs,
+            isolated_home: &value.isolated_home,
+            config_seed: &value.config_seed,
+            removable: &value.removable,
+            update_commands: &value.update_commands,
+            auto_update: &value.auto_update,
+            idle_burst: &value.idle_burst,
+            install_commands: &value.install_commands,
+        }
+    }
+}
+
 fn managed_content_sha256(definitions: &[CodingAgentDefinition]) -> String {
-    match serde_json::to_vec(definitions) {
+    let historical: Vec<_> = definitions.iter().map(LegacyDefinitionHash::from).collect();
+    match serde_json::to_vec(&historical) {
         Ok(bytes) => sha256_hex(&bytes),
         Err(error) => {
             log::error!(
@@ -1545,6 +1654,7 @@ const LOCAL_ROW_FIELDS: &[&str] = &[
     "description",
     "color",
     "command",
+    "baseCommand",
     "instructionsFilename",
     "envs",
     "isolatedHome",
@@ -1768,12 +1878,15 @@ fn parse_local_fields(
         };
         fields.color = Some(value.clone());
     }
-    if let Some(value) = object.get("command") {
-        let serde_json::Value::String(value) = value else {
-            return Err(format!("{context}: 'command' must be a string"));
-        };
-        fields.command = Some(value.clone());
+    for name in ["baseCommand", "command"] {
+        if object.get(name).is_some_and(|value| !value.is_string()) {
+            return Err(format!("{context}: '{name}' must be a string"));
+        }
     }
+    fields.command = crate::config::settings::select_configuration_command(
+        object.get("baseCommand").and_then(serde_json::Value::as_str),
+        object.get("command").and_then(serde_json::Value::as_str),
+    ).map(str::to_owned);
     if let Some(value) = object.get("instructionsFilename") {
         fields.instructions_filename = Some(match value {
             serde_json::Value::Null => None,
@@ -3623,6 +3736,7 @@ struct LocalRowWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "baseCommand")]
     command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions_filename: Option<Option<String>>,
@@ -3643,6 +3757,46 @@ struct LocalRowWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     install_commands: Option<Option<InstallCommandsWire>>,
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoricalLocalRowWire<'a> {
+    key: &'a String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remove: &'a Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions_filename: &'a Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    envs: &'a Option<Vec<CodingAgentEnv>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    isolated_home: &'a Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_seed: &'a Option<Option<ConfigSeedWire>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    removable: &'a Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    update_commands: &'a Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_update: &'a Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    idle_burst: &'a Option<Option<IdleBurstConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_commands: &'a Option<Option<InstallCommandsWire>>,
+}
+impl<'a> From<&'a LocalRowWire> for HistoricalLocalRowWire<'a> {
+    fn from(row: &'a LocalRowWire) -> Self {
+        Self { key: &row.key, remove: &row.remove, label: &row.label, description: &row.description, color: &row.color, command: &row.command, instructions_filename: &row.instructions_filename, envs: &row.envs, isolated_home: &row.isolated_home, config_seed: &row.config_seed, removable: &row.removable, update_commands: &row.update_commands, auto_update: &row.auto_update, idle_burst: &row.idle_burst, install_commands: &row.install_commands }
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -3725,8 +3879,7 @@ fn pin_explicit_legacy_fields(
             .contains_key("description")
             .then(|| definition.description.clone()),
         color: raw.contains_key("color").then(|| definition.color.clone()),
-        command: raw
-            .contains_key("command")
+        command: (raw.contains_key("baseCommand") || raw.contains_key("command"))
             .then(|| definition.command.clone()),
         instructions_filename: raw
             .contains_key("instructionsFilename")
@@ -3806,9 +3959,14 @@ fn materialize_complete_legacy_fields(
 /// duplicate member (already rejected by the strict parser), an unknown
 /// field, an invalid definition, a duplicate key or a non-removable missing
 /// shipped key. Nothing is written here.
-fn extract_legacy_local(
+fn extract_legacy_local(source_bytes: &[u8], shipped: &[CodingAgentDefinition]) -> Result<Vec<u8>, String> {
+    extract_legacy_local_mode(source_bytes, shipped, false)
+}
+
+fn extract_legacy_local_mode(
     source_bytes: &[u8],
     shipped: &[CodingAgentDefinition],
+    historical: bool,
 ) -> Result<Vec<u8>, String> {
     let value = parse_strict_json(source_bytes)
         .map_err(|reason| format!("the legacy catalog is not valid JSON ({reason})"))?;
@@ -3907,7 +4065,27 @@ fn extract_legacy_local(
             });
         }
     }
-    Ok(local_layer_bytes(local_rows, Some(order)))
+    if historical {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct HistoricalLayer<'a> {
+            schema_version: u32,
+            agents: Vec<HistoricalLocalRowWire<'a>>,
+            order: Option<Vec<String>>,
+        }
+        let layer = HistoricalLayer { schema_version: CATALOG_SCHEMA_VERSION, agents: local_rows.iter().map(HistoricalLocalRowWire::from).collect(), order: Some(order) };
+        let mut bytes = serde_json::to_vec_pretty(&layer).map_err(|error| error.to_string())?;
+        bytes.push(b'
+');
+        return Ok(bytes);
+    }
+    let bytes = local_layer_bytes(local_rows, Some(order));
+    let mut after: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    crate::config::settings::retain_configuration_commands(&mut after, &value, "key", true, true, false)?;
+    let mut bytes = serde_json::to_vec_pretty(&after).map_err(|error| error.to_string())?;
+    bytes.push(b'
+');
+    Ok(bytes)
 }
 
 /// Execute one migration transaction under the held catalog lock. Order:
@@ -4112,7 +4290,10 @@ fn recover_interrupted_migration(paths: &CatalogPaths) -> Result<Option<DateTime
             Utc::now()
         }
         None => {
-            let recomputed = extract_legacy_local(&backup, &managed_definitions)?;
+            let mut recomputed = extract_legacy_local(&backup, &managed_definitions)?;
+            if sha256_hex(&recomputed) != journal.local_sha256 || recomputed.len() as u64 != journal.local_byte_length {
+                recomputed = extract_legacy_local_mode(&backup, &managed_definitions, true)?;
+            }
             if sha256_hex(&recomputed) != journal.local_sha256
                 || recomputed.len() as u64 != journal.local_byte_length
             {
@@ -4206,6 +4387,13 @@ fn refresh_managed_base(
         return Ok(None);
     }
     let managed_bytes = build_managed_base_bytes(&shipped);
+    let before = read_optional_regular_file(&paths.base, "persisted catalog")?.ok_or("catalog disappeared before refresh")?;
+    let before = parse_strict_json(&before)?;
+    let mut after: serde_json::Value = serde_json::from_slice(&managed_bytes).map_err(|error| error.to_string())?;
+    crate::config::settings::retain_configuration_commands(&mut after, &before, "key", true, true, false)?;
+    let mut managed_bytes = serde_json::to_vec_pretty(&after).map_err(|error| error.to_string())?;
+    managed_bytes.push(b'
+');
     publish_replace(&paths.base, &managed_bytes)?;
     log::info!(
         "[coding-agents] refreshed the managed catalog base revision at {}",
@@ -13074,5 +13262,60 @@ mod tests {
         project_rejection_has_no_donor_and_personal_rejection_keeps_project();
         project_ownership_support_and_unavailable_base_contract();
         builtin_agent_support_ships_only_muse_disabled();
+    }
+}
+
+#[cfg(test)]
+mod p02_catalog_schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn p02_catalog_wire_selection_local_precedence_and_historical_ordered_hash() {
+        let legacy = json!({"key":"own","label":"Own","description":"d","color":"#123456","command":"tool --fixed"});
+        let definition: CodingAgentDefinition = serde_json::from_value(legacy.clone()).unwrap();
+        let historical = br##"[{"key":"own","label":"Own","description":"d","color":"#123456","command":"tool --fixed","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false}]"##;
+        assert_eq!(managed_content_sha256(&[definition.clone()]), sha256_hex(historical));
+        let mut canonical = legacy.clone();
+        canonical["baseCommand"] = json!("tool --fixed");
+        canonical.as_object_mut().unwrap().remove("command");
+        let new_definition: CodingAgentDefinition = serde_json::from_value(canonical.clone()).unwrap();
+        assert_eq!(definition, new_definition);
+        assert_eq!(managed_content_sha256(&[new_definition.clone()]), sha256_hex(historical));
+        assert_ne!(sha256_hex(&serde_json::to_vec(&legacy).unwrap()), sha256_hex(&serde_json::to_vec(&canonical).unwrap()));
+        let wire = serde_json::to_value(&new_definition).unwrap();
+        assert_eq!(wire["baseCommand"], "tool --fixed");
+        assert!(wire.get("command").is_none());
+        let layer = parse_local_layer(br#"{"schemaVersion":1,"agents":[{"key":"own","command":"higher"}]}"#, LayerDescription::Local).unwrap();
+        let composed = compose_local_layer(&[new_definition], &layer, LayerDescription::Local).unwrap();
+        assert_eq!(composed[0].command, "higher");
+        for version in [1, 2] {
+            let root = json!({"schemaVersion":version,"agents":[canonical.clone()]});
+            assert_eq!(parse_independent_catalog(&serde_json::to_vec(&root).unwrap(), true).unwrap().agents[0].command, "tool --fixed");
+        }
+        for bad in [json!(null), json!(false), json!(42), json!([]), json!({})] {
+            for key in ["baseCommand", "command"] {
+                let mut mixed = legacy.clone();
+                mixed["baseCommand"] = json!("valid");
+                mixed[key] = bad.clone();
+                assert!(serde_json::from_value::<CodingAgentDefinition>(mixed).is_err());
+                let patch = json!({"schemaVersion":1,"agents":[{"key":"own","baseCommand":"valid","command":bad.clone()}]});
+                assert!(parse_local_layer(&serde_json::to_vec(&patch).unwrap(), LayerDescription::Local).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn p02_extraction_retains_legacy_and_historical_journal_bytes() {
+        let source = br##"{"schemaVersion":1,"agents":[{"key":"own","label":"Own","description":"d","color":"#123456","command":"tool"}]}"##;
+        let new_bytes = extract_legacy_local(source, &[]).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&new_bytes).unwrap();
+        assert_eq!(value["agents"][0]["baseCommand"], "tool");
+        assert_eq!(value["agents"][0]["command"], "tool");
+        let historical = extract_legacy_local_mode(source, &[], true).unwrap();
+        let old: serde_json::Value = serde_json::from_slice(&historical).unwrap();
+        assert_eq!(old["agents"][0]["command"], "tool");
+        assert!(old["agents"][0].get("baseCommand").is_none());
+        assert_eq!(extract_legacy_local_mode(source, &[], true).unwrap(), historical);
     }
 }
