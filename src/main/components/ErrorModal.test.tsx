@@ -319,6 +319,25 @@ describe("ErrorModal popup mute (#3037)", () => {
     expect(muteBox().disabled).toBe(false);
   });
 
+  it("a set queued behind a pending drain uses the typeId captured at the click", async () => {
+    await mountWith([], [A1, B1]);
+    const drain = deferred<ErrorLogEntry[]>();
+    ipc.drainErrorLogs.mockReturnValueOnce(drain.promise);
+    ipc.ping!();
+    await hop();
+    ipc.setErrorPopupMuted.mockResolvedValueOnce(["A"]);
+    muteBox().click(); // on A, queued behind the drain
+    await hop();
+    expect(ipc.setErrorPopupMuted).not.toHaveBeenCalled();
+    dismissBtn().click();
+    expect(errorModalStore.current).toBe(B1);
+    drain.resolve([]);
+    await hop();
+    expect(ipc.setErrorPopupMuted).toHaveBeenCalledTimes(1);
+    expect(ipc.setErrorPopupMuted).toHaveBeenCalledWith("A", true);
+    expect(muteBox().checked).toBe(false); // B is not muted
+  });
+
   it("a set whose response is lost reconciles from the snapshot", async () => {
     await mountWith([], [A1]);
     ipc.setErrorPopupMuted.mockRejectedValueOnce(new Error("lost"));
