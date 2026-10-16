@@ -28,6 +28,174 @@ use crate::pty::spawn_diagnostics::{self, ChildLiveness, ExitCause, SpawnRecord,
 use crate::pty::watchers::{FrameStamp, ScreenRowsSince};
 use crate::telegram::manager::OutputSenderMap;
 
+// #3029: a single startup transaction, owned by the existing Windows reader.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+enum CursorQueryState {
+    Ground,
+    Escape,
+    Csi,
+    String(bool), // OSC alone also accepts BEL.
+    StringEscape(bool),
+}
+
+#[cfg(windows)]
+struct OneShotCursorQuery {
+    state: CursorQueryState,
+    pending: Vec<u8>,
+    armed: bool,
+}
+
+#[cfg(windows)]
+impl OneShotCursorQuery {
+    fn new() -> Self {
+        Self {
+            state: CursorQueryState::Ground,
+            pending: Vec::with_capacity(3),
+            armed: true,
+        }
+    }
+
+    // The callback sees each preceding segment before the query event and the tail after it.
+    fn feed(&mut self, bytes: &[u8], mut emit: impl FnMut(&[u8], bool)) {
+        if !self.armed {
+            if !bytes.is_empty() {
+                emit(bytes, false);
+            }
+            return;
+        }
+        let mut output = Vec::with_capacity(bytes.len() + 3);
+        for &byte in bytes {
+            if !self.armed {
+                output.push(byte);
+                continue;
+            }
+            match (self.pending.len(), byte) {
+                (1, b'[') => {
+                    self.pending.push(byte);
+                    self.state = CursorQueryState::Csi;
+                    continue;
+                }
+                (2, b'6') => {
+                    self.pending.push(byte);
+                    continue;
+                }
+                (3, b'n') => {
+                    self.pending.clear();
+                    self.armed = false;
+                    if !output.is_empty() {
+                        emit(&output, false);
+                        output.clear();
+                    }
+                    emit(&[], true);
+                    continue;
+                }
+                _ => output.append(&mut self.pending),
+            }
+            use CursorQueryState::*;
+            self.state = match self.state {
+                String(_) | StringEscape(_) if byte == 0x18 || byte == 0x1a => Ground,
+                String(osc) | StringEscape(osc) if byte == 0x07 && osc => Ground,
+                String(osc) if byte == 0x1b => StringEscape(osc),
+                StringEscape(_) if byte == 0x5c => Ground,
+                StringEscape(osc) if byte == 0x1b => StringEscape(osc),
+                String(osc) | StringEscape(osc) => String(osc),
+                _ if byte == 0x18 || byte == 0x1a => Ground,
+                _ if byte == 0x1b => {
+                    self.pending.push(byte);
+                    Escape
+                }
+                Escape => match byte {
+                    b']' => String(true),
+                    b'P' | b'X' | b'^' | b'_' => String(false),
+                    b'[' => Csi,
+                    _ => Ground,
+                },
+                Csi if (0x40..=0x7e).contains(&byte) => Ground,
+                Csi => Csi,
+                Ground => Ground,
+            };
+            if byte != 0x1b || matches!(self.state, String(_) | StringEscape(_)) {
+                output.push(byte);
+            }
+        }
+        if !output.is_empty() {
+            emit(&output, false);
+        }
+    }
+
+    fn finish(&mut self, mut output: impl FnMut(&[u8])) {
+        if !self.pending.is_empty() {
+            output(&self.pending);
+            self.pending.clear();
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+#[derive(Default)]
+struct CursorReplyObserver {
+    consumed: AtomicUsize,
+    written: AtomicUsize,
+    finished: AtomicBool,
+}
+
+#[cfg(windows)]
+fn write_cursor_reply(
+    writer: &std::sync::Weak<Mutex<Box<dyn Write + Send>>>,
+    position: Option<(u16, u16)>,
+) -> std::io::Result<()> {
+    let (row, col) = position.ok_or_else(|| std::io::Error::other("cursor unavailable"))?;
+    let writer = writer
+        .upgrade()
+        .ok_or_else(|| std::io::Error::other("cursor writer retired"))?;
+    let mut writer = writer
+        .lock()
+        .map_err(|_| std::io::Error::other("cursor writer poisoned"))?;
+    writer.write_all(format!("\x1b[{row};{col}R").as_bytes())?;
+    writer.flush()
+}
+
+#[cfg(windows)]
+fn pump_cursor_query(
+    reader: &mut dyn Read,
+    mut raw: impl FnMut(&[u8]),
+    mut output: impl FnMut(&[u8]),
+    mut reply: impl FnMut() -> std::io::Result<()>,
+    #[cfg(test)] observer: Option<&CursorReplyObserver>,
+) {
+    let mut query = OneShotCursorQuery::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                raw(&buf[..n]);
+                query.feed(&buf[..n], |segment, consumed| {
+                    if consumed {
+                        #[cfg(test)]
+                        if let Some(observer) = observer { observer.consumed.fetch_add(1, Ordering::SeqCst); }
+                        match reply() {
+                            Ok(()) => {
+                                #[cfg(test)]
+                                if let Some(observer) = observer { observer.written.fetch_add(1, Ordering::SeqCst); }
+                            }
+                            Err(error) => log::warn!("[pty] startup cursor reply failed: {error}; retaining drainer and Stop"),
+                        }
+                    } else {
+                        output(segment);
+                    }
+                });
+            }
+        }
+    }
+    query.finish(&mut output);
+    #[cfg(test)]
+    if let Some(observer) = observer {
+        observer.finished.store(true, Ordering::SeqCst);
+    }
+}
+
 struct PtyInstance {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -521,6 +689,572 @@ fn git_guard_file_matches(path: &Path, content: &[u8]) -> bool {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    #[test]
+    fn issue_3029_cursor_query_stream_contract() {
+        let mut cases: Vec<(Vec<u8>, Vec<u8>, usize)> = vec![
+            (b"\x1b[6n".to_vec(), vec![], 1),
+            (
+                b"before\x1b[6nafter\x1b[6n".to_vec(),
+                b"beforeafter\x1b[6n".to_vec(),
+                1,
+            ),
+        ];
+        for bytes in [
+            &b"plain \xc3\xa9"[..],
+            b"\x1b[?6n",
+            b"\x1b[6 n",
+            b"\x1b[16n",
+            b"\x1b[6\x07n",
+            b"\x1b",
+            b"\x1b[",
+            b"\x1b[6",
+            b"\x1b[6\x18n",
+            b"\x1b[6\x1an",
+            b"\xc2\x9b6n",
+        ] {
+            cases.push((bytes.to_vec(), bytes.to_vec(), 0));
+        }
+        for opener in [b']', b'P', b'X', b'^', b'_'] {
+            for cancel in [false, true] {
+                let mut prefix = vec![27, opener];
+                prefix.extend_from_slice(b"literal\x1b[6n");
+                if cancel {
+                    prefix.push(0x18);
+                } else {
+                    prefix.extend_from_slice(&[27, 92]);
+                }
+                let mut input = prefix.clone();
+                input.extend_from_slice(b"\x1b[6n");
+                cases.push((input, prefix, 1));
+            }
+        }
+        cases.push((
+            b"\x1b]title\x1b[6n\x07\x1b[6n".to_vec(),
+            b"\x1b]title\x1b[6n\x07".to_vec(),
+            1,
+        ));
+        cases.push((
+            b"\x1bP\x07\x1b[6n\x1a\x1b[6n".to_vec(),
+            b"\x1bP\x07\x1b[6n\x1a".to_vec(),
+            1,
+        ));
+        cases.push((b"\x1b\x1b[6n".to_vec(), vec![27], 1));
+        for (input, expected, replies) in cases {
+            // Every two-part split, plus all bytewise partitions of the four-byte query.
+            for split in 0..=input.len() {
+                let mut filter = OneShotCursorQuery::new();
+                let mut actual = vec![];
+                let mut count = 0;
+                for chunk in [&input[..split], &input[split..]] {
+                    filter.feed(chunk, |bytes, query| {
+                        actual.extend_from_slice(bytes);
+                        count += usize::from(query);
+                    });
+                    assert!(filter.pending.len() <= 3);
+                }
+                filter.finish(|bytes| actual.extend_from_slice(bytes));
+                assert_eq!(
+                    (actual, count),
+                    (expected.clone(), replies),
+                    "input {input:?}, split {split}"
+                );
+            }
+        }
+        for partitions in 0..8 {
+            let mut filter = OneShotCursorQuery::new();
+            let mut count = 0;
+            let mut output = vec![];
+            let mut start = 0;
+            for end in 1..=4 {
+                if end == 4 || partitions & (1 << (end - 1)) != 0 {
+                    filter.feed(&b"\x1b[6n"[start..end], |bytes, query| {
+                        output.extend_from_slice(bytes);
+                        count += usize::from(query);
+                    });
+                    assert!(filter.pending.len() <= 3);
+                    start = end;
+                }
+            }
+            assert_eq!(count, 1);
+            assert!(output.is_empty());
+        }
+    }
+
+    struct CursorTestWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        fail: u8,
+    }
+    impl Write for CursorTestWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let mut saved = self.bytes.lock().unwrap();
+            if self.fail == 1 && !saved.is_empty() {
+                return Err(std::io::Error::other("partial"));
+            }
+            let n = if self.fail == 1 { 1 } else { bytes.len() };
+            saved.extend_from_slice(&bytes[..n]);
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.fail == 2 {
+                Err(std::io::Error::other("flush"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn issue_3029_cursor_reply_order_and_failure() {
+        use std::sync::mpsc;
+        // A channel only in the fake: caller-controlled EOF/Stop proves failure retains the drainer.
+        struct Frames(mpsc::Receiver<Vec<u8>>);
+        impl Read for Frames {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                match self.0.recv_timeout(Duration::from_secs(5)) {
+                    Ok(frame) => {
+                        out[..frame.len()].copy_from_slice(&frame);
+                        Ok(frame.len())
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => Ok(0),
+                    Err(error) => Err(std::io::Error::other(error)),
+                }
+            }
+        }
+        for fail in 0..5 {
+            let saved = Arc::new(Mutex::new(vec![]));
+            let original: Arc<Mutex<Box<dyn Write + Send>>> =
+                Arc::new(Mutex::new(Box::new(CursorTestWriter {
+                    bytes: saved.clone(),
+                    fail,
+                })));
+            let weak = Arc::downgrade(&original);
+            let replacement_bytes = Arc::new(Mutex::new(vec![]));
+            let replacement: Arc<Mutex<Box<dyn Write + Send>>> =
+                Arc::new(Mutex::new(Box::new(CursorTestWriter {
+                    bytes: replacement_bytes.clone(),
+                    fail: 0,
+                })));
+            let mut map = HashMap::from([(Uuid::nil(), original)]);
+            // An already upgraded original remains valid, never redirects to the replacement.
+            let retained = if fail == 4 { None } else { weak.upgrade() };
+            map.insert(Uuid::nil(), replacement);
+            let fanout = SessionIoFanout::new(
+                Arc::new(Mutex::new(HashMap::new())),
+                IdleDetector::new(|_| {}, |_| {}),
+                None,
+            );
+            let id = Uuid::new_v4();
+            let token = fanout
+                .register_session_for_test(id, crate::session::profile::IdleTuning::DEFAULT, 24, 80)
+                .unwrap();
+            let observer = Arc::new(CursorReplyObserver::default());
+            let raw = Arc::new(Mutex::new(vec![]));
+            let output = Arc::new(Mutex::new(vec![]));
+            let (tx, rx) = mpsc::channel();
+            let (seen_tx, seen_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let observed = observer.clone();
+            let bytes = saved.clone();
+            let raw_copy = raw.clone();
+            let out = output.clone();
+            let worker = std::thread::spawn(move || {
+                pump_cursor_query(
+                    &mut Frames(rx),
+                    |chunk| raw_copy.lock().unwrap().extend_from_slice(chunk),
+                    |chunk| {
+                        fanout.handle_output(&token, &id.to_string(), chunk.to_vec());
+                        out.lock().unwrap().extend_from_slice(chunk);
+                        if chunk.ends_with(b"TAIL\x1b[6n") || chunk == b"FINAL" {
+                            seen_tx.send(chunk.to_vec()).unwrap();
+                        }
+                    },
+                    || {
+                        assert_eq!(&*out.lock().unwrap(), b"\x1b[3;4Hhi");
+                        assert_eq!(fanout.cursor_position_for_reader(&token), Some((3, 6)));
+                        if fail == 3 {
+                            fanout.remove_session(id);
+                            fanout
+                                .register_session_for_test(
+                                    id,
+                                    crate::session::profile::IdleTuning::DEFAULT,
+                                    24,
+                                    80,
+                                )
+                                .unwrap();
+                        }
+                        let result =
+                            write_cursor_reply(&weak, fanout.cursor_position_for_reader(&token));
+                        assert!(weak
+                            .upgrade()
+                            .is_none_or(|writer| writer.try_lock().is_ok()));
+                        result
+                    },
+                    Some(&observed),
+                );
+                if fail == 3 {
+                    let replacement = fanout.registration_token_for_session(id).unwrap();
+                    assert_eq!(
+                        fanout.cursor_position_for_reader(&replacement),
+                        Some((1, 1))
+                    );
+                    assert_eq!(fanout.get_screen_snapshot(id).unwrap().sequence, 0);
+                }
+                drop(retained);
+                done_tx.send(()).unwrap();
+            });
+            tx.send(b"\x1b[3;4Hhi\x1b[6nTAIL\x1b[6n".to_vec()).unwrap();
+            seen_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("tail after reply failure");
+            assert_eq!(observer.consumed.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                observer.written.load(Ordering::SeqCst),
+                usize::from(fail == 0)
+            );
+            assert!(!observer.finished.load(Ordering::SeqCst));
+            assert!(
+                map.contains_key(&Uuid::nil()),
+                "reader must not clean up the instance"
+            );
+            tx.send(b"FINAL".to_vec()).unwrap();
+            seen_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("Stop must retain final-frame drainer");
+            drop(tx);
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("EOF finishes reader");
+            worker.join().unwrap();
+            assert!(observer.finished.load(Ordering::SeqCst));
+            assert_eq!(&*output.lock().unwrap(), b"\x1b[3;4HhiTAIL\x1b[6nFINAL");
+            assert_eq!(&*raw.lock().unwrap(), b"\x1b[3;4Hhi\x1b[6nTAIL\x1b[6nFINAL");
+            assert!(replacement_bytes.lock().unwrap().is_empty());
+            match fail {
+                0 => assert_eq!(&*bytes.lock().unwrap(), b"\x1b[3;6R"),
+                1 => assert_eq!(&*bytes.lock().unwrap(), &[27]),
+                2 => assert_eq!(&*bytes.lock().unwrap(), b"\x1b[3;6R"),
+                _ => assert!(bytes.lock().unwrap().is_empty()),
+            }
+        }
+    }
+
+    #[test]
+    fn issue_3029_cursor_query_positive_control() {
+        struct Startup {
+            phase: u8,
+            reply: Arc<Mutex<Vec<u8>>>,
+        }
+        impl Read for Startup {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                let bytes: &[u8] = match self.phase {
+                    0 => b"\x1b[6n",
+                    1 => {
+                        let deadline = Instant::now() + Duration::from_millis(100);
+                        while &*self.reply.lock().unwrap() != b"\x1b[1;1R" {
+                            if Instant::now() >= deadline {
+                                self.phase = 2;
+                                return Ok(0);
+                            }
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        b"READY"
+                    }
+                    _ => return Ok(0),
+                };
+                self.phase += 1;
+                out[..bytes.len()].copy_from_slice(bytes);
+                Ok(bytes.len())
+            }
+        }
+        let saved = Arc::new(Mutex::new(vec![]));
+        let mut control = Startup {
+            phase: 0,
+            reply: saved.clone(),
+        };
+        let mut output = vec![];
+        control.read_to_end(&mut output).unwrap();
+        assert_eq!(
+            &output, b"\x1b[6n",
+            "fixture must withhold READY without CPR"
+        );
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(CursorTestWriter {
+                bytes: saved.clone(),
+                fail: 0,
+            })));
+        let observer = CursorReplyObserver::default();
+        let mut output = vec![];
+        pump_cursor_query(
+            &mut Startup {
+                phase: 0,
+                reply: saved,
+            },
+            |_| {},
+            |bytes| output.extend_from_slice(bytes),
+            || write_cursor_reply(&Arc::downgrade(&writer), Some((1, 1))),
+            Some(&observer),
+        );
+        assert_eq!(&output, b"READY");
+        assert_eq!(observer.consumed.load(Ordering::SeqCst), 1);
+        assert_eq!(observer.written.load(Ordering::SeqCst), 1);
+        assert!(observer.finished.load(Ordering::SeqCst));
+    }
+
+    fn cursor_test_backend() -> LocalProcessBackend {
+        let sessions = Arc::new(tokio::sync::RwLock::new(
+            crate::session::manager::SessionManager::new(),
+        ));
+        LocalProcessBackend::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            IdleDetector::new(|_| {}, |_| {}),
+            GitWatcher::new_headless_for_tests(sessions),
+            None,
+        )
+    }
+
+    fn cursor_test_spec(cwd: &Path, payload: &str) -> BackendSpawnSpec {
+        BackendSpawnSpec {
+            id: Uuid::new_v4(),
+            agent_id: None,
+            coding_agent: None,
+            cmd: "cmd.exe".into(),
+            args: vec!["/D".into(), "/Q".into(), "/C".into(), payload.into()],
+            resolved_agent_host_shell: None,
+            cwd: cwd.to_string_lossy().into_owned(),
+            selected_cwd: None,
+            cols: 80,
+            rows: 24,
+            container_image: None,
+            configured_env: vec![],
+            env_remove_keys: vec![],
+            env_unset: vec![],
+            extra_env: vec![],
+            idle_tuning: crate::session::profile::IdleTuning::DEFAULT,
+            output_target: crate::pty::output::PtyOutputTarget::noop(),
+            resource_registration: None,
+            logical_resource_slot: None,
+            container_credential: None,
+            container_repo_mounts: vec![],
+            launch_witness: Default::default(),
+        }
+    }
+
+    fn cursor_wait(mut predicate: impl FnMut() -> bool, description: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !predicate() {
+            assert!(Instant::now() < deadline, "deadline: {description}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    struct CursorSessionCleanup {
+        backend: LocalProcessBackend,
+        id: Uuid,
+        process: windows_sys::Win32::Foundation::HANDLE,
+    }
+    impl CursorSessionCleanup {
+        fn new(backend: &LocalProcessBackend, id: Uuid) -> Self {
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+            };
+            let pid = backend.ptys.lock().unwrap()[&id]
+                .child
+                .as_ref()
+                .unwrap()
+                .process_id()
+                .unwrap();
+            let process = unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                    0,
+                    pid,
+                )
+            };
+            if process.is_null() {
+                backend.kill(id).expect("cleanup after OpenProcess failure");
+                panic!("cannot capture own child PID {pid}");
+            }
+            eprintln!("I3029 child PID={pid}");
+            Self {
+                backend: backend.clone(),
+                id,
+                process,
+            }
+        }
+        fn stop(&mut self) {
+            self.backend.kill(self.id).expect("Stop cleanup");
+            assert!(!self.backend.ptys.lock().unwrap().contains_key(&self.id));
+            assert!(self
+                .backend
+                .fanout
+                .registration_token_for_session(self.id)
+                .is_none());
+            assert_eq!(
+                unsafe {
+                    windows_sys::Win32::System::Threading::WaitForSingleObject(self.process, 5000)
+                },
+                windows_sys::Win32::Foundation::WAIT_OBJECT_0,
+                "own child must be terminated"
+            );
+        }
+    }
+    impl Drop for CursorSessionCleanup {
+        fn drop(&mut self) {
+            // Cleanup is always driven by the caller, including when an assertion unwinds.
+            let result = self.backend.kill(self.id);
+            let exited = unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(self.process, 5000)
+            };
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.process);
+            }
+            if std::thread::panicking() {
+                eprintln!("I3029 cleanup result={result:?}, wait={exited}");
+            } else {
+                assert!(result.is_ok());
+                assert_eq!(exited, windows_sys::Win32::Foundation::WAIT_OBJECT_0);
+            }
+        }
+    }
+
+    fn cursor_marker(backend: &LocalProcessBackend, id: Uuid, marker: &str) -> bool {
+        backend
+            .fanout
+            .get_screen_snapshot(id)
+            .is_some_and(|snapshot| String::from_utf8_lossy(&snapshot.data).contains(marker))
+    }
+
+    fn cursor_host_observer(observer: &CursorReplyObserver) {
+        // cmd's version banner supplies the exact build without adding a product OS API.
+        let version = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "ver"])
+            .output()
+            .unwrap();
+        assert!(version.status.success());
+        let version = String::from_utf8_lossy(&version.stdout);
+        let consumed = observer.consumed.load(Ordering::SeqCst);
+        let written = observer.written.load(Ordering::SeqCst);
+        eprintln!("I3029 {version} consumed={consumed} written={written}");
+        if version.contains("10.0.26300.9711") {
+            assert_eq!(
+                (consumed, written),
+                (1, 1),
+                "host B requires autonomous CPR"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_3029_windows_hidden_startup_and_late_attach() {
+        let cwd = tempfile::tempdir().unwrap();
+        let backend = cursor_test_backend();
+        let spec = cursor_test_spec(cwd.path(), "echo AC3029_READY");
+        let id = spec.id;
+        let observer = Arc::new(CursorReplyObserver::default());
+        backend
+            .cursor_observers
+            .lock()
+            .unwrap()
+            .insert(id, observer.clone());
+        backend.spawn_sync(spec).unwrap();
+        let mut cleanup = CursorSessionCleanup::new(&backend, id);
+        cursor_wait(
+            || cursor_marker(&backend, id, "AC3029_READY"),
+            "hidden first paint",
+        );
+        cursor_wait(
+            || {
+                matches!(
+                    backend.probe_child(id),
+                    ChildLiveness::Exited {
+                        code: 0,
+                        success: true
+                    }
+                )
+            },
+            "exit0 before attach",
+        );
+        cursor_host_observer(&observer);
+        let attached = backend
+            .fanout
+            .activate_terminal_output(id, "3029-test", true)
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&attached.data).contains("AC3029_READY"));
+        assert!(!attached.data.windows(4).any(|bytes| bytes == b"\x1b[6n"));
+        cleanup.stop();
+    }
+
+    #[test]
+    fn issue_3029_windows_input_resize_stop() {
+        let cwd = tempfile::tempdir().unwrap();
+        let backend = cursor_test_backend();
+        for stop_while_waiting in [false, true] {
+            let spec = cursor_test_spec(
+                cwd.path(),
+                "echo AC3029_READY & set /p AC3029_INPUT= & echo AC3029_AFTER",
+            );
+            let id = spec.id;
+            let observer = Arc::new(CursorReplyObserver::default());
+            backend
+                .cursor_observers
+                .lock()
+                .unwrap()
+                .insert(id, observer.clone());
+            backend.spawn_sync(spec).unwrap();
+            let mut cleanup = CursorSessionCleanup::new(&backend, id);
+            cursor_wait(
+                || cursor_marker(&backend, id, "AC3029_READY"),
+                "ready before attach/input",
+            );
+            cursor_host_observer(&observer);
+            backend.resize(id, 73, 19).unwrap();
+            cursor_wait(
+                || backend.fanout.get_pty_size(id) == Some((19, 73)),
+                "parser resize",
+            );
+            assert_eq!(
+                backend.ptys.lock().unwrap()[&id]
+                    .master
+                    .lock()
+                    .unwrap()
+                    .get_size()
+                    .map(|s| (s.rows, s.cols))
+                    .unwrap(),
+                (19, 73)
+            );
+            let snapshot = backend
+                .fanout
+                .activate_terminal_output(id, "3029-input", true)
+                .unwrap()
+                .unwrap();
+            assert!(String::from_utf8_lossy(&snapshot.data).contains("AC3029_READY"));
+            assert!(!snapshot.data.windows(4).any(|bytes| bytes == b"\x1b[6n"));
+            if !stop_while_waiting {
+                write_to_local_pty(&backend.ptys, id, b"ok\r\n").unwrap();
+                cursor_wait(
+                    || cursor_marker(&backend, id, "AC3029_AFTER"),
+                    "input delivered",
+                );
+                cursor_wait(
+                    || {
+                        matches!(
+                            backend.probe_child(id),
+                            ChildLiveness::Exited {
+                                code: 0,
+                                success: true
+                            }
+                        )
+                    },
+                    "input exit0",
+                );
+            } else {
+                assert!(matches!(backend.probe_child(id), ChildLiveness::Alive));
+            }
+            cleanup.stop();
+        }
+    }
+
     use std::fs;
     use std::os::windows::fs::OpenOptionsExt;
     use std::sync::{Arc, Barrier};
@@ -637,6 +1371,8 @@ pub struct LocalProcessBackend {
     /// its own observer; there is no global to reset and no cross-test race.
     #[cfg(test)]
     pre_pty_attempts: Arc<AtomicUsize>,
+    #[cfg(all(test, windows))]
+    cursor_observers: Arc<Mutex<HashMap<Uuid, Arc<CursorReplyObserver>>>>,
 }
 
 fn write_to_local_pty(
@@ -1483,6 +2219,8 @@ impl Clone for LocalProcessBackend {
             git_watcher: Arc::clone(&self.git_watcher),
             #[cfg(test)]
             pre_pty_attempts: Arc::clone(&self.pre_pty_attempts),
+            #[cfg(all(test, windows))]
+            cursor_observers: Arc::clone(&self.cursor_observers),
         }
     }
 }
@@ -1500,6 +2238,8 @@ impl LocalProcessBackend {
             git_watcher,
             #[cfg(test)]
             pre_pty_attempts: Arc::new(AtomicUsize::new(0)),
+            #[cfg(all(test, windows))]
+            cursor_observers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1711,6 +2451,11 @@ impl LocalProcessBackend {
             rendered: Arc::clone(&rendered),
         };
 
+        #[cfg(windows)]
+        let cursor_writer = Arc::downgrade(&instance.writer);
+        #[cfg(all(test, windows))]
+        let cursor_observer = self.cursor_observers.lock().unwrap().get(&id).cloned();
+
         self.ptys
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1775,37 +2520,60 @@ impl LocalProcessBackend {
         let fanout = self.fanout.clone();
         let gate_backend = self.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        // #942 - time-to-first-output and the retained head bytes. Hot
-                        // path: once the first byte is stamped and the head buffer is
-                        // full this is two relaxed loads and one relaxed add.
-                        record.note_output(&buf[..n]);
-                        fanout.handle_output(&output_token, &session_id_str, buf[..n].to_vec());
-                        // #973 (B) - has the child PAINTED anything yet? Asked of the real vt100
-                        // parser that `handle_output` has just fed this chunk to, which is why it
-                        // is asked after it and not before.
-                        //
-                        // Once the child has painted, this is a single relaxed load per chunk and
-                        // nothing else: no lock, no scan, no allocation. Before it has, it is one
-                        // uncontended lock and a bounded scan of the grid - and it REPLACED a
-                        // second `from_utf8_lossy` + `strip_ansi_csi` over the whole chunk, which
-                        // `handle_output` was already paying for the idle detector on the very
-                        // same bytes. One less chunk-sized allocation per chunk, not one more.
-                        //
-                        // Locks: the query takes `screen_parsers` and RELEASES it before
-                        // `open_startup_gate` takes `ptys`. The two are sequential, never nested,
-                        // so the order stays `ptys -> startup_gate -> size -> master`.
-                        if !rendered.load(Ordering::Relaxed)
-                            && fanout.has_rendered_visible_content(id)
-                        {
-                            gate_backend.open_startup_gate(id);
-                        }
+            #[cfg(windows)]
+            pump_cursor_query(
+                &mut reader,
+                |bytes| record.note_output(bytes),
+                |bytes| {
+                    fanout.handle_output(&output_token, &session_id_str, bytes.to_vec());
+                    if !rendered.load(Ordering::Relaxed) && fanout.has_rendered_visible_content(id)
+                    {
+                        gate_backend.open_startup_gate(id);
                     }
-                    Err(_) => break,
+                },
+                || {
+                    write_cursor_reply(
+                        &cursor_writer,
+                        fanout.cursor_position_for_reader(&output_token),
+                    )
+                },
+                #[cfg(test)]
+                cursor_observer.as_deref(),
+            );
+            #[cfg(not(windows))]
+            {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            // #942 - time-to-first-output and the retained head bytes. Hot
+                            // path: once the first byte is stamped and the head buffer is
+                            // full this is two relaxed loads and one relaxed add.
+                            record.note_output(&buf[..n]);
+                            fanout.handle_output(&output_token, &session_id_str, buf[..n].to_vec());
+                            // #973 (B) - has the child PAINTED anything yet? Asked of the real vt100
+                            // parser that `handle_output` has just fed this chunk to, which is why it
+                            // is asked after it and not before.
+                            //
+                            // Once the child has painted, this is a single relaxed load per chunk and
+                            // nothing else: no lock, no scan, no allocation. Before it has, it is one
+                            // uncontended lock and a bounded scan of the grid - and it REPLACED a
+                            // second `from_utf8_lossy` + `strip_ansi_csi` over the whole chunk, which
+                            // `handle_output` was already paying for the idle detector on the very
+                            // same bytes. One less chunk-sized allocation per chunk, not one more.
+                            //
+                            // Locks: the query takes `screen_parsers` and RELEASES it before
+                            // `open_startup_gate` takes `ptys`. The two are sequential, never nested,
+                            // so the order stays `ptys -> startup_gate -> size -> master`.
+                            if !rendered.load(Ordering::Relaxed)
+                                && fanout.has_rendered_visible_content(id)
+                            {
+                                gate_backend.open_startup_gate(id);
+                            }
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
         });
@@ -4548,6 +5316,240 @@ mod issue_2683_spawn_sync_search_path_tests {
         }
     }
 
+    struct LaunchCleanup<'a> {
+        backend: &'a LocalProcessBackend,
+        id: Uuid,
+    }
+    impl Drop for LaunchCleanup<'_> {
+        fn drop(&mut self) {
+            let result = self.backend.kill(self.id);
+            if std::thread::panicking() {
+                eprintln!("I3029 cleanup: {result:?}");
+            } else {
+                result.expect("cleanup own PTY");
+            }
+        }
+    }
+
+    fn await_launch(backend: &LocalProcessBackend, spec: BackendSpawnSpec, marker: &str) {
+        let id = spec.id;
+        backend.spawn_sync(spec).expect("Unix contract spawn");
+        let _cleanup = LaunchCleanup { backend, id };
+        let pid = backend.ptys.lock().unwrap()[&id]
+            .child
+            .as_ref()
+            .unwrap()
+            .process_id()
+            .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let painted = backend
+                .fanout
+                .get_screen_snapshot(id)
+                .is_some_and(|s| String::from_utf8_lossy(&s.data).contains(marker));
+            if painted
+                && matches!(
+                    backend.probe_child(id),
+                    ChildLiveness::Exited {
+                        code: 0,
+                        success: true
+                    }
+                )
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "marker {marker} / exit0 missing for PID {pid}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        backend.kill(id).expect("kill after exit");
+        assert!(!backend.ptys.lock().unwrap().contains_key(&id));
+        assert!(backend.fanout.registration_token_for_session(id).is_none());
+        assert_eq!(
+            unsafe { libc::kill(pid as libc::pid_t, 0) },
+            -1,
+            "own child leaked"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    fn script(path: &std::path::Path, text: &str, executable: bool) {
+        std::fs::write(path, text).unwrap();
+        std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn issue_3029_unix_launch_contracts() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("cwd");
+        let bin = cwd.join("bin");
+        let child = cwd.join("nested");
+        let decoy = root.path().join("ambient");
+        for dir in [&bin, &child, &decoy] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let probe = "ac3029-probe";
+        script(&decoy.join(probe), "#!/bin/sh\necho WRONG_AMBIENT\n", true);
+        let _search_path = SearchPathOverrideGuard::new(decoy.as_os_str());
+        let backend = test_backend();
+        for (index, program, working_dir, path) in [
+            (0, "./bin/ac3029-probe", &cwd, "/usr/bin:/bin"),
+            (1, "../bin/ac3029-probe", &child, "/usr/bin:/bin"),
+            (2, "ac3029-probe", &cwd, "bin"),
+        ] {
+            let marker = format!("AC3029_RELATIVE_{index}");
+            script(
+                &bin.join(probe),
+                &format!("#!/bin/sh\necho {marker}\n"),
+                true,
+            );
+            let mut spec = spawn_spec(program, working_dir);
+            spec.configured_env.push(("PATH".into(), path.into()));
+            await_launch(&backend, spec, &marker);
+        }
+        let mut shell = spawn_spec("/bin/sh", &cwd);
+        shell.args = vec!["-c".into(), "printf '%s' \"$SHELL\"".into()];
+        shell
+            .configured_env
+            .push(("SHELL".into(), "AC3029_SHELL_SENTINEL".into()));
+        await_launch(&backend, shell, "AC3029_SHELL_SENTINEL");
+        script(
+            &bin.join("not-executable"),
+            "#!/bin/sh\necho UNEXPECTED\n",
+            false,
+        );
+        for target in ["./bin", "./bin/not-executable"] {
+            let spec = spawn_spec(target, &cwd);
+            let id = spec.id;
+            let witness = spec.launch_witness.clone();
+            let error = backend
+                .spawn_sync(spec)
+                .expect_err("invalid executable must fail");
+            assert!(matches!(error, AppError::PtyError(_)), "{error}");
+            assert!(!error.to_string().is_empty());
+            assert!(!witness.launched());
+            assert!(!backend.ptys.lock().unwrap().contains_key(&id));
+            assert!(backend.fanout.registration_token_for_session(id).is_none());
+        }
+    }
+
+    struct SignalMaskGuard(libc::sigset_t);
+    impl SignalMaskGuard {
+        fn block_usr1() -> Self {
+            unsafe {
+                let mut block = std::mem::zeroed();
+                let mut original = std::mem::zeroed();
+                assert_eq!(libc::sigemptyset(&mut block), 0);
+                assert_eq!(libc::sigaddset(&mut block, libc::SIGUSR1), 0);
+                assert_eq!(
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &block, &mut original),
+                    0
+                );
+                Self(original)
+            }
+        }
+    }
+    impl Drop for SignalMaskGuard {
+        fn drop(&mut self) {
+            assert_eq!(
+                unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut()) },
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn pty_3029_child_fixture() {
+        if std::env::var("AC3029_CHILD_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+        let blocked = unsafe {
+            let mut current = std::mem::zeroed();
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), &mut current),
+                0
+            );
+            libc::sigismember(&current, libc::SIGUSR1)
+        };
+        assert_eq!(blocked, 0);
+        println!(
+            "AC3029_SHELL={} SIGUSR1_BLOCKED={blocked}",
+            std::env::var("SHELL").unwrap()
+        );
+    }
+
+    #[test]
+    fn issue_3029_unix_child_inherits_shell_and_unblocked_signals() {
+        let cwd = tempfile::tempdir().unwrap();
+        let backend = test_backend();
+        let executable = std::env::current_exe().unwrap();
+        let mut spec = spawn_spec(executable.to_str().unwrap(), cwd.path());
+        spec.args = vec![
+            "--exact".into(),
+            "pty::local_backend::issue_2683_spawn_sync_search_path_tests::pty_3029_child_fixture"
+                .into(),
+            "--nocapture".into(),
+            "--test-threads=1".into(),
+        ];
+        spec.configured_env = vec![
+            ("AC3029_CHILD_FIXTURE".into(), "1".into()),
+            ("SHELL".into(), "AC3029_SIGNAL_SENTINEL".into()),
+        ];
+        let id = spec.id;
+        let guard = SignalMaskGuard::block_usr1();
+        let spawned = backend.spawn_sync(spec);
+        drop(guard); // Restore the calling thread before assertions, even on launch failure.
+        spawned.expect("spawn direct test child");
+        let _cleanup = LaunchCleanup {
+            backend: &backend,
+            id,
+        };
+        let pid = backend.ptys.lock().unwrap()[&id]
+            .child
+            .as_ref()
+            .unwrap()
+            .process_id()
+            .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let painted = backend.fanout.get_screen_snapshot(id).is_some_and(|s| {
+                String::from_utf8_lossy(&s.data)
+                    .contains("AC3029_SHELL=AC3029_SIGNAL_SENTINEL SIGUSR1_BLOCKED=0")
+            });
+            if painted
+                && matches!(
+                    backend.probe_child(id),
+                    ChildLiveness::Exited {
+                        code: 0,
+                        success: true
+                    }
+                )
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "direct fixture marker/exit missing"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        backend.kill(id).unwrap();
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
     fn write_probe(dir: &std::path::Path) {
         let probe = dir.join(PROBE);
         std::fs::write(&probe, "#!/bin/sh\nexit 0\n").expect("write probe");
@@ -4607,7 +5609,9 @@ mod issue_2683_spawn_sync_search_path_tests {
             .spawn_sync(spec)
             .expect_err("the probe is absent from the injected search path");
         assert!(
-            error.to_string().contains("was not found in PATH"),
+            matches!(&error, AppError::PtyError(_))
+                && error.to_string().contains(PROBE)
+                && error.to_string().contains("PATH"),
             "unexpected error: {error}"
         );
         assert!(backend.ptys.lock().unwrap().is_empty());
