@@ -16,9 +16,9 @@ You do **not** need Rust to run AgentsCommander. Rust is only needed if you want
 
 ## 1. Install AgentsCommander
 
-Use the copyable [install-with-a-Coding-Agent prompt](../README.md#install-with-a-coding-agent). The Coding Agent reads the pinned [installation contract](install-with-agent.md), reports your host's support tier, selected stable release asset, checksum, destination, commands, privilege and `PATH` effects, validation, and rollback, then waits for your approval.
+Use the copyable [install-with-a-Coding-Agent prompt](../README.md#install-with-a-coding-agent). It asks your coding agent to install the stable version through npm, verify that it works, tell you how to launch it, and explain Agents-Matrix, Teams, and Rooms.
 
-After it verifies the exact asset against `SHASUMS256.txt` and validates the executable, start AgentsCommander from the approved location. If you choose a manual release asset or npm, use the same platform and trust gates in the canonical guide.
+Follow the launch instructions your coding agent provides. For a detailed installation procedure, including platform gates, checksum verification, and rollback, see the optional [installation guide](install-with-agent.md).
 
 ## 2. Open or create an AC project
 
