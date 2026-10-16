@@ -22,14 +22,19 @@ use crate::telegram::types::TelegramBotConfig;
 
 /// Configuration selection uses the frozen cross-runtime set, never Rust trim.
 pub(crate) fn configuration_command_has_content(value: &str) -> bool {
-    value.chars().any(|c| !matches!(c,
-        '\u{0009}'..='\u{000D}' | '\u{0020}' | '\u{00A0}' | '\u{1680}' |
-        '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' |
-        '\u{205F}' | '\u{3000}' | '\u{FEFF}'
-    ))
+    value.chars().any(|c| {
+        !matches!(c,
+            '\u{0009}'..='\u{000D}' | '\u{0020}' | '\u{00A0}' | '\u{1680}' |
+            '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' |
+            '\u{205F}' | '\u{3000}' | '\u{FEFF}'
+        )
+    })
 }
 
-pub(crate) fn select_configuration_command<'a>(new: Option<&'a str>, old: Option<&'a str>) -> Option<&'a str> {
+pub(crate) fn select_configuration_command<'a>(
+    new: Option<&'a str>,
+    old: Option<&'a str>,
+) -> Option<&'a str> {
     new.filter(|value| configuration_command_has_content(value))
         .or_else(|| old.filter(|value| configuration_command_has_content(value)))
         .or(new)
@@ -37,57 +42,107 @@ pub(crate) fn select_configuration_command<'a>(new: Option<&'a str>, old: Option
 }
 
 /// Absent is optional; a present null or any other non-string is an error.
-pub(crate) fn deserialize_present_command<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+pub(crate) fn deserialize_present_command<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     String::deserialize(deserializer).map(Some)
 }
 
-fn raw_configuration_command<'a>(row: &'a Map<String, Value>, key: &str) -> Result<Option<&'a str>, String> {
+fn raw_configuration_command<'a>(
+    row: &'a Map<String, Value>,
+    key: &str,
+) -> Result<Option<&'a str>, String> {
     for name in [key, "command"] {
         if row.get(name).is_some_and(|value| !value.is_string()) {
             return Err(format!("{name} must be a string"));
         }
     }
-    Ok(select_configuration_command(row.get(key).and_then(Value::as_str), row.get("command").and_then(Value::as_str)))
+    Ok(select_configuration_command(
+        row.get(key).and_then(Value::as_str),
+        row.get("command").and_then(Value::as_str),
+    ))
 }
 
-fn overlay_configuration_command(row: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
+fn overlay_configuration_command(
+    row: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
     raw_configuration_command(row, key).map(|value| value.map(str::to_owned))
 }
 
 const CONFIGURATION_COMMAND_PAIRS: &[PairedLeaf] = &[
-    PairedLeaf { path: &["agents", "*"], canonical: "baseCommand", legacy: "command", select: overlay_configuration_command },
-    PairedLeaf { path: &["codingAgentProfiles", "profilesByAgent", "*", "*"], canonical: "additionalArguments", legacy: "command", select: overlay_configuration_command },
+    PairedLeaf {
+        path: &["agents", "*"],
+        canonical: "baseCommand",
+        legacy: "command",
+        select: overlay_configuration_command,
+    },
+    PairedLeaf {
+        path: &["codingAgentProfiles", "profilesByAgent", "*", "*"],
+        canonical: "additionalArguments",
+        legacy: "command",
+        select: overlay_configuration_command,
+    },
 ];
 
 /// An edit owns the canonical leaf only. The locked physical source owns the
 /// legacy leaf, including its absence; a caller never supplies that authority.
-fn retain_command_leaf(row: &mut Map<String, Value>, before: Option<&Map<String, Value>>, key: &str) -> Result<(), String> {
+fn retain_command_leaf(
+    row: &mut Map<String, Value>,
+    before: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<(), String> {
+    if before.is_some_and(|before| {
+        row.get(key) == before.get(key) && row.get("command") == before.get("command")
+    }) {
+        return Ok(());
+    }
     raw_configuration_command(row, key)?;
-    let edit = row.get(key).or_else(|| row.get("command")).and_then(Value::as_str).map(str::to_owned);
+    let edit = row
+        .get(key)
+        .or_else(|| row.get("command"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     if let Some(before) = before {
         raw_configuration_command(before, key)?;
-        if row.get(key) == before.get(key) && row.get("command") == before.get("command") {
-            return Ok(());
-        }
     }
     if let Some(edit) = edit {
         row.insert(key.to_owned(), Value::String(edit));
     }
     match before.and_then(|row| row.get("command")) {
-        Some(value) => { row.insert("command".to_owned(), value.clone()); }
-        None => { row.remove("command"); }
+        Some(value) => {
+            row.insert("command".to_owned(), value.clone());
+        }
+        None => {
+            row.remove("command");
+        }
     }
     Ok(())
 }
 
-pub(crate) fn retain_configuration_commands(after: &mut Value, before: &Value, identity: &str, catalog: bool, agents: bool, profiles: bool) -> Result<(), String> {
+pub(crate) fn retain_configuration_commands(
+    after: &mut Value,
+    before: &Value,
+    identity: &str,
+    catalog: bool,
+    agents: bool,
+    profiles: bool,
+) -> Result<(), String> {
     if agents {
         if let Some(rows) = after.get_mut("agents").and_then(Value::as_array_mut) {
             for row in rows {
-                let previous = row.get(identity).and_then(Value::as_str).and_then(|id| before.get("agents").and_then(Value::as_array).and_then(|rows| rows.iter().find(|row| row.get(identity).and_then(Value::as_str) == Some(id))));
+                let previous = row.get(identity).and_then(Value::as_str).and_then(|id| {
+                    before
+                        .get("agents")
+                        .and_then(Value::as_array)
+                        .and_then(|rows| {
+                            rows.iter()
+                                .find(|row| row.get(identity).and_then(Value::as_str) == Some(id))
+                        })
+                });
                 if let Some(row) = row.as_object_mut() {
                     retain_command_leaf(row, previous.and_then(Value::as_object), "baseCommand")?;
                 }
@@ -95,12 +150,20 @@ pub(crate) fn retain_configuration_commands(after: &mut Value, before: &Value, i
         }
     }
     if profiles {
-        let pointer = if catalog { "/codingAgentProfiles" } else { "/codingAgentProfiles/profilesByAgent" };
+        let pointer = if catalog {
+            "/codingAgentProfiles"
+        } else {
+            "/codingAgentProfiles/profilesByAgent"
+        };
         if let Some(groups) = after.pointer_mut(pointer).and_then(Value::as_object_mut) {
             for (id, cells) in groups {
                 if let Some(cells) = cells.as_object_mut() {
                     for (letter, cell) in cells {
-                        let previous = before.pointer(pointer).and_then(|groups| groups.get(id)).and_then(|cells| cells.get(letter)).and_then(Value::as_object);
+                        let previous = before
+                            .pointer(pointer)
+                            .and_then(|groups| groups.get(id))
+                            .and_then(|cells| cells.get(letter))
+                            .and_then(Value::as_object);
                         if let Some(cell) = cell.as_object_mut() {
                             retain_command_leaf(cell, previous, "additionalArguments")?;
                         }
@@ -231,9 +294,16 @@ struct AgentConfigWire {
     )]
     pub id_hash: Option<String>,
     pub label: String,
-    #[serde(default, deserialize_with = "crate::config::settings::deserialize_present_command")]
+    #[serde(
+        default,
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
     pub command: Option<String>,
-    #[serde(default, rename = "baseCommand", deserialize_with = "crate::config::settings::deserialize_present_command")]
+    #[serde(
+        default,
+        rename = "baseCommand",
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
     pub canonical_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preflight: Option<String>,
@@ -268,7 +338,12 @@ impl<'de> Deserialize<'de> for AgentConfig {
         D: serde::Deserializer<'de>,
     {
         let wire = AgentConfigWire::deserialize(deserializer)?;
-        let command = crate::config::settings::select_configuration_command(wire.canonical_command.as_deref(), wire.command.as_deref()).ok_or_else(|| <D::Error as serde::de::Error>::missing_field("baseCommand"))?.to_owned();
+        let command = crate::config::settings::select_configuration_command(
+            wire.canonical_command.as_deref(),
+            wire.command.as_deref(),
+        )
+        .ok_or_else(|| <D::Error as serde::de::Error>::missing_field("baseCommand"))?
+        .to_owned();
         Ok(Self {
             id: wire.id,
             id_hash: wire.id_hash,
@@ -492,9 +567,16 @@ pub struct ProfileCellConfig {
 struct ProfileCellConfigWire {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default, deserialize_with = "crate::config::settings::deserialize_present_command")]
+    #[serde(
+        default,
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
     pub command: Option<String>,
-    #[serde(default, rename = "additionalArguments", deserialize_with = "crate::config::settings::deserialize_present_command")]
+    #[serde(
+        default,
+        rename = "additionalArguments",
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
     pub canonical_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preflight: Option<String>,
@@ -512,7 +594,12 @@ impl<'de> Deserialize<'de> for ProfileCellConfig {
         D: serde::Deserializer<'de>,
     {
         let wire = ProfileCellConfigWire::deserialize(deserializer)?;
-        let command = crate::config::settings::select_configuration_command(wire.canonical_command.as_deref(), wire.command.as_deref()).unwrap_or_default().to_owned();
+        let command = crate::config::settings::select_configuration_command(
+            wire.canonical_command.as_deref(),
+            wire.command.as_deref(),
+        )
+        .unwrap_or_default()
+        .to_owned();
         Ok(Self {
             enabled: wire.enabled,
             command,
@@ -2569,8 +2656,8 @@ impl LegacyCompatibilityOrigin {
                 OVERLAY_INELIGIBLE_DISK_KEYS,
                 OVERLAY_INELIGIBLE_LEGACY_KEYS,
                 OVERLAY_DERIVED_ID_CLOSURES,
-            CONFIGURATION_COMMAND_PAIRS,
-        ),
+                CONFIGURATION_COMMAND_PAIRS,
+            ),
             OriginPhysicalInput::Unknown => {
                 unknown_paths.push(Vec::new());
                 LocalSettingsOverlay::default()
@@ -3308,8 +3395,15 @@ pub(crate) fn prepare_source_candidate_with_original_links(
         .or_else(|| snapshot.candidate_template.clone())
         .ok_or(SourcePreparationError::InvalidCandidate)?;
     let mut retained_candidate = candidate.clone();
-    retain_configuration_commands(&mut retained_candidate, &before, if registered { "id" } else { "key" }, !registered, true, true)
-        .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    retain_configuration_commands(
+        &mut retained_candidate,
+        &before,
+        if registered { "id" } else { "key" },
+        !registered,
+        true,
+        true,
+    )
+    .map_err(|_| SourcePreparationError::InvalidCandidate)?;
     let candidate = &retained_candidate;
     let model = if registered {
         let (agents, profiles) = decode_registered_raw(candidate)?;
@@ -3600,14 +3694,26 @@ mod independent_source_tests {
         let mut candidate = fixture.registered.clone();
         candidate["agents"][1]["baseCommand"] = json!("other-new");
         candidate["agents"][1]["command"] = json!("stale-caller");
-        let prepared = prepare_source_candidate(&snapshot, &snapshot.snapshot.revision, &candidate, Some(&origin)).unwrap();
+        let prepared = prepare_source_candidate(
+            &snapshot,
+            &snapshot.snapshot.revision,
+            &candidate,
+            Some(&origin),
+        )
+        .unwrap();
         let saved: Value = serde_json::from_slice(&prepared.serialized_after).unwrap();
         assert_eq!(saved["agents"][1]["baseCommand"], "other-new");
         assert_eq!(saved["agents"][1]["command"], "other-base");
         assert_eq!(saved["agents"][0], fixture.registered["agents"][0]);
-        assert_eq!(saved["codingAgentProfiles"], fixture.registered["codingAgentProfiles"]);
+        assert_eq!(
+            saved["codingAgentProfiles"],
+            fixture.registered["codingAgentProfiles"]
+        );
         assert_eq!(saved["foreign"], fixture.registered["foreign"]);
-        assert_eq!(std::fs::read(fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME)).unwrap(), serde_json::to_vec(&fixture.registered).unwrap());
+        assert_eq!(
+            std::fs::read(fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME)).unwrap(),
+            serde_json::to_vec(&fixture.registered).unwrap()
+        );
     }
 
     struct Fixture {
@@ -7923,8 +8029,19 @@ fn save_agents_instance_file(
         )
     };
     let mut retained = Value::Object(target);
-    retain_configuration_commands(&mut retained, &Value::Object(before.clone()), "id", false, editable_agents, editable_profiles).map_err(&rejected)?;
-    let mut target = retained.as_object().expect("retained settings object").clone();
+    retain_configuration_commands(
+        &mut retained,
+        &Value::Object(before.clone()),
+        "id",
+        false,
+        editable_agents,
+        editable_profiles,
+    )
+    .map_err(&rejected)?;
+    let mut target = retained
+        .as_object()
+        .expect("retained settings object")
+        .clone();
     // Decode the final physical rows, but update only their raw metadata property.
     // Retained overlay-owned groups have no new backfill or validation authority.
     if editable_agents {
@@ -8275,8 +8392,8 @@ fn default_settings_with_overlay_captured(
         OVERLAY_INELIGIBLE_DISK_KEYS,
         OVERLAY_INELIGIBLE_LEGACY_KEYS,
         OVERLAY_DERIVED_ID_CLOSURES,
-            CONFIGURATION_COMMAND_PAIRS,
-        );
+        CONFIGURATION_COMMAND_PAIRS,
+    );
     let agents_base = read_agents_instance_file(&agents_instance_path(settings_path))
         .ok()
         .flatten();
@@ -8740,8 +8857,8 @@ fn coding_agent_identity_with_physical_overlay(
         OVERLAY_INELIGIBLE_DISK_KEYS,
         OVERLAY_INELIGIBLE_LEGACY_KEYS,
         OVERLAY_DERIVED_ID_CLOSURES,
-            CONFIGURATION_COMMAND_PAIRS,
-        );
+        CONFIGURATION_COMMAND_PAIRS,
+    );
     restore_codex_home_carrier(value.as_object_mut().unwrap(), base_profiles.as_ref());
     // Match the loader's undecodable-overlay rule without using its repaired
     // typed value as identity authority. The fallback is the raw physical base.
@@ -10261,8 +10378,8 @@ fn read_merged_top_level_key(path: &Path, key: &str) -> Option<Value> {
         OVERLAY_INELIGIBLE_DISK_KEYS,
         OVERLAY_INELIGIBLE_LEGACY_KEYS,
         OVERLAY_DERIVED_ID_CLOSURES,
-            CONFIGURATION_COMMAND_PAIRS,
-        );
+        CONFIGURATION_COMMAND_PAIRS,
+    );
     value.get(key).cloned()
 }
 
@@ -12995,6 +13112,37 @@ fn save_settings_value_locked(
         disk_gate_stage,
     )?;
     strip_agents_instance_keys(&mut out, &agents_groups);
+
+    // Partial profile ownership can keep these groups in settings.json instead
+    // of the sidecar. Retain its locked legacy leaves after raw overlay restore;
+    // complete overlay-owned groups stay outside this writer's authority.
+    if let Some(disk) = &disk {
+        let profiles_owned = settings
+            .local_overlay_state
+            .owned_paths()
+            .iter()
+            .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
+        let mut retained = Value::Object(out);
+        retain_configuration_commands(
+            &mut retained,
+            &Value::Object(disk.clone()),
+            "id",
+            false,
+            !settings.local_overlay_state.owns_top_level("agents"),
+            !profiles_owned,
+        )
+        .map_err(|reason| {
+            SettingsSaveError::semantic(
+                disk_gate_stage,
+                path,
+                None,
+                SettingsSaveReason::DiskSettingsValidationRejected,
+                SettingsSaveLegacyOutward::DiskValidation(reason),
+            )
+        })?;
+        out = retained.as_object().expect("retained settings object").clone();
+    }
+
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
@@ -23800,6 +23948,20 @@ mod tests {
                     "id_hash".to_string(),
                     Value::String(configuration_identity(&agent.command, &agent.envs)),
                 );
+                // The physical legacy agent text survives the canonical write.
+                raw["baseCommand"] = raw["command"].clone();
+            }
+            // S6 never seeded profile cells. Their generated defaults are fresh
+            // canonical rows and must not acquire invented historical fields.
+            for cells in object["codingAgentProfiles"]["profilesByAgent"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                for cell in cells.as_object_mut().unwrap().values_mut() {
+                    let command = cell.as_object_mut().unwrap().remove("command").unwrap();
+                    cell["additionalArguments"] = command;
+                }
             }
             let sorted: BTreeMap<String, Value> =
                 object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -24632,8 +24794,8 @@ mod tests {
                     OVERLAY_INELIGIBLE_DISK_KEYS,
                     OVERLAY_INELIGIBLE_LEGACY_KEYS,
                     OVERLAY_DERIVED_ID_CLOSURES,
-            CONFIGURATION_COMMAND_PAIRS,
-        );
+                    CONFIGURATION_COMMAND_PAIRS,
+                );
                 let records = overlay.diagnostics("test");
                 assert!(!records.is_empty(), "{label}: expected a diagnostic");
                 if label == "all-ineligible" {
@@ -24664,8 +24826,8 @@ mod tests {
                 OVERLAY_INELIGIBLE_DISK_KEYS,
                 OVERLAY_INELIGIBLE_LEGACY_KEYS,
                 OVERLAY_DERIVED_ID_CLOSURES,
-            CONFIGURATION_COMMAND_PAIRS,
-        );
+                CONFIGURATION_COMMAND_PAIRS,
+            );
             assert!(overlay.diagnostics("test").is_empty());
         }
 
@@ -27894,7 +28056,12 @@ mod tests {
 
     #[test]
     fn id_hash_activation_overlay_owned_physical_and_effective_remain_distinct() {
-        for sidecar in [false, true] {
+        for (sidecar, field) in [
+            (false, "baseCommand"),
+            (true, "baseCommand"),
+            (false, "command"),
+            (true, "command"),
+        ] {
             let (temp, path) = hash_activation_seed(sidecar);
             let physical_path = if sidecar {
                 b3_sidecar_path(temp.path())
@@ -27912,7 +28079,9 @@ mod tests {
             b3_write(&physical_path, &physical);
             let raw_before = physical["agents"].clone();
             let mut overlay = raw_before.clone();
-            overlay[0]["command"] = serde_json::json!("codex --different");
+            overlay[0].as_object_mut().unwrap().remove("baseCommand");
+            overlay[0].as_object_mut().unwrap().remove("command");
+            overlay[0][field] = serde_json::json!("codex --different");
             overlay[0]["envs"] =
                 serde_json::json!([{"key":"MODE","value":"effective","enabled":false}]);
             overlay[0]["id_hash"] = serde_json::json!("forged-effective");
@@ -28750,7 +28919,18 @@ mod tests {
                 }
                 (serde_json::Value::Object(seeded_fields), serde_json::Value::Object(held)) => {
                     for (field, value) in seeded_fields {
-                        assert_eq!(held.get(field), Some(value), "{key}.{field}");
+                        let mut expected = value.clone();
+                        if field == "profilesByAgent" {
+                            // Compare the complete original cells, including old
+                            // command values, plus only the new physical leaf.
+                            for cells in expected.as_object_mut().unwrap().values_mut() {
+                                for cell in cells.as_object_mut().unwrap().values_mut() {
+                                    assert!(cell.get("additionalArguments").is_none());
+                                    cell["additionalArguments"] = cell["command"].clone();
+                                }
+                            }
+                        }
+                        assert_eq!(held.get(field), Some(&expected), "{key}.{field}");
                     }
                 }
                 other => panic!("{key}: unexpected shapes {other:?}"),
@@ -29337,9 +29517,14 @@ pub(crate) fn source_original_mappings(
         })
         .collect::<Result<_, _>>()?;
     let calculated = |value: &&Value| -> Result<String, SourcePreparationError> {
-        let command = raw_configuration_command(value.as_object().ok_or(SourcePreparationError::InvalidCandidate)?, "baseCommand")
-            .map_err(|_| SourcePreparationError::InvalidCandidate)?
-            .ok_or(SourcePreparationError::InvalidCandidate)?;
+        let command = raw_configuration_command(
+            value
+                .as_object()
+                .ok_or(SourcePreparationError::InvalidCandidate)?,
+            "baseCommand",
+        )
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?
+        .ok_or(SourcePreparationError::InvalidCandidate)?;
         let envs: Vec<CodingAgentEnv> = value
             .get("envs")
             .cloned()
@@ -30817,8 +31002,12 @@ mod derived_agent_binding_projection_tests {
             bootstrap_binding_revision(&load_settings_for_cli_from_path(&path), "alpha").unwrap()
         );
         assert_eq!(
-            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]["command"],
+            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]["baseCommand"],
             "claude --different-execution"
+        );
+        assert_eq!(
+            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]["command"],
+            "claude"
         );
     }
 
@@ -30910,15 +31099,21 @@ mod p02_configuration_schema_tests {
 
     fn agent(pair: Value) -> Value {
         let mut row = json!({"id":"one", "label":"One", "color":"#123456"});
-        row.as_object_mut().unwrap().extend(pair.as_object().unwrap().clone());
+        row.as_object_mut()
+            .unwrap()
+            .extend(pair.as_object().unwrap().clone());
         row
     }
 
     fn selected(new: Option<&str>, old: Option<&str>, expected: &str) {
         for key in ["baseCommand", "additionalArguments"] {
             let mut pair = Map::new();
-            if let Some(new) = new { pair.insert(key.into(), json!(new)); }
-            if let Some(old) = old { pair.insert("command".into(), json!(old)); }
+            if let Some(new) = new {
+                pair.insert(key.into(), json!(new));
+            }
+            if let Some(old) = old {
+                pair.insert("command".into(), json!(old));
+            }
             if key == "baseCommand" {
                 let row: AgentConfig = serde_json::from_value(agent(Value::Object(pair))).unwrap();
                 assert_eq!(row.command, expected);
@@ -30938,17 +31133,24 @@ mod p02_configuration_schema_tests {
     #[test]
     fn p02_literal_selection_matrix_and_frozen_whitespace() {
         for (new, old, expected) in [
-            (Some("new"), Some("old"), "new"), (Some(""), Some("old"), "old"),
-            (Some(" "), Some("old"), "old"), (Some("new"), Some(" "), "new"),
-            (Some(""), Some(""), ""), (Some(" "), Some("\t"), " "),
-            (Some(""), Some("\t"), ""), (None, Some("\t"), "\t"),
-            (Some("new"), None, "new"), (None, Some("old"), "old"),
+            (Some("new"), Some("old"), "new"),
+            (Some(""), Some("old"), "old"),
+            (Some(" "), Some("old"), "old"),
+            (Some("new"), Some(" "), "new"),
+            (Some(""), Some(""), ""),
+            (Some(" "), Some("\t"), " "),
+            (Some(""), Some("\t"), ""),
+            (None, Some("\t"), "\t"),
+            (Some("new"), None, "new"),
+            (None, Some("old"), "old"),
             (Some("\u{85}"), Some("legacy"), "\u{85}"),
             (Some("\u{FEFF}"), Some("legacy"), "legacy"),
             (Some("legacy"), Some("\u{85}"), "legacy"),
             (Some(""), Some("\u{85}"), "\u{85}"),
             (Some(""), Some("\u{FEFF}"), ""),
-        ] { selected(new, old, expected); }
+        ] {
+            selected(new, old, expected);
+        }
         let whitespace = "\u{9}\u{A}\u{B}\u{C}\u{D} \u{A0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}";
         for w in whitespace.chars() {
             let w = w.to_string();
@@ -30967,13 +31169,18 @@ mod p02_configuration_schema_tests {
     #[test]
     fn p02_present_malformed_peer_rejects_and_absence_keeps_required_default() {
         assert!(serde_json::from_value::<AgentConfig>(agent(json!({}))).is_err());
-        assert_eq!(serde_json::from_value::<ProfileCellConfig>(json!({})).unwrap().command, "");
+        assert_eq!(
+            serde_json::from_value::<ProfileCellConfig>(json!({}))
+                .unwrap()
+                .command,
+            ""
+        );
         for bad in [Value::Null, json!(false), json!(17), json!([]), json!({})] {
             for canonical_bad in [false, true] {
                 for key in ["baseCommand", "additionalArguments"] {
                     let mut pair = json!({"command":"old"});
                     pair[key] = json!("new");
-                    pair[if canonical_bad {key} else {"command"}] = bad.clone();
+                    pair[if canonical_bad { key } else { "command" }] = bad.clone();
                     if key == "baseCommand" {
                         assert!(serde_json::from_value::<AgentConfig>(agent(pair)).is_err());
                     } else {
@@ -31002,21 +31209,46 @@ mod p02_configuration_schema_tests {
         assert_eq!(after, saved);
         let mut malformed = before.clone();
         malformed["agents"][0]["command"] = Value::Null;
-        assert!(retain_configuration_commands(&mut after, &malformed, "id", false, true, true).is_err());
+        assert!(
+            retain_configuration_commands(&mut after, &malformed, "id", false, true, true).is_err()
+        );
     }
 
     #[test]
     fn p02_overlay_pairs_resolve_per_layer_restore_raw_and_reapply_effective() {
         for (base, overlay, expected) in [
-            (json!({"additionalArguments":"lower"}), json!({"command":"higher"}), "higher"),
-            (json!({"command":"lower"}), json!({"additionalArguments":"higher"}), "higher"),
-            (json!({"additionalArguments":"lower"}), json!({"command":""}), ""),
-            (json!({"command":"lower"}), json!({"additionalArguments":" ","command":"\t"}), " "),
+            (
+                json!({"additionalArguments":"lower"}),
+                json!({"command":"higher"}),
+                "higher",
+            ),
+            (
+                json!({"command":"lower"}),
+                json!({"additionalArguments":"higher"}),
+                "higher",
+            ),
+            (
+                json!({"additionalArguments":"lower"}),
+                json!({"command":""}),
+                "",
+            ),
+            (
+                json!({"command":"lower"}),
+                json!({"additionalArguments":" ","command":"\t"}),
+                " ",
+            ),
         ] {
             let original = json!({"codingAgentProfiles":{"profilesByAgent":{"one":{"A":base}}}});
             let mut merged = original.clone();
             let overlay = json!({"codingAgentProfiles":{"profilesByAgent":{"one":{"A":overlay}}}});
-            let state = LocalSettingsOverlay::from_overlay_object_paired(&mut merged, overlay.as_object().unwrap().clone(), &[], &[], &[], CONFIGURATION_COMMAND_PAIRS);
+            let state = LocalSettingsOverlay::from_overlay_object_paired(
+                &mut merged,
+                overlay.as_object().unwrap().clone(),
+                &[],
+                &[],
+                &[],
+                CONFIGURATION_COMMAND_PAIRS,
+            );
             assert!(state.rejection().is_none());
             let cell = &merged["codingAgentProfiles"]["profilesByAgent"]["one"]["A"];
             let decoded: ProfileCellConfig = serde_json::from_value(cell.clone()).unwrap();
@@ -31039,34 +31271,71 @@ mod p02_physical_schema_tests {
     fn p02_three_loaders_do_not_rewrite_and_locked_save_retains_legacy() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        let main = json!({"defaultShell":"test-shell","defaultShellArgs":[],"rootToken":"base-token"});
+        let main =
+            json!({"defaultShell":"test-shell","defaultShellArgs":[],"rootToken":"base-token"});
         let groups = json!({"agents":[{"id":"own","label":"Own","color":"#123456","baseCommand":"tool --current","command":"tool --legacy","order":0}],"codingAgentProfiles":{"schemaVersion":2,"profileSlots":{"A":{"label":""}},"defaultProfileByAgent":{},"profilesByAgent":{"own":{"A":{"enabled":true,"additionalArguments":"--current","command":"--legacy","env":{},"notes":"keep"}}},"profileLabelsByAgent":{}}});
         std::fs::write(&path, serde_json::to_vec_pretty(&main).unwrap()).unwrap();
         let sidecar = agents_instance_path(&path);
         std::fs::write(&sidecar, serde_json::to_vec_pretty(&groups).unwrap()).unwrap();
+        // BASE already materializes project-paths.json and a persistent lock on
+        // first use. Seed those controls before measuring schema read effects.
+        let project_paths = project_paths_path(&path);
+        std::fs::write(&project_paths, b"{}").unwrap();
+        drop(
+            SettingsFileLock::acquire_contextual(
+                &path,
+                std::time::Duration::from_secs(2),
+                "p02-read-baseline",
+            )
+            .unwrap(),
+        );
         let main_before = std::fs::read(&path).unwrap();
         let agents_before = std::fs::read(&sidecar).unwrap();
-        let names = || { let mut names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect(); names.sort(); names };
+        let names = || {
+            let mut names: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
         let names_before = names();
         let strict = load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
         let cli = load_settings_for_cli_from_path(&path);
         let gui = load_settings_from_path(&path);
         for settings in [&strict, &cli, &gui] {
             assert_eq!(settings.agents[0].command, "tool --current");
-            assert_eq!(settings.coding_agent_profiles.profiles_by_agent["own"]["A"].command, "--current");
+            assert_eq!(
+                settings.coding_agent_profiles.profiles_by_agent["own"]["A"].command,
+                "--current"
+            );
         }
         assert_eq!(std::fs::read(&path).unwrap(), main_before);
         assert_eq!(std::fs::read(&sidecar).unwrap(), agents_before);
+        assert_eq!(std::fs::read(&project_paths).unwrap(), b"{}");
         assert_eq!(names(), names_before, "read creates no backups or journals");
         let mut edited = strict;
         edited.agents[0].command = "tool --edited".into();
-        edited.coding_agent_profiles.profiles_by_agent.get_mut("own").unwrap().get_mut("A").unwrap().command = "--edited".into();
+        edited
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("own")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .command = "--edited".into();
         let written = save_settings_to_path_preserving_project_paths(&edited, &path).unwrap();
         let raw: Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
         assert_eq!(raw["agents"][0]["baseCommand"], "tool --edited");
         assert_eq!(raw["agents"][0]["command"], "tool --legacy");
-        assert_eq!(raw["codingAgentProfiles"]["profilesByAgent"]["own"]["A"]["additionalArguments"], "--edited");
-        assert_eq!(raw["codingAgentProfiles"]["profilesByAgent"]["own"]["A"]["command"], "--legacy");
+        assert_eq!(
+            raw["codingAgentProfiles"]["profilesByAgent"]["own"]["A"]["additionalArguments"],
+            "--edited"
+        );
+        assert_eq!(
+            raw["codingAgentProfiles"]["profilesByAgent"]["own"]["A"]["command"],
+            "--legacy"
+        );
         let bytes = std::fs::read(&sidecar).unwrap();
         save_settings_to_path_preserving_project_paths(&written, &path).unwrap();
         assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);

@@ -823,9 +823,16 @@ pub struct AgentPatch {
 struct AgentPatchWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(default, deserialize_with = "crate::config::settings::deserialize_present_command")]
+    #[serde(
+        default,
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
     pub command: Option<String>,
-    #[serde(default, rename = "baseCommand", deserialize_with = "crate::config::settings::deserialize_present_command")]
+    #[serde(
+        default,
+        rename = "baseCommand",
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
     pub canonical_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
@@ -857,7 +864,11 @@ impl<'de> Deserialize<'de> for AgentPatch {
         D: serde::Deserializer<'de>,
     {
         let wire = AgentPatchWire::deserialize(deserializer)?;
-        let command = crate::config::settings::select_configuration_command(wire.canonical_command.as_deref(), wire.command.as_deref()).map(str::to_owned);
+        let command = crate::config::settings::select_configuration_command(
+            wire.canonical_command.as_deref(),
+            wire.command.as_deref(),
+        )
+        .map(str::to_owned);
         Ok(Self {
             label: wire.label,
             command,
@@ -5914,15 +5925,25 @@ mod p02_patch_schema_tests {
 
     #[test]
     fn p02_patch_presence_types_and_queue_canonical_wire() {
-        assert!(serde_json::from_value::<AgentPatch>(json!({})).unwrap().command.is_none());
-        let patch: AgentPatch = serde_json::from_value(json!({"baseCommand":"","command":"\t"})).unwrap();
+        assert!(serde_json::from_value::<AgentPatch>(json!({}))
+            .unwrap()
+            .command
+            .is_none());
+        let patch: AgentPatch =
+            serde_json::from_value(json!({"baseCommand":"","command":"\t"})).unwrap();
         assert_eq!(patch.command.as_deref(), Some(""));
-        let op = CodingAgentOp::Update { id: "own".into(), patch };
+        let op = CodingAgentOp::Update {
+            id: "own".into(),
+            patch,
+        };
         let wire = serde_json::to_value(&op).unwrap();
         assert_eq!(wire["patch"]["baseCommand"], "");
         assert!(wire["patch"].get("command").is_none());
         let decoded: CodingAgentOp = serde_json::from_value(wire).unwrap();
-        match decoded { CodingAgentOp::Update { patch, .. } => assert_eq!(patch.command.as_deref(), Some("")), _ => panic!("update") }
+        match decoded {
+            CodingAgentOp::Update { patch, .. } => assert_eq!(patch.command.as_deref(), Some("")),
+            _ => panic!("update"),
+        }
         for bad in [json!(null), json!(false), json!(9), json!([]), json!({})] {
             for key in ["command", "baseCommand"] {
                 let mut pair = json!({"baseCommand":"new","command":"old"});

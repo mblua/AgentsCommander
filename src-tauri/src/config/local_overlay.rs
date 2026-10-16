@@ -205,7 +205,13 @@ pub(crate) struct PairedLeaf {
     pub(crate) select: fn(&Map<String, Value>, &str) -> Result<Option<String>, String>,
 }
 
-fn resolve_pairs(value: &mut Value, pair: &PairedLeaf, depth: usize, path: &mut Vec<String>, owned: &mut Vec<Vec<String>>) -> Result<(), String> {
+fn resolve_pairs(
+    value: &mut Value,
+    pair: &PairedLeaf,
+    depth: usize,
+    path: &mut Vec<String>,
+    owned: &mut Vec<Vec<String>>,
+) -> Result<(), String> {
     if depth == pair.path.len() {
         if let Some(row) = value.as_object_mut() {
             if row.contains_key(pair.canonical) || row.contains_key(pair.legacy) {
@@ -226,16 +232,20 @@ fn resolve_pairs(value: &mut Value, pair: &PairedLeaf, depth: usize, path: &mut 
     let segment = pair.path[depth];
     if segment == "*" {
         match value {
-            Value::Object(rows) => for (key, row) in rows {
-                path.push(key.clone());
-                resolve_pairs(row, pair, depth + 1, path, owned)?;
-                path.pop();
-            },
-            Value::Array(rows) => for (index, row) in rows.iter_mut().enumerate() {
-                path.push(index.to_string());
-                resolve_pairs(row, pair, depth + 1, path, owned)?;
-                path.pop();
-            },
+            Value::Object(rows) => {
+                for (key, row) in rows {
+                    path.push(key.clone());
+                    resolve_pairs(row, pair, depth + 1, path, owned)?;
+                    path.pop();
+                }
+            }
+            Value::Array(rows) => {
+                for (index, row) in rows.iter_mut().enumerate() {
+                    path.push(index.to_string());
+                    resolve_pairs(row, pair, depth + 1, path, owned)?;
+                    path.pop();
+                }
+            }
             _ => {}
         }
     } else if let Some(child) = value.get_mut(segment) {
@@ -342,7 +352,14 @@ impl LocalSettingsOverlay {
         ineligible_legacy: &[&str],
         derived: &[DerivedIdClosure],
     ) -> Self {
-        Self::load_and_merge_paired(settings_path, base, ineligible_disk, ineligible_legacy, derived, &[])
+        Self::load_and_merge_paired(
+            settings_path,
+            base,
+            ineligible_disk,
+            ineligible_legacy,
+            derived,
+            &[],
+        )
     }
 
     pub(crate) fn load_and_merge_paired(
@@ -385,7 +402,14 @@ impl LocalSettingsOverlay {
         let Value::Object(overlay) = value else {
             return Self::rejected(OverlayRejection::NotAnObject);
         };
-        Self::from_overlay_object_paired(base, overlay, ineligible_disk, ineligible_legacy, derived, pairs)
+        Self::from_overlay_object_paired(
+            base,
+            overlay,
+            ineligible_disk,
+            ineligible_legacy,
+            derived,
+            pairs,
+        )
     }
 
     /// The pure core of `load_and_merge`, for tests and for callers that already
@@ -398,7 +422,14 @@ impl LocalSettingsOverlay {
         ineligible_legacy: &[&str],
         derived: &[DerivedIdClosure],
     ) -> Self {
-        Self::from_overlay_object_paired(base, overlay, ineligible_disk, ineligible_legacy, derived, &[])
+        Self::from_overlay_object_paired(
+            base,
+            overlay,
+            ineligible_disk,
+            ineligible_legacy,
+            derived,
+            &[],
+        )
     }
 
     pub(crate) fn from_overlay_object_paired(
@@ -438,7 +469,9 @@ impl LocalSettingsOverlay {
                 return Self::rejected(OverlayRejection::MergedValueUndecodable(reason));
             }
             let mut value = Value::Object(std::mem::take(&mut overlay));
-            if let Err(reason) = resolve_pairs(&mut value, pair, 0, &mut Vec::new(), &mut pair_paths) {
+            if let Err(reason) =
+                resolve_pairs(&mut value, pair, 0, &mut Vec::new(), &mut pair_paths)
+            {
                 *base = original_base;
                 return Self::rejected(OverlayRejection::MergedValueUndecodable(reason));
             }
