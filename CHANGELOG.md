@@ -6,6 +6,8 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+## 0.45.0
+
 ### Added
 
 - The error popup offers a checkbox to mute future popups of the same error type until the application closes. Logging, Copy and Dismiss remain available; restarting clears the mute. (#3036, #3037, #3039, #3040)
@@ -34,7 +36,6 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 - Internal groundwork for recoverable configuration persistence, selection references and response-close admission landed dormant and does not change current behavior. (#2852, #2853, #2893, #2894, #2895, #2896, #2897, #2947, #2950, #2957, #2958, #2968, #2970, #2986)
 - Frontend coverage is measured and published to Codecov. (#2962, #3025, #3032, #3033, #3042)
-
 ## 0.44.0
 
 ### Added
