@@ -28608,7 +28608,7 @@ mod tests {
     }
 
     #[test]
-    fn id_hash_activation_legacy_duplicates_preserve_rows_multiplicity_and_allow_repair() {
+    fn id_hash_activation_legacy_duplicates_preserve_rows_and_refuse_ambiguous_changes() {
         let (temp, path) = hash_activation_seed(true);
         let sidecar = b3_sidecar_path(temp.path());
         let mut raw = serde_json::Value::Object(b3_object(&sidecar));
@@ -28623,25 +28623,42 @@ mod tests {
         settings.agents.reverse();
         super::normalize_agent_order(&mut settings.agents);
         settings.log_level = Some("debug".into());
-        let mut written =
+        let written =
             super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
         assert_eq!(written.agents.iter().filter(|a| a.id == "alpha").count(), 2);
         hash_activation_assert(&written);
         let mut increased = written.clone();
         increased.agents.push(serde_json::from_value(row).unwrap());
-        let before = hash_activation_files(temp.path());
+        let before_identity = b3_object(&sidecar);
+        let mut after_identity = before_identity.clone();
+        after_identity.insert(
+            "agents".into(),
+            serde_json::to_value(&increased.agents).unwrap(),
+        );
         assert!(
-            super::save_settings_to_path_preserving_project_paths(&increased, &path)
+            super::validate_physical_identity_delta(&before_identity, &after_identity, true, false)
                 .unwrap_err()
                 .contains("DuplicateConfigurationIdentity")
         );
-        assert_eq!(hash_activation_files(temp.path()), before);
-        written.agents[1].command = "repair-extra-character".into();
-        let repaired =
-            super::save_settings_to_path_preserving_project_paths(&written, &path).unwrap();
-        assert_eq!(repaired.agents.len(), 3);
-        written.agents.remove(1);
-        assert!(super::save_settings_to_path_preserving_project_paths(&written, &path).is_ok());
+        let mut edited = written.clone();
+        edited.agents[1].command = "repair-extra-character".into();
+        let mut partially_deleted = written.clone();
+        partially_deleted.agents.remove(1);
+        for candidate in [increased, edited, partially_deleted] {
+            let before = hash_activation_files(temp.path());
+            let error =
+                super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap_err();
+            assert!(error.contains("duplicate agent ID 'alpha'"));
+            assert!(error.contains("unprovable row correspondence"));
+            assert_eq!(hash_activation_files(temp.path()), before);
+            let reloaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert_eq!(
+                serde_json::to_value(&reloaded.agents).unwrap(),
+                serde_json::to_value(&written.agents).unwrap()
+            );
+            assert_eq!(reloaded.log_level, written.log_level);
+            hash_activation_assert(&reloaded);
+        }
     }
 
     #[test]
