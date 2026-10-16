@@ -21,7 +21,7 @@ export default defineConfig({
         'src/sidebar/components/restart-toast-harness.tsx',
         'src/sidebar/components/settings/agentReorderDnd.testkit.ts',
       ],
-      reporter: ['html', 'json', 'json-summary', 'text', 'text-summary'],
+      reporter: ['html', 'json', 'json-summary', 'text', 'text-summary', 'lcov'],
       reportsDirectory: process.env.COVERAGE_OUTPUT || 'artifacts/coverage/frontend',
       excludeAfterRemap: true,
       clean: false,
