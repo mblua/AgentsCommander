@@ -1415,17 +1415,43 @@ fn supported_shipped_definitions() -> Vec<CodingAgentDefinition> {
 /// `revision` and `contentSha256` are the same content identity. No timestamp
 /// is part of the content identity.
 fn build_managed_base_bytes(definitions: &[CodingAgentDefinition]) -> Vec<u8> {
+    build_managed_base_bytes_with_original(definitions, None)
+}
+
+fn original_catalog_command<'a>(original: Option<&'a serde_json::Value>, key: &str) -> Option<&'a serde_json::Value> {
+    original?
+        .get("agents")?
+        .as_array()?
+        .iter()
+        .find(|row| row.get("key").and_then(serde_json::Value::as_str) == Some(key))?
+        .get("command")
+}
+
+fn build_managed_base_bytes_with_original(
+    definitions: &[CodingAgentDefinition],
+    original: Option<&serde_json::Value>,
+) -> Vec<u8> {
     let revision = managed_content_sha256(definitions);
+    #[derive(Serialize)]
+    struct DefinitionWire<'a> {
+        #[serde(flatten)]
+        definition: &'a CodingAgentDefinition,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        command: Option<&'a serde_json::Value>,
+    }
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct ManagedBaseWire<'a> {
         schema_version: u32,
-        agents: &'a [CodingAgentDefinition],
+        agents: Vec<DefinitionWire<'a>>,
         managed: ManagedCatalogMarker,
     }
     let root = ManagedBaseWire {
         schema_version: CATALOG_SCHEMA_VERSION,
-        agents: definitions,
+        agents: definitions.iter().map(|definition| DefinitionWire {
+            definition,
+            command: original_catalog_command(original, &definition.key),
+        }).collect(),
         managed: ManagedCatalogMarker {
             owner: MANAGED_OWNER.to_string(),
             version: MANAGED_VERSION,
@@ -3839,17 +3865,36 @@ impl From<&ConfigSeedConfig> for ConfigSeedWire {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LocalLayerWire {
+struct LocalLayerWire<'a> {
     schema_version: u32,
-    agents: Vec<LocalRowWire>,
+    agents: Vec<LocalRowWithLegacy<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     order: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct LocalRowWithLegacy<'a> {
+    #[serde(flatten)]
+    row: &'a LocalRowWire,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'a serde_json::Value>,
+}
+
 fn local_layer_bytes(rows: Vec<LocalRowWire>, order: Option<Vec<String>>) -> Vec<u8> {
+    local_layer_bytes_with_original(rows, order, None)
+}
+
+fn local_layer_bytes_with_original(
+    rows: Vec<LocalRowWire>,
+    order: Option<Vec<String>>,
+    original: Option<&serde_json::Value>,
+) -> Vec<u8> {
     let layer = LocalLayerWire {
         schema_version: CATALOG_SCHEMA_VERSION,
-        agents: rows,
+        agents: rows.iter().map(|row| LocalRowWithLegacy {
+            row,
+            command: original_catalog_command(original, &row.key),
+        }).collect(),
         order,
     };
     let mut bytes = match serde_json::to_vec_pretty(&layer) {
@@ -4078,12 +4123,11 @@ fn extract_legacy_local_mode(
         bytes.push(b'\n');
         return Ok(bytes);
     }
-    let bytes = local_layer_bytes(local_rows, Some(order));
-    let mut after: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    crate::config::settings::retain_configuration_commands(&mut after, &value, "key", true, true, false)?;
-    let mut bytes = serde_json::to_vec_pretty(&after).map_err(|error| error.to_string())?;
-    bytes.push(b'\n');
-    Ok(bytes)
+    if local_rows.iter().all(|row| original_catalog_command(Some(&value), &row.key).is_none()) {
+        Ok(local_layer_bytes(local_rows, Some(order)))
+    } else {
+        Ok(local_layer_bytes_with_original(local_rows, Some(order), Some(&value)))
+    }
 }
 
 /// Execute one migration transaction under the held catalog lock. Order:
@@ -4384,13 +4428,9 @@ fn refresh_managed_base(
     if !managed_base_is_stale(analysis, &shipped_revision) {
         return Ok(None);
     }
-    let managed_bytes = build_managed_base_bytes(&shipped);
     let before = read_optional_regular_file(&paths.base, "persisted catalog")?.ok_or("catalog disappeared before refresh")?;
     let before = parse_strict_json(&before)?;
-    let mut after: serde_json::Value = serde_json::from_slice(&managed_bytes).map_err(|error| error.to_string())?;
-    crate::config::settings::retain_configuration_commands(&mut after, &before, "key", true, true, false)?;
-    let mut managed_bytes = serde_json::to_vec_pretty(&after).map_err(|error| error.to_string())?;
-    managed_bytes.push(b'\n');
+    let managed_bytes = build_managed_base_bytes_with_original(&shipped, Some(&before));
     publish_replace(&paths.base, &managed_bytes)?;
     log::info!(
         "[coding-agents] refreshed the managed catalog base revision at {}",
@@ -13266,6 +13306,50 @@ mod tests {
 mod p02_catalog_schema_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn p02_retention_preserves_typed_publication_order_and_fresh_bytes() {
+        let definition: CodingAgentDefinition = serde_json::from_value(json!({
+            "key":"own", "label":"Own", "description":"d", "color":"#123456", "baseCommand":"tool"
+        })).unwrap();
+        let definitions = [definition];
+        let canonical = json!({"agents":[{"key":"own","baseCommand":"tool"}]});
+        assert_eq!(
+            build_managed_base_bytes_with_original(&definitions, Some(&canonical)),
+            build_managed_base_bytes(&definitions)
+        );
+        let original = json!({"agents":[{"key":"own","command":"old"}]});
+        let managed = build_managed_base_bytes_with_original(&definitions, Some(&original));
+        assert!(managed.starts_with(b"{\n  \"schemaVersion\": 1,\n  \"agents\": ["));
+        let value: serde_json::Value = serde_json::from_slice(&managed).unwrap();
+        assert_eq!(value["agents"][0]["baseCommand"], "tool");
+        assert_eq!(value["agents"][0]["command"], "old");
+
+        let row = LocalRowWire {
+            key: "own".into(),
+            command: Some("tool".into()),
+            ..LocalRowWire::default()
+        };
+        let fresh = concat!(
+            "{\n  \"schemaVersion\": 1,\n  \"agents\": [\n    {\n",
+            "      \"key\": \"own\",\n      \"baseCommand\": \"tool\"\n",
+            "    }\n  ],\n  \"order\": [\n    \"own\"\n  ]\n}\n"
+        );
+        let order = Some(vec!["own".to_owned()]);
+        assert_eq!(local_layer_bytes(vec![row.clone()], order.clone()), fresh.as_bytes());
+        assert_eq!(
+            local_layer_bytes_with_original(vec![row.clone()], order.clone(), Some(&canonical)),
+            fresh.as_bytes()
+        );
+        let retained = fresh.replace(
+            "\"baseCommand\": \"tool\"\n",
+            "\"baseCommand\": \"tool\",\n      \"command\": \"old\"\n"
+        );
+        assert_eq!(
+            local_layer_bytes_with_original(vec![row], order, Some(&original)),
+            retained.as_bytes()
+        );
+    }
 
     #[test]
     fn p02_catalog_wire_selection_local_precedence_and_historical_ordered_hash() {
