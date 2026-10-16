@@ -15042,6 +15042,21 @@ impl Drop for SettingsPermitAdmission<'_> {
     }
 }
 
+/// Admission of one managed operation. It is released on every path, unwinding
+/// included, which is what lets a drain terminate.
+struct SettingsOperationAdmission<'a> {
+    owner: &'a SettingsOwner,
+}
+
+impl Drop for SettingsOperationAdmission<'_> {
+    fn drop(&mut self) {
+        self.owner.finish_operation();
+    }
+}
+
+/// Outcome, builder value and error of one classified operation.
+type OperationParts<T> = (OperationOutcome, Option<T>, Option<String>);
+
 /// A borrowed, validated read of the current settings.
 pub struct SettingsReadGuard<'a> {
     guard: tokio::sync::RwLockReadGuard<'a, AppSettings>,
@@ -15195,12 +15210,25 @@ fn capture_source_file(
         .map_err(|reason| SettingsOwnerError::Capture(format!("{name}: {reason}")))
 }
 
+// Test seam: the next owner capture on this thread panics, so the panic is
+// raised outside the builder while the operation's guards are held.
+#[cfg(test)]
+thread_local! {
+    static OWNER_CAPTURE_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Captures base, project-paths, agents and overlay exactly once while the guard
 /// holds the transactional lock. No directory creation, migration or write.
 fn capture_sources_locked(
     guard: &SettingsOperationGuard<'_>,
 ) -> Result<CapturedSettingsSources, SettingsOwnerError> {
     guard.counters.captures.fetch_add(1, Ordering::Relaxed);
+    #[cfg(test)]
+    OWNER_CAPTURE_PANIC.with(|armed| {
+        if armed.replace(false) {
+            panic!("injected settings owner capture panic");
+        }
+    });
     let path = guard.settings_path();
     let captured = CapturedSettingsSources {
         settings_path: path.to_path_buf(),
@@ -15551,7 +15579,7 @@ impl SettingsOwner {
         })
     }
 
-    fn admit_operation(&self) -> Result<(), SettingsOwnerError> {
+    fn admit_operation(&self) -> Result<SettingsOperationAdmission<'_>, SettingsOwnerError> {
         let mut control = self.control();
         if !control.managed_operations_enabled {
             return Err(SettingsOwnerError::OperationsNotEnabled);
@@ -15560,7 +15588,7 @@ impl SettingsOwner {
             return Err(SettingsOwnerError::Unavailable(control.availability));
         }
         control.operations += 1;
-        Ok(())
+        Ok(SettingsOperationAdmission { owner: self })
     }
 
     fn finish_operation(&self) {
@@ -15575,15 +15603,27 @@ impl SettingsOwner {
     /// transactional lock, builder over the captured current settings, publishers,
     /// adoption of the effective reality, then release. Host effects belong to
     /// the caller, after this returns. Never nests a runtime.
+    ///
+    /// The admission is released on every path, panics included, so a drain
+    /// always terminates. A panic before the guards are held published nothing
+    /// and is a worker error; a panic while they are held is classified under
+    /// them (see `run_operation`).
     pub fn with_operation_blocking<T>(
         &self,
         name: &'static str,
         builder: impl FnOnce(&AppSettings, &mut SettingsOperationGuard<'_>) -> Result<T, String>,
     ) -> Result<SettingsOperationReport<T>, SettingsOwnerError> {
-        self.admit_operation()?;
-        let result = self.run_operation(name, builder);
-        self.finish_operation();
-        result
+        let _admission = self.admit_operation()?;
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.run_operation(name, builder)
+        }));
+        match run {
+            Ok(result) => result,
+            Err(_) => {
+                let reason = "operation panicked before its guards were held";
+                Err(SettingsOwnerError::Worker(reason.to_string()))
+            }
+        }
     }
 
     /// The async form: the same body on a blocking worker that retains its
@@ -15618,12 +15658,64 @@ impl SettingsOwner {
             SettingsAvailability::Closed,
         ))?;
         let mut guard = self.operation_guard(lease)?;
+        // Everything that reads sources, runs the builder or adopts reality runs
+        // under this catch, so a panic anywhere is classified while the state
+        // guard, the lease and the transactional lock are all still held.
+        let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.operation_body(&mut state, &mut guard, builder)
+        }));
+        let effect = guard.effect;
+        let (outcome, value, error) = match body {
+            Ok(Ok(parts)) => parts,
+            Ok(Err(error)) => return Err(error),
+            Err(_) if effect == OperationEffect::None => {
+                // No publisher ran and RAM was not replaced: nothing to recover.
+                let reason = "operation panicked before any publisher";
+                (OperationOutcome::Rejected, None, Some(reason.to_string()))
+            }
+            Err(_) => {
+                // A source may have changed and reality could not be adopted.
+                self.mark_invalid("panic");
+                let reason = "operation panicked after a publisher";
+                (
+                    OperationOutcome::PartialOrUnknown,
+                    None,
+                    Some(reason.to_string()),
+                )
+            }
+        };
+        drop(guard);
+        drop(state);
+        let control = self.control();
+        log::debug!(
+            "[settings-owner] {} op={operation} {name} {outcome:?}/{effect:?} epoch={} in {:?}",
+            self.instance_id,
+            control.epoch,
+            started.elapsed()
+        );
+        Ok(SettingsOperationReport {
+            outcome,
+            value,
+            error,
+            epoch: control.epoch,
+            availability: control.availability,
+        })
+    }
+
+    /// Capture, builder, classification and adoption, all under the caller's
+    /// guards. Admission errors return before any publisher can run.
+    fn operation_body<T>(
+        &self,
+        state: &mut AppSettings,
+        guard: &mut SettingsOperationGuard<'_>,
+        builder: impl FnOnce(&AppSettings, &mut SettingsOperationGuard<'_>) -> Result<T, String>,
+    ) -> Result<OperationParts<T>, SettingsOwnerError> {
         // Sources that do not compose at admission reject the operation before
         // any publisher; RAM keeps the last adopted value.
-        let captured = capture_sources_locked(&guard)?;
+        let captured = capture_sources_locked(guard)?;
         let current = compose_captured_sources(&captured, CapturePolicy::Recovery)?;
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            builder(&current, &mut guard)
+            builder(&current, &mut *guard)
         }));
         let effect = guard.effect;
         let (value, error) = match built {
@@ -15649,7 +15741,7 @@ impl SettingsOwner {
             self.control().epoch += 1;
             outcome
         } else {
-            let recaptured = capture_sources_locked(&guard);
+            let recaptured = capture_sources_locked(guard);
             match recaptured.and_then(|captured| recover_composition(&captured)) {
                 Ok(effective) => {
                     *state = effective;
@@ -15662,22 +15754,7 @@ impl SettingsOwner {
                 }
             }
         };
-        drop(guard);
-        drop(state);
-        let control = self.control();
-        log::debug!(
-            "[settings-owner] {} op={operation} {name} {outcome:?}/{effect:?} epoch={} in {:?}",
-            self.instance_id,
-            control.epoch,
-            started.elapsed()
-        );
-        Ok(SettingsOperationReport {
-            outcome,
-            value,
-            error,
-            epoch: control.epoch,
-            availability: control.availability,
-        })
+        Ok((outcome, value, error))
     }
 
     /// Seals admission, waits for every permit and operation, then releases the
@@ -33301,6 +33378,31 @@ mod e2992_p41_owner_tests {
         path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME)
     }
 
+    /// Link-free physical aliases of `dir`: its canonical spelling when that
+    /// differs textually (Windows verbatim prefix, macOS `/var` -> `/private/var`),
+    /// and a case variant of its leaf when the filesystem resolves it to the same
+    /// directory. Each is checked to canonicalize to the same directory.
+    fn physical_aliases(dir: &Path) -> Vec<PathBuf> {
+        let canonical = std::fs::canonicalize(dir).unwrap();
+        let mut aliases = Vec::new();
+        if canonical != dir {
+            aliases.push(canonical.clone());
+        }
+        let leaf = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let upper = leaf.to_ascii_uppercase();
+        let flipped = if upper != leaf {
+            upper
+        } else {
+            leaf.to_ascii_lowercase()
+        };
+        let variant = dir.with_file_name(flipped);
+        let same = std::fs::canonicalize(&variant).is_ok_and(|resolved| resolved == canonical);
+        if variant != dir && same {
+            aliases.push(variant);
+        }
+        aliases
+    }
+
     fn is_compose(error: &SettingsOwnerError) -> bool {
         matches!(error, SettingsOwnerError::Compose(_))
     }
@@ -33488,6 +33590,51 @@ mod e2992_p41_owner_tests {
         assert_eq!(report.outcome, OperationOutcome::Committed);
         let snapshot = runtime.block_on(owner.current_snapshot()).unwrap();
         assert!(snapshot.voice_to_text_enabled);
+
+        // A panic in the admission capture, outside the builder and before any
+        // publisher, is classified under the guards: Rejected, RAM kept, Ready.
+        OWNER_CAPTURE_PANIC.with(|armed| armed.set(true));
+        let report = owner
+            .with_operation_blocking("capture-panic", |_, _| Ok(()))
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::Rejected);
+        assert_eq!(report.availability, SettingsAvailability::Ready);
+        assert!(report.error.is_some());
+        assert!(voice_enabled(&owner));
+
+        // A panic in the recapture after a publisher cannot adopt reality:
+        // PartialOrUnknown and sticky Invalid, never success.
+        let report = owner
+            .with_operation_blocking("recapture-panic", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |settings_path| {
+                    write_json(settings_path, &voice(false));
+                    Ok(())
+                })?;
+                OWNER_CAPTURE_PANIC.with(|armed| armed.set(true));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        assert!(report.value.is_none());
+        assert!(owner.blocking_current_snapshot().is_err());
+        // Every admission was released, so the drain terminates.
+        owner.drain_blocking(SOFT_DEADLINE);
+        assert_eq!(owner.availability(), SettingsAvailability::Closed);
+
+        // A panic before the guards (a blocking state guard requested from
+        // inside a runtime) published nothing: a worker error, Ready kept, and
+        // the drain still terminates.
+        let (_dir, path) = instance(Some(voice(true)));
+        let owner = SettingsOwner::open_active(&path, WAIT).unwrap();
+        let in_runtime =
+            runtime.block_on(async { owner.with_operation_blocking("in-runtime", |_, _| Ok(())) });
+        assert!(
+            matches!(in_runtime, Err(SettingsOwnerError::Worker(_))),
+            "{in_runtime:?}"
+        );
+        assert_eq!(owner.availability(), SettingsAvailability::Ready);
+        assert!(voice_enabled(&owner));
         owner.drain_blocking(SOFT_DEADLINE);
     }
 
@@ -33579,10 +33726,29 @@ mod e2992_p41_owner_tests {
         let base = std::fs::read(&path).unwrap();
         let before = counts(&first);
 
-        // A physical alias of the same directory meets the same authority.
-        let alias = dir.path().join(".").join(SETTINGS_FILE_NAME);
-        let error = SettingsOwner::open_active(&alias, Duration::from_millis(100)).unwrap_err();
-        assert_eq!(error, SettingsOwnerError::LifecycleTimedOut);
+        // Physical aliases: different spellings that name the same directory
+        // object, found without creating any link. Each one meets the same
+        // authority, times out, and reads no source.
+        let aliases = physical_aliases(dir.path());
+        if cfg!(windows) {
+            // NTFS is case-insensitive and canonicalize yields a verbatim
+            // spelling, so Windows always has both aliases.
+            assert_eq!(aliases.len(), 2, "{aliases:?}");
+        }
+        assert!(
+            !aliases.is_empty() || cfg!(target_os = "linux"),
+            "only a case-sensitive, link-free temp directory may lack a physical alias"
+        );
+        for alias_dir in &aliases {
+            let alias = alias_dir.join(SETTINGS_FILE_NAME);
+            let error = SettingsOwner::open_active(&alias, Duration::from_millis(100));
+            assert_eq!(error.unwrap_err(), SettingsOwnerError::LifecycleTimedOut);
+        }
+        let alias = aliases
+            .first()
+            .cloned()
+            .unwrap_or_else(|| dir.path().to_path_buf())
+            .join(SETTINGS_FILE_NAME);
 
         // An identity that cannot be established is an error, never "free".
         let parent_alias = dir.path().join("sub").join("..").join(SETTINGS_FILE_NAME);
