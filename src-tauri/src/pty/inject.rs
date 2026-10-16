@@ -1540,9 +1540,10 @@ mod tests {
         pty.lock()
             .unwrap()
             .record_route(id, SessionBackendKind::LocalProcess);
-        let settings_state: crate::config::settings::SettingsState = Arc::new(
-            tokio::sync::RwLock::new(crate::config::settings::AppSettings::default()),
-        );
+        let settings_state: crate::config::settings::SettingsState =
+            crate::config::settings::new_settings_state(
+                crate::config::settings::AppSettings::default(),
+            );
         let app = tauri::test::mock_builder()
             .manage(session_manager)
             .manage(pty)
@@ -1582,9 +1583,10 @@ mod tests {
         pty.lock()
             .unwrap()
             .record_route(id, SessionBackendKind::LocalProcess);
-        let settings_state: crate::config::settings::SettingsState = Arc::new(
-            tokio::sync::RwLock::new(crate::config::settings::AppSettings::default()),
-        );
+        let settings_state: crate::config::settings::SettingsState =
+            crate::config::settings::new_settings_state(
+                crate::config::settings::AppSettings::default(),
+            );
         let app = tauri::test::mock_builder()
             .manage(session_manager)
             .manage(pty)

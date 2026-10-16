@@ -4438,7 +4438,7 @@ pub fn run(
     // (#621) Snapshot registered project paths for the startup orphan-clock prune
     // below (taken before the value is moved into the RwLock).
     let startup_project_paths = loaded_settings.project_paths.clone();
-    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(loaded_settings));
+    let settings: SettingsState = crate::config::settings::new_settings_state(loaded_settings);
     // #552 persisted coordinator badge clock + auto-closed marker store (loaded
     // once at startup; flushed by the auto-close tick and on app exit).
     let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
@@ -8592,7 +8592,7 @@ mod tests {
 
     fn resolved(settings: AppSettings) -> std::collections::HashMap<String, String> {
         let source = ScraperPatterns {
-            settings: std::sync::Arc::new(tokio::sync::RwLock::new(settings)) as SettingsState,
+            settings: crate::config::settings::new_settings_state(settings) as SettingsState,
         };
         futures::executor::block_on(source.patterns())
     }
@@ -9122,7 +9122,8 @@ mod tests {
         let session_mgr = Arc::new(tokio::sync::RwLock::new(
             crate::session::manager::SessionManager::new(),
         ));
-        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let settings: SettingsState =
+            crate::config::settings::new_settings_state(AppSettings::default());
         let app = crate::test_support::test_builder()
             .manage(Arc::clone(&settings))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -9736,7 +9737,7 @@ mod tests {
         let registry = Arc::new(CaptureRegistry::new());
         let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
         let app = tauri::test::mock_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(session_manager.clone())
             .manage(crate::network::OutboundNetwork::new().expect("shared outbound network"))
             .manage(registry.clone())
@@ -12520,7 +12521,7 @@ mod tests {
             ));
             let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
             let app = tauri::test::mock_builder()
-                .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+                .manage(crate::config::settings::new_settings_state(settings))
                 .manage(manager.clone())
                 .manage(crate::network::OutboundNetwork::new().expect("shared outbound network"))
                 .manage(registry.clone())

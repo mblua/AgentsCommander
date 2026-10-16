@@ -1363,7 +1363,7 @@ mod watcher_preview_tests {
     }
 
     fn settings_app(settings: AppSettings) -> tauri::App<tauri::test::MockRuntime> {
-        let state: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
+        let state: SettingsState = crate::config::settings::new_settings_state(settings);
         tauri::test::mock_builder()
             .manage(state)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

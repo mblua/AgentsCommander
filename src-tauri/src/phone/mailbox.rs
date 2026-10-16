@@ -15319,7 +15319,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string(),
             ))
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(session_mgr.clone())
             .manage(pty_mgr) // #885 E-3: real PtyManager for pty_live probes
             .manage(Arc::new(tokio::sync::Mutex::new(
@@ -30183,7 +30183,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string(),
             ))
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(session_mgr.clone())
             .manage(pty_mgr)
             .manage(telegram)
