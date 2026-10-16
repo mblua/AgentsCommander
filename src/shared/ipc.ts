@@ -28,6 +28,12 @@ import type {
   PtyScreenSnapshot,
   TypingHoldSnapshot,
   AppSettings,
+  AppSettingsWire,
+  AgentConfig,
+  AgentConfigWire,
+  ProfileCellConfig,
+  ProfileCellConfigWire,
+  CodingAgentProfilesConfigWire,
   MainWindowDisplayState,
   SettingsSnapshot,
   AgentConfigWireInput,
@@ -473,6 +479,36 @@ function decodeCatalogReport(input: CatalogReportWireInput): CatalogReportProjec
   return catalog === input.catalog ? input as CatalogReportProjection : { ...input, catalog };
 }
 
+// Outbound configuration writes emit only the canonical keys; internal command
+// members carry effective text and never forward legacy copies.
+function encodeAgent({ command, ...rest }: AgentConfig): AgentConfigWire {
+  return { ...rest, baseCommand: command };
+}
+
+function encodeProfileCell({ command, ...rest }: ProfileCellConfig): ProfileCellConfigWire {
+  return { ...rest, additionalArguments: command };
+}
+
+function encodeProfiles(profiles: CodingAgentProfilesConfig): CodingAgentProfilesConfigWire {
+  return {
+    ...profiles,
+    profilesByAgent: Object.fromEntries(
+      Object.entries(profiles.profilesByAgent).map(([agent, cells]) => [
+        agent,
+        Object.fromEntries(Object.entries(cells).map(([slot, cell]) => [slot, encodeProfileCell(cell)])),
+      ]),
+    ),
+  };
+}
+
+function encodeSettings(settings: AppSettings): AppSettingsWire {
+  return {
+    ...settings,
+    agents: settings.agents.map(encodeAgent),
+    codingAgentProfiles: encodeProfiles(settings.codingAgentProfiles),
+  };
+}
+
 export const CodingAgentsAPI = {
   // Trusted complete typed Rust response after field projection; unrelated fields
   // are not runtime-validated. Partial fake payloads test projection only.
@@ -555,9 +591,9 @@ export const SettingsAPI = {
       targetIndex: request.targetIndex,
     }),
   update: (settings: AppSettings) =>
-    transport.invoke<void>("update_settings", { newSettings: settings }),
+    transport.invoke<void>("update_settings", { newSettings: encodeSettings(settings) }),
   saveDraft: (settings: AppSettings) =>
-    transport.invoke<void>("save_settings_draft", { draft: settings }),
+    transport.invoke<void>("save_settings_draft", { draft: encodeSettings(settings) }),
   openWebRemote: () => transport.invoke<void>("open_web_remote"),
   startWebServer: () => transport.invoke<boolean>("start_web_server"),
   stopWebServer: () => transport.invoke<boolean>("stop_web_server"),
@@ -589,7 +625,7 @@ export const SettingsAPI = {
   setLogLevel: (level: LogLevel) =>
     transport.invoke<void>("set_log_level", { level }),
   updateCodingAgentProfiles: (profiles: CodingAgentProfilesConfig) =>
-    transport.invoke<void>("update_coding_agent_profiles", { profiles }),
+    transport.invoke<void>("update_coding_agent_profiles", { profiles: encodeProfiles(profiles) }),
   updateCodingAgentEnvSettings: (
     agentId: string,
     envs: CodingAgentEnv[],

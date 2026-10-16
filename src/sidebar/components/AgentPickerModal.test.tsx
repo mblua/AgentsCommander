@@ -23,7 +23,7 @@ import type {
   ScopeFault,
   SelectionState,
 } from "../../shared/types";
-import { resolveProfilePreview } from "../../shared/profile-utils";
+import { composeEffectiveCommand, profileCellCommandText, resolveProfilePreview } from "../../shared/profile-utils";
 import { baseSettings } from "../../shared/testing/base-settings";
 import { dispatchPointer, stubAgentRowGeometry } from "./settings/agentReorderDnd.testkit";
 import { sessionsStore } from "../stores/sessions";
@@ -576,6 +576,23 @@ describe("AgentPickerModal", () => {
       expect(text("agentPicker.provider.codex")).toContain("Codex");
       expect(target("agentPicker.profile.A").getAttribute("data-ac-profile-letter")).toBe("A");
       expect(text("agentPicker.profile.A.pill")).toBe("MATCH");
+    } finally {
+      dispose();
+    }
+  });
+
+  // #3021 - the picker shows only the composed launch preview, still labelled Command.
+  it("keeps the composed Command preview from base and profile text", async () => {
+    const { dispose } = renderPicker();
+    try {
+      await settle();
+      const cell = currentSettings.codingAgentProfiles.profilesByAgent.codex.A;
+      const param = target("agentPicker.profile.A").querySelector(".agent-profile-param")!;
+      const [label, value] = Array.from(param.children).map((child) => child.textContent);
+      expect(label).toBe("Command ");
+      expect(value).toBe(composeEffectiveCommand("codex", profileCellCommandText(cell)));
+      expect(value).toContain("--model gpt-5");
+      expect(target("agentPicker.profiles").textContent).not.toMatch(/Base command|Additional arguments/);
     } finally {
       dispose();
     }
