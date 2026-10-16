@@ -426,6 +426,59 @@ html.light-theme .home-markdown pre { background: rgba(0, 0, 0, 0.05); }
   outline: 2px solid var(--focus-ring, #00d4ff);
   outline-offset: -2px;
 }
+/* #3037 - popup mute field. The main window does not load sidebar.css, so the
+   reused settings-checkbox classes are styled here, scoped to the error modal. */
+.error-modal .error-mute-field {
+  margin: -4px 0 20px;
+}
+.error-modal .settings-checkbox-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-secondary, rgba(255, 255, 255, 0.7));
+  cursor: pointer;
+  padding: 2px 0;
+}
+.error-modal .settings-checkbox {
+  accent-color: #00d4ff;
+  cursor: pointer;
+  flex: 0 0 auto;
+  margin: 3px 0 0;
+}
+.error-modal .settings-checkbox:focus-visible {
+  outline: 2px solid var(--focus-ring, #00d4ff);
+  outline-offset: 2px;
+}
+.error-modal .settings-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.error-modal .settings-checkbox-field:has(.settings-checkbox:disabled) {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.error-modal .error-mute-help,
+.error-modal .error-mute-status {
+  margin: 4px 0 0 21px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+}
+/* Stays rendered (not display:none) so the polite live region keeps announcing. */
+.error-modal .error-mute-status:empty {
+  margin: 0;
+}
+html.light-theme .error-modal .settings-checkbox-field {
+  color: rgba(0, 0, 0, 0.65);
+}
+html.light-theme .error-modal .settings-checkbox {
+  accent-color: #0066cc;
+}
+html.light-theme .error-modal .error-mute-help,
+html.light-theme .error-modal .error-mute-status {
+  color: #5a6172;
+}
 .error-modal-actions {
   display: flex;
   justify-content: flex-end;
