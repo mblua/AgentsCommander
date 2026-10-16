@@ -10686,3 +10686,28 @@ html.light-theme .agent-comparison-table-head {
   border-radius: 2px;
 }
 .light-theme .sidebar-task-label:focus-visible { outline-color: #2563eb; }
+
+/* #3027 - halo around the row that opened the replica context menu. Sits under
+   the menu (9999) and its flyouts (10000); never takes pointer input. */
+.replica-menu-halo-clip {
+  position: fixed;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 9998;
+}
+.replica-menu-halo {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: var(--radius-md);
+  border: 2px solid var(--sidebar-accent);
+  box-shadow: 0 0 0 1px var(--sidebar-accent);
+  pointer-events: none;
+  animation: replica-menu-halo-pulse 420ms ease-in-out 2;
+}
+@keyframes replica-menu-halo-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 1px var(--sidebar-accent); }
+  50% { opacity: 0.45; box-shadow: 0 0 0 4px var(--sidebar-accent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .replica-menu-halo { animation: none; }
+}

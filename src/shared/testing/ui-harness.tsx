@@ -266,7 +266,69 @@ export function resetUiStoresForTests(): void {
   __resetHomeStoreForTests();
 }
 
-export function installBrowserDomStubs(): () => void {
+// #3027 - jsdom has no layout, so every element measures 0x0. The replica menu
+// closes when its origin row measures empty, which would shut it in every test
+// that does not model layout. Rows and the ancestors that contain them get
+// synthetic visible bounds instead; every other element keeps its own rect.
+const REPLICA_ROW_FALLBACK_RECT = { left: 8, top: 40, width: 240, height: 28 };
+
+function syntheticRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+    toJSON: () => ({ left, top, width, height }),
+  } as DOMRect;
+}
+
+function isStyleHidden(el: Element): boolean {
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return true;
+  }
+  return false;
+}
+
+function installReplicaMenuGeometry(): () => void {
+  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "getBoundingClientRect");
+  const captured = previous?.value as ((this: HTMLElement) => DOMRect) | undefined;
+  Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+    configurable: true,
+    writable: true,
+    value: function getBoundingClientRect(this: HTMLElement): DOMRect {
+      // Looked up per call, so a spy installed later on Element.prototype still applies.
+      const rect = captured ? captured.call(this) : Element.prototype.getBoundingClientRect.call(this);
+      if (rect.width !== 0 || rect.height !== 0 || !this.isConnected) return rect;
+      const isRow = this.classList.contains("replica-item");
+      if (!isRow && !this.querySelector(".replica-item")) return rect;
+      if (isStyleHidden(this)) return rect;
+      if (isRow) {
+        const { left, top, width, height } = REPLICA_ROW_FALLBACK_RECT;
+        return syntheticRect(left, top, width, height);
+      }
+      return syntheticRect(0, 0, window.innerWidth, window.innerHeight);
+    },
+  });
+  return () => {
+    if (previous) {
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", previous);
+    } else {
+      delete (HTMLElement.prototype as Partial<HTMLElement>).getBoundingClientRect;
+    }
+  };
+}
+
+/** `replicaMenuGeometry` (default true) gives connected, visible replica rows
+ *  and the ancestors that contain them synthetic bounds when they measure 0x0;
+ *  pass false in a test that models that geometry itself. */
+export function installBrowserDomStubs(options: { replicaMenuGeometry?: boolean } = {}): () => void {
+  const restoreReplicaMenuGeometry =
+    options.replicaMenuGeometry === false ? () => {} : installReplicaMenuGeometry();
   const previousResizeObserver = globalThis.ResizeObserver;
   const previousRequestAnimationFrame = globalThis.requestAnimationFrame;
   const previousCancelAnimationFrame = globalThis.cancelAnimationFrame;
@@ -367,6 +429,7 @@ export function installBrowserDomStubs(): () => void {
       delete (navigator as unknown as { clipboard?: Clipboard }).clipboard;
     }
     HTMLCanvasElement.prototype.getContext = previousCanvasGetContext;
+    restoreReplicaMenuGeometry();
   };
 }
 
