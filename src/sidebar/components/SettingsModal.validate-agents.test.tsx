@@ -181,12 +181,19 @@ describe("SettingsModal command field labels and writes (#3021)", () => {
     return { fake, rendered };
   }
 
+  // The base command input exists only once the row's editor is open.
+  async function openBaseCommand(root: HTMLElement): Promise<HTMLInputElement> {
+    q<HTMLButtonElement>(root, "settings.agentRow.0.toggle")!.click();
+    await waitFor(() => expect(q(root, "settings.agentRow.0.command")).toBeTruthy());
+    return q<HTMLInputElement>(root, "settings.agentRow.0.command")!;
+  }
+
   it("labels the base and profile fields and keeps the legacy fallback visible on reload", async () => {
     const { rendered } = renderWire();
     try {
       await ready(rendered.root);
       await waitFor(() => expect(q(rendered.root, `${CARD}.command`)).toBeTruthy());
-      const baseInput = q<HTMLInputElement>(rendered.root, "settings.agentRow.0.command")!;
+      const baseInput = await openBaseCommand(rendered.root);
       expect(baseInput.closest("label")?.querySelector(".settings-label")?.textContent).toBe("Base command");
       expect(baseInput.value).toBe('codex --profile "x y"');
       const cardInput = q<HTMLTextAreaElement>(rendered.root, `${CARD}.command`)!;
@@ -206,7 +213,7 @@ describe("SettingsModal command field labels and writes (#3021)", () => {
     const { fake, rendered } = renderWire();
     try {
       await ready(rendered.root);
-      const baseInput = q<HTMLInputElement>(rendered.root, "settings.agentRow.0.command")!;
+      const baseInput = await openBaseCommand(rendered.root);
       baseInput.value = 'wrapper "C:/Program Files/codex.exe" --fixed';
       baseInput.dispatchEvent(new Event("input", { bubbles: true }));
       await expectFooterError(rendered.root, "");
