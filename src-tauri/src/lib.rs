@@ -52,7 +52,8 @@ use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
 use pty::manager::PtyManager;
 use pty::watchers::{
-    SessionFrameReader, WatcherBackendSource, WatcherEngine, WatcherEventSink, WatcherPatternSource,
+    ActivityConsumer, ActivityFactory, ActivityObservation, SessionFrameReader,
+    WatcherBackendSource, WatcherEngine, WatcherEventSink, WatcherPatternSource,
 };
 use session::manager::SessionManager;
 use shutdown::ShutdownSignal;
@@ -1986,6 +1987,27 @@ impl ContextPersistSink for ScraperPersist {
             crate::config::sessions_persistence::persist_current_state_prune_dormant(&guard).await;
         })
     }
+}
+
+/// #2879 - the watcher engine's internal activity factory, composed over the idle detector.
+/// Each call is one attach (`activity_consumer`); the returned consumer only maps the engine's
+/// observation onto that attach's own `observe`/`retire` and returns their verdict unchanged.
+/// The engine never names the detector, and the detector never learns about the engine.
+pub(crate) fn codex_activity_factory(detector: &Arc<IdleDetector>) -> ActivityFactory {
+    let detector = Arc::clone(detector);
+    Arc::new(move |id: uuid::Uuid| {
+        let handle = detector.activity_consumer(id)?;
+        let consumer: ActivityConsumer =
+            Arc::new(move |observation: ActivityObservation| match observation {
+                ActivityObservation::Present => (handle.observe)(Some(true)),
+                ActivityObservation::Absent => (handle.observe)(Some(false)),
+                ActivityObservation::Unavailable | ActivityObservation::Validate => {
+                    (handle.observe)(None)
+                }
+                ActivityObservation::Retired => (handle.retire)(),
+            });
+        Some(consumer)
+    })
 }
 
 // ---- #1171: the three narrow watcher adapters -------------------------------------------
@@ -4795,7 +4817,8 @@ pub fn run(
             // and for the same reason it must come after `.manage(settings)`.
             let watcher_history: crate::pty::watchers::history::WatcherHistoryState =
                 Arc::new(crate::pty::watchers::history::WatcherHistory::default());
-            let watcher_engine = WatcherEngine::new(
+            // #2879 - plus the internal Codex activity factory over the idle detector.
+            let watcher_engine = WatcherEngine::new_with_activity_factory(
                 Arc::new(WatcherBackends {
                     pty_mgr: pty_mgr.clone(),
                     poison_logged: AtomicBool::new(false),
@@ -4809,6 +4832,7 @@ pub fn run(
                     delivery: WatcherDelivery::to_watchers_window(app.handle().clone()),
                 }),
                 Arc::clone(&watcher_history),
+                Some(codex_activity_factory(&idle_detector_for_setup)),
             );
             watcher_engine.start(shutdown_for_setup.clone());
             app.manage(Arc::clone(&watcher_engine));

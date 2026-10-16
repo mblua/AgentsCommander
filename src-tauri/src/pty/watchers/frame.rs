@@ -767,4 +767,318 @@ mod tests {
         );
         assert_eq!(selected[0].text, "bc");
     }
+
+    /// #2879 - test-only instrument, not a product constant: the Codex status header with a
+    /// complete `esc to interrupt` hint, upstream `fmt_elapsed_compact` durations, and an
+    /// optional ` · ` context suffix.
+    const I2879_PATTERN: &str = r"^[ \t]*Working[ \t]*\((?:[0-9]+s|[1-9][0-9]*m [0-5][0-9]s|[1-9][0-9]*h [0-5][0-9]m [0-5][0-9]s)[ \t]*•[ \t]*esc[ \t]+to[ \t]+interrupt\)(?: · [^\r\n]+)?[ \t]*$";
+
+    /// `(name, sha256, bytes, expected len, row 17 text, expected matches)`.
+    type I2879OfflineCase = (
+        &'static str,
+        &'static str,
+        &'static [u8],
+        usize,
+        &'static str,
+        Vec<(usize, usize)>,
+    );
+
+    /// `(name, bytes, row 17 text, expected matches)`.
+    type I2879PrefixCase = (
+        &'static str,
+        &'static [u8],
+        &'static str,
+        Vec<(usize, usize)>,
+    );
+
+    /// Everything the real pipeline produces from one 24x80 `vt100` screen.
+    #[derive(Debug, PartialEq)]
+    struct I2879Snapshot {
+        rows: Vec<String>,
+        wrapped: Vec<bool>,
+        cursor_row: u16,
+        logical: Vec<LogicalRow>,
+    }
+
+    /// Bytes -> vt100 -> `ScreenFrame` (with the real wrap flags) -> `logical_rows`.
+    fn i2879_snapshot(chunks: &[&[u8]]) -> I2879Snapshot {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        for chunk in chunks {
+            parser.process(chunk);
+        }
+        let screen = parser.screen();
+        let frame = ScreenFrame {
+            rows: screen.rows(0, 80).collect(),
+            wrapped: (0..24).map(|i| screen.row_wrapped(i)).collect(),
+            cursor_row: screen.cursor_position().0,
+            stamp: None,
+        };
+        let logical = logical_rows(&frame);
+        I2879Snapshot {
+            rows: frame.rows,
+            wrapped: frame.wrapped,
+            cursor_row: frame.cursor_row,
+            logical,
+        }
+    }
+
+    /// `(start, end)` of every logical row the pattern matches.
+    fn i2879_matches(snapshot: &I2879Snapshot) -> Vec<(usize, usize)> {
+        let pattern = super::super::pattern::compile(I2879_PATTERN).expect("compiles");
+        snapshot
+            .logical
+            .iter()
+            .filter(|row| pattern.regex().is_match(&row.text))
+            .map(|row| (row.start, row.end))
+            .collect()
+    }
+
+    /// The whole stream, then every split point `k = 0..=len`, then byte by byte, each from an
+    /// empty parser. Only the final state is compared.
+    fn i2879_snapshot_every_split(name: &str, bytes: &[u8]) -> I2879Snapshot {
+        let whole = i2879_snapshot(&[bytes]);
+        for k in 0..=bytes.len() {
+            let split = i2879_snapshot(&[&bytes[..k], &bytes[k..]]);
+            assert_eq!(split, whole, "{name}: split at {k}");
+            assert_eq!(
+                i2879_matches(&split),
+                i2879_matches(&whole),
+                "{name}: split at {k}"
+            );
+        }
+        let singles: Vec<&[u8]> = bytes.chunks(1).collect();
+        let byte_by_byte = i2879_snapshot(&singles);
+        assert_eq!(byte_by_byte, whole, "{name}: byte by byte");
+        assert_eq!(
+            i2879_matches(&byte_by_byte),
+            i2879_matches(&whole),
+            "{name}: byte by byte"
+        );
+        whole
+    }
+
+    /// #2879 - the seven offline fixtures, transcribed byte-exact from
+    /// `room-shared/i2879-offline-evidence/fixtures/*.ans` (SHA-256 per `SHA256SUMS-fixtures`).
+    /// CUP prefixes and the initial state are derived; f3 is synthetic, not recovered raw
+    /// bytes. None of this is a full session replay.
+    #[test]
+    fn i2879_offline_ansi() {
+        const CORE_0S: &str = "Working (0s • esc to interrupt)";
+        // (name, sha256, bytes, expected len, row 17 text, expected matches)
+        let cases: [I2879OfflineCase; 6] = [
+            (
+                "f1-paint-csi1c",
+                "e164f40c63c7e7a4adf5f4576d1f2f1be39e68b5d20c2acc804b386e99119ce1",
+                b"\x1b[18;1HWorking\x1b[2m\x1b[1C(0s \xe2\x80\xa2 \x1b[22m\x1b[1mesc\x1b[22m\x1b[2m to interrupt)\x1b[21;3H",
+                72,
+                CORE_0S,
+                vec![(17, 17)],
+            ),
+            (
+                "f2-paint-space",
+                "4926ed6fc7d4b30f624244c0745829515d25319a98381c5ef12e5863ed5226b2",
+                b"\x1b[18;1HWorking \x1b[2m(3s \xe2\x80\xa2 \x1b[22m\x1b[1mesc\x1b[22m\x1b[2m to interrupt)\x1b[21;3H\x1b[?25h",
+                75,
+                "Working (3s • esc to interrupt)",
+                vec![(17, 17)],
+            ),
+            (
+                "f3-cup-counter-derived",
+                "7d50b3262cb57ccfc2350be08a0c8e33a03edfc42d08f67c922e827b712f5f90",
+                b"\x1b[18;1HWorking \x1b[2m(3s \xe2\x80\xa2 \x1b[22m\x1b[1mesc\x1b[22m\x1b[2m to interrupt)\x1b[21;3H\x1b[?25h\x1b[18;10H5",
+                84,
+                "Working (5s • esc to interrupt)",
+                vec![(17, 17)],
+            ),
+            (
+                "f4-clear-el",
+                "81038ce1acb72099d6efb83e2277db673090fae93403a7c72fc7387b5759075d",
+                b"\x1b[18;1HWorking\x1b[2m\x1b[1C(0s \xe2\x80\xa2 \x1b[22m\x1b[1mesc\x1b[22m\x1b[2m to interrupt)\x1b[21;3H\x1b[18;1H\x1b[K",
+                82,
+                "",
+                vec![],
+            ),
+            (
+                "n1-keyword-only",
+                "9fe68efa826830437bd57d38c408168dcf03c7531a9cb1305bb516c0e7d629d9",
+                b"\x1b[18;1HWorking\x1b[21;3H",
+                21,
+                "Working",
+                vec![],
+            ),
+            (
+                "n2-extra-text",
+                "6aa95a220f0f566027febede0ede120286a61e8b23c181b49bbad038bee99381",
+                b"\x1b[18;1HWorking (0s \xe2\x80\xa2 esc to interrupt) extra\x1b[21;3H",
+                53,
+                "Working (0s • esc to interrupt) extra",
+                vec![],
+            ),
+        ];
+
+        for (name, sha256, bytes, len, row17, matches) in cases {
+            assert_eq!(bytes.len(), len, "{name} ({sha256}): transcription length");
+            let snapshot = i2879_snapshot_every_split(name, bytes);
+            assert_eq!(snapshot.rows[17], row17, "{name}: row 17");
+            let logical17 = snapshot
+                .logical
+                .iter()
+                .find(|row| row.start == 17)
+                .expect("row 17 starts a logical row");
+            assert_eq!(
+                (logical17.end, logical17.text.as_str()),
+                (17, row17),
+                "{name}"
+            );
+            assert_eq!(i2879_matches(&snapshot), matches, "{name}: matches");
+        }
+
+        // f5: 80 explicit spaces fill row 16, so the next printable autowraps into row 17.
+        let name = "f5-wrap-autowrap";
+        let sha256 = "bdd50457c09c56a9e4715cece6a68e17a0d3ad383c12990687d7171fd49448b5";
+        let bytes: &[u8] = b"\x1b[17;1H                                                                                Working\x1b[2m\x1b[1C(0s \xe2\x80\xa2 \x1b[22m\x1b[1mesc\x1b[22m\x1b[2m to interrupt)\x1b[21;3H";
+        assert_eq!(bytes.len(), 152, "{name} ({sha256}): transcription length");
+        let snapshot = i2879_snapshot_every_split(name, bytes);
+        let spaces = " ".repeat(80);
+        assert_eq!(snapshot.rows[16], spaces, "{name}: row 16");
+        assert_eq!(snapshot.rows[17], CORE_0S, "{name}: row 17");
+        assert!(snapshot.wrapped[16], "{name}: row 16 wraps into row 17");
+        let logical16 = snapshot
+            .logical
+            .iter()
+            .find(|row| row.start == 16)
+            .expect("row 16 starts a logical row");
+        assert_eq!(logical16.end, 17, "{name}");
+        assert_eq!(logical16.text, format!("{spaces}{CORE_0S}"), "{name}");
+        assert_eq!(i2879_matches(&snapshot), vec![(16, 17)], "{name}: matches");
+    }
+
+    /// #2879 - upstream `fmt_elapsed_compact` shapes (`Ns`, `Nm SSs`, `Nh MMm SSs`) and the
+    /// ` · ` context suffix, through the same pipeline, one independent 24x80 parser each.
+    #[test]
+    fn i2879_offline_elapsed() {
+        let cases: [(&str, bool); 11] = [
+            ("Working (59s • esc to interrupt)", true),
+            ("Working (1m 00s • esc to interrupt)", true),
+            ("Working (59m 59s • esc to interrupt)", true),
+            ("Working (1h 00m 00s • esc to interrupt)", true),
+            ("Working (2h 03m 09s • esc to interrupt)", true),
+            ("Working (1m 00s • esc to interrupt) · context", true),
+            ("Working (1m 60s • esc to interrupt)", false),
+            ("Working (1h 60m 00s • esc to interrupt)", false),
+            ("Working (0s • esc to", false),
+            ("Working", false),
+            ("Working (1m 00s • esc to interrupt) context", false),
+        ];
+
+        for (row17, matches) in cases {
+            let bytes = format!("\x1b[18;1H{row17}").into_bytes();
+            let snapshot = i2879_snapshot(&[&bytes]);
+            assert_eq!(snapshot.rows[17], row17);
+            let expected: Vec<(usize, usize)> = if matches { vec![(17, 17)] } else { vec![] };
+            assert_eq!(i2879_matches(&snapshot), expected, "{row17}");
+        }
+    }
+
+    /// `(start, end)` of every logical row the PRODUCTION Codex Working pattern matches.
+    fn i2879_production_matches(snapshot: &I2879Snapshot) -> Vec<(usize, usize)> {
+        let pattern =
+            super::super::pattern::compile(super::super::CODEX_WORKING_PATTERN).expect("compiles");
+        snapshot
+            .logical
+            .iter()
+            .filter(|row| pattern.regex().is_match(&row.text))
+            .map(|row| (row.start, row.end))
+            .collect()
+    }
+
+    /// #2879 - both activity-glyph prefixes, styled, with context, wrapped and at the top
+    /// edge, through ANSI -> vt100 -> `logical_rows` -> the production pattern, at every
+    /// split point (CSI and UTF-8 cut anywhere). The row-0 wrap stays skipped: a known limit.
+    #[test]
+    fn i2879_feature_ansi_prefix() {
+        let spaces = " ".repeat(71);
+        let wrapped_indicator = format!("\x1b[17;1H{spaces}• Working (3s • esc to interrupt)");
+        let top_edge = format!(
+            "\x1b[1;1H{spaces}• Working (3s • esc to interrupt)\x1b[18;1H• Working (4s • esc to interrupt)\x1b[21;3H"
+        );
+        // (name, bytes, row 17 text, matches)
+        let cases: [I2879PrefixCase; 2] = [
+            (
+                "bullet-styled",
+                b"\x1b[18;1H\x1b[36m\xe2\x80\xa2\x1b[0m Working \x1b[2m(12s \xe2\x80\xa2 \x1b[22m\x1b[1mesc\x1b[22m\x1b[2m to interrupt)\x1b[0m\x1b[21;3H",
+                "• Working (12s • esc to interrupt)",
+                vec![(17, 17)],
+            ),
+            (
+                "hollow-context",
+                b"\x1b[18;1H\xe2\x97\xa6 Working\x1b[1C(1m 05s \xe2\x80\xa2 esc to interrupt)\x1b[2m \xc2\xb7 Running hook\x1b[0m\x1b[21;3H",
+                "◦ Working (1m 05s • esc to interrupt) · Running hook",
+                vec![(17, 17)],
+            ),
+        ];
+        for (name, bytes, row17, matches) in cases {
+            let snapshot = i2879_snapshot_every_split(name, bytes);
+            assert_eq!(snapshot.rows[17], row17, "{name}: row 17");
+            assert_eq!(
+                i2879_production_matches(&snapshot),
+                matches,
+                "{name}: matches"
+            );
+            // The control: the same row with its hint truncated must not match.
+            let cut = format!("\x1b[18;1H{}", &row17[..row17.find("interrupt").unwrap()]);
+            assert!(
+                i2879_production_matches(&i2879_snapshot(&[cut.as_bytes()])).is_empty(),
+                "{name}: truncated hint"
+            );
+        }
+
+        let name = "bullet-wrapped";
+        let snapshot = i2879_snapshot_every_split(name, wrapped_indicator.as_bytes());
+        assert_eq!(
+            snapshot.rows[16],
+            format!("{spaces}• Working"),
+            "{name}: row 16"
+        );
+        assert_eq!(
+            snapshot.rows[17], " (3s • esc to interrupt)",
+            "{name}: row 17"
+        );
+        assert!(snapshot.wrapped[16], "{name}: row 16 wraps into row 17");
+        let logical16 = snapshot
+            .logical
+            .iter()
+            .find(|row| row.start == 16)
+            .expect("row 16 starts a logical row");
+        assert_eq!(
+            (logical16.end, logical16.text.as_str()),
+            (
+                17,
+                format!("{spaces}• Working (3s • esc to interrupt)").as_str()
+            ),
+            "{name}"
+        );
+        assert_eq!(
+            i2879_production_matches(&snapshot),
+            vec![(16, 17)],
+            "{name}"
+        );
+
+        let name = "top-edge";
+        let snapshot = i2879_snapshot_every_split(name, top_edge.as_bytes());
+        assert!(snapshot.wrapped[0], "{name}: row 0 wraps into row 1");
+        assert_eq!(
+            snapshot.rows[1], " (3s • esc to interrupt)",
+            "{name}: row 1"
+        );
+        assert!(
+            snapshot.logical.iter().all(|row| row.start > 1),
+            "{name}: the wrapped group at row 0 is skipped, as logical_rows documents"
+        );
+        assert_eq!(
+            i2879_production_matches(&snapshot),
+            vec![(17, 17)],
+            "{name}"
+        );
+    }
 }
