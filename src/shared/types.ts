@@ -2237,3 +2237,44 @@ export interface AgentHelpFile {
   byCommand?: Record<string, AgentHelpEntry>;
   byAgent?: Record<string, AgentHelpEntry>;
 }
+
+/** Configuration wire DTOs; internal command members remain effective text.
+ * Both present input spellings require runtime string validation. */
+export type AgentConfigWire = Omit<AgentConfig, "command"> & { baseCommand: string };
+export type AgentConfigWireInput = Partial<Omit<AgentConfig, "command">> & {
+  baseCommand?: unknown;
+  command?: unknown;
+};
+export type CodingAgentDefinitionWire = Omit<CodingAgentDefinition, "command"> & { baseCommand: string };
+export type CodingAgentDefinitionWireInput = Partial<Omit<CodingAgentDefinition, "command">> & {
+  baseCommand?: unknown;
+  command?: unknown;
+};
+export type ProfileCellConfigWire = Omit<ProfileCellConfig, "command"> & { additionalArguments: string };
+export type ProfileCellConfigWireInput = Partial<Omit<ProfileCellConfig, "command">> & {
+  additionalArguments?: unknown;
+  command?: unknown;
+};
+export type CodingAgentProfilesWireInput = Partial<Omit<CodingAgentProfilesConfig, "profilesByAgent">> & {
+  profilesByAgent?: Record<string, Record<string, ProfileCellConfigWireInput>>;
+};
+export type SettingsSnapshotWireInput = Partial<Omit<SettingsSnapshot, "agents" | "codingAgentProfiles">> & {
+  agents?: AgentConfigWireInput[];
+  codingAgentProfiles?: CodingAgentProfilesWireInput;
+};
+export type CatalogReportWireInput = Partial<Omit<CatalogReport, "catalog">> & {
+  catalog?: CodingAgentDefinitionWireInput[];
+};
+
+export type AgentConfigProjection = Partial<AgentConfig>;
+export type CodingAgentDefinitionProjection = Partial<CodingAgentDefinition>;
+export type ProfileCellConfigProjection = Partial<ProfileCellConfig>;
+export type CodingAgentProfilesProjection = Partial<Omit<CodingAgentProfilesConfig, "profilesByAgent">> & {
+  profilesByAgent?: Record<string, Record<string, ProfileCellConfigProjection>>;
+};
+export type SettingsSnapshotProjection = Partial<Omit<SettingsSnapshot, "agents" | "codingAgentProfiles">> & {
+  agents?: AgentConfigProjection[]; codingAgentProfiles?: CodingAgentProfilesProjection;
+};
+export type CatalogReportProjection = Partial<Omit<CatalogReport, "catalog">> & {
+  catalog?: CodingAgentDefinitionProjection[];
+};

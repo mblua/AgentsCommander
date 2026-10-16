@@ -752,6 +752,7 @@ const AgentPickerModal: Component<{
       throw err;
     }
     settleDone(true);
+    if (disposed) return;
     // #2306 - vector order decides the initial selection: no alphabetical remap.
     const agentIndex = loaded.agents.findIndex((agent) => agent.id === props.currentAgentId);
     // #2484 - one batch so the snapshot and the requested profile trigger one preview round.

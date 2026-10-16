@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ResourceMonitorApp, { groupWarningText } from "./App";
 import { FakeTransport } from "../shared/testing/fake-transport";
 import {
@@ -157,6 +157,75 @@ describe("ResourceMonitorApp automation hooks", () => {
     resourceMonitorStore.stopPolling();
     cleanupDom?.();
     cleanupDom = null;
+  });
+
+  it.each(["resolve", "reject"])("does not acquire polling or snapshot after early disposal and settings %s", async (outcome) => {
+    const fake = new FakeTransport();
+    let resolve!: (value: ReturnType<typeof baseSettings>) => void;
+    let reject!: (reason: Error) => void;
+    const settings = new Promise<ReturnType<typeof baseSettings>>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    fake.onInvoke("get_settings", () => settings);
+    fake.resolve("get_resource_snapshot", emptySnapshot());
+    const polling = vi.spyOn(resourceMonitorStore, "startPolling");
+    const refresh = vi.spyOn(resourceMonitorStore, "refresh");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    let disposed = false;
+    try {
+      await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+      rendered.cleanup();
+      disposed = true;
+      if (outcome === "resolve") resolve(baseSettings());
+      else reject(new Error("deferred settings failure"));
+      // Flush the actual invoke/projection/initializer promise continuations.
+      await new Promise<void>(done => setTimeout(done, 0));
+      expect(polling).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(fake.callsFor("get_resource_snapshot")).toHaveLength(0);
+      expect(error).toHaveBeenCalledTimes(outcome === "reject" ? 1 : 0);
+    } finally {
+      if (!disposed) rendered.cleanup();
+      polling.mockRestore();
+      refresh.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it.each(["resolve", "reject"])("acquires live polling and releases only its owned disposer once after settings %s", async (outcome) => {
+    const fake = new FakeTransport();
+    setupResourceMonitor(fake, emptySnapshot());
+    if (outcome === "reject") fake.reject("get_settings", "settings unavailable");
+    const release = vi.fn();
+    const polling = vi.spyOn(resourceMonitorStore, "startPolling").mockReturnValue(release);
+    const globalStop = vi.spyOn(resourceMonitorStore, "stopPolling");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rendered = renderWithFakeTransport(() => <ResourceMonitorApp />, fake);
+    let disposed = false;
+    try {
+      await waitFor(() => expect(fake.callsFor("get_resource_snapshot")).toHaveLength(1));
+      expect(polling).toHaveBeenCalledTimes(1);
+      expect(polling).toHaveBeenCalledWith({
+        activeIntervalMs: 2000, idleIntervalMs: 10000, backoffIntervalMs: 15000,
+        backoffWhenIdle: outcome === "resolve" ? baseSettings().resourceBackoffPolling : true,
+        keepLastSnapshot: outcome === "resolve" ? baseSettings().resourceKeepLastSnapshot : true,
+      });
+      expect(release).not.toHaveBeenCalled();
+      rendered.cleanup();
+      disposed = true;
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(globalStop).not.toHaveBeenCalled();
+      await new Promise<void>(done => setTimeout(done, 0));
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledTimes(outcome === "reject" ? 1 : 0);
+    } finally {
+      if (!disposed) rendered.cleanup();
+      polling.mockRestore();
+      globalStop.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it("exposes stable summary, group, process, warning, and kill-cancel selectors", async () => {
