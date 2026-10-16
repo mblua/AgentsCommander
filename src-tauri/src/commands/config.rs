@@ -7075,6 +7075,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -7113,6 +7114,7 @@ mod tests {
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -7140,6 +7142,7 @@ mod tests {
             .insert(
                 "C".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -8710,6 +8713,7 @@ mod tests {
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,

@@ -1729,6 +1729,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -1799,6 +1800,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -1848,6 +1850,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -1922,6 +1925,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -1986,6 +1990,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -2548,6 +2553,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -2631,6 +2637,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -2681,6 +2688,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -2953,6 +2961,7 @@ mod tests {
 
     fn cell(command: &str, env: BTreeMap<String, String>) -> ProfileCellConfig {
         ProfileCellConfig {
+            id_hash: None,
             preflight: None,
             preflight_timeout_seconds: None,
             enabled: true,
@@ -3469,6 +3478,7 @@ exit 0
                 .insert(
                     letter.to_string(),
                     ProfileCellConfig {
+                        id_hash: None,
                         preflight: None,
                         preflight_timeout_seconds: None,
                         enabled: *enabled,
