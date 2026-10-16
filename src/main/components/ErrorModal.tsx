@@ -1,4 +1,4 @@
-import { Component, createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, onCleanup, onMount, Show, untrack } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { UnlistenFn } from "../../shared/transport";
 import type { ErrorLogEntry } from "../../shared/types";
@@ -19,22 +19,116 @@ const ErrorModal: Component = () => {
   let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
   let previouslyFocused: HTMLElement | null = null;
   let wasOpen = false;
+  let muteRef: HTMLInputElement | undefined;
   const unlisteners: UnlistenFn[] = [];
+  let disposed = false;
+
+  // #3037 - popup mute. The backend owns the muted set; this instance only
+  // mirrors the last confirmed snapshot. `synced` is false until a snapshot
+  // succeeds and after a failed reconciliation; `syncFailed` drives the status.
+  const [mutedIds, setMutedIds] = createSignal<readonly string[]>([]);
+  const [synced, setSynced] = createSignal(false);
+  const [syncFailed, setSyncFailed] = createSignal(false);
+  const [mutePending, setMutePending] = createSignal(false);
+  let retryQueued = false;
 
   const currentEntry = createMemo(() => errorModalStore.current);
+  const currentTypeId = () => currentEntry()?.typeId || null;
+  const muteChecked = () => {
+    const id = currentTypeId();
+    return id !== null && mutedIds().includes(id);
+  };
+  const muteDisabled = () => !synced() || mutePending() || currentTypeId() === null;
+  const showSyncStatus = () => syncFailed() || (currentEntry() !== null && currentTypeId() === null);
+
+  // One chain serializes snapshot/drain/set of this instance; each step owns
+  // its errors, so a rejection never breaks the chain.
+  let chain: Promise<void> = Promise.resolve();
+  const schedule = (step: () => Promise<void>) => {
+    chain = chain.then(() => (disposed ? undefined : step())).catch((err) => {
+      console.error("[error-modal] queued step failed:", err);
+    });
+  };
+
+  const refreshSnapshot = async () => {
+    retryQueued = false;
+    try {
+      const ids = await DebugAPI.getErrorPopupMutes();
+      if (disposed) return;
+      setMutedIds(ids);
+      setSynced(true);
+      setSyncFailed(false);
+    } catch (err) {
+      if (disposed) return;
+      console.error("[error-modal] getErrorPopupMutes failed:", err);
+      setSynced(false);
+      setSyncFailed(true);
+    }
+  };
+
+  const retrySnapshotIfFailed = () => {
+    if (!syncFailed() || retryQueued || mutePending()) return;
+    retryQueued = true;
+    schedule(refreshSnapshot);
+  };
 
   const drainAndEnqueue = async () => {
     try {
-      errorModalStore.enqueue(await DebugAPI.drainErrorLogs());
+      const entries = await DebugAPI.drainErrorLogs();
+      if (disposed) return;
+      errorModalStore.enqueue(entries);
     } catch (err) {
+      if (disposed) return;
       console.error("[error-modal] drainErrorLogs failed:", err);
     }
   };
 
+  const onErrorPing = () => {
+    if (disposed) return;
+    retrySnapshotIfFailed();
+    schedule(drainAndEnqueue);
+  };
+
   onMount(async () => {
     if (!isTauri) return; // Web remote client: the error modal is desktop-only.
-    unlisteners.push(await onErrorLogEvent(drainAndEnqueue));
-    await drainAndEnqueue();
+    const unlisten = await onErrorLogEvent(onErrorPing);
+    if (disposed) {
+      unlisten();
+      return;
+    }
+    unlisteners.push(unlisten);
+    schedule(refreshSnapshot);
+    schedule(drainAndEnqueue);
+  });
+
+  const onMuteChange = (e: Event & { currentTarget: HTMLInputElement }) => {
+    // Captured at the event: never re-read `current` after an await.
+    const typeId = currentTypeId();
+    const muted = e.currentTarget.checked;
+    // No optimistic success: the box shows only the confirmed set.
+    e.currentTarget.checked = muteChecked();
+    if (typeId === null || muteDisabled()) return;
+    setMutePending(true);
+    schedule(async () => {
+      try {
+        const ids = await DebugAPI.setErrorPopupMuted(typeId, muted);
+        if (disposed) return;
+        setMutedIds(ids);
+        setSynced(true);
+        setSyncFailed(false);
+      } catch (err) {
+        if (disposed) return;
+        console.error("[error-modal] setErrorPopupMuted failed:", err);
+        await refreshSnapshot();
+      } finally {
+        if (!disposed) setMutePending(false);
+      }
+    });
+  };
+
+  createEffect(() => {
+    currentEntry();
+    untrack(retrySnapshotIfFailed);
   });
 
   onMount(() => {
@@ -48,7 +142,8 @@ const ErrorModal: Component = () => {
       }
       if (e.key === "Tab") {
         e.stopImmediatePropagation();
-        trapTabFocus(e, [messageRef, copyBtnRef, dismissBtnRef].filter(Boolean) as HTMLElement[]);
+        const mute = muteRef && !muteRef.disabled ? muteRef : undefined;
+        trapTabFocus(e, [messageRef, mute, copyBtnRef, dismissBtnRef].filter(Boolean) as HTMLElement[]);
         return;
       }
       e.stopImmediatePropagation();
@@ -58,6 +153,7 @@ const ErrorModal: Component = () => {
   });
 
   onCleanup(() => {
+    disposed = true; // late responses and a late listener registration are ignored
     unlisteners.forEach((u) => u());
     if (copyResetTimer) clearTimeout(copyResetTimer);
   });
@@ -136,6 +232,24 @@ const ErrorModal: Component = () => {
               aria-label="Error detail"
             >
               {currentEntry()?.message}
+            </div>
+            <div class="error-mute-field">
+              <label class="settings-checkbox-field">
+                <input
+                  ref={muteRef}
+                  type="checkbox"
+                  class="settings-checkbox"
+                  aria-describedby="error-mute-help"
+                  checked={muteChecked()}
+                  disabled={muteDisabled()}
+                  onChange={onMuteChange}
+                />
+                <span>Hide future popups for this error type until the application closes</span>
+              </label>
+              <p id="error-mute-help" class="error-mute-help">Errors will still be logged.</p>
+              <p class="error-mute-status" role="status" aria-live="polite">
+                {showSyncStatus() ? "Could not confirm popup preference." : ""}
+              </p>
             </div>
             <div class="error-modal-actions">
               <button

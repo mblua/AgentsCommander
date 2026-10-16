@@ -2139,6 +2139,8 @@ export interface ErrorLogEntry {
   level: string;
   target: string;
   message: string;
+  /** #3037 - backend emission-site identity (#3036); keys the popup mute. */
+  typeId: string;
 }
 
 
