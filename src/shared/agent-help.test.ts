@@ -137,7 +137,7 @@ describe("embedded agent help", () => {
   it("the embedded file covers every enabled built-in command", () => {
     const expected = agentsDefault.agents
       .filter((agent) => agent.key !== "muse")
-      .map((agent) => agent.command)
+      .map((agent) => agent.baseCommand)
       .sort();
     expect(expected).toHaveLength(8);
     expect(Object.keys(byCommand).sort()).toEqual(expected);

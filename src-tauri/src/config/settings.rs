@@ -131,9 +131,34 @@ pub(crate) fn retain_configuration_commands(
     agents: bool,
     profiles: bool,
 ) -> Result<(), String> {
+    retain_configuration_commands_with_startup(after, before, identity, catalog, agents, profiles, None)
+}
+
+fn retain_configuration_commands_with_startup(
+    after: &mut Value,
+    before: &Value,
+    identity: &str,
+    catalog: bool,
+    agents: bool,
+    profiles: bool,
+    startup: Option<&StartupAgentRows>,
+) -> Result<(), String> {
     if agents {
+        if !catalog {
+            retain_duplicate_agent_rows(after, before, startup)?;
+        }
         if let Some(rows) = after.get_mut("agents").and_then(Value::as_array_mut) {
+            let mut counts = BTreeMap::new();
+            for row in before.get("agents").and_then(Value::as_array).into_iter().flatten() {
+                if let Some(id) = row.get(identity).and_then(Value::as_str) {
+                    *counts.entry(id).or_insert(0usize) += 1;
+                }
+            }
             for row in rows {
+                if !catalog && row.get(identity).and_then(Value::as_str)
+                    .is_some_and(|id| counts.get(id).copied().unwrap_or(0) > 1) {
+                    continue;
+                }
                 let previous = row.get(identity).and_then(Value::as_str).and_then(|id| {
                     before
                         .get("agents")
@@ -170,6 +195,131 @@ pub(crate) fn retain_configuration_commands(
                     }
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// Private to one startup operation; never accepted from a settings caller.
+struct StartupAgentRows {
+    raw: Value,
+    sidecar_owner: bool,
+    sidecar_absent: bool,
+    permutation: Vec<usize>,
+    expected: Vec<AgentConfig>,
+}
+
+impl StartupAgentRows {
+    fn capture(raw: Value, sidecar_owner: bool, sidecar_absent: bool) -> Option<Self> {
+        let mut expected: Vec<AgentConfig> = serde_json::from_value(raw.clone()).ok()?;
+        let mut ids = HashSet::new();
+        if !expected.iter().any(|agent| !ids.insert(agent.id.clone())) {
+            return None;
+        }
+        let permutation = agent_order_permutation(&expected);
+        finalize_agent_order(&mut expected);
+        Some(Self { raw, sidecar_owner, sidecar_absent, permutation, expected })
+    }
+
+    fn validate_source(&self, raw: &Value, sidecar_owner: bool) -> Result<(), String> {
+        if self.raw == *raw && (self.sidecar_owner == sidecar_owner
+            || (!self.sidecar_owner && self.sidecar_absent && sidecar_owner)) {
+            Ok(())
+        } else {
+            let mut ids = HashSet::new();
+            let id = self.expected.iter().find(|agent| !ids.insert(agent.id.as_str()))
+                .map(|agent| agent.id.as_str()).unwrap_or("unknown");
+            Err(format!("duplicate agent ID '{id}': unprovable row correspondence (stale startup source)"))
+        }
+    }
+}
+
+// Includes all AgentConfig wire fields and its sole alias, even omitted defaults.
+fn known_agent_field(key: &str) -> bool {
+    matches!(key, "id" | "id_hash" | "label" | "command" | "baseCommand" |
+        "preflight" | "preflightTimeoutSeconds" | "color" | "envs" |
+        "isolatedHome" | "isolateCodexHome" | "instructionsFilename" |
+        "configSeed" | "contextRegex" | "blockingMenus" | "order" | "backend")
+}
+
+fn comparable_agent(agent: &AgentConfig) -> Result<Value, String> {
+    let mut value = serde_json::to_value(agent).map_err(|error| error.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("order");
+        object.remove("id_hash");
+    }
+    Ok(value)
+}
+
+/// Prove the ordered duplicate subsequence before transferring any raw payload.
+fn retain_duplicate_agent_rows(
+    after: &mut Value,
+    before: &Value,
+    startup: Option<&StartupAgentRows>,
+) -> Result<(), String> {
+    let Some(raw) = before.get("agents").and_then(Value::as_array) else { return Ok(()); };
+    let Some(rows) = after.get_mut("agents").and_then(Value::as_array_mut) else { return Ok(()); };
+    let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (index, row) in raw.iter().enumerate() {
+        if let Some(id) = row.get("id").and_then(Value::as_str) {
+            groups.entry(id).or_default().push(index);
+        }
+    }
+    // Existing unique/new-row saves need no typed duplicate preparation.
+    let mut candidate_counts = BTreeMap::new();
+    for row in rows.iter() {
+        if let Some(id) = row.get("id").and_then(Value::as_str) {
+            *candidate_counts.entry(id.to_owned()).or_insert(0usize) += 1;
+        }
+    }
+    for (id, indices) in &groups {
+        if indices.len() == 1 && candidate_counts.get(*id).copied().unwrap_or(0) > 1 {
+            return Err(format!("duplicate agent ID '{id}': unprovable row correspondence"));
+        }
+    }
+    if !groups.values().any(|indices| indices.len() > 1) { return Ok(()); }
+    let decoded: Vec<AgentConfig> = serde_json::from_value(Value::Array(raw.clone()))
+        .map_err(|error| error.to_string())?;
+    let permutation = startup.map(|context| context.permutation.clone())
+        .unwrap_or_else(|| agent_order_permutation(&decoded));
+    let expected = startup.map(|context| context.expected.clone()).unwrap_or_else(|| {
+        let mut expected = decoded;
+        finalize_agent_order(&mut expected);
+        expected
+    });
+    for (id, indices) in groups.iter().filter(|(_, indices)| indices.len() > 1) {
+        let rejected = || format!("duplicate agent ID '{id}': unprovable row correspondence");
+        let candidates: Vec<usize> = rows.iter().enumerate()
+            .filter(|(_, row)| row.get("id").and_then(Value::as_str) == Some(*id))
+            .map(|(index, _)| index).collect();
+        if candidates.is_empty() { continue; }
+        let baseline: Vec<(usize, &AgentConfig)> = permutation.iter().copied().zip(expected.iter())
+            .filter(|(_, agent)| agent.id == *id).collect();
+        if candidates.len() != indices.len() || baseline.len() != indices.len() {
+            return Err(rejected());
+        }
+        for (candidate_index, (raw_index, expected)) in candidates.into_iter().zip(baseline) {
+            let candidate: AgentConfig = serde_json::from_value(rows[candidate_index].clone())
+                .map_err(|_| rejected())?;
+            if comparable_agent(&candidate)? != comparable_agent(expected)? { return Err(rejected()); }
+            let original = raw[raw_index].as_object().ok_or_else(rejected)?;
+            let provided = rows[candidate_index].as_object().ok_or_else(rejected)?;
+            let mut retained = original.clone();
+            for (key, value) in provided {
+                if known_agent_field(key) { continue; }
+                if original.get(key) != Some(value) { return Err(rejected()); }
+            }
+            // Rebuild recognized fields through the existing serializer, preserving
+            // unknown metadata from this exact whole raw row only.
+            retained.retain(|key, _| !known_agent_field(key));
+            retained.extend(serde_json::to_value(&candidate).map_err(|error| error.to_string())?
+                .as_object().ok_or_else(rejected)?.clone());
+            retained.insert("baseCommand".to_owned(), Value::String(candidate.command));
+            match original.get("command") {
+                Some(value) => { retained.insert("command".to_owned(), value.clone()); }
+                None => { retained.remove("command"); }
+            }
+            rows[candidate_index] = Value::Object(retained);
         }
     }
     Ok(())
@@ -404,6 +554,24 @@ where
 /// untouched. This is the load-side finalize and the only place allowed to
 /// re-sort; use [`normalize_agent_order`] on the write side.
 pub fn finalize_agent_order(agents: &mut Vec<AgentConfig>) {
+    let permutation = agent_order_permutation(agents);
+    if permutation.iter().enumerate().all(|(position, &index)| position == index) {
+        normalize_agent_order(agents);
+        return;
+    }
+    let mut slots: Vec<Option<AgentConfig>> =
+        std::mem::take(agents).into_iter().map(Some).collect();
+    let mut ordered: Vec<AgentConfig> = Vec::with_capacity(slots.len());
+    for index in permutation {
+        if let Some(agent) = slots[index].take() {
+            ordered.push(agent);
+        }
+    }
+    *agents = ordered;
+    normalize_agent_order(agents);
+}
+
+fn agent_order_permutation(agents: &[AgentConfig]) -> Vec<usize> {
     let mut keyed: Vec<(u64, usize)> = agents
         .iter()
         .enumerate()
@@ -412,25 +580,7 @@ pub fn finalize_agent_order(agents: &mut Vec<AgentConfig>) {
     // The original index is part of the key, so the order is total and the
     // sort outcome does not depend on the sort implementation being stable.
     keyed.sort_unstable();
-    if keyed
-        .iter()
-        .enumerate()
-        .all(|(position, &(_, index))| position == index)
-    {
-        normalize_agent_order(agents);
-        return;
-    }
-
-    let mut slots: Vec<Option<AgentConfig>> =
-        std::mem::take(agents).into_iter().map(Some).collect();
-    let mut ordered: Vec<AgentConfig> = Vec::with_capacity(slots.len());
-    for (_, index) in keyed {
-        if let Some(agent) = slots[index].take() {
-            ordered.push(agent);
-        }
-    }
-    *agents = ordered;
-    normalize_agent_order(agents);
+    keyed.into_iter().map(|(_, index)| index).collect()
 }
 
 /// #2306 P1 - write-side normalizer: renumber `agents` in current vector order
@@ -3389,6 +3539,9 @@ pub(crate) fn prepare_source_candidate_with_original_links(
         return Err(SourcePreparationError::ReadOnly);
     }
     let registered = snapshot.snapshot.source.kind == SourceKind::RegisteredInstance;
+    if registered {
+        decode_registered_raw(candidate)?;
+    }
     let before = snapshot
         .raw
         .value()
@@ -4103,6 +4256,28 @@ mod independent_source_tests {
             ),
             Err(SourcePreparationError::LegacyOriginUnresolved)
         ));
+    }
+
+    #[test]
+    fn p02_source_aware_duplicate_candidate_refuses_without_publication() {
+        let fixture = Fixture::new();
+        let (_, origin) = fixture.origin();
+        let snapshot = fixture.snapshot();
+        let mut candidate = fixture.registered.clone();
+        let duplicate = candidate["agents"][0].clone();
+        candidate["agents"].as_array_mut().unwrap().push(duplicate);
+        let path = fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME);
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            prepare_source_candidate(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &candidate,
+                Some(&origin),
+            ),
+            Err(SourcePreparationError::InvalidCandidate)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]
@@ -7401,6 +7576,15 @@ fn export_blocking_menus_to_local_file_with_publish(
     settings_path: &Path,
     publish: crate::config::local_config_io::ConfigPublisher<'_>,
 ) -> bool {
+    export_blocking_menus_with_startup(settings, settings_path, publish, None)
+}
+
+fn export_blocking_menus_with_startup(
+    settings: &mut AppSettings,
+    settings_path: &Path,
+    publish: crate::config::local_config_io::ConfigPublisher<'_>,
+    mut startup: Option<&mut StartupAgentRows>,
+) -> bool {
     if settings.agents.iter().all(|a| a.blocking_menus.is_none()) {
         return false;
     }
@@ -7419,6 +7603,9 @@ fn export_blocking_menus_to_local_file_with_publish(
         return false;
     }
     apply_issue_1757_migration(settings);
+    if let Some(context) = startup.as_deref_mut() {
+        context.expected = settings.agents.clone();
+    }
     // One id, one array, one command: two agents sharing an id with different arrays cannot
     // both live under byAgent[id], and equal arrays under different commands would make the
     // pristine test below order-dependent, so the export aborts and layer 0 keeps serving both.
@@ -7533,6 +7720,9 @@ fn export_blocking_menus_to_local_file_with_publish(
     }
     for agent in &mut settings.agents {
         agent.blocking_menus = None;
+    }
+    if let Some(context) = startup {
+        context.expected = settings.agents.clone();
     }
     true
 }
@@ -7735,10 +7925,25 @@ fn merge_agents_instance_file_labeled(
     settings_path: &Path,
     base: &mut Value,
 ) -> AgentsLayerState {
+    merge_agents_instance_file_with_capture(io_path, settings_path, base, None)
+}
+
+fn merge_agents_instance_file_with_capture(
+    io_path: &Path,
+    settings_path: &Path,
+    base: &mut Value,
+    capture: Option<&mut Option<StartupAgentRows>>,
+) -> AgentsLayerState {
     let path = agents_instance_path(settings_path);
+    let mut sidecar_owner = false;
+    let mut sidecar_absent = false;
     let state = match read_agents_instance_file_labeled(&agents_instance_path(io_path), &path) {
-        Ok(None) => AgentsLayerState::Readable,
+        Ok(None) => {
+            sidecar_absent = true;
+            AgentsLayerState::Readable
+        }
         Ok(Some(sidecar)) => {
+            sidecar_owner = sidecar.contains_key("agents");
             if let Some(object) = base.as_object_mut() {
                 object.extend(agents_instance_groups(&sidecar));
             }
@@ -7753,6 +7958,13 @@ fn merge_agents_instance_file_labeled(
         object
             .entry(AGENTS_INSTANCE_KEYS[0])
             .or_insert_with(|| Value::Array(Vec::new()));
+    }
+    if let Some(capture) = capture {
+        if matches!(state, AgentsLayerState::Readable) {
+            *capture = base.get("agents").cloned().and_then(|raw| {
+                StartupAgentRows::capture(raw, sidecar_owner, sidecar_absent)
+            });
+        }
     }
     state
 }
@@ -7942,6 +8154,7 @@ fn save_agents_instance_file(
     #[cfg(test)] disk: Option<&Map<String, Value>>,
     out: &Map<String, Value>,
     disk_gate_stage: SettingsSaveStage,
+    prepared_duplicate_agents: Option<&Value>,
 ) -> Result<Map<String, Value>, SettingsSaveError> {
     let sidecar_path = agents_instance_path(path);
     let existing = read_agents_instance_file(&sidecar_path).map_err(|e| {
@@ -8029,12 +8242,17 @@ fn save_agents_instance_file(
         )
     };
     let mut retained = Value::Object(target);
+    if editable_agents {
+        if let Some(prepared) = prepared_duplicate_agents {
+            retained["agents"] = prepared.clone();
+        }
+    }
     retain_configuration_commands(
         &mut retained,
         &Value::Object(before.clone()),
         "id",
         false,
-        editable_agents,
+        editable_agents && prepared_duplicate_agents.is_none(),
         editable_profiles,
     )
     .map_err(&rejected)?;
@@ -8214,6 +8432,17 @@ fn parse_settings_json_with_projection_labeled(
     settings_path: Option<&Path>,
     projection: Option<&Map<String, Value>>,
 ) -> Result<(AppSettings, bool), String> {
+    parse_settings_with_startup(contents, source, io_path, settings_path, projection, None)
+}
+
+fn parse_settings_with_startup(
+    contents: &str,
+    source: &str,
+    io_path: Option<&Path>,
+    settings_path: Option<&Path>,
+    projection: Option<&Map<String, Value>>,
+    mut startup: Option<&mut Option<StartupAgentRows>>,
+) -> Result<(AppSettings, bool), String> {
     let mut value: Value = serde_json::from_str(contents)
         .map_err(|e| format!("Failed to parse settings file: {}", e))?;
     if let (Some(object), Some(projection)) = (value.as_object_mut(), projection) {
@@ -8240,7 +8469,7 @@ fn parse_settings_json_with_projection_labeled(
     // `pre_merge` clone, so the undecodable fallback carries its groups.
     let agents_layer = io_path
         .zip(settings_path)
-        .map(|(io, label)| merge_agents_instance_file_labeled(io, label, &mut value));
+        .map(|(io, label)| merge_agents_instance_file_with_capture(io, label, &mut value, startup.as_deref_mut()));
     // #1737 (D21): the clone must be taken BEFORE the merge, because the merge is
     // in place and the overlay's presence is not known until it returns. Gated on
     // `settings_path.is_some()`, which is true on all three production loaders and
@@ -8318,6 +8547,11 @@ fn parse_settings_json_with_projection_labeled(
     refresh_agent_id_hashes(&mut settings.agents);
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
+    if settings.local_overlay_state.owns_top_level("agents") {
+        if let Some(startup) = startup {
+            *startup = None;
+        }
+    }
     if let (Some(p), Some(state)) = (settings_path, agents_layer) {
         set_agents_layer_state(&mut settings, p, state);
     }
@@ -8476,6 +8710,14 @@ fn capture_project_settings(
     path: &Path,
     migrate: bool,
 ) -> Result<(AppSettings, bool, Option<String>), String> {
+    capture_project_settings_with_startup(path, migrate, None)
+}
+
+fn capture_project_settings_with_startup(
+    path: &Path,
+    migrate: bool,
+    mut startup: Option<&mut Option<StartupAgentRows>>,
+) -> Result<(AppSettings, bool, Option<String>), String> {
     let lock_error = |reason| {
         SettingsSaveError::semantic(
             SettingsSaveStage::LockAcquire,
@@ -8548,17 +8790,21 @@ fn capture_project_settings(
                 Some(legacy) => {
                     let contents =
                         String::from_utf8(legacy.bytes).map_err(|error| error.to_string())?;
-                    match parse_settings_json_with_projection_labeled(
+                    match parse_settings_with_startup(
                         &contents,
                         &path.to_string_lossy(),
                         Some(&transaction.path),
                         Some(path),
                         Some(&selected.projection),
+                        startup.as_deref_mut(),
                     ) {
                         Ok((settings, legacy_profiles)) => {
                             Ok((settings, legacy_profiles, Some(contents)))
                         }
                         Err(error) => {
+                            if let Some(startup) = startup.as_deref_mut() {
+                                *startup = None;
+                            }
                             log::error!("{error}");
                             // Selection succeeded; unrelated decode failure must not
                             // mark the authoritative project source unavailable.
@@ -9691,8 +9937,9 @@ fn load_settings_from_path_with_blocking_menus_publish(
     path: &Path,
     publish: Option<crate::config::local_config_io::ConfigPublisher<'_>>,
 ) -> AppSettings {
+    let mut startup = None;
     let (mut settings, legacy_profiles_detected, legacy_profiles_contents) =
-        read_settings_for_startup(path);
+        read_settings_for_startup_with_capture(path, Some(&mut startup));
     if settings.project_paths_persistence_error.is_some() {
         return settings;
     }
@@ -9708,12 +9955,12 @@ fn load_settings_from_path_with_blocking_menus_publish(
 
     // Auto-generate root token if missing.
     let mut needs_save = issue_248_migrated || legacy_profiles_detected;
-    let exported = match publish {
-        None => export_blocking_menus_to_local_file(&mut settings, path),
-        Some(publish) => {
-            export_blocking_menus_to_local_file_with_publish(&mut settings, path, publish)
-        }
-    };
+    let exported = export_blocking_menus_with_startup(
+        &mut settings,
+        path,
+        publish.unwrap_or(&crate::config::local_config_io::publish_temp_config),
+        startup.as_mut(),
+    );
     if exported {
         log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
         needs_save = true;
@@ -9739,6 +9986,7 @@ fn load_settings_from_path_with_blocking_menus_publish(
             path,
             legacy_profiles_detected,
             &legacy_profiles_contents,
+            startup.as_ref(),
         );
     }
 
@@ -9751,7 +9999,14 @@ fn load_settings_from_path_with_blocking_menus_publish(
 }
 
 fn read_settings_for_startup(path: &Path) -> (AppSettings, bool, Option<String>) {
-    match capture_project_settings(path, true) {
+    read_settings_for_startup_with_capture(path, None)
+}
+
+fn read_settings_for_startup_with_capture(
+    path: &Path,
+    startup: Option<&mut Option<StartupAgentRows>>,
+) -> (AppSettings, bool, Option<String>) {
+    match capture_project_settings_with_startup(path, true, startup) {
         Ok(captured) => captured,
         Err(error) => {
             let mut settings = AppSettings::default();
@@ -9812,6 +10067,7 @@ fn persist_loaded_settings_migrations(
     path: &Path,
     legacy_profiles_detected: bool,
     legacy_profiles_contents: &Option<String>,
+    startup: Option<&StartupAgentRows>,
 ) {
     let backup_ok = if legacy_profiles_detected {
         match legacy_profiles_contents.as_deref() {
@@ -9840,7 +10096,7 @@ fn persist_loaded_settings_migrations(
         // first snapshot, and so a present-but-invalid file is never
         // overwritten (the preserve writer's disk gate returns Err). On
         // success adopt the fresh-decoded settings so runtime/hidden agree.
-        match save_settings_to_path_preserving_project_paths_typed(settings, path) {
+        match save_settings_value_with_startup(settings, path, ProjectWriteMode::Preserve, startup) {
             Ok(written) => *settings = written,
             Err(error) => {
                 let _ =
@@ -12907,6 +13163,45 @@ fn preserve_main_window_placement_keys(out: &mut Map<String, Value>, disk: &Map<
     }
 }
 
+fn preflight_duplicate_agents(
+    settings: &AppSettings,
+    path: &Path,
+    disk: Option<&Map<String, Value>>,
+    startup: Option<&StartupAgentRows>,
+) -> Result<Option<Value>, SettingsSaveError> {
+    let rejected = |reason: String| SettingsSaveError::semantic(
+        SettingsSaveStage::PreserveDiskGate, path, None,
+        SettingsSaveReason::DiskSettingsValidationRejected,
+        SettingsSaveLegacyOutward::DiskValidation(reason),
+    );
+    let sidecar = read_agents_instance_file(&agents_instance_path(path)).map_err(&rejected)?;
+    let sidecar_owner = sidecar.as_ref().is_some_and(|groups| groups.contains_key("agents"));
+    let raw = sidecar.as_ref().and_then(|groups| groups.get("agents"))
+        .or_else(|| disk.and_then(|disk| disk.get("agents")))
+        .cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    if let Some(context) = startup {
+        context.validate_source(&raw, sidecar_owner).map_err(&rejected)?;
+    }
+    let mut ids = HashSet::new();
+    let has_duplicates = raw.as_array().into_iter().flatten()
+        .filter_map(|row| row.get("id").and_then(Value::as_str))
+        .any(|id| !ids.insert(id));
+    let mut candidate_ids = HashSet::new();
+    let newly_ambiguous = settings.agents.iter().any(|agent| {
+        !candidate_ids.insert(agent.id.as_str()) && ids.contains(agent.id.as_str())
+    });
+    // Complete the set when the duplicate scan short-circuited.
+    if !has_duplicates && !newly_ambiguous { return Ok(None); }
+    let mut candidate = serialize_settings_component(settings, path)?;
+    let object = candidate.as_object_mut().expect("serialized settings object");
+    write_identity_rows(object, &settings.local_overlay_state);
+    settings.local_overlay_state.restore_base(object);
+    let before = serde_json::json!({"agents":raw});
+    retain_configuration_commands_with_startup(&mut candidate, &before, "id", false,
+        true, false, startup).map_err(rejected)?;
+    Ok(candidate.get("agents").cloned())
+}
+
 /// The #1077 project-aware atomic writer. Builds the output object per `mode`,
 /// writes it atomically, then re-decodes the exact written value so the returned
 /// `AppSettings` carries fresh runtime projections + hidden state (never the
@@ -12915,6 +13210,15 @@ fn save_settings_value(
     settings: &AppSettings,
     path: &Path,
     mode: ProjectWriteMode,
+) -> Result<AppSettings, SettingsSaveError> {
+    save_settings_value_with_startup(settings, path, mode, None)
+}
+
+fn save_settings_value_with_startup(
+    settings: &AppSettings,
+    path: &Path,
+    mode: ProjectWriteMode,
+    startup: Option<&StartupAgentRows>,
 ) -> Result<AppSettings, SettingsSaveError> {
     let _lock = SettingsFileLock::acquire_contextual(
         path,
@@ -12927,12 +13231,13 @@ fn save_settings_value(
             callback(path);
         }
     });
-    save_settings_value_locked(
+    save_settings_value_locked_with_startup(
         settings,
         path,
         mode,
         TerminalSnapshotGateWriteMode::Preserve,
         MainWindowPlacementWriteMode::Preserve,
+        startup,
     )
 }
 
@@ -12946,7 +13251,19 @@ fn save_settings_value_locked(
     terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
     main_window_placement_mode: MainWindowPlacementWriteMode,
 ) -> Result<AppSettings, SettingsSaveError> {
-    read_disk_object_for_write_typed(
+    save_settings_value_locked_with_startup(settings, path, mode, terminal_snapshot_gate_mode,
+        main_window_placement_mode, None)
+}
+
+fn save_settings_value_locked_with_startup(
+    settings: &AppSettings,
+    path: &Path,
+    mode: ProjectWriteMode,
+    terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
+    main_window_placement_mode: MainWindowPlacementWriteMode,
+    startup: Option<&StartupAgentRows>,
+) -> Result<AppSettings, SettingsSaveError> {
+    let initial_disk = read_disk_object_for_write_typed(
         path,
         match &mode {
             ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
@@ -12954,6 +13271,12 @@ fn save_settings_value_locked(
             ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
         },
     )?;
+    // Read-only duplicate proof precedes every publisher belonging to this save.
+    // The same prepared raw array is consumed by the sidecar/main writers.
+    let prepared_duplicate_agents = if matches!(mode, ProjectWriteMode::Preserve)
+        && !settings.local_overlay_state.owns_top_level("agents") {
+        preflight_duplicate_agents(settings, path, initial_disk.as_ref(), startup)?
+    } else { None };
     ensure_project_paths_migrated_at_locked_path(path, &mut |_, _| Ok(()))?;
     let selected_projection = select_project_source_at_locked_path(path)?.projection;
     let base = production_instance_base();
@@ -13110,6 +13433,7 @@ fn save_settings_value_locked(
         disk.as_ref(),
         &out,
         disk_gate_stage,
+        prepared_duplicate_agents.as_ref(),
     )?;
     strip_agents_instance_keys(&mut out, &agents_groups);
 
@@ -13123,12 +13447,17 @@ fn save_settings_value_locked(
             .iter()
             .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
         let mut retained = Value::Object(out);
+        if retained.get("agents").is_some() {
+            if let Some(prepared) = &prepared_duplicate_agents {
+                retained["agents"] = prepared.clone();
+            }
+        }
         retain_configuration_commands(
             &mut retained,
             &Value::Object(disk.clone()),
             "id",
             false,
-            !settings.local_overlay_state.owns_top_level("agents"),
+            !settings.local_overlay_state.owns_top_level("agents") && prepared_duplicate_agents.is_none(),
             !profiles_owned,
         )
         .map_err(|reason| {
@@ -31341,5 +31670,221 @@ mod p02_physical_schema_tests {
         let bytes = std::fs::read(&sidecar).unwrap();
         save_settings_to_path_preserving_project_paths(&written, &path).unwrap();
         assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+    }
+}
+
+#[cfg(test)]
+mod p02_duplicate_row_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn row(id: &str, command: &str, order: Value, marker: &str) -> Value {
+        json!({"id":id,"label":marker,"color":"#123456","command":command,
+            "order":order,"privatePayload":{"marker":marker}})
+    }
+
+    fn typed_candidate(raw: &Value) -> Value {
+        let mut agents: Vec<AgentConfig> = serde_json::from_value(raw.clone()).unwrap();
+        finalize_agent_order(&mut agents);
+        json!({"agents":agents})
+    }
+
+    fn retain(after: &mut Value, raw: &Value) -> Result<(), String> {
+        retain_configuration_commands(after, &json!({"agents":raw}), "id", false, true, false)
+    }
+
+    fn seed(raw: &Value, sidecar: bool) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE_NAME);
+        let mut main = json!({"defaultShell":"test-shell","defaultShellArgs":[],"rootToken":"token"});
+        if sidecar {
+            std::fs::write(agents_instance_path(&path), serde_json::to_vec(&json!({"agents":raw})).unwrap()).unwrap();
+        } else {
+            main["agents"] = raw.clone();
+        }
+        std::fs::write(&path, serde_json::to_vec(&main).unwrap()).unwrap();
+        (dir, path)
+    }
+
+    fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file() && path.file_name().unwrap() != SETTINGS_LOCK_FILE_NAME)
+            .map(|path| (path.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(path).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn p02_duplicate_full_row_permutation_retains_distinct_values_and_absence() {
+        for orders in [(json!(1), json!(0)), (Value::Null, Value::Null), (json!(0), json!(0))] {
+            let mut raw = json!([
+                row("dup", "claude", orders.0, "claude-row"),
+                row("dup", "codex", orders.1, "codex-row"),
+                row("dup", "third", json!(2), "absent-old")
+            ]);
+            raw[2]["baseCommand"] = json!("third");
+            raw[2].as_object_mut().unwrap().remove("command");
+            let mut after = typed_candidate(&raw);
+            retain(&mut after, &raw).unwrap();
+            for candidate in after["agents"].as_array().unwrap() {
+                let original = raw.as_array().unwrap().iter().find(|row| row["label"] == candidate["label"]).unwrap();
+                assert_eq!(candidate.get("command"), original.get("command"));
+                assert_eq!(candidate["privatePayload"], original["privatePayload"]);
+            }
+            let saved = after.clone();
+            retain_configuration_commands(&mut after, &saved, "id", false, true, false).unwrap();
+            assert_eq!(after, saved);
+        }
+        let raw = json!([row("dup", "claude", json!(1), "claude"), row("dup", "codex", json!(0), "codex")]);
+        let mut after = typed_candidate(&raw);
+        retain(&mut after, &raw).unwrap();
+        assert_eq!(after["agents"][0]["command"], "codex");
+        assert_eq!(after["agents"][0]["privatePayload"]["marker"], "codex");
+        assert_eq!(after["agents"][1]["command"], "claude");
+    }
+
+    #[test]
+    fn p02_identical_effective_duplicates_keep_authoritative_unknown_order() {
+        let mut raw = json!([row("dup", "tool", json!(0), "first"), row("dup", "tool", json!(1), "second")]);
+        raw[1]["label"] = raw[0]["label"].clone();
+        let mut after = typed_candidate(&raw);
+        after["agents"].as_array_mut().unwrap().swap(0, 1);
+        retain(&mut after, &raw).unwrap();
+        assert_eq!(after["agents"][0]["privatePayload"]["marker"], "first");
+        assert_eq!(after["agents"][1]["privatePayload"]["marker"], "second");
+        after["agents"][0]["privatePayload"]["marker"] = json!("second");
+        assert!(retain(&mut after, &raw).is_err());
+    }
+
+    #[test]
+    fn p02_duplicate_ambiguity_refuses_before_all_ordinary_publishers() {
+        let raw = json!([row("dup", "claude", json!(0), "a"), row("dup", "codex", json!(1), "b")]);
+        for sidecar in [false, true] {
+            for mutation in ["edit", "reorder", "add", "partial-delete", "menu"] {
+                let (dir, path) = seed(&raw, sidecar);
+                let mut settings = load_settings_for_cli_from_path(&path);
+                match mutation {
+                    "edit" => settings.agents[0].command = "edited".into(),
+                    "reorder" => settings.agents.swap(0, 1),
+                    "add" => settings.agents.push(settings.agents[0].clone()),
+                    "partial-delete" => { settings.agents.pop(); }
+                    "menu" => settings.agents[0].blocking_menus = Some(vec![]),
+                    _ => unreachable!(),
+                }
+                // Read-only CLI load must not create project/backup/export files.
+                let before = files(dir.path());
+                let error = save_settings_to_path_preserving_project_paths_typed(&settings, &path).unwrap_err();
+                assert!(matches!(&error.legacy_outward,
+                    SettingsSaveLegacyOutward::DiskValidation(reason)
+                        if reason.contains("duplicate agent ID 'dup'") && reason.contains("unprovable row correspondence")),
+                    "{mutation}: {error}");
+                assert_eq!(files(dir.path()), before, "{sidecar}/{mutation}");
+            }
+        }
+    }
+
+    #[test]
+    fn p02_unique_incumbent_cannot_become_ambiguous_but_new_repeated_ids_keep_behavior() {
+        let raw = json!([row("incumbent", "claude", json!(0), "old")]);
+        let (dir, path) = seed(&raw, false);
+        let mut settings = load_settings_for_cli_from_path(&path);
+        let mut extra = settings.agents[0].clone();
+        extra.command = "codex".into();
+        settings.agents.push(extra);
+        let before = files(dir.path());
+        assert!(save_settings_to_path_preserving_project_paths_typed(&settings, &path).is_err());
+        assert_eq!(files(dir.path()), before);
+        let mut fresh = json!({"agents":[row("fresh", "one", json!(0), "a"), row("fresh", "two", json!(1), "b")]});
+        retain(&mut fresh, &raw).unwrap();
+        for row in fresh["agents"].as_array().unwrap() {
+            assert!(row.get("command").is_none());
+            assert!(row.get("baseCommand").is_some());
+        }
+        settings.agents[1].id = "fresh".into();
+        let mut another = settings.agents[1].clone();
+        another.command = "third".into();
+        settings.agents.push(another);
+        let written = save_settings_to_path_preserving_project_paths_typed(&settings, &path).unwrap();
+        assert_eq!(written.agents.len(), 3);
+        let saved: Value = serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+        for row in &saved["agents"].as_array().unwrap()[1..] {
+            assert_eq!(row["id"], "fresh");
+            assert!(row.get("command").is_none());
+        }
+    }
+
+    #[test]
+    fn p02_duplicate_no_edit_save_move_interleaving_and_whole_group_delete() {
+        let raw = json!([row("dup", "claude", json!(1), "a"), row("dup", "codex", json!(0), "b"), row("unique", "third", json!(2), "c")]);
+        for sidecar in [false, true] {
+            let (_dir, path) = seed(&raw, sidecar);
+            let mut settings = load_settings_for_cli_from_path(&path);
+            settings.agents.swap(1, 2); // Unique row moves; duplicate subsequence is unchanged.
+            settings.default_shell = "unrelated-edit".into();
+            let written = save_settings_to_path_preserving_project_paths_typed(&settings, &path).unwrap();
+            let saved: Value = serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+            assert_eq!(saved["agents"][0]["command"], "codex");
+            assert_eq!(saved["agents"][2]["command"], "claude");
+            assert_eq!(saved["agents"][0]["privatePayload"]["marker"], "b");
+            assert_eq!(saved["agents"][2]["privatePayload"]["marker"], "a");
+            save_settings_to_path_preserving_project_paths_typed(&written, &path).unwrap();
+            let again: Value = serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+            assert_eq!(again, saved);
+            let mut deleted = written;
+            deleted.agents.retain(|agent| agent.id != "dup");
+            assert!(save_settings_to_path_preserving_project_paths_typed(&deleted, &path).is_ok());
+        }
+    }
+
+    #[test]
+    fn p02_startup_context_binds_raw_owner_and_original_sidecar_absence() {
+        let raw = json!([row("dup", "claude", json!(1), "a"), row("dup", "codex", json!(0), "b")]);
+        for present_without_agents in [false, true] {
+            let (dir, path) = seed(&raw, false);
+            if present_without_agents {
+                std::fs::write(agents_instance_path(&path), b"{}").unwrap();
+            }
+            let mut context = None;
+            let (mut settings, _, _) = capture_project_settings_with_startup(&path, true, Some(&mut context)).unwrap();
+            let context = context.unwrap();
+            assert_eq!(context.raw, raw);
+            assert_eq!(context.sidecar_absent, !present_without_agents);
+            if !present_without_agents {
+                assert!(export_agents_to_instance_file(&mut settings, &path));
+            } else {
+                std::fs::write(agents_instance_path(&path), serde_json::to_vec(&json!({"agents":raw})).unwrap()).unwrap();
+            }
+            let result = save_settings_value_with_startup(&settings, &path, ProjectWriteMode::Preserve, Some(&context));
+            assert_eq!(result.is_ok(), !present_without_agents);
+            // A changed raw group never qualifies as the verbatim owner transition.
+            let mut changed = raw.clone();
+            changed[0]["privatePayload"]["marker"] = json!("changed-between-capture-and-lock");
+            std::fs::write(agents_instance_path(&path), serde_json::to_vec(&json!({"agents":changed})).unwrap()).unwrap();
+            let completed_effects = files(dir.path());
+            assert!(save_settings_value_with_startup(&settings, &path, ProjectWriteMode::Preserve, Some(&context)).is_err());
+            assert_eq!(files(dir.path()), completed_effects);
+            assert!(project_paths_path(&path).exists()); // Independent startup migration remains.
+        }
+    }
+
+    #[test]
+    fn p02_startup_records_actual_1757_append_even_when_menu_export_aborts() {
+        let mut raw = json!([row("dup", "codex", json!(0), "codex"), row("dup", "claude", json!(1), "claude")]);
+        for row in raw.as_array_mut().unwrap() {
+            row["blockingMenus"] = json!([{"custom":"invalid-but-retained"}]);
+        }
+        let (_dir, path) = seed(&raw, false);
+        let loaded = load_settings_from_path(&path);
+        assert_eq!(loaded.agents[0].blocking_menus.as_ref().unwrap().len(), 2);
+        assert_eq!(loaded.agents[1].blocking_menus.as_ref().unwrap().len(), 1);
+        assert!(!blocking_menus_local_path(&path).exists());
+        let saved: Value = serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+        assert_eq!(saved["agents"][0]["command"], "codex");
+        assert_eq!(saved["agents"][1]["command"], "claude");
+        assert_eq!(saved["agents"][0]["blockingMenus"].as_array().unwrap().len(), 2);
+        assert_eq!(saved["agents"][0]["privatePayload"], raw[0]["privatePayload"]);
+        // Ordinary saves cannot claim the startup-only append authority.
+        let mut ordinary = typed_candidate(&raw);
+        ordinary["agents"] = serde_json::to_value(&loaded.agents).unwrap();
+        assert!(retain(&mut ordinary, &raw).is_err());
     }
 }
