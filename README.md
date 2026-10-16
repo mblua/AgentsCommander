@@ -5,7 +5,7 @@
 <h1 align="center">Agents Commander</h1>
 
 <p align="center">
-  <b>Compound your coding agents.</b> Bring any CLI coding agent at full power and activate Teams as parallel Rooms. Each Room is a separate filesystem workspace with replicas of its Team's agents and clones of its assigned repositories. <b>Parallelize the work. Keep the thread. Share the setup.</b>
+  <b>Turn what you learn into an agent ecosystem you can reuse.</b> For developers working solo or in Teams: keep roles, skills, and recorded experience in your repository, refine them from real work, and bring the setup to your next task. Your coding agents run in real terminals; you decide how they work together.
 </p>
 
 <p align="center">
@@ -51,12 +51,13 @@ Read the complete [installation contract, platform matrix, trust boundaries, and
 
 ## The 30-second pitch
 
-> **See which Team is working on each task, even while several Teams work in parallel.** Define agents and Teams in source-controlled files, then activate a Team as one or more Rooms. Each Room is a separate filesystem workspace with its own agent replicas, repository clones, messaging area, and build or test state. The UI keeps every Room's task, sessions, branches, and repository state visible.
+> **Build a coding-agent setup that keeps the lessons from your work.** Start with one agent and refine its role, skills, and written notes, or define a Team and activate it as a Room for each task. Review the outputs and messages, update the reusable files, and carry those changes into the next task. You choose what to record and improve; this is an explicit workflow, not automatic learning.
 
-- **Pick the coding agent per role (Claude Code, Codex, Antigravity, Pi, or OpenCode) at full power.** Each runs in its own real terminal with a full PTY, not a command runner. AgentsCommander only adds capability; it never sandboxes or nerfs your agent.
+- **Bring your coding agents and model access.** Claude Code, Codex, Antigravity, and Pi have dedicated integrations; you can configure other shell-based CLIs, including OpenCode, through custom agents. Each session runs in a real PTY. You supply the CLI, account, and authentication; custom commands do not necessarily support every integration feature.
 - **Direct multiple Rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across Teams. Ask it to talk to Room orchestrators, send work to different Teams, and keep initiatives aligned across parallel Rooms.
 - **Give each Room its own working copies.** AC creates a separate workspace with repository clones, agent replicas, a messaging area, and build or test state. Each agent's context carries write-restriction instructions that ask it to stay inside its Room; that is documented policy the agents follow, not a sandbox the product enforces. Each session invokes the installed AgentsCommander executable with credentials whose token and root values are scoped to that Room. Run multiple Teams, or multiple Rooms for the same Team, without mixing one task's source changes or build and test state into another's.
 - **Return without rebuilding the map.** A Room keeps its task, agent replicas, repository clones, and messages on disk. Come back later, reopen a Room's closed session, and AC asks Claude Code, Codex, Antigravity, or Pi to continue the prior conversation in that same workspace.
+- **Continue from a written handoff.** With a compatible CLI, an agent can write `SELF-HANDOFF.md`, request a context clear, and continue from that note. Clearing is best-effort and depends on the provider mapping; unrecognized shell wrappers are unsupported. The note records what to carry forward rather than preserving the entire conversation automatically.
 - **Share configuration as source code.** A Project's `.ac/` tree holds canonical agent roles, skills, and plans; Team rosters and repo access; and Loop prompts and schedules in reviewable Markdown, JSON, and TOML. Commit the shared files so teammates can pull the same reviewed setup instead of recreating it.
 - **Coordinate Teams through auditable files.** Agents exchange Markdown messages in a `messaging/` folder you can read with `cat`, inspect in an editor, search, and audit directly on disk. The whole organization fits in `ls`.
 - **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
@@ -83,18 +84,22 @@ Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
 
 ## Why this exists
 
-Most agent tools focus on in-process orchestration or one interactive session. AgentsCommander starts with the **coding agents you already use** (Claude Code, Codex, Antigravity, Pi, and OpenCode), runs them as real OS processes, and lets them coordinate through plain Markdown files that humans and file tools can read, search, and audit directly on disk. You see every step in a real terminal, and the coordination state stays visible on disk.
+The useful part of a session can outlast its conversation: a clearer role, a tested skill, a recorded failure, or a better brief. AgentsCommander gives you a place to keep and refine that experience as plain files alongside your project. Use one agent day to day or organize Teams for different tasks; review their work and decide which changes belong in your reusable setup.
+
+Your coding agents keep their own tools and run as real OS processes. AgentsCommander adds terminal sessions, Rooms, and inspectable Markdown messaging around them. Share reviewed configuration through Git while keeping credentials and machine-local runtime state separate.
 
 ## What you can build
 
 | Use case | Setup |
 |---|---|
+| **A reusable solo setup** | Give one agent a role and skills, record useful lessons in notes, and revise those files as you learn what works. |
 | **Parallel feature development** | Activate one Room per parallel task, even when reusing the same Team. Every Room gets its own repository clones and build or test state; direct the Room orchestrators from the Root Agent. |
 | **Code-review swarm** | One agent ships a PR; two others review independently. You read both reviews in their own terminals before merging. |
-| **Autonomous refactor Team** | A long-running orchestrator splits a multi-file refactor across worker agents and rebases their branches as they finish. |
+| **Coordinated refactor Team** | Assign an orchestrator and workers to a multi-file refactor. Have agents run tests, inspect failures, and propose fixes using their own tools. |
+| **Compare agent setups** | Manually rerun the same brief with different roles, skills, or CLI profiles, then compare terminal output, messages, test results, and diffs. You make the comparison; AC does not score the runs. |
 | **Long-running agent with phone alerts** | Pair a session with a [Telegram bot](docs/features/telegram-bridge.md), kick off a build from your phone, and receive text updates plus screenshots or image artifacts. |
 
-Full recipes: [`docs/use-cases.md`](docs/use-cases.md).
+Recipes for parallel development, review, refactoring, and Telegram: [`docs/use-cases.md`](docs/use-cases.md).
 
 ## How it compares
 
@@ -152,6 +157,8 @@ A release checksum detects corruption or a file that differs from the release re
 
 ## Community
 
+- **Discuss setups and share what you learn**: join the [official Discord](https://discord.gg/EcwW5KvDCy).
+- **Watch videos**: [Mariano Blua on YouTube](https://www.youtube.com/@marianoblua).
 - **Questions, ideas, show-and-tell**: [GitHub Discussions](https://github.com/mblua/AgentsCommander/discussions).
 - **Bug reports, feature requests**: [GitHub Issues](https://github.com/mblua/AgentsCommander/issues).
 - **What's next**: [`ROADMAP.md`](ROADMAP.md).
