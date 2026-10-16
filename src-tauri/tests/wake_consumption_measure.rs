@@ -196,14 +196,14 @@ fn make_ctx(repo_root: &Path) -> HarnessCtx {
     // No-op callbacks: signal 1 is read from the detector's idle_set via
     // purge_readiness, so we do not need to mirror into SessionManager here.
     let idle: Arc<IdleDetector> = IdleDetector::new(|_| {}, |_| {});
-    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new({
+    let settings: SettingsState = agentscommander_lib::config::settings::new_settings_state({
         // #1077: AppSettings has a crate-private hidden field; build from Default.
         let mut s = AppSettings::default();
         s.default_shell = "powershell.exe".to_string();
         s.default_shell_args = vec!["-NoLogo".to_string()];
         s.project_paths = vec![repo_root.to_string_lossy().to_string()];
         s
-    }));
+    });
     let git_app = Box::leak(Box::new(
         agentscommander_lib::test_support::test_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

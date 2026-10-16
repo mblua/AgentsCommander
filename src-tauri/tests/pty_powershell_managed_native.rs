@@ -284,13 +284,13 @@ fn make_fixture() -> Fixture {
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
     ));
     let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new({
+    let settings: SettingsState = agentscommander_lib::config::settings::new_settings_state({
         let mut s = AppSettings::default();
         s.default_shell = "powershell.exe".to_string();
         s.default_shell_args = vec!["-NoLogo".to_string()];
         s.project_paths = vec![repo_root.to_string_lossy().to_string()];
         s
-    }));
+    });
     let git_app = Box::leak(Box::new(
         agentscommander_lib::test_support::test_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

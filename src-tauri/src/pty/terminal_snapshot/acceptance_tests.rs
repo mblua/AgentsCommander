@@ -379,7 +379,7 @@ impl AcceptanceFixture {
             ..Default::default()
         };
         let settings: crate::config::settings::SettingsState =
-            Arc::new(tokio::sync::RwLock::new(app_settings));
+            crate::config::settings::new_settings_state(app_settings);
 
         let manager = SessionManager::new();
         let host_coordinator = create_session(

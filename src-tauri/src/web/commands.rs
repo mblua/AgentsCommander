@@ -1528,7 +1528,7 @@ mod tests {
             Some(broadcaster.clone()),
             None,
         )));
-        let settings = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let settings = crate::config::settings::new_settings_state(AppSettings::default());
         let state = WsState {
             session_mgr,
             pty_mgr,
@@ -1602,7 +1602,7 @@ mod tests {
             Some(broadcaster.clone()),
             None,
         )));
-        let settings = Arc::new(tokio::sync::RwLock::new(settings));
+        let settings = crate::config::settings::new_settings_state(settings);
         let state = WsState {
             session_mgr,
             pty_mgr,
@@ -1918,7 +1918,7 @@ title: 'USER: café'
         let temp = tempfile::tempdir().expect("tempdir");
         let settings = overlay_owned_agents_settings(temp.path());
         let settings_state: crate::config::settings::SettingsState =
-            Arc::new(tokio::sync::RwLock::new(settings));
+            crate::config::settings::new_settings_state(settings);
         let app = tauri::test::mock_builder()
             .invoke_handler(tauri::generate_handler![
                 crate::commands::config::move_coding_agent
@@ -2062,7 +2062,7 @@ title: 'USER: café'
         let settings = overlay_owned_agents_settings(temp.path());
         let overlay_order: Vec<String> = settings.agents.iter().map(|a| a.id.clone()).collect();
         let settings_state: crate::config::settings::SettingsState =
-            Arc::new(tokio::sync::RwLock::new(settings));
+            crate::config::settings::new_settings_state(settings);
         let app = tauri::test::mock_builder()
             .invoke_handler(tauri::generate_handler![
                 crate::commands::config::reorder_coding_agent
@@ -2475,7 +2475,7 @@ title: 'USER: café'
         let (_temp, replica, settings) = selection_lock_web_fixture(true);
         let replica_text = replica.to_string_lossy().to_string();
         let settings_state: crate::config::settings::SettingsState =
-            Arc::new(tokio::sync::RwLock::new(settings));
+            crate::config::settings::new_settings_state(settings);
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let app = tauri::test::mock_builder()
             .invoke_handler(tauri::generate_handler![
@@ -2773,7 +2773,7 @@ title: 'USER: café'
             Arc::clone(&session_mgr),
             shutdown.token().clone(),
         );
-        let settings = Arc::new(tokio::sync::RwLock::new(settings));
+        let settings = crate::config::settings::new_settings_state(settings);
 
         let full_app = crate::test_support::test_builder()
             .manage(settings.clone())
@@ -3054,7 +3054,7 @@ title: 'USER: café'
         let state = WsState {
             session_mgr,
             pty_mgr,
-            settings: Arc::new(tokio::sync::RwLock::new(settings)),
+            settings: crate::config::settings::new_settings_state(settings),
             broadcaster,
             app_handle,
         };

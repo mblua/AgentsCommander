@@ -826,7 +826,7 @@ mod tests {
             settings: crate::config::settings::AppSettings,
         ) -> tauri::App<tauri::test::MockRuntime> {
             let state: crate::config::settings::SettingsState =
-                Arc::new(tokio::sync::RwLock::new(settings));
+                crate::config::settings::new_settings_state(settings);
             tauri::test::mock_builder()
                 .manage(state)
                 .manage(crate::network::OutboundNetwork::new_for_tests(4))
