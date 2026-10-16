@@ -12,7 +12,7 @@
 //! Without the guard, a second `env_logger::Builder::init()` would panic via
 //! `log::set_logger`'s "called twice" contract.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -617,6 +617,23 @@ pub struct ErrorLogEntry {
     pub target: String,
     /// Full message; may contain embedded newlines (multi-line git errors etc.).
     pub message: String,
+    /// #3036 emission-site identity (`typeId`); see `error_type_id`.
+    pub type_id: String,
+}
+
+/// #3036 — collision-free emission-site identity built from
+/// `(target, file, line)`: byte-length prefixes and explicit presence markers,
+/// never the message. Format: `v1|<len>:<target>|<n|s<len>:file>|<n|u<line>>`.
+fn error_type_id(target: &str, file: Option<&str>, line: Option<u32>) -> String {
+    let file_part = match file {
+        Some(f) => format!("s{}:{}", f.len(), f),
+        None => "n".to_string(),
+    };
+    let line_part = match line {
+        Some(l) => format!("u{l}"),
+        None => "n".to_string(),
+    };
+    format!("v1|{}:{}|{}|{}", target.len(), target, file_part, line_part)
 }
 
 impl ErrorLogEntry {
@@ -634,6 +651,7 @@ impl ErrorLogEntry {
             level: record.level().to_string(),
             target: record.target().to_string(),
             message,
+            type_id: error_type_id(record.target(), record.file(), record.line()),
         }
     }
 }
@@ -665,16 +683,32 @@ const ERROR_BUFFER_CAP: usize = 200;
 /// pushes BEFORE signalling, a drain triggered by the ping always observes the
 /// entry — race-free without sequence numbers.
 pub struct ErrorEventSink {
-    pending: Mutex<VecDeque<ErrorLogEntry>>,
+    state: Mutex<ErrorSinkState>,
     notify: tokio::sync::Notify,
+}
+
+/// #3036 — one lock guards the queue and the process-only mute state, so a
+/// mute linearizes against capture/drain: already-queued entries stay; only
+/// later inserts of a muted type are skipped. `known` holds observed type IDs.
+#[derive(Default)]
+struct ErrorSinkState {
+    pending: VecDeque<ErrorLogEntry>,
+    muted: HashSet<String>,
+    known: HashSet<String>,
 }
 
 impl ErrorEventSink {
     fn new() -> Self {
         Self {
-            pending: Mutex::new(VecDeque::new()),
+            state: Mutex::new(ErrorSinkState::default()),
             notify: tokio::sync::Notify::new(),
         }
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, ErrorSinkState> {
+        // into_inner() recovers a poisoned lock so one panic while holding
+        // the mutex cannot permanently disable error capture.
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Buffer an ERROR entry and wake the emit task. Runs inside the
@@ -683,9 +717,16 @@ impl ErrorEventSink {
     /// panic-free, and needs no tokio runtime (only the awaiting side does).
     pub fn capture(&self, entry: ErrorLogEntry) {
         {
-            // into_inner() recovers a poisoned lock so one panic while holding
-            // the mutex cannot permanently disable error capture.
-            let mut buf = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self.lock_state();
+            if !state.known.contains(&entry.type_id) {
+                state.known.insert(entry.type_id.clone());
+            }
+            // #3036 — muted type: skip only the popup queue; the caller's
+            // stderr/app.log writes still run.
+            if state.muted.contains(&entry.type_id) {
+                return;
+            }
+            let buf = &mut state.pending;
             if buf.len() >= ERROR_BUFFER_CAP {
                 buf.pop_front();
             }
@@ -699,14 +740,40 @@ impl ErrorEventSink {
 
     /// Read-and-clear all buffered entries. Each entry is returned exactly once.
     pub fn drain(&self) -> Vec<ErrorLogEntry> {
-        let mut buf = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        Vec::from(std::mem::take(&mut *buf))
+        let mut state = self.lock_state();
+        Vec::from(std::mem::take(&mut state.pending))
+    }
+
+    /// #3036 — sorted snapshot of the muted type IDs.
+    pub fn muted_snapshot(&self) -> Vec<String> {
+        sorted_ids(&self.lock_state().muted)
+    }
+
+    /// #3036 — idempotently mute/unmute future captures of a known type ID.
+    /// Unknown IDs are rejected with no mutation. Never replays skipped entries.
+    pub fn set_muted(&self, type_id: &str, muted: bool) -> Result<Vec<String>, String> {
+        let mut state = self.lock_state();
+        if !state.known.contains(type_id) {
+            return Err("Unknown error popup type".to_string());
+        }
+        if muted {
+            state.muted.insert(type_id.to_string());
+        } else {
+            state.muted.remove(type_id);
+        }
+        Ok(sorted_ids(&state.muted))
     }
 
     /// Await the next `capture()` signal. Used only by `spawn_error_emit_task`.
     async fn wait_for_capture(&self) {
         self.notify.notified().await;
     }
+}
+
+fn sorted_ids(ids: &HashSet<String>) -> Vec<String> {
+    let mut out: Vec<String> = ids.iter().cloned().collect();
+    out.sort();
+    out
 }
 
 static ERROR_SINK: OnceLock<ErrorEventSink> = OnceLock::new();
@@ -758,7 +825,35 @@ mod tests {
             level: "ERROR".to_string(),
             target: "agentscommander_lib::test".to_string(),
             message: message.to_string(),
+            type_id: "v1|25:agentscommander_lib::test|n|n".to_string(),
         }
+    }
+
+    /// #3036 — an entry of emission-site type `type_id` carrying `message`.
+    fn typed(type_id: &str, message: &str) -> ErrorLogEntry {
+        ErrorLogEntry {
+            type_id: type_id.to_string(),
+            ..entry(message)
+        }
+    }
+
+    /// #3036 — `typeId` of a synthetic record at `(target, file, line)`.
+    fn type_of(target: &str, file: Option<&str>, line: Option<u32>, msg: &str) -> String {
+        ErrorLogEntry::from_record(
+            String::new(),
+            &log::Record::builder()
+                .level(log::Level::Error)
+                .target(target)
+                .file(file)
+                .line(line)
+                .args(format_args!("{msg}"))
+                .build(),
+        )
+        .type_id
+    }
+
+    fn messages(entries: Vec<ErrorLogEntry>) -> Vec<String> {
+        entries.into_iter().map(|e| e.message).collect()
     }
 
     /// Run `should_capture` against a synthetic record. The `Record` (and the
@@ -912,6 +1007,194 @@ mod tests {
         assert!(json.contains("\"level\""), "missing level: {}", json);
         assert!(json.contains("\"target\""), "missing target: {}", json);
         assert!(json.contains("\"message\""), "missing message: {}", json);
+        assert!(json.contains("\"typeId\""), "missing typeId: {}", json);
+        assert!(!json.contains("type_id"), "snake_case leaked: {}", json);
+    }
+
+    // ── #3036 error-popup mute tests ────────────────────────────────
+
+    #[test]
+    fn type_id_groups_by_emission_site_only() {
+        let t = "agentscommander_lib::commands::x";
+        let a1 = type_of(t, Some("src/x.rs"), Some(10), "failed C:/a 1111-uuid");
+        let a2 = type_of(t, Some("src/x.rs"), Some(10), "other D:/b 2222-uuid");
+        assert_eq!(a1, a2);
+        assert_eq!(a1, "v1|32:agentscommander_lib::commands::x|s8:src/x.rs|u10");
+        // Same target, another site => distinct type.
+        assert_ne!(a1, type_of(t, Some("src/x.rs"), Some(11), "failed"));
+        // None vs Some("") and line None vs 0 never collide.
+        assert_ne!(type_of(t, None, None, "m"), type_of(t, Some(""), None, "m"));
+        assert_ne!(type_of(t, None, None, "m"), type_of(t, None, Some(0), "m"));
+        assert_eq!(
+            type_of(t, None, None, "m"),
+            format!("v1|{}:{t}|n|n", t.len())
+        );
+        // Length prefixes keep separator-bearing parts unambiguous.
+        assert_ne!(
+            type_of("a|s1:b", None, None, "m"),
+            type_of("a", Some("b|n"), None, "m")
+        );
+        // An aggregator site emitting causes A and B shares one type by design.
+        let agg = |cause: &str| type_of(t, Some("src/agg.rs"), Some(7), cause);
+        assert_eq!(agg("cause A"), agg("cause B"));
+    }
+
+    #[test]
+    fn mute_skips_only_new_inserts_and_keeps_queued() {
+        let sink = ErrorEventSink::new();
+        sink.capture(typed("A", "a-old"));
+        assert_eq!(sink.set_muted("A", true), Ok(vec!["A".to_string()]));
+        sink.capture(typed("A", "a-new"));
+        sink.capture(typed("B", "b"));
+        assert_eq!(messages(sink.drain()), ["a-old", "b"]);
+    }
+
+    #[test]
+    fn mute_is_idempotent_and_unmute_has_no_replay() {
+        let sink = ErrorEventSink::new();
+        sink.capture(typed("A", "a0"));
+        sink.capture(typed("B", "b0"));
+        let _ = sink.drain();
+        assert_eq!(sink.set_muted("A", true), Ok(vec!["A".to_string()]));
+        assert_eq!(sink.set_muted("A", true), Ok(vec!["A".to_string()]));
+        sink.capture(typed("A", "skipped"));
+        assert_eq!(sink.muted_snapshot(), ["A"]);
+        assert_eq!(sink.set_muted("A", false), Ok(vec![]));
+        assert_eq!(sink.set_muted("A", false), Ok(vec![]));
+        sink.capture(typed("A", "a-future"));
+        assert_eq!(messages(sink.drain()), ["a-future"]);
+        assert!(sink.muted_snapshot().is_empty());
+    }
+
+    #[test]
+    fn new_sink_starts_unmuted_and_keeps_cap_and_poison_recovery() {
+        let sink = ErrorEventSink::new();
+        assert!(sink.muted_snapshot().is_empty());
+        for i in 0..ERROR_BUFFER_CAP + 3 {
+            sink.capture(typed("A", &i.to_string()));
+        }
+        let drained = sink.drain();
+        assert_eq!(drained.len(), ERROR_BUFFER_CAP);
+        assert_eq!(drained[0].message, "3");
+        assert!(sink.drain().is_empty());
+        // Poison the lock; capture/drain/set still recover.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = sink.state.lock().unwrap();
+            panic!("poison");
+        }));
+        assert!(sink.state.is_poisoned());
+        sink.capture(typed("A", "after-poison"));
+        assert_eq!(messages(sink.drain()), ["after-poison"]);
+        assert_eq!(sink.set_muted("A", true), Ok(vec!["A".to_string()]));
+    }
+
+    #[test]
+    fn unknown_type_is_rejected_without_mutation() {
+        let sink = ErrorEventSink::new();
+        sink.capture(typed("A", "a"));
+        assert_eq!(sink.set_muted("A", true), Ok(vec!["A".to_string()]));
+        assert_eq!(
+            sink.set_muted("Z", true),
+            Err("Unknown error popup type".to_string())
+        );
+        assert_eq!(
+            sink.set_muted("Z", false),
+            Err("Unknown error popup type".to_string())
+        );
+        assert_eq!(sink.muted_snapshot(), ["A"]);
+        assert_eq!(messages(sink.drain()), ["a"]);
+    }
+
+    /// Captures racing the mute on other threads: barriers/channels order them
+    /// strictly before or after the set; the late drain shows the exact
+    /// insertion boundary (no sleeps).
+    #[test]
+    fn concurrent_captures_respect_set_boundary() {
+        let sink = ErrorEventSink::new();
+        sink.capture(typed("A", "seed"));
+        let _ = sink.drain();
+        let (before_tx, before_rx) = std::sync::mpsc::channel::<()>();
+        let set_done = std::sync::Barrier::new(3);
+        std::thread::scope(|s| {
+            for name in ["t1", "t2"] {
+                let sink = &sink;
+                let before_tx = before_tx.clone();
+                let set_done = &set_done;
+                s.spawn(move || {
+                    sink.capture(typed("A", &format!("{name}-a-before")));
+                    before_tx.send(()).unwrap();
+                    set_done.wait();
+                    sink.capture(typed("A", &format!("{name}-a-after")));
+                    sink.capture(typed("B", &format!("{name}-b-after")));
+                });
+            }
+            before_rx.recv().unwrap();
+            before_rx.recv().unwrap();
+            assert_eq!(sink.set_muted("A", true), Ok(vec!["A".to_string()]));
+            set_done.wait();
+        });
+        let mut got = messages(sink.drain());
+        got.sort();
+        assert_eq!(
+            got,
+            ["t1-a-before", "t1-b-after", "t2-a-before", "t2-b-after"]
+        );
+    }
+
+    /// Unmutes the global type on drop (also during unwind); log-free.
+    struct UnmuteGuard(String);
+
+    impl Drop for UnmuteGuard {
+        fn drop(&mut self) {
+            let _ = error_sink().set_muted(&self.0, false);
+        }
+    }
+
+    #[test]
+    fn muted_type_is_skipped_by_real_logger_but_still_written_and_redacted() {
+        let _drain_guard = ERROR_SINK_TEST_DRAIN_LOCK.blocking_lock();
+        const TARGET: &str = "agentscommander_lib::tests::mute_3034_logger";
+        const FILE: &str = "mute_3034_logger_fixture";
+        let id = error_type_id(TARGET, Some(FILE), Some(3034));
+        let tmp = tempfile::tempdir().expect("tmp");
+        {
+            let mut builder = env_logger::Builder::new();
+            builder.parse_filters(GATE_INNER_FILTER);
+            install_format(&mut builder, Arc::new(Some(build_app_log(tmp.path(), 0))));
+            let gate = LevelGateLogger {
+                inner: builder.build(),
+                level: Arc::new(AtomicU8::new(log::Level::Error as u8)),
+            };
+            let emit = |msg: &str| {
+                gate.log(
+                    &log::Record::builder()
+                        .level(log::Level::Error)
+                        .target(TARGET)
+                        .file(Some(FILE))
+                        .line(Some(3034))
+                        .args(format_args!("{msg}"))
+                        .build(),
+                );
+            };
+            // Register A as known, then drain that entry before measuring.
+            emit("mute-3034 prior capture");
+            let prior = error_sink().drain();
+            assert!(prior.iter().any(|e| e.type_id == id), "prior={prior:?}");
+
+            let unmute = UnmuteGuard(id.clone());
+            assert!(error_sink().set_muted(&id, true).is_ok());
+            emit(
+                "MUTE_3034_MARKER https://api.telegram.org/bot123456789:MUTE_3034_SECRET_xxxxxxxxxxxxxx/getMe",
+            );
+            let after = error_sink().drain();
+            assert!(!after.iter().any(|e| e.type_id == id), "after={after:?}");
+            drop(unmute);
+            drop(gate);
+        }
+        let log = std::fs::read_to_string(tmp.path().join("app.log")).expect("read app.log");
+        assert!(log.contains("MUTE_3034_MARKER"), "log={log}");
+        assert!(!log.contains("MUTE_3034_SECRET"), "secret leaked: {log}");
+        assert!(log.contains("/bot***/getMe"), "log={log}");
     }
 
     #[test]

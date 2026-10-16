@@ -5609,6 +5609,8 @@ pub fn run(
                 commands::voice::voice_had_typing,
                 commands::config::save_debug_logs,
                 commands::config::drain_error_logs,
+                commands::config::get_error_popup_mutes,
+                commands::config::set_error_popup_muted,
                 commands::config::open_web_remote,
                 commands::config::start_api_server,
                 commands::config::stop_api_server,

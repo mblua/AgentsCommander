@@ -142,6 +142,20 @@ pub fn drain_error_logs() -> Vec<crate::logging::ErrorLogEntry> {
     crate::logging::error_sink().drain()
 }
 
+/// #3036 — sorted snapshot of the error-popup types muted for this process.
+/// Memory only: a new process starts empty; a webview reload keeps it.
+#[tauri::command]
+pub fn get_error_popup_mutes() -> Vec<String> {
+    crate::logging::error_sink().muted_snapshot()
+}
+
+/// #3036 — mute or unmute future popups for one captured `typeId`. Unknown IDs
+/// are rejected without mutation; returns the sorted muted snapshot.
+#[tauri::command]
+pub fn set_error_popup_muted(type_id: String, muted: bool) -> Result<Vec<String>, String> {
+    crate::logging::error_sink().set_muted(&type_id, muted)
+}
+
 // ── #1077 SettingsSnapshot: the get_settings client response ────────────────
 
 /// Tagged raw string field state (absent vs JSON null vs string). `present ==
