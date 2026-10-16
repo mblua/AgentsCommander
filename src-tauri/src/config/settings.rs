@@ -13140,9 +13140,11 @@ fn save_settings_value_locked(
                 SettingsSaveLegacyOutward::DiskValidation(reason),
             )
         })?;
-        out = retained.as_object().expect("retained settings object").clone();
+        out = retained
+            .as_object()
+            .expect("retained settings object")
+            .clone();
     }
-
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
