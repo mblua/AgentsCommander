@@ -1007,6 +1007,26 @@ impl SessionIoFanout {
         state.reader_gate.acquire()
     }
 
+    /// #3029: the reader's own parser is the only cursor authority. No locks escape.
+    #[cfg(any(windows, test))]
+    pub(crate) fn cursor_position_for_reader(
+        &self,
+        token: &PtyOutputRegistrationToken,
+    ) -> Option<(u16, u16)> {
+        let parsers = self.screen_parsers.lock().ok()?;
+        let state = parsers.get(&token.identity.session_id)?;
+        if !state
+            .registration
+            .matches_token(token, &self.fanout_identity)
+            || !state.reader_gate.is_open()
+            || state.parser_availability != ParserAvailability::Available
+        {
+            return None;
+        }
+        let (row, col) = state.parser.screen().cursor_position();
+        Some((row + 1, col + 1))
+    }
+
     pub(crate) fn registration_token_for_session(
         &self,
         id: Uuid,
@@ -2033,6 +2053,46 @@ mod tests {
             IdleDetector::new(|_| {}, |_| {}),
             None,
         )
+    }
+
+    #[test]
+    fn issue_3029_cursor_position_respects_reader_token() {
+        let fanout = fanout();
+        let id = Uuid::new_v4();
+        let token = fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 24, 80)
+            .unwrap();
+        assert_eq!(fanout.cursor_position_for_reader(&token), Some((1, 1)));
+        fanout.handle_output(&token, &id.to_string(), b"\x1b[3;4Hhi".to_vec());
+        let before = fanout.get_screen_snapshot(id).unwrap();
+        let history = fanout.screen_parsers.lock().unwrap()[&id].history.clone();
+        assert_eq!(fanout.cursor_position_for_reader(&token), Some((3, 6)));
+        let after = fanout.get_screen_snapshot(id).unwrap();
+        assert_eq!((before.sequence, before.data), (after.sequence, after.data));
+        assert_eq!(history, fanout.screen_parsers.lock().unwrap()[&id].history);
+        let foreign = super::tests::fanout();
+        foreign
+            .register_session_for_test(id, IdleTuning::DEFAULT, 24, 80)
+            .unwrap();
+        assert_eq!(foreign.cursor_position_for_reader(&token), None);
+        fanout.remove_session(id);
+        assert_eq!(fanout.cursor_position_for_reader(&token), None);
+        let replacement = fanout
+            .register_session_for_test(id, IdleTuning::DEFAULT, 24, 80)
+            .unwrap();
+        assert_eq!(fanout.cursor_position_for_reader(&token), None);
+        assert_eq!(
+            fanout.cursor_position_for_reader(&replacement),
+            Some((1, 1))
+        );
+        fanout
+            .screen_parsers
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .parser_availability = ParserAvailability::Unavailable;
+        assert_eq!(fanout.cursor_position_for_reader(&replacement), None);
     }
 
     /// A coding agent's TUI on the way up: hide the cursor, clear, switch to the alternate

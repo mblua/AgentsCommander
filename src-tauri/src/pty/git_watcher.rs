@@ -461,7 +461,7 @@ impl GitWatcher {
 
     /// #2683 - a watcher with no `AppHandle`, for the unix `spawn_sync` tests
     /// that cannot build a `tauri::App` on a headless runner. It never emits.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn new_headless_for_tests(
         session_manager: Arc<tokio::sync::RwLock<SessionManager>>,
     ) -> Arc<Self> {
