@@ -4075,16 +4075,14 @@ fn extract_legacy_local_mode(
         }
         let layer = HistoricalLayer { schema_version: CATALOG_SCHEMA_VERSION, agents: local_rows.iter().map(HistoricalLocalRowWire::from).collect(), order: Some(order) };
         let mut bytes = serde_json::to_vec_pretty(&layer).map_err(|error| error.to_string())?;
-        bytes.push(b'
-');
+        bytes.push(b'\n');
         return Ok(bytes);
     }
     let bytes = local_layer_bytes(local_rows, Some(order));
     let mut after: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     crate::config::settings::retain_configuration_commands(&mut after, &value, "key", true, true, false)?;
     let mut bytes = serde_json::to_vec_pretty(&after).map_err(|error| error.to_string())?;
-    bytes.push(b'
-');
+    bytes.push(b'\n');
     Ok(bytes)
 }
 
@@ -4392,8 +4390,7 @@ fn refresh_managed_base(
     let mut after: serde_json::Value = serde_json::from_slice(&managed_bytes).map_err(|error| error.to_string())?;
     crate::config::settings::retain_configuration_commands(&mut after, &before, "key", true, true, false)?;
     let mut managed_bytes = serde_json::to_vec_pretty(&after).map_err(|error| error.to_string())?;
-    managed_bytes.push(b'
-');
+    managed_bytes.push(b'\n');
     publish_replace(&paths.base, &managed_bytes)?;
     log::info!(
         "[coding-agents] refreshed the managed catalog base revision at {}",
