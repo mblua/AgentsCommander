@@ -1080,11 +1080,13 @@ mod p02_cli_schema_tests {
 
     #[test]
     fn p02_direct_and_queued_updates_share_canonical_serializer_and_effect() {
-        let mut settings = AppSettings::default();
-        settings.agents = vec![serde_json::from_value(
-            json!({"id":"own","label":"Own","color":"#123456","command":"tool --before"}),
-        )
-        .unwrap()];
+        let settings = AppSettings {
+            agents: vec![serde_json::from_value(
+                json!({"id":"own","label":"Own","color":"#123456","command":"tool --before"}),
+            )
+            .unwrap()],
+            ..AppSettings::default()
+        };
         let op: CodingAgentOp = serde_json::from_value(
             json!({"kind":"update","id":"own","patch":{"command":"tool --after"}}),
         )

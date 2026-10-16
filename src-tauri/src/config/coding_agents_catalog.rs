@@ -13420,7 +13420,7 @@ mod p02_catalog_schema_tests {
         let definition: CodingAgentDefinition = serde_json::from_value(legacy.clone()).unwrap();
         let historical = br##"[{"key":"own","label":"Own","description":"d","color":"#123456","command":"tool --fixed","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false}]"##;
         assert_eq!(
-            managed_content_sha256(&[definition.clone()]),
+            managed_content_sha256(std::slice::from_ref(&definition)),
             sha256_hex(historical)
         );
         let mut canonical = legacy.clone();
@@ -13430,7 +13430,7 @@ mod p02_catalog_schema_tests {
             serde_json::from_value(canonical.clone()).unwrap();
         assert_eq!(definition, new_definition);
         assert_eq!(
-            managed_content_sha256(&[new_definition.clone()]),
+            managed_content_sha256(std::slice::from_ref(&new_definition)),
             sha256_hex(historical)
         );
         assert_ne!(

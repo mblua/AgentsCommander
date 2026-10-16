@@ -196,13 +196,15 @@ pub(crate) struct DerivedIdClosure {
     pub(crate) derived_prefix: &'static [&'static str],
 }
 
+type PairedLeafSelector = fn(&Map<String, Value>, &str) -> Result<Option<String>, String>;
+
 /// Caller-owned field knowledge; `*` traverses object members or array rows.
 #[derive(Clone, Copy)]
 pub(crate) struct PairedLeaf {
     pub(crate) path: &'static [&'static str],
     pub(crate) canonical: &'static str,
     pub(crate) legacy: &'static str,
-    pub(crate) select: fn(&Map<String, Value>, &str) -> Result<Option<String>, String>,
+    pub(crate) select: PairedLeafSelector,
 }
 
 fn resolve_pairs(

@@ -8884,7 +8884,7 @@ fn capture_project_settings_with_startup(
                             Ok((settings, legacy_profiles, Some(contents)))
                         }
                         Err(error) => {
-                            if let Some(startup) = startup.as_deref_mut() {
+                            if let Some(startup) = startup {
                                 *startup = None;
                             }
                             log::error!("{error}");
