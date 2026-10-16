@@ -2253,6 +2253,13 @@ export type CodingAgentDefinitionWireInput = Partial<Omit<CodingAgentDefinition,
   command?: unknown;
 };
 export type ProfileCellConfigWire = Omit<ProfileCellConfig, "command"> & { additionalArguments: string };
+export type CodingAgentProfilesConfigWire = Omit<CodingAgentProfilesConfig, "profilesByAgent"> & {
+  profilesByAgent: Record<string, Record<string, ProfileCellConfigWire>>;
+};
+export type AppSettingsWire = Omit<AppSettings, "agents" | "codingAgentProfiles"> & {
+  agents: AgentConfigWire[];
+  codingAgentProfiles: CodingAgentProfilesConfigWire;
+};
 export type ProfileCellConfigWireInput = Partial<Omit<ProfileCellConfig, "command">> & {
   additionalArguments?: unknown;
   command?: unknown;

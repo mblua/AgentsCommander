@@ -135,3 +135,99 @@ describe("SettingsModal validateAgents (#2611)", () => {
     }
   });
 });
+
+// #3021 - base/profile labels and canonical keys on save after a mixed-key reload.
+describe("SettingsModal command field labels and writes (#3021)", () => {
+  let cleanupDom: (() => void) | null = null;
+
+  beforeEach(() => {
+    cleanupDom = installBrowserDomStubs();
+    resetUiStoresForTests();
+  });
+
+  afterEach(() => {
+    cleanupDom?.();
+    cleanupDom = null;
+    resetUiStoresForTests();
+    document.body.replaceChildren();
+  });
+
+  const CARD = "settings.profileCard.0.A";
+
+  function renderWire() {
+    const base = baseSettings();
+    const { command: _command, ...agentRest } = agent("unused");
+    const wire = {
+      ...base,
+      agents: [{ ...agentRest, baseCommand: "", command: 'codex --profile "x y"' }],
+      codingAgentProfiles: {
+        ...base.codingAgentProfiles,
+        profilesByAgent: { codex: {
+          A: { enabled: true, env: {}, notes: "", additionalArguments: " ", command: "--legacy" },
+          B: { enabled: false, env: {}, notes: "", additionalArguments: "--new-off", command: "--old-off" },
+        } },
+      },
+    };
+    const fake = new FakeTransport();
+    fake.resolve("get_settings", wire);
+    fake.resolve("get_web_server_status", false);
+    fake.resolve("get_coding_agent_catalog", []);
+    fake.resolve("list_reseedable_agent_commands", []);
+    fake.resolve("save_settings_draft", null);
+    const rendered = renderWithFakeTransport(
+      () => <SettingsModal section="agents" onClose={() => {}} />,
+      fake,
+    );
+    return { fake, rendered };
+  }
+
+  // The base command input exists only once the row's editor is open.
+  async function openBaseCommand(root: HTMLElement): Promise<HTMLInputElement> {
+    q<HTMLButtonElement>(root, "settings.agentRow.0.toggle")!.click();
+    await waitFor(() => expect(q(root, "settings.agentRow.0.command")).toBeTruthy());
+    return q<HTMLInputElement>(root, "settings.agentRow.0.command")!;
+  }
+
+  it("labels the base and profile fields and keeps the legacy fallback visible on reload", async () => {
+    const { rendered } = renderWire();
+    try {
+      await ready(rendered.root);
+      await waitFor(() => expect(q(rendered.root, `${CARD}.command`)).toBeTruthy());
+      const baseInput = await openBaseCommand(rendered.root);
+      expect(baseInput.closest("label")?.querySelector(".settings-label")?.textContent).toBe("Base command");
+      expect(baseInput.value).toBe('codex --profile "x y"');
+      const cardInput = q<HTMLTextAreaElement>(rendered.root, `${CARD}.command`)!;
+      expect(cardInput.value).toBe("--legacy");
+      const labels = Array.from(rendered.root.querySelectorAll(".settings-profile-field-label"))
+        .map((label) => label.textContent);
+      expect(labels).toContain("Additional arguments");
+      expect(labels).not.toContain("Command");
+      expect(q(rendered.root, `${CARD}.commandBase`)?.textContent)
+        .toContain("If left empty, a previously saved legacy value still applies.");
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
+  it("saves edited base text and effective cells under canonical keys only", async () => {
+    const { fake, rendered } = renderWire();
+    try {
+      await ready(rendered.root);
+      const baseInput = await openBaseCommand(rendered.root);
+      baseInput.value = 'wrapper "C:/Program Files/codex.exe" --fixed';
+      baseInput.dispatchEvent(new Event("input", { bubbles: true }));
+      await expectFooterError(rendered.root, "");
+      q<HTMLButtonElement>(rendered.root, "settings.save")!.click();
+      await waitFor(() => expect(fake.callsFor("save_settings_draft")).toHaveLength(1));
+      const draft = JSON.parse(JSON.stringify(fake.lastCall("save_settings_draft")!.args.draft));
+      expect(draft.agents).toHaveLength(1);
+      expect(draft.agents[0].baseCommand).toBe('wrapper "C:/Program Files/codex.exe" --fixed');
+      expect(Object.keys(draft.agents[0])).not.toContain("command");
+      const cells = draft.codingAgentProfiles.profilesByAgent.codex;
+      expect(cells.A).toEqual({ enabled: true, env: {}, notes: "", additionalArguments: "--legacy" });
+      expect(cells.B).toEqual({ enabled: false, env: {}, notes: "", additionalArguments: "--new-off" });
+    } finally {
+      rendered.cleanup();
+    }
+  });
+});

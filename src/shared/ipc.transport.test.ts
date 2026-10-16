@@ -1309,17 +1309,72 @@ describe("tolerant configuration readers (#3019)", () => {
         await ipc.SettingsAPI.updateCodingAgentProfiles(profiles);
         for (const [cmd, key] of [["update_settings", "newSettings"], ["save_settings_draft", "draft"]]) {
           const sent = JSON.parse(JSON.stringify(fake.lastCall(cmd)?.args?.[key]));
-          expect(sent.agents[0].command).toBe("base --edited");
-          expect(Object.prototype.hasOwnProperty.call(sent.agents[0], "baseCommand")).toBe(false);
-          expect(sent.codingAgentProfiles.profilesByAgent.a.A.command).toBe("--edited");
-          expect(Object.prototype.hasOwnProperty.call(sent.codingAgentProfiles.profilesByAgent.a.A, "additionalArguments")).toBe(false);
+          expect(sent.agents[0].baseCommand).toBe("base --edited");
+          expect(Object.prototype.hasOwnProperty.call(sent.agents[0], "command")).toBe(false);
+          expect(sent.codingAgentProfiles.profilesByAgent.a.A.additionalArguments).toBe("--edited");
+          expect(Object.prototype.hasOwnProperty.call(sent.codingAgentProfiles.profilesByAgent.a.A, "command")).toBe(false);
           expect(sent.agents[0].metadata).toEqual(metadata);
           expect(sent.codingAgentProfiles.profilesByAgent.a.A.metadata).toEqual(metadata);
         }
         const sentProfiles = JSON.parse(JSON.stringify(fake.lastCall("update_coding_agent_profiles")?.args?.profiles));
-        expect(sentProfiles.profilesByAgent.a.A.command).toBe("--edited");
-        expect(Object.prototype.hasOwnProperty.call(sentProfiles.profilesByAgent.a.A, "additionalArguments")).toBe(false);
+        expect(sentProfiles.profilesByAgent.a.A.additionalArguments).toBe("--edited");
+        expect(Object.prototype.hasOwnProperty.call(sentProfiles.profilesByAgent.a.A, "command")).toBe(false);
+        expect(edited.agents[0].command).toBe("base --edited");
+        expect(profiles.profilesByAgent.a.A.command).toBe("--edited");
         expect(JSON.stringify(raw)).toBe(before);
+      } finally {
+        restore();
+      }
+    });
+
+    it("writes exact base and profile text under canonical keys only through every whole-settings write", async () => {
+      const ipc = await import("./ipc");
+      const fake = new FakeTransport();
+      fake.resolve("update_settings", undefined);
+      fake.resolve("save_settings_draft", undefined);
+      fake.resolve("update_coding_agent_profiles", undefined);
+      const base = baseSettings();
+      const settings = {
+        ...base,
+        agents: [
+          { id: "a", label: "A", command: 'wrapper "C:/Program Files/agent.exe" --fixed', color: "blue", envs: [], isolatedHome: false },
+          { id: "b", label: "B", command: " ", color: "red", envs: [], isolatedHome: false },
+        ],
+        watchers: { probe: { commands: ["claude"] } },
+        codingAgentProfiles: {
+          ...base.codingAgentProfiles,
+          profilesByAgent: { a: {
+            A: { enabled: true, command: ' --model "x y" ', env: {}, notes: "" },
+            B: { enabled: false, command: "", env: {}, notes: "off" },
+          } },
+        },
+      } as unknown as typeof base;
+      const before = JSON.stringify(settings);
+      const restore = ipc.__setTransportForTests(fake);
+      try {
+        await ipc.SettingsAPI.update(settings);
+        await ipc.SettingsAPI.saveDraft(settings);
+        await ipc.SettingsAPI.updateCodingAgentProfiles(settings.codingAgentProfiles);
+        const sentProfilesList = [
+          fake.lastCall("update_settings")?.args?.newSettings,
+          fake.lastCall("save_settings_draft")?.args?.draft,
+        ].map((sent) => {
+          const wire = JSON.parse(JSON.stringify(sent));
+          expect(wire.agents.map((agent: Record<string, unknown>) => agent.baseCommand))
+            .toEqual(['wrapper "C:/Program Files/agent.exe" --fixed', " "]);
+          for (const agent of wire.agents) expect(Object.keys(agent)).not.toContain("command");
+          expect(wire.watchers).toEqual({ probe: { commands: ["claude"] } });
+          return wire.codingAgentProfiles;
+        });
+        sentProfilesList.push(JSON.parse(JSON.stringify(fake.lastCall("update_coding_agent_profiles")?.args?.profiles)));
+        for (const wire of sentProfilesList) {
+          expect(wire.profilesByAgent).toEqual({ a: {
+            A: { enabled: true, additionalArguments: ' --model "x y" ', env: {}, notes: "" },
+            B: { enabled: false, additionalArguments: "", env: {}, notes: "off" },
+          } });
+          expect(wire.profileSlots).toEqual(base.codingAgentProfiles.profileSlots);
+        }
+        expect(JSON.stringify(settings)).toBe(before);
       } finally {
         restore();
       }
