@@ -262,7 +262,7 @@ pub struct InstallCommands {
 /// removable}` on the frontend. `removable`, `envs`, and `isolated_home` are
 /// serde-guaranteed present (the frontend types them as required);
 /// `instructions_filename` and `config_seed` are optional.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodingAgentDefinition {
     /// Stable identity within the catalog. Must match `^[a-z0-9-]+$` and be
@@ -272,6 +272,7 @@ pub struct CodingAgentDefinition {
     pub label: String,
     pub description: String,
     pub color: String,
+    #[serde(rename = "baseCommand")]
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions_filename: Option<String>,
@@ -321,6 +322,75 @@ pub struct CodingAgentDefinition {
     /// and the managed revision hash is taken over this serialization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_commands: Option<InstallCommands>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodingAgentDefinitionWire {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    pub color: String,
+    #[serde(
+        default,
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
+    pub command: Option<String>,
+    #[serde(
+        default,
+        rename = "baseCommand",
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
+    pub canonical_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_filename: Option<String>,
+    #[serde(default)]
+    pub envs: Vec<CodingAgentEnv>,
+    #[serde(default)]
+    pub isolated_home: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_seed: Option<ConfigSeedConfig>,
+    #[serde(default = "default_true")]
+    pub removable: bool,
+    #[serde(default)]
+    pub update_commands: Vec<String>,
+    #[serde(default)]
+    pub auto_update: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_burst: Option<IdleBurstConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_commands: Option<InstallCommands>,
+}
+
+impl<'de> Deserialize<'de> for CodingAgentDefinition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = CodingAgentDefinitionWire::deserialize(deserializer)?;
+        let command = crate::config::settings::select_configuration_command(
+            wire.canonical_command.as_deref(),
+            wire.command.as_deref(),
+        )
+        .ok_or_else(|| <D::Error as serde::de::Error>::missing_field("baseCommand"))?
+        .to_owned();
+        Ok(Self {
+            key: wire.key,
+            label: wire.label,
+            description: wire.description,
+            color: wire.color,
+            command,
+            instructions_filename: wire.instructions_filename,
+            envs: wire.envs,
+            isolated_home: wire.isolated_home,
+            config_seed: wire.config_seed,
+            removable: wire.removable,
+            update_commands: wire.update_commands,
+            auto_update: wire.auto_update,
+            idle_burst: wire.idle_burst,
+            install_commands: wire.install_commands,
+        })
+    }
 }
 
 /// The manifest file shape: a schema version plus the ordered agent list.
@@ -962,6 +1032,7 @@ const KNOWN_DEFINITION_FIELDS: &[&str] = &[
     "description",
     "color",
     "command",
+    "baseCommand",
     "instructionsFilename",
     "envs",
     "isolatedHome",
@@ -1279,8 +1350,58 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// round trips reproduce the hash and a whitespace-only edit does not count as
 /// a data edit. `serde_json::Value` map iteration and raw bytes are never
 /// consulted.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyDefinitionHash<'a> {
+    key: &'a String,
+    label: &'a String,
+    description: &'a String,
+    color: &'a String,
+    command: &'a String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instructions_filename: &'a Option<String>,
+    #[serde(default)]
+    envs: &'a Vec<CodingAgentEnv>,
+    #[serde(default)]
+    isolated_home: &'a bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config_seed: &'a Option<ConfigSeedConfig>,
+    #[serde(default = "default_true")]
+    removable: &'a bool,
+    #[serde(default)]
+    update_commands: &'a Vec<String>,
+    #[serde(default)]
+    auto_update: &'a bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    idle_burst: &'a Option<IdleBurstConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    install_commands: &'a Option<InstallCommands>,
+}
+
+impl<'a> From<&'a CodingAgentDefinition> for LegacyDefinitionHash<'a> {
+    fn from(value: &'a CodingAgentDefinition) -> Self {
+        Self {
+            key: &value.key,
+            label: &value.label,
+            description: &value.description,
+            color: &value.color,
+            command: &value.command,
+            instructions_filename: &value.instructions_filename,
+            envs: &value.envs,
+            isolated_home: &value.isolated_home,
+            config_seed: &value.config_seed,
+            removable: &value.removable,
+            update_commands: &value.update_commands,
+            auto_update: &value.auto_update,
+            idle_burst: &value.idle_burst,
+            install_commands: &value.install_commands,
+        }
+    }
+}
+
 fn managed_content_sha256(definitions: &[CodingAgentDefinition]) -> String {
-    match serde_json::to_vec(definitions) {
+    let historical: Vec<_> = definitions.iter().map(LegacyDefinitionHash::from).collect();
+    match serde_json::to_vec(&historical) {
         Ok(bytes) => sha256_hex(&bytes),
         Err(error) => {
             log::error!(
@@ -1306,17 +1427,49 @@ fn supported_shipped_definitions() -> Vec<CodingAgentDefinition> {
 /// `revision` and `contentSha256` are the same content identity. No timestamp
 /// is part of the content identity.
 fn build_managed_base_bytes(definitions: &[CodingAgentDefinition]) -> Vec<u8> {
+    build_managed_base_bytes_with_original(definitions, None)
+}
+
+fn original_catalog_command<'a>(
+    original: Option<&'a serde_json::Value>,
+    key: &str,
+) -> Option<&'a serde_json::Value> {
+    original?
+        .get("agents")?
+        .as_array()?
+        .iter()
+        .find(|row| row.get("key").and_then(serde_json::Value::as_str) == Some(key))?
+        .get("command")
+}
+
+fn build_managed_base_bytes_with_original(
+    definitions: &[CodingAgentDefinition],
+    original: Option<&serde_json::Value>,
+) -> Vec<u8> {
     let revision = managed_content_sha256(definitions);
+    #[derive(Serialize)]
+    struct DefinitionWire<'a> {
+        #[serde(flatten)]
+        definition: &'a CodingAgentDefinition,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        command: Option<&'a serde_json::Value>,
+    }
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct ManagedBaseWire<'a> {
         schema_version: u32,
-        agents: &'a [CodingAgentDefinition],
+        agents: Vec<DefinitionWire<'a>>,
         managed: ManagedCatalogMarker,
     }
     let root = ManagedBaseWire {
         schema_version: CATALOG_SCHEMA_VERSION,
-        agents: definitions,
+        agents: definitions
+            .iter()
+            .map(|definition| DefinitionWire {
+                definition,
+                command: original_catalog_command(original, &definition.key),
+            })
+            .collect(),
         managed: ManagedCatalogMarker {
             owner: MANAGED_OWNER.to_string(),
             version: MANAGED_VERSION,
@@ -1545,6 +1698,7 @@ const LOCAL_ROW_FIELDS: &[&str] = &[
     "description",
     "color",
     "command",
+    "baseCommand",
     "instructionsFilename",
     "envs",
     "isolatedHome",
@@ -1768,12 +1922,18 @@ fn parse_local_fields(
         };
         fields.color = Some(value.clone());
     }
-    if let Some(value) = object.get("command") {
-        let serde_json::Value::String(value) = value else {
-            return Err(format!("{context}: 'command' must be a string"));
-        };
-        fields.command = Some(value.clone());
+    for name in ["baseCommand", "command"] {
+        if object.get(name).is_some_and(|value| !value.is_string()) {
+            return Err(format!("{context}: '{name}' must be a string"));
+        }
     }
+    fields.command = crate::config::settings::select_configuration_command(
+        object
+            .get("baseCommand")
+            .and_then(serde_json::Value::as_str),
+        object.get("command").and_then(serde_json::Value::as_str),
+    )
+    .map(str::to_owned);
     if let Some(value) = object.get("instructionsFilename") {
         fields.instructions_filename = Some(match value {
             serde_json::Value::Null => None,
@@ -3623,6 +3783,7 @@ struct LocalRowWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "baseCommand")]
     command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions_filename: Option<Option<String>>,
@@ -3642,6 +3803,61 @@ struct LocalRowWire {
     idle_burst: Option<Option<IdleBurstConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     install_commands: Option<Option<InstallCommandsWire>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoricalLocalRowWire<'a> {
+    key: &'a String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remove: &'a Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions_filename: &'a Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    envs: &'a Option<Vec<CodingAgentEnv>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    isolated_home: &'a Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_seed: &'a Option<Option<ConfigSeedWire>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    removable: &'a Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    update_commands: &'a Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_update: &'a Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    idle_burst: &'a Option<Option<IdleBurstConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_commands: &'a Option<Option<InstallCommandsWire>>,
+}
+impl<'a> From<&'a LocalRowWire> for HistoricalLocalRowWire<'a> {
+    fn from(row: &'a LocalRowWire) -> Self {
+        Self {
+            key: &row.key,
+            remove: &row.remove,
+            label: &row.label,
+            description: &row.description,
+            color: &row.color,
+            command: &row.command,
+            instructions_filename: &row.instructions_filename,
+            envs: &row.envs,
+            isolated_home: &row.isolated_home,
+            config_seed: &row.config_seed,
+            removable: &row.removable,
+            update_commands: &row.update_commands,
+            auto_update: &row.auto_update,
+            idle_burst: &row.idle_burst,
+            install_commands: &row.install_commands,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -3685,17 +3901,39 @@ impl From<&ConfigSeedConfig> for ConfigSeedWire {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LocalLayerWire {
+struct LocalLayerWire<'a> {
     schema_version: u32,
-    agents: Vec<LocalRowWire>,
+    agents: Vec<LocalRowWithLegacy<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     order: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct LocalRowWithLegacy<'a> {
+    #[serde(flatten)]
+    row: &'a LocalRowWire,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'a serde_json::Value>,
+}
+
 fn local_layer_bytes(rows: Vec<LocalRowWire>, order: Option<Vec<String>>) -> Vec<u8> {
+    local_layer_bytes_with_original(rows, order, None)
+}
+
+fn local_layer_bytes_with_original(
+    rows: Vec<LocalRowWire>,
+    order: Option<Vec<String>>,
+    original: Option<&serde_json::Value>,
+) -> Vec<u8> {
     let layer = LocalLayerWire {
         schema_version: CATALOG_SCHEMA_VERSION,
-        agents: rows,
+        agents: rows
+            .iter()
+            .map(|row| LocalRowWithLegacy {
+                row,
+                command: original_catalog_command(original, &row.key),
+            })
+            .collect(),
         order,
     };
     let mut bytes = match serde_json::to_vec_pretty(&layer) {
@@ -3725,8 +3963,7 @@ fn pin_explicit_legacy_fields(
             .contains_key("description")
             .then(|| definition.description.clone()),
         color: raw.contains_key("color").then(|| definition.color.clone()),
-        command: raw
-            .contains_key("command")
+        command: (raw.contains_key("baseCommand") || raw.contains_key("command"))
             .then(|| definition.command.clone()),
         instructions_filename: raw
             .contains_key("instructionsFilename")
@@ -3809,6 +4046,14 @@ fn materialize_complete_legacy_fields(
 fn extract_legacy_local(
     source_bytes: &[u8],
     shipped: &[CodingAgentDefinition],
+) -> Result<Vec<u8>, String> {
+    extract_legacy_local_mode(source_bytes, shipped, false)
+}
+
+fn extract_legacy_local_mode(
+    source_bytes: &[u8],
+    shipped: &[CodingAgentDefinition],
+    historical: bool,
 ) -> Result<Vec<u8>, String> {
     let value = parse_strict_json(source_bytes)
         .map_err(|reason| format!("the legacy catalog is not valid JSON ({reason})"))?;
@@ -3907,7 +4152,38 @@ fn extract_legacy_local(
             });
         }
     }
-    Ok(local_layer_bytes(local_rows, Some(order)))
+    if historical {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct HistoricalLayer<'a> {
+            schema_version: u32,
+            agents: Vec<HistoricalLocalRowWire<'a>>,
+            order: Option<Vec<String>>,
+        }
+        let layer = HistoricalLayer {
+            schema_version: CATALOG_SCHEMA_VERSION,
+            agents: local_rows
+                .iter()
+                .map(HistoricalLocalRowWire::from)
+                .collect(),
+            order: Some(order),
+        };
+        let mut bytes = serde_json::to_vec_pretty(&layer).map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        return Ok(bytes);
+    }
+    if local_rows
+        .iter()
+        .all(|row| original_catalog_command(Some(&value), &row.key).is_none())
+    {
+        Ok(local_layer_bytes(local_rows, Some(order)))
+    } else {
+        Ok(local_layer_bytes_with_original(
+            local_rows,
+            Some(order),
+            Some(&value),
+        ))
+    }
 }
 
 /// Execute one migration transaction under the held catalog lock. Order:
@@ -4112,7 +4388,12 @@ fn recover_interrupted_migration(paths: &CatalogPaths) -> Result<Option<DateTime
             Utc::now()
         }
         None => {
-            let recomputed = extract_legacy_local(&backup, &managed_definitions)?;
+            let mut recomputed = extract_legacy_local(&backup, &managed_definitions)?;
+            if sha256_hex(&recomputed) != journal.local_sha256
+                || recomputed.len() as u64 != journal.local_byte_length
+            {
+                recomputed = extract_legacy_local_mode(&backup, &managed_definitions, true)?;
+            }
             if sha256_hex(&recomputed) != journal.local_sha256
                 || recomputed.len() as u64 != journal.local_byte_length
             {
@@ -4205,7 +4486,10 @@ fn refresh_managed_base(
     if !managed_base_is_stale(analysis, &shipped_revision) {
         return Ok(None);
     }
-    let managed_bytes = build_managed_base_bytes(&shipped);
+    let before = read_optional_regular_file(&paths.base, "persisted catalog")?
+        .ok_or("catalog disappeared before refresh")?;
+    let before = parse_strict_json(&before)?;
+    let managed_bytes = build_managed_base_bytes_with_original(&shipped, Some(&before));
     publish_replace(&paths.base, &managed_bytes)?;
     log::info!(
         "[coding-agents] refreshed the managed catalog base revision at {}",
@@ -6240,7 +6524,7 @@ mod tests {
                 "label": "Muse Code",
                 "description": "Meta terminal coding agent (beta; macOS/Linux host only)",
                 "color": "#0668E1",
-                "command": "muse",
+                "baseCommand": "muse",
                 "envs": [],
                 "isolatedHome": false,
                 "removable": true,
@@ -12955,7 +13239,7 @@ mod tests {
     }
 
     const SCOPE_B_EXPECTED_2800: &str = r#####"{"claude":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYwBsAGEAdQBkAGUALgBhAGkALwBpAG4AcwB0AGEAbABsAC4AcABzADEAJwAgAC0AVABpAG0AZQBvAHUAdABTAGUAYwAgADEAMgAwACAALQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AIABTAHQAbwBwADsAIABpAGYAIAAoAFsAcwB0AHIAaQBuAGcAXQA6ADoASQBzAE4AdQBsAGwATwByAFcAaABpAHQAZQBTAHAAYQBjAGUAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApACkAIAB7ACAAdABoAHIAbwB3ACAAJwBFAG0AcAB0AHkAIABpAG4AcwB0AGEAbABsAGUAcgAgAHIAZQBzAHAAbwBuAHMAZQAnACAAfQA7ACAAJABhAGMAXwBwAGEAdABoAD0ASgBvAGkAbgAtAFAAYQB0AGgAIAAoAFsASQBPAC4AUABhAHQAaABdADoAOgBHAGUAdABUAGUAbQBwAFAAYQB0AGgAKAApACkAIAAoACcAYQBjAC0AaQBuAHMAdABhAGwAbAAtADIANwA4ADcALQAnACsAWwBHAHUAaQBkAF0AOgA6AE4AZQB3AEcAdQBpAGQAKAApAC4AVABvAFMAdAByAGkAbgBnACgAJwBOACcAKQArACcALgBwAHMAMQAnACkAOwAgACQAYQBjAF8AZgBpAGwAZQA9AFsASQBPAC4ARgBpAGwAZQBdADoAOgBPAHAAZQBuACgAJABhAGMAXwBwAGEAdABoACwAWwBJAE8ALgBGAGkAbABlAE0AbwBkAGUAXQA6ADoAQwByAGUAYQB0AGUATgBlAHcALABbAEkATwAuAEYAaQBsAGUAQQBjAGMAZQBzAHMAXQA6ADoAVwByAGkAdABlACwAWwBJAE8ALgBGAGkAbABlAFMAaABhAHIAZQBdADoAOgBOAG8AbgBlACkAOwAgACQAYQBjAF8AYwByAGUAYQB0AGUAZAA9ACQAdAByAHUAZQA7ACAAdAByAHkAIAB7ACAAWwBiAHkAdABlAFsAXQBdACQAYQBjAF8AYgB5AHQAZQBzAD0AWwBUAGUAeAB0AC4ARQBuAGMAbwBkAGkAbgBnAF0AOgA6AFUAVABGADgALgBHAGUAdABQAHIAZQBhAG0AYgBsAGUAKAApACsAWwBUAGUAeAB0AC4ARQBuAGMAbwBkAGkAbgBnAF0AOgA6AFUAVABGADgALgBHAGUAdABCAHkAdABlAHMAKAAkAGEAYwBfAGkAbgBzAHQAYQBsAGwAXwBzAGMAcgBpAHAAdAApADsAIAAkAGEAYwBfAGYAaQBsAGUALgBXAHIAaQB0AGUAKAAkAGEAYwBfAGIAeQB0AGUAcwAsADAALAAkAGEAYwBfAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAIAB9ACAAZgBpAG4AYQBsAGwAeQAgAHsAIAAkAGEAYwBfAGYAaQBsAGUALgBEAGkAcwBwAG8AcwBlACgAKQAgAH0AOwAgACQAZwBsAG8AYgBhAGwAOgBMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA9ACQAbgB1AGwAbAA7ACAAJgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAFAAUwBIAE8ATQBFACAAJwBwAG8AdwBlAHIAcwBoAGUAbABsAC4AZQB4AGUAJwApACAALQBOAG8AUAByAG8AZgBpAGwAZQAgAC0ATgBvAG4ASQBuAHQAZQByAGEAYwB0AGkAdgBlACAALQBFAHgAZQBjAHUAdABpAG8AbgBQAG8AbABpAGMAeQAgAEIAeQBwAGEAcwBzACAALQBGAGkAbABlACAAJABhAGMAXwBwAGEAdABoADsAIAAkAGEAYwBfAGUAeABpAHQAPQAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFADsAIABpAGYAIAAoACQAbgB1AGwAbAAgAC0AZQBxACAAJABhAGMAXwBlAHgAaQB0ACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAaQBmACAAKAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAKQAgAHsAIAB0AHIAeQAgAHsAIABSAGUAbQBvAHYAZQAtAEkAdABlAG0AIAAtAEwAaQB0AGUAcgBhAGwAUABhAHQAaAAgACQAYQBjAF8AcABhAHQAaAAgAC0ARgBvAHIAYwBlACAALQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AIABTAHQAbwBwACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAaQBmACAAKAAkAGEAYwBfAGUAeABpAHQAIAAtAGUAcQAgADAAKQAgAHsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAH0AIAB9ACAAfQA7ACAAZQB4AGkAdAAgACQAYQBjAF8AZQB4AGkAdAA=","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://claude.ai/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://claude.ai/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"},"codex":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYwBoAGEAdABnAHAAdAAuAGMAbwBtAC8AYwBvAGQAZQB4AC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAA7ACAAJABhAGMAXwBlAHgAaQB0AD0AJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA7ACAAaQBmACAAKAAkAG4AdQBsAGwAIAAtAGUAcQAgACQAYQBjAF8AZQB4AGkAdAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgAGkAZgAgACgAJABhAGMAXwBjAHIAZQBhAHQAZQBkACkAIAB7ACAAdAByAHkAIAB7ACAAUgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGEAYwBfAHAAYQB0AGgAIAAtAEYAbwByAGMAZQAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGkAZgAgACgAJABhAGMAXwBlAHgAaQB0ACAALQBlAHEAIAAwACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAfQAgAH0AOwAgAGUAeABpAHQAIAAkAGEAYwBfAGUAeABpAHQA","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://chatgpt.com/codex/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | sh","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://chatgpt.com/codex/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | sh","default":"echo No verified installer for this platform 1>&2 && exit 1"},"hermes":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AaABlAHIAbQBlAHMALQBhAGcAZQBuAHQALgBuAG8AdQBzAHIAZQBzAGUAYQByAGMAaAAuAGMAbwBtAC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAAgAC0ATgBvAG4ASQBuAHQAZQByAGEAYwB0AGkAdgBlADsAIAAkAGEAYwBfAGUAeABpAHQAPQAkAEwAQQBTAFQARQBYAEkAVABDAE8ARABFADsAIABpAGYAIAAoACQAbgB1AGwAbAAgAC0AZQBxACAAJABhAGMAXwBlAHgAaQB0ACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAaQBmACAAKAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAKQAgAHsAIAB0AHIAeQAgAHsAIABSAGUAbQBvAHYAZQAtAEkAdABlAG0AIAAtAEwAaQB0AGUAcgBhAGwAUABhAHQAaAAgACQAYQBjAF8AcABhAHQAaAAgAC0ARgBvAHIAYwBlACAALQBFAHIAcgBvAHIAQQBjAHQAaQBvAG4AIABTAHQAbwBwACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAaQBmACAAKAAkAGEAYwBfAGUAeABpAHQAIAAtAGUAcQAgADAAKQAgAHsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAH0AIAB9ACAAfQA7ACAAZQB4AGkAdAAgACQAYQBjAF8AZQB4AGkAdAA=","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://hermes-agent.nousresearch.com/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash -s -- --non-interactive","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://hermes-agent.nousresearch.com/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash -s -- --non-interactive","default":"echo No verified installer for this platform 1>&2 && exit 1"},"cursor":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYwB1AHIAcwBvAHIALgBjAG8AbQAvAGkAbgBzAHQAYQBsAGwAPwB3AGkAbgAzADIAPQB0AHIAdQBlACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAA7ACAAJABhAGMAXwBlAHgAaQB0AD0AJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA7ACAAaQBmACAAKAAkAG4AdQBsAGwAIAAtAGUAcQAgACQAYQBjAF8AZQB4AGkAdAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgAGkAZgAgACgAJABhAGMAXwBjAHIAZQBhAHQAZQBkACkAIAB7ACAAdAByAHkAIAB7ACAAUgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGEAYwBfAHAAYQB0AGgAIAAtAEYAbwByAGMAZQAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGkAZgAgACgAJABhAGMAXwBlAHgAaQB0ACAALQBlAHEAIAAwACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAfQAgAH0AOwAgAGUAeABpAHQAIAAkAGEAYwBfAGUAeABpAHQA","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://cursor.com/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://cursor.com/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"},"pi":{"windows":"npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent","macos":"npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent","linux":"npm install -g --ignore-scripts --include=optional @earendil-works/pi-coding-agent","default":"echo No verified installer for this platform 1>&2 && exit 1"},"opencode":{"windows":"npm install -g --ignore-scripts=false --include=optional --allow-scripts=opencode-ai opencode-ai","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://opencode.ai/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://opencode.ai/install') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"},"antigravity":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AYQBuAHQAaQBnAHIAYQB2AGkAdAB5AC4AZwBvAG8AZwBsAGUALwBjAGwAaQAvAGkAbgBzAHQAYQBsAGwALgBwAHMAMQAnACAALQBUAGkAbQBlAG8AdQB0AFMAZQBjACAAMQAyADAAIAAtAEUAcgByAG8AcgBBAGMAdABpAG8AbgAgAFMAdABvAHAAOwAgAGkAZgAgACgAWwBzAHQAcgBpAG4AZwBdADoAOgBJAHMATgB1AGwAbABPAHIAVwBoAGkAdABlAFMAcABhAGMAZQAoACQAYQBjAF8AaQBuAHMAdABhAGwAbABfAHMAYwByAGkAcAB0ACkAKQAgAHsAIAB0AGgAcgBvAHcAIAAnAEUAbQBwAHQAeQAgAGkAbgBzAHQAYQBsAGwAZQByACAAcgBlAHMAcABvAG4AcwBlACcAIAB9ADsAIAAkAGEAYwBfAHAAYQB0AGgAPQBKAG8AaQBuAC0AUABhAHQAaAAgACgAWwBJAE8ALgBQAGEAdABoAF0AOgA6AEcAZQB0AFQAZQBtAHAAUABhAHQAaAAoACkAKQAgACgAJwBhAGMALQBpAG4AcwB0AGEAbABsAC0AMgA3ADgANwAtACcAKwBbAEcAdQBpAGQAXQA6ADoATgBlAHcARwB1AGkAZAAoACkALgBUAG8AUwB0AHIAaQBuAGcAKAAnAE4AJwApACsAJwAuAHAAcwAxACcAKQA7ACAAJABhAGMAXwBmAGkAbABlAD0AWwBJAE8ALgBGAGkAbABlAF0AOgA6AE8AcABlAG4AKAAkAGEAYwBfAHAAYQB0AGgALABbAEkATwAuAEYAaQBsAGUATQBvAGQAZQBdADoAOgBDAHIAZQBhAHQAZQBOAGUAdwAsAFsASQBPAC4ARgBpAGwAZQBBAGMAYwBlAHMAcwBdADoAOgBXAHIAaQB0AGUALABbAEkATwAuAEYAaQBsAGUAUwBoAGEAcgBlAF0AOgA6AE4AbwBuAGUAKQA7ACAAJABhAGMAXwBjAHIAZQBhAHQAZQBkAD0AJAB0AHIAdQBlADsAIAB0AHIAeQAgAHsAIABbAGIAeQB0AGUAWwBdAF0AJABhAGMAXwBiAHkAdABlAHMAPQBbAFQAZQB4AHQALgBFAG4AYwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAuAEcAZQB0AFAAcgBlAGEAbQBiAGwAZQAoACkAKwBbAFQAZQB4AHQALgBFAG4AYwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAuAEcAZQB0AEIAeQB0AGUAcwAoACQAYQBjAF8AaQBuAHMAdABhAGwAbABfAHMAYwByAGkAcAB0ACkAOwAgACQAYQBjAF8AZgBpAGwAZQAuAFcAcgBpAHQAZQAoACQAYQBjAF8AYgB5AHQAZQBzACwAMAAsACQAYQBjAF8AYgB5AHQAZQBzAC4ATABlAG4AZwB0AGgAKQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgACQAYQBjAF8AZgBpAGwAZQAuAEQAaQBzAHAAbwBzAGUAKAApACAAfQA7ACAAJABnAGwAbwBiAGEAbAA6AEwAQQBTAFQARQBYAEkAVABDAE8ARABFAD0AJABuAHUAbABsADsAIAAmACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAUABTAEgATwBNAEUAIAAnAHAAbwB3AGUAcgBzAGgAZQBsAGwALgBlAHgAZQAnACkAIAAtAE4AbwBQAHIAbwBmAGkAbABlACAALQBOAG8AbgBJAG4AdABlAHIAYQBjAHQAaQB2AGUAIAAtAEUAeABlAGMAdQB0AGkAbwBuAFAAbwBsAGkAYwB5ACAAQgB5AHAAYQBzAHMAIAAtAEYAaQBsAGUAIAAkAGEAYwBfAHAAYQB0AGgAOwAgACQAYQBjAF8AZQB4AGkAdAA9ACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAOwAgAGkAZgAgACgAJABuAHUAbABsACAALQBlAHEAIAAkAGEAYwBfAGUAeABpAHQAKQAgAHsAIAAkAGEAYwBfAGUAeABpAHQAPQAxACAAfQAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAZgBpAG4AYQBsAGwAeQAgAHsAIABpAGYAIAAoACQAYQBjAF8AYwByAGUAYQB0AGUAZAApACAAewAgAHQAcgB5ACAAewAgAFIAZQBtAG8AdgBlAC0ASQB0AGUAbQAgAC0ATABpAHQAZQByAGEAbABQAGEAdABoACAAJABhAGMAXwBwAGEAdABoACAALQBGAG8AcgBjAGUAIAAtAEUAcgByAG8AcgBBAGMAdABpAG8AbgAgAFMAdABvAHAAIAB9ACAAYwBhAHQAYwBoACAAewAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBFAHIAcgBvAHIALgBXAHIAaQB0AGUATABpAG4AZQAoACQAXwApADsAIABpAGYAIAAoACQAYQBjAF8AZQB4AGkAdAAgAC0AZQBxACAAMAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAH0AIAB9ADsAIABlAHgAaQB0ACAAJABhAGMAXwBlAHgAaQB0AA==","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://antigravity.google/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://antigravity.google/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"},"grok":{"windows":"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABhAGMAXwBwAGEAdABoAD0AJABuAHUAbABsADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAGYAYQBsAHMAZQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQA7ACAAdAByAHkAIAB7ACAAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAPQBJAG4AdgBvAGsAZQAtAFIAZQBzAHQATQBlAHQAaABvAGQAIAAtAFUAcgBpACAAJwBoAHQAdABwAHMAOgAvAC8AeAAuAGEAaQAvAGMAbABpAC8AaQBuAHMAdABhAGwAbAAuAHAAcwAxACcAIAAtAFQAaQBtAGUAbwB1AHQAUwBlAGMAIAAxADIAMAAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAA7ACAAaQBmACAAKABbAHMAdAByAGkAbgBnAF0AOgA6AEkAcwBOAHUAbABsAE8AcgBXAGgAaQB0AGUAUwBwAGEAYwBlACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQApACAAewAgAHQAaAByAG8AdwAgACcARQBtAHAAdAB5ACAAaQBuAHMAdABhAGwAbABlAHIAIAByAGUAcwBwAG8AbgBzAGUAJwAgAH0AOwAgACQAYQBjAF8AcABhAHQAaAA9AEoAbwBpAG4ALQBQAGEAdABoACAAKABbAEkATwAuAFAAYQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABQAGEAdABoACgAKQApACAAKAAnAGEAYwAtAGkAbgBzAHQAYQBsAGwALQAyADcAOAA3AC0AJwArAFsARwB1AGkAZABdADoAOgBOAGUAdwBHAHUAaQBkACgAKQAuAFQAbwBTAHQAcgBpAG4AZwAoACcATgAnACkAKwAnAC4AcABzADEAJwApADsAIAAkAGEAYwBfAGYAaQBsAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoATwBwAGUAbgAoACQAYQBjAF8AcABhAHQAaAAsAFsASQBPAC4ARgBpAGwAZQBNAG8AZABlAF0AOgA6AEMAcgBlAGEAdABlAE4AZQB3ACwAWwBJAE8ALgBGAGkAbABlAEEAYwBjAGUAcwBzAF0AOgA6AFcAcgBpAHQAZQAsAFsASQBPAC4ARgBpAGwAZQBTAGgAYQByAGUAXQA6ADoATgBvAG4AZQApADsAIAAkAGEAYwBfAGMAcgBlAGEAdABlAGQAPQAkAHQAcgB1AGUAOwAgAHQAcgB5ACAAewAgAFsAYgB5AHQAZQBbAF0AXQAkAGEAYwBfAGIAeQB0AGUAcwA9AFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAUAByAGUAYQBtAGIAbABlACgAKQArAFsAVABlAHgAdAAuAEUAbgBjAG8AZABpAG4AZwBdADoAOgBVAFQARgA4AC4ARwBlAHQAQgB5AHQAZQBzACgAJABhAGMAXwBpAG4AcwB0AGEAbABsAF8AcwBjAHIAaQBwAHQAKQA7ACAAJABhAGMAXwBmAGkAbABlAC4AVwByAGkAdABlACgAJABhAGMAXwBiAHkAdABlAHMALAAwACwAJABhAGMAXwBiAHkAdABlAHMALgBMAGUAbgBnAHQAaAApACAAfQAgAGYAaQBuAGEAbABsAHkAIAB7ACAAJABhAGMAXwBmAGkAbABlAC4ARABpAHMAcABvAHMAZQAoACkAIAB9ADsAIAAkAGcAbABvAGIAYQBsADoATABBAFMAVABFAFgASQBUAEMATwBEAEUAPQAkAG4AdQBsAGwAOwAgACYAIAAoAEoAbwBpAG4ALQBQAGEAdABoACAAJABQAFMASABPAE0ARQAgACcAcABvAHcAZQByAHMAaABlAGwAbAAuAGUAeABlACcAKQAgAC0ATgBvAFAAcgBvAGYAaQBsAGUAIAAtAE4AbwBuAEkAbgB0AGUAcgBhAGMAdABpAHYAZQAgAC0ARQB4AGUAYwB1AHQAaQBvAG4AUABvAGwAaQBjAHkAIABCAHkAcABhAHMAcwAgAC0ARgBpAGwAZQAgACQAYQBjAF8AcABhAHQAaAA7ACAAJABhAGMAXwBlAHgAaQB0AD0AJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA7ACAAaQBmACAAKAAkAG4AdQBsAGwAIAAtAGUAcQAgACQAYQBjAF8AZQB4AGkAdAApACAAewAgACQAYQBjAF8AZQB4AGkAdAA9ADEAIAB9ACAAfQAgAGMAYQB0AGMAaAAgAHsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoARQByAHIAbwByAC4AVwByAGkAdABlAEwAaQBuAGUAKAAkAF8AKQA7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIABmAGkAbgBhAGwAbAB5ACAAewAgAGkAZgAgACgAJABhAGMAXwBjAHIAZQBhAHQAZQBkACkAIAB7ACAAdAByAHkAIAB7ACAAUgBlAG0AbwB2AGUALQBJAHQAZQBtACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGEAYwBfAHAAYQB0AGgAIAAtAEYAbwByAGMAZQAgAC0ARQByAHIAbwByAEEAYwB0AGkAbwBuACAAUwB0AG8AcAAgAH0AIABjAGEAdABjAGgAIAB7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AEUAcgByAG8AcgAuAFcAcgBpAHQAZQBMAGkAbgBlACgAJABfACkAOwAgAGkAZgAgACgAJABhAGMAXwBlAHgAaQB0ACAALQBlAHEAIAAwACkAIAB7ACAAJABhAGMAXwBlAHgAaQB0AD0AMQAgAH0AIAB9ACAAfQAgAH0AOwAgAGUAeABpAHQAIAAkAGEAYwBfAGUAeABpAHQA","macos":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://x.ai/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","linux":"ac_install_script=$(curl -fsSL --connect-timeout 20 --max-time 120 'https://x.ai/cli/install.sh') && [ -n \"$ac_install_script\" ] && printf '%s\\n' \"$ac_install_script\" | bash","default":"echo No verified installer for this platform 1>&2 && exit 1"}}"#####;
-    const SCOPE_B_NON_INSTALL_MAIN_2800: &str = r#####"{"schemaVersion":1,"agents":[{"key":"claude","label":"Claude Code","description":"Coding Agent by Anthropic","color":"#d97706","command":"claude","instructionsFilename":"CLAUDE.md","envs":[],"isolatedHome":false,"configSeed":{"enabled":true,"dest":".claude"},"removable":true,"updateCommands":["claude --update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"codex","label":"Codex","description":"Coding Agent by OpenAI","color":"#10b981","command":"codex","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"configSeed":{"enabled":true,"dest":".codex"},"removable":true,"updateCommands":["codex update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"hermes","label":"Hermes","description":"Coding Agent by Nous Research","color":"#8b5cf6","command":"hermes","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["hermes update --yes"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"cursor","label":"Cursor CLI","description":"Coding Agent by Cursor","color":"#22d3ee","command":"agent","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"pi","label":"Pi","description":"Coding Agent by Earendil Inc","color":"#ec4899","command":"pi","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["pi update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"opencode","label":"OpenCode","description":"Open-source terminal coding agent by Anomaly","color":"#64748b","command":"opencode","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"configSeed":{"enabled":true,"dest":".opencode"},"removable":true,"updateCommands":["opencode upgrade"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"antigravity","label":"Antigravity","description":"Coding Agent by Google","color":"#4285F4","command":"agy","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["agy update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"grok","label":"Grok Build","description":"Coding Agent by SpaceXAI","color":"#64748b","command":"grok","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"muse","label":"Muse Code","description":"Meta terminal coding agent (beta; macOS/Linux host only)","color":"#0668E1","command":"muse","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false,"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}}]}"#####;
+    const SCOPE_B_NON_INSTALL_MAIN_2800: &str = r#####"{"schemaVersion":1,"agents":[{"key":"claude","label":"Claude Code","description":"Coding Agent by Anthropic","color":"#d97706","baseCommand":"claude","instructionsFilename":"CLAUDE.md","envs":[],"isolatedHome":false,"configSeed":{"enabled":true,"dest":".claude"},"removable":true,"updateCommands":["claude --update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"codex","label":"Codex","description":"Coding Agent by OpenAI","color":"#10b981","baseCommand":"codex","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"configSeed":{"enabled":true,"dest":".codex"},"removable":true,"updateCommands":["codex update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"hermes","label":"Hermes","description":"Coding Agent by Nous Research","color":"#8b5cf6","baseCommand":"hermes","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["hermes update --yes"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"cursor","label":"Cursor CLI","description":"Coding Agent by Cursor","color":"#22d3ee","baseCommand":"agent","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"pi","label":"Pi","description":"Coding Agent by Earendil Inc","color":"#ec4899","baseCommand":"pi","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["pi update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"opencode","label":"OpenCode","description":"Open-source terminal coding agent by Anomaly","color":"#64748b","baseCommand":"opencode","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"configSeed":{"enabled":true,"dest":".opencode"},"removable":true,"updateCommands":["opencode upgrade"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"antigravity","label":"Antigravity","description":"Coding Agent by Google","color":"#4285F4","baseCommand":"agy","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"updateCommands":["agy update"],"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"grok","label":"Grok Build","description":"Coding Agent by SpaceXAI","color":"#64748b","baseCommand":"grok","instructionsFilename":"AGENTS.md","envs":[],"isolatedHome":false,"removable":true,"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}},{"key":"muse","label":"Muse Code","description":"Meta terminal coding agent (beta; macOS/Linux host only)","color":"#0668E1","baseCommand":"muse","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false,"idleBurst":{"maxBytes":1024,"maxSecs":3.0,"priorSilenceSecs":60.0}}]}"#####;
 
     fn scope_b_expected_commands_2800(key: &str) -> Option<serde_json::Value> {
         let expected: serde_json::Value = serde_json::from_str(SCOPE_B_EXPECTED_2800).unwrap();
@@ -13074,5 +13358,136 @@ mod tests {
         project_rejection_has_no_donor_and_personal_rejection_keeps_project();
         project_ownership_support_and_unavailable_base_contract();
         builtin_agent_support_ships_only_muse_disabled();
+    }
+}
+
+#[cfg(test)]
+mod p02_catalog_schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn p02_retention_preserves_typed_publication_order_and_fresh_bytes() {
+        let definition: CodingAgentDefinition = serde_json::from_value(json!({
+            "key":"own", "label":"Own", "description":"d", "color":"#123456", "baseCommand":"tool"
+        }))
+        .unwrap();
+        let definitions = [definition];
+        let canonical = json!({"agents":[{"key":"own","baseCommand":"tool"}]});
+        assert_eq!(
+            build_managed_base_bytes_with_original(&definitions, Some(&canonical)),
+            build_managed_base_bytes(&definitions)
+        );
+        let original = json!({"agents":[{"key":"own","command":"old"}]});
+        let managed = build_managed_base_bytes_with_original(&definitions, Some(&original));
+        assert!(managed.starts_with(b"{\n  \"schemaVersion\": 1,\n  \"agents\": ["));
+        let value: serde_json::Value = serde_json::from_slice(&managed).unwrap();
+        assert_eq!(value["agents"][0]["baseCommand"], "tool");
+        assert_eq!(value["agents"][0]["command"], "old");
+
+        let row = LocalRowWire {
+            key: "own".into(),
+            command: Some("tool".into()),
+            ..LocalRowWire::default()
+        };
+        let fresh = concat!(
+            "{\n  \"schemaVersion\": 1,\n  \"agents\": [\n    {\n",
+            "      \"key\": \"own\",\n      \"baseCommand\": \"tool\"\n",
+            "    }\n  ],\n  \"order\": [\n    \"own\"\n  ]\n}\n"
+        );
+        let order = Some(vec!["own".to_owned()]);
+        assert_eq!(
+            local_layer_bytes(vec![row.clone()], order.clone()),
+            fresh.as_bytes()
+        );
+        assert_eq!(
+            local_layer_bytes_with_original(vec![row.clone()], order.clone(), Some(&canonical)),
+            fresh.as_bytes()
+        );
+        let retained = fresh.replace(
+            "\"baseCommand\": \"tool\"\n",
+            "\"baseCommand\": \"tool\",\n      \"command\": \"old\"\n",
+        );
+        assert_eq!(
+            local_layer_bytes_with_original(vec![row], order, Some(&original)),
+            retained.as_bytes()
+        );
+    }
+
+    #[test]
+    fn p02_catalog_wire_selection_local_precedence_and_historical_ordered_hash() {
+        let legacy = json!({"key":"own","label":"Own","description":"d","color":"#123456","command":"tool --fixed"});
+        let definition: CodingAgentDefinition = serde_json::from_value(legacy.clone()).unwrap();
+        let historical = br##"[{"key":"own","label":"Own","description":"d","color":"#123456","command":"tool --fixed","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false}]"##;
+        assert_eq!(
+            managed_content_sha256(std::slice::from_ref(&definition)),
+            sha256_hex(historical)
+        );
+        let mut canonical = legacy.clone();
+        canonical["baseCommand"] = json!("tool --fixed");
+        canonical.as_object_mut().unwrap().remove("command");
+        let new_definition: CodingAgentDefinition =
+            serde_json::from_value(canonical.clone()).unwrap();
+        assert_eq!(definition, new_definition);
+        assert_eq!(
+            managed_content_sha256(std::slice::from_ref(&new_definition)),
+            sha256_hex(historical)
+        );
+        assert_ne!(
+            sha256_hex(&serde_json::to_vec(&legacy).unwrap()),
+            sha256_hex(&serde_json::to_vec(&canonical).unwrap())
+        );
+        let wire = serde_json::to_value(&new_definition).unwrap();
+        assert_eq!(wire["baseCommand"], "tool --fixed");
+        assert!(wire.get("command").is_none());
+        let layer = parse_local_layer(
+            br#"{"schemaVersion":1,"agents":[{"key":"own","command":"higher"}]}"#,
+            LayerDescription::Local,
+        )
+        .unwrap();
+        let composed =
+            compose_local_layer(&[new_definition], &layer, LayerDescription::Local).unwrap();
+        assert_eq!(composed[0].command, "higher");
+        for version in [1, 2] {
+            let root = json!({"schemaVersion":version,"agents":[canonical.clone()]});
+            assert_eq!(
+                parse_independent_catalog(&serde_json::to_vec(&root).unwrap(), true)
+                    .unwrap()
+                    .agents[0]
+                    .command,
+                "tool --fixed"
+            );
+        }
+        for bad in [json!(null), json!(false), json!(42), json!([]), json!({})] {
+            for key in ["baseCommand", "command"] {
+                let mut mixed = legacy.clone();
+                mixed["baseCommand"] = json!("valid");
+                mixed[key] = bad.clone();
+                assert!(serde_json::from_value::<CodingAgentDefinition>(mixed).is_err());
+                let patch = json!({"schemaVersion":1,"agents":[{"key":"own","baseCommand":"valid","command":bad.clone()}]});
+                assert!(parse_local_layer(
+                    &serde_json::to_vec(&patch).unwrap(),
+                    LayerDescription::Local
+                )
+                .is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn p02_extraction_retains_legacy_and_historical_journal_bytes() {
+        let source = br##"{"schemaVersion":1,"agents":[{"key":"own","label":"Own","description":"d","color":"#123456","command":"tool"}]}"##;
+        let new_bytes = extract_legacy_local(source, &[]).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&new_bytes).unwrap();
+        assert_eq!(value["agents"][0]["baseCommand"], "tool");
+        assert_eq!(value["agents"][0]["command"], "tool");
+        let historical = extract_legacy_local_mode(source, &[], true).unwrap();
+        let old: serde_json::Value = serde_json::from_slice(&historical).unwrap();
+        assert_eq!(old["agents"][0]["command"], "tool");
+        assert!(old["agents"][0].get("baseCommand").is_none());
+        assert_eq!(
+            extract_legacy_local_mode(source, &[], true).unwrap(),
+            historical
+        );
     }
 }

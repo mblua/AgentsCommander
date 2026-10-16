@@ -775,7 +775,7 @@ fn new_project_seeds_catalog_into_ac() {
             "label": "Grok Build",
             "description": "Coding Agent by SpaceXAI",
             "color": "#64748b",
-            "command": "grok",
+            "baseCommand": "grok",
             "instructionsFilename": "AGENTS.md",
             "envs": [],
             "isolatedHome": false,
@@ -1013,7 +1013,8 @@ fn cli_add_from_catalog_is_persisted_only_and_preserves_existing_agents() {
         .find(|agent| agent["id"] == "added-1967")
         .expect("added agent");
     assert_eq!(added["label"], "Sentinel");
-    assert_eq!(added["command"], "sentinel-1967-command");
+    assert_eq!(added["baseCommand"], "sentinel-1967-command");
+    assert!(added.get("command").is_none());
     assert_eq!(added["color"], "#654321");
     // #2306 P1 - the pre-existing record keeps position 0, the add lands at 1.
     assert_eq!(existing["order"], serde_json::json!(0));

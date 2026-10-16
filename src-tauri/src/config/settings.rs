@@ -14,11 +14,391 @@ use crate::config::instance_artifacts::{
     BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX,
     SETTINGS_FILE_NAME, SETTINGS_LOCAL_OVERRIDE_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
 };
-use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay};
+use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay, PairedLeaf};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
 use crate::pty::backend::SessionBackendKind;
 use crate::session::profile::CodingAgentKind;
 use crate::telegram::types::TelegramBotConfig;
+
+/// Configuration selection uses the frozen cross-runtime set, never Rust trim.
+pub(crate) fn configuration_command_has_content(value: &str) -> bool {
+    value.chars().any(|c| {
+        !matches!(c,
+            '\u{0009}'..='\u{000D}' | '\u{0020}' | '\u{00A0}' | '\u{1680}' |
+            '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' |
+            '\u{205F}' | '\u{3000}' | '\u{FEFF}'
+        )
+    })
+}
+
+pub(crate) fn select_configuration_command<'a>(
+    new: Option<&'a str>,
+    old: Option<&'a str>,
+) -> Option<&'a str> {
+    new.filter(|value| configuration_command_has_content(value))
+        .or_else(|| old.filter(|value| configuration_command_has_content(value)))
+        .or(new)
+        .or(old)
+}
+
+/// Absent is optional; a present null or any other non-string is an error.
+pub(crate) fn deserialize_present_command<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
+fn raw_configuration_command<'a>(
+    row: &'a Map<String, Value>,
+    key: &str,
+) -> Result<Option<&'a str>, String> {
+    for name in [key, "command"] {
+        if row.get(name).is_some_and(|value| !value.is_string()) {
+            return Err(format!("{name} must be a string"));
+        }
+    }
+    Ok(select_configuration_command(
+        row.get(key).and_then(Value::as_str),
+        row.get("command").and_then(Value::as_str),
+    ))
+}
+
+fn overlay_configuration_command(
+    row: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    raw_configuration_command(row, key).map(|value| value.map(str::to_owned))
+}
+
+const CONFIGURATION_COMMAND_PAIRS: &[PairedLeaf] = &[
+    PairedLeaf {
+        path: &["agents", "*"],
+        canonical: "baseCommand",
+        legacy: "command",
+        select: overlay_configuration_command,
+    },
+    PairedLeaf {
+        path: &["codingAgentProfiles", "profilesByAgent", "*", "*"],
+        canonical: "additionalArguments",
+        legacy: "command",
+        select: overlay_configuration_command,
+    },
+];
+
+/// An edit owns the canonical leaf only. The locked physical source owns the
+/// legacy leaf, including its absence; a caller never supplies that authority.
+fn retain_command_leaf(
+    row: &mut Map<String, Value>,
+    before: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<(), String> {
+    if before.is_some_and(|before| {
+        row.get(key) == before.get(key) && row.get("command") == before.get("command")
+    }) {
+        return Ok(());
+    }
+    raw_configuration_command(row, key)?;
+    let edit = row
+        .get(key)
+        .or_else(|| row.get("command"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(before) = before {
+        raw_configuration_command(before, key)?;
+    }
+    if let Some(edit) = edit {
+        row.insert(key.to_owned(), Value::String(edit));
+    }
+    match before.and_then(|row| row.get("command")) {
+        Some(value) => {
+            row.insert("command".to_owned(), value.clone());
+        }
+        None => {
+            row.remove("command");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn retain_configuration_commands(
+    after: &mut Value,
+    before: &Value,
+    identity: &str,
+    catalog: bool,
+    agents: bool,
+    profiles: bool,
+) -> Result<(), String> {
+    retain_configuration_commands_with_startup(
+        after, before, identity, catalog, agents, profiles, None,
+    )
+}
+
+fn retain_configuration_commands_with_startup(
+    after: &mut Value,
+    before: &Value,
+    identity: &str,
+    catalog: bool,
+    agents: bool,
+    profiles: bool,
+    startup: Option<&StartupAgentRows>,
+) -> Result<(), String> {
+    if agents {
+        if !catalog {
+            retain_duplicate_agent_rows(after, before, startup)?;
+        }
+        if let Some(rows) = after.get_mut("agents").and_then(Value::as_array_mut) {
+            let mut counts = BTreeMap::new();
+            for row in before
+                .get("agents")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(id) = row.get(identity).and_then(Value::as_str) {
+                    *counts.entry(id).or_insert(0usize) += 1;
+                }
+            }
+            for row in rows {
+                if !catalog
+                    && row
+                        .get(identity)
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| counts.get(id).copied().unwrap_or(0) > 1)
+                {
+                    continue;
+                }
+                let previous = row.get(identity).and_then(Value::as_str).and_then(|id| {
+                    before
+                        .get("agents")
+                        .and_then(Value::as_array)
+                        .and_then(|rows| {
+                            rows.iter()
+                                .find(|row| row.get(identity).and_then(Value::as_str) == Some(id))
+                        })
+                });
+                if let Some(row) = row.as_object_mut() {
+                    retain_command_leaf(row, previous.and_then(Value::as_object), "baseCommand")?;
+                }
+            }
+        }
+    }
+    if profiles {
+        let pointer = if catalog {
+            "/codingAgentProfiles"
+        } else {
+            "/codingAgentProfiles/profilesByAgent"
+        };
+        if let Some(groups) = after.pointer_mut(pointer).and_then(Value::as_object_mut) {
+            for (id, cells) in groups {
+                if let Some(cells) = cells.as_object_mut() {
+                    for (letter, cell) in cells {
+                        let previous = before
+                            .pointer(pointer)
+                            .and_then(|groups| groups.get(id))
+                            .and_then(|cells| cells.get(letter))
+                            .and_then(Value::as_object);
+                        if let Some(cell) = cell.as_object_mut() {
+                            retain_command_leaf(cell, previous, "additionalArguments")?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Private to one startup operation; never accepted from a settings caller.
+struct StartupAgentRows {
+    raw: Value,
+    sidecar_owner: bool,
+    sidecar_absent: bool,
+    permutation: Vec<usize>,
+    expected: Vec<AgentConfig>,
+}
+
+impl StartupAgentRows {
+    fn capture(raw: Value, sidecar_owner: bool, sidecar_absent: bool) -> Option<Self> {
+        let mut expected: Vec<AgentConfig> = serde_json::from_value(raw.clone()).ok()?;
+        let mut ids = HashSet::new();
+        if !expected.iter().any(|agent| !ids.insert(agent.id.clone())) {
+            return None;
+        }
+        let permutation = agent_order_permutation(&expected);
+        finalize_agent_order(&mut expected);
+        Some(Self {
+            raw,
+            sidecar_owner,
+            sidecar_absent,
+            permutation,
+            expected,
+        })
+    }
+
+    fn validate_source(&self, raw: &Value, sidecar_owner: bool) -> Result<(), String> {
+        if self.raw == *raw
+            && (self.sidecar_owner == sidecar_owner
+                || (!self.sidecar_owner && self.sidecar_absent && sidecar_owner))
+        {
+            Ok(())
+        } else {
+            let mut ids = HashSet::new();
+            let id = self
+                .expected
+                .iter()
+                .find(|agent| !ids.insert(agent.id.as_str()))
+                .map(|agent| agent.id.as_str())
+                .unwrap_or("unknown");
+            Err(format!(
+                "duplicate agent ID '{id}': unprovable row correspondence (stale startup source)"
+            ))
+        }
+    }
+}
+
+// Includes all AgentConfig wire fields and its sole alias, even omitted defaults.
+fn known_agent_field(key: &str) -> bool {
+    matches!(
+        key,
+        "id" | "id_hash"
+            | "label"
+            | "command"
+            | "baseCommand"
+            | "preflight"
+            | "preflightTimeoutSeconds"
+            | "color"
+            | "envs"
+            | "isolatedHome"
+            | "isolateCodexHome"
+            | "instructionsFilename"
+            | "configSeed"
+            | "contextRegex"
+            | "blockingMenus"
+            | "order"
+            | "backend"
+    )
+}
+
+fn comparable_agent(agent: &AgentConfig) -> Result<Value, String> {
+    let mut value = serde_json::to_value(agent).map_err(|error| error.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("order");
+        object.remove("id_hash");
+    }
+    Ok(value)
+}
+
+/// Prove the ordered duplicate subsequence before transferring any raw payload.
+fn retain_duplicate_agent_rows(
+    after: &mut Value,
+    before: &Value,
+    startup: Option<&StartupAgentRows>,
+) -> Result<(), String> {
+    let Some(raw) = before.get("agents").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let Some(rows) = after.get_mut("agents").and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+    let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (index, row) in raw.iter().enumerate() {
+        if let Some(id) = row.get("id").and_then(Value::as_str) {
+            groups.entry(id).or_default().push(index);
+        }
+    }
+    // Existing unique/new-row saves need no typed duplicate preparation.
+    let mut candidate_counts = BTreeMap::new();
+    for row in rows.iter() {
+        if let Some(id) = row.get("id").and_then(Value::as_str) {
+            *candidate_counts.entry(id.to_owned()).or_insert(0usize) += 1;
+        }
+    }
+    for (id, indices) in &groups {
+        if indices.len() == 1 && candidate_counts.get(*id).copied().unwrap_or(0) > 1 {
+            return Err(format!(
+                "duplicate agent ID '{id}': unprovable row correspondence"
+            ));
+        }
+    }
+    if !groups.values().any(|indices| indices.len() > 1) {
+        return Ok(());
+    }
+    let decoded: Vec<AgentConfig> =
+        serde_json::from_value(Value::Array(raw.clone())).map_err(|error| error.to_string())?;
+    let permutation = startup
+        .map(|context| context.permutation.clone())
+        .unwrap_or_else(|| agent_order_permutation(&decoded));
+    let expected = startup
+        .map(|context| context.expected.clone())
+        .unwrap_or_else(|| {
+            let mut expected = decoded;
+            finalize_agent_order(&mut expected);
+            expected
+        });
+    for (id, indices) in groups.iter().filter(|(_, indices)| indices.len() > 1) {
+        let rejected = || format!("duplicate agent ID '{id}': unprovable row correspondence");
+        let candidates: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.get("id").and_then(Value::as_str) == Some(*id))
+            .map(|(index, _)| index)
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+        let baseline: Vec<(usize, &AgentConfig)> = permutation
+            .iter()
+            .copied()
+            .zip(expected.iter())
+            .filter(|(_, agent)| agent.id == *id)
+            .collect();
+        if candidates.len() != indices.len() || baseline.len() != indices.len() {
+            return Err(rejected());
+        }
+        for (candidate_index, (raw_index, expected)) in candidates.into_iter().zip(baseline) {
+            let candidate: AgentConfig =
+                serde_json::from_value(rows[candidate_index].clone()).map_err(|_| rejected())?;
+            if comparable_agent(&candidate)? != comparable_agent(expected)? {
+                return Err(rejected());
+            }
+            let original = raw[raw_index].as_object().ok_or_else(rejected)?;
+            let provided = rows[candidate_index].as_object().ok_or_else(rejected)?;
+            let mut retained = original.clone();
+            for (key, value) in provided {
+                if known_agent_field(key) {
+                    continue;
+                }
+                if original.get(key) != Some(value) {
+                    return Err(rejected());
+                }
+            }
+            // Rebuild recognized fields through the existing serializer, preserving
+            // unknown metadata from this exact whole raw row only.
+            retained.retain(|key, _| !known_agent_field(key));
+            retained.extend(
+                serde_json::to_value(&candidate)
+                    .map_err(|error| error.to_string())?
+                    .as_object()
+                    .ok_or_else(rejected)?
+                    .clone(),
+            );
+            retained.insert("baseCommand".to_owned(), Value::String(candidate.command));
+            match original.get("command") {
+                Some(value) => {
+                    retained.insert("command".to_owned(), value.clone());
+                }
+                None => {
+                    retained.remove("command");
+                }
+            }
+            rows[candidate_index] = Value::Object(retained);
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +432,7 @@ impl From<&AgentBackendConfig> for SessionBackendKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
     pub id: String,
@@ -64,6 +444,7 @@ pub struct AgentConfig {
     )]
     pub id_hash: Option<String>,
     pub label: String,
+    #[serde(rename = "baseCommand")]
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preflight: Option<String>,
@@ -126,6 +507,88 @@ pub struct AgentConfig {
     pub backend: AgentBackendConfig,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentConfigWire {
+    pub id: String,
+    #[serde(
+        default,
+        rename = "id_hash",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_agent_id_hash"
+    )]
+    pub id_hash: Option<String>,
+    pub label: String,
+    #[serde(
+        default,
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
+    pub command: Option<String>,
+    #[serde(
+        default,
+        rename = "baseCommand",
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
+    pub canonical_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight_timeout_seconds: Option<u32>,
+    pub color: String,
+    #[serde(default)]
+    pub envs: Vec<CodingAgentEnv>,
+    #[serde(default, alias = "isolateCodexHome")]
+    pub isolated_home: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_seed: Option<ConfigSeedConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_regex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_menus: Option<Vec<BlockingMenuEntry>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_agent_order"
+    )]
+    pub order: Option<u32>,
+    #[serde(default, skip_serializing_if = "AgentBackendConfig::is_default")]
+    pub backend: AgentBackendConfig,
+}
+
+impl<'de> Deserialize<'de> for AgentConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = AgentConfigWire::deserialize(deserializer)?;
+        let command = crate::config::settings::select_configuration_command(
+            wire.canonical_command.as_deref(),
+            wire.command.as_deref(),
+        )
+        .ok_or_else(|| <D::Error as serde::de::Error>::missing_field("baseCommand"))?
+        .to_owned();
+        Ok(Self {
+            id: wire.id,
+            id_hash: wire.id_hash,
+            label: wire.label,
+            command,
+            preflight: wire.preflight,
+            preflight_timeout_seconds: wire.preflight_timeout_seconds,
+            color: wire.color,
+            envs: wire.envs,
+            isolated_home: wire.isolated_home,
+            instructions_filename: wire.instructions_filename,
+            config_seed: wire.config_seed,
+            context_regex: wire.context_regex,
+            blocking_menus: wire.blocking_menus,
+            order: wire.order,
+            backend: wire.backend,
+        })
+    }
+}
+
 /// #2306 P1 - tolerant decode for [`AgentConfig::order`].
 ///
 /// Only a nonnegative integer that fits `u32` decodes as `Some`. `null`,
@@ -166,6 +629,28 @@ where
 /// untouched. This is the load-side finalize and the only place allowed to
 /// re-sort; use [`normalize_agent_order`] on the write side.
 pub fn finalize_agent_order(agents: &mut Vec<AgentConfig>) {
+    let permutation = agent_order_permutation(agents);
+    if permutation
+        .iter()
+        .enumerate()
+        .all(|(position, &index)| position == index)
+    {
+        normalize_agent_order(agents);
+        return;
+    }
+    let mut slots: Vec<Option<AgentConfig>> =
+        std::mem::take(agents).into_iter().map(Some).collect();
+    let mut ordered: Vec<AgentConfig> = Vec::with_capacity(slots.len());
+    for index in permutation {
+        if let Some(agent) = slots[index].take() {
+            ordered.push(agent);
+        }
+    }
+    *agents = ordered;
+    normalize_agent_order(agents);
+}
+
+fn agent_order_permutation(agents: &[AgentConfig]) -> Vec<usize> {
     let mut keyed: Vec<(u64, usize)> = agents
         .iter()
         .enumerate()
@@ -174,25 +659,7 @@ pub fn finalize_agent_order(agents: &mut Vec<AgentConfig>) {
     // The original index is part of the key, so the order is total and the
     // sort outcome does not depend on the sort implementation being stable.
     keyed.sort_unstable();
-    if keyed
-        .iter()
-        .enumerate()
-        .all(|(position, &(_, index))| position == index)
-    {
-        normalize_agent_order(agents);
-        return;
-    }
-
-    let mut slots: Vec<Option<AgentConfig>> =
-        std::mem::take(agents).into_iter().map(Some).collect();
-    let mut ordered: Vec<AgentConfig> = Vec::with_capacity(slots.len());
-    for (_, index) in keyed {
-        if let Some(agent) = slots[index].take() {
-            ordered.push(agent);
-        }
-    }
-    *agents = ordered;
-    normalize_agent_order(agents);
+    keyed.into_iter().map(|(_, index)| index).collect()
 }
 
 /// #2306 P1 - write-side normalizer: renumber `agents` in current vector order
@@ -306,12 +773,13 @@ pub struct ProfileSlotConfig {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileCellConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
+    #[serde(rename = "additionalArguments")]
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preflight: Option<String>,
@@ -321,6 +789,55 @@ pub struct ProfileCellConfig {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub notes: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileCellConfigWire {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(
+        default,
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
+    pub command: Option<String>,
+    #[serde(
+        default,
+        rename = "additionalArguments",
+        deserialize_with = "crate::config::settings::deserialize_present_command"
+    )]
+    pub canonical_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight_timeout_seconds: Option<u32>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub notes: String,
+}
+
+impl<'de> Deserialize<'de> for ProfileCellConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ProfileCellConfigWire::deserialize(deserializer)?;
+        let command = crate::config::settings::select_configuration_command(
+            wire.canonical_command.as_deref(),
+            wire.command.as_deref(),
+        )
+        .unwrap_or_default()
+        .to_owned();
+        Ok(Self {
+            enabled: wire.enabled,
+            command,
+            preflight: wire.preflight,
+            preflight_timeout_seconds: wire.preflight_timeout_seconds,
+            env: wire.env,
+            notes: wire.notes,
+        })
+    }
 }
 
 // #2892 P01: additive source-aware contracts. These are data and pure helpers;
@@ -2362,12 +2879,13 @@ impl LegacyCompatibilityOrigin {
         let mut effective = base.clone();
         let mut overlay = match &inputs.overlay {
             OriginPhysicalInput::Absent => LocalSettingsOverlay::default(),
-            OriginPhysicalInput::Bytes(bytes) => LocalSettingsOverlay::from_overlay_bytes(
+            OriginPhysicalInput::Bytes(bytes) => LocalSettingsOverlay::from_overlay_bytes_paired(
                 &mut effective,
                 bytes,
                 OVERLAY_INELIGIBLE_DISK_KEYS,
                 OVERLAY_INELIGIBLE_LEGACY_KEYS,
                 OVERLAY_DERIVED_ID_CLOSURES,
+                CONFIGURATION_COMMAND_PAIRS,
             ),
             OriginPhysicalInput::Unknown => {
                 unknown_paths.push(Vec::new());
@@ -3100,11 +3618,25 @@ pub(crate) fn prepare_source_candidate_with_original_links(
         return Err(SourcePreparationError::ReadOnly);
     }
     let registered = snapshot.snapshot.source.kind == SourceKind::RegisteredInstance;
+    if registered {
+        decode_registered_raw(candidate)?;
+    }
     let before = snapshot
         .raw
         .value()
         .or_else(|| snapshot.candidate_template.clone())
         .ok_or(SourcePreparationError::InvalidCandidate)?;
+    let mut retained_candidate = candidate.clone();
+    retain_configuration_commands(
+        &mut retained_candidate,
+        &before,
+        if registered { "id" } else { "key" },
+        !registered,
+        true,
+        true,
+    )
+    .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    let candidate = &retained_candidate;
     let model = if registered {
         let (agents, profiles) = decode_registered_raw(candidate)?;
         serde_json::json!({"agents":agents, "codingAgentProfiles":profiles})
@@ -3283,12 +3815,13 @@ pub(crate) fn prepare_settings_without_source_write(
     // rather than capturing the effective value echoed by the caller.
     let mut restoration_base = out.clone();
     let restoration = match &inputs.overlay {
-        OriginPhysicalInput::Bytes(bytes) => LocalSettingsOverlay::from_overlay_bytes(
+        OriginPhysicalInput::Bytes(bytes) => LocalSettingsOverlay::from_overlay_bytes_paired(
             &mut restoration_base,
             bytes,
             OVERLAY_INELIGIBLE_DISK_KEYS,
             OVERLAY_INELIGIBLE_LEGACY_KEYS,
             OVERLAY_DERIVED_ID_CLOSURES,
+            CONFIGURATION_COMMAND_PAIRS,
         ),
         _ => LocalSettingsOverlay::default(),
     };
@@ -3337,12 +3870,13 @@ pub(crate) fn prepare_settings_without_source_write(
     }
     let unmerged = effective.clone();
     if let OriginPhysicalInput::Bytes(bytes) = &inputs.overlay {
-        let overlay = LocalSettingsOverlay::from_overlay_bytes(
+        let overlay = LocalSettingsOverlay::from_overlay_bytes_paired(
             &mut effective,
             bytes,
             OVERLAY_INELIGIBLE_DISK_KEYS,
             OVERLAY_INELIGIBLE_LEGACY_KEYS,
             OVERLAY_DERIVED_ID_CLOSURES,
+            CONFIGURATION_COMMAND_PAIRS,
         );
         let mut probe = effective.clone();
         if let Some(root) = probe.as_object_mut() {
@@ -3383,6 +3917,36 @@ pub(crate) fn prepare_settings_without_source_write(
 mod independent_source_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn p02_source_candidate_retains_locked_legacy_without_editing_untouched_groups() {
+        let fixture = Fixture::new();
+        let snapshot = fixture.snapshot();
+        let (_, origin) = fixture.origin();
+        let mut candidate = fixture.registered.clone();
+        candidate["agents"][1]["baseCommand"] = json!("other-new");
+        candidate["agents"][1]["command"] = json!("stale-caller");
+        let prepared = prepare_source_candidate(
+            &snapshot,
+            &snapshot.snapshot.revision,
+            &candidate,
+            Some(&origin),
+        )
+        .unwrap();
+        let saved: Value = serde_json::from_slice(&prepared.serialized_after).unwrap();
+        assert_eq!(saved["agents"][1]["baseCommand"], "other-new");
+        assert_eq!(saved["agents"][1]["command"], "other-base");
+        assert_eq!(saved["agents"][0], fixture.registered["agents"][0]);
+        assert_eq!(
+            saved["codingAgentProfiles"],
+            fixture.registered["codingAgentProfiles"]
+        );
+        assert_eq!(saved["foreign"], fixture.registered["foreign"]);
+        assert_eq!(
+            std::fs::read(fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME)).unwrap(),
+            serde_json::to_vec(&fixture.registered).unwrap()
+        );
+    }
 
     struct Fixture {
         root: tempfile::TempDir,
@@ -3771,6 +4335,28 @@ mod independent_source_tests {
             ),
             Err(SourcePreparationError::LegacyOriginUnresolved)
         ));
+    }
+
+    #[test]
+    fn p02_source_aware_duplicate_candidate_refuses_without_publication() {
+        let fixture = Fixture::new();
+        let (_, origin) = fixture.origin();
+        let snapshot = fixture.snapshot();
+        let mut candidate = fixture.registered.clone();
+        let duplicate = candidate["agents"][0].clone();
+        candidate["agents"].as_array_mut().unwrap().push(duplicate);
+        let path = fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME);
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            prepare_source_candidate(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &candidate,
+                Some(&origin),
+            ),
+            Err(SourcePreparationError::InvalidCandidate)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]
@@ -7053,6 +7639,7 @@ fn abort_blocking_menus_export(local_path: &Path, why: &str) -> bool {
 
 /// #1905 (D7) - one-shot, state-keyed export of every `blockingMenus` array still in
 /// `settings.json`. Writes the `.local` file before it strips anything; true means "save".
+#[cfg(test)]
 pub(crate) fn export_blocking_menus_to_local_file(
     settings: &mut AppSettings,
     settings_path: &Path,
@@ -7064,10 +7651,20 @@ pub(crate) fn export_blocking_menus_to_local_file(
     )
 }
 
+#[cfg(test)]
 fn export_blocking_menus_to_local_file_with_publish(
     settings: &mut AppSettings,
     settings_path: &Path,
     publish: crate::config::local_config_io::ConfigPublisher<'_>,
+) -> bool {
+    export_blocking_menus_with_startup(settings, settings_path, publish, None)
+}
+
+fn export_blocking_menus_with_startup(
+    settings: &mut AppSettings,
+    settings_path: &Path,
+    publish: crate::config::local_config_io::ConfigPublisher<'_>,
+    mut startup: Option<&mut StartupAgentRows>,
 ) -> bool {
     if settings.agents.iter().all(|a| a.blocking_menus.is_none()) {
         return false;
@@ -7087,6 +7684,9 @@ fn export_blocking_menus_to_local_file_with_publish(
         return false;
     }
     apply_issue_1757_migration(settings);
+    if let Some(context) = startup.as_deref_mut() {
+        context.expected = settings.agents.clone();
+    }
     // One id, one array, one command: two agents sharing an id with different arrays cannot
     // both live under byAgent[id], and equal arrays under different commands would make the
     // pristine test below order-dependent, so the export aborts and layer 0 keeps serving both.
@@ -7201,6 +7801,9 @@ fn export_blocking_menus_to_local_file_with_publish(
     }
     for agent in &mut settings.agents {
         agent.blocking_menus = None;
+    }
+    if let Some(context) = startup {
+        context.expected = settings.agents.clone();
     }
     true
 }
@@ -7403,10 +8006,25 @@ fn merge_agents_instance_file_labeled(
     settings_path: &Path,
     base: &mut Value,
 ) -> AgentsLayerState {
+    merge_agents_instance_file_with_capture(io_path, settings_path, base, None)
+}
+
+fn merge_agents_instance_file_with_capture(
+    io_path: &Path,
+    settings_path: &Path,
+    base: &mut Value,
+    capture: Option<&mut Option<StartupAgentRows>>,
+) -> AgentsLayerState {
     let path = agents_instance_path(settings_path);
+    let mut sidecar_owner = false;
+    let mut sidecar_absent = false;
     let state = match read_agents_instance_file_labeled(&agents_instance_path(io_path), &path) {
-        Ok(None) => AgentsLayerState::Readable,
+        Ok(None) => {
+            sidecar_absent = true;
+            AgentsLayerState::Readable
+        }
         Ok(Some(sidecar)) => {
+            sidecar_owner = sidecar.contains_key("agents");
             if let Some(object) = base.as_object_mut() {
                 object.extend(agents_instance_groups(&sidecar));
             }
@@ -7421,6 +8039,14 @@ fn merge_agents_instance_file_labeled(
         object
             .entry(AGENTS_INSTANCE_KEYS[0])
             .or_insert_with(|| Value::Array(Vec::new()));
+    }
+    if let Some(capture) = capture {
+        if matches!(state, AgentsLayerState::Readable) {
+            *capture = base
+                .get("agents")
+                .cloned()
+                .and_then(|raw| StartupAgentRows::capture(raw, sidecar_owner, sidecar_absent));
+        }
     }
     state
 }
@@ -7610,6 +8236,7 @@ fn save_agents_instance_file(
     #[cfg(test)] disk: Option<&Map<String, Value>>,
     out: &Map<String, Value>,
     disk_gate_stage: SettingsSaveStage,
+    prepared_duplicate_agents: Option<&Value>,
 ) -> Result<Map<String, Value>, SettingsSaveError> {
     let sidecar_path = agents_instance_path(path);
     let existing = read_agents_instance_file(&sidecar_path).map_err(|e| {
@@ -7696,6 +8323,25 @@ fn save_agents_instance_file(
             SettingsSaveLegacyOutward::DiskValidation(reason),
         )
     };
+    let mut retained = Value::Object(target);
+    if editable_agents {
+        if let Some(prepared) = prepared_duplicate_agents {
+            retained["agents"] = prepared.clone();
+        }
+    }
+    retain_configuration_commands(
+        &mut retained,
+        &Value::Object(before.clone()),
+        "id",
+        false,
+        editable_agents && prepared_duplicate_agents.is_none(),
+        editable_profiles,
+    )
+    .map_err(&rejected)?;
+    let mut target = retained
+        .as_object()
+        .expect("retained settings object")
+        .clone();
     // Decode the final physical rows, but update only their raw metadata property.
     // Retained overlay-owned groups have no new backfill or validation authority.
     if editable_agents {
@@ -7868,6 +8514,17 @@ fn parse_settings_json_with_projection_labeled(
     settings_path: Option<&Path>,
     projection: Option<&Map<String, Value>>,
 ) -> Result<(AppSettings, bool), String> {
+    parse_settings_with_startup(contents, source, io_path, settings_path, projection, None)
+}
+
+fn parse_settings_with_startup(
+    contents: &str,
+    source: &str,
+    io_path: Option<&Path>,
+    settings_path: Option<&Path>,
+    projection: Option<&Map<String, Value>>,
+    mut startup: Option<&mut Option<StartupAgentRows>>,
+) -> Result<(AppSettings, bool), String> {
     let mut value: Value = serde_json::from_str(contents)
         .map_err(|e| format!("Failed to parse settings file: {}", e))?;
     if let (Some(object), Some(projection)) = (value.as_object_mut(), projection) {
@@ -7892,9 +8549,9 @@ fn parse_settings_json_with_projection_labeled(
     // merged into the raw base object here: after the detection above, so
     // `legacy_profiles` stays a property of the settings file, and before the
     // `pre_merge` clone, so the undecodable fallback carries its groups.
-    let agents_layer = io_path
-        .zip(settings_path)
-        .map(|(io, label)| merge_agents_instance_file_labeled(io, label, &mut value));
+    let agents_layer = io_path.zip(settings_path).map(|(io, label)| {
+        merge_agents_instance_file_with_capture(io, label, &mut value, startup.as_deref_mut())
+    });
     // #1737 (D21): the clone must be taken BEFORE the merge, because the merge is
     // in place and the overlay's presence is not known until it returns. Gated on
     // `settings_path.is_some()`, which is true on all three production loaders and
@@ -7904,12 +8561,13 @@ fn parse_settings_json_with_projection_labeled(
     // project decode. Merging after the detection keeps the `legacy_profiles` flag
     // a property of the base file alone and makes the B7 cross-key edge impossible.
     let mut overlay = match io_path {
-        Some(p) => LocalSettingsOverlay::load_and_merge(
+        Some(p) => LocalSettingsOverlay::load_and_merge_paired(
             p,
             &mut value,
             OVERLAY_INELIGIBLE_DISK_KEYS,
             OVERLAY_INELIGIBLE_LEGACY_KEYS,
             OVERLAY_DERIVED_ID_CLOSURES,
+            CONFIGURATION_COMMAND_PAIRS,
         ),
         None => LocalSettingsOverlay::default(),
     };
@@ -7971,6 +8629,11 @@ fn parse_settings_json_with_projection_labeled(
     refresh_agent_id_hashes(&mut settings.agents);
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
+    if settings.local_overlay_state.owns_top_level("agents") {
+        if let Some(startup) = startup {
+            *startup = None;
+        }
+    }
     if let (Some(p), Some(state)) = (settings_path, agents_layer) {
         set_agents_layer_state(&mut settings, p, state);
     }
@@ -8039,12 +8702,13 @@ fn default_settings_with_overlay_captured(
     let Ok(mut value @ Value::Object(_)) = serde_json::to_value(AppSettings::default()) else {
         return AppSettings::default();
     };
-    let overlay = LocalSettingsOverlay::load_and_merge(
+    let overlay = LocalSettingsOverlay::load_and_merge_paired(
         settings_path,
         &mut value,
         OVERLAY_INELIGIBLE_DISK_KEYS,
         OVERLAY_INELIGIBLE_LEGACY_KEYS,
         OVERLAY_DERIVED_ID_CLOSURES,
+        CONFIGURATION_COMMAND_PAIRS,
     );
     let agents_base = read_agents_instance_file(&agents_instance_path(settings_path))
         .ok()
@@ -8128,6 +8792,14 @@ fn capture_project_settings(
     path: &Path,
     migrate: bool,
 ) -> Result<(AppSettings, bool, Option<String>), String> {
+    capture_project_settings_with_startup(path, migrate, None)
+}
+
+fn capture_project_settings_with_startup(
+    path: &Path,
+    migrate: bool,
+    mut startup: Option<&mut Option<StartupAgentRows>>,
+) -> Result<(AppSettings, bool, Option<String>), String> {
     let lock_error = |reason| {
         SettingsSaveError::semantic(
             SettingsSaveStage::LockAcquire,
@@ -8200,17 +8872,21 @@ fn capture_project_settings(
                 Some(legacy) => {
                     let contents =
                         String::from_utf8(legacy.bytes).map_err(|error| error.to_string())?;
-                    match parse_settings_json_with_projection_labeled(
+                    match parse_settings_with_startup(
                         &contents,
                         &path.to_string_lossy(),
                         Some(&transaction.path),
                         Some(path),
                         Some(&selected.projection),
+                        startup.as_deref_mut(),
                     ) {
                         Ok((settings, legacy_profiles)) => {
                             Ok((settings, legacy_profiles, Some(contents)))
                         }
                         Err(error) => {
+                            if let Some(startup) = startup {
+                                *startup = None;
+                            }
                             log::error!("{error}");
                             // Selection succeeded; unrelated decode failure must not
                             // mark the authoritative project source unavailable.
@@ -8503,12 +9179,13 @@ fn coding_agent_identity_with_physical_overlay(
 ) -> Value {
     let unmerged = value.clone();
     let base_profiles = value.get("codingAgentProfiles").cloned();
-    let overlay = LocalSettingsOverlay::load_and_merge(
+    let overlay = LocalSettingsOverlay::load_and_merge_paired(
         path,
         &mut value,
         OVERLAY_INELIGIBLE_DISK_KEYS,
         OVERLAY_INELIGIBLE_LEGACY_KEYS,
         OVERLAY_DERIVED_ID_CLOSURES,
+        CONFIGURATION_COMMAND_PAIRS,
     );
     restore_codex_home_carrier(value.as_object_mut().unwrap(), base_profiles.as_ref());
     // Match the loader's undecodable-overlay rule without using its repaired
@@ -9342,8 +10019,9 @@ fn load_settings_from_path_with_blocking_menus_publish(
     path: &Path,
     publish: Option<crate::config::local_config_io::ConfigPublisher<'_>>,
 ) -> AppSettings {
+    let mut startup = None;
     let (mut settings, legacy_profiles_detected, legacy_profiles_contents) =
-        read_settings_for_startup(path);
+        read_settings_for_startup_with_capture(path, Some(&mut startup));
     if settings.project_paths_persistence_error.is_some() {
         return settings;
     }
@@ -9359,12 +10037,12 @@ fn load_settings_from_path_with_blocking_menus_publish(
 
     // Auto-generate root token if missing.
     let mut needs_save = issue_248_migrated || legacy_profiles_detected;
-    let exported = match publish {
-        None => export_blocking_menus_to_local_file(&mut settings, path),
-        Some(publish) => {
-            export_blocking_menus_to_local_file_with_publish(&mut settings, path, publish)
-        }
-    };
+    let exported = export_blocking_menus_with_startup(
+        &mut settings,
+        path,
+        publish.unwrap_or(&crate::config::local_config_io::publish_temp_config),
+        startup.as_mut(),
+    );
     if exported {
         log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
         needs_save = true;
@@ -9390,6 +10068,7 @@ fn load_settings_from_path_with_blocking_menus_publish(
             path,
             legacy_profiles_detected,
             &legacy_profiles_contents,
+            startup.as_ref(),
         );
     }
 
@@ -9401,8 +10080,16 @@ fn load_settings_from_path_with_blocking_menus_publish(
     settings
 }
 
+#[cfg(test)]
 fn read_settings_for_startup(path: &Path) -> (AppSettings, bool, Option<String>) {
-    match capture_project_settings(path, true) {
+    read_settings_for_startup_with_capture(path, None)
+}
+
+fn read_settings_for_startup_with_capture(
+    path: &Path,
+    startup: Option<&mut Option<StartupAgentRows>>,
+) -> (AppSettings, bool, Option<String>) {
+    match capture_project_settings_with_startup(path, true, startup) {
         Ok(captured) => captured,
         Err(error) => {
             let mut settings = AppSettings::default();
@@ -9463,6 +10150,7 @@ fn persist_loaded_settings_migrations(
     path: &Path,
     legacy_profiles_detected: bool,
     legacy_profiles_contents: &Option<String>,
+    startup: Option<&StartupAgentRows>,
 ) {
     let backup_ok = if legacy_profiles_detected {
         match legacy_profiles_contents.as_deref() {
@@ -9491,7 +10179,8 @@ fn persist_loaded_settings_migrations(
         // first snapshot, and so a present-but-invalid file is never
         // overwritten (the preserve writer's disk gate returns Err). On
         // success adopt the fresh-decoded settings so runtime/hidden agree.
-        match save_settings_to_path_preserving_project_paths_typed(settings, path) {
+        match save_settings_value_with_startup(settings, path, ProjectWriteMode::Preserve, startup)
+        {
             Ok(written) => *settings = written,
             Err(error) => {
                 let _ =
@@ -10023,12 +10712,13 @@ fn read_merged_top_level_key(path: &Path, key: &str) -> Option<Value> {
         .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| Value::Object(Map::new()));
-    let _ = LocalSettingsOverlay::load_and_merge(
+    let _ = LocalSettingsOverlay::load_and_merge_paired(
         path,
         &mut value,
         OVERLAY_INELIGIBLE_DISK_KEYS,
         OVERLAY_INELIGIBLE_LEGACY_KEYS,
         OVERLAY_DERIVED_ID_CLOSURES,
+        CONFIGURATION_COMMAND_PAIRS,
     );
     value.get(key).cloned()
 }
@@ -12557,6 +13247,72 @@ fn preserve_main_window_placement_keys(out: &mut Map<String, Value>, disk: &Map<
     }
 }
 
+fn preflight_duplicate_agents(
+    settings: &AppSettings,
+    path: &Path,
+    disk: Option<&Map<String, Value>>,
+    startup: Option<&StartupAgentRows>,
+) -> Result<Option<Value>, SettingsSaveError> {
+    let rejected = |reason: String| {
+        SettingsSaveError::semantic(
+            SettingsSaveStage::PreserveDiskGate,
+            path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    };
+    let sidecar = read_agents_instance_file(&agents_instance_path(path)).map_err(&rejected)?;
+    let sidecar_owner = sidecar
+        .as_ref()
+        .is_some_and(|groups| groups.contains_key("agents"));
+    let raw = sidecar
+        .as_ref()
+        .and_then(|groups| groups.get("agents"))
+        .or_else(|| disk.and_then(|disk| disk.get("agents")))
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    if let Some(context) = startup {
+        context
+            .validate_source(&raw, sidecar_owner)
+            .map_err(&rejected)?;
+    }
+    let mut ids = HashSet::new();
+    let has_duplicates = raw
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("id").and_then(Value::as_str))
+        .any(|id| !ids.insert(id));
+    let mut candidate_ids = HashSet::new();
+    let newly_ambiguous = settings
+        .agents
+        .iter()
+        .any(|agent| !candidate_ids.insert(agent.id.as_str()) && ids.contains(agent.id.as_str()));
+    // Complete the set when the duplicate scan short-circuited.
+    if !has_duplicates && !newly_ambiguous {
+        return Ok(None);
+    }
+    let mut candidate = serialize_settings_component(settings, path)?;
+    let object = candidate
+        .as_object_mut()
+        .expect("serialized settings object");
+    write_identity_rows(object, &settings.local_overlay_state);
+    settings.local_overlay_state.restore_base(object);
+    let before = serde_json::json!({"agents":raw});
+    retain_configuration_commands_with_startup(
+        &mut candidate,
+        &before,
+        "id",
+        false,
+        true,
+        false,
+        startup,
+    )
+    .map_err(rejected)?;
+    Ok(candidate.get("agents").cloned())
+}
+
 /// The #1077 project-aware atomic writer. Builds the output object per `mode`,
 /// writes it atomically, then re-decodes the exact written value so the returned
 /// `AppSettings` carries fresh runtime projections + hidden state (never the
@@ -12565,6 +13321,15 @@ fn save_settings_value(
     settings: &AppSettings,
     path: &Path,
     mode: ProjectWriteMode,
+) -> Result<AppSettings, SettingsSaveError> {
+    save_settings_value_with_startup(settings, path, mode, None)
+}
+
+fn save_settings_value_with_startup(
+    settings: &AppSettings,
+    path: &Path,
+    mode: ProjectWriteMode,
+    startup: Option<&StartupAgentRows>,
 ) -> Result<AppSettings, SettingsSaveError> {
     let _lock = SettingsFileLock::acquire_contextual(
         path,
@@ -12577,12 +13342,13 @@ fn save_settings_value(
             callback(path);
         }
     });
-    save_settings_value_locked(
+    save_settings_value_locked_with_startup(
         settings,
         path,
         mode,
         TerminalSnapshotGateWriteMode::Preserve,
         MainWindowPlacementWriteMode::Preserve,
+        startup,
     )
 }
 
@@ -12596,7 +13362,25 @@ fn save_settings_value_locked(
     terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
     main_window_placement_mode: MainWindowPlacementWriteMode,
 ) -> Result<AppSettings, SettingsSaveError> {
-    read_disk_object_for_write_typed(
+    save_settings_value_locked_with_startup(
+        settings,
+        path,
+        mode,
+        terminal_snapshot_gate_mode,
+        main_window_placement_mode,
+        None,
+    )
+}
+
+fn save_settings_value_locked_with_startup(
+    settings: &AppSettings,
+    path: &Path,
+    mode: ProjectWriteMode,
+    terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
+    main_window_placement_mode: MainWindowPlacementWriteMode,
+    startup: Option<&StartupAgentRows>,
+) -> Result<AppSettings, SettingsSaveError> {
+    let initial_disk = read_disk_object_for_write_typed(
         path,
         match &mode {
             ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
@@ -12604,6 +13388,15 @@ fn save_settings_value_locked(
             ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
         },
     )?;
+    // Read-only duplicate proof precedes every publisher belonging to this save.
+    // The same prepared raw array is consumed by the sidecar/main writers.
+    let prepared_duplicate_agents = if matches!(mode, ProjectWriteMode::Preserve)
+        && !settings.local_overlay_state.owns_top_level("agents")
+    {
+        preflight_duplicate_agents(settings, path, initial_disk.as_ref(), startup)?
+    } else {
+        None
+    };
     ensure_project_paths_migrated_at_locked_path(path, &mut |_, _| Ok(()))?;
     let selected_projection = select_project_source_at_locked_path(path)?.projection;
     let base = production_instance_base();
@@ -12760,8 +13553,48 @@ fn save_settings_value_locked(
         disk.as_ref(),
         &out,
         disk_gate_stage,
+        prepared_duplicate_agents.as_ref(),
     )?;
     strip_agents_instance_keys(&mut out, &agents_groups);
+
+    // Partial profile ownership can keep these groups in settings.json instead
+    // of the sidecar. Retain its locked legacy leaves after raw overlay restore;
+    // complete overlay-owned groups stay outside this writer's authority.
+    if let Some(disk) = &disk {
+        let profiles_owned = settings
+            .local_overlay_state
+            .owned_paths()
+            .iter()
+            .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
+        let mut retained = Value::Object(out);
+        if retained.get("agents").is_some() {
+            if let Some(prepared) = &prepared_duplicate_agents {
+                retained["agents"] = prepared.clone();
+            }
+        }
+        retain_configuration_commands(
+            &mut retained,
+            &Value::Object(disk.clone()),
+            "id",
+            false,
+            !settings.local_overlay_state.owns_top_level("agents")
+                && prepared_duplicate_agents.is_none(),
+            !profiles_owned,
+        )
+        .map_err(|reason| {
+            SettingsSaveError::semantic(
+                disk_gate_stage,
+                path,
+                None,
+                SettingsSaveReason::DiskSettingsValidationRejected,
+                SettingsSaveLegacyOutward::DiskValidation(reason),
+            )
+        })?;
+        out = retained
+            .as_object()
+            .expect("retained settings object")
+            .clone();
+    }
 
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
@@ -23567,6 +24400,20 @@ mod tests {
                     "id_hash".to_string(),
                     Value::String(configuration_identity(&agent.command, &agent.envs)),
                 );
+                // The physical legacy agent text survives the canonical write.
+                raw["baseCommand"] = raw["command"].clone();
+            }
+            // S6 never seeded profile cells. Their generated defaults are fresh
+            // canonical rows and must not acquire invented historical fields.
+            for cells in object["codingAgentProfiles"]["profilesByAgent"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                for cell in cells.as_object_mut().unwrap().values_mut() {
+                    let command = cell.as_object_mut().unwrap().remove("command").unwrap();
+                    cell["additionalArguments"] = command;
+                }
             }
             let sorted: BTreeMap<String, Value> =
                 object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -24393,12 +25240,13 @@ mod tests {
 
                 // The diagnostics the arm renders, observed on the overlay it loaded.
                 let mut value = serde_json::to_value(AppSettings::default()).unwrap();
-                let overlay = LocalSettingsOverlay::load_and_merge(
+                let overlay = LocalSettingsOverlay::load_and_merge_paired(
                     &path,
                     &mut value,
                     OVERLAY_INELIGIBLE_DISK_KEYS,
                     OVERLAY_INELIGIBLE_LEGACY_KEYS,
                     OVERLAY_DERIVED_ID_CLOSURES,
+                    CONFIGURATION_COMMAND_PAIRS,
                 );
                 let records = overlay.diagnostics("test");
                 assert!(!records.is_empty(), "{label}: expected a diagnostic");
@@ -24424,12 +25272,13 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("settings.json");
             let mut value = serde_json::to_value(AppSettings::default()).unwrap();
-            let overlay = LocalSettingsOverlay::load_and_merge(
+            let overlay = LocalSettingsOverlay::load_and_merge_paired(
                 &path,
                 &mut value,
                 OVERLAY_INELIGIBLE_DISK_KEYS,
                 OVERLAY_INELIGIBLE_LEGACY_KEYS,
                 OVERLAY_DERIVED_ID_CLOSURES,
+                CONFIGURATION_COMMAND_PAIRS,
             );
             assert!(overlay.diagnostics("test").is_empty());
         }
@@ -26592,7 +27441,7 @@ mod tests {
                             .iter()
                             .find(|agent| agent["key"] == *key)
                             .unwrap_or_else(|| panic!("built-in {key} is not in the catalog"));
-                        let command = agent["command"].as_str().unwrap();
+                        let command = agent["baseCommand"].as_str().unwrap();
                         crate::config::coding_agents_catalog::command_executable_basename(command)
                             .unwrap()
                     })
@@ -27659,7 +28508,12 @@ mod tests {
 
     #[test]
     fn id_hash_activation_overlay_owned_physical_and_effective_remain_distinct() {
-        for sidecar in [false, true] {
+        for (sidecar, field) in [
+            (false, "baseCommand"),
+            (true, "baseCommand"),
+            (false, "command"),
+            (true, "command"),
+        ] {
             let (temp, path) = hash_activation_seed(sidecar);
             let physical_path = if sidecar {
                 b3_sidecar_path(temp.path())
@@ -27677,7 +28531,9 @@ mod tests {
             b3_write(&physical_path, &physical);
             let raw_before = physical["agents"].clone();
             let mut overlay = raw_before.clone();
-            overlay[0]["command"] = serde_json::json!("codex --different");
+            overlay[0].as_object_mut().unwrap().remove("baseCommand");
+            overlay[0].as_object_mut().unwrap().remove("command");
+            overlay[0][field] = serde_json::json!("codex --different");
             overlay[0]["envs"] =
                 serde_json::json!([{"key":"MODE","value":"effective","enabled":false}]);
             overlay[0]["id_hash"] = serde_json::json!("forged-effective");
@@ -27752,7 +28608,7 @@ mod tests {
     }
 
     #[test]
-    fn id_hash_activation_legacy_duplicates_preserve_rows_multiplicity_and_allow_repair() {
+    fn id_hash_activation_legacy_duplicates_preserve_rows_and_refuse_ambiguous_changes() {
         let (temp, path) = hash_activation_seed(true);
         let sidecar = b3_sidecar_path(temp.path());
         let mut raw = serde_json::Value::Object(b3_object(&sidecar));
@@ -27767,25 +28623,45 @@ mod tests {
         settings.agents.reverse();
         super::normalize_agent_order(&mut settings.agents);
         settings.log_level = Some("debug".into());
-        let mut written =
+        let written =
             super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
         assert_eq!(written.agents.iter().filter(|a| a.id == "alpha").count(), 2);
         hash_activation_assert(&written);
         let mut increased = written.clone();
         increased.agents.push(serde_json::from_value(row).unwrap());
-        let before = hash_activation_files(temp.path());
-        assert!(
-            super::save_settings_to_path_preserving_project_paths(&increased, &path)
-                .unwrap_err()
-                .contains("DuplicateConfigurationIdentity")
+        let before_identity = b3_object(&sidecar);
+        let mut after_identity = before_identity.clone();
+        after_identity.insert(
+            "agents".into(),
+            serde_json::to_value(&increased.agents).unwrap(),
         );
-        assert_eq!(hash_activation_files(temp.path()), before);
-        written.agents[1].command = "repair-extra-character".into();
-        let repaired =
-            super::save_settings_to_path_preserving_project_paths(&written, &path).unwrap();
-        assert_eq!(repaired.agents.len(), 3);
-        written.agents.remove(1);
-        assert!(super::save_settings_to_path_preserving_project_paths(&written, &path).is_ok());
+        assert!(super::validate_physical_identity_delta(
+            &before_identity,
+            &after_identity,
+            true,
+            false
+        )
+        .unwrap_err()
+        .contains("DuplicateConfigurationIdentity"));
+        let mut edited = written.clone();
+        edited.agents[1].command = "repair-extra-character".into();
+        let mut partially_deleted = written.clone();
+        partially_deleted.agents.remove(1);
+        for candidate in [increased, edited, partially_deleted] {
+            let before = hash_activation_files(temp.path());
+            let error = super::save_settings_to_path_preserving_project_paths(&candidate, &path)
+                .unwrap_err();
+            assert!(error.contains("duplicate agent ID 'alpha'"));
+            assert!(error.contains("unprovable row correspondence"));
+            assert_eq!(hash_activation_files(temp.path()), before);
+            let reloaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert_eq!(
+                serde_json::to_value(&reloaded.agents).unwrap(),
+                serde_json::to_value(&written.agents).unwrap()
+            );
+            assert_eq!(reloaded.log_level, written.log_level);
+            hash_activation_assert(&reloaded);
+        }
     }
 
     #[test]
@@ -28515,7 +29391,18 @@ mod tests {
                 }
                 (serde_json::Value::Object(seeded_fields), serde_json::Value::Object(held)) => {
                     for (field, value) in seeded_fields {
-                        assert_eq!(held.get(field), Some(value), "{key}.{field}");
+                        let mut expected = value.clone();
+                        if field == "profilesByAgent" {
+                            // Compare the complete original cells, including old
+                            // command values, plus only the new physical leaf.
+                            for cells in expected.as_object_mut().unwrap().values_mut() {
+                                for cell in cells.as_object_mut().unwrap().values_mut() {
+                                    assert!(cell.get("additionalArguments").is_none());
+                                    cell["additionalArguments"] = cell["command"].clone();
+                                }
+                            }
+                        }
+                        assert_eq!(held.get(field), Some(&expected), "{key}.{field}");
                     }
                 }
                 other => panic!("{key}: unexpected shapes {other:?}"),
@@ -29102,10 +29989,14 @@ pub(crate) fn source_original_mappings(
         })
         .collect::<Result<_, _>>()?;
     let calculated = |value: &&Value| -> Result<String, SourcePreparationError> {
-        let command = value
-            .get("command")
-            .and_then(Value::as_str)
-            .ok_or(SourcePreparationError::InvalidCandidate)?;
+        let command = raw_configuration_command(
+            value
+                .as_object()
+                .ok_or(SourcePreparationError::InvalidCandidate)?,
+            "baseCommand",
+        )
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?
+        .ok_or(SourcePreparationError::InvalidCandidate)?;
         let envs: Vec<CodingAgentEnv> = value
             .get("envs")
             .cloned()
@@ -30583,8 +31474,12 @@ mod derived_agent_binding_projection_tests {
             bootstrap_binding_revision(&load_settings_for_cli_from_path(&path), "alpha").unwrap()
         );
         assert_eq!(
-            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]["command"],
+            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]["baseCommand"],
             "claude --different-execution"
+        );
+        assert_eq!(
+            written.coding_agent_identity_physical.as_ref().unwrap()["agents"][0]["command"],
+            "claude"
         );
     }
 
@@ -30666,5 +31561,553 @@ mod derived_agent_binding_projection_tests {
             bootstrap_identity_revision(&draft).unwrap_err(),
             "coding_agent_identity_duplicate"
         );
+    }
+}
+
+#[cfg(test)]
+mod p02_configuration_schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn agent(pair: Value) -> Value {
+        let mut row = json!({"id":"one", "label":"One", "color":"#123456"});
+        row.as_object_mut()
+            .unwrap()
+            .extend(pair.as_object().unwrap().clone());
+        row
+    }
+
+    fn selected(new: Option<&str>, old: Option<&str>, expected: &str) {
+        for key in ["baseCommand", "additionalArguments"] {
+            let mut pair = Map::new();
+            if let Some(new) = new {
+                pair.insert(key.into(), json!(new));
+            }
+            if let Some(old) = old {
+                pair.insert("command".into(), json!(old));
+            }
+            if key == "baseCommand" {
+                let row: AgentConfig = serde_json::from_value(agent(Value::Object(pair))).unwrap();
+                assert_eq!(row.command, expected);
+                let wire = serde_json::to_value(row).unwrap();
+                assert_eq!(wire[key], expected);
+                assert!(wire.get("command").is_none());
+            } else {
+                let row: ProfileCellConfig = serde_json::from_value(Value::Object(pair)).unwrap();
+                assert_eq!(row.command, expected);
+                let wire = serde_json::to_value(row).unwrap();
+                assert_eq!(wire[key], expected);
+                assert!(wire.get("command").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn p02_literal_selection_matrix_and_frozen_whitespace() {
+        for (new, old, expected) in [
+            (Some("new"), Some("old"), "new"),
+            (Some(""), Some("old"), "old"),
+            (Some(" "), Some("old"), "old"),
+            (Some("new"), Some(" "), "new"),
+            (Some(""), Some(""), ""),
+            (Some(" "), Some("\t"), " "),
+            (Some(""), Some("\t"), ""),
+            (None, Some("\t"), "\t"),
+            (Some("new"), None, "new"),
+            (None, Some("old"), "old"),
+            (Some("\u{85}"), Some("legacy"), "\u{85}"),
+            (Some("\u{FEFF}"), Some("legacy"), "legacy"),
+            (Some("legacy"), Some("\u{85}"), "legacy"),
+            (Some(""), Some("\u{85}"), "\u{85}"),
+            (Some(""), Some("\u{FEFF}"), ""),
+        ] {
+            selected(new, old, expected);
+        }
+        let whitespace = "\u{9}\u{A}\u{B}\u{C}\u{D} \u{A0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}";
+        for w in whitespace.chars() {
+            let w = w.to_string();
+            selected(Some(&w), Some("legacy"), "legacy");
+            selected(Some(&w), Some("\t"), &w);
+            selected(Some(""), Some(&w), "");
+        }
+        selected(Some(whitespace), Some("legacy"), "legacy");
+        for content in ["\u{85}", "\u{180E}", "\u{200B}", "\u{1F680}", "new"] {
+            let mixed = format!("{whitespace}{content}{whitespace}");
+            selected(Some(&mixed), Some("legacy"), &mixed);
+            selected(Some(""), Some(&mixed), &mixed);
+        }
+    }
+
+    #[test]
+    fn p02_present_malformed_peer_rejects_and_absence_keeps_required_default() {
+        assert!(serde_json::from_value::<AgentConfig>(agent(json!({}))).is_err());
+        assert_eq!(
+            serde_json::from_value::<ProfileCellConfig>(json!({}))
+                .unwrap()
+                .command,
+            ""
+        );
+        for bad in [Value::Null, json!(false), json!(17), json!([]), json!({})] {
+            for canonical_bad in [false, true] {
+                for key in ["baseCommand", "additionalArguments"] {
+                    let mut pair = json!({"command":"old"});
+                    pair[key] = json!("new");
+                    pair[if canonical_bad { key } else { "command" }] = bad.clone();
+                    if key == "baseCommand" {
+                        assert!(serde_json::from_value::<AgentConfig>(agent(pair)).is_err());
+                    } else {
+                        assert!(serde_json::from_value::<ProfileCellConfig>(pair).is_err());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn p02_retention_uses_authoritative_legacy_by_identity_and_is_fixed_point() {
+        let before = json!({"agents":[{"id":"one","command":"locked"}],"codingAgentProfiles":{"profilesByAgent":{"one":{"A":{"command":"--locked"}}}}});
+        let mut after = json!({"agents":[{"id":"fresh","baseCommand":"fresh","command":"forged"},{"id":"one","baseCommand":"edited","command":"stale"}],"codingAgentProfiles":{"profilesByAgent":{"one":{"A":{"additionalArguments":"--edited","command":"--stale"},"B":{"command":"--new"}}}}});
+        retain_configuration_commands(&mut after, &before, "id", false, true, true).unwrap();
+        assert_eq!(after["agents"][1]["command"], "locked");
+        assert_eq!(after["agents"][1]["baseCommand"], "edited");
+        assert!(after["agents"][0].get("command").is_none());
+        let cells = &after["codingAgentProfiles"]["profilesByAgent"]["one"];
+        assert_eq!(cells["A"]["command"], "--locked");
+        assert_eq!(cells["A"]["additionalArguments"], "--edited");
+        assert_eq!(cells["B"]["additionalArguments"], "--new");
+        assert!(cells["B"].get("command").is_none());
+        let saved = after.clone();
+        retain_configuration_commands(&mut after, &saved, "id", false, true, true).unwrap();
+        assert_eq!(after, saved);
+        let mut malformed = before.clone();
+        malformed["agents"][0]["command"] = Value::Null;
+        assert!(
+            retain_configuration_commands(&mut after, &malformed, "id", false, true, true).is_err()
+        );
+    }
+
+    #[test]
+    fn p02_overlay_pairs_resolve_per_layer_restore_raw_and_reapply_effective() {
+        for (base, overlay, expected) in [
+            (
+                json!({"additionalArguments":"lower"}),
+                json!({"command":"higher"}),
+                "higher",
+            ),
+            (
+                json!({"command":"lower"}),
+                json!({"additionalArguments":"higher"}),
+                "higher",
+            ),
+            (
+                json!({"additionalArguments":"lower"}),
+                json!({"command":""}),
+                "",
+            ),
+            (
+                json!({"command":"lower"}),
+                json!({"additionalArguments":" ","command":"\t"}),
+                " ",
+            ),
+        ] {
+            let original = json!({"codingAgentProfiles":{"profilesByAgent":{"one":{"A":base}}}});
+            let mut merged = original.clone();
+            let overlay = json!({"codingAgentProfiles":{"profilesByAgent":{"one":{"A":overlay}}}});
+            let state = LocalSettingsOverlay::from_overlay_object_paired(
+                &mut merged,
+                overlay.as_object().unwrap().clone(),
+                &[],
+                &[],
+                &[],
+                CONFIGURATION_COMMAND_PAIRS,
+            );
+            assert!(state.rejection().is_none());
+            let cell = &merged["codingAgentProfiles"]["profilesByAgent"]["one"]["A"];
+            let decoded: ProfileCellConfig = serde_json::from_value(cell.clone()).unwrap();
+            assert_eq!(decoded.command, expected);
+            let mut physical = merged.as_object().unwrap().clone();
+            state.restore_base(&mut physical);
+            assert_eq!(Value::Object(physical.clone()), original);
+            state.reapply_from(merged.as_object().unwrap(), &mut physical);
+            assert_eq!(Value::Object(physical), merged);
+        }
+    }
+}
+
+#[cfg(test)]
+mod p02_physical_schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn p02_three_loaders_do_not_rewrite_and_locked_save_retains_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let main =
+            json!({"defaultShell":"test-shell","defaultShellArgs":[],"rootToken":"base-token"});
+        let groups = json!({"agents":[{"id":"own","label":"Own","color":"#123456","baseCommand":"tool --current","command":"tool --legacy","order":0}],"codingAgentProfiles":{"schemaVersion":2,"profileSlots":{"A":{"label":""}},"defaultProfileByAgent":{},"profilesByAgent":{"own":{"A":{"enabled":true,"additionalArguments":"--current","command":"--legacy","env":{},"notes":"keep"}}},"profileLabelsByAgent":{}}});
+        std::fs::write(&path, serde_json::to_vec_pretty(&main).unwrap()).unwrap();
+        let sidecar = agents_instance_path(&path);
+        std::fs::write(&sidecar, serde_json::to_vec_pretty(&groups).unwrap()).unwrap();
+        // BASE already materializes project-paths.json and a persistent lock on
+        // first use. Seed those controls before measuring schema read effects.
+        let project_paths = project_paths_path(&path);
+        std::fs::write(&project_paths, b"{}").unwrap();
+        drop(
+            SettingsFileLock::acquire_contextual(
+                &path,
+                std::time::Duration::from_secs(2),
+                "p02-read-baseline",
+            )
+            .unwrap(),
+        );
+        let main_before = std::fs::read(&path).unwrap();
+        let agents_before = std::fs::read(&sidecar).unwrap();
+        let names = || {
+            let mut names: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let names_before = names();
+        let strict = load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        let cli = load_settings_for_cli_from_path(&path);
+        let gui = load_settings_from_path(&path);
+        for settings in [&strict, &cli, &gui] {
+            assert_eq!(settings.agents[0].command, "tool --current");
+            assert_eq!(
+                settings.coding_agent_profiles.profiles_by_agent["own"]["A"].command,
+                "--current"
+            );
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), main_before);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), agents_before);
+        assert_eq!(std::fs::read(&project_paths).unwrap(), b"{}");
+        assert_eq!(names(), names_before, "read creates no backups or journals");
+        let mut edited = strict;
+        edited.agents[0].command = "tool --edited".into();
+        edited
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("own")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .command = "--edited".into();
+        let written = save_settings_to_path_preserving_project_paths(&edited, &path).unwrap();
+        let raw: Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(raw["agents"][0]["baseCommand"], "tool --edited");
+        assert_eq!(raw["agents"][0]["command"], "tool --legacy");
+        assert_eq!(
+            raw["codingAgentProfiles"]["profilesByAgent"]["own"]["A"]["additionalArguments"],
+            "--edited"
+        );
+        assert_eq!(
+            raw["codingAgentProfiles"]["profilesByAgent"]["own"]["A"]["command"],
+            "--legacy"
+        );
+        let bytes = std::fs::read(&sidecar).unwrap();
+        save_settings_to_path_preserving_project_paths(&written, &path).unwrap();
+        assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+    }
+}
+
+#[cfg(test)]
+mod p02_duplicate_row_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn row(id: &str, command: &str, order: Value, marker: &str) -> Value {
+        json!({"id":id,"label":marker,"color":"#123456","command":command,
+            "order":order,"privatePayload":{"marker":marker}})
+    }
+
+    fn typed_candidate(raw: &Value) -> Value {
+        let mut agents: Vec<AgentConfig> = serde_json::from_value(raw.clone()).unwrap();
+        finalize_agent_order(&mut agents);
+        json!({"agents":agents})
+    }
+
+    fn retain(after: &mut Value, raw: &Value) -> Result<(), String> {
+        retain_configuration_commands(after, &json!({"agents":raw}), "id", false, true, false)
+    }
+
+    fn seed(raw: &Value, sidecar: bool) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE_NAME);
+        let mut main =
+            json!({"defaultShell":"test-shell","defaultShellArgs":[],"rootToken":"token"});
+        if sidecar {
+            std::fs::write(
+                agents_instance_path(&path),
+                serde_json::to_vec(&json!({"agents":raw})).unwrap(),
+            )
+            .unwrap();
+        } else {
+            main["agents"] = raw.clone();
+        }
+        std::fs::write(&path, serde_json::to_vec(&main).unwrap()).unwrap();
+        (dir, path)
+    }
+
+    fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file() && path.file_name().unwrap() != SETTINGS_LOCK_FILE_NAME)
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn p02_duplicate_full_row_permutation_retains_distinct_values_and_absence() {
+        for orders in [
+            (json!(1), json!(0)),
+            (Value::Null, Value::Null),
+            (json!(0), json!(0)),
+        ] {
+            let mut raw = json!([
+                row("dup", "claude", orders.0, "claude-row"),
+                row("dup", "codex", orders.1, "codex-row"),
+                row("dup", "third", json!(2), "absent-old")
+            ]);
+            raw[2]["baseCommand"] = json!("third");
+            raw[2].as_object_mut().unwrap().remove("command");
+            let mut after = typed_candidate(&raw);
+            retain(&mut after, &raw).unwrap();
+            for candidate in after["agents"].as_array().unwrap() {
+                let original = raw
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["label"] == candidate["label"])
+                    .unwrap();
+                assert_eq!(candidate.get("command"), original.get("command"));
+                assert_eq!(candidate["privatePayload"], original["privatePayload"]);
+            }
+            let saved = after.clone();
+            retain_configuration_commands(&mut after, &saved, "id", false, true, false).unwrap();
+            assert_eq!(after, saved);
+        }
+        let raw = json!([
+            row("dup", "claude", json!(1), "claude"),
+            row("dup", "codex", json!(0), "codex")
+        ]);
+        let mut after = typed_candidate(&raw);
+        retain(&mut after, &raw).unwrap();
+        assert_eq!(after["agents"][0]["command"], "codex");
+        assert_eq!(after["agents"][0]["privatePayload"]["marker"], "codex");
+        assert_eq!(after["agents"][1]["command"], "claude");
+    }
+
+    #[test]
+    fn p02_identical_effective_duplicates_keep_authoritative_unknown_order() {
+        let mut raw = json!([
+            row("dup", "tool", json!(0), "first"),
+            row("dup", "tool", json!(1), "second")
+        ]);
+        raw[1]["label"] = raw[0]["label"].clone();
+        let mut after = typed_candidate(&raw);
+        after["agents"].as_array_mut().unwrap().swap(0, 1);
+        retain(&mut after, &raw).unwrap();
+        assert_eq!(after["agents"][0]["privatePayload"]["marker"], "first");
+        assert_eq!(after["agents"][1]["privatePayload"]["marker"], "second");
+        after["agents"][0]["privatePayload"]["marker"] = json!("second");
+        assert!(retain(&mut after, &raw).is_err());
+    }
+
+    #[test]
+    fn p02_duplicate_ambiguity_refuses_before_all_ordinary_publishers() {
+        let raw = json!([
+            row("dup", "claude", json!(0), "a"),
+            row("dup", "codex", json!(1), "b")
+        ]);
+        for sidecar in [false, true] {
+            for mutation in ["edit", "reorder", "add", "partial-delete", "menu"] {
+                let (dir, path) = seed(&raw, sidecar);
+                let mut settings = load_settings_for_cli_from_path(&path);
+                match mutation {
+                    "edit" => settings.agents[0].command = "edited".into(),
+                    "reorder" => settings.agents.swap(0, 1),
+                    "add" => settings.agents.push(settings.agents[0].clone()),
+                    "partial-delete" => {
+                        settings.agents.pop();
+                    }
+                    "menu" => settings.agents[0].blocking_menus = Some(vec![]),
+                    _ => unreachable!(),
+                }
+                // Read-only CLI load must not create project/backup/export files.
+                let before = files(dir.path());
+                let error = save_settings_to_path_preserving_project_paths_typed(&settings, &path)
+                    .unwrap_err();
+                assert!(
+                    matches!(&error.legacy_outward,
+                    SettingsSaveLegacyOutward::DiskValidation(reason)
+                        if reason.contains("duplicate agent ID 'dup'") && reason.contains("unprovable row correspondence")),
+                    "{mutation}: {error}"
+                );
+                assert_eq!(files(dir.path()), before, "{sidecar}/{mutation}");
+            }
+        }
+    }
+
+    #[test]
+    fn p02_unique_incumbent_cannot_become_ambiguous_but_new_repeated_ids_keep_behavior() {
+        let raw = json!([row("incumbent", "claude", json!(0), "old")]);
+        let (dir, path) = seed(&raw, false);
+        let mut settings = load_settings_for_cli_from_path(&path);
+        let mut extra = settings.agents[0].clone();
+        extra.command = "codex".into();
+        settings.agents.push(extra);
+        let before = files(dir.path());
+        assert!(save_settings_to_path_preserving_project_paths_typed(&settings, &path).is_err());
+        assert_eq!(files(dir.path()), before);
+        let mut fresh = json!({"agents":[row("fresh", "one", json!(0), "a"), row("fresh", "two", json!(1), "b")]});
+        retain(&mut fresh, &raw).unwrap();
+        for row in fresh["agents"].as_array().unwrap() {
+            assert!(row.get("command").is_none());
+            assert!(row.get("baseCommand").is_some());
+        }
+        settings.agents[1].id = "fresh".into();
+        let mut another = settings.agents[1].clone();
+        another.command = "third".into();
+        settings.agents.push(another);
+        let written =
+            save_settings_to_path_preserving_project_paths_typed(&settings, &path).unwrap();
+        assert_eq!(written.agents.len(), 3);
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+        for row in &saved["agents"].as_array().unwrap()[1..] {
+            assert_eq!(row["id"], "fresh");
+            assert!(row.get("command").is_none());
+        }
+    }
+
+    #[test]
+    fn p02_duplicate_no_edit_save_move_interleaving_and_whole_group_delete() {
+        let raw = json!([
+            row("dup", "claude", json!(1), "a"),
+            row("dup", "codex", json!(0), "b"),
+            row("unique", "third", json!(2), "c")
+        ]);
+        for sidecar in [false, true] {
+            let (_dir, path) = seed(&raw, sidecar);
+            let mut settings = load_settings_for_cli_from_path(&path);
+            settings.agents.swap(1, 2); // Unique row moves; duplicate subsequence is unchanged.
+            settings.default_shell = "unrelated-edit".into();
+            let written =
+                save_settings_to_path_preserving_project_paths_typed(&settings, &path).unwrap();
+            let saved: Value =
+                serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap())
+                    .unwrap();
+            assert_eq!(saved["agents"][0]["command"], "codex");
+            assert_eq!(saved["agents"][2]["command"], "claude");
+            assert_eq!(saved["agents"][0]["privatePayload"]["marker"], "b");
+            assert_eq!(saved["agents"][2]["privatePayload"]["marker"], "a");
+            save_settings_to_path_preserving_project_paths_typed(&written, &path).unwrap();
+            let again: Value =
+                serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap())
+                    .unwrap();
+            assert_eq!(again, saved);
+            let mut deleted = written;
+            deleted.agents.retain(|agent| agent.id != "dup");
+            assert!(save_settings_to_path_preserving_project_paths_typed(&deleted, &path).is_ok());
+        }
+    }
+
+    #[test]
+    fn p02_startup_context_binds_raw_owner_and_original_sidecar_absence() {
+        let raw = json!([
+            row("dup", "claude", json!(1), "a"),
+            row("dup", "codex", json!(0), "b")
+        ]);
+        for present_without_agents in [false, true] {
+            let (dir, path) = seed(&raw, false);
+            if present_without_agents {
+                std::fs::write(agents_instance_path(&path), b"{}").unwrap();
+            }
+            let mut context = None;
+            let (mut settings, _, _) =
+                capture_project_settings_with_startup(&path, true, Some(&mut context)).unwrap();
+            let context = context.unwrap();
+            assert_eq!(context.raw, raw);
+            assert_eq!(context.sidecar_absent, !present_without_agents);
+            if !present_without_agents {
+                assert!(export_agents_to_instance_file(&mut settings, &path));
+            } else {
+                std::fs::write(
+                    agents_instance_path(&path),
+                    serde_json::to_vec(&json!({"agents":raw})).unwrap(),
+                )
+                .unwrap();
+            }
+            let result = save_settings_value_with_startup(
+                &settings,
+                &path,
+                ProjectWriteMode::Preserve,
+                Some(&context),
+            );
+            assert_eq!(result.is_ok(), !present_without_agents);
+            // A changed raw group never qualifies as the verbatim owner transition.
+            let mut changed = raw.clone();
+            changed[0]["privatePayload"]["marker"] = json!("changed-between-capture-and-lock");
+            std::fs::write(
+                agents_instance_path(&path),
+                serde_json::to_vec(&json!({"agents":changed})).unwrap(),
+            )
+            .unwrap();
+            let completed_effects = files(dir.path());
+            assert!(save_settings_value_with_startup(
+                &settings,
+                &path,
+                ProjectWriteMode::Preserve,
+                Some(&context)
+            )
+            .is_err());
+            assert_eq!(files(dir.path()), completed_effects);
+            assert!(project_paths_path(&path).exists()); // Independent startup migration remains.
+        }
+    }
+
+    #[test]
+    fn p02_startup_records_actual_1757_append_even_when_menu_export_aborts() {
+        let mut raw = json!([
+            row("dup", "codex", json!(0), "codex"),
+            row("dup", "claude", json!(1), "claude")
+        ]);
+        for row in raw.as_array_mut().unwrap() {
+            row["blockingMenus"] = json!([{"custom":"invalid-but-retained"}]);
+        }
+        let (_dir, path) = seed(&raw, false);
+        let loaded = load_settings_from_path(&path);
+        assert_eq!(loaded.agents[0].blocking_menus.as_ref().unwrap().len(), 2);
+        assert_eq!(loaded.agents[1].blocking_menus.as_ref().unwrap().len(), 1);
+        assert!(!blocking_menus_local_path(&path).exists());
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+        assert_eq!(saved["agents"][0]["command"], "codex");
+        assert_eq!(saved["agents"][1]["command"], "claude");
+        assert_eq!(
+            saved["agents"][0]["blockingMenus"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            saved["agents"][0]["privatePayload"],
+            raw[0]["privatePayload"]
+        );
+        // Ordinary saves cannot claim the startup-only append authority.
+        let mut ordinary = typed_candidate(&raw);
+        ordinary["agents"] = serde_json::to_value(&loaded.agents).unwrap();
+        assert!(retain(&mut ordinary, &raw).is_err());
     }
 }
