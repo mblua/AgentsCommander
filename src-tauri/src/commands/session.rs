@@ -330,8 +330,11 @@ fn co_managed_same_directory(left: &std::path::Path, right: &std::path::Path) ->
 
 /// #1032 + #1171 - start sampling a freshly spawned session, with both engines.
 ///
-/// **Sessions with no agent are never registered**, and that rule lives HERE, once, for both:
-/// a plain shell costs neither engine anything, ever. `try_state` and not `state`, because
+/// **Sessions with no agent are never registered** with the scraper or the quota engine, and
+/// that rule lives HERE, once: a plain shell costs neither anything, ever. #2879 - the watcher
+/// engine is asked BEFORE that rule, with the optional agent, because its internal activity
+/// consumer may observe a Codex session that has no configured agent; it registers nothing
+/// when there is neither an agent nor a consumer. `try_state` and not `state`, because
 /// `state` panics when unmanaged and a test app manages neither engine - an absent engine is
 /// simply the feature being off.
 ///
@@ -344,14 +347,14 @@ pub(crate) fn register_session_samplers<R: tauri::Runtime>(
     id: Uuid,
     agent_id: Option<String>,
 ) {
+    if let Some(watchers) = app.try_state::<Arc<crate::pty::watchers::WatcherEngine>>() {
+        watchers.register_session(id, agent_id.clone());
+    }
     let Some(agent_id) = agent_id else {
         return;
     };
     if let Some(scraper) = app.try_state::<Arc<crate::pty::context_scrape::ContextScraper>>() {
         scraper.register_session(id, agent_id.clone());
-    }
-    if let Some(watchers) = app.try_state::<Arc<crate::pty::watchers::WatcherEngine>>() {
-        watchers.register_session(id, agent_id.clone());
     }
     if let Some(quota) = app.try_state::<Arc<crate::pty::agent_quota::AgentQuotaEngine>>() {
         quota.register_session(id, agent_id);

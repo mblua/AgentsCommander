@@ -855,6 +855,16 @@ impl CodingAgentKind {
     }
 }
 
+/// #2879 - which activity detector arbitrates a session's busy state. `Timed` is the
+/// pre-#2879 silence clock alone; `CodexWorking` additionally keeps the session busy while
+/// Codex's complete `Working (… • esc to interrupt)` indicator is visible. Selected per
+/// profile only: reverting `CODEX_PROFILE` to `Timed` reverts the feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivityDetectorKind {
+    Timed,
+    CodexWorking,
+}
+
 /// Per-session tuning for the PTY idle detector. Resolved from the session's
 /// `CodingAgentProfile` (or `DEFAULT` for a plain shell) and handed to
 /// `IdleDetector::register_session` at PTY spawn time.
@@ -889,6 +899,9 @@ pub struct IdleTuning {
     /// candidate. Shorter silences count immediately, so input and message
     /// delivery still register right away.
     pub burst_prior_silence: Duration,
+    /// #2879 - the activity detector for this session. Launch overrides only touch the burst
+    /// fields, so this selector always survives `idle_tuning_for_launch`.
+    pub(crate) activity_detector: ActivityDetectorKind,
 }
 
 /// #2124 defaults for an `idleBurst` object that omits a subfield.
@@ -912,6 +925,7 @@ impl IdleTuning {
         burst_max_bytes: 0,
         burst_window: Duration::ZERO,
         burst_prior_silence: Duration::ZERO,
+        activity_detector: ActivityDetectorKind::Timed,
     };
 
     /// #2156 - tuning for a recognised coding agent: `DEFAULT` plus the #2124
@@ -1026,7 +1040,11 @@ const CLAUDE_PROFILE: CodingAgentProfile = CodingAgentProfile {
 };
 const CODEX_PROFILE: CodingAgentProfile = CodingAgentProfile {
     kind: CodingAgentKind::Codex,
-    idle: IdleTuning::AGENT_DEFAULT,
+    // #2879 - the only profile that selects the Working-indicator detector.
+    idle: IdleTuning {
+        activity_detector: ActivityDetectorKind::CodexWorking,
+        ..IdleTuning::AGENT_DEFAULT
+    },
     resume_tokens: &["resume", "--last"],
     // #930 follow-up (needs CODEX_HOME container wiring verified, Q3):
     // Some(ContainerCredentialSource { host_dir: ".codex", host_dir_env: Some("CODEX_HOME"),
@@ -2327,7 +2345,12 @@ mod tests {
             CodingAgentKind::Muse,
         ] {
             assert!(kind.profile().idle.seed_initial_activity);
-            assert_eq!(kind.profile().idle, IdleTuning::AGENT_DEFAULT);
+            // #2879 - Codex differs from AGENT_DEFAULT only in its detector selector.
+            let idle = IdleTuning {
+                activity_detector: ActivityDetectorKind::Timed,
+                ..kind.profile().idle
+            };
+            assert_eq!(idle, IdleTuning::AGENT_DEFAULT);
         }
         assert!(idle_tuning_for(None).seed_initial_activity);
         assert_eq!(
@@ -2360,5 +2383,84 @@ mod tests {
             IdleTuning::AGENT_DEFAULT.burst_prior_silence,
             Duration::from_secs_f64(IDLE_BURST_DEFAULT_PRIOR_SILENCE_SECS)
         );
+    }
+
+    /// #2879 - only an effective Codex launch selects `CodexWorking`; every other agent, a
+    /// plain shell and `DEFAULT` stay `Timed`, and burst launch overrides keep the selector.
+    #[test]
+    fn i2879_feature_selection() {
+        assert_eq!(
+            CodingAgentKind::Codex.profile().idle.activity_detector,
+            ActivityDetectorKind::CodexWorking
+        );
+        assert_eq!(
+            idle_tuning_for(Some(CodingAgentKind::Codex)).activity_detector,
+            ActivityDetectorKind::CodexWorking
+        );
+        for kind in [
+            CodingAgentKind::Claude,
+            CodingAgentKind::Antigravity,
+            CodingAgentKind::Pi,
+            CodingAgentKind::Muse,
+        ] {
+            assert_eq!(
+                idle_tuning_for(Some(kind)).activity_detector,
+                ActivityDetectorKind::Timed,
+                "{kind:?}"
+            );
+            assert_eq!(
+                idle_tuning_for_launch(Some(kind), Some((Some(7), Some(1.0), Some(2.0))))
+                    .activity_detector,
+                ActivityDetectorKind::Timed,
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            idle_tuning_for(None).activity_detector,
+            ActivityDetectorKind::Timed
+        );
+        assert_eq!(
+            IdleTuning::DEFAULT.activity_detector,
+            ActivityDetectorKind::Timed
+        );
+        assert_eq!(
+            IdleTuning::AGENT_DEFAULT.activity_detector,
+            ActivityDetectorKind::Timed
+        );
+        // Every launch-override shape keeps the Codex selector AND still applies the burst
+        // override it was given (the control: the override is not silently ignored).
+        for burst in [
+            None,
+            Some((None, None, None)),
+            Some((Some(0), Some(0.0), Some(0.0))),
+            Some((Some(2048), Some(2.0), Some(30.0))),
+        ] {
+            let resolved = idle_tuning_for_launch(Some(CodingAgentKind::Codex), burst);
+            assert_eq!(
+                resolved.activity_detector,
+                ActivityDetectorKind::CodexWorking,
+                "{burst:?}"
+            );
+            if let Some((Some(bytes), _, _)) = burst {
+                assert_eq!(resolved.burst_max_bytes, bytes, "{burst:?}");
+            }
+        }
+
+        // A Timed selection never yields a semantic consumer; the Codex one does.
+        let detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let (claude, shell, codex) = (
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+        );
+        detector.register_session(claude, idle_tuning_for(Some(CodingAgentKind::Claude)));
+        detector.register_session(shell, idle_tuning_for(None));
+        detector.register_session(
+            codex,
+            idle_tuning_for_launch(Some(CodingAgentKind::Codex), Some((None, None, None))),
+        );
+        assert!(detector.activity_consumer(claude).is_none());
+        assert!(detector.activity_consumer(shell).is_none());
+        assert!(detector.activity_consumer(codex).is_some());
     }
 }
