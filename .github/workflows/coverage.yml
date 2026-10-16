@@ -1,0 +1,91 @@
+name: Frontend coverage
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.2 --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Require exact checkout and fresh coverage directory
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          COVERAGE_OUTPUT="$RUNNER_TEMP/frontend-coverage-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$COVERAGE_OUTPUT"
+          mkdir "$COVERAGE_OUTPUT"
+          printf 'COVERAGE_OUTPUT=%s\n' "$COVERAGE_OUTPUT" >> "$GITHUB_ENV"
+
+      - name: Run complete frontend suite with coverage
+        run: npm test -- --coverage --maxWorkers=1
+
+      - name: Validate frontend LCOV and record provenance
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+          import { createHash } from 'node:crypto';
+
+          const report = path.join(process.env.COVERAGE_OUTPUT, 'lcov.info');
+          const original = fs.readFileSync(report, 'utf8');
+          if (!original.length) throw new Error('Empty LCOV report');
+          const root = process.env.GITHUB_WORKSPACE.replace(/\\/g, '/').replace(/\/$/, '');
+          const tracked = new Set(execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0'));
+          let records = 0;
+          const normalized = original.split('\n').map(line => {
+            if (!line.startsWith('SF:')) return line;
+            let source = line.slice(3).replace(/\r$/, '').replace(/\\/g, '/');
+            if (source.startsWith(`${root}/`)) source = source.slice(root.length + 1);
+            if (!source.startsWith('src/') || path.posix.isAbsolute(source) ||
+                /^[A-Za-z]:/.test(source) || source.split('/').some(part => !part || part === '.' || part === '..') ||
+                !tracked.has(source) || !fs.statSync(path.join(process.env.GITHUB_WORKSPACE, source)).isFile()) {
+              throw new Error(`Invalid or unmapped LCOV source: ${source}`);
+            }
+            records++;
+            return `SF:${source}${line.endsWith('\r') ? '\r' : ''}`;
+          }).join('\n');
+          if (!records) throw new Error('LCOV has no SF records');
+          fs.writeFileSync(report, normalized);
+          const bytes = fs.readFileSync(report);
+          const hash = createHash('sha256').update(bytes).digest('hex');
+          const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `### Frontend coverage provenance\n\nCommit: ${process.env.GITHUB_SHA}\n\nRun: ${runUrl}\n\nUTC: ${new Date().toISOString()}\n\nLCOV: ${report}\n\nSHA256: ${hash}\n\nBytes: ${bytes.length}\n`);
+          NODE
+
+      - name: Upload validated frontend coverage
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
+        with:
+          files: ${{ env.COVERAGE_OUTPUT }}/lcov.info
+          disable_search: true
+          flags: frontend
+          name: frontend-${{ github.run_id }}-${{ github.run_attempt }}
+          override_commit: ${{ github.sha }}
+          override_branch: main
+          root_dir: ${{ github.workspace }}
+          plugins: noop
+          disable_file_fixes: true
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}

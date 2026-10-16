@@ -142,6 +142,20 @@ pub fn drain_error_logs() -> Vec<crate::logging::ErrorLogEntry> {
     crate::logging::error_sink().drain()
 }
 
+/// #3036 — sorted snapshot of the error-popup types muted for this process.
+/// Memory only: a new process starts empty; a webview reload keeps it.
+#[tauri::command]
+pub fn get_error_popup_mutes() -> Vec<String> {
+    crate::logging::error_sink().muted_snapshot()
+}
+
+/// #3036 — mute or unmute future popups for one captured `typeId`. Unknown IDs
+/// are rejected without mutation; returns the sorted muted snapshot.
+#[tauri::command]
+pub fn set_error_popup_muted(type_id: String, muted: bool) -> Result<Vec<String>, String> {
+    crate::logging::error_sink().set_muted(&type_id, muted)
+}
+
 // ── #1077 SettingsSnapshot: the get_settings client response ────────────────
 
 /// Tagged raw string field state (absent vs JSON null vs string). `present ==
@@ -8961,8 +8975,12 @@ mod tests {
 
             let profiles = disk(&path)["codingAgentProfiles"].clone();
             assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["command"],
+                profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
                 json!("codex --edited")
+            );
+            assert_eq!(
+                profiles["profilesByAgent"]["codex"]["A"]["command"],
+                json!("codex")
             );
             assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
             assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
@@ -9008,8 +9026,12 @@ mod tests {
 
             let profiles = disk(&path)["codingAgentProfiles"].clone();
             assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["command"],
+                profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
                 json!("codex --edited")
+            );
+            assert_eq!(
+                profiles["profilesByAgent"]["codex"]["A"]["command"],
+                json!("codex")
             );
             assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
             assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
@@ -13445,5 +13467,46 @@ mod tests {
             "read bodies must overlap: occupancy.max() = {}",
             run.occupancy_max
         );
+    }
+}
+
+#[cfg(test)]
+mod p02_wire_schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn p02_typed_ipc_snapshot_emits_only_canonical_configuration_names() {
+        let mut settings = AppSettings {
+            agents: vec![serde_json::from_value(json!({"id":"one","label":"One","color":"#123456","baseCommand":"tool","command":"old"})).unwrap()],
+            ..AppSettings::default()
+        };
+        settings.coding_agent_profiles.profiles_by_agent.insert(
+            "one".into(),
+            std::collections::BTreeMap::from([(
+                "A".into(),
+                serde_json::from_value(json!({"additionalArguments":"--new","command":"--old"}))
+                    .unwrap(),
+            )]),
+        );
+        let wire = serde_json::to_value(SettingsSnapshot {
+            settings,
+            project_path_resolution: ProjectPathResolution {
+                active_registration_count: 0,
+                archived_registration_count: 0,
+                issues: vec![],
+                reconciliation_error: None,
+            },
+            settings_file_path: None,
+            overlay_owns_agents: false,
+            agents_layer_unreadable: false,
+            agents_file_path: None,
+        })
+        .unwrap();
+        assert_eq!(wire["agents"][0]["baseCommand"], "tool");
+        assert!(wire["agents"][0].get("command").is_none());
+        let cell = &wire["codingAgentProfiles"]["profilesByAgent"]["one"]["A"];
+        assert_eq!(cell["additionalArguments"], "--new");
+        assert!(cell.get("command").is_none());
     }
 }

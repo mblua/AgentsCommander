@@ -80,9 +80,10 @@ async function refreshTaskSnapshot(path: string): Promise<void> {
   taskRequests.set(key, request);
   setTaskSnapshots(prev => { const next = new Map(prev); next.delete(key); return next; });
   const current = () => {
+    if (generation !== taskGeneration || taskRequests.get(key) !== request ||
+      !loadedTaskRooms().has(key)) return false;
     const now = getTransportConnectionState();
-    return generation === taskGeneration && taskRequests.get(key) === request &&
-      loadedTaskRooms().has(key) && now.state === "connected" && now.generation === connection.generation;
+    return now.state === "connected" && now.generation === connection.generation;
   };
   try {
     const snapshot = await TaskAPI.getSnapshotAt(root);

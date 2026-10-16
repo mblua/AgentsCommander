@@ -3989,7 +3989,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               />
             </label>
             <label class="settings-field">
-              <span class="settings-label">Command</span>
+              <span class="settings-label">Base command</span>
               <input
                 class="settings-input"
                 value={agent.command}
@@ -4735,7 +4735,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
 
         <Show when={expanded()}>
           <div class="settings-profile-field-label-row">
-            <label class="settings-profile-field-label">Command</label>
+            <label class="settings-profile-field-label">Additional arguments</label>
             <button
               type="button"
               class="settings-field-help"
@@ -4773,6 +4773,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </div>
           <div class="settings-profile-command-base" data-ac-testid={`${cardId}.commandBase`}>
             Runs <code>{agent.command || "(set the Coding Agent command first)"}</code> then your params:
+            {" "}If left empty, a previously saved legacy value still applies.
           </div>
           <textarea
             class="settings-input settings-profile-command"

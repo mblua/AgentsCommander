@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-use crate::session::profile::IdleTuning;
+use crate::session::profile::{ActivityDetectorKind, IdleTuning};
 
 const CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -28,9 +28,91 @@ struct PendingBurst {
     printable: bool,
 }
 
+/// #2879 - one session's semantic activity registration. Its PRESENCE is the active
+/// registration; `observation` is the single token of the current consumer attach, and
+/// `last_valid` the last valid frame verdict that attach delivered.
+struct SemanticRegistration {
+    kind: ActivityDetectorKind,
+    observation: Option<Arc<()>>,
+    last_valid: Option<bool>,
+}
+
+/// #2879 - everything guarded by the `activity` mutex: the #260 printable-output clock and
+/// the semantic registrations, so an observation and the watcher's commit are linearized by
+/// the one lock the arbiter already takes. Derefs to the clock map, which every pre-#2879
+/// reader of `activity` keeps using unchanged.
+#[derive(Default)]
+struct ActivityState {
+    timestamps: HashMap<Uuid, Instant>,
+    semantic: HashMap<Uuid, SemanticRegistration>,
+}
+
+impl std::ops::Deref for ActivityState {
+    type Target = HashMap<Uuid, Instant>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.timestamps
+    }
+}
+
+impl std::ops::DerefMut for ActivityState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.timestamps
+    }
+}
+
+impl ActivityState {
+    /// The registration `token` was attached to, if it is still the current CodexWorking
+    /// attach. The single identity check `observe` and `retire` both use.
+    fn current_attach(&mut self, id: Uuid, token: &Arc<()>) -> Option<&mut SemanticRegistration> {
+        self.semantic.get_mut(&id).filter(|registration| {
+            registration.kind == ActivityDetectorKind::CodexWorking
+                && registration
+                    .observation
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, token))
+        })
+    }
+}
+
+/// #2879 - the per-kind arbitration between the timed clock and semantic evidence.
+trait ActivityDetector {
+    fn is_busy(&self, timed_busy: bool, positive: bool) -> bool;
+}
+
+struct TimedDetector;
+struct CodexWorkingDetector;
+
+impl ActivityDetector for TimedDetector {
+    fn is_busy(&self, timed_busy: bool, _positive: bool) -> bool {
+        timed_busy
+    }
+}
+
+impl ActivityDetector for CodexWorkingDetector {
+    fn is_busy(&self, timed_busy: bool, positive: bool) -> bool {
+        positive || timed_busy
+    }
+}
+
+fn activity_detector(kind: ActivityDetectorKind) -> &'static dyn ActivityDetector {
+    match kind {
+        ActivityDetectorKind::Timed => &TimedDetector,
+        ActivityDetectorKind::CodexWorking => &CodexWorkingDetector,
+    }
+}
+
+/// #2879 - one consumer attach. `observe(Some(b))` records a valid frame verdict,
+/// `observe(None)` only validates; `retire()` releases this attach's evidence. Each returns
+/// whether it was accepted, i.e. whether this attach is still the current one.
+pub(crate) struct ActivityConsumerHandle {
+    pub(crate) observe: Arc<dyn Fn(Option<bool>) -> bool + Send + Sync>,
+    pub(crate) retire: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
 pub struct IdleDetector {
     raw_output_observer: std::sync::OnceLock<(usize, RawOutputObserver)>,
-    activity: Arc<Mutex<HashMap<Uuid, Instant>>>,
+    activity: Arc<Mutex<ActivityState>>,
     /// #552 auto-close silence clock. SEPARATE from `activity` (which drives the
     /// #260 idle dot). Reset by user input, inter-agent delivery and PTY output
     /// that the #2124 burst filter counts; a short burst after long silence is
@@ -154,7 +236,7 @@ impl IdleDetector {
     ) -> Arc<Self> {
         Arc::new(Self {
             raw_output_observer: std::sync::OnceLock::new(),
-            activity: Arc::new(Mutex::new(HashMap::new())),
+            activity: Arc::new(Mutex::new(ActivityState::default())),
             silence: Arc::new(Mutex::new(HashMap::new())),
             registered_at: Arc::new(Mutex::new(HashMap::new())),
             idle_set: Arc::new(Mutex::new(HashSet::new())),
@@ -179,17 +261,26 @@ impl IdleDetector {
              trigger a false busy→idle transition"
         );
         self.tuning.lock().unwrap().insert(session_id, tuning);
+        let mut activity = self.activity.lock().unwrap();
+        // #2879 - always a FRESH registration: a re-registration drops any evidence and
+        // invalidates every earlier consumer attach, whatever the seed below decides.
+        activity.semantic.insert(
+            session_id,
+            SemanticRegistration {
+                kind: tuning.activity_detector,
+                observation: None,
+                last_valid: None,
+            },
+        );
         if tuning.seed_initial_activity {
-            self.activity
-                .lock()
-                .unwrap()
-                .insert(session_id, Instant::now());
+            activity.insert(session_id, Instant::now());
             log::debug!(
                 "[idle] SEEDED activity for {} at spawn (idle_threshold={}ms)",
                 &session_id.to_string()[..8],
                 tuning.idle_threshold.as_millis()
             );
         }
+        drop(activity);
         // #552 always seed the silence clock so a freshly spawned session has a
         // baseline age (the auto-close evaluator treats untracked-but-live as a
         // spawn race; see auto_close.rs). Independent of the #260 activity seed
@@ -679,7 +770,13 @@ impl IdleDetector {
 
     /// Remove a session from tracking (called on session destroy).
     pub fn remove_session(&self, session_id: Uuid) {
-        self.activity.lock().unwrap().remove(&session_id);
+        {
+            // #2879 - the current registration goes first, under `activity`: every attach
+            // of it is invalid from here on.
+            let mut activity = self.activity.lock().unwrap();
+            activity.semantic.remove(&session_id);
+            activity.remove(&session_id);
+        }
         self.silence
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -701,6 +798,130 @@ impl IdleDetector {
         self.tuning.lock().unwrap().remove(&session_id);
     }
 
+    /// #2879 - attach a semantic consumer to the CURRENT CodexWorking registration of `id`.
+    /// Every call is a new attach: it replaces the registration's observation token, which
+    /// invalidates every earlier handle, and keeps the registration's evidence. `None`, and
+    /// nothing changed, when `id` has no active CodexWorking registration. Never creates a
+    /// registration or a clock.
+    pub(crate) fn activity_consumer(self: &Arc<Self>, id: Uuid) -> Option<ActivityConsumerHandle> {
+        let token = {
+            let mut activity = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+            let registration = activity
+                .semantic
+                .get_mut(&id)
+                .filter(|registration| registration.kind == ActivityDetectorKind::CodexWorking)?;
+            let token = Arc::new(());
+            registration.observation = Some(Arc::clone(&token));
+            token
+        };
+        let observe_detector = Arc::clone(self);
+        let observe_token = Arc::clone(&token);
+        let retire_detector = Arc::clone(self);
+        Some(ActivityConsumerHandle {
+            observe: Arc::new(move |value: Option<bool>| {
+                let mut activity = observe_detector
+                    .activity
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let Some(registration) = activity.current_attach(id, &observe_token) else {
+                    return false;
+                };
+                if let Some(value) = value {
+                    registration.last_valid = Some(value);
+                }
+                true
+            }),
+            retire: Arc::new(move || {
+                let mut activity = retire_detector
+                    .activity
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let Some(registration) = activity.current_attach(id, &token) else {
+                    return false;
+                };
+                registration.observation = None;
+                registration.last_valid = None;
+                true
+            }),
+        })
+    }
+
+    /// One watcher tick's commit, shared by `start` and the tests. `now` is taken AFTER the
+    /// locks unless a test injects it. Returns the heartbeat's working set when asked for one.
+    ///
+    /// Each session's timed verdict is exactly the pre-#2879 rule (`> idle_threshold` since a
+    /// PRESENT `activity` stamp); its detector kind decides whether positive semantic
+    /// evidence vetoes the idle edge. A positive that finds the session idle re-opens it with
+    /// the existing `on_busy`, once. Both callbacks run under `activity -> idle_set`, which
+    /// is what orders them against observations and output.
+    fn evaluate_tick(&self, now: Option<Instant>, heartbeat: bool) -> Option<Vec<Uuid>> {
+        // Snapshot tuning (clone, lock released) so it is never held
+        // across the activity/idle_set critical section. Lock order:
+        // tuning → activity → idle_set (consistent everywhere).
+        let tuning = self.tuning.lock().unwrap().clone();
+        let activity = self.activity.lock().unwrap();
+        let mut idle_set = self.idle_set.lock().unwrap();
+        let now = now.unwrap_or_else(Instant::now);
+
+        let crossing: HashMap<Uuid, Duration> =
+            sessions_crossing_idle_threshold(now, &activity, &idle_set, &tuning)
+                .into_iter()
+                .collect();
+        let mut ids: Vec<Uuid> = activity
+            .timestamps
+            .keys()
+            .chain(activity.semantic.keys())
+            .copied()
+            .collect::<HashSet<Uuid>>()
+            .into_iter()
+            .collect();
+        ids.sort_unstable();
+        for session_id in ids {
+            let registration = activity.semantic.get(&session_id);
+            let kind = registration.map_or(ActivityDetectorKind::Timed, |r| r.kind);
+            let positive = registration.is_some_and(|r| {
+                r.kind == ActivityDetectorKind::CodexWorking && r.last_valid == Some(true)
+            });
+            let elapsed = crossing.get(&session_id).copied();
+            if !activity_detector(kind).is_busy(elapsed.is_none(), positive) {
+                // Only a timed crossing reaches here, so it is the pre-#2879 idle edge.
+                let elapsed = elapsed.unwrap_or_default();
+                idle_set.insert(session_id);
+                log::debug!(
+                    "[idle] IDLE {} ({}ms since last activity)",
+                    &session_id.to_string()[..8],
+                    elapsed.as_millis()
+                );
+                // Callback inside the lock scope preserves delivery order:
+                // on_idle always fires before any on_busy for new activity.
+                (self.on_idle)(session_id);
+            } else if positive && idle_set.remove(&session_id) {
+                log::debug!(
+                    "[idle] BUSY {} (Codex Working indicator visible)",
+                    &session_id.to_string()[..8]
+                );
+                (self.on_busy)(session_id);
+            }
+        }
+
+        // #1149 - the heartbeat, and the universal backstop for closing
+        // edges. A session that exits or is removed while working never
+        // reaches `mark_idle`, so it emits no closing record; it simply
+        // stops appearing here and the consumer closes it at the last
+        // heartbeat that listed it. This is the detector's own view
+        // deliberately, because this loop is a native thread and must not
+        // take the async manager lock. It may therefore list a session
+        // still pending creation, which is inert: the closing rule only
+        // ever closes an interval a `busy` record opened.
+        heartbeat.then(|| {
+            activity
+                .keys()
+                .copied()
+                .filter(|id| !idle_set.contains(id))
+                .collect::<Vec<Uuid>>()
+        })
+    }
+
     /// Start the watcher thread that polls for idle transitions.
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let detector = Arc::clone(self);
@@ -715,44 +936,9 @@ impl IdleDetector {
                 }
 
                 ticks = ticks.wrapping_add(1);
-                let now = Instant::now();
-                // Snapshot tuning (clone, lock released) so it is never held
-                // across the activity/idle_set critical section. Lock order:
-                // tuning → activity → idle_set (consistent everywhere).
-                let tuning = detector.tuning.lock().unwrap().clone();
-                let activity = detector.activity.lock().unwrap();
-                let mut idle_set = detector.idle_set.lock().unwrap();
-
-                let crossing = sessions_crossing_idle_threshold(now, &activity, &idle_set, &tuning);
-                for (session_id, elapsed) in crossing {
-                    idle_set.insert(session_id);
-                    log::debug!(
-                        "[idle] IDLE {} ({}ms since last activity)",
-                        &session_id.to_string()[..8],
-                        elapsed.as_millis()
-                    );
-                    // Callback inside the lock scope preserves delivery order:
-                    // on_idle always fires before any on_busy for new activity.
-                    (detector.on_idle)(session_id);
-                }
-
-                // #1149 - the heartbeat, and the universal backstop for closing
-                // edges. A session that exits or is removed while working never
-                // reaches `mark_idle`, so it emits no closing record; it simply
-                // stops appearing here and the consumer closes it at the last
-                // heartbeat that listed it. This is the detector's own view
-                // deliberately, because this loop is a native thread and must not
-                // take the async manager lock. It may therefore list a session
-                // still pending creation, which is inert: the closing rule only
-                // ever closes an interval a `busy` record opened.
-                let heartbeat = ticks.is_multiple_of(HEARTBEAT_TICKS).then(|| {
-                    activity
-                        .keys()
-                        .copied()
-                        .filter(|id| !idle_set.contains(id))
-                        .collect::<Vec<Uuid>>()
-                });
-                // Both guards MUST be released before the append. These are the
+                let heartbeat = detector.evaluate_tick(None, ticks.is_multiple_of(HEARTBEAT_TICKS));
+                // Both guards MUST be released before the append (`evaluate_tick`
+                // drops them before it returns). These are the
                 // two the PTY reader threads take together on every output chunk,
                 // so appending under them would stall every terminal in the fleet
                 // on a 60 s beat for the length of a file open, write and close,
@@ -761,8 +947,6 @@ impl IdleDetector {
                 // watcher, so a rename that normally costs 1 ms can cost
                 // hundreds. Fleet-wide terminal jank with no log line explaining
                 // it is the one failure here a user would actually feel.
-                drop(idle_set);
-                drop(activity);
                 if let Some(working_session_ids) = heartbeat {
                     crate::config::activity_log::append(
                         crate::config::activity_log::build_app_alive(working_session_ids),
@@ -1641,6 +1825,383 @@ mod tests {
         assert_eq!(fx.busy(), 1);
         assert!(fx.silence_age() < Duration::from_secs(1));
         assert!(!fx.pending());
+    }
+
+    // -----------------------------------------------------------------
+    // #2879 - the Codex Working detector, driven through `evaluate_tick`
+    // with injected instants, so no test sleeps.
+    // -----------------------------------------------------------------
+
+    type I2879Edges = Arc<Mutex<Vec<(&'static str, Uuid, usize)>>>;
+
+    fn i2879_codex() -> IdleTuning {
+        IdleTuning {
+            activity_detector: ActivityDetectorKind::CodexWorking,
+            ..IdleTuning::DEFAULT
+        }
+    }
+
+    /// A detector whose callbacks record `(edge, id, global order)`.
+    fn i2879_detector() -> (
+        Arc<IdleDetector>,
+        I2879Edges,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let edges: I2879Edges = Arc::new(Mutex::new(Vec::new()));
+        let order = Arc::new(AtomicUsize::new(0));
+        let (idle_edges, busy_edges) = (Arc::clone(&edges), Arc::clone(&edges));
+        let (idle_order, busy_order) = (Arc::clone(&order), Arc::clone(&order));
+        let detector = IdleDetector::new(
+            move |id| {
+                let n = idle_order.fetch_add(1, Ordering::SeqCst);
+                idle_edges.lock().unwrap().push(("idle", id, n));
+            },
+            move |id| {
+                let n = busy_order.fetch_add(1, Ordering::SeqCst);
+                busy_edges.lock().unwrap().push(("busy", id, n));
+            },
+        );
+        (detector, edges, order)
+    }
+
+    fn i2879_edges(edges: &I2879Edges) -> Vec<(&'static str, Uuid)> {
+        edges
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(edge, id, _)| (*edge, *id))
+            .collect()
+    }
+
+    fn i2879_stamp(detector: &IdleDetector, id: Uuid) -> Instant {
+        *detector.activity.lock().unwrap().get(&id).expect("seeded")
+    }
+
+    /// `(kind, attached, last_valid)` of the current registration.
+    fn i2879_registration(
+        detector: &IdleDetector,
+        id: Uuid,
+    ) -> Option<(ActivityDetectorKind, bool, Option<bool>)> {
+        detector
+            .activity
+            .lock()
+            .unwrap()
+            .semantic
+            .get(&id)
+            .map(|r| (r.kind, r.observation.is_some(), r.last_valid))
+    }
+
+    /// A visible indicator keeps a Codex session busy long after the threshold, with no
+    /// bytes and no refresh of any clock; the Timed control on the same instants goes idle.
+    #[test]
+    fn i2879_feature_frozen() {
+        let (detector, edges, _) = i2879_detector();
+        let codex = Uuid::new_v4();
+        let timed = Uuid::new_v4();
+        detector.register_session(codex, i2879_codex());
+        detector.register_session(timed, IdleTuning::DEFAULT);
+        let t0 = i2879_stamp(&detector, codex);
+        detector.activity.lock().unwrap().insert(timed, t0);
+        let silence = *detector.silence.lock().unwrap().get(&codex).unwrap();
+
+        let handle = detector.activity_consumer(codex).expect("Codex attaches");
+        assert!((handle.observe)(Some(true)));
+
+        let threshold = i2879_codex().idle_threshold;
+        for after in [
+            threshold + Duration::from_millis(1),
+            threshold * 4,
+            Duration::from_secs(10 * 60 * 60),
+        ] {
+            assert!(detector.evaluate_tick(Some(t0 + after), false).is_none());
+            // An Unchanged frame or a validation delivers nothing new and keeps the evidence.
+            assert!((handle.observe)(None));
+        }
+
+        assert_eq!(
+            i2879_edges(&edges),
+            vec![("idle", timed)],
+            "the Timed control idles once; the visible indicator never lets Codex idle"
+        );
+        assert!(!detector.idle_set.lock().unwrap().contains(&codex));
+        assert_eq!(i2879_stamp(&detector, codex), t0, "no activity refresh");
+        assert_eq!(
+            *detector.silence.lock().unwrap().get(&codex).unwrap(),
+            silence,
+            "no silence refresh"
+        );
+        assert_eq!(
+            i2879_registration(&detector, codex),
+            Some((ActivityDetectorKind::CodexWorking, true, Some(true)))
+        );
+    }
+
+    /// Without positive evidence - none yet, an initial Unavailable, or a valid negative -
+    /// Codex is exactly Timed on both sides of the threshold; a positive followed by a
+    /// negative never ends the turn before the timed clock does.
+    #[test]
+    fn i2879_feature_fallback() {
+        let threshold = i2879_codex().idle_threshold;
+        for case in ["none", "unavailable", "negative", "positive-then-negative"] {
+            let (detector, edges, _) = i2879_detector();
+            let id = Uuid::new_v4();
+            detector.register_session(id, i2879_codex());
+            let t0 = i2879_stamp(&detector, id);
+            let handle = detector.activity_consumer(id).expect("Codex attaches");
+            match case {
+                "none" => {}
+                "unavailable" => assert!((handle.observe)(None)),
+                "negative" => assert!((handle.observe)(Some(false))),
+                _ => {
+                    assert!((handle.observe)(Some(true)));
+                    detector.evaluate_tick(Some(t0 + Duration::from_millis(1)), false);
+                    assert!((handle.observe)(Some(false)));
+                }
+            }
+            detector.evaluate_tick(Some(t0 + threshold), false);
+            assert!(
+                i2879_edges(&edges).is_empty(),
+                "{case}: not past the threshold"
+            );
+            detector.evaluate_tick(Some(t0 + threshold + Duration::from_millis(1)), false);
+            detector.evaluate_tick(Some(t0 + Duration::from_secs(3600)), false);
+            assert_eq!(i2879_edges(&edges), vec![("idle", id)], "{case}");
+        }
+
+        // The control: the same instants with positive evidence never idle.
+        let (detector, edges, _) = i2879_detector();
+        let id = Uuid::new_v4();
+        detector.register_session(id, i2879_codex());
+        let t0 = i2879_stamp(&detector, id);
+        let handle = detector.activity_consumer(id).expect("Codex attaches");
+        assert!((handle.observe)(Some(true)));
+        detector.evaluate_tick(Some(t0 + threshold + Duration::from_millis(1)), false);
+        assert!(i2879_edges(&edges).is_empty());
+    }
+
+    /// From idle, a positive under a resize grace and an unconfirmed burst - output that
+    /// moves no clock - emits `on_busy` exactly once through the real commit, and the
+    /// observation itself touches no output or silence clock.
+    #[test]
+    fn i2879_feature_suppressed_output() {
+        let (detector, edges, _) = i2879_detector();
+        let id = Uuid::new_v4();
+        detector.register_session(
+            id,
+            IdleTuning {
+                activity_detector: ActivityDetectorKind::CodexWorking,
+                ..IdleTuning::AGENT_DEFAULT
+            },
+        );
+        detector.set_auto_close_ages_for_test(
+            id,
+            Duration::from_secs(30 * 60),
+            Duration::from_secs(31 * 60),
+        );
+        detector.set_pty_input_ready_for_test(id);
+        let stamp = i2879_stamp(&detector, id);
+        let silence = *detector.silence.lock().unwrap().get(&id).unwrap();
+
+        detector.record_resize(id);
+        detector.record_activity_with_bytes(id, 500);
+        detector.record_output_at(id, 64, true, Instant::now());
+        assert!(
+            detector.burst.lock().unwrap().contains_key(&id),
+            "burst pending"
+        );
+        detector.evaluate_tick(Some(stamp + Duration::from_secs(3600)), false);
+        assert!(
+            i2879_edges(&edges).is_empty(),
+            "suppressed output and no evidence: still idle, no edge"
+        );
+
+        let handle = detector.activity_consumer(id).expect("Codex attaches");
+        assert!((handle.observe)(Some(true)));
+        assert!(
+            i2879_edges(&edges).is_empty(),
+            "observing alone emits nothing"
+        );
+        detector.evaluate_tick(Some(stamp + Duration::from_secs(3600)), false);
+        detector.evaluate_tick(Some(stamp + Duration::from_secs(7200)), false);
+        assert_eq!(i2879_edges(&edges), vec![("busy", id)], "exactly once");
+        assert!(!detector.idle_set.lock().unwrap().contains(&id));
+        assert_eq!(
+            i2879_stamp(&detector, id),
+            stamp,
+            "activity clock untouched"
+        );
+        assert_eq!(
+            *detector.silence.lock().unwrap().get(&id).unwrap(),
+            silence,
+            "silence clock untouched"
+        );
+    }
+
+    /// Token identity: a new attach, a retire, `remove_session` and a re-registration each
+    /// reject every older handle without mutating anything, and nothing positive is
+    /// inherited by a re-registration or a new UUID. Timed registrations never attach.
+    #[test]
+    fn i2879_feature_retire() {
+        let (detector, edges, _) = i2879_detector();
+        let id = Uuid::new_v4();
+        detector.register_session(id, i2879_codex());
+
+        let first = detector.activity_consumer(id).expect("Codex attaches");
+        assert!((first.observe)(Some(true)));
+        let second = detector.activity_consumer(id).expect("a new attach");
+        assert!(
+            !(first.observe)(Some(false)),
+            "a replaced attach is rejected"
+        );
+        assert!(
+            !(first.retire)(),
+            "a late retire of a replaced attach is rejected"
+        );
+        assert_eq!(
+            i2879_registration(&detector, id),
+            Some((ActivityDetectorKind::CodexWorking, true, Some(true))),
+            "the rejected calls mutated nothing and the new attach kept the evidence"
+        );
+        assert!((second.observe)(None));
+
+        assert!((second.retire)(), "the current attach retires");
+        assert_eq!(
+            i2879_registration(&detector, id),
+            Some((ActivityDetectorKind::CodexWorking, false, None)),
+            "retire releases the evidence and keeps the registration"
+        );
+        assert!(
+            !(second.observe)(Some(true)),
+            "a retired attach is rejected"
+        );
+        assert!(!(second.retire)());
+
+        // Removal (a confirmed Gone or a destroy) invalidates the current attach.
+        let third = detector.activity_consumer(id).expect("re-attach");
+        assert!((third.observe)(Some(true)));
+        detector.remove_session(id);
+        assert!(!(third.observe)(Some(true)));
+        assert!(!(third.retire)());
+        assert!(i2879_registration(&detector, id).is_none());
+        assert!(
+            detector.activity_consumer(id).is_none(),
+            "nothing to attach to"
+        );
+
+        // Re-registration of the same UUID starts clean and rejects the old handle.
+        detector.register_session(id, i2879_codex());
+        assert!(
+            !(third.observe)(Some(true)),
+            "late callback after re-registration"
+        );
+        assert_eq!(
+            i2879_registration(&detector, id),
+            Some((ActivityDetectorKind::CodexWorking, false, None))
+        );
+        let fourth = detector.activity_consumer(id).expect("attach");
+        assert!((fourth.observe)(Some(true)));
+        detector.register_session(id, i2879_codex());
+        assert!(!(fourth.observe)(Some(true)));
+        assert!(!(fourth.retire)());
+        assert_eq!(
+            i2879_registration(&detector, id),
+            Some((ActivityDetectorKind::CodexWorking, false, None)),
+            "no positive is inherited"
+        );
+
+        // A new UUID never sees another session's evidence; Timed never attaches.
+        let other = Uuid::new_v4();
+        detector.register_session(other, i2879_codex());
+        assert_eq!(
+            i2879_registration(&detector, other),
+            Some((ActivityDetectorKind::CodexWorking, false, None))
+        );
+        let timed = Uuid::new_v4();
+        detector.register_session(timed, IdleTuning::DEFAULT);
+        assert!(detector.activity_consumer(timed).is_none());
+        assert_eq!(
+            i2879_registration(&detector, timed),
+            Some((ActivityDetectorKind::Timed, false, None)),
+            "a refused attach mutates nothing"
+        );
+
+        // With all evidence gone, the re-registered session follows the timed clock.
+        let t0 = i2879_stamp(&detector, id);
+        detector.evaluate_tick(Some(t0 + Duration::from_secs(3600)), false);
+        assert!(i2879_edges(&edges).contains(&("idle", id)));
+    }
+
+    /// The commit order: every edge is emitted under `activity -> idle_set`, so an edge
+    /// recorded after an observation returned saw that observation. Deterministic phases
+    /// first, then a real concurrent interleaving of observation and ticks.
+    #[test]
+    fn i2879_feature_commit_order() {
+        use std::sync::atomic::Ordering;
+        let (detector, edges, order) = i2879_detector();
+        let id = Uuid::new_v4();
+        detector.register_session(id, i2879_codex());
+        let t0 = i2879_stamp(&detector, id);
+        let threshold = i2879_codex().idle_threshold;
+        let handle = detector.activity_consumer(id).expect("Codex attaches");
+        let far = || Instant::now() + Duration::from_secs(3600);
+
+        detector.evaluate_tick(Some(t0 + threshold + Duration::from_millis(1)), false);
+        detector.record_activity_with_bytes(id, 3); // input re-opens the turn
+        assert!((handle.observe)(Some(true)));
+        detector.evaluate_tick(Some(far()), false); // positive vetoes idle
+        assert!((handle.observe)(Some(false)));
+        detector.evaluate_tick(Some(far()), false); // negative: timed idle
+        assert!((handle.observe)(Some(true)));
+        detector.evaluate_tick(Some(far()), false); // positive re-opens, once
+        detector.evaluate_tick(Some(far()), false);
+        detector.record_activity_with_bytes(id, 3); // already busy: no edge
+        assert_eq!(
+            i2879_edges(&edges),
+            vec![("idle", id), ("busy", id), ("idle", id), ("busy", id)]
+        );
+
+        // Concurrent: a tick thread races one observation. No idle may be ordered after
+        // the observation's commit returned.
+        let racing = Uuid::new_v4();
+        detector.register_session(racing, i2879_codex());
+        let racing_handle = detector.activity_consumer(racing).expect("attach");
+        edges.lock().unwrap().clear();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let ticker = {
+            let detector = Arc::clone(&detector);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..500 {
+                    detector.evaluate_tick(Some(Instant::now() + Duration::from_secs(3600)), false);
+                }
+            })
+        };
+        barrier.wait();
+        assert!((racing_handle.observe)(Some(true)));
+        let committed = order.fetch_add(1, Ordering::SeqCst);
+        ticker.join().expect("ticker");
+        detector.evaluate_tick(Some(far()), false);
+
+        let racing_edges: Vec<(&str, usize)> = edges
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, edge_id, _)| *edge_id == racing)
+            .map(|(edge, _, n)| (*edge, *n))
+            .collect();
+        assert!(
+            racing_edges
+                .iter()
+                .all(|(edge, n)| *edge != "idle" || *n < committed),
+            "an idle edge after a committed positive: {racing_edges:?} committed={committed}"
+        );
+        assert!(racing_edges.iter().filter(|(e, _)| *e == "idle").count() <= 1);
+        if racing_edges.iter().any(|(e, _)| *e == "idle") {
+            assert_eq!(racing_edges.last().map(|(e, _)| *e), Some("busy"));
+        }
+        assert!(!detector.idle_set.lock().unwrap().contains(&racing));
     }
 }
 

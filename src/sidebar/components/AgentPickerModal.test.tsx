@@ -23,7 +23,7 @@ import type {
   ScopeFault,
   SelectionState,
 } from "../../shared/types";
-import { resolveProfilePreview } from "../../shared/profile-utils";
+import { composeEffectiveCommand, profileCellCommandText, resolveProfilePreview } from "../../shared/profile-utils";
 import { baseSettings } from "../../shared/testing/base-settings";
 import { dispatchPointer, stubAgentRowGeometry } from "./settings/agentReorderDnd.testkit";
 import { sessionsStore } from "../stores/sessions";
@@ -512,6 +512,90 @@ describe("AgentPickerModal", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("round9 picker lifetime stops deferred settings requests after disposal", async () => {
+    let resolveSettings!: (value: AppSettings) => void;
+    const pendingSettings = new Promise<AppSettings>((resolve) => {
+      resolveSettings = resolve;
+    });
+    mockSettingsApi.get.mockReturnValueOnce(pendingSettings);
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    try {
+      expect(mockSettingsApi.get).toHaveBeenCalledTimes(1);
+    } finally {
+      dispose();
+    }
+    const requests = [
+      mockSettingsApi.previewSelectionLockRemoval,
+      mockSettingsApi.previewCodingAgentProfileSelection,
+      mockSettingsApi.getReplicaSelectionDefault,
+      mockSettingsApi.resolveCodingAgentProfile,
+    ];
+    const counts = requests.map((request) => request.mock.calls.length);
+    resolveSettings(currentSettings);
+    // The onMount await was registered first; drain it and queued continuations.
+    await pendingSettings;
+    for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
+    expect(requests.map((request) => request.mock.calls.length)).toEqual(counts);
+    expect(maybe("agentPicker.providers")).toBeNull();
+  });
+
+  it("round9 picker lifetime installs deferred settings while live", async () => {
+    let resolveSettings!: (value: AppSettings) => void;
+    const pendingSettings = new Promise<AppSettings>((resolve) => {
+      resolveSettings = resolve;
+    });
+    mockSettingsApi.get.mockReturnValueOnce(pendingSettings);
+    const { dispose } = renderPicker({
+      agentPath: WG_REPLICA_PATH,
+      scopeContext: WG_SCOPE_CONTEXT,
+      currentRequestedProfile: "A",
+    });
+    try {
+      expect(mockSettingsApi.get).toHaveBeenCalledTimes(1);
+      resolveSettings(currentSettings);
+      await pendingSettings;
+      for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
+      expect(mockSettingsApi.previewSelectionLockRemoval).toHaveBeenCalledWith(
+        expect.objectContaining({ targetReplicaPath: WG_REPLICA_PATH, scope: "replica" }),
+      );
+      expect(mockSettingsApi.previewCodingAgentProfileSelection).toHaveBeenCalledWith(
+        expect.objectContaining({ targetReplicaPath: WG_REPLICA_PATH, codingAgentId: "codex", profile: "A" }),
+      );
+      expect(mockSettingsApi.getReplicaSelectionDefault).toHaveBeenCalledWith({
+        targetReplicaPath: WG_REPLICA_PATH,
+      });
+      expect(mockSettingsApi.resolveCodingAgentProfile).toHaveBeenCalledWith(
+        WG_REPLICA_PATH, "codex", "A",
+      );
+      expect(text("agentPicker.provider.codex")).toContain("Codex");
+      expect(target("agentPicker.profile.A").getAttribute("data-ac-profile-letter")).toBe("A");
+      expect(text("agentPicker.profile.A.pill")).toBe("MATCH");
+    } finally {
+      dispose();
+    }
+  });
+
+  // #3021 - the picker shows only the composed launch preview, still labelled Command.
+  it("keeps the composed Command preview from base and profile text", async () => {
+    const { dispose } = renderPicker();
+    try {
+      await settle();
+      const cell = currentSettings.codingAgentProfiles.profilesByAgent.codex.A;
+      const param = target("agentPicker.profile.A").querySelector(".agent-profile-param")!;
+      const [label, value] = Array.from(param.children).map((child) => child.textContent);
+      expect(label).toBe("Command ");
+      expect(value).toBe(composeEffectiveCommand("codex", profileCellCommandText(cell)));
+      expect(value).toContain("--model gpt-5");
+      expect(target("agentPicker.profiles").textContent).not.toMatch(/Base command|Additional arguments/);
+    } finally {
+      dispose();
+    }
   });
 
   it("renders the selector regions and the scope-picker apply button", async () => {

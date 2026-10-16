@@ -308,6 +308,7 @@ describe("SidebarApp primary-project catalog invalidation (#1966)", () => {
       await projectStore.removeProject(PROJECT_A);
 
       await waitFor(() => expect(codingAgentsStore.generation()).toBeGreaterThan(generation));
+      await waitFor(() => expect(codingAgentsStore.loaded()).toBe(true));
       expect(catalogKeys()).toEqual([]);
       expect(codingAgentsStore.loaded()).toBe(true);
       expect(codingAgentsStore.error()).toBeNull();

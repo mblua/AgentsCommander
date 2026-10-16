@@ -28,8 +28,25 @@ import type {
   PtyScreenSnapshot,
   TypingHoldSnapshot,
   AppSettings,
+  AppSettingsWire,
+  AgentConfig,
+  AgentConfigWire,
+  ProfileCellConfig,
+  ProfileCellConfigWire,
+  CodingAgentProfilesConfigWire,
   MainWindowDisplayState,
   SettingsSnapshot,
+  AgentConfigWireInput,
+  CodingAgentDefinitionWireInput,
+  ProfileCellConfigWireInput,
+  CodingAgentProfilesWireInput,
+  SettingsSnapshotWireInput,
+  CatalogReportWireInput,
+  CodingAgentDefinitionProjection,
+  ProfileCellConfigProjection,
+  CodingAgentProfilesProjection,
+  SettingsSnapshotProjection,
+  CatalogReportProjection,
   MoveCodingAgentDirection,
   MoveCodingAgentRequest,
   ReorderCodingAgentRequest,
@@ -377,9 +394,127 @@ export const PtyAPI = {
     transport.invoke<{ rows: number; cols: number }>("get_pty_size", { sessionId }),
 };
 
+// Frozen selection set W; do not substitute runtime whitespace rules.
+function hasConfigurationContent(value: string): boolean {
+  return /[^\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/u.test(value);
+}
+
+function selectConfigurationText(
+  input: { command?: unknown; baseCommand?: unknown; additionalArguments?: unknown },
+  key: "baseCommand" | "additionalArguments",
+): string | undefined {
+  const hasNew = Object.prototype.hasOwnProperty.call(input, key);
+  const hasOld = Object.prototype.hasOwnProperty.call(input, "command");
+  const current = input[key];
+  const legacy = input.command;
+  if ((hasNew && typeof current !== "string") || (hasOld && typeof legacy !== "string")) {
+    throw new Error("Invalid configuration: command fields must be strings when present.");
+  }
+  if (typeof current === "string" && hasConfigurationContent(current)) return current;
+  if (typeof legacy === "string" && hasConfigurationContent(legacy)) return legacy;
+  if (typeof current === "string") return current;
+  if (typeof legacy === "string") return legacy;
+  return undefined;
+}
+
+function decodeBaseCommand<T extends AgentConfigWireInput | CodingAgentDefinitionWireInput>(
+  input: T,
+): Omit<T, "baseCommand" | "command"> & { command?: string } {
+  const command = selectConfigurationText(input, "baseCommand");
+  if (!Object.prototype.hasOwnProperty.call(input, "baseCommand")) {
+    return input as Omit<T, "baseCommand" | "command"> & { command?: string };
+  }
+  const { baseCommand: _baseCommand, command: _command, ...rest } = input;
+  return command === undefined ? rest : { ...rest, command };
+}
+
+function decodeProfileCell(input: ProfileCellConfigWireInput): ProfileCellConfigProjection {
+  const command = selectConfigurationText(input, "additionalArguments");
+  if (!Object.prototype.hasOwnProperty.call(input, "additionalArguments")) {
+    return input as ProfileCellConfigProjection;
+  }
+  const { additionalArguments: _additionalArguments, command: _command, ...rest } = input;
+  return command === undefined ? rest : { ...rest, command };
+}
+
+function decodeProfiles(input: CodingAgentProfilesWireInput): CodingAgentProfilesProjection {
+  let changed = false;
+  const profilesByAgent = input.profilesByAgent && Object.fromEntries(
+    Object.entries(input.profilesByAgent).map(([agent, cells]) => {
+      let cellsChanged = false;
+      const projected = Object.fromEntries(Object.entries(cells).map(([slot, cell]) => {
+        const decoded = decodeProfileCell(cell);
+        if (decoded !== cell) cellsChanged = true;
+        return [slot, decoded];
+      }));
+      if (cellsChanged) changed = true;
+      return [agent, cellsChanged ? projected : cells as Record<string, ProfileCellConfigProjection>];
+    }),
+  );
+  return changed ? { ...input, profilesByAgent } : input as CodingAgentProfilesProjection;
+}
+
+function decodeSettings(input: SettingsSnapshotWireInput): SettingsSnapshotProjection {
+  const agents = input.agents && input.agents.map(decodeBaseCommand);
+  const agentsChanged = agents?.some((agent, index) => agent !== input.agents![index]);
+  const codingAgentProfiles = input.codingAgentProfiles && decodeProfiles(input.codingAgentProfiles);
+  if (!agentsChanged && codingAgentProfiles === input.codingAgentProfiles) {
+    return input as SettingsSnapshotProjection;
+  }
+  return {
+    ...input,
+    ...(agentsChanged ? { agents } : {}),
+    ...(codingAgentProfiles !== input.codingAgentProfiles ? { codingAgentProfiles } : {}),
+  } as SettingsSnapshotProjection;
+}
+
+function decodeCatalog(input: CodingAgentDefinitionWireInput[]): CodingAgentDefinitionProjection[] {
+  const catalog = input.map(decodeBaseCommand);
+  return catalog.some((row, index) => row !== input[index])
+    ? catalog : input as CodingAgentDefinitionProjection[];
+}
+
+function decodeCatalogReport(input: CatalogReportWireInput): CatalogReportProjection {
+  const catalog = input.catalog && decodeCatalog(input.catalog);
+  return catalog === input.catalog ? input as CatalogReportProjection : { ...input, catalog };
+}
+
+// Outbound configuration writes emit only the canonical keys; internal command
+// members carry effective text and never forward legacy copies.
+function encodeAgent({ command, ...rest }: AgentConfig): AgentConfigWire {
+  return { ...rest, baseCommand: command };
+}
+
+function encodeProfileCell({ command, ...rest }: ProfileCellConfig): ProfileCellConfigWire {
+  return { ...rest, additionalArguments: command };
+}
+
+function encodeProfiles(profiles: CodingAgentProfilesConfig): CodingAgentProfilesConfigWire {
+  return {
+    ...profiles,
+    profilesByAgent: Object.fromEntries(
+      Object.entries(profiles.profilesByAgent).map(([agent, cells]) => [
+        agent,
+        Object.fromEntries(Object.entries(cells).map(([slot, cell]) => [slot, encodeProfileCell(cell)])),
+      ]),
+    ),
+  };
+}
+
+function encodeSettings(settings: AppSettings): AppSettingsWire {
+  return {
+    ...settings,
+    agents: settings.agents.map(encodeAgent),
+    codingAgentProfiles: encodeProfiles(settings.codingAgentProfiles),
+  };
+}
+
 export const CodingAgentsAPI = {
-  getCatalog: () =>
-    transport.invoke<CodingAgentDefinition[]>("get_coding_agent_catalog"),
+  // Trusted complete typed Rust response after field projection; unrelated fields
+  // are not runtime-validated. Partial fake payloads test projection only.
+  getCatalog: (): Promise<CodingAgentDefinition[]> =>
+    transport.invoke<CodingAgentDefinitionWireInput[]>("get_coding_agent_catalog")
+      .then(input => decodeCatalog(input) as CodingAgentDefinition[]),
 
   welcomeStatus: (): Promise<CodingAgentWelcomeStatus[]> =>
     transport.invoke<CodingAgentWelcomeStatus[]>("get_coding_agent_welcome_status"),
@@ -387,8 +522,10 @@ export const CodingAgentsAPI = {
   install: (key: string): Promise<void> =>
     transport.invoke<void>("install_coding_agent", { key }),
 
-  getCatalogReport: () =>
-    transport.invoke<CatalogReport>("get_coding_agent_catalog_report"),
+  // Trusted complete typed Rust response after field projection; unrelated fields
+  // are not runtime-validated. Partial fake payloads test projection only.
+  getCatalogReport: (): Promise<CatalogReport> =>
+    transport.invoke<CatalogReportWireInput>("get_coding_agent_catalog_report").then(input => decodeCatalogReport(input) as CatalogReport),
 
   listReseedableCommands: () =>
     transport.invoke<string[]>("list_reseedable_agent_commands"),
@@ -432,7 +569,11 @@ export const SettingsAPI = {
   // projectPathResolution). update/save-draft still take a plain AppSettings;
   // the extra report field riding along on a round-tripped object is ignored by
   // the backend (non-deny_unknown_fields) and cannot re-pair persisted state.
-  get: () => transport.invoke<SettingsSnapshot>("get_settings"),
+  // Trusted complete typed Rust response after field projection; unrelated fields
+  // are not runtime-validated. Partial fake payloads test projection only.
+  get: (): Promise<SettingsSnapshot> =>
+    transport.invoke<SettingsSnapshotWireInput>("get_settings")
+      .then(input => decodeSettings(input) as SettingsSnapshot),
   /** #2306 P3 - the narrow move command: only the requested adjacent swap is
    *  persisted; the resolved value is the backend's authoritative ordered ids. */
   moveCodingAgent: (request: MoveCodingAgentRequest) =>
@@ -450,9 +591,9 @@ export const SettingsAPI = {
       targetIndex: request.targetIndex,
     }),
   update: (settings: AppSettings) =>
-    transport.invoke<void>("update_settings", { newSettings: settings }),
+    transport.invoke<void>("update_settings", { newSettings: encodeSettings(settings) }),
   saveDraft: (settings: AppSettings) =>
-    transport.invoke<void>("save_settings_draft", { draft: settings }),
+    transport.invoke<void>("save_settings_draft", { draft: encodeSettings(settings) }),
   openWebRemote: () => transport.invoke<void>("open_web_remote"),
   startWebServer: () => transport.invoke<boolean>("start_web_server"),
   stopWebServer: () => transport.invoke<boolean>("stop_web_server"),
@@ -484,7 +625,7 @@ export const SettingsAPI = {
   setLogLevel: (level: LogLevel) =>
     transport.invoke<void>("set_log_level", { level }),
   updateCodingAgentProfiles: (profiles: CodingAgentProfilesConfig) =>
-    transport.invoke<void>("update_coding_agent_profiles", { profiles }),
+    transport.invoke<void>("update_coding_agent_profiles", { profiles: encodeProfiles(profiles) }),
   updateCodingAgentEnvSettings: (
     agentId: string,
     envs: CodingAgentEnv[],
@@ -742,6 +883,12 @@ export const DebugAPI = {
     transport.invoke<void>("save_debug_logs", { content }),
   drainErrorLogs: () =>
     transport.invoke<ErrorLogEntry[]>("drain_error_logs"),
+  /** #3037 - sorted muted error type IDs for this process. */
+  getErrorPopupMutes: () =>
+    transport.invoke<string[]>("get_error_popup_mutes"),
+  /** #3037 - mute/unmute future popups of one type; resolves to sorted muted IDs. */
+  setErrorPopupMuted: (typeId: string, muted: boolean) =>
+    transport.invoke<string[]>("set_error_popup_muted", { typeId, muted }),
 };
 
 export const AutomationAPI = {

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 // #2180 — the non-stop alarm must have exactly one importer.
@@ -22,11 +23,10 @@ import { describe, expect, it } from "vitest";
 const IMPORT_RE = /^\s*(?:import|export)\b[^;]*?\bfrom\s*["']([^"']+)["']/gm;
 const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["']([^"']+)["']/g;
 const SELF = "sidebar/watchdog/no-alarm-import.test.ts";
-const SOURCES = import.meta.glob<string>("../../**/*.{ts,tsx}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-});
+const SOURCES = Object.fromEntries(
+  Object.keys(import.meta.glob("../../**/*.{ts,tsx}"))
+    .map(key => [key, readFileSync(new URL(key, import.meta.url), "utf8")]),
+);
 
 const ALARM_IDENTIFIERS = [
   "playNonStopAlarm",
