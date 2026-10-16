@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,98 @@ use crate::session::session::{SessionInfo, SessionStatus};
 use crate::session::warnings::{emit_session_warning, SessionWarning};
 use crate::web::broadcast::WsBroadcaster;
 use crate::DetachedSessionsState;
+
+#[derive(Clone)]
+pub(crate) struct ResponseCloseRegistration {
+    pub tracker: crate::pty::manager::ResponseCloseState,
+    pub member: crate::pty::manager::ResponseRouteIdentity,
+    pub coordinator: crate::pty::manager::ResponseRouteIdentity,
+    pub carrier: crate::config::sessions_persistence::PublishedCarrier,
+}
+
+fn response_close_registrations() -> &'static Mutex<BTreeMap<Uuid, ResponseCloseRegistration>> {
+    static REGISTRATIONS: OnceLock<Mutex<BTreeMap<Uuid, ResponseCloseRegistration>>> =
+        OnceLock::new();
+    REGISTRATIONS.get_or_init(Default::default)
+}
+
+pub(crate) fn remember_response_close_registration(
+    registration: ResponseCloseRegistration,
+) -> bool {
+    let Ok(mut registrations) = response_close_registrations().lock() else {
+        return false;
+    };
+    registrations.insert(registration.member.session_id, registration);
+    true
+}
+
+pub(crate) fn response_close_registration(id: Uuid) -> Option<ResponseCloseRegistration> {
+    response_close_registrations()
+        .lock()
+        .ok()?
+        .get(&id)
+        .cloned()
+}
+
+pub(crate) fn forget_response_close_registration(id: Uuid) {
+    if let Ok(mut registrations) = response_close_registrations().lock() {
+        registrations.remove(&id);
+    }
+}
+
+fn response_registration_row<'a>(
+    current: &'a crate::session::manager::CarrierSnapshot,
+    identity: &crate::pty::manager::ResponseRouteIdentity,
+) -> Option<&'a crate::session::session::Session> {
+    current.rows.iter().find(|row| {
+        row.id == identity.session_id
+            && row.token == identity.token
+            && row.backend_kind == identity.backend
+            && current.versions.get(&row.id) == Some(&identity.carrier_version)
+            && !current.pending_ids.contains(&row.id)
+            && !matches!(row.status, SessionStatus::Exited(_))
+    })
+}
+
+fn response_registration_route(
+    pty: &Arc<Mutex<PtyManager>>,
+    identity: &crate::pty::manager::ResponseRouteIdentity,
+    row: &crate::session::session::Session,
+) -> bool {
+    let Ok(route) = PtyManager::snapshot_route_proof(pty, identity.session_id) else {
+        return false;
+    };
+    route.backend_kind() == identity.backend
+        && std::path::Path::new(&row.working_directory)
+            == route.saved_cwd().canonical_path.as_path()
+        && route.matches_requester_route(identity.backend, route.saved_cwd(), route.saved_replica())
+}
+
+pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
+    let Some(tracker) = app.try_state::<crate::pty::manager::ResponseCloseState>() else {
+        return;
+    };
+    crate::commands::session::reconcile_response_closes(app).await;
+    let Some(coordinator) = app.try_state::<SelectionCoordinator>() else {
+        return;
+    };
+    let registrations = response_close_registrations()
+        .lock()
+        .ok()
+        .map(|registrations| registrations.values().cloned().collect::<Vec<_>>());
+    let Some(registrations) = registrations else {
+        return;
+    };
+    for registration in registrations {
+        if !registration.tracker.same_state(&tracker) {
+            continue;
+        }
+        if registration.member.backend != crate::pty::backend::SessionBackendKind::LocalProcess {
+            continue;
+        }
+        let _ = coordinator.try_response_close(app, &registration).await;
+    }
+}
 
 const COORDINATOR_QUEUE_CAPACITY: usize = 64;
 const COORDINATOR_ADMISSION_CAPACITY: usize = 65;
@@ -791,6 +883,7 @@ pub enum CriticalAdmissionKind {
     RouteLoss,
     WatchdogKill,
     BackgroundCleanup,
+    ResponseClose,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1101,14 +1194,32 @@ impl SelectionRequest {
 
 #[derive(Debug)]
 struct FinalizeCreateRequest {
+    owned_replacement: Option<OwnedReplacementContinuation>,
     binding: PendingCreateBinding,
     cause: SelectionCause,
     auto_select_precondition: Option<(String, u64)>,
     warnings: Vec<SessionWarning>,
 }
 
+struct ConditionalResponseClose {
+    ticket: crate::pty::manager::ResponseCloseTicket,
+}
+
+impl fmt::Debug for ConditionalResponseClose {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConditionalResponseClose")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug)]
 enum CoordinatorJob {
+    #[cfg(test)]
+    InlineReplacementFixture {
+        input: crate::commands::session::FixtureReplacementInput,
+        control: Arc<ReplacementFixtureControl>,
+        response: oneshot::Sender<crate::commands::session::FixtureReplacementResult>,
+    },
     Transition {
         request: SelectionRequest,
         response: oneshot::Sender<Result<Option<SessionSelection>, String>>,
@@ -1128,15 +1239,20 @@ enum CoordinatorJob {
         exit_code: i32,
         response: oneshot::Sender<Result<(), String>>,
     },
+    ConditionalResponseClose {
+        request: ConditionalResponseClose,
+    },
     Destroy {
         request: crate::commands::session::DestroyRequest,
         response: oneshot::Sender<Result<crate::commands::session::DestroyOutcome, String>>,
     },
     RestartLifecycle {
+        entry: OwnedLifecycleEntry,
         request: crate::commands::session::RestartJobRequest,
         response: oneshot::Sender<Result<SessionInfo, String>>,
     },
     RootLifecycle {
+        entry: OwnedLifecycleEntry,
         request: crate::commands::session::RootJobRequest,
         response: oneshot::Sender<Result<SessionInfo, String>>,
     },
@@ -1156,6 +1272,7 @@ enum CoordinatorJob {
         response: oneshot::Sender<Result<(), String>>,
     },
     RestoreBarrier {
+        nonce: Uuid,
         started: oneshot::Sender<()>,
         release: oneshot::Receiver<()>,
     },
@@ -1215,7 +1332,3303 @@ impl EnvelopeHold {
     }
 }
 
+/// A canceled admission must not strand startup in Restoring. Never overwrite
+/// a concurrent Closing transition when returning the unaccepted admission.
+struct RestoreSubmissionPhaseGuard<'a> {
+    phase: &'a AtomicU8,
+}
+
+impl Drop for RestoreSubmissionPhaseGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.phase.compare_exchange(
+            CoordinatorPhase::Restoring as u8,
+            CoordinatorPhase::Bootstrapping as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+/// Constructed only by the owned continuation after its initial B receipt and
+/// the current A/Preparing/launch relation have been checked under the same U.
+/// This capability never lives in an owner record or a serialized value.
+pub(super) struct FinalizedOwnedCarryCapability {
+    owner: Arc<ReplacementOwner>,
+    operation: Uuid,
+    preparing_nonce: Uuid,
+    previous: Uuid,
+    binding: PendingCreateBinding,
+    token: Uuid,
+    expected_version: u64,
+    telegram_bot_id: Option<String>,
+    communication: Option<crate::session::session::SessionCommunication>,
+    start_fresh_on_restore: bool,
+}
+
+impl FinalizedOwnedCarryCapability {
+    pub(super) fn bound_operation(&self) -> bool {
+        self.operation == self.owner.operation
+            && self.preparing_nonce == self.operation
+            && self.previous != self.binding.session_id()
+    }
+    pub(super) fn session_id(&self) -> Uuid {
+        self.binding.session_id()
+    }
+    pub(super) fn token(&self) -> Uuid {
+        self.token
+    }
+    pub(super) fn expected_version(&self) -> u64 {
+        self.expected_version
+    }
+    pub(super) fn telegram_bot_id(&self) -> &Option<String> {
+        &self.telegram_bot_id
+    }
+    pub(super) fn communication(&self) -> &Option<crate::session::session::SessionCommunication> {
+        &self.communication
+    }
+    pub(super) fn start_fresh_on_restore(&self) -> bool {
+        self.start_fresh_on_restore
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum FinalizedOwnedCarryOutcome {
+    Applied,
+    Recapture,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum OwnedReplacementWork {
+    OrdinaryOwned {
+        message_id: String,
+        body: String,
+        payload: serde_json::Value,
+        recipient: String,
+        request: serde_json::Value,
+    },
+    PtyDurableReference {
+        version: u32,
+        injection_id: String,
+        op_id: String,
+        sender: String,
+        target: String,
+        source_plane: String,
+        payload_sha256: String,
+        payload_bytes: u64,
+        issued_at: String,
+        expires_at: String,
+        queued_at: String,
+        lease_owner: String,
+        attempt: i64,
+        authority_session_id: String,
+        authority_client_id: Option<String>,
+        authority_client_generation: Option<String>,
+        sender_identity_fingerprint: String,
+        target_identity_fingerprint: String,
+        requested_agent_id: Option<String>,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) struct ResolvedReplacement {
+    pub(crate) target: String,
+    pub(crate) directory: std::path::PathBuf,
+    pub(crate) previous: crate::session::session::Session,
+    pub(crate) carrier: crate::config::sessions_persistence::PublishedCarrier,
+    pub(crate) requested_agent_id: Option<String>,
+    pub(crate) requested_profile: Option<String>,
+    pub(crate) shell: String,
+    pub(crate) shell_args: Vec<String>,
+    pub(crate) launch_recipe: serde_json::Value,
+    pub(crate) cwd: String,
+    pub(crate) backend: crate::pty::backend::SessionBackendKind,
+    pub(crate) work: OwnedReplacementWork,
+    pub(crate) cwd_identity: crate::path_identity::VerifiedPathIdentity,
+    pub(crate) replica_identity: Option<crate::path_identity::VerifiedPathIdentity>,
+}
+
+impl fmt::Debug for ResolvedReplacement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedReplacement")
+            .field("target", &self.target)
+            .field("previous", &self.previous.id)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
+struct OwnedLaunchReceipt {
+    operation: Uuid,
+    preparing_nonce: Uuid,
+    binding: PendingCreateBinding,
+    token: Uuid,
+    generation: u64,
+    backend: crate::pty::backend::SessionBackendKind,
+    info: SessionInfo,
+    cwd_identity: crate::path_identity::VerifiedPathIdentity,
+    replica_identity: Option<crate::path_identity::VerifiedPathIdentity>,
+}
+
+struct InitialFinalizationReceipt {
+    operation: Uuid,
+    preparing_nonce: Uuid,
+    binding: PendingCreateBinding,
+    token: Uuid,
+    carrier_version: u64,
+    launch_generation: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplacementCleanupAuthority {
+    Executor(Uuid),
+    Claimed(Uuid),
+    Disarmed,
+    Unknown,
+}
+
+struct ReplacementProgress {
+    source_executor: SourceExecutorObservation,
+    current_previous: crate::session::session::Session,
+    launch_start_fresh: Option<bool>,
+    previous_carrier: crate::config::sessions_persistence::PublishedCarrier,
+    binding: PendingCreateBinding,
+    preparing_nonce: Uuid,
+    committed: Option<CommitResult>,
+    warnings: Vec<SessionWarning>,
+    activity_started: bool,
+    activity_completed: bool,
+    initial_b: Option<InitialFinalizationReceipt>,
+    launch: Option<OwnedLaunchReceipt>,
+    current_checkpoint: Option<crate::config::sessions_persistence::PublishedCarrier>,
+    first_checkpoint: Option<crate::config::sessions_persistence::PublishedCarrier>,
+    pending_carrier: Option<crate::config::sessions_persistence::PublishedCarrier>,
+    retirement_result: Option<CommitResult>,
+    retirement_cleanup_completed: bool,
+    preparing_released: bool,
+    create_failed: bool,
+    rollback_completed: bool,
+    create_reservation: Option<crate::pty::manager::CreateOwnerReservation>,
+    work_reservation: Option<crate::pty::manager::WorkDeliveryReservation>,
+    tracker: Option<crate::pty::manager::ResponseCloseState>,
+    accepted_work: OwnedReplacementWork,
+    cleanup: ReplacementCleanupAuthority,
+    preparing_started: bool,
+    retired: bool,
+    work_transferred: bool,
+    reservations_released: bool,
+    terminal_verified: bool,
+    source_stop: Option<OwnedSourceStop>,
+    context_prerequisite: Option<OwnedEffectState>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceExecutorObservation {
+    NotStarted,
+    Active,
+    Stopped,
+    Returned { failed: bool },
+}
+
+/// Lexical observation of the accepted producer, never of its outer waiter.
+/// This handle is transient; the retained owner stores only the observation.
+pub(crate) struct SourceExecutorGuard {
+    bound: Option<(Arc<ReplacementOwner>, Uuid)>,
+    returned: bool,
+}
+
+impl SourceExecutorGuard {
+    pub(crate) fn unbound() -> Self {
+        Self {
+            bound: None,
+            returned: false,
+        }
+    }
+
+    pub(crate) fn bind(&mut self, continuation: &OwnedReplacementContinuation) -> bool {
+        if let Some((owner, nonce)) = &self.bound {
+            return Arc::ptr_eq(owner, &continuation.owner)
+                && *nonce == continuation.executor_nonce;
+        }
+        let Ok(mut state) = continuation.owner.state.lock() else {
+            return false;
+        };
+        if state.executor_nonce != continuation.executor_nonce {
+            return false;
+        }
+        let Some(progress) = state.replacement.as_mut() else {
+            return false;
+        };
+        if progress.source_executor != SourceExecutorObservation::NotStarted {
+            return false;
+        }
+        progress.source_executor = SourceExecutorObservation::Active;
+        self.bound = Some((continuation.owner.clone(), continuation.executor_nonce));
+        true
+    }
+
+    pub(crate) fn returned(&mut self, failed: bool) {
+        let Some((owner, nonce)) = &self.bound else {
+            return;
+        };
+        let Ok(mut state) = owner.state.lock() else {
+            return;
+        };
+        if state.executor_nonce != *nonce {
+            return;
+        }
+        let Some(progress) = state.replacement.as_mut() else {
+            return;
+        };
+        if progress.source_executor == SourceExecutorObservation::Active {
+            progress.source_executor = SourceExecutorObservation::Returned { failed };
+            self.returned = true;
+        }
+    }
+}
+
+impl Drop for SourceExecutorGuard {
+    fn drop(&mut self) {
+        if self.returned {
+            return;
+        }
+        let Some((owner, nonce)) = &self.bound else {
+            return;
+        };
+        if let Ok(mut state) = owner.state.lock() {
+            if state.executor_nonce == *nonce {
+                if let Some(progress) = state.replacement.as_mut() {
+                    if progress.source_executor == SourceExecutorObservation::Active {
+                        progress.source_executor = SourceExecutorObservation::Stopped;
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum PendingCleanupEvidence<'a> {
+    ActualSetupFailure(&'a str),
+    ObservedSourceStoppedOrReturnedFailure,
+}
+
+/// A transient handle to the same data-only owner retained by CoordinatorInner.
+/// No app, backend, guard, task or future returns from that root.
+#[derive(Clone)]
+pub(crate) struct OwnedReplacementContinuation {
+    owner: Arc<ReplacementOwner>,
+    coordinator: Weak<CoordinatorInner>,
+    executor_nonce: Uuid,
+    // Transient executor/request only. ReplacementOwner never stores this
+    // callback, its app captures, or the future it creates.
+    source_validation: Option<OwnedSourceValidation>,
+    #[cfg(test)]
+    fixture: Option<Arc<ReplacementFixtureControl>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplacementFixtureCut {
+    TicketSubmitted,
+    TicketDrained,
+    BeforeTerminalRemoval,
+    SourceRetainedReturn,
+    Inserted,
+    BeforeSourceValidation,
+    BeforeBackendSpawn,
+    ContextNativeEnter,
+    ContextNativeReturned,
+    SeedNativeEnter,
+    SeedNativeReturned,
+    SourceCoreEntered,
+    BeforeFinalizer,
+    BeforeCommit,
+    AfterDisarm,
+    BeforeCarry,
+    BeforePublication,
+    PublicationPrepared,
+    BeforeRetirement,
+    AdapterOutcomeBeforeLeaseDrop,
+    AfterReleaseBeforeSend,
+    Submitted,
+    SubmitFailed,
+    Baseline,
+    AdapterReturned,
+    AdmissionReleased,
+    SourceReceived,
+    GateLost,
+    Drained,
+    ReceiverLost,
+    WorkerEntered,
+    WorkerUnwound,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) enum ReplacementFixtureAction {
+    Pause {
+        cut: ReplacementFixtureCut,
+        resume: oneshot::Receiver<()>,
+    },
+    PanicOnce {
+        cut: ReplacementFixtureCut,
+    },
+    CommitBeforeDisarmPanicOnce,
+    FixtureStopExactB,
+    SimulatedPrecommitFailure,
+    BindPreparedTwice,
+    PublicationLeaf(crate::config::sessions_persistence::FixturePublicationActionKind),
+}
+
+#[cfg(test)]
+struct ReplacementFixtureEnvelopeTrace<'a> {
+    hold: &'a mut EnvelopeHold,
+    control: &'a ReplacementFixtureControl,
+    owned: &'a OwnedReplacementContinuation,
+    released: bool,
+    outcome: Option<ReplacementFixtureOutcome>,
+}
+
+#[cfg(test)]
+impl ReplacementFixtureEnvelopeTrace<'_> {
+    fn release(&mut self) {
+        self.hold.release();
+        self.released = true;
+        self.control.record_outcome(
+            self.owned,
+            ReplacementFixtureCut::AdmissionReleased,
+            self.outcome,
+        );
+    }
+}
+
+#[cfg(test)]
+impl Drop for ReplacementFixtureEnvelopeTrace<'_> {
+    fn drop(&mut self) {
+        if !self.released {
+            self.control
+                .record(self.owned, ReplacementFixtureCut::WorkerUnwound);
+            self.release();
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplacementFixtureOutcome {
+    Finalized,
+    Retained,
+    Error,
+}
+
+#[cfg(test)]
+pub(crate) struct ReplacementFixtureOwnerWeak(Weak<ReplacementOwner>);
+
+#[cfg(test)]
+impl ReplacementFixtureOwnerWeak {
+    pub(crate) fn is_alive(&self) -> bool {
+        self.0.upgrade().is_some()
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ReplacementFixtureOwnerObservation {
+    pub(crate) source_stop: Option<OwnedSourceStop>,
+    pub(crate) source_unwound: bool,
+    pub(crate) source_stopped: bool,
+    pub(crate) source_active: bool,
+    pub(crate) cleanup_disarmed: bool,
+    pub(crate) cleanup_claimed: bool,
+    pub(crate) rollback_completed: bool,
+    pub(crate) initial_version: Option<u64>,
+    pub(crate) terminal: bool,
+    pub(crate) transferred: bool,
+    pub(crate) carry_attempts: usize,
+    pub(crate) carry_recaptured: bool,
+    pub(crate) effects_started: usize,
+    pub(crate) rename_failed: bool,
+    pub(crate) checkpoint_confirmed: bool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReplacementFixtureReceipt {
+    pub(crate) operation: Uuid,
+    pub(crate) binding: Option<PendingCreateBinding>,
+    pub(crate) cut: ReplacementFixtureCut,
+    pub(crate) initial_version: Option<u64>,
+    pub(crate) outcome: Option<ReplacementFixtureOutcome>,
+}
+
+/// Per-operation observations only. Neither these gates nor their receipts
+/// participate in product authority or alter common finalizer accounting.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct ReplacementFixtureControl {
+    pub(crate) restoration_failed: std::sync::atomic::AtomicBool,
+    pub(crate) restoration_shared: std::sync::atomic::AtomicBool,
+    pub(crate) preaccept_identity: Mutex<Option<String>>,
+    pub(crate) preaccept_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    pub(crate) preaccept_entered: std::sync::atomic::AtomicBool,
+    pub(crate) accepted_core_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    pub(crate) accepted_core_entered: std::sync::atomic::AtomicBool,
+    pub(crate) native_results: Mutex<Vec<(ReplacementFixtureCut, String)>>,
+    pub(crate) source_panic: Mutex<Option<oneshot::Receiver<()>>>,
+    pub(crate) live_receiver_drop: Mutex<Option<oneshot::Receiver<()>>>,
+    pub(crate) actions: Mutex<Vec<ReplacementFixtureAction>>,
+    pub(crate) mock_backend: std::sync::atomic::AtomicBool,
+    identity: Mutex<Option<(Uuid, Uuid, PendingCreateBinding)>>,
+    pub(crate) receipts: Mutex<Vec<ReplacementFixtureReceipt>>,
+    pub(crate) baseline_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    pub(crate) before_release_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    pub(crate) submitted: std::sync::atomic::AtomicBool,
+    pub(crate) received: std::sync::atomic::AtomicBool,
+    pub(crate) drop_receiver: std::sync::atomic::AtomicBool,
+    pub(crate) ticket_only: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+pub(crate) struct ReplacementFixtureNativeInvocation {
+    control: Arc<ReplacementFixtureControl>,
+    identity: (Uuid, Uuid, PendingCreateBinding),
+    enter: ReplacementFixtureCut,
+    returned: ReplacementFixtureCut,
+}
+
+#[cfg(test)]
+impl ReplacementFixtureNativeInvocation {
+    fn reached(&self, cut: ReplacementFixtureCut) {
+        assert_eq!(
+            *self.control.identity.lock().expect("native identity"),
+            Some(self.identity)
+        );
+        self.control
+            .receipts
+            .lock()
+            .expect("native receipt")
+            .push(ReplacementFixtureReceipt {
+                operation: self.identity.0,
+                binding: Some(self.identity.2),
+                cut,
+                initial_version: None,
+                outcome: None,
+            });
+        let action = {
+            let mut actions = self.control.actions.lock().expect("native fixture actions");
+            actions
+                .iter()
+                .position(|action| {
+                    matches!(action,
+                ReplacementFixtureAction::Pause { cut: selected, .. } |
+                ReplacementFixtureAction::PanicOnce { cut: selected } if *selected == cut)
+                })
+                .map(|position| actions.remove(position))
+        };
+        match action {
+            Some(ReplacementFixtureAction::Pause { resume, .. }) => {
+                resume
+                    .blocking_recv()
+                    .expect("native fixture observer lost");
+            }
+            Some(ReplacementFixtureAction::PanicOnce { .. }) => {
+                panic!("selected native fixture unwind at {cut:?}")
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn enter(&self) {
+        self.reached(self.enter);
+    }
+
+    pub(crate) fn returned(&self, actual: String) {
+        self.control
+            .native_results
+            .lock()
+            .expect("native fixture result")
+            .push((self.returned, actual));
+        self.reached(self.returned);
+    }
+}
+
+#[cfg(test)]
+impl ReplacementFixtureControl {
+    pub(crate) async fn after_pty_core_accept(&self, source_identity: &str) -> bool {
+        assert_eq!(
+            self.preaccept_identity
+                .lock()
+                .expect("source identity")
+                .as_deref(),
+            Some(source_identity)
+        );
+        self.accepted_core_entered.store(true, Ordering::Release);
+        Self::wait_gate(&self.accepted_core_gate).await
+    }
+
+    pub(crate) async fn before_source_accept(&self, source_identity: &str) -> bool {
+        {
+            let mut identity = self
+                .preaccept_identity
+                .lock()
+                .expect("preaccept source identity");
+            if let Some(expected) = identity.as_ref() {
+                assert_eq!(expected, source_identity);
+            } else {
+                *identity = Some(source_identity.to_owned());
+            }
+        }
+        self.preaccept_entered.store(true, Ordering::Release);
+        Self::wait_gate(&self.preaccept_gate).await
+    }
+    fn owner(&self, coordinator: &SelectionCoordinator) -> Option<Arc<ReplacementOwner>> {
+        let operation = self.identity.lock().ok()?.as_ref()?.0;
+        coordinator
+            .inner
+            .retained_replacements
+            .lock()
+            .ok()?
+            .entries
+            .get(&operation)
+            .cloned()
+    }
+
+    pub(crate) fn owner_weak(
+        &self,
+        coordinator: &SelectionCoordinator,
+    ) -> Option<ReplacementFixtureOwnerWeak> {
+        Some(ReplacementFixtureOwnerWeak(Arc::downgrade(
+            &self.owner(coordinator)?,
+        )))
+    }
+
+    pub(crate) fn observe_owner(
+        &self,
+        coordinator: &SelectionCoordinator,
+    ) -> Option<ReplacementFixtureOwnerObservation> {
+        let owner = self.owner(coordinator)?;
+        let state = owner.state.lock().ok()?;
+        let progress = state.replacement.as_ref()?;
+        Some(ReplacementFixtureOwnerObservation {
+            source_stop: progress.source_stop,
+            source_unwound: progress.source_executor == SourceExecutorObservation::Stopped,
+            source_stopped: matches!(
+                progress.source_executor,
+                SourceExecutorObservation::Stopped
+                    | SourceExecutorObservation::Returned { failed: true }
+            ),
+            source_active: progress.source_executor == SourceExecutorObservation::Active,
+            cleanup_disarmed: progress.cleanup == ReplacementCleanupAuthority::Disarmed,
+            cleanup_claimed: matches!(progress.cleanup, ReplacementCleanupAuthority::Claimed(_)),
+            rollback_completed: progress.rollback_completed,
+            initial_version: progress
+                .initial_b
+                .as_ref()
+                .map(|initial| initial.carrier_version),
+            terminal: state.replacement_terminal_is_verified(),
+            transferred: progress.work_transferred,
+            carry_attempts: usize::from(!matches!(
+                state.effects[LifecycleEffectSlot::Carry as usize],
+                OwnedEffectState::NotStarted
+            )),
+            carry_recaptured: matches!(&state.effects[LifecycleEffectSlot::Carry as usize],
+                OwnedEffectState::Completed { outcome: Err(error), .. } if error == "carry recapture: newer B preserved"),
+            effects_started: state
+                .effects
+                .iter()
+                .filter(|effect| !matches!(effect, OwnedEffectState::NotStarted))
+                .count(),
+            rename_failed: matches!(
+                &state.effects[LifecycleEffectSlot::CarrierRename as usize],
+                OwnedEffectState::Completed {
+                    outcome: Err(_),
+                    ..
+                }
+            ),
+            checkpoint_confirmed: progress.first_checkpoint.is_some(),
+        })
+    }
+
+    pub(crate) fn attempt_duplicate(
+        &self,
+        coordinator: &SelectionCoordinator,
+    ) -> Result<(), String> {
+        let owner = self
+            .owner(coordinator)
+            .ok_or_else(|| "fixture owner absent".to_string())?;
+        coordinator.insert_lifecycle_entry(&owner)
+    }
+
+    pub(crate) fn poison_observed_owner(&self, coordinator: &SelectionCoordinator) {
+        let owner = self.owner(coordinator).expect("actual observed owner");
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _state = owner.state.lock().expect("initially readable owner state");
+            panic!("selected actual owner observation poison");
+        }));
+        assert!(panic.is_err());
+        assert!(owner.state.is_poisoned());
+    }
+    #[cfg(test)]
+    pub(crate) fn cleanup_observed_stopped<'a>(
+        &'a self,
+        coordinator: &'a SelectionCoordinator,
+        manager: &'a SessionManager,
+        pty: &'a Arc<Mutex<PtyManager>>,
+    ) -> impl std::future::Future<Output = bool> + 'a {
+        let owner = self
+            .identity
+            .lock()
+            .ok()
+            .and_then(|identity| *identity)
+            .and_then(|(operation, nonce, _)| {
+                let root = coordinator.inner.retained_replacements.lock().ok()?;
+                let owner = root.entries.get(&operation)?.clone();
+                Some((owner, nonce))
+            });
+        async move {
+            let Some((owner, executor_nonce)) = owner else {
+                return false;
+            };
+            OwnedReplacementContinuation {
+                owner,
+                coordinator: Arc::downgrade(&coordinator.inner),
+                executor_nonce,
+                source_validation: None,
+                fixture: None,
+            }
+            .cleanup_stopped_source(manager, pty)
+            .await
+        }
+    }
+    async fn receive<T>(
+        &self,
+        owned: &OwnedReplacementContinuation,
+        receiver: oneshot::Receiver<T>,
+    ) -> Option<T> {
+        self.validate_identity(owned);
+        let panic = self
+            .source_panic
+            .lock()
+            .expect("source panic control")
+            .take();
+        let drop_receiver = self
+            .live_receiver_drop
+            .lock()
+            .expect("receiver control")
+            .take();
+        async fn signal(receiver: Option<oneshot::Receiver<()>>) {
+            if let Some(receiver) = receiver {
+                if receiver.await.is_ok() {
+                    return;
+                }
+            }
+            std::future::pending::<()>().await;
+        }
+        tokio::select! {
+            result = receiver => result.ok(),
+            () = signal(panic) => panic!("selected actual source response-wait unwind"),
+            () = signal(drop_receiver) => None,
+        }
+    }
+    fn validate_identity(&self, owned: &OwnedReplacementContinuation) {
+        if owned.owner.state.is_poisoned() {
+            // An unknown-proof fixture must not turn a real poisoned owner
+            // into a second panic from a trace Drop. Check the immutable
+            // operation/executor against the already-bound observation only;
+            // record_outcome honestly leaves binding/version absent. This
+            // observation grants no finalization or cleanup authority.
+            let expected = self
+                .identity
+                .lock()
+                .expect("fixture identity")
+                .expect("identity was bound before owner poison");
+            assert_eq!(expected.0, owned.owner.operation);
+            assert_eq!(expected.1, owned.executor_nonce);
+            return;
+        }
+        let identity = (
+            owned.owner.operation,
+            owned.executor_nonce,
+            owned.binding().expect("fixture actual B binding"),
+        );
+        let mut expected = self.identity.lock().expect("fixture identity");
+        match *expected {
+            Some(expected) => assert_eq!(identity, expected, "fixture operation/B mismatch"),
+            None => *expected = Some(identity),
+        }
+    }
+
+    fn take_action(
+        &self,
+        owned: &OwnedReplacementContinuation,
+        select: impl Fn(&ReplacementFixtureAction) -> bool,
+    ) -> Option<ReplacementFixtureAction> {
+        self.validate_identity(owned);
+        let mut actions = self.actions.lock().expect("fixture actions");
+        let position = actions.iter().position(select)?;
+        Some(actions.remove(position))
+    }
+
+    async fn reached(
+        &self,
+        owned: &OwnedReplacementContinuation,
+        cut: ReplacementFixtureCut,
+    ) -> bool {
+        let action = self.take_action(owned, |action| {
+            matches!(action,
+            ReplacementFixtureAction::Pause { cut: selected, .. } |
+            ReplacementFixtureAction::PanicOnce { cut: selected } if *selected == cut)
+        });
+        self.record(owned, cut);
+        match action {
+            Some(ReplacementFixtureAction::Pause { resume, .. }) => resume.await.is_ok(),
+            Some(ReplacementFixtureAction::PanicOnce { .. }) => {
+                panic!("selected fixture unwind at {cut:?}")
+            }
+            _ => true,
+        }
+    }
+    pub(crate) fn observe_retained(
+        &self,
+        coordinator: &SelectionCoordinator,
+    ) -> Option<(bool, bool, bool, bool, usize)> {
+        let operation = self.receipts.lock().ok()?.last()?.operation;
+        let owner = coordinator
+            .inner
+            .retained_replacements
+            .lock()
+            .ok()?
+            .entries
+            .get(&operation)?
+            .clone();
+        let state = owner.state.lock().ok()?;
+        Some((
+            state.publication_observed,
+            state.envelope_released,
+            !matches!(
+                state.effects[LifecycleEffectSlot::WorkTransfer as usize],
+                OwnedEffectState::NotStarted
+            ),
+            state.replacement.as_ref()?.work_transferred,
+            COORDINATOR_ADMISSION_CAPACITY - coordinator.inner.admission.available_permits(),
+        ))
+    }
+
+    fn record(&self, owned: &OwnedReplacementContinuation, cut: ReplacementFixtureCut) {
+        self.record_outcome(owned, cut, None);
+    }
+
+    fn record_outcome(
+        &self,
+        owned: &OwnedReplacementContinuation,
+        cut: ReplacementFixtureCut,
+        outcome: Option<ReplacementFixtureOutcome>,
+    ) {
+        self.validate_identity(owned);
+        let receipt = ReplacementFixtureReceipt {
+            operation: owned.owner.operation,
+            binding: owned.binding(),
+            cut,
+            outcome,
+            initial_version: owned.owner.state.lock().ok().and_then(|state| {
+                state
+                    .replacement
+                    .as_ref()?
+                    .initial_b
+                    .as_ref()
+                    .map(|initial| initial.carrier_version)
+            }),
+        };
+        self.receipts
+            .lock()
+            .expect("fixture receipt lock")
+            .push(receipt);
+    }
+
+    async fn wait_gate(gate: &Mutex<Option<oneshot::Receiver<()>>>) -> bool {
+        let receiver = gate.lock().expect("fixture gate lock").take();
+        match receiver {
+            Some(receiver) => receiver.await.is_ok(),
+            None => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnedSourceStop {
+    Terminal,
+    AuthorityChanged,
+    StoreTransient,
+    Expired,
+    LeaseLost,
+}
+
+pub(crate) type OwnedSourceValidation = Arc<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), OwnedSourceStop>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+pub(crate) struct PreparedOwnedReplacement {
+    owner: Arc<ReplacementOwner>,
+    executor_nonce: Uuid,
+}
+
+pub(crate) enum ReplacementAdmissionStep {
+    Waiting(PreparedOwnedReplacement),
+    Accepted(OwnedReplacementContinuation),
+}
+
+impl PreparedOwnedReplacement {
+    pub(crate) fn matches_launch(
+        &self,
+        shell: &str,
+        args: &[String],
+        cwd: &str,
+        agent: &Option<String>,
+        recipe: &serde_json::Value,
+    ) -> bool {
+        matches!(&self.owner.descriptor, OwnedReplacementDescriptor::Replacement(descriptor)
+            if descriptor.shell == shell && descriptor.shell_args == args
+                && descriptor.cwd == cwd && descriptor.requested_agent_id == *agent
+                && descriptor.launch_recipe == *recipe
+                && descriptor.backend == crate::pty::backend::SessionBackendKind::LocalProcess)
+    }
+}
+
+impl OwnedReplacementContinuation {
+    #[cfg(test)]
+    pub(crate) fn fixture_inserted(&self) {
+        if let Some(control) = self.fixture.as_ref() {
+            control.record(self, ReplacementFixtureCut::Inserted);
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture_native(&self, seed: bool) -> Option<ReplacementFixtureNativeInvocation> {
+        let control = self.fixture.as_ref()?;
+        control.validate_identity(self);
+        Some(ReplacementFixtureNativeInvocation {
+            control: control.clone(),
+            identity: (
+                self.owner.operation,
+                self.executor_nonce,
+                self.binding().expect("actual native B"),
+            ),
+            enter: if seed {
+                ReplacementFixtureCut::SeedNativeEnter
+            } else {
+                ReplacementFixtureCut::ContextNativeEnter
+            },
+            returned: if seed {
+                ReplacementFixtureCut::SeedNativeReturned
+            } else {
+                ReplacementFixtureCut::ContextNativeReturned
+            },
+        })
+    }
+    #[cfg(test)]
+    pub(crate) async fn fixture_reached(&self, cut: ReplacementFixtureCut) -> bool {
+        match &self.fixture {
+            Some(control) => control.reached(self, cut).await,
+            None => true,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_bind_twice(&self) -> bool {
+        self.fixture
+            .as_ref()
+            .and_then(|control| {
+                control.take_action(self, |action| {
+                    matches!(action, ReplacementFixtureAction::BindPreparedTwice)
+                })
+            })
+            .is_some()
+    }
+    #[cfg(test)]
+    pub(crate) fn with_fixture_control(mut self, control: Arc<ReplacementFixtureControl>) -> Self {
+        self.fixture = Some(control);
+        self
+    }
+    fn reservation_release_is_observed(&self, pty: &Arc<Mutex<PtyManager>>) -> bool {
+        let tracker = self
+            .owner
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.replacement.as_ref()?.tracker.clone());
+        let Some(tracker) = tracker else {
+            return false;
+        };
+        pty.try_lock().ok().is_some_and(|pty| {
+            pty.response_close_state().same_state(&tracker) && tracker.publishers_bound()
+        })
+    }
+
+    pub(crate) async fn validate_pre_effect_region(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> bool {
+        if !self.validate_source().await {
+            return false;
+        }
+        let tracker = match pty.try_lock() {
+            Ok(pty) => pty.response_close_state(),
+            Err(_) => return false,
+        };
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                self.validate_create_region(&permit, current, &tracker, pty)
+            })
+            .await
+    }
+
+    pub(crate) fn note_retained_work(&self, reason: String) {
+        if let Ok(mut state) = self.owner.state.lock() {
+            state.retained_reason = Some(reason);
+        }
+    }
+    pub(crate) fn preserve_context_prerequisite(&self) -> bool {
+        let Ok(mut state) = self.owner.state.lock() else {
+            return false;
+        };
+        if state.executor_nonce != self.executor_nonce
+            || state.stage != ReplacementStage::Admitted
+            || !matches!(
+                state.effects[LifecycleEffectSlot::ContextPreparation as usize],
+                OwnedEffectState::Completed { .. }
+            )
+            || state
+                .replacement
+                .as_ref()
+                .is_none_or(|progress| progress.context_prerequisite.is_some())
+        {
+            return false;
+        }
+        let receipt = std::mem::replace(
+            &mut state.effects[LifecycleEffectSlot::ContextPreparation as usize],
+            OwnedEffectState::NotStarted,
+        );
+        if let Some(progress) = state.replacement.as_mut() {
+            progress.context_prerequisite = Some(receipt);
+        }
+        true
+    }
+    pub(crate) fn with_source_validation(mut self, validation: OwnedSourceValidation) -> Self {
+        self.source_validation = Some(validation);
+        self
+    }
+
+    pub(crate) fn source_stop(&self) -> Option<OwnedSourceStop> {
+        self.owner
+            .state
+            .lock()
+            .ok()?
+            .replacement
+            .as_ref()?
+            .source_stop
+    }
+
+    pub(crate) async fn validate_source(&self) -> bool {
+        if self.source_stop().is_some() {
+            return false;
+        }
+        let result = match self.source_validation.as_ref() {
+            Some(validate) => validate().await,
+            None => Err(OwnedSourceStop::StoreTransient),
+        };
+        if let Err(reason) = result {
+            if let Ok(mut state) = self.owner.state.lock() {
+                if let Some(progress) = state.replacement.as_mut() {
+                    progress.source_stop.get_or_insert(reason);
+                }
+                state.retained_reason = Some(format!("replacement source stopped: {reason:?}"));
+            }
+            return false;
+        }
+        self.source_stop().is_none()
+    }
+    pub(crate) fn operation(&self) -> Uuid {
+        self.owner.operation
+    }
+    pub(crate) fn binding(&self) -> Option<PendingCreateBinding> {
+        let state = self.owner.state.lock().ok()?;
+        (state.executor_nonce == self.executor_nonce).then_some(state.replacement.as_ref()?.binding)
+    }
+    pub(crate) fn previous_for_launch(
+        &self,
+        _permit: &crate::session::manager::CarrierMutationPermit,
+    ) -> Option<crate::session::session::Session> {
+        let mut state = self.owner.state.lock().ok()?;
+        if state.executor_nonce != self.executor_nonce
+            || state.stage != ReplacementStage::PendingCreate
+        {
+            return None;
+        }
+        let progress = state.replacement.as_mut()?;
+        if progress.launch_start_fresh.is_some() {
+            return None;
+        }
+        progress.launch_start_fresh = Some(progress.current_previous.start_fresh_on_restore);
+        Some(progress.current_previous.clone())
+    }
+    pub(crate) fn launch_token(&self) -> Option<Uuid> {
+        let state = self.owner.state.lock().ok()?;
+        (state.executor_nonce == self.executor_nonce).then(|| {
+            state
+                .replacement
+                .as_ref()?
+                .launch
+                .as_ref()
+                .map(|launch| launch.token)
+        })?
+    }
+
+    pub(crate) fn matches_captured_launch_route(
+        &self,
+        proof: &crate::pty::manager::PtySnapshotRouteProof,
+    ) -> bool {
+        let launch = self
+            .owner
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.replacement.as_ref()?.launch.clone());
+        launch.is_some_and(|launch| {
+            proof.backend_kind() == launch.backend
+                && proof.matches_requester_route(
+                    launch.backend,
+                    &launch.cwd_identity,
+                    launch.replica_identity.as_ref(),
+                )
+        })
+    }
+
+    pub(crate) fn current_completion_region(
+        &self,
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> bool {
+        let captured = self.owner.state.lock().ok().and_then(|state| {
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::FinalizedPublish
+            {
+                return None;
+            }
+            let progress = state.replacement.as_ref()?;
+            if !progress.preparing_released
+                || !progress.retired
+                || !progress.retirement_cleanup_completed
+            {
+                return None;
+            }
+            Some((
+                progress.launch.clone()?,
+                progress.current_checkpoint.clone()?,
+            ))
+        });
+        let Some((launch, carrier)) = captured else {
+            return false;
+        };
+        Self::launch_is_current(&launch, current, pty)
+            && crate::config::sessions_persistence::current_protected_carrier(
+                permit, &carrier, current,
+            )
+            .is_some()
+    }
+
+    pub(crate) async fn refresh_completion_info(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> Option<SessionInfo> {
+        if !self.validate_source().await {
+            return None;
+        }
+        let captured = self.owner.state.lock().ok().and_then(|state| {
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::FinalizedPublish
+            {
+                return None;
+            }
+            let progress = state.replacement.as_ref()?;
+            if !progress.preparing_released
+                || !progress.retired
+                || !progress.retirement_cleanup_completed
+            {
+                return None;
+            }
+            Some((
+                progress.launch.clone()?,
+                progress.current_checkpoint.clone()?,
+            ))
+        })?;
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let observed = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                if !Self::launch_is_current(&captured.0, current, pty) {
+                    return None;
+                }
+                let key = crate::config::sessions_persistence::current_protected_carrier(
+                    &permit,
+                    &captured.1,
+                    current,
+                )?;
+                let row = current
+                    .rows
+                    .iter()
+                    .find(|row| row.id == key.session_id && row.token == key.token)?;
+                Some((SessionInfo::from(row), key))
+            })
+            .await?;
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::FinalizedPublish
+            {
+                return None;
+            }
+            // A new actual strict checkpoint is recovery evidence. The initial
+            // post-finalization baseline stays immutable and is never rebased.
+            state.replacement.as_mut()?.current_checkpoint = Some(observed.1);
+        }
+        drop(permit);
+        Some(observed.0)
+    }
+
+    pub(crate) fn pre_write_work_matches(
+        &self,
+        current: &crate::session::manager::CarrierSnapshot,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> bool {
+        let captured = self.owner.state.lock().ok().and_then(|state| {
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::FinalizedPublish
+            {
+                return None;
+            }
+            let progress = state.replacement.as_ref()?;
+            if !progress.preparing_released
+                || !progress.retired
+                || progress.source_stop.is_some()
+                || !progress.retirement_cleanup_completed
+            {
+                return None;
+            }
+            Some((
+                progress.launch.clone()?,
+                progress.current_checkpoint.clone()?,
+            ))
+        });
+        let Some((launch, carrier)) = captured else {
+            return false;
+        };
+        Self::launch_is_current(&launch, current, pty)
+            && carrier.matches_owned_work_snapshot(current, &launch.cwd_identity.canonical_path)
+    }
+    pub(crate) fn validate_create_region(
+        &self,
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        tracker: &crate::pty::manager::ResponseCloseState,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> bool {
+        use crate::pty::manager::{CreateAdmission, CreateClassification, ResponseRouteIdentity};
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+            return false;
+        };
+        let captured = self.owner.state.lock().ok().and_then(|mut state| {
+            if state.executor_nonce != self.executor_nonce
+                || !matches!(
+                    state.stage,
+                    ReplacementStage::Admitted | ReplacementStage::PendingCreate
+                )
+            {
+                return None;
+            }
+            let progress = state.replacement.as_mut()?;
+            if !progress.preparing_started
+                || progress.cleanup != ReplacementCleanupAuthority::Executor(self.executor_nonce)
+                || !progress
+                    .tracker
+                    .as_ref()
+                    .is_some_and(|saved| saved.same_state(tracker))
+            {
+                return None;
+            }
+            Some((
+                progress.previous_carrier.clone(),
+                progress.binding,
+                progress.create_reservation.take(),
+            ))
+        });
+        let Some((carrier, binding, reservation)) = captured else {
+            return false;
+        };
+        // Only this operation's old reservation is released, under continuous U.
+        drop(reservation);
+        let Some(actual) = crate::config::sessions_persistence::renew_carrier_replacement(
+            permit,
+            &carrier,
+            self.owner.operation,
+            descriptor.previous.id,
+            binding.session_id(),
+            current,
+        ) else {
+            return false;
+        };
+        if !descriptor
+            .replica_identity
+            .as_ref()
+            .is_some_and(|physical| actual.retired_local_replica_matches(physical))
+        {
+            return false;
+        }
+        let Some(generation) = actual.retired_local_generation() else {
+            return false;
+        };
+        let Some(previous) = current
+            .rows
+            .iter()
+            .find(|row| row.id == actual.session_id && row.token == actual.token)
+            .cloned()
+        else {
+            return false;
+        };
+        if !pty.try_lock().ok().is_some_and(|pty| {
+            pty.backend_kind(actual.session_id).is_none()
+                && tracker.generation(actual.session_id).is_none()
+        }) {
+            return false;
+        }
+        let epoch = match crate::config::sessions_persistence::classify_create_carrier_scope(
+            permit,
+            &descriptor.target,
+            std::path::Path::new(&descriptor.cwd),
+        ) {
+            crate::config::sessions_persistence::CreateCarrierScope::Protected {
+                epoch,
+                preparing_owner: Some(owner),
+                ..
+            } if owner == self.owner.operation => epoch,
+            _ => return false,
+        };
+        let reservation = match tracker.reserve_create_owner(
+            &descriptor.target,
+            self.owner.operation,
+            CreateClassification::Preparing {
+                owner_nonce: self.owner.operation,
+                identity: ResponseRouteIdentity {
+                    target: descriptor.target.clone(),
+                    session_id: actual.session_id,
+                    token: actual.token,
+                    generation,
+                    backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+                    carrier_version: actual.version,
+                },
+                publication_epoch: epoch,
+            },
+        ) {
+            Ok(CreateAdmission::Reserved(reservation)) => reservation,
+            _ => return false,
+        };
+        let Ok(mut state) = self.owner.state.lock() else {
+            return false;
+        };
+        let Some(progress) = state.replacement.as_mut() else {
+            return false;
+        };
+        if progress
+            .launch_start_fresh
+            .is_some_and(|fresh| fresh != previous.start_fresh_on_restore)
+        {
+            state.retained_reason =
+                Some("replacement launch fresh decision changed; current A preserved".into());
+            return false;
+        }
+        progress.current_previous = previous;
+        progress.previous_carrier = actual;
+        progress.create_reservation = Some(reservation);
+        true
+    }
+
+    pub(crate) fn mark_pending(&self, binding: PendingCreateBinding) -> bool {
+        let Ok(mut state) = self.owner.state.lock() else {
+            return false;
+        };
+        if state.executor_nonce != self.executor_nonce || state.stage != ReplacementStage::Admitted
+        {
+            return false;
+        }
+        if !state
+            .replacement
+            .as_ref()
+            .is_some_and(|progress| progress.binding == binding && progress.preparing_started)
+        {
+            return false;
+        }
+        state.stage = ReplacementStage::PendingCreate;
+        true
+    }
+
+    /// Bind the actual observed spawn once; no launch witness/query invents a
+    /// backend result, and a later route is never adopted as the initial launch.
+    pub(crate) fn record_launch(
+        &self,
+        session: &crate::session::session::Session,
+        generation: u64,
+    ) -> bool {
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+            return false;
+        };
+        if session.shell != descriptor.shell
+            || session.backend_kind != descriptor.backend
+            || session.working_directory != descriptor.cwd
+            || session.agent_id != descriptor.requested_agent_id
+        {
+            return false;
+        }
+        let Ok(mut state) = self.owner.state.lock() else {
+            return false;
+        };
+        if state.executor_nonce != self.executor_nonce
+            || state.stage != ReplacementStage::PendingCreate
+        {
+            return false;
+        }
+        let Some(progress) = state.replacement.as_mut() else {
+            return false;
+        };
+        if progress.binding.session_id() != session.id
+            || progress.launch.is_some()
+            || progress.cleanup != ReplacementCleanupAuthority::Executor(self.executor_nonce)
+        {
+            return false;
+        }
+        progress.launch = Some(OwnedLaunchReceipt {
+            operation: self.owner.operation,
+            preparing_nonce: progress.preparing_nonce,
+            binding: progress.binding,
+            token: session.token,
+            generation,
+            backend: session.backend_kind,
+            info: SessionInfo::from(session),
+            cwd_identity: descriptor.cwd_identity.clone(),
+            replica_identity: descriptor.replica_identity.clone(),
+        });
+        true
+    }
+
+    fn launch_is_current(
+        launch: &OwnedLaunchReceipt,
+        current: &crate::session::manager::CarrierSnapshot,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> bool {
+        let Some(row) = current.rows.iter().find(|row| {
+            row.id == launch.binding.session_id()
+                && row.token == launch.token
+                && row.backend_kind == launch.backend
+                && !row.is_root_agent
+                && !row.is_coordinator
+                && !row.was_detached
+                && !matches!(row.status, SessionStatus::Exited(_))
+                && row.working_directory == launch.info.working_directory
+                && row.shell == launch.info.shell
+                && row.shell_args == launch.info.shell_args
+                && row.effective_shell_args == launch.info.effective_shell_args
+                && row.agent_id == launch.info.agent_id
+                && row.agent_label == launch.info.agent_label
+                && row.agent_kind == launch.info.agent_kind
+                && row.requested_profile == launch.info.requested_profile
+                && row.effective_profile == launch.info.effective_profile
+                && row.profile_fallback_chain == launch.info.profile_fallback_chain
+                && row.profile_fallback_applied == launch.info.profile_fallback_applied
+                && row.profile_content_hash == launch.info.profile_content_hash
+                && row.trusted_configured_spawn == launch.info.trusted_configured_spawn
+                && row.effective_codex_home == launch.info.effective_codex_home
+        }) else {
+            return false;
+        };
+        pty.try_lock().ok().is_some_and(|pty| {
+            let Some((Some(cwd), replica, generation)) = pty.route_identities(row.id) else {
+                return false;
+            };
+            let replica_matches = match (replica.as_ref(), launch.replica_identity.as_ref()) {
+                (Some(actual), Some(expected)) => {
+                    crate::path_identity::same_object(actual, expected)
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            generation == launch.generation
+                && pty.backend_kind(row.id) == Some(launch.backend)
+                && pty.has_session(row.id)
+                && crate::path_identity::same_object(&cwd, &launch.cwd_identity)
+                && replica_matches
+        })
+    }
+
+    fn retained_commit_copy(&self) -> Option<CommitResult> {
+        let state = self.owner.state.lock().ok()?;
+        let committed = state.replacement.as_ref()?.committed.as_ref()?;
+        Some(CommitResult {
+            removed_rows: committed.removed_rows.clone(),
+            missing_ids: committed.missing_ids.clone(),
+            changed_rows: committed.changed_rows.clone(),
+            finalized_rows: committed.finalized_rows.clone(),
+            cleared_raise_hand_ids: committed.cleared_raise_hand_ids.clone(),
+            selection: committed.selection.clone(),
+            activity: committed.activity.clone(),
+        })
+    }
+
+    /// None is an internal retained outcome. It is never translated into a
+    /// successful create or ordinary pending-create error/rollback.
+    async fn commit_finalized<R: Runtime>(
+        &self,
+        transaction: &SelectionTransaction<R>,
+        decision: CommitDecision,
+        cause: SelectionCause,
+        mutations: LifecycleMutations,
+    ) -> Option<Result<CommitResult, String>> {
+        if !self.validate_source().await {
+            return None;
+        }
+        let manager = transaction.manager().await;
+        let pty = transaction
+            .app()
+            .state::<Arc<Mutex<PtyManager>>>()
+            .inner()
+            .clone();
+        #[cfg(test)]
+        if !self
+            .fixture_reached(ReplacementFixtureCut::BeforeCommit)
+            .await
+        {
+            return None;
+        }
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let launch = self.owner.state.lock().ok().and_then(|state| {
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::PendingCreate
+            {
+                return None;
+            }
+            let progress = state.replacement.as_ref()?;
+            (progress.cleanup == ReplacementCleanupAuthority::Executor(self.executor_nonce))
+                .then(|| progress.launch.clone())
+                .flatten()
+        })?;
+        let authorized = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                let tracker = pty.try_lock().ok().map(|pty| pty.response_close_state());
+                tracker.is_some_and(|tracker| {
+                    self.validate_create_region(&permit, current, &tracker, &pty)
+                }) && Self::launch_is_current(&launch, current, &pty)
+            })
+            .await;
+        if !authorized {
+            return None;
+        }
+        #[cfg(test)]
+        let panic_before_disarm = self
+            .fixture
+            .as_ref()
+            .and_then(|control| {
+                control.take_action(self, |action| {
+                    matches!(
+                        action,
+                        ReplacementFixtureAction::CommitBeforeDisarmPanicOnce
+                    )
+                })
+            })
+            .is_some();
+        let committed = match manager
+            .commit_selection_transition_with_carrier_permit(
+                &permit,
+                &transaction.capability,
+                decision,
+                cause,
+                mutations,
+            )
+            .await
+        {
+            Ok(committed) => committed,
+            Err(error) => return Some(Err(error)),
+        };
+        // Actual commit -> synchronous disarm. No append, allocation, await or
+        // fallible row lookup intervenes in this ownership transition.
+        {
+            #[cfg(test)]
+            if panic_before_disarm {
+                panic!("selected Replacement commit-before-disarm unwind");
+            }
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_mut()?;
+            progress.cleanup = ReplacementCleanupAuthority::Disarmed;
+            progress.committed = Some(committed);
+            state.stage = ReplacementStage::FinalizedCarry;
+        }
+        #[cfg(test)]
+        {
+            if !self
+                .fixture_reached(ReplacementFixtureCut::AfterDisarm)
+                .await
+            {
+                return None;
+            }
+            let stop = self
+                .fixture
+                .as_ref()
+                .and_then(|control| {
+                    control.take_action(self, |action| {
+                        matches!(action, ReplacementFixtureAction::FixtureStopExactB)
+                    })
+                })
+                .is_some();
+            if stop {
+                assert!(
+                    self.fixture
+                        .as_ref()
+                        .is_some_and(|control| control.mock_backend.load(Ordering::Acquire)),
+                    "stop-exact-B requires fixture mock backend"
+                );
+                let pty = pty.lock().expect("fixture mock backend lock");
+                assert_eq!(
+                    pty.backend_kind(launch.binding.session_id()),
+                    Some(launch.backend)
+                );
+                assert_eq!(
+                    pty.response_close_state()
+                        .generation(launch.binding.session_id()),
+                    Some(launch.generation)
+                );
+                pty.kill_for_kind(launch.binding.session_id(), launch.backend)
+                    .expect("fixture stop exact B");
+            }
+        }
+        let baseline = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                if !Self::launch_is_current(&launch, current, &pty)
+                    || current.pending_ids.contains(&launch.binding.session_id())
+                {
+                    return false;
+                }
+                let Some(version) = current
+                    .versions
+                    .get(&launch.binding.session_id())
+                    .copied()
+                    .filter(|version| *version < u64::MAX)
+                else {
+                    return false;
+                };
+                let Ok(mut state) = self.owner.state.lock() else {
+                    return false;
+                };
+                let Some(progress) = state.replacement.as_mut() else {
+                    return false;
+                };
+                if progress.initial_b.is_some() {
+                    return false;
+                }
+                progress.initial_b = Some(InitialFinalizationReceipt {
+                    operation: self.owner.operation,
+                    preparing_nonce: progress.preparing_nonce,
+                    binding: launch.binding,
+                    token: launch.token,
+                    carrier_version: version,
+                    launch_generation: launch.generation,
+                });
+                true
+            })
+            .await;
+        drop(permit);
+        let committed = self.retained_commit_copy()?;
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_mut()?;
+            if progress.activity_started {
+                return None;
+            }
+            progress.activity_started = true;
+        }
+        crate::config::activity_log::append_batch(&committed.activity);
+        if let Ok(mut state) = self.owner.state.lock() {
+            if let Some(progress) = state.replacement.as_mut() {
+                progress.activity_completed = true;
+            }
+            if !baseline {
+                state.stage = ReplacementStage::Ambiguous;
+                state.retained_reason =
+                    Some("initial B receipt unavailable before releasing finalization U".into());
+            }
+        }
+        #[cfg(test)]
+        if baseline {
+            if let Some(control) = &self.fixture {
+                control.record(self, ReplacementFixtureCut::Baseline);
+                if !ReplacementFixtureControl::wait_gate(&control.baseline_gate).await {
+                    self.note_retained_work("fixture baseline observer lost".into());
+                    return None;
+                }
+            }
+        }
+        baseline.then_some(Ok(committed))
+    }
+
+    async fn apply_finalized_carry(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> bool {
+        if !self.validate_source().await {
+            return false;
+        }
+        let Some(effect) = self.start_effect(LifecycleEffectSlot::Carry) else {
+            return false;
+        };
+        #[cfg(test)]
+        if !self
+            .fixture_reached(ReplacementFixtureCut::BeforeCarry)
+            .await
+        {
+            return false;
+        }
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let admission = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                self.finalized_carry_capability(&permit, current, pty)
+            })
+            .await;
+        let capability = match admission {
+            Some(Some(capability)) => capability,
+            Some(None) => {
+                // Initial version remains immutable. A newer B is reconciled
+                // as it stands and never overwritten by A's old carry.
+                effect.complete(Err("carry recapture: newer B preserved".into()));
+                if let Ok(mut state) = self.owner.state.lock() {
+                    state.stage = ReplacementStage::FinalizedPreRename;
+                }
+                return true;
+            }
+            None => return false,
+        };
+        let outcome = manager
+            .apply_finalized_owned_replacement_carry(&permit, capability)
+            .await;
+        match outcome {
+            FinalizedOwnedCarryOutcome::Applied => {
+                // Consume Carry synchronously before any further await.
+                if let Ok(mut state) = self.owner.state.lock() {
+                    state.stage = ReplacementStage::FinalizedPreRename;
+                } else {
+                    return false;
+                }
+                effect.complete(Ok(None));
+            }
+            FinalizedOwnedCarryOutcome::Recapture => {
+                effect.complete(Err("carry recapture: finalized binding changed".into()));
+                return false;
+            }
+        }
+        // Read the real version after CarrierStateWrite::drop, still under U.
+        let launch = self.owner.state.lock().ok().and_then(|state| {
+            state
+                .replacement
+                .as_ref()
+                .and_then(|progress| progress.launch.clone())
+        });
+        let Some(launch) = launch else {
+            return false;
+        };
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                Self::launch_is_current(&launch, current, pty).then_some(())?;
+                current
+                    .versions
+                    .get(&launch.binding.session_id())
+                    .filter(|version| **version < u64::MAX)?;
+                Some(())
+            })
+            .await
+            .is_some()
+    }
+
+    /// Some(None) is the explicit newer-B path, never a replacement baseline.
+    fn finalized_carry_capability(
+        &self,
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> Option<Option<FinalizedOwnedCarryCapability>> {
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+            return None;
+        };
+        let (launch, carrier, token, version, binding, nonce, generation) = {
+            let state = self.owner.state.lock().ok()?;
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::FinalizedCarry
+            {
+                return None;
+            }
+            let progress = state.replacement.as_ref()?;
+            let initial = progress.initial_b.as_ref()?;
+            if initial.operation != self.owner.operation
+                || initial.preparing_nonce != progress.preparing_nonce
+                || initial.binding != progress.binding
+            {
+                return None;
+            }
+            (
+                progress.launch.clone()?,
+                progress.previous_carrier.clone(),
+                initial.token,
+                initial.carrier_version,
+                initial.binding,
+                initial.preparing_nonce,
+                initial.launch_generation,
+            )
+        };
+        if launch.token != token
+            || launch.generation != generation
+            || launch.operation != self.owner.operation
+            || launch.preparing_nonce != nonce
+            || !Self::launch_is_current(&launch, current, pty)
+            || current.pending_ids.contains(&binding.session_id())
+        {
+            return None;
+        }
+        let previous_carrier = crate::config::sessions_persistence::renew_carrier_replacement(
+            permit,
+            &carrier,
+            nonce,
+            descriptor.previous.id,
+            binding.session_id(),
+            current,
+        )?;
+        previous_carrier.retired_local_generation()?;
+        descriptor
+            .replica_identity
+            .as_ref()
+            .filter(|physical| previous_carrier.retired_local_replica_matches(physical))?;
+        let current_version = *current.versions.get(&binding.session_id())?;
+        if current_version >= u64::MAX {
+            return None;
+        }
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_mut()?;
+            progress.previous_carrier = previous_carrier;
+            progress.current_previous = current
+                .rows
+                .iter()
+                .find(|row| row.id == descriptor.previous.id)?
+                .clone();
+        }
+        if current_version != version {
+            return Some(None);
+        }
+        let previous = current.rows.iter().find(|row| {
+            row.id == descriptor.previous.id && row.token == descriptor.previous.token
+        })?;
+        let fresh_matches = self.owner.state.lock().ok().is_some_and(|state| {
+            state.replacement.as_ref().is_some_and(|progress| {
+                progress.launch_start_fresh == Some(previous.start_fresh_on_restore)
+            })
+        });
+        if !fresh_matches {
+            self.note_retained_work(
+                "replacement launch fresh decision changed after spawn; current A/B preserved"
+                    .into(),
+            );
+            return None;
+        }
+        Some(Some(FinalizedOwnedCarryCapability {
+            owner: self.owner.clone(),
+            operation: self.owner.operation,
+            preparing_nonce: nonce,
+            previous: previous.id,
+            binding,
+            token,
+            expected_version: version,
+            telegram_bot_id: previous.telegram_bot_id.clone(),
+            communication: previous.communication.clone(),
+            start_fresh_on_restore: previous.start_fresh_on_restore,
+        }))
+    }
+
+    fn publication_region_current(
+        &self,
+        current: &crate::session::manager::CarrierSnapshot,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> bool {
+        let captured = self.owner.state.lock().ok().and_then(|state| {
+            let progress = state.replacement.as_ref()?;
+            Some((
+                progress.launch.clone()?,
+                progress.previous_carrier.clone(),
+                progress.retired,
+            ))
+        });
+        let Some((launch, previous, retired)) = captured else {
+            return false;
+        };
+        Self::launch_is_current(&launch, current, pty)
+            && if retired {
+                !current.rows.iter().any(|row| row.id == previous.session_id)
+            } else {
+                current.versions.get(&previous.session_id) == Some(&previous.version)
+                    && current
+                        .rows
+                        .iter()
+                        .any(|row| row.id == previous.session_id && row.token == previous.token)
+            }
+    }
+
+    async fn publish_checkpoint(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        project_paths: &[String],
+        source: crate::config::sessions_persistence::PublishedCarrier,
+    ) -> bool {
+        if !self.validate_source().await {
+            return false;
+        }
+        use crate::config::sessions_persistence::{
+            prepare_owned_replacement_publication, publish_owned_replacement,
+            OwnedReplacementPublicationOutcome,
+        };
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+            return false;
+        };
+        let Some(binding) = self.binding() else {
+            return false;
+        };
+        // Recheckpoint is a new required native publication; retain the first
+        // strict receipt separately before reusing this fixed effect slot.
+        if let Ok(mut state) = self.owner.state.lock() {
+            if state.stage == ReplacementStage::FinalizedRecheckpoint {
+                state.effects[LifecycleEffectSlot::CarrierRename as usize] =
+                    OwnedEffectState::NotStarted;
+                state.effects[LifecycleEffectSlot::Readback as usize] =
+                    OwnedEffectState::NotStarted;
+            }
+        }
+        let Some(rename) = self.start_effect(LifecycleEffectSlot::CarrierRename) else {
+            return false;
+        };
+        #[cfg(test)]
+        if !self
+            .fixture_reached(ReplacementFixtureCut::BeforePublication)
+            .await
+        {
+            return false;
+        }
+        let mut prepared = match prepare_owned_replacement_publication(
+            manager,
+            &source,
+            self.owner.operation,
+            descriptor.previous.id,
+            binding.session_id(),
+            project_paths,
+            || self.validate_source(),
+        )
+        .await
+        {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => {
+                rename.complete(Err("replacement publication requires recapture".into()));
+                return false;
+            }
+            Err(error) => {
+                rename.complete(Err(error));
+                return false;
+            }
+        };
+        #[cfg(test)]
+        {
+            if let Some(ReplacementFixtureAction::PublicationLeaf(kind)) =
+                self.fixture.as_ref().and_then(|control| {
+                    control.take_action(self, |action| {
+                        matches!(action, ReplacementFixtureAction::PublicationLeaf(_))
+                    })
+                })
+            {
+                prepared.attach_fixture_action(self.owner.operation, &descriptor.directory, kind);
+            }
+            if !self
+                .fixture_reached(ReplacementFixtureCut::PublicationPrepared)
+                .await
+            {
+                return false;
+            }
+        }
+        if let Ok(mut state) = self.owner.state.lock() {
+            if let Some(progress) = state.replacement.as_mut() {
+                progress.pending_carrier = Some(prepared.destination_key());
+            }
+        } else {
+            return false;
+        }
+        let Some(readback) = self.start_effect(LifecycleEffectSlot::Readback) else {
+            return false;
+        };
+        for attempt in 0..4 {
+            if !self.validate_source().await {
+                return false;
+            }
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            let valid = manager
+                .with_current_carrier_snapshot(&permit, |current| {
+                    self.publication_region_current(current, pty)
+                })
+                .await;
+            if !valid {
+                rename.complete(Err("replacement identity changed before publication".into()));
+                readback.skip();
+                return false;
+            }
+            let outcome = publish_owned_replacement(manager, &permit, &mut prepared, |current| {
+                self.publication_region_current(current, pty)
+            })
+            .await;
+            drop(permit);
+            match outcome {
+                OwnedReplacementPublicationOutcome::Confirmed(carrier) => {
+                    rename.complete(Ok(Some(carrier.session_id.to_string())));
+                    readback.complete(Ok(Some(carrier.nonce.to_string())));
+                    let Ok(mut state) = self.owner.state.lock() else {
+                        return false;
+                    };
+                    let Some(progress) = state.replacement.as_mut() else {
+                        return false;
+                    };
+                    if progress.first_checkpoint.is_none() {
+                        progress.first_checkpoint = Some(carrier.clone());
+                    }
+                    progress.current_checkpoint = Some(carrier);
+                    progress.pending_carrier = None;
+                    return true;
+                }
+                OwnedReplacementPublicationOutcome::Pending(carrier) => {
+                    rename.complete(Ok(Some(carrier.session_id.to_string())));
+                    {
+                        let Ok(mut state) = self.owner.state.lock() else {
+                            return false;
+                        };
+                        let Some(progress) = state.replacement.as_mut() else {
+                            return false;
+                        };
+                        progress.pending_carrier = Some(carrier.clone());
+                        state.stage = ReplacementStage::FinalizedPendingReadback;
+                    }
+                    // The rename is observed. Native recovery reads this same
+                    // publication only; it never repeats preparation or rename.
+                    for delay in [10, 50, 200] {
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        if !self.validate_source().await {
+                            return false;
+                        }
+                        let permit =
+                            crate::session::manager::acquire_carrier_mutation_permit().await;
+                        let confirmed = manager.with_current_carrier_snapshot(&permit, |current| {
+                            if !self.publication_region_current(current, pty) { return None; }
+                            crate::config::sessions_persistence::reconcile_owned_replacement_readback(
+                                &permit, &carrier, self.owner.operation, descriptor.previous.id, current,
+                            )
+                        }).await;
+                        drop(permit);
+                        if let Some(confirmed) = confirmed {
+                            readback.complete(Ok(Some(confirmed.nonce.to_string())));
+                            let Ok(mut state) = self.owner.state.lock() else {
+                                return false;
+                            };
+                            let Some(progress) = state.replacement.as_mut() else {
+                                return false;
+                            };
+                            if progress.first_checkpoint.is_none() {
+                                progress.first_checkpoint = Some(confirmed.clone());
+                            }
+                            progress.current_checkpoint = Some(confirmed);
+                            progress.pending_carrier = None;
+                            return true;
+                        }
+                    }
+                    readback.complete(Err("replacement readback is Pending".into()));
+                    if let Ok(mut state) = self.owner.state.lock() {
+                        state.retained_reason = Some(
+                            "replacement native rename observed; strict readback unavailable"
+                                .into(),
+                        );
+                    }
+                    return false;
+                }
+                OwnedReplacementPublicationOutcome::Recapture => {
+                    rename.complete(Err("replacement publication stale before rename".into()));
+                    readback.skip();
+                    return false;
+                }
+                OwnedReplacementPublicationOutcome::Failed(error) => {
+                    if attempt == 3 {
+                        rename.complete(Err(error));
+                        readback.skip();
+                        return false;
+                    }
+                }
+            }
+            // Exact existing native backoffs, with no U/M/lifecycle/leaf guard.
+            tokio::time::sleep(Duration::from_millis([10, 50, 200][attempt])).await;
+        }
+        false
+    }
+
+    async fn retire_previous<R: Runtime>(
+        &self,
+        transaction: &SelectionTransaction<R>,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> Option<bool> {
+        if !self.validate_source().await {
+            return None;
+        }
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+            return None;
+        };
+        let effect = self.start_effect(LifecycleEffectSlot::Retirement)?;
+        #[cfg(test)]
+        if !self
+            .fixture_reached(ReplacementFixtureCut::BeforeRetirement)
+            .await
+        {
+            return None;
+        }
+        let carrier = self
+            .owner
+            .state
+            .lock()
+            .ok()?
+            .replacement
+            .as_ref()?
+            .current_checkpoint
+            .clone()?;
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let decision = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                if !self.publication_region_current(current, pty)
+                    || crate::config::sessions_persistence::renew_carrier_replacement(
+                        &permit,
+                        &carrier,
+                        self.owner.operation,
+                        descriptor.previous.id,
+                        carrier.session_id,
+                        current,
+                    )
+                    .is_none()
+                {
+                    return None;
+                }
+                Some(if current.selection.id() == Some(descriptor.previous.id) {
+                    CommitDecision::Clear
+                } else {
+                    CommitDecision::Keep
+                })
+            })
+            .await?;
+        let mut mutations = LifecycleMutations::default();
+        mutations.remove(descriptor.previous.id);
+        let retired = match manager
+            .commit_selection_transition_with_carrier_permit(
+                &permit,
+                &transaction.capability,
+                decision,
+                SelectionCause::BackgroundCleanup,
+                mutations,
+            )
+            .await
+        {
+            Ok(retired) => retired,
+            Err(error) => {
+                effect.complete(Err(error));
+                return None;
+            }
+        };
+        // Record the actual removal before any cleanup await. A missing A is
+        // admissible on recovery only through this same-operation receipt.
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_mut()?;
+            progress.retired = retired
+                .removed_rows
+                .iter()
+                .any(|row| row.id == descriptor.previous.id.to_string());
+            progress.retirement_result = Some(retired);
+            if !progress.retired {
+                return None;
+            }
+        }
+        // The version is observed after manager Drop under the SAME retirement U.
+        let reusable = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                crate::config::sessions_persistence::renew_carrier_replacement(
+                    &permit,
+                    &carrier,
+                    self.owner.operation,
+                    descriptor.previous.id,
+                    carrier.session_id,
+                    current,
+                )
+            })
+            .await;
+        drop(permit);
+        let activity = self
+            .owner
+            .state
+            .lock()
+            .ok()?
+            .replacement
+            .as_ref()?
+            .retirement_result
+            .as_ref()?
+            .activity
+            .clone();
+        crate::config::activity_log::append_batch(&activity);
+        crate::commands::session::complete_owned_replacement_retirement(
+            transaction,
+            descriptor.previous.id,
+        )
+        .await;
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_mut()?;
+            progress.retirement_cleanup_completed = true;
+            if let Some(current) = reusable.as_ref() {
+                progress.current_checkpoint = Some(current.clone());
+            }
+        }
+        effect.complete(Ok(Some(descriptor.previous.id.to_string())));
+        Some(reusable.is_some())
+    }
+
+    async fn complete_finalized_create<R: Runtime>(
+        &self,
+        transaction: &SelectionTransaction<R>,
+    ) -> Option<(SessionInfo, SessionSelection)> {
+        let manager = transaction.manager().await;
+        let pty = transaction
+            .app()
+            .state::<Arc<Mutex<PtyManager>>>()
+            .inner()
+            .clone();
+        let settings = transaction
+            .app()
+            .state::<crate::config::settings::SettingsState>()
+            .read()
+            .await
+            .clone();
+        let roots =
+            crate::config::sessions_persistence::session_retention_project_paths(&settings).ok()?;
+        if !self.apply_finalized_carry(&manager, &pty).await {
+            return None;
+        }
+        let carrier = self
+            .owner
+            .state
+            .lock()
+            .ok()?
+            .replacement
+            .as_ref()?
+            .previous_carrier
+            .clone();
+        if !self
+            .publish_checkpoint(&manager, &pty, &roots, carrier)
+            .await
+        {
+            return None;
+        }
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            state.stage = ReplacementStage::FinalizedRetire;
+        }
+        let reusable = self.retire_previous(transaction, &manager, &pty).await?;
+        if !reusable {
+            let carrier = {
+                let mut state = self.owner.state.lock().ok()?;
+                state.stage = ReplacementStage::FinalizedRecheckpoint;
+                state.replacement.as_ref()?.current_checkpoint.clone()?
+            };
+            if !self
+                .publish_checkpoint(&manager, &pty, &roots, carrier)
+                .await
+            {
+                return None;
+            }
+        }
+        let carrier = self
+            .owner
+            .state
+            .lock()
+            .ok()?
+            .replacement
+            .as_ref()?
+            .current_checkpoint
+            .clone()?;
+        let previous = match &self.owner.descriptor {
+            OwnedReplacementDescriptor::Replacement(descriptor) => descriptor.previous.id,
+            _ => return None,
+        };
+        if !self.validate_source().await {
+            return None;
+        }
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let current = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                if !self.publication_region_current(current, &pty)
+                    || !crate::config::sessions_persistence::finish_carrier_replacement(
+                        &permit,
+                        &carrier,
+                        self.owner.operation,
+                        previous,
+                        current,
+                    )
+                {
+                    return None;
+                }
+                let key = crate::config::sessions_persistence::current_protected_carrier(
+                    &permit, &carrier, current,
+                )?;
+                let row = current
+                    .rows
+                    .iter()
+                    .find(|row| row.id == key.session_id && row.token == key.token)?;
+                Some((SessionInfo::from(row), current.selection.clone(), key))
+            })
+            .await?;
+        {
+            let mut state = self.owner.state.lock().ok()?;
+            let progress = state.replacement.as_mut()?;
+            progress.preparing_released = true;
+            progress.current_checkpoint = Some(current.2);
+            state.stage = ReplacementStage::FinalizedPublish;
+        }
+        drop(permit);
+        Some((current.0, current.1))
+    }
+
+    /// The transport supplies only an actually observed submit/terminal or
+    /// conditional source-handoff Result, never byte acquisition or expiry.
+    pub(crate) fn precommit_rollback_completed(&self) -> bool {
+        self.owner.state.lock().ok().is_some_and(|state| {
+            state.executor_nonce == self.executor_nonce
+                && matches!(state.completion, Some(Err(_)))
+                && state.replacement.as_ref().is_some_and(|progress| {
+                    progress.create_failed
+                        && progress.rollback_completed
+                        && progress.preparing_released
+                        && progress.committed.is_none()
+                })
+        })
+    }
+
+    /// Called after the producer receives the real failed create result and
+    /// observes its existing source handoff, with lexical target guards gone.
+    pub(crate) async fn finish_rolled_back_work(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        effect: LifecycleEffectGuard,
+        observed: bool,
+    ) -> bool {
+        if !observed || !self.precommit_rollback_completed() {
+            effect.complete(Err("replacement rollback handoff not observed".into()));
+            return false;
+        }
+        effect.complete(Ok(None));
+        let released = self.reservation_release_is_observed(pty);
+        if !released {
+            return false;
+        }
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let captured = self.owner.state.lock().ok().and_then(|state| {
+            let progress = state.replacement.as_ref()?;
+            if state.executor_nonce != self.executor_nonce
+                || !matches!(
+                    state.stage,
+                    ReplacementStage::Admitted | ReplacementStage::PendingCreate
+                )
+                || !progress.rollback_completed
+                || !progress.preparing_released
+                || progress.create_reservation.is_some()
+                || progress.work_reservation.is_some()
+                || !matches!(
+                    progress.context_prerequisite,
+                    None | Some(OwnedEffectState::Completed { .. })
+                )
+                || !state.effects.iter().all(|effect| {
+                    matches!(
+                        effect,
+                        OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
+                    )
+                })
+            {
+                return None;
+            }
+            Some((progress.previous_carrier.clone(), progress.binding))
+        });
+        let Some((previous, binding)) = captured else {
+            return false;
+        };
+        let current = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                !current
+                    .rows
+                    .iter()
+                    .any(|row| row.id == binding.session_id())
+                    && crate::config::sessions_persistence::current_protected_carrier(
+                        &permit, &previous, current,
+                    )
+                    .is_some()
+                    && pty.try_lock().ok().is_some_and(|pty| {
+                        !pty.has_session(binding.session_id())
+                            && pty.backend_kind(binding.session_id()).is_none()
+                            && pty
+                                .response_close_state()
+                                .generation(binding.session_id())
+                                .is_none()
+                    })
+            })
+            .await;
+        if !current {
+            return false;
+        }
+        let verified = self.owner.state.lock().ok().is_some_and(|mut state| {
+            let Some(progress) = state.replacement.as_mut() else {
+                return false;
+            };
+            progress.work_transferred = true;
+            progress.reservations_released = true;
+            progress.terminal_verified = true;
+            state.publication_observed = true;
+            state.envelope_released = true;
+            state.stage = ReplacementStage::RolledBack;
+            true
+        });
+        drop(permit);
+        if verified {
+            #[cfg(test)]
+            if !self
+                .fixture_reached(ReplacementFixtureCut::BeforeTerminalRemoval)
+                .await
+            {
+                return verified;
+            }
+            if let Some(inner) = self.coordinator.upgrade() {
+                SelectionCoordinator { inner }.remove_terminal_entry(&self.owner);
+            }
+        }
+        verified
+    }
+
+    pub(crate) fn record_observed_work_transfer(
+        &self,
+        effect: LifecycleEffectGuard,
+        observed: bool,
+    ) -> bool {
+        if !observed {
+            effect.complete(Err("replacement work transfer was not observed".into()));
+            return false;
+        }
+        effect.complete(Ok(None));
+        let reservations = self.owner.state.lock().ok().and_then(|mut state| {
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::FinalizedPublish
+            {
+                return None;
+            }
+            let progress = state.replacement.as_mut()?;
+            progress.work_transferred = true;
+            Some((
+                progress.create_reservation.take(),
+                progress.work_reservation.take(),
+            ))
+        });
+        let Some(reservations) = reservations else {
+            return false;
+        };
+        drop(reservations);
+        true
+    }
+
+    pub(crate) async fn finish_observed_work_transfer(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        effect: LifecycleEffectGuard,
+        observed: bool,
+    ) -> bool {
+        if !self.record_observed_work_transfer(effect, observed) {
+            return false;
+        }
+        let released = self.reservation_release_is_observed(pty);
+        if !released {
+            return false;
+        }
+        if let Ok(mut state) = self.owner.state.lock() {
+            if let Some(progress) = state.replacement.as_mut() {
+                progress.reservations_released = true;
+            }
+        }
+        // Receipt of the finalizer result precedes a successful work transfer.
+        // Unknown publication stays retained without parking another task.
+        if !self
+            .owner
+            .state
+            .lock()
+            .ok()
+            .is_some_and(|state| state.publication_observed && state.envelope_released)
+        {
+            return false;
+        }
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let captured = self.owner.state.lock().ok().and_then(|state| {
+            let progress = state.replacement.as_ref()?;
+            let launch = progress.launch.as_ref()?;
+            if state.executor_nonce != self.executor_nonce
+                || state.stage != ReplacementStage::FinalizedPublish
+                || !progress.work_transferred || !progress.preparing_released || !progress.reservations_released
+                || !progress.retired || !progress.retirement_cleanup_completed
+                || !progress.activity_completed || progress.initial_b.is_none()
+                || !matches!(progress.context_prerequisite,
+                    None | Some(OwnedEffectState::Completed { .. }))
+                || progress.create_reservation.is_some() || progress.work_reservation.is_some()
+                || !matches!(state.completion.as_ref(), Some(Ok(info)) if info.id == launch.binding.session_id().to_string())
+                || !state.effects.iter().all(|effect| matches!(effect,
+                    OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }))
+            { return None; }
+            let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else { return None; };
+            Some((progress.current_checkpoint.clone()?, launch.clone(), descriptor.previous.id))
+        });
+        let Some((carrier, launch, previous)) = captured else {
+            return false;
+        };
+        let current = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                if !Self::launch_is_current(&launch, current, pty)
+                    || current.rows.iter().any(|row| row.id == previous)
+                {
+                    return None;
+                }
+                crate::config::sessions_persistence::current_protected_carrier(
+                    &permit, &carrier, current,
+                )
+            })
+            .await;
+        let Some(current) = current else {
+            return false;
+        };
+        let verified = self.owner.state.lock().ok().is_some_and(|mut state| {
+            if state.stage != ReplacementStage::FinalizedPublish {
+                return false;
+            }
+            let Some(progress) = state.replacement.as_mut() else {
+                return false;
+            };
+            progress.current_checkpoint = Some(current);
+            progress.terminal_verified = true;
+            state.stage = ReplacementStage::Completed;
+            true
+        });
+        drop(permit);
+        if verified {
+            #[cfg(test)]
+            if !self
+                .fixture_reached(ReplacementFixtureCut::BeforeTerminalRemoval)
+                .await
+            {
+                return verified;
+            }
+            if let Some(inner) = self.coordinator.upgrade() {
+                SelectionCoordinator { inner }.remove_terminal_entry(&self.owner);
+            }
+        }
+        verified
+    }
+
+    /// Called only after this executor's setup body returned a real Err.
+    /// Waiter loss or ticket Drop never enters this cleanup path.
+    pub(crate) async fn rollback_failed_create(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        error: &str,
+    ) -> bool {
+        self.claim_and_cleanup_pending(
+            manager,
+            pty,
+            PendingCleanupEvidence::ActualSetupFailure(error),
+        )
+        .await
+    }
+
+    async fn cleanup_stopped_source(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+    ) -> bool {
+        self.claim_and_cleanup_pending(
+            manager,
+            pty,
+            PendingCleanupEvidence::ObservedSourceStoppedOrReturnedFailure,
+        )
+        .await
+    }
+
+    fn pending_cleanup_runtime_matches(
+        &self,
+        binding: PendingCreateBinding,
+        launch: Option<&OwnedLaunchReceipt>,
+        pty: &PtyManager,
+    ) -> bool {
+        let id = binding.session_id();
+        let Some(kind) = pty.backend_kind(id) else {
+            let OwnedReplacementDescriptor::Replacement(descriptor) = &self.owner.descriptor else {
+                return false;
+            };
+            // A partially failed spawn can leave a backend handle without a
+            // route. Absence of routing alone never proves absence of runtime.
+            return !pty.has_session(id)
+                && !pty.backend_for_kind(descriptor.backend).has_session(id);
+        };
+        let Some(launch) = launch else {
+            // A runtime without this executor's actual spawn receipt is not
+            // cleanup authority, even when its UUID/backend happens to match.
+            return false;
+        };
+        let Some((Some(cwd), replica, generation)) = pty.route_identities(id) else {
+            return false;
+        };
+        let replica_matches = match (replica.as_ref(), launch.replica_identity.as_ref()) {
+            (Some(actual), Some(expected)) => crate::path_identity::same_object(actual, expected),
+            (None, None) => true,
+            _ => false,
+        };
+        launch.binding == binding
+            && launch.backend == kind
+            && launch.generation == generation
+            && crate::path_identity::same_object(&cwd, &launch.cwd_identity)
+            && replica_matches
+    }
+
+    // The caller holds U; this decision holds only the owner lock and never awaits.
+    fn claim_pending_cleanup_state(
+        &self,
+        pending_exists: bool,
+        launch_generation: Option<u64>,
+        cleanup_nonce: Uuid,
+        evidence: PendingCleanupEvidence<'_>,
+    ) -> Option<crate::config::sessions_persistence::PublishedCarrier> {
+        self.owner.state.lock().ok().and_then(|mut state| {
+            if state.executor_nonce != self.executor_nonce
+                || !matches!(
+                    state.stage,
+                    ReplacementStage::Admitted | ReplacementStage::PendingCreate
+                )
+                || state.effects.iter().any(|effect| {
+                    matches!(
+                        effect,
+                        OwnedEffectState::Running(_) | OwnedEffectState::Ambiguous(_)
+                    )
+                })
+            {
+                return None;
+            }
+            let stage = state.stage;
+            let progress = state.replacement.as_mut()?;
+            let stopped = matches!(
+                progress.source_executor,
+                SourceExecutorObservation::Stopped
+                    | SourceExecutorObservation::Returned { failed: true }
+            );
+            if matches!(
+                evidence,
+                PendingCleanupEvidence::ObservedSourceStoppedOrReturnedFailure
+            ) && (!stopped || stage != ReplacementStage::PendingCreate)
+            {
+                return None;
+            }
+            if progress.cleanup != ReplacementCleanupAuthority::Executor(self.executor_nonce)
+                || progress.initial_b.is_some()
+                || progress.committed.is_some()
+                || progress.pending_carrier.is_some()
+                || progress.launch.as_ref().map(|launch| launch.generation) != launch_generation
+                || (stage == ReplacementStage::PendingCreate && !pending_exists)
+            {
+                return None;
+            }
+            progress.create_failed = true;
+            progress.cleanup = ReplacementCleanupAuthority::Claimed(cleanup_nonce);
+            let carrier = progress.previous_carrier.clone();
+            if let PendingCleanupEvidence::ActualSetupFailure(error) = evidence {
+                state.completion = Some(Err(error.to_owned()));
+            }
+            Some(carrier)
+        })
+    }
+
+    async fn claim_and_cleanup_pending(
+        &self,
+        manager: &SessionManager,
+        pty: &Arc<Mutex<PtyManager>>,
+        evidence: PendingCleanupEvidence<'_>,
+    ) -> bool {
+        let Some(binding) = self.binding() else {
+            return false;
+        };
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let pending = manager.get_pending_session(binding).await;
+        let launch = match self.owner.state.lock() {
+            Ok(state) => state
+                .replacement
+                .as_ref()
+                .and_then(|progress| progress.launch.clone()),
+            Err(_) => return false,
+        };
+        if let Some(launch) = launch.as_ref() {
+            if !pending
+                .as_ref()
+                .is_some_and(|row| row.token == launch.token && row.backend_kind == launch.backend)
+            {
+                return false;
+            }
+        }
+        let runtime_matches = pty.try_lock().ok().is_some_and(|pty| {
+            self.pending_cleanup_runtime_matches(binding, launch.as_ref(), &pty)
+        });
+        if !runtime_matches {
+            return false;
+        }
+        let cleanup_nonce = Uuid::new_v4();
+        let claim = self.claim_pending_cleanup_state(
+            pending.is_some(),
+            launch.as_ref().map(|launch| launch.generation),
+            cleanup_nonce,
+            evidence,
+        );
+        drop(permit);
+        let Some(carrier) = claim else {
+            return false;
+        };
+        let Some(effect) = self.start_effect(LifecycleEffectSlot::PendingRollback) else {
+            return false;
+        };
+        let killed = match pty.try_lock() {
+            Ok(pty) => match pty.backend_kind(binding.session_id()) {
+                Some(kind)
+                    if pending.as_ref().is_some_and(|row| row.backend_kind == kind)
+                        && self.pending_cleanup_runtime_matches(binding, launch.as_ref(), &pty) =>
+                {
+                    pty.kill_for_kind(binding.session_id(), kind)
+                        .map_err(|error| error.to_string())
+                }
+                None if self.pending_cleanup_runtime_matches(binding, launch.as_ref(), &pty) => {
+                    Ok(())
+                }
+                _ => Err("replacement pending runtime identity changed".into()),
+            },
+            Err(_) => Err("replacement pending runtime unavailable".into()),
+        };
+        if let Err(error) = killed {
+            effect.complete(Err(error));
+            return false;
+        }
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let claimed = self.owner.state.lock().ok().is_some_and(|state| {
+            state.executor_nonce == self.executor_nonce
+                && state.replacement.as_ref().is_some_and(|progress| {
+                    progress.cleanup == ReplacementCleanupAuthority::Claimed(cleanup_nonce)
+                        && progress.committed.is_none()
+                })
+        });
+        if !claimed {
+            return false;
+        }
+        let runtime_absent = pty
+            .try_lock()
+            .ok()
+            .is_some_and(|pty| self.pending_cleanup_runtime_matches(binding, None, &pty));
+        if !runtime_absent {
+            effect.complete(Err(
+                "replacement pending runtime changed after cleanup".into()
+            ));
+            return false;
+        }
+        if let Err(error) = manager
+            .rollback_pending_create_with_carrier_permit(&permit, binding)
+            .await
+        {
+            effect.complete(Err(error));
+            return false;
+        }
+        let released = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                crate::config::sessions_persistence::abort_owned_carrier_replacement(
+                    &permit,
+                    &carrier,
+                    self.owner.operation,
+                    binding.session_id(),
+                    current,
+                )
+            })
+            .await;
+        if !released {
+            effect.complete(Err(
+                "replacement Preparing rollback requires reconciliation".into(),
+            ));
+            return false;
+        }
+        let reservations = self.owner.state.lock().ok().and_then(|mut state| {
+            let progress = state.replacement.as_mut()?;
+            progress.preparing_released = true;
+            Some((
+                progress.create_reservation.take(),
+                progress.work_reservation.take(),
+            ))
+        });
+        drop(permit);
+        drop(reservations);
+        effect.complete(Ok(None));
+        if let Ok(mut state) = self.owner.state.lock() {
+            if let Some(progress) = state.replacement.as_mut() {
+                progress.rollback_completed = true;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn start_effect(&self, slot: LifecycleEffectSlot) -> Option<LifecycleEffectGuard> {
+        let mut state = self.owner.state.lock().ok()?;
+        let progress = state.replacement.as_ref()?;
+        let cleanup_allows = match progress.cleanup {
+            ReplacementCleanupAuthority::Executor(nonce) => nonce == self.executor_nonce,
+            ReplacementCleanupAuthority::Claimed(_) => {
+                (slot == LifecycleEffectSlot::PendingRollback && !progress.rollback_completed)
+                    || (slot == LifecycleEffectSlot::WorkTransfer && progress.rollback_completed)
+            }
+            ReplacementCleanupAuthority::Disarmed => !matches!(
+                slot,
+                LifecycleEffectSlot::RootDirectory
+                    | LifecycleEffectSlot::ContextPreparation
+                    | LifecycleEffectSlot::ConfigSeed
+                    | LifecycleEffectSlot::BackendSpawn
+                    | LifecycleEffectSlot::PendingRollback
+            ),
+            ReplacementCleanupAuthority::Unknown => false,
+        };
+        if state.executor_nonce != self.executor_nonce
+            || !cleanup_allows
+            || matches!(
+                state.stage,
+                ReplacementStage::Completed
+                    | ReplacementStage::Refused
+                    | ReplacementStage::RolledBack
+                    | ReplacementStage::Ambiguous
+            )
+            || !matches!(state.effects[slot as usize], OwnedEffectState::NotStarted)
+        {
+            return None;
+        }
+        let attempt = Uuid::new_v4();
+        state.effects[slot as usize] = OwnedEffectState::Running(attempt);
+        Some(LifecycleEffectGuard {
+            owner: self.owner.clone(),
+            slot,
+            attempt,
+            completed: false,
+        })
+    }
+}
+
+impl fmt::Debug for OwnedReplacementContinuation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnedReplacementContinuation")
+            .field("operation", &self.owner.operation)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone)]
+enum OwnedReplacementDescriptor {
+    Replacement(Box<ResolvedReplacement>),
+    EntryRestart(crate::commands::session::RestartJobRequest),
+    EntryRoot(crate::commands::session::RootJobRequest),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplacementStage {
+    Admitted,
+    PendingCreate,
+    FinalizedCarry,
+    FinalizedPreRename,
+    FinalizedPendingReadback,
+    FinalizedRetire,
+    FinalizedRecheckpoint,
+    FinalizedPublish,
+    Completed,
+    Refused,
+    RolledBack,
+    EntryWaiting,
+    Queued,
+    Executing,
+    Returned,
+    Ambiguous,
+    EntryTerminal,
+}
+
+#[derive(Clone, Copy)]
+enum EntryTerminalDisposition {
+    Success,
+    Failure,
+    RolledBack,
+}
+
+struct EntryReleaseReceipt {
+    operation: Uuid,
+    executor_nonce: Uuid,
+    envelope_never_sent: bool,
+    worker_returned_and_sidecar_released: bool,
+    reached_effects: [Option<Uuid>; 11],
+    prerequisite_attempt: Option<Uuid>,
+    binding: Option<(PendingCreateBinding, EntryCreateStage)>,
+    reader_demand: Option<EntryReaderDemandReceipt>,
+}
+
+struct EntryTerminal {
+    disposition: EntryTerminalDisposition,
+    actual_result: Result<SessionInfo, String>,
+    release_receipt: EntryReleaseReceipt,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LifecycleEffectSlot {
+    RootDirectory,
+    ContextPreparation,
+    ConfigSeed,
+    BackendSpawn,
+    Carry,
+    CarrierRename,
+    Readback,
+    Retirement,
+    PendingRollback,
+    Publication,
+    WorkTransfer,
+}
+
+#[derive(Clone)]
+enum OwnedEffectState {
+    NotStarted,
+    Running(Uuid),
+    Completed {
+        attempt: Uuid,
+        outcome: Result<Option<String>, String>,
+    },
+    Ambiguous(Uuid),
+}
+
+pub(crate) struct LifecycleEffectGuard {
+    owner: Arc<ReplacementOwner>,
+    slot: LifecycleEffectSlot,
+    attempt: Uuid,
+    completed: bool,
+}
+
+impl LifecycleEffectGuard {
+    /// The caller observed that this particular effect was not reached.
+    fn skip(mut self) {
+        if let Ok(mut state) = self.owner.state.lock() {
+            let effect = &mut state.effects[self.slot as usize];
+            if matches!(effect, OwnedEffectState::Running(attempt) if *attempt == self.attempt) {
+                *effect = OwnedEffectState::NotStarted;
+                self.completed = true;
+            }
+        }
+    }
+    pub(crate) fn complete(mut self, outcome: Result<Option<String>, String>) {
+        if let Ok(mut state) = self.owner.state.lock() {
+            let effect = &mut state.effects[self.slot as usize];
+            if matches!(effect, OwnedEffectState::Running(attempt) if *attempt == self.attempt) {
+                *effect = OwnedEffectState::Completed {
+                    attempt: self.attempt,
+                    outcome,
+                };
+                self.completed = true;
+            }
+        }
+    }
+}
+
+impl Drop for LifecycleEffectGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            if let Ok(mut state) = self.owner.state.lock() {
+                if matches!(state.effects[self.slot as usize],
+                    OwnedEffectState::Running(attempt) if attempt == self.attempt)
+                {
+                    state.effects[self.slot as usize] = OwnedEffectState::Ambiguous(self.attempt);
+                    if let Some(progress) = state.replacement.as_mut() {
+                        progress.cleanup = ReplacementCleanupAuthority::Unknown;
+                    }
+                    state.stage = ReplacementStage::Ambiguous;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EntryCreateStage {
+    Reserved,
+    Pending,
+    Finalized,
+    CleanupClaimed(Uuid),
+    RolledBack,
+    Unknown,
+}
+
+struct EntryCreateBinding {
+    binding: PendingCreateBinding,
+    stage: EntryCreateStage,
+    preparation_receipt: Option<OwnedEffectState>,
+    reader_demand: Option<EntryReaderDemandReceipt>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntryReaderDemandReceipt {
+    LegacyTaskAccepted,
+    Returned,
+}
+
+struct ReplacementState {
+    replacement: Option<ReplacementProgress>,
+    effects: [OwnedEffectState; 11],
+    entry_terminal: Option<EntryTerminal>,
+    stage: ReplacementStage,
+    executor_nonce: Uuid,
+    completion: Option<Result<SessionInfo, String>>,
+    publication_observed: bool,
+    envelope_released: bool,
+    sidecar_released: bool,
+    claim_reached: bool,
+    claim_released: bool,
+    pre_teardown_failure: bool,
+    reuse_live_result: Option<Result<SessionInfo, String>>,
+    body_result: Option<Result<SessionInfo, String>>,
+    entry_create: Option<EntryCreateBinding>,
+    retained_reason: Option<String>,
+}
+
+impl ReplacementState {
+    fn retained_effect_diagnostic(&self) -> String {
+        let pending = self
+            .effects
+            .iter()
+            .enumerate()
+            .find_map(|(slot, effect)| match effect {
+                OwnedEffectState::Running(attempt) => Some((slot, "running", attempt)),
+                OwnedEffectState::Ambiguous(attempt) => Some((slot, "ambiguous", attempt)),
+                _ => None,
+            });
+        match pending {
+            Some((slot, outcome, attempt)) => format!(
+                "stage={:?} effect_slot={} effect_state={} attempt={}",
+                self.stage, slot, outcome, attempt
+            ),
+            None => format!(
+                "stage={:?} detail={}",
+                self.stage,
+                self.retained_reason
+                    .as_deref()
+                    .unwrap_or("terminal-proof-incomplete")
+            ),
+        }
+    }
+
+    fn effects_are_terminal(&self) -> bool {
+        self.effects.iter().all(|effect| {
+            matches!(
+                effect,
+                OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
+            )
+        })
+    }
+
+    fn replacement_terminal_is_verified(&self) -> bool {
+        if !self.publication_observed || !self.envelope_released || !self.effects_are_terminal() {
+            return false;
+        }
+        let Some(progress) = self.replacement.as_ref() else {
+            return false;
+        };
+        let released = progress.terminal_verified
+            && progress.work_transferred
+            && progress.reservations_released
+            && progress.preparing_released
+            && progress.create_reservation.is_none()
+            && progress.work_reservation.is_none()
+            && matches!(
+                progress.context_prerequisite,
+                None | Some(OwnedEffectState::Completed { .. })
+            );
+        if !released {
+            return false;
+        }
+        match self.stage {
+            ReplacementStage::Completed => {
+                progress.retired && progress.retirement_cleanup_completed
+            }
+            ReplacementStage::RolledBack => {
+                progress.rollback_completed
+                    && progress.committed.is_none()
+                    && matches!(self.completion, Some(Err(_)))
+            }
+            _ => false,
+        }
+    }
+
+    fn entry_terminal_is_verified(&self, operation: Uuid) -> bool {
+        self.stage == ReplacementStage::EntryTerminal
+            && self.publication_observed
+            && self.envelope_released
+            && self.claim_released
+            && self.entry_terminal.as_ref().is_some_and(|terminal| {
+                matches!(
+                    (&terminal.disposition, &terminal.actual_result),
+                    (EntryTerminalDisposition::Success, Ok(_))
+                        | (EntryTerminalDisposition::Failure, Err(_))
+                        | (EntryTerminalDisposition::RolledBack, Err(_))
+                ) && terminal.release_receipt.operation == operation
+                    && self.prerequisite_attempt().ok()
+                        == Some(terminal.release_receipt.prerequisite_attempt)
+                    && self
+                        .entry_create
+                        .as_ref()
+                        .map(|create| (create.binding, create.stage))
+                        == terminal.release_receipt.binding
+                    && self
+                        .entry_create
+                        .as_ref()
+                        .and_then(|create| create.reader_demand)
+                        == terminal.release_receipt.reader_demand
+                    && terminal.release_receipt.executor_nonce == self.executor_nonce
+                    && (terminal.release_receipt.envelope_never_sent
+                        || terminal
+                            .release_receipt
+                            .worker_returned_and_sidecar_released)
+                    && self
+                        .effects
+                        .iter()
+                        .enumerate()
+                        .all(|(index, effect)| match effect {
+                            OwnedEffectState::NotStarted => {
+                                terminal.release_receipt.reached_effects[index].is_none()
+                            }
+                            OwnedEffectState::Completed { attempt, .. } => {
+                                terminal.release_receipt.reached_effects[index] == Some(*attempt)
+                            }
+                            _ => false,
+                        })
+            })
+    }
+
+    fn prerequisite_attempt(&self) -> Result<Option<Uuid>, ()> {
+        match self
+            .entry_create
+            .as_ref()
+            .and_then(|create| create.preparation_receipt.as_ref())
+        {
+            None => Ok(None),
+            Some(OwnedEffectState::Completed { attempt, .. }) => Ok(Some(*attempt)),
+            _ => Err(()),
+        }
+    }
+    /// Actual body return plus terminal binding/effects; an Err by itself is
+    /// never a pending rollback or finalized-row cleanup certificate.
+    fn entry_body_terminal(&self, actual: &Result<SessionInfo, String>) -> bool {
+        let result_matches = match (self.body_result.as_ref(), actual) {
+            (Some(Ok(recorded)), Ok(actual)) => serde_json::to_value(recorded)
+                .ok()
+                .zip(serde_json::to_value(actual).ok())
+                .is_some_and(|(a, b)| a == b),
+            (Some(Err(recorded)), Err(actual)) => recorded == actual,
+            _ => false,
+        };
+        if !result_matches {
+            return false;
+        }
+        let published = matches!(
+            &self.effects[LifecycleEffectSlot::Publication as usize],
+            OwnedEffectState::Completed { .. }
+        );
+        match (
+            actual,
+            self.entry_create.as_ref().map(|create| create.stage),
+        ) {
+            (Ok(info), Some(EntryCreateStage::Finalized)) => {
+                published
+                    && self.entry_create.as_ref().is_some_and(|create| {
+                        create.reader_demand.is_some()
+                            && info.id == create.binding.session_id().to_string()
+                    })
+            }
+            (Err(_), Some(EntryCreateStage::RolledBack)) => true,
+            (Err(_), Some(EntryCreateStage::Finalized)) => published,
+            (Err(_), Some(EntryCreateStage::Reserved)) => true,
+            (Err(_), None) => {
+                self.pre_teardown_failure
+                    || published
+                    || matches!(&self.effects[LifecycleEffectSlot::Retirement as usize],
+                        OwnedEffectState::Completed { outcome: Err(error), .. }
+                            if error.starts_with("old_lost=false:"))
+                    || matches!(&self.effects[LifecycleEffectSlot::Retirement as usize],
+                        OwnedEffectState::Completed { outcome: Ok(Some(outcome)), .. }
+                            if outcome == "old_lost=false")
+            }
+            _ => false,
+        }
+    }
+}
+
+struct ReplacementOwner {
+    changed: Notify,
+    operation: Uuid,
+    descriptor: OwnedReplacementDescriptor,
+    state: Mutex<ReplacementState>,
+}
+
+impl fmt::Debug for ReplacementOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReplacementOwner")
+            .field("operation", &self.operation)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Non-Clone transient executor sidecar. No executor/guard/app backreference is
+/// stored in the coordinator's data-only root.
+#[derive(Debug)]
+struct OwnedLifecycleEntry {
+    owner: Arc<ReplacementOwner>,
+    executor_nonce: Uuid,
+    authority: Option<crate::commands::session::LifecycleEntryAuthority>,
+}
+
+impl OwnedLifecycleEntry {
+    async fn release_lease(&mut self) {
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let current = self.owner.state.lock().ok().is_some_and(|state| {
+            state.executor_nonce == self.executor_nonce && state.stage == ReplacementStage::Returned
+        });
+        let authority = self.authority.take();
+        drop(permit);
+        let released = authority.is_some_and(|authority| authority.release());
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        if let Ok(mut state) = self.owner.state.lock() {
+            if current
+                && state.executor_nonce == self.executor_nonce
+                && state.stage == ReplacementStage::Returned
+            {
+                state.sidecar_released = released;
+            }
+        }
+        drop(permit);
+    }
+    fn observe_authority_interruption(&self) {
+        if let Ok(mut state) = self.owner.state.lock() {
+            if state.executor_nonce == self.executor_nonce {
+                state.stage = ReplacementStage::Ambiguous;
+                state.retained_reason = Some("lifecycle authority changed before teardown".into());
+            }
+        }
+    }
+
+    fn observe_return(&self, result: &Result<SessionInfo, String>) {
+        if let Ok(mut state) = self.owner.state.lock() {
+            if state.executor_nonce == self.executor_nonce
+                && state.stage == ReplacementStage::Executing
+            {
+                state.stage = ReplacementStage::Returned;
+                state.body_result = Some(result.clone());
+                state.completion = Some(result.clone());
+            }
+        }
+    }
+}
+
+impl Drop for OwnedLifecycleEntry {
+    fn drop(&mut self) {
+        // Release real target guards and tracker claim BEFORE observing release.
+        let released = self.authority.take().map(|authority| authority.release());
+        if let Ok(mut state) = self.owner.state.lock() {
+            if state.executor_nonce == self.executor_nonce
+                && state.stage == ReplacementStage::Returned
+            {
+                if let Some(released) = released {
+                    state.sidecar_released = released;
+                }
+            }
+            if state.executor_nonce == self.executor_nonce
+                && matches!(
+                    state.stage,
+                    ReplacementStage::Queued | ReplacementStage::Executing
+                )
+            {
+                state.stage = ReplacementStage::Ambiguous;
+                state.retained_reason =
+                    Some("lifecycle executor ended without observed settlement".into());
+            }
+        }
+    }
+}
+
+// The existing coordinator owns the single retained-root state. Replacement
+// entries join this same state; restore metadata is never a separate registry.
+struct RetainedReplacements {
+    restore_active: Arc<AtomicBool>,
+    restore_nonce: Option<Uuid>,
+    sealed: bool,
+    unavailable: bool,
+    entries: HashMap<Uuid, Arc<ReplacementOwner>>,
+}
+
+impl RetainedReplacements {
+    fn new() -> Self {
+        Self::reserve(COORDINATOR_ADMISSION_CAPACITY)
+    }
+
+    fn reserve(demand: usize) -> Self {
+        let mut entries = HashMap::new();
+        let unavailable = entries.try_reserve(demand).is_err();
+        Self {
+            restore_active: Arc::new(AtomicBool::new(true)),
+            restore_nonce: None,
+            sealed: false,
+            unavailable,
+            entries,
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum FixtureRootReservation {
+    Normal65,
+    RejectCapacity,
+}
+
 struct CoordinatorInner {
+    retained_replacements: Mutex<RetainedReplacements>,
     sender: mpsc::Sender<CoordinatorEnvelope>,
     receiver: Mutex<Option<mpsc::Receiver<CoordinatorEnvelope>>>,
     admission: Arc<Semaphore>,
@@ -1250,9 +4663,31 @@ impl SelectionCoordinator {
         manager: Arc<tokio::sync::RwLock<SessionManager>>,
         shutdown: CancellationToken,
     ) -> Self {
+        Self::with_retained_root(manager, shutdown, RetainedReplacements::new())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_fixture_root_reservation(
+        manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        shutdown: CancellationToken,
+        reservation: FixtureRootReservation,
+    ) -> Self {
+        let demand = match reservation {
+            FixtureRootReservation::Normal65 => COORDINATOR_ADMISSION_CAPACITY,
+            FixtureRootReservation::RejectCapacity => usize::MAX,
+        };
+        Self::with_retained_root(manager, shutdown, RetainedReplacements::reserve(demand))
+    }
+
+    fn with_retained_root(
+        manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        shutdown: CancellationToken,
+        root: RetainedReplacements,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(COORDINATOR_QUEUE_CAPACITY);
         Self {
             inner: Arc::new(CoordinatorInner {
+                retained_replacements: Mutex::new(root),
                 sender,
                 receiver: Mutex::new(Some(receiver)),
                 admission: Arc::new(Semaphore::new(COORDINATOR_ADMISSION_CAPACITY)),
@@ -1309,6 +4744,33 @@ impl SelectionCoordinator {
             .lock()
             .map_err(|_| SelectionCoordinatorError::Unavailable)?;
         *worker = Some(handle);
+        Ok(())
+    }
+
+    /// Exclusion only: false never grants an inline restore capability.
+    pub(crate) fn restore_mint_exclusion(&self) -> Option<Arc<AtomicBool>> {
+        Some(
+            self.inner
+                .retained_replacements
+                .lock()
+                .ok()?
+                .restore_active
+                .clone(),
+        )
+    }
+
+    pub(crate) fn restore_is_active(&self) -> bool {
+        self.restore_mint_exclusion()
+            .is_none_or(|active| active.load(Ordering::Acquire))
+    }
+
+    pub(crate) async fn wait_for_restore_release(&self) -> Result<(), String> {
+        while self.restore_is_active() {
+            if self.inner.shutdown.is_cancelled() {
+                return Err(SelectionCoordinatorError::Unavailable.to_string());
+            }
+            tokio::task::yield_now().await;
+        }
         Ok(())
     }
 
@@ -1409,6 +4871,96 @@ impl SelectionCoordinator {
             .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
     }
 
+    async fn try_response_close<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        registration: &ResponseCloseRegistration,
+    ) -> Result<(), SelectionCoordinatorError> {
+        let key = CriticalAdmissionKey {
+            session_id: registration.member.session_id,
+            kind: CriticalAdmissionKind::ResponseClose,
+        };
+        let critical = {
+            let mut keys = self
+                .inner
+                .critical_keys
+                .lock()
+                .map_err(|_| SelectionCoordinatorError::Unavailable)?;
+            if !keys.insert(key) {
+                return Ok(());
+            }
+            CriticalAdmissionGuard::new(&self.inner, key)
+        };
+        let (admission, slot) = self.try_reserve_envelope()?;
+        let tracker = app
+            .state::<crate::pty::manager::ResponseCloseState>()
+            .inner()
+            .clone();
+        let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+        let manager = self.inner.manager.read().await.clone();
+        let settings = app.state::<crate::config::settings::SettingsState>();
+        let settings = settings.read().await;
+        let carrier_permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        if self.restore_is_active() {
+            return Ok(());
+        }
+        let ticket = manager
+            .with_current_carrier_snapshot(&carrier_permit, |current| {
+                let member = response_registration_row(current, &registration.member)?;
+                let coordinator = response_registration_row(current, &registration.coordinator)?;
+                if member.backend_kind != crate::pty::backend::SessionBackendKind::LocalProcess
+                    || member.is_root_agent
+                    || member.is_coordinator
+                    || member.agent_kind.is_none()
+                    || !coordinator.is_coordinator
+                    || coordinator.is_root_agent
+                {
+                    return None;
+                }
+                if !response_registration_route(&pty, &registration.member, member)
+                    || !response_registration_route(&pty, &registration.coordinator, coordinator)
+                {
+                    return None;
+                }
+                let now = Instant::now();
+                tracker.apply_settings(
+                    settings.response_close_enabled,
+                    settings.response_close_idle_seconds,
+                    now,
+                );
+                tracker.publish_manager_facts(
+                    registration.member.clone(),
+                    true,
+                    crate::session::session::is_working(member),
+                    now,
+                );
+                tracker.publish_manager_facts(
+                    registration.coordinator.clone(),
+                    false,
+                    crate::session::session::is_working(coordinator),
+                    now,
+                );
+                tracker.select_ticket(member.id, now).ok()
+            })
+            .await;
+        drop(carrier_permit);
+        let Some(ticket) = ticket else {
+            return Ok(());
+        };
+        if ticket.committed_binding().member != registration.member {
+            return Ok(());
+        }
+        drop(slot.send(CoordinatorEnvelope {
+            job: CoordinatorJob::ConditionalResponseClose {
+                request: ConditionalResponseClose { ticket },
+            },
+            _admission: admission,
+            _create_ticket: None,
+            _critical_admission: Some(critical),
+        }));
+        Ok(())
+    }
+
     pub(crate) async fn destroy(
         &self,
         request: crate::commands::session::DestroyRequest,
@@ -1428,42 +4980,773 @@ impl SelectionCoordinator {
             .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
     }
 
-    pub(crate) async fn restart_lifecycle(
+    pub(crate) async fn restart_lifecycle<R: Runtime>(
         &self,
+        app: AppHandle<R>,
         request: crate::commands::session::RestartJobRequest,
     ) -> Result<SessionInfo, String> {
+        self.submit_lifecycle_entry(app, OwnedReplacementDescriptor::EntryRestart(request))
+            .await
+    }
+
+    pub(crate) async fn root_lifecycle<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: crate::commands::session::RootJobRequest,
+    ) -> Result<SessionInfo, String> {
+        self.submit_lifecycle_entry(app, OwnedReplacementDescriptor::EntryRoot(request))
+            .await
+    }
+
+    /// E2 is available only to an actual still-retained external entry. Restore
+    /// nonces and generic requests do not create a record in this root.
+    pub(crate) fn retains_lifecycle_operation(&self, operation: Uuid) -> bool {
+        let owner = {
+            let Ok(root) = self.inner.retained_replacements.lock() else {
+                return false;
+            };
+            if root.sealed || root.unavailable {
+                return false;
+            }
+            root.entries.get(&operation).cloned()
+        };
+        let Some(owner) = owner else {
+            return false;
+        };
+        let Ok(state) = owner.state.lock() else {
+            return false;
+        };
+        matches!(
+            state.stage,
+            ReplacementStage::EntryWaiting | ReplacementStage::Queued | ReplacementStage::Executing
+        ) && state.completion.is_none()
+            && state.entry_terminal.is_none()
+    }
+
+    /// Prepare all owned data and the independent result cell before U.
+    pub(crate) fn prepare_owned_replacement(
+        &self,
+        descriptor: ResolvedReplacement,
+        binding: PendingCreateBinding,
+    ) -> PreparedOwnedReplacement {
+        let operation = Uuid::new_v4();
+        let executor_nonce = Uuid::new_v4();
+        let progress = ReplacementProgress {
+            source_executor: SourceExecutorObservation::NotStarted,
+            current_previous: descriptor.previous.clone(),
+            launch_start_fresh: None,
+            previous_carrier: descriptor.carrier.clone(),
+            binding,
+            preparing_nonce: operation,
+            committed: None,
+            warnings: Vec::new(),
+            activity_started: false,
+            activity_completed: false,
+            initial_b: None,
+            launch: None,
+            current_checkpoint: None,
+            first_checkpoint: None,
+            pending_carrier: None,
+            retirement_result: None,
+            retirement_cleanup_completed: false,
+            preparing_released: false,
+            create_failed: false,
+            rollback_completed: false,
+            create_reservation: None,
+            work_reservation: None,
+            tracker: None,
+            accepted_work: descriptor.work.clone(),
+            cleanup: ReplacementCleanupAuthority::Executor(executor_nonce),
+            preparing_started: false,
+            retired: false,
+            work_transferred: false,
+            reservations_released: false,
+            terminal_verified: false,
+            source_stop: None,
+            context_prerequisite: None,
+        };
+        PreparedOwnedReplacement {
+            executor_nonce,
+            owner: Arc::new(ReplacementOwner {
+                changed: Notify::new(),
+                operation,
+                descriptor: OwnedReplacementDescriptor::Replacement(Box::new(descriptor)),
+                state: Mutex::new(ReplacementState {
+                    replacement: Some(progress),
+                    effects: std::array::from_fn(|_| OwnedEffectState::NotStarted),
+                    entry_terminal: None,
+                    stage: ReplacementStage::Admitted,
+                    executor_nonce,
+                    completion: None,
+                    publication_observed: false,
+                    envelope_released: false,
+                    sidecar_released: false,
+                    claim_reached: false,
+                    claim_released: false,
+                    pre_teardown_failure: false,
+                    reuse_live_result: None,
+                    body_result: None,
+                    entry_create: None,
+                    retained_reason: None,
+                }),
+            }),
+        }
+    }
+
+    /// Bootstrap from current retired Confirmed A and a real healthy reservation.
+    pub(crate) fn admit_owned_replacement(
+        &self,
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        tracker: &crate::pty::manager::ResponseCloseState,
+        pty: &Arc<Mutex<PtyManager>>,
+        prepared: PreparedOwnedReplacement,
+    ) -> Result<ReplacementAdmissionStep, String> {
+        use crate::pty::manager::{CreateAdmission, CreateClassification, ResponseRouteIdentity};
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &prepared.owner.descriptor else {
+            return Err(SelectionCoordinatorError::Unavailable.to_string());
+        };
+        let carrier = crate::config::sessions_persistence::retained_carrier_for_replacement(
+            permit,
+            &descriptor.directory,
+            &descriptor.target,
+            descriptor.previous.id,
+            current,
+        );
+        let Some(carrier) = carrier.filter(|carrier| {
+            carrier.nonce == descriptor.carrier.nonce && carrier.token == descriptor.previous.token
+        }) else {
+            return Ok(ReplacementAdmissionStep::Waiting(prepared));
+        };
+        if descriptor.backend != crate::pty::backend::SessionBackendKind::LocalProcess
+            || !descriptor
+                .replica_identity
+                .as_ref()
+                .is_some_and(|physical| carrier.retired_local_replica_matches(physical))
+        {
+            return Ok(ReplacementAdmissionStep::Waiting(prepared));
+        }
+        let Some(generation) = carrier.retired_local_generation() else {
+            return Ok(ReplacementAdmissionStep::Waiting(prepared));
+        };
+        let Some(previous) = current
+            .rows
+            .iter()
+            .find(|row| row.id == carrier.session_id)
+            .cloned()
+        else {
+            return Ok(ReplacementAdmissionStep::Waiting(prepared));
+        };
+        let absent = pty.try_lock().ok().is_some_and(|pty| {
+            pty.backend_kind(carrier.session_id).is_none()
+                && tracker.generation(carrier.session_id).is_none()
+        });
+        if !absent {
+            return Ok(ReplacementAdmissionStep::Waiting(prepared));
+        }
+        let epoch = match crate::config::sessions_persistence::classify_create_carrier_scope(
+            permit,
+            &descriptor.target,
+            std::path::Path::new(&descriptor.cwd),
+        ) {
+            crate::config::sessions_persistence::CreateCarrierScope::Protected {
+                epoch,
+                preparing_owner: None,
+                ..
+            } => epoch,
+            _ => return Ok(ReplacementAdmissionStep::Waiting(prepared)),
+        };
+        let classification = CreateClassification::Protected {
+            identity: ResponseRouteIdentity {
+                target: descriptor.target.clone(),
+                session_id: carrier.session_id,
+                token: carrier.token,
+                generation,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+                carrier_version: carrier.version,
+            },
+            publication_epoch: epoch,
+        };
+        let reservation = match tracker.reserve_create_owner(
+            &descriptor.target,
+            prepared.owner.operation,
+            classification,
+        ) {
+            Ok(CreateAdmission::Reserved(reservation)) => reservation,
+            _ => return Ok(ReplacementAdmissionStep::Waiting(prepared)),
+        };
+        let work = match tracker.begin_delivery(&descriptor.target) {
+            Ok(work) => work,
+            Err(_) => return Ok(ReplacementAdmissionStep::Waiting(prepared)),
+        };
+        let binding = prepared
+            .owner
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.replacement.as_ref().map(|progress| progress.binding))
+            .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
+        if let Err(error) = self.insert_lifecycle_entry(&prepared.owner) {
+            // No Preparing, row binding publication or native effect occurred.
+            // Drop only this refused attempt's claims, outside owner/root locks.
+            drop(reservation);
+            drop(work);
+            let released = tracker.publishers_bound();
+            if let Ok(mut state) = prepared.owner.state.lock() {
+                state.completion = Some(Err(error.clone()));
+                state.publication_observed = true;
+                state.envelope_released = true;
+                if let Some(progress) = state.replacement.as_mut() {
+                    progress.reservations_released = released;
+                    progress.terminal_verified = released;
+                }
+                state.stage = if released {
+                    ReplacementStage::Refused
+                } else {
+                    ReplacementStage::Ambiguous
+                };
+            }
+            return Err(error);
+        }
+        let begun = crate::config::sessions_persistence::begin_carrier_replacement(
+            permit,
+            &carrier,
+            prepared.owner.operation,
+            binding.session_id(),
+            current,
+        );
+        if let Ok(mut state) = prepared.owner.state.lock() {
+            if let Some(progress) = state.replacement.as_mut() {
+                progress.current_previous = previous;
+                progress.previous_carrier = carrier;
+                progress.create_reservation = Some(reservation);
+                progress.work_reservation = Some(work);
+                progress.tracker = Some(tracker.clone());
+                progress.preparing_started = begun;
+            }
+            if !begun {
+                state.stage = ReplacementStage::Ambiguous;
+                state.retained_reason =
+                    Some("replacement Preparing unavailable after acceptance".into());
+            }
+        }
+        Ok(ReplacementAdmissionStep::Accepted(
+            OwnedReplacementContinuation {
+                owner: prepared.owner,
+                coordinator: Arc::downgrade(&self.inner),
+                executor_nonce: prepared.executor_nonce,
+                source_validation: None,
+                #[cfg(test)]
+                fixture: None,
+            },
+        ))
+    }
+
+    fn insert_lifecycle_entry(&self, owner: &Arc<ReplacementOwner>) -> Result<(), String> {
+        let result = {
+            let mut root = match self.inner.retained_replacements.lock() {
+                Ok(root) => root,
+                Err(error) => {
+                    let mut root = error.into_inner();
+                    root.sealed = true;
+                    root.unavailable = true;
+                    return Err(SelectionCoordinatorError::Unavailable.to_string());
+                }
+            };
+            if root.sealed
+                || root.unavailable
+                || CoordinatorPhase::from_u8(self.inner.phase.load(Ordering::Acquire))
+                    != CoordinatorPhase::Running
+            {
+                Err(SelectionCoordinatorError::Unavailable)
+            } else if root.entries.len()
+                >= if matches!(
+                    &owner.descriptor,
+                    OwnedReplacementDescriptor::Replacement(_)
+                ) {
+                    COORDINATOR_ADMISSION_CAPACITY
+                } else {
+                    COORDINATOR_QUEUE_CAPACITY
+                }
+                || root.entries.contains_key(&owner.operation)
+            {
+                Err(SelectionCoordinatorError::Busy)
+            } else {
+                root.entries.insert(owner.operation, owner.clone());
+                Ok(())
+            }
+        };
+        result.map_err(|error| error.to_string())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_root_count(&self) -> Option<usize> {
+        Some(self.inner.retained_replacements.lock().ok()?.entries.len())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_poison_root(&self) {
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _root = self
+                .inner
+                .retained_replacements
+                .lock()
+                .expect("real fixture root");
+            panic!("selected actual retained-root poison stimulus");
+        }));
+        assert!(unwind.is_err());
+        assert!(self.inner.retained_replacements.is_poisoned());
+    }
+
+    fn prepare_lifecycle_owner(
+        descriptor: OwnedReplacementDescriptor,
+    ) -> (Arc<ReplacementOwner>, Uuid) {
+        let operation = Uuid::new_v4();
+        let executor_nonce = Uuid::new_v4();
+        let owner = Arc::new(ReplacementOwner {
+            changed: Notify::new(),
+            operation,
+            descriptor,
+            state: Mutex::new(ReplacementState {
+                replacement: None,
+                effects: std::array::from_fn(|_| OwnedEffectState::NotStarted),
+                entry_terminal: None,
+                stage: ReplacementStage::EntryWaiting,
+                executor_nonce,
+                completion: None,
+                publication_observed: false,
+                envelope_released: false,
+                sidecar_released: false,
+                claim_reached: false,
+                claim_released: false,
+                pre_teardown_failure: false,
+                reuse_live_result: None,
+                body_result: None,
+                entry_create: None,
+                retained_reason: None,
+            }),
+        });
+        (owner, executor_nonce)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_initial_reservation_refusal(
+        &self,
+        request: crate::commands::session::RestartJobRequest,
+    ) -> Result<(), String> {
+        {
+            let root = self
+                .inner
+                .retained_replacements
+                .lock()
+                .expect("actual initial root");
+            assert!(root.unavailable && root.entries.is_empty() && !root.sealed);
+            assert_eq!(
+                self.inner.phase.load(Ordering::Acquire),
+                CoordinatorPhase::Bootstrapping as u8
+            );
+        }
+        let (owner, _) =
+            Self::prepare_lifecycle_owner(OwnedReplacementDescriptor::EntryRestart(request));
+        self.insert_lifecycle_entry(&owner)
+    }
+
+    async fn submit_lifecycle_entry<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        descriptor: OwnedReplacementDescriptor,
+    ) -> Result<SessionInfo, String> {
+        // Original real capacity probe precedes acceptance and validation.
         let (admission, slot) = self
             .try_reserve_envelope()
             .map_err(|error| error.to_string())?;
-        let (response, receiver) = oneshot::channel();
-        drop(slot.send(CoordinatorEnvelope {
-            job: CoordinatorJob::RestartLifecycle { request, response },
-            _admission: admission,
-            _create_ticket: None,
-            _critical_admission: None,
-        }));
-        receiver
+        let (owner, executor_nonce) = Self::prepare_lifecycle_owner(descriptor);
+        let (publication, result) = oneshot::channel();
+        self.insert_lifecycle_entry(&owner)?;
+        drop(slot);
+        drop(admission);
+        let coordinator = self.clone();
+        crate::config::sessions_persistence::run_owned_persist_core(async move {
+            let execution = coordinator
+                .execute_accepted_entry(&app, owner.clone(), executor_nonce)
+                .await;
+            coordinator
+                .finish_lifecycle_entry(&owner, executor_nonce, execution, publication)
+                .await;
+        })
+        .await;
+        result
             .await
             .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
     }
 
-    pub(crate) async fn root_lifecycle(
+    async fn execute_accepted_entry<R: Runtime>(
         &self,
-        request: crate::commands::session::RootJobRequest,
-    ) -> Result<SessionInfo, String> {
-        let (admission, slot) = self
-            .try_reserve_envelope()
-            .map_err(|error| error.to_string())?;
+        app: &AppHandle<R>,
+        owner: Arc<ReplacementOwner>,
+        executor_nonce: Uuid,
+    ) -> (Result<SessionInfo, String>, bool) {
+        if let Err(error) = self.wait_for_restore_release().await {
+            return (Err(error), true);
+        }
+        if matches!(&owner.descriptor, OwnedReplacementDescriptor::EntryRoot(_)) {
+            let effect = {
+                owner.state.lock().ok().and_then(|mut state| {
+                    if state.executor_nonce != executor_nonce
+                        || state.stage != ReplacementStage::EntryWaiting
+                    {
+                        return None;
+                    }
+                    let attempt = Uuid::new_v4();
+                    state.effects[LifecycleEffectSlot::RootDirectory as usize] =
+                        OwnedEffectState::Running(attempt);
+                    Some(LifecycleEffectGuard {
+                        owner: owner.clone(),
+                        slot: LifecycleEffectSlot::RootDirectory,
+                        attempt,
+                        completed: false,
+                    })
+                })
+            };
+            let Some(effect) = effect else {
+                return std::future::pending().await;
+            };
+            if let Err(error) = crate::commands::session::ensure_owned_root_directory(effect) {
+                return (Err(error), true);
+            }
+        }
+        let mut root_directory = owner.state.lock().ok().and_then(|state| {
+            match &state.effects[LifecycleEffectSlot::RootDirectory as usize] {
+                OwnedEffectState::Completed {
+                    outcome: Ok(Some(path)),
+                    ..
+                } => Some(path.clone()),
+                _ => None,
+            }
+        });
+        let (requested, root_request) = match &owner.descriptor {
+            OwnedReplacementDescriptor::EntryRestart(request) => (Some(request.session_id), false),
+            OwnedReplacementDescriptor::EntryRoot(_) => (None, true),
+            OwnedReplacementDescriptor::Replacement(_) => return std::future::pending().await,
+        };
+        let authority = loop {
+            if let Err(error) = self.wait_for_restore_release().await {
+                return (Err(error), true);
+            }
+            if self.inner.shutdown.is_cancelled() {
+                return (
+                    Err(SelectionCoordinatorError::Unavailable.to_string()),
+                    true,
+                );
+            }
+            let admission = tokio::select! {
+                biased;
+                _ = self.inner.shutdown.cancelled() => {
+                    return (Err(SelectionCoordinatorError::Unavailable.to_string()), true);
+                }
+                admission = crate::commands::session::prepare_lifecycle_entry_authority(
+                    app, owner.operation, requested, root_request, root_directory.as_deref(),
+                ) => admission,
+            };
+            match admission {
+                Ok(crate::commands::session::LifecycleAuthorityAdmission::Ready(authority)) => {
+                    break authority
+                }
+                Ok(crate::commands::session::LifecycleAuthorityAdmission::Waiting) => {
+                    // Every failed probe has dropped its own stripe/exact/claim.
+                    tokio::task::yield_now().await;
+                }
+                Ok(crate::commands::session::LifecycleAuthorityAdmission::NeedsRootDirectory) => {
+                    let effect = owner.state.lock().ok().and_then(|mut state| {
+                        if state.executor_nonce != executor_nonce
+                            || !matches!(
+                                state.effects[LifecycleEffectSlot::RootDirectory as usize],
+                                OwnedEffectState::NotStarted
+                            )
+                        {
+                            return None;
+                        }
+                        let attempt = Uuid::new_v4();
+                        state.effects[LifecycleEffectSlot::RootDirectory as usize] =
+                            OwnedEffectState::Running(attempt);
+                        Some(LifecycleEffectGuard {
+                            owner: owner.clone(),
+                            slot: LifecycleEffectSlot::RootDirectory,
+                            attempt,
+                            completed: false,
+                        })
+                    });
+                    let Some(effect) = effect else {
+                        return std::future::pending().await;
+                    };
+                    match crate::commands::session::ensure_owned_root_directory(effect) {
+                        Ok(path) => root_directory = Some(path),
+                        Err(error) => return (Err(error), true),
+                    }
+                }
+                Err(error) => return (Err(error), true),
+            }
+        };
+        if let Ok(mut state) = owner.state.lock() {
+            state.claim_reached = authority.has_owned_claim();
+        }
+        let (admission, slot) = match self.try_reserve_envelope() {
+            Ok(capacity) => capacity,
+            Err(error) => {
+                let released = authority.release();
+                if let Ok(mut state) = owner.state.lock() {
+                    state.sidecar_released = released;
+                }
+                return (Err(error.to_string()), true);
+            }
+        };
         let (response, receiver) = oneshot::channel();
+        let entry = OwnedLifecycleEntry {
+            owner: owner.clone(),
+            executor_nonce,
+            authority: Some(authority),
+        };
+        if let Ok(mut state) = owner.state.lock() {
+            state.stage = ReplacementStage::Queued;
+        }
+        let job = match &owner.descriptor {
+            OwnedReplacementDescriptor::EntryRestart(request) => CoordinatorJob::RestartLifecycle {
+                request: request.clone(),
+                entry,
+                response,
+            },
+            OwnedReplacementDescriptor::EntryRoot(request) => CoordinatorJob::RootLifecycle {
+                request: request.clone(),
+                entry,
+                response,
+            },
+            OwnedReplacementDescriptor::Replacement(_) => return std::future::pending().await,
+        };
         drop(slot.send(CoordinatorEnvelope {
-            job: CoordinatorJob::RootLifecycle { request, response },
+            job,
             _admission: admission,
             _create_ticket: None,
             _critical_admission: None,
         }));
-        receiver
-            .await
-            .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
+        match receiver.await {
+            Ok(result) => (result, false),
+            Err(_) => {
+                // Lost internal outcome has no public fabricated result or retry.
+                if let Ok(mut state) = owner.state.lock() {
+                    state.stage = ReplacementStage::Ambiguous;
+                    state
+                        .retained_reason
+                        .get_or_insert_with(|| "lifecycle internal result lost".into());
+                }
+                std::future::pending().await
+            }
+        }
+    }
+
+    async fn finish_lifecycle_entry(
+        &self,
+        owner: &Arc<ReplacementOwner>,
+        executor_nonce: Uuid,
+        (result, never_sent): (Result<SessionInfo, String>, bool),
+        publication: oneshot::Sender<Result<SessionInfo, String>>,
+    ) {
+        let manager = self.inner.manager.read().await.clone();
+        let binding = owner.state.lock().ok().and_then(|state| {
+            state
+                .entry_create
+                .as_ref()
+                .map(|create| (create.binding, create.stage))
+        });
+        let claim_reached = owner
+            .state
+            .lock()
+            .ok()
+            .is_some_and(|state| state.claim_reached);
+        let permit = if claim_reached || binding.is_some() {
+            Some(crate::session::manager::acquire_carrier_mutation_permit().await)
+        } else {
+            None
+        };
+        let binding_released = match (binding, permit.as_ref()) {
+            (None, _) => true,
+            (Some((binding, stage)), Some(permit)) => {
+                manager
+                    .with_current_carrier_snapshot(permit, |current| {
+                        let id = binding.session_id();
+                        match stage {
+                            EntryCreateStage::Reserved | EntryCreateStage::RolledBack => {
+                                !current.pending_ids.contains(&id)
+                                    && !current.rows.iter().any(|row| row.id == id)
+                            }
+                            EntryCreateStage::Finalized => !current.pending_ids.contains(&id),
+                            _ => false,
+                        }
+                    })
+                    .await
+            }
+            _ => false,
+        };
+        if let Ok(mut state) = owner.state.lock() {
+            state.claim_released = !state.claim_reached || state.sidecar_released;
+            state.completion = Some(result.clone());
+            state.envelope_released = true;
+        }
+        let terminal_result = result.clone();
+        let _ = publication.send(result);
+        let removable = match owner.state.lock() {
+            Ok(mut state) if state.executor_nonce == executor_nonce => {
+                state.publication_observed = true;
+                let reuse_live_returned =
+                    state.reuse_live_result.as_ref().is_some_and(|recorded| {
+                        match (recorded, &terminal_result) {
+                            (Ok(recorded), Ok(actual)) => serde_json::to_value(recorded)
+                                .ok()
+                                .zip(serde_json::to_value(actual).ok())
+                                .is_some_and(|(recorded, actual)| recorded == actual),
+                            (Err(recorded), Err(actual)) => recorded == actual,
+                            _ => false,
+                        }
+                    });
+                let body_terminal = state.entry_body_terminal(&terminal_result);
+                let worker_released = state.stage == ReplacementStage::Returned
+                    && state.sidecar_released
+                    && (state.pre_teardown_failure || reuse_live_returned || body_terminal);
+                if (never_sent && state.stage == ReplacementStage::EntryWaiting || worker_released)
+                    && (terminal_result.is_err() || reuse_live_returned || body_terminal)
+                    && state.claim_released
+                    && binding_released
+                    && state.prerequisite_attempt().is_ok()
+                    && state.effects.iter().all(|effect| {
+                        matches!(
+                            effect,
+                            OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
+                        )
+                    })
+                {
+                    let reached_effects =
+                        std::array::from_fn(|index| match &state.effects[index] {
+                            OwnedEffectState::Completed { attempt, .. } => Some(*attempt),
+                            _ => None,
+                        });
+                    state.entry_terminal = Some(EntryTerminal {
+                        disposition: if terminal_result.is_ok() {
+                            EntryTerminalDisposition::Success
+                        } else if state
+                            .entry_create
+                            .as_ref()
+                            .is_some_and(|create| create.stage == EntryCreateStage::RolledBack)
+                        {
+                            EntryTerminalDisposition::RolledBack
+                        } else {
+                            EntryTerminalDisposition::Failure
+                        },
+                        actual_result: terminal_result,
+                        release_receipt: EntryReleaseReceipt {
+                            operation: owner.operation,
+                            executor_nonce,
+                            envelope_never_sent: never_sent,
+                            worker_returned_and_sidecar_released: worker_released,
+                            reached_effects,
+                            prerequisite_attempt: state.prerequisite_attempt().ok().flatten(),
+                            binding,
+                            reader_demand: state
+                                .entry_create
+                                .as_ref()
+                                .and_then(|create| create.reader_demand),
+                        },
+                    });
+                    state.stage = ReplacementStage::EntryTerminal;
+                    true
+                } else {
+                    // The actual legacy result is observed, but individual reached
+                    // effects must still be instrumented before terminal certification.
+                    state.stage = ReplacementStage::Ambiguous;
+                    state.retained_reason =
+                        Some("lifecycle reached-effect receipts incomplete".into());
+                    false
+                }
+            }
+            _ => false,
+        };
+        drop(permit);
+        if removable {
+            self.remove_terminal_entry(owner);
+        }
+    }
+
+    fn seal_retained_entries(&self) {
+        let mut root = match self.inner.retained_replacements.lock() {
+            Ok(root) => root,
+            Err(error) => {
+                let mut root = error.into_inner();
+                root.unavailable = true;
+                root
+            }
+        };
+        root.sealed = true;
+        self.inner
+            .phase
+            .store(CoordinatorPhase::Closing as u8, Ordering::Release);
+    }
+
+    fn inspect_retained_entries(&self, retained: &mut Vec<String>) {
+        let mut cursor = None;
+        loop {
+            let (unavailable, next) = match self.inner.retained_replacements.try_lock() {
+                Ok(root) => (
+                    root.unavailable,
+                    root.entries
+                        .iter()
+                        .filter(|(key, _)| cursor.is_none_or(|last| **key > last))
+                        .min_by_key(|(key, _)| **key)
+                        .map(|(key, owner)| (*key, owner.clone())),
+                ),
+                Err(error) => {
+                    drop(error);
+                    retained.push("reason=retained-root-unreadable state=retained".into());
+                    return;
+                }
+            };
+            if unavailable {
+                retained.push("reason=retained-root-unavailable state=retained".into());
+            }
+            let Some((operation, owner)) = next else {
+                return;
+            };
+            cursor = Some(operation);
+            let safe = owner.state.try_lock().ok().is_some_and(|state| {
+                state.replacement_terminal_is_verified()
+                    || state.entry_terminal_is_verified(operation)
+            });
+            if !safe {
+                let detail = owner
+                    .state
+                    .try_lock()
+                    .ok()
+                    .map(|state| state.retained_effect_diagnostic())
+                    .unwrap_or_else(|| "detail=owner-state-unreadable".into());
+                retained.push(format!(
+                    "reason=retained-lifecycle-entry operation={} state=unsafe {}",
+                    operation, detail
+                ));
+            }
+        }
+    }
+
+    fn remove_terminal_entry(&self, owner: &Arc<ReplacementOwner>) {
+        let removed = match self.inner.retained_replacements.lock() {
+            Ok(mut root)
+                if !root.sealed
+                    && root
+                        .entries
+                        .get(&owner.operation)
+                        .is_some_and(|current| Arc::ptr_eq(current, owner)) =>
+            {
+                root.entries.remove(&owner.operation)
+            }
+            _ => None,
+        };
+        drop(removed);
     }
 
     pub(crate) fn reserve_auto_close(
@@ -1474,6 +5757,63 @@ impl SelectionCoordinator {
             slot: Some(slot),
             admission: Some(admission),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn submit_inline_replacement_fixture(
+        &self,
+        input: crate::commands::session::FixtureReplacementInput,
+        control: Arc<ReplacementFixtureControl>,
+    ) -> Option<crate::commands::session::FixtureReplacementResult> {
+        let owned = input.continuation.clone();
+        let (admission, slot) = match self.try_reserve_envelope() {
+            Ok(reserved) => reserved,
+            Err(_) => {
+                control.record(&owned, ReplacementFixtureCut::SubmitFailed);
+                return None;
+            }
+        };
+        let (response, receiver) = oneshot::channel();
+        control.submitted.store(true, Ordering::Release);
+        control.record(&owned, ReplacementFixtureCut::Submitted);
+        drop(slot.send(CoordinatorEnvelope {
+            _admission: admission,
+            _critical_admission: None,
+            _create_ticket: None,
+            job: CoordinatorJob::InlineReplacementFixture {
+                input,
+                control: control.clone(),
+                response,
+            },
+        }));
+        if control.drop_receiver.load(Ordering::Acquire) {
+            drop(receiver);
+            return None;
+        }
+        match control.receive(&owned, receiver).await {
+            Some(result) => {
+                control.received.store(true, Ordering::Release);
+                let outcome = match &result.outcome {
+                    Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {
+                        ReplacementFixtureOutcome::Finalized
+                    }
+                    Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
+                        ReplacementFixtureOutcome::Retained
+                    }
+                    Err(_) => ReplacementFixtureOutcome::Error,
+                };
+                control.record_outcome(
+                    &owned,
+                    ReplacementFixtureCut::SourceReceived,
+                    Some(outcome),
+                );
+                Some(result)
+            }
+            None => {
+                control.record(&owned, ReplacementFixtureCut::ReceiverLost);
+                None
+            }
+        }
     }
 
     pub(crate) async fn resource_kill(
@@ -1603,6 +5943,7 @@ impl SelectionCoordinator {
             && selection.mode() == SelectionMode::None)
             .then(|| (selection.epoch().to_string(), selection.revision()));
         Ok(CreateFinalizationTicket {
+            owned_replacement: None,
             slot: Some(slot),
             admission: Some(admission),
             create_ticket: Some(create_ticket),
@@ -1626,28 +5967,44 @@ impl SelectionCoordinator {
                 Ordering::Acquire,
             )
             .map_err(|_| SelectionCoordinatorError::Busy.to_string())?;
+        let _phase_guard = RestoreSubmissionPhaseGuard {
+            phase: &self.inner.phase,
+        };
+        let carrier_permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        match crate::config::sessions_persistence::restore_carrier_scopes_are_empty(&carrier_permit)
+        {
+            Some(true) => {}
+            Some(false) => return Err(SelectionCoordinatorError::Busy.to_string()),
+            None => return Err(SelectionCoordinatorError::Unavailable.to_string()),
+        }
         let admission = match Arc::clone(&self.inner.admission).try_acquire_owned() {
             Ok(admission) => admission,
             Err(_) => {
-                self.inner
-                    .phase
-                    .store(CoordinatorPhase::Bootstrapping as u8, Ordering::Release);
                 return Err(SelectionCoordinatorError::Busy.to_string());
             }
         };
         let slot = match self.inner.sender.clone().try_reserve_owned() {
             Ok(slot) => slot,
             Err(_) => {
-                self.inner
-                    .phase
-                    .store(CoordinatorPhase::Bootstrapping as u8, Ordering::Release);
                 return Err(SelectionCoordinatorError::Busy.to_string());
             }
         };
+        let nonce = Uuid::new_v4();
+        {
+            let root = self
+                .inner
+                .retained_replacements
+                .lock()
+                .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?;
+            if root.restore_nonce.is_some() || !root.restore_active.load(Ordering::Acquire) {
+                return Err(SelectionCoordinatorError::Unavailable.to_string());
+            }
+        }
         let (started, started_rx) = oneshot::channel();
         let (release, release_rx) = oneshot::channel();
         drop(slot.send(CoordinatorEnvelope {
             job: CoordinatorJob::RestoreBarrier {
+                nonce,
                 started,
                 release: release_rx,
             },
@@ -1659,13 +6016,19 @@ impl SelectionCoordinator {
         // admitted, but the worker cannot execute it until restore releases the
         // barrier. In particular, unsolicited route loss must wait here instead
         // of being rejected after the external route has already disappeared.
-        self.inner
-            .phase
-            .store(CoordinatorPhase::Running as u8, Ordering::Release);
+        let _ = self.inner.phase.compare_exchange(
+            CoordinatorPhase::Restoring as u8,
+            CoordinatorPhase::Running as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        drop(carrier_permit);
         started_rx
             .await
             .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?;
         Ok(RestoreBarrierGuard {
+            coordinator: Arc::downgrade(&self.inner),
+            nonce,
             release: Some(release),
         })
     }
@@ -1923,9 +6286,7 @@ impl SelectionCoordinator {
         let worker_deadline = deadline
             .checked_sub(finalization_reserve)
             .unwrap_or(started_at);
-        self.inner
-            .phase
-            .store(CoordinatorPhase::Closing as u8, Ordering::Release);
+        self.seal_retained_entries();
         let queued_aborts = self.inner.blocking_seed_work.seal();
         for abort in queued_aborts {
             abort.abort();
@@ -2011,6 +6372,7 @@ impl SelectionCoordinator {
                 retained.push("reason=critical-key-clear state=retained".to_string());
             }
         }
+        self.inspect_retained_entries(&mut retained);
         retained.sort();
         retained.dedup();
         SelectionShutdownReport {
@@ -2021,6 +6383,8 @@ impl SelectionCoordinator {
 }
 
 pub struct RestoreBarrierGuard {
+    coordinator: Weak<CoordinatorInner>,
+    nonce: Uuid,
     release: Option<oneshot::Sender<()>>,
 }
 
@@ -2064,7 +6428,9 @@ impl AutoCloseBatchTicket {
 
 impl RestoreBarrierGuard {
     pub(crate) fn transaction<R: Runtime>(&self, app: AppHandle<R>) -> SelectionTransaction<R> {
-        SelectionTransaction::new(app)
+        let mut transaction = SelectionTransaction::new(app, self.coordinator.clone());
+        transaction.restore_nonce = Some(self.nonce);
+        transaction
     }
 
     fn release_worker(&mut self) {
@@ -2090,6 +6456,7 @@ impl Drop for RestoreBarrierGuard {
 }
 
 pub struct CreateFinalizationTicket {
+    owned_replacement: Option<OwnedReplacementContinuation>,
     slot: Option<mpsc::OwnedPermit<CoordinatorEnvelope>>,
     admission: Option<OwnedSemaphorePermit>,
     create_ticket: Option<OwnedSemaphorePermit>,
@@ -2110,57 +6477,172 @@ impl fmt::Debug for CreateFinalizationTicket {
 }
 
 impl CreateFinalizationTicket {
-    pub(super) fn bind(&mut self, session_id: Uuid) -> PendingCreateBinding {
-        let binding = PendingCreateBinding::new(session_id, Uuid::new_v4());
+    pub(crate) fn retain_owned_replacement(
+        &mut self,
+        continuation: OwnedReplacementContinuation,
+    ) -> Result<(), String> {
+        self.check_unbound()?;
+        if self.owned_replacement.is_some() {
+            return Err("create finalization ticket was already bound".to_string());
+        }
+        self.auto_select_precondition = None;
+        self.owned_replacement = Some(continuation);
+        Ok(())
+    }
+    /// Keep the original selection precondition and binding metadata, while a
+    /// blocked accepted create releases scarce finalizer capacity.
+    pub(crate) fn release_capacity_for_wait(&mut self) -> bool {
+        drop(self.slot.take());
+        drop(self.admission.take());
+        drop(self.create_ticket.take());
+        !self.completed && self.binding.is_none()
+    }
+
+    pub(crate) fn resume_unbound_capacity(
+        &mut self,
+        coordinator: &SelectionCoordinator,
+    ) -> Result<(), SelectionCoordinatorError> {
+        if self.slot.is_some() && self.admission.is_some() && self.create_ticket.is_some() {
+            return Ok(());
+        }
+        if self.completed
+            || self.binding.is_some()
+            || self.slot.is_some()
+            || self.admission.is_some()
+            || self.create_ticket.is_some()
+        {
+            return Err(SelectionCoordinatorError::Unavailable);
+        }
+        coordinator.check_external_submission()?;
+        let create_ticket = coordinator
+            .inner
+            .create_tickets
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| SelectionCoordinatorError::Busy)?;
+        let admission = coordinator
+            .inner
+            .admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| SelectionCoordinatorError::Busy)?;
+        let slot = coordinator
+            .inner
+            .sender
+            .clone()
+            .try_reserve_owned()
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Closed(_) => SelectionCoordinatorError::Unavailable,
+                mpsc::error::TrySendError::Full(_) => SelectionCoordinatorError::Busy,
+            })?;
+        self.slot = Some(slot);
+        self.admission = Some(admission);
+        self.create_ticket = Some(create_ticket);
+        Ok(())
+    }
+
+    fn check_unbound(&self) -> Result<(), String> {
+        if self.completed || self.binding.is_some() {
+            return Err("create finalization ticket was already bound".to_string());
+        }
+        Ok(())
+    }
+
+    pub(super) fn bind(&mut self, session_id: Uuid) -> Result<PendingCreateBinding, String> {
+        self.check_unbound()?;
+        self.bind_prepared(PendingCreateBinding::new(session_id, Uuid::new_v4()))
+    }
+
+    pub(crate) fn bind_prepared(
+        &mut self,
+        binding: PendingCreateBinding,
+    ) -> Result<PendingCreateBinding, String> {
+        self.check_unbound()?;
         self.binding = Some(binding);
-        binding
+        Ok(binding)
     }
 
     pub(crate) fn binding(&self) -> Option<PendingCreateBinding> {
         self.binding
     }
 
-    pub async fn finalize(mut self, warnings: Vec<SessionWarning>) -> Result<SessionInfo, String> {
-        let slot = self
-            .slot
-            .take()
-            .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
-        let admission = self
-            .admission
-            .take()
-            .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
-        let create_ticket = self
-            .create_ticket
-            .take()
-            .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
-        let binding = self
-            .binding
-            .take()
-            .ok_or_else(|| "create finalization ticket was not bound".to_string())?;
-        let (response, receiver) = oneshot::channel();
-        drop(slot.send(CoordinatorEnvelope {
-            job: CoordinatorJob::FinalizeCreate {
-                request: FinalizeCreateRequest {
-                    binding,
-                    cause: self.cause,
-                    auto_select_precondition: self.auto_select_precondition.take(),
-                    warnings,
+    pub async fn finalize(self, warnings: Vec<SessionWarning>) -> Result<SessionInfo, String> {
+        match self.finalize_with_owned_outcome(warnings).await {
+            Some(result) => result,
+            None => std::future::pending().await,
+        }
+    }
+
+    pub(crate) async fn finalize_with_owned_outcome(
+        mut self,
+        warnings: Vec<SessionWarning>,
+    ) -> Option<Result<SessionInfo, String>> {
+        let owned = self.owned_replacement.is_some();
+        #[cfg(test)]
+        let fixture_owned = self.owned_replacement.clone();
+        let queued = (|| {
+            let slot = self
+                .slot
+                .take()
+                .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
+            let admission = self
+                .admission
+                .take()
+                .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
+            let create_ticket = self
+                .create_ticket
+                .take()
+                .ok_or_else(|| SelectionCoordinatorError::Unavailable.to_string())?;
+            let binding = self
+                .binding
+                .take()
+                .ok_or_else(|| "create finalization ticket was not bound".to_string())?;
+            let (response, receiver) = oneshot::channel();
+            drop(slot.send(CoordinatorEnvelope {
+                job: CoordinatorJob::FinalizeCreate {
+                    request: FinalizeCreateRequest {
+                        owned_replacement: self.owned_replacement.take(),
+                        binding,
+                        cause: self.cause,
+                        auto_select_precondition: self.auto_select_precondition.take(),
+                        warnings,
+                    },
+                    response,
                 },
-                response,
-            },
-            _admission: admission,
-            _create_ticket: Some(create_ticket),
-            _critical_admission: None,
-        }));
-        self.completed = true;
-        receiver
-            .await
-            .map_err(|_| SelectionCoordinatorError::Unavailable.to_string())?
+                _admission: admission,
+                _create_ticket: Some(create_ticket),
+                _critical_admission: None,
+            }));
+            self.completed = true;
+            Ok::<_, String>(receiver)
+        })();
+        let receiver = match queued {
+            Ok(receiver) => receiver,
+            Err(error) => return Some(Err(error)),
+        };
+        #[cfg(test)]
+        if let Some(continuation) = fixture_owned.as_ref() {
+            if let Some(control) = continuation.fixture.as_ref() {
+                control.record(continuation, ReplacementFixtureCut::TicketSubmitted);
+                return control.receive(continuation, receiver).await;
+            }
+        }
+        match receiver.await {
+            Ok(result) => Some(result),
+            Err(_) if owned => None,
+            Err(_) => Some(Err(SelectionCoordinatorError::Unavailable.to_string())),
+        }
     }
 }
 
 impl Drop for CreateFinalizationTicket {
     fn drop(&mut self) {
+        // A dropped waiter/task is never explicit stopped-executor authority.
+        // The retained owner, including finalized B, survives this ticket.
+        if self.owned_replacement.is_some() {
+            return;
+        }
+
         if self.completed {
             return;
         }
@@ -2212,6 +6694,9 @@ impl ContainerLifecycleSender {
 pub(crate) struct SelectionTransaction<R: Runtime> {
     app: AppHandle<R>,
     capability: CommitCapability,
+    lifecycle_entry: Option<(Arc<ReplacementOwner>, Uuid)>,
+    coordinator: Weak<CoordinatorInner>,
+    restore_nonce: Option<Uuid>,
 }
 
 impl<R: Runtime> Clone for SelectionTransaction<R> {
@@ -2219,6 +6704,9 @@ impl<R: Runtime> Clone for SelectionTransaction<R> {
         Self {
             app: self.app.clone(),
             capability: self.capability.clone(),
+            lifecycle_entry: self.lifecycle_entry.clone(),
+            coordinator: self.coordinator.clone(),
+            restore_nonce: self.restore_nonce,
         }
     }
 }
@@ -2236,10 +6724,13 @@ impl CommitCapability {
 }
 
 impl<R: Runtime> SelectionTransaction<R> {
-    fn new(app: AppHandle<R>) -> Self {
+    fn new(app: AppHandle<R>, coordinator: Weak<CoordinatorInner>) -> Self {
         Self {
             app,
             capability: CommitCapability { _private: () },
+            lifecycle_entry: None,
+            coordinator,
+            restore_nonce: None,
         }
     }
 
@@ -2248,6 +6739,378 @@ impl<R: Runtime> SelectionTransaction<R> {
         Self {
             app,
             capability: CommitCapability::for_test(),
+            lifecycle_entry: None,
+            coordinator: Weak::new(),
+            restore_nonce: None,
+        }
+    }
+
+    fn for_lifecycle_entry(&self, entry: &OwnedLifecycleEntry) -> Self {
+        let mut transaction = self.clone();
+        transaction.lifecycle_entry = Some((entry.owner.clone(), entry.executor_nonce));
+        if let Ok(mut state) = entry.owner.state.lock() {
+            if state.executor_nonce == entry.executor_nonce
+                && state.stage == ReplacementStage::Queued
+            {
+                state.stage = ReplacementStage::Executing;
+            }
+        }
+        transaction
+    }
+
+    /// Only the original exact-UUID lookup failure calls this before any
+    /// teardown/create/native prerequisite. No error string implies this fact.
+    pub(crate) fn observe_lifecycle_missing_source(&self) {
+        let Some((owner, nonce)) = &self.lifecycle_entry else {
+            return;
+        };
+        if let Ok(mut state) = owner.state.lock() {
+            if state.executor_nonce == *nonce
+                && state.stage == ReplacementStage::Executing
+                && state
+                    .effects
+                    .iter()
+                    .all(|effect| matches!(effect, OwnedEffectState::NotStarted))
+            {
+                state.pre_teardown_failure = true;
+            }
+        }
+    }
+
+    /// The original resolver/probe/native preparation returned its observed
+    /// error before retirement or pending-runtime creation. Native residues stay.
+    pub(crate) fn observe_lifecycle_preparation_failure(&self) {
+        let Some((owner, nonce)) = &self.lifecycle_entry else {
+            return;
+        };
+        if let Ok(mut state) = owner.state.lock() {
+            let context_failed = matches!(
+                &state.effects[LifecycleEffectSlot::ContextPreparation as usize],
+                OwnedEffectState::Completed {
+                    outcome: Err(_),
+                    ..
+                }
+            );
+            let no_later_effect = state.effects.iter().enumerate().all(|(index, effect)| {
+                if index == LifecycleEffectSlot::RootDirectory as usize
+                    || index == LifecycleEffectSlot::ContextPreparation as usize
+                {
+                    matches!(
+                        effect,
+                        OwnedEffectState::NotStarted | OwnedEffectState::Completed { .. }
+                    )
+                } else {
+                    matches!(effect, OwnedEffectState::NotStarted)
+                }
+            });
+            if state.executor_nonce == *nonce
+                && state.stage == ReplacementStage::Executing
+                && context_failed
+                && no_later_effect
+            {
+                state.pre_teardown_failure = true;
+            }
+        }
+    }
+
+    /// Only the actual ReuseLive return can certify this path. Restart/create
+    /// paths never call this and still require their own reached-effect proof.
+    pub(crate) fn observe_reuse_live_result(&self, result: &Result<SessionInfo, String>) {
+        let Some((owner, nonce)) = self.lifecycle_entry.as_ref() else {
+            return;
+        };
+        let Ok(mut state) = owner.state.lock() else {
+            return;
+        };
+        if state.executor_nonce == *nonce
+            && state.stage == ReplacementStage::Executing
+            && matches!(&owner.descriptor, OwnedReplacementDescriptor::EntryRoot(_))
+            && state.reuse_live_result.is_none()
+            && state.entry_create.is_none()
+            && state.effects.iter().enumerate().all(|(index, effect)| {
+                if index == LifecycleEffectSlot::RootDirectory as usize
+                    || index == LifecycleEffectSlot::Publication as usize
+                {
+                    matches!(effect, OwnedEffectState::Completed { .. })
+                } else {
+                    matches!(effect, OwnedEffectState::NotStarted)
+                }
+            })
+        {
+            state.reuse_live_result = Some(result.clone());
+        }
+    }
+
+    pub(crate) fn retain_entry_create_binding(&self, binding: PendingCreateBinding) -> bool {
+        let Some((owner, nonce)) = self.lifecycle_entry.as_ref() else {
+            return true;
+        };
+        let Ok(mut state) = owner.state.lock() else {
+            return false;
+        };
+        if state.executor_nonce != *nonce || state.stage != ReplacementStage::Executing {
+            return false;
+        }
+        if state.entry_create.is_some() {
+            return false;
+        }
+        let preparation_receipt =
+            match &state.effects[LifecycleEffectSlot::ContextPreparation as usize] {
+                OwnedEffectState::NotStarted => None,
+                receipt @ OwnedEffectState::Completed { .. } => Some(receipt.clone()),
+                _ => return false,
+            };
+        state.effects[LifecycleEffectSlot::ContextPreparation as usize] =
+            OwnedEffectState::NotStarted;
+        state.entry_create = Some(EntryCreateBinding {
+            binding,
+            stage: EntryCreateStage::Reserved,
+            preparation_receipt,
+            reader_demand: None,
+        });
+        true
+    }
+
+    pub(crate) fn observe_entry_reader_demand(
+        &self,
+        binding: PendingCreateBinding,
+        receipt: EntryReaderDemandReceipt,
+    ) -> bool {
+        let Some((owner, nonce)) = self.lifecycle_entry.as_ref() else {
+            return true;
+        };
+        let Ok(mut state) = owner.state.lock() else {
+            return false;
+        };
+        if state.executor_nonce != *nonce || state.stage != ReplacementStage::Executing {
+            return false;
+        }
+        let Some(create) = state.entry_create.as_mut() else {
+            return false;
+        };
+        if create.binding != binding
+            || create.stage != EntryCreateStage::Finalized
+            || create.reader_demand.is_some()
+        {
+            return false;
+        }
+        create.reader_demand = Some(receipt);
+        true
+    }
+
+    pub(crate) fn observe_entry_pending_binding(&self, binding: PendingCreateBinding) -> bool {
+        let Some((owner, nonce)) = self.lifecycle_entry.as_ref() else {
+            return true;
+        };
+        let Ok(mut state) = owner.state.lock() else {
+            return false;
+        };
+        if state.executor_nonce != *nonce || state.stage != ReplacementStage::Executing {
+            return false;
+        }
+        let Some(create) = state.entry_create.as_mut() else {
+            return false;
+        };
+        if create.binding != binding || create.stage != EntryCreateStage::Reserved {
+            return false;
+        }
+        create.stage = EntryCreateStage::Pending;
+        true
+    }
+
+    /// The actual commit and synchronous disarm share U. A lost result after
+    /// this transition never turns finalized B into pending cleanup authority.
+    pub(crate) async fn commit_entry_create(
+        &self,
+        binding: PendingCreateBinding,
+        decision: CommitDecision,
+        cause: SelectionCause,
+        mutations: LifecycleMutations,
+    ) -> Result<CommitResult, String> {
+        let Some((owner, nonce)) = self.lifecycle_entry.as_ref() else {
+            return self.commit(decision, cause, mutations).await;
+        };
+        let manager = self.manager().await;
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let authorized = owner.state.lock().ok().is_some_and(|state| {
+            state.executor_nonce == *nonce
+                && state.stage == ReplacementStage::Executing
+                && state.entry_create.as_ref().is_some_and(|create| {
+                    create.binding == binding && create.stage == EntryCreateStage::Pending
+                })
+        });
+        if !authorized {
+            return Err(SelectionCoordinatorError::Unavailable.to_string());
+        }
+        let committed = manager
+            .commit_selection_transition_with_carrier_permit(
+                &permit,
+                &self.capability,
+                decision,
+                cause,
+                mutations,
+            )
+            .await?;
+        // No await/fallible exit between real manager commit and disarm.
+        let disarmed = match owner.state.lock() {
+            Ok(mut state) => {
+                let same_executor = state.executor_nonce == *nonce;
+                match state.entry_create.as_mut() {
+                    Some(create)
+                        if same_executor
+                            && create.binding == binding
+                            && create.stage == EntryCreateStage::Pending =>
+                    {
+                        create.stage = EntryCreateStage::Finalized;
+                        true
+                    }
+                    Some(create) => {
+                        create.stage = EntryCreateStage::Unknown;
+                        state.stage = ReplacementStage::Ambiguous;
+                        false
+                    }
+                    None => {
+                        state.stage = ReplacementStage::Ambiguous;
+                        false
+                    }
+                }
+            }
+            Err(_) => false,
+        };
+        drop(permit);
+        if !disarmed {
+            // Actual B committed: never turn missing owner bookkeeping into an
+            // ordinary Err which could trigger pending-runtime cleanup.
+            return std::future::pending().await;
+        }
+        crate::config::activity_log::append_batch(&committed.activity);
+        Ok(committed)
+    }
+
+    pub(crate) fn has_lifecycle_entry(&self) -> bool {
+        self.lifecycle_entry.is_some()
+    }
+
+    pub(crate) fn start_lifecycle_effect(
+        &self,
+        slot: LifecycleEffectSlot,
+    ) -> Option<LifecycleEffectGuard> {
+        let (owner, nonce) = self.lifecycle_entry.as_ref()?;
+        let mut state = owner.state.lock().ok()?;
+        if state.executor_nonce != *nonce
+            || state.stage != ReplacementStage::Executing
+            || !matches!(state.effects[slot as usize], OwnedEffectState::NotStarted)
+        {
+            state.stage = ReplacementStage::Ambiguous;
+            return None;
+        }
+        let attempt = Uuid::new_v4();
+        state.effects[slot as usize] = OwnedEffectState::Running(attempt);
+        Some(LifecycleEffectGuard {
+            owner: owner.clone(),
+            slot,
+            attempt,
+            completed: false,
+        })
+    }
+
+    pub(crate) fn lifecycle_root_directory_outcome(&self) -> Option<Result<String, String>> {
+        let (owner, nonce) = self.lifecycle_entry.as_ref()?;
+        let state = owner.state.lock().ok()?;
+        if state.executor_nonce != *nonce {
+            return None;
+        }
+        match &state.effects[LifecycleEffectSlot::RootDirectory as usize] {
+            OwnedEffectState::Completed {
+                outcome: Ok(Some(path)),
+                ..
+            } => Some(Ok(path.clone())),
+            OwnedEffectState::Completed {
+                outcome: Err(error),
+                ..
+            } => Some(Err(error.clone())),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn has_accepted_lifecycle_core(&self) -> bool {
+        self.lifecycle_entry.as_ref().is_some_and(|(owner, nonce)| {
+            owner.state.lock().ok().is_some_and(|state| {
+                state.executor_nonce == *nonce && state.stage == ReplacementStage::Executing
+            })
+        })
+    }
+
+    pub(crate) fn current_restore_nonce(&self) -> Option<Uuid> {
+        self.has_active_restore_capability()
+            .then_some(self.restore_nonce)
+            .flatten()
+    }
+
+    pub(crate) fn has_restore_context(&self) -> bool {
+        self.restore_nonce.is_some()
+    }
+
+    /// Contradictory mid-effect authority invalidates only this real restore
+    /// capability. Keep its actual barrier active until the existing owner
+    /// releases it, and latch persistence unsafe rather than resetting history.
+    pub(crate) fn invalidate_restore_ownership(&self) {
+        let (Some(nonce), Some(inner)) = (self.restore_nonce, self.coordinator.upgrade()) else {
+            return;
+        };
+        if let Ok(mut root) = inner.retained_replacements.lock() {
+            if root.restore_nonce == Some(nonce) && root.restore_active.load(Ordering::Acquire) {
+                root.unavailable = true;
+            }
+        };
+    }
+
+    pub(crate) fn has_active_restore_capability(&self) -> bool {
+        let Some(nonce) = self.restore_nonce else {
+            return false;
+        };
+        let Some(inner) = self.coordinator.upgrade() else {
+            return false;
+        };
+        let Ok(root) = inner.retained_replacements.lock() else {
+            return false;
+        };
+        !root.unavailable
+            && root.restore_nonce == Some(nonce)
+            && root.restore_active.load(Ordering::Acquire)
+            && CoordinatorPhase::from_u8(inner.phase.load(Ordering::Acquire))
+                == CoordinatorPhase::Running
+            && !inner.shutdown.is_cancelled()
+    }
+
+    fn begin_restore(&self, nonce: Uuid) -> bool {
+        let Some(inner) = self.coordinator.upgrade() else {
+            return false;
+        };
+        let Ok(mut root) = inner.retained_replacements.lock() else {
+            return false;
+        };
+        if !root.restore_active.load(Ordering::Acquire)
+            || root.restore_nonce.is_some()
+            || CoordinatorPhase::from_u8(inner.phase.load(Ordering::Acquire))
+                == CoordinatorPhase::Closing
+        {
+            return false;
+        }
+        root.restore_nonce = Some(nonce);
+        true
+    }
+
+    fn release_restore(&self, nonce: Uuid) {
+        let Some(inner) = self.coordinator.upgrade() else {
+            return;
+        };
+        let Ok(mut root) = inner.retained_replacements.lock() else {
+            return;
+        };
+        if root.restore_nonce == Some(nonce) {
+            root.restore_nonce = None;
+            root.restore_active.store(false, Ordering::Release);
         }
     }
 
@@ -2261,6 +7124,20 @@ impl<R: Runtime> SelectionTransaction<R> {
             .read()
             .await
             .clone()
+    }
+
+    /// Uses the caller's preallocated binding and the current selection turn.
+    /// This reserves no queue slot and performs no manager access.
+    pub(crate) fn prepare_inline_create_binding(
+        &self,
+        binding: PendingCreateBinding,
+        reserved: &mut Option<PendingCreateBinding>,
+    ) -> Result<PendingCreateBinding, String> {
+        if reserved.is_some() {
+            return Err("inline create binding was already prepared".to_string());
+        }
+        *reserved = Some(binding);
+        Ok(binding)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2296,17 +7173,29 @@ impl<R: Runtime> SelectionTransaction<R> {
         binding: PendingCreateBinding,
         cause: SelectionCause,
         warnings: Vec<SessionWarning>,
-    ) -> Result<SessionInfo, String> {
-        execute_finalize_create(
-            self,
-            FinalizeCreateRequest {
-                binding,
-                cause,
-                auto_select_precondition: None,
-                warnings,
-            },
-        )
-        .await
+        owned_replacement: Option<OwnedReplacementContinuation>,
+    ) -> Option<Result<SessionInfo, String>> {
+        let request = FinalizeCreateRequest {
+            owned_replacement,
+            binding,
+            cause,
+            auto_select_precondition: None,
+            warnings,
+        };
+        if let Some(owned) = request.owned_replacement.clone() {
+            let result = execute_owned_finalize_create(self, request).await;
+            if let Some(result) = result.as_ref() {
+                if let Ok(mut state) = owned.owner.state.lock() {
+                    state.completion = Some(result.clone());
+                    state.publication_observed = true;
+                    state.envelope_released = true;
+                }
+                owned.owner.changed.notify_waiters();
+            }
+            result
+        } else {
+            Some(execute_finalize_create(self, request).await)
+        }
     }
 
     pub(crate) async fn rollback_inline_create(&self, binding: PendingCreateBinding) {
@@ -2396,6 +7285,38 @@ impl<R: Runtime> SelectionTransaction<R> {
         Ok(result)
     }
 
+    pub(crate) async fn commit_response_close_retained(
+        &self,
+        id: Uuid,
+    ) -> Result<CommitResult, String> {
+        let manager = self.manager().await;
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let decision = manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                if current.selection.id() == Some(id) {
+                    CommitDecision::Clear
+                } else {
+                    CommitDecision::Keep
+                }
+            })
+            .await;
+        let mut mutations = LifecycleMutations::default();
+        mutations.set_detached_intent(id, false);
+        mutations.mark_exited(id, 0);
+        let result = manager
+            .commit_selection_transition_with_carrier_permit(
+                &permit,
+                &self.capability,
+                decision,
+                SelectionCause::BackgroundCleanup,
+                mutations,
+            )
+            .await?;
+        drop(permit);
+        crate::config::activity_log::append_batch(&result.activity);
+        Ok(result)
+    }
+
     pub(crate) async fn persist(&self, source: SelectionSource, session_id: Option<Uuid>) {
         let manager = self.manager().await;
         if let Err(error) = persist_current_state_result(&manager).await {
@@ -2449,7 +7370,7 @@ async fn worker_loop<R: Runtime>(
     inner: Arc<CoordinatorInner>,
     mut receiver: mpsc::Receiver<CoordinatorEnvelope>,
 ) {
-    let transaction = SelectionTransaction::new(app);
+    let transaction = SelectionTransaction::new(app, Arc::downgrade(&inner));
     loop {
         let envelope = tokio::select! {
             biased;
@@ -2474,7 +7395,40 @@ async fn drain_after_shutdown<R: Runtime>(
     while let Some(envelope) = receiver.recv().await {
         let (job, mut hold) = envelope.into_parts();
         match job {
+            #[cfg(test)]
+            CoordinatorJob::InlineReplacementFixture {
+                input,
+                control,
+                response,
+            } => {
+                control.record(&input.continuation, ReplacementFixtureCut::Drained);
+                hold.release();
+                control.record(
+                    &input.continuation,
+                    ReplacementFixtureCut::AdmissionReleased,
+                );
+                drop(input);
+                drop(response);
+            }
             CoordinatorJob::FinalizeCreate { request, response } => {
+                if let Some(owned) = request.owned_replacement {
+                    // Shutdown is not stopped-executor cleanup authority. The
+                    // accepted caller observes Retained when this channel ends;
+                    // its original pending/finalized binding remains accounted.
+                    hold.release();
+                    drop(hold._create_ticket.take());
+                    if let Ok(mut state) = owned.owner.state.lock() {
+                        state.envelope_released = true;
+                        state.retained_reason =
+                            Some("owned finalizer drained during shutdown".into());
+                    }
+                    #[cfg(test)]
+                    if let Some(control) = owned.fixture.as_ref() {
+                        control.record(&owned, ReplacementFixtureCut::TicketDrained);
+                    }
+                    drop(response);
+                    continue;
+                }
                 execute_rollback_create(transaction, request.binding).await;
                 if hold
                     .respond(
@@ -2526,6 +7480,7 @@ async fn drain_after_shutdown<R: Runtime>(
                     log::debug!("[selection] queued route-loss caller dropped during shutdown");
                 }
             }
+            CoordinatorJob::ConditionalResponseClose { .. } => {}
             CoordinatorJob::Destroy { response, .. } => {
                 if hold
                     .respond(
@@ -2612,6 +7567,54 @@ async fn execute_envelope<R: Runtime>(
 ) {
     let (job, mut hold) = envelope.into_parts();
     match job {
+        #[cfg(test)]
+        CoordinatorJob::InlineReplacementFixture {
+            input,
+            control,
+            response,
+        } => {
+            let owned = input.continuation.clone();
+            control.record(&owned, ReplacementFixtureCut::WorkerEntered);
+            let mut trace = ReplacementFixtureEnvelopeTrace {
+                hold: &mut hold,
+                control: &control,
+                owned: &owned,
+                released: false,
+                outcome: None,
+            };
+            let result =
+                crate::commands::session::execute_inline_replacement_fixture(transaction, input)
+                    .await;
+            let outcome = match &result.outcome {
+                Ok(crate::commands::session::OwnedReplacementCreateStep::Finalized(_)) => {
+                    ReplacementFixtureOutcome::Finalized
+                }
+                Ok(crate::commands::session::OwnedReplacementCreateStep::Retained) => {
+                    ReplacementFixtureOutcome::Retained
+                }
+                Err(_) => ReplacementFixtureOutcome::Error,
+            };
+            control.record_outcome(
+                &owned,
+                ReplacementFixtureCut::AdapterReturned,
+                Some(outcome),
+            );
+            let resumed = ReplacementFixtureControl::wait_gate(&control.before_release_gate).await;
+            trace.outcome = Some(outcome);
+            trace.release();
+            let after_release = control
+                .reached(&owned, ReplacementFixtureCut::AfterReleaseBeforeSend)
+                .await;
+            if resumed && after_release {
+                if response.send(result).is_err() {
+                    control.record(&owned, ReplacementFixtureCut::ReceiverLost);
+                }
+            } else {
+                control.record(&owned, ReplacementFixtureCut::GateLost);
+                drop(result);
+                drop(response);
+            }
+        }
         CoordinatorJob::Transition { request, response } => {
             let result = execute_transition(transaction, request).await;
             if hold.respond(response, result).is_err() {
@@ -2626,12 +7629,41 @@ async fn execute_envelope<R: Runtime>(
         }
         CoordinatorJob::FinalizeCreate { request, response } => {
             let session_id = request.binding.session_id();
-            let result = execute_finalize_create(transaction, request).await;
-            if hold.respond(response, result).is_err() {
-                log::debug!(
-                    "[selection] create finalizer caller dropped before result delivery session={}",
-                    session_id
-                );
+            let owned = request.owned_replacement.clone();
+            let result = if owned.is_some() {
+                execute_owned_finalize_create(transaction, request).await
+            } else {
+                Some(execute_finalize_create(transaction, request).await)
+            };
+            match result {
+                Some(result) => {
+                    let observed = result.clone();
+                    hold.release();
+                    if owned.is_some() {
+                        drop(hold._create_ticket.take());
+                    }
+                    if let Some(owned) = owned {
+                        if let Ok(mut state) = owned.owner.state.lock() {
+                            state.completion = Some(observed);
+                            state.publication_observed = true;
+                            state.envelope_released = true;
+                        }
+                        owned.owner.changed.notify_waiters();
+                    }
+                    // No await separates recording the attempt from sending.
+                    // Only receipt permits the producer to certify work.
+                    let sent = response.send(result);
+                    if sent.is_err() {
+                        log::debug!(
+                            "[selection] create finalizer caller dropped session={}",
+                            session_id
+                        );
+                    }
+                }
+                None => {
+                    hold.release();
+                    drop(response);
+                }
             }
         }
         CoordinatorJob::RollbackCreate { binding } => {
@@ -2651,6 +7683,16 @@ async fn execute_envelope<R: Runtime>(
                 );
             }
         }
+        CoordinatorJob::ConditionalResponseClose { request } => {
+            if let Err(error) = crate::commands::session::execute_response_close_transaction(
+                transaction,
+                request.ticket,
+            )
+            .await
+            {
+                log::warn!("[response-close] conditional operation failed: {}", error);
+            }
+        }
         CoordinatorJob::Destroy { request, response } => {
             let result =
                 crate::commands::session::execute_destroy_transaction(transaction, request).await;
@@ -2658,16 +7700,114 @@ async fn execute_envelope<R: Runtime>(
                 log::debug!("[selection] destroy caller dropped before result delivery");
             }
         }
-        CoordinatorJob::RestartLifecycle { request, response } => {
-            let result =
-                crate::commands::session::execute_restart_transaction(transaction, request).await;
+        CoordinatorJob::RestartLifecycle {
+            request,
+            mut entry,
+            response,
+        } => {
+            let Some(authority) = entry.authority.as_mut() else {
+                hold.release();
+                drop(response);
+                return;
+            };
+            if !crate::commands::session::validate_lifecycle_entry_authority(
+                transaction.app(),
+                authority,
+            )
+            .await
+            {
+                hold.release();
+                drop(response);
+                return;
+            }
+            let transaction = transaction.for_lifecycle_entry(&entry);
+            if !transaction.has_accepted_lifecycle_core() {
+                hold.release();
+                drop(response);
+                return;
+            }
+            let Some(authority) = entry.authority.as_ref() else {
+                hold.release();
+                drop(response);
+                return;
+            };
+            let result = crate::commands::session::execute_external_restart_transaction(
+                &transaction,
+                request,
+                authority,
+            )
+            .await;
+            let result = match result {
+                crate::commands::session::LifecycleEntryOutcome::Returned(result) => result,
+                crate::commands::session::LifecycleEntryOutcome::Interrupted => {
+                    entry.observe_authority_interruption();
+                    drop(transaction);
+                    drop(entry);
+                    hold.release();
+                    drop(response);
+                    return;
+                }
+            };
+            entry.observe_return(&result);
+            entry.release_lease().await;
+            drop(transaction);
+            drop(entry);
             if hold.respond(response, result).is_err() {
                 log::debug!("[selection] restart caller dropped before result delivery");
             }
         }
-        CoordinatorJob::RootLifecycle { request, response } => {
-            let result =
-                crate::commands::session::execute_root_transaction(transaction, request).await;
+        CoordinatorJob::RootLifecycle {
+            request,
+            mut entry,
+            response,
+        } => {
+            let Some(authority) = entry.authority.as_mut() else {
+                hold.release();
+                drop(response);
+                return;
+            };
+            if !crate::commands::session::validate_lifecycle_entry_authority(
+                transaction.app(),
+                authority,
+            )
+            .await
+            {
+                hold.release();
+                drop(response);
+                return;
+            }
+            let transaction = transaction.for_lifecycle_entry(&entry);
+            if !transaction.has_accepted_lifecycle_core() {
+                hold.release();
+                drop(response);
+                return;
+            }
+            let Some(authority) = entry.authority.as_ref() else {
+                hold.release();
+                drop(response);
+                return;
+            };
+            let result = crate::commands::session::execute_external_root_transaction(
+                &transaction,
+                request,
+                authority,
+            )
+            .await;
+            let result = match result {
+                crate::commands::session::LifecycleEntryOutcome::Returned(result) => result,
+                crate::commands::session::LifecycleEntryOutcome::Interrupted => {
+                    entry.observe_authority_interruption();
+                    drop(transaction);
+                    drop(entry);
+                    hold.release();
+                    drop(response);
+                    return;
+                }
+            };
+            entry.observe_return(&result);
+            entry.release_lease().await;
+            drop(transaction);
+            drop(entry);
             if hold.respond(response, result).is_err() {
                 log::debug!("[selection] Root caller dropped before result delivery");
             }
@@ -2723,13 +7863,23 @@ async fn execute_envelope<R: Runtime>(
                 );
             }
         }
-        CoordinatorJob::RestoreBarrier { started, release } => {
+        CoordinatorJob::RestoreBarrier {
+            nonce,
+            started,
+            release,
+        } => {
+            if !transaction.begin_restore(nonce) {
+                drop(started);
+                hold.release();
+                return;
+            }
             if started.send(()).is_err() {
                 log::debug!("[selection] restore submitter dropped before barrier start");
             }
             if release.await.is_err() {
                 log::warn!("[selection] restore barrier released by dropped owner");
             }
+            transaction.release_restore(nonce);
             hold.release();
         }
     }
@@ -2856,6 +8006,77 @@ async fn execute_transition<R: Runtime>(
     }
 }
 
+async fn execute_owned_finalize_create<R: Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: FinalizeCreateRequest,
+) -> Option<Result<SessionInfo, String>> {
+    let continuation = request.owned_replacement?;
+    #[cfg(test)]
+    if !continuation
+        .fixture_reached(ReplacementFixtureCut::BeforeFinalizer)
+        .await
+    {
+        return None;
+    }
+    let manager = transaction.manager().await;
+    if manager.get_pending_session(request.binding).await.is_none() {
+        return Some(Err("created session pending record is unavailable".into()));
+    }
+    let runtime = transaction.runtime_snapshot(request.binding.session_id());
+    let live = match LiveRuntimeWitness::from_snapshot(runtime) {
+        Some(live) => live,
+        None => return Some(Err("created session is not displayable".into())),
+    };
+    {
+        let mut state = continuation.owner.state.lock().ok()?;
+        state.replacement.as_mut()?.warnings = request.warnings;
+    }
+    let mut mutations = LifecycleMutations::default();
+    mutations.finalize_live(request.binding, live);
+    #[cfg(test)]
+    if continuation
+        .fixture
+        .as_ref()
+        .and_then(|control| {
+            control.take_action(&continuation, |action| {
+                matches!(action, ReplacementFixtureAction::SimulatedPrecommitFailure)
+            })
+        })
+        .is_some()
+    {
+        return Some(Err("simulated fixture precommit setup failure".into()));
+    }
+    // Owned replacement never auto-selects B. The later R5 commit alone
+    // removes A with current Clear/Keep; generic None stays literal below.
+    match continuation
+        .commit_finalized(transaction, CommitDecision::Keep, request.cause, mutations)
+        .await?
+    {
+        Ok(_) => {}
+        Err(error) => return Some(Err(error)),
+    }
+    let (info, selection) = continuation.complete_finalized_create(transaction).await?;
+    let publication = continuation.start_effect(LifecycleEffectSlot::Publication)?;
+    let (warnings, previous) = {
+        let state = continuation.owner.state.lock().ok()?;
+        let progress = state.replacement.as_ref()?;
+        let OwnedReplacementDescriptor::Replacement(descriptor) = &continuation.owner.descriptor
+        else {
+            return None;
+        };
+        (progress.warnings.clone(), descriptor.previous.id)
+    };
+    // Owned checkpoint already persisted current B. No generic stale save.
+    transaction.publish_created(&info);
+    transaction.publish_destroyed(previous);
+    transaction.publish_selection(&selection);
+    for warning in warnings {
+        emit_session_warning(transaction.app(), warning);
+    }
+    publication.complete(Ok(Some(info.id.clone())));
+    Some(Ok(info))
+}
+
 async fn execute_finalize_create<R: Runtime>(
     transaction: &SelectionTransaction<R>,
     request: FinalizeCreateRequest,
@@ -2898,7 +8119,10 @@ async fn execute_finalize_create<R: Runtime>(
     } else {
         CommitDecision::Keep
     };
-    let committed = match transaction.commit(decision, request.cause, mutations).await {
+    let committed = match transaction
+        .commit_entry_create(request.binding, decision, request.cause, mutations)
+        .await
+    {
         Ok(committed) => committed,
         Err(error) => {
             log::warn!(
@@ -2916,6 +8140,10 @@ async fn execute_finalize_create<R: Runtime>(
         .find(|row| row.id == session_id.to_string())
         .cloned()
         .ok_or_else(|| "create finalization did not publish a row".to_string())?;
+    let publication = transaction.start_lifecycle_effect(LifecycleEffectSlot::Publication);
+    if transaction.has_lifecycle_entry() && publication.is_none() {
+        return Err(SelectionCoordinatorError::Unavailable.to_string());
+    }
     transaction
         .persist(SelectionSource::SessionCreated, Some(session_id))
         .await;
@@ -2925,6 +8153,9 @@ async fn execute_finalize_create<R: Runtime>(
     }
     for warning in request.warnings {
         emit_session_warning(transaction.app(), warning);
+    }
+    if let Some(publication) = publication {
+        publication.complete(Ok(Some(info.id.clone())));
     }
     Ok(info)
 }
@@ -2983,16 +8214,24 @@ async fn execute_restore_dormant<R: Runtime>(
         context_percent: None,
     };
     let manager = transaction.manager().await;
+    let carrier_permit = crate::session::manager::acquire_carrier_mutation_permit().await;
     manager
-        .insert_transaction_pending_record(session, binding)
+        .insert_transaction_pending_record_with_carrier_permit(&carrier_permit, session, binding)
         .await?;
     if let Err(error) = manager
-        .install_pending_coding_agent_binding(binding, coding_agent_binding)
+        .install_pending_coding_agent_binding_with_carrier_permit(
+            &carrier_permit,
+            binding,
+            coding_agent_binding,
+        )
         .await
     {
-        manager.rollback_pending_create(binding).await?;
+        manager
+            .rollback_pending_create_with_carrier_permit(&carrier_permit, binding)
+            .await?;
         return Err(error);
     }
+    drop(carrier_permit);
     let witness = DormantRuntimeWitness::from_snapshot(transaction.runtime_snapshot(id))
         .ok_or_else(|| "restored dormant record is runtime-detached".to_string())?;
     let mut mutations = LifecycleMutations::default();
@@ -3021,7 +8260,116 @@ async fn execute_rollback_create<R: Runtime>(
         .app()
         .try_state::<Arc<Mutex<PtyManager>>>()
         .map(|state| state.inner().clone());
-    execute_rollback_create_parts(manager, pty, binding).await;
+    if transaction.has_lifecycle_entry() {
+        execute_entry_rollback_create(transaction, manager, pty, binding).await;
+    } else {
+        if let Some(inner) = transaction.coordinator.upgrade() {
+            if !matches!(retained_entry_owns_binding(&inner, binding), Ok(None)) {
+                // An owned or unreadable retained binding is never a generic
+                // rollback capability, including a stale queued cleanup job.
+                return;
+            }
+        }
+        execute_rollback_create_parts(manager, pty, binding).await;
+    }
+}
+
+/// An entry's own stopped setup body calls this on its real error exit. Neither
+/// a missing pending row nor an Err grants authority to kill a finalized B.
+async fn execute_entry_rollback_create<R: Runtime>(
+    transaction: &SelectionTransaction<R>,
+    manager: SessionManager,
+    pty: Option<Arc<Mutex<PtyManager>>>,
+    binding: PendingCreateBinding,
+) {
+    let Some((owner, executor)) = transaction.lifecycle_entry.as_ref() else {
+        return;
+    };
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let pending = manager.get_pending_session(binding).await;
+    let cleanup_nonce = Uuid::new_v4();
+    let claimed = owner.state.lock().ok().is_some_and(|mut state| {
+        if state.executor_nonce != *executor
+            || state.stage != ReplacementStage::Executing
+            || state.effects.iter().any(|effect| {
+                matches!(
+                    effect,
+                    OwnedEffectState::Running(_) | OwnedEffectState::Ambiguous(_)
+                )
+            })
+        {
+            return false;
+        }
+        let Some(create) = state.entry_create.as_mut() else {
+            return false;
+        };
+        if create.binding != binding
+            || create.stage != EntryCreateStage::Pending
+            || pending.is_none()
+        {
+            return false;
+        }
+        create.stage = EntryCreateStage::CleanupClaimed(cleanup_nonce);
+        true
+    });
+    drop(permit);
+    if !claimed {
+        return;
+    }
+    let effect = transaction.start_lifecycle_effect(LifecycleEffectSlot::PendingRollback);
+    let Some(effect) = effect else {
+        return;
+    };
+    let Some(pending) = pending else {
+        return;
+    };
+    let kill = match pty.as_ref().and_then(|pty| pty.lock().ok()) {
+        Some(pty) => pty
+            .kill_for_kind(binding.session_id(), pending.backend_kind)
+            .map_err(|error| error.to_string()),
+        None => Err(SelectionCoordinatorError::Unavailable.to_string()),
+    };
+    if let Err(error) = kill {
+        effect.complete(Err(error));
+        if let Ok(mut state) = owner.state.lock() {
+            state.stage = ReplacementStage::Ambiguous;
+            state.retained_reason = Some("entry pending backend rollback failed".into());
+        }
+        return;
+    }
+    let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+    let still_claimed = owner.state.lock().ok().is_some_and(|state| {
+        state.executor_nonce == *executor
+            && state.entry_create.as_ref().is_some_and(|create| {
+                create.binding == binding
+                    && create.stage == EntryCreateStage::CleanupClaimed(cleanup_nonce)
+            })
+    });
+    if !still_claimed {
+        return;
+    }
+    let result = manager
+        .rollback_pending_create_with_carrier_permit(&permit, binding)
+        .await;
+    if let Ok(mut state) = owner.state.lock() {
+        if let Some(create) = state.entry_create.as_mut() {
+            if create.binding == binding
+                && create.stage == EntryCreateStage::CleanupClaimed(cleanup_nonce)
+            {
+                create.stage = if result.is_ok() {
+                    EntryCreateStage::RolledBack
+                } else {
+                    EntryCreateStage::Unknown
+                };
+            }
+        }
+        if result.is_err() {
+            state.stage = ReplacementStage::Ambiguous;
+            state.retained_reason = Some("entry pending manager rollback failed".into());
+        }
+    }
+    effect.complete(result.map(|_| None));
+    drop(permit);
 }
 
 async fn execute_rollback_create_parts(
@@ -3078,6 +8426,51 @@ fn begin_container_shutdown(inner: &Arc<CoordinatorInner>, deadline: Instant) ->
     true
 }
 
+/// Clone one retained owner at a time; no root lock spans owner inspection,
+/// U acquisition, native cleanup, or resource destruction.
+fn retained_entry_owns_binding(
+    inner: &CoordinatorInner,
+    binding: PendingCreateBinding,
+) -> Result<Option<Arc<ReplacementOwner>>, ()> {
+    let mut cursor = None;
+    loop {
+        let next = {
+            let root = inner.retained_replacements.try_lock().map_err(|_| ())?;
+            if root.unavailable {
+                return Err(());
+            }
+            root.entries
+                .iter()
+                .filter(|(operation, _)| cursor.is_none_or(|last| **operation > last))
+                .min_by_key(|(operation, _)| **operation)
+                .map(|(operation, owner)| (*operation, owner.clone()))
+        };
+        let Some((operation, owner)) = next else {
+            return Ok(None);
+        };
+        cursor = Some(operation);
+        let state = owner.state.try_lock().map_err(|_| ())?;
+        if let Some(progress) = state.replacement.as_ref() {
+            if progress.binding.session_id() == binding.session_id() {
+                return if progress.binding == binding {
+                    Ok(Some(owner.clone()))
+                } else {
+                    Err(())
+                };
+            }
+        }
+        if let Some(create) = state.entry_create.as_ref() {
+            if create.binding.session_id() == binding.session_id() {
+                return if create.binding == binding {
+                    Ok(Some(owner.clone()))
+                } else {
+                    Err(())
+                };
+            }
+        }
+    }
+}
+
 async fn cleanup_pending_creates_after_join(
     inner: &Arc<CoordinatorInner>,
     deadline: Instant,
@@ -3099,6 +8492,7 @@ async fn cleanup_pending_creates_after_join(
         return vec!["reason=pending-pty-owner state=retained".to_string()];
     };
     let manager = Arc::clone(&inner.manager);
+    let cleanup_inner = Arc::clone(inner);
     let mut cleanup = tokio::spawn(async move {
         let manager = manager.read().await.clone();
         let bindings = manager.pending_create_bindings().await;
@@ -3111,6 +8505,42 @@ async fn cleanup_pending_creates_after_join(
         let mut retained = Vec::new();
         for binding in bindings {
             let session_id = binding.session_id();
+            match retained_entry_owns_binding(&cleanup_inner, binding) {
+                Ok(None) => {}
+                Ok(Some(owner)) => {
+                    let nonce =
+                        owner.state.lock().ok().and_then(|state| {
+                            state.replacement.as_ref().map(|_| state.executor_nonce)
+                        });
+                    let cleaned = if let Some(executor_nonce) = nonce {
+                        OwnedReplacementContinuation {
+                            owner,
+                            coordinator: Arc::downgrade(&cleanup_inner),
+                            executor_nonce,
+                            source_validation: None,
+                            #[cfg(test)]
+                            fixture: None,
+                        }
+                        .cleanup_stopped_source(&manager, &pty)
+                        .await
+                    } else {
+                        false
+                    };
+                    if cleaned {
+                        continue;
+                    }
+                    retained.push(format!(
+                        "session={session_id} reason=owned-entry-cleanup-authority state=retained"
+                    ));
+                    continue;
+                }
+                Err(()) => {
+                    retained.push(format!(
+                        "session={session_id} reason=owned-entry-unreadable state=retained"
+                    ));
+                    continue;
+                }
+            }
             let Some(backend_kind) = manager
                 .get_pending_session(binding)
                 .await
@@ -3376,6 +8806,75 @@ pub(crate) fn publish_session_communication<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    fn response_close_unbound_ticket() -> super::CreateFinalizationTicket {
+        super::CreateFinalizationTicket {
+            owned_replacement: None,
+            slot: None,
+            admission: None,
+            create_ticket: None,
+            binding: None,
+            cause: super::SelectionCause::SessionCreated(super::TrustedCreateIntent::Background),
+            auto_select_precondition: None,
+            completed: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn response_close_prepared_ticket_rejects_both_duplicate_bind_orders() {
+        let mut prepared_first = response_close_unbound_ticket();
+        let binding = super::PendingCreateBinding::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        assert_eq!(prepared_first.bind_prepared(binding).unwrap(), binding);
+        assert!(prepared_first.bind(uuid::Uuid::new_v4()).is_err());
+        assert!(prepared_first.bind_prepared(binding).is_err());
+        assert_eq!(prepared_first.binding(), Some(binding));
+        // No manager row was created by this pure preparation fixture.
+        prepared_first.completed = true;
+
+        let mut default_first = response_close_unbound_ticket();
+        let first = default_first.bind(uuid::Uuid::new_v4()).unwrap();
+        assert!(default_first.bind_prepared(binding).is_err());
+        assert_eq!(default_first.binding(), Some(first));
+        default_first.completed = true;
+        assert!(default_first.bind_prepared(binding).is_err());
+
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(manager.clone(), CancellationToken::new());
+        let app = tauri::test::mock_builder()
+            .manage(manager)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        coordinator.start(app.handle().clone()).unwrap();
+        coordinator.submit_restore_first().await.unwrap().finish();
+        coordinator.snapshot().await.unwrap();
+        let mut waiting = coordinator
+            .reserve_create(TrustedCreateIntent::Background)
+            .await
+            .unwrap();
+        let original_selection = waiting.auto_select_precondition.clone();
+        assert!(original_selection.is_some());
+        assert!(waiting.release_capacity_for_wait());
+        let mut occupied = Vec::new();
+        for _ in 0..CREATE_TICKET_CAPACITY {
+            occupied.push(coordinator.reserve_suppressed_create().await.unwrap());
+        }
+        assert!(
+            matches!(
+                waiting.resume_unbound_capacity(&coordinator),
+                Err(SelectionCoordinatorError::Busy)
+            ),
+            "a real second probe reports actual saturation; it does not await capacity"
+        );
+        assert_eq!(waiting.auto_select_precondition, original_selection);
+        drop(occupied);
+        waiting.resume_unbound_capacity(&coordinator).unwrap();
+        assert_eq!(
+            waiting.auto_select_precondition, original_selection,
+            "reacquisition preserves option1's original None-selection condition"
+        );
+        drop(waiting);
+        coordinator.close_and_join().await;
+    }
+
     use super::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::path::{Path, PathBuf};
@@ -4961,6 +10460,13 @@ fn commit_selection_transition_with_carrier_permit() {
             "CoordinatorJob contains a managed handle or arbitrary executable field: {:?}",
             coordinator_job_handle_violations(source)
         );
+        let commands = include_str!("../commands/session.rs");
+        let payload = &commands[commands
+            .find("pub(crate) struct FixturePtyCutLease")
+            .unwrap()
+            ..commands
+                .find("impl std::fmt::Debug for FixtureReplacementInput")
+                .unwrap()];
         for forbidden in [
             "SessionManager",
             "PtyManager",
@@ -4970,6 +10476,10 @@ fn commit_selection_transition_with_carrier_permit() {
             "dyn Future",
             "FnOnce",
         ] {
+            assert!(
+                !payload.contains(forbidden),
+                "fixture payload hides forbidden {forbidden}"
+            );
             let mutated = format!("enum CoordinatorJob {{ Rogue {{ value: {forbidden} }} }}");
             assert_eq!(
                 coordinator_job_handle_violations(&mutated),
@@ -5207,6 +10717,34 @@ fn commit_selection_transition_with_carrier_permit() {
             .start(app.handle().clone())
             .expect("start selection coordinator");
 
+        let publication = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let canceled = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move { coordinator.submit_restore_first().await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while CoordinatorPhase::from_u8(coordinator.inner.phase.load(Ordering::Acquire))
+                != CoordinatorPhase::Restoring
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("restore admission reaches its U wait");
+        canceled.abort();
+        assert!(matches!(canceled.await, Err(error) if error.is_cancelled()));
+        assert_eq!(
+            CoordinatorPhase::from_u8(coordinator.inner.phase.load(Ordering::Acquire)),
+            CoordinatorPhase::Bootstrapping
+        );
+        assert!(coordinator
+            .inner
+            .retained_replacements
+            .lock()
+            .unwrap()
+            .restore_nonce
+            .is_none());
+        drop(publication);
         let guard = coordinator
             .submit_restore_first()
             .await
@@ -5219,6 +10757,12 @@ fn commit_selection_transition_with_carrier_permit() {
             coordinator.submit_restore_first().await,
             Err(error) if error == SelectionCoordinatorError::Busy.to_string()
         ));
+        assert!(
+            coordinator.restore_is_active(),
+            "Running is not restore release"
+        );
+        let restore_transaction = guard.transaction(app.handle().clone());
+        assert!(restore_transaction.has_active_restore_capability());
         let mut queued_snapshot = {
             let coordinator = coordinator.clone();
             tokio::spawn(async move { coordinator.snapshot().await })
@@ -5229,6 +10773,21 @@ fn commit_selection_transition_with_carrier_permit() {
                 .is_err(),
             "hydration admitted after restore must remain queued behind it"
         );
+        restore_transaction.invalidate_restore_ownership();
+        assert!(!restore_transaction.has_active_restore_capability());
+        assert!(
+            coordinator.restore_is_active(),
+            "lost authority does not fabricate barrier release"
+        );
+        assert!(
+            coordinator
+                .inner
+                .retained_replacements
+                .lock()
+                .unwrap()
+                .unavailable,
+            "unknown restore ownership stays persistence unsafe"
+        );
         guard.finish();
         assert_eq!(
             queued_snapshot
@@ -5237,6 +10796,11 @@ fn commit_selection_transition_with_carrier_permit() {
                 .expect("queued hydration succeeds")
                 .revision(),
             0
+        );
+        assert!(!coordinator.restore_is_active());
+        assert!(
+            !restore_transaction.has_active_restore_capability(),
+            "released nonce cannot authorize inline work"
         );
         coordinator.close_and_join().await;
     }
@@ -6963,12 +12527,110 @@ fn commit_selection_transition_with_carrier_permit() {
         let app = tauri::test::mock_builder()
             .manage(Arc::clone(&manager))
             .manage(Arc::clone(&pty))
+            .manage(Arc::new(tokio::sync::RwLock::new(
+                crate::config::settings::AppSettings::default(),
+            )))
             .manage(DetachedSessionsState::default())
             .manage(WsBroadcaster::new())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build retention test app");
         coordinator.start(app.handle().clone()).unwrap();
         coordinator.submit_restore_first().await.unwrap().finish();
+        // Real entry admission, worker return, source lease release and result
+        // publication must reclaim capacity before the next accepted entry.
+        for _ in 0..(COORDINATOR_ADMISSION_CAPACITY + 1) {
+            let error = coordinator.restart_lifecycle(
+                app.handle().clone(),
+                crate::commands::session::RestartJobRequest {
+                    session_id: Uuid::new_v4(),
+                    agent_id: None,
+                    requested_profile: None,
+                    skip_auto_resume: None,
+                    activate_after: false,
+                    intent: TrustedRestartIntent::Background,
+                    communication_override: None,
+                    enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
+                },
+            ).await.unwrap_err();
+            assert_eq!(error, "Session not found");
+            assert!(coordinator
+                .inner
+                .retained_replacements
+                .lock()
+                .unwrap()
+                .entries
+                .is_empty());
+        }
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let pending = {
+            let coordinator = coordinator.clone();
+            let app = app.handle().clone();
+            tokio::spawn(async move {
+                coordinator.restart_lifecycle(app, crate::commands::session::RestartJobRequest {
+                    session_id: Uuid::new_v4(), agent_id: None, requested_profile: None,
+                    skip_auto_resume: None, activate_after: false,
+                    intent: TrustedRestartIntent::Background, communication_override: None,
+                    enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
+                }).await
+            })
+        };
+        let owner = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let owner = coordinator
+                    .inner
+                    .retained_replacements
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .values()
+                    .next()
+                    .cloned();
+                if let Some(owner) = owner {
+                    let queued = owner.state.lock().unwrap().stage == ReplacementStage::Queued;
+                    if queued {
+                        break owner;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("real worker reaches the current-authority U wait");
+        let mut unsafe_before = Vec::new();
+        coordinator.inspect_retained_entries(&mut unsafe_before);
+        assert!(!unsafe_before.is_empty(), "active entry is not terminal");
+        coordinator.seal_retained_entries();
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+        drop(permit);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if owner.state.lock().unwrap().stage == ReplacementStage::EntryTerminal {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("caller loss does not stop the accepted core");
+        assert_eq!(
+            coordinator
+                .inner
+                .retained_replacements
+                .lock()
+                .unwrap()
+                .entries
+                .len(),
+            1,
+            "seal prohibits removal of the now verified terminal entry"
+        );
+        let mut unsafe_after = Vec::new();
+        coordinator.inspect_retained_entries(&mut unsafe_after);
+        assert!(
+            unsafe_after.is_empty(),
+            "real returned/released entry is safe after seal: {unsafe_after:?}"
+        );
+        drop(owner);
         coordinator.close_and_join().await;
         assert!(coordinator.inner.worker.lock().unwrap().is_none());
 
@@ -7260,6 +12922,9 @@ fn commit_selection_transition_with_carrier_permit() {
             panic!("simulated operation worker failure");
         }
 
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
         // (a) Coordinator closing: the phase gate rejects before any admission.
         let closing = SelectionCoordinator::new(
             Arc::new(tokio::sync::RwLock::new(SessionManager::new())),
@@ -7272,12 +12937,13 @@ fn commit_selection_transition_with_carrier_permit() {
         let persisted = Arc::new(Mutex::new(Vec::<&'static str>::new()));
         let persisted_a = Arc::clone(&persisted);
         let closing_for_operation = closing.clone();
+        let restart_app = app.handle().clone();
         let error = run_owned_selection_operation(move || {
             let persisted = Arc::clone(&persisted_a);
             async move {
                 persisted.lock().unwrap().push("a:publish");
                 let failure = closing_for_operation
-                    .restart_lifecycle(restart_request(Uuid::new_v4()))
+                    .restart_lifecycle(restart_app.clone(), restart_request(Uuid::new_v4()))
                     .await
                     .map(|_| ())
                     .unwrap_err();
@@ -7317,9 +12983,10 @@ fn commit_selection_transition_with_carrier_permit() {
         }
         assert_eq!(held_permits.len(), COORDINATOR_ADMISSION_CAPACITY);
         let busy_for_operation = busy.clone();
+        let restart_app = app.handle().clone();
         let error = run_owned_selection_operation(move || async move {
             busy_for_operation
-                .restart_lifecycle(restart_request(Uuid::new_v4()))
+                .restart_lifecycle(restart_app.clone(), restart_request(Uuid::new_v4()))
                 .await
                 .map(|_| ())
         })
@@ -7345,9 +13012,10 @@ fn commit_selection_transition_with_carrier_permit() {
             .store(CoordinatorPhase::Running as u8, Ordering::Release);
         drop(orphaned.inner.receiver.lock().unwrap().take());
         let orphaned_for_operation = orphaned.clone();
+        let restart_app = app.handle().clone();
         let error = run_owned_selection_operation(move || async move {
             orphaned_for_operation
-                .restart_lifecycle(restart_request(Uuid::new_v4()))
+                .restart_lifecycle(restart_app.clone(), restart_request(Uuid::new_v4()))
                 .await
                 .map(|_| ())
         })
@@ -7359,6 +13027,81 @@ fn commit_selection_transition_with_carrier_permit() {
             COORDINATOR_QUEUE_CAPACITY,
             "a dead worker channel must not accept a late job"
         );
+
+        // A real accepted entry releases its provisional capacity while the
+        // existing restore barrier is active. Saturation then belongs to the
+        // actual second probe, rather than an invented admission receipt.
+        let second_manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let second_probe =
+            SelectionCoordinator::new(second_manager.clone(), CancellationToken::new());
+        let second_app = tauri::test::mock_builder()
+            .manage(second_manager)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        second_probe.start(second_app.handle().clone()).unwrap();
+        let restore = second_probe.submit_restore_first().await.unwrap();
+        let accepted = {
+            let coordinator = second_probe.clone();
+            let app = second_app.handle().clone();
+            tokio::spawn(async move {
+                coordinator
+                    .restart_lifecycle(app, restart_request(Uuid::new_v4()))
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let waiting = second_probe
+                    .inner
+                    .retained_replacements
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .len()
+                    == 1;
+                if waiting
+                    && second_probe.inner.admission.available_permits()
+                        == COORDINATOR_ADMISSION_CAPACITY - 1
+                {
+                    // The restore envelope itself holds the remaining permit.
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("entry accepted and provisional admission released");
+        let mut saturation = Vec::new();
+        while let Ok(permit) = second_probe.inner.admission.clone().try_acquire_owned() {
+            saturation.push(permit);
+        }
+        // The restore envelope will release one admission permit. Occupy the
+        // real queue slots too, so the second probe still observes Busy without
+        // racing that release or submitting any synthetic lifecycle job.
+        let mut occupied_slots = Vec::new();
+        while let Ok(slot) = second_probe.inner.sender.clone().try_reserve_owned() {
+            occupied_slots.push(slot);
+        }
+        assert_eq!(occupied_slots.len(), COORDINATOR_QUEUE_CAPACITY);
+        restore.finish();
+        let outcome = tokio::time::timeout(Duration::from_secs(2), accepted)
+            .await
+            .expect("second probe returns without queueing")
+            .unwrap();
+        assert_eq!(
+            outcome.unwrap_err(),
+            SelectionCoordinatorError::Busy.to_string()
+        );
+        assert!(second_probe
+            .inner
+            .retained_replacements
+            .lock()
+            .unwrap()
+            .entries
+            .is_empty());
+        drop(occupied_slots);
+        drop(saturation);
+        second_probe.close_and_join().await;
 
         // (d) Owned-task failure: a panicking operation maps to the explicit
         // join error, and the turn is not poisoned.

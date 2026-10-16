@@ -576,7 +576,7 @@ impl SessionManager {
         backend_kind: SessionBackendKind,
     ) -> Result<Session, AppError> {
         let id = Uuid::new_v4();
-        let binding = ticket.bind(id);
+        let binding = ticket.bind(id).map_err(AppError::Other)?;
         self.insert_new_pending_session(
             binding,
             shell,
@@ -2207,6 +2207,49 @@ impl SessionManager {
         .await
     }
 
+    /// The upper continuation owns the A/Preparing/launch check. This one
+    /// interior mutation accepts only its exact finalized B and initial version.
+    pub(super) async fn apply_finalized_owned_replacement_carry(
+        &self,
+        permit: &CarrierMutationPermit,
+        capability: super::selection::FinalizedOwnedCarryCapability,
+    ) -> super::selection::FinalizedOwnedCarryOutcome {
+        use super::selection::FinalizedOwnedCarryOutcome;
+        if !capability.bound_operation() {
+            return FinalizedOwnedCarryOutcome::Recapture;
+        }
+        let id = capability.session_id();
+        let token = capability.token();
+        let version = capability.expected_version();
+        if version == u64::MAX {
+            return FinalizedOwnedCarryOutcome::Recapture;
+        }
+        let telegram = capability.telegram_bot_id().clone();
+        let communication = capability.communication().clone();
+        let fresh = capability.start_fresh_on_restore();
+        let mut state = self.carrier_state_write(permit).await;
+        if state.pending_create.contains_key(&id)
+            || state.carrier_versions.get(&id) != Some(&version)
+            || !state
+                .sessions
+                .get(&id)
+                .is_some_and(|row| row.token == token)
+        {
+            drop(state);
+            return FinalizedOwnedCarryOutcome::Recapture;
+        }
+        if let Some(row) = state.sessions.get_mut(&id) {
+            row.telegram_bot_id = telegram;
+            row.communication = communication;
+            row.start_fresh_on_restore = fresh;
+        }
+        // Drop publishes the actual version and invalidation while U remains
+        // borrowed by upper. The capability/owner is dropped outside the write.
+        drop(state);
+        drop(capability);
+        FinalizedOwnedCarryOutcome::Applied
+    }
+
     /// Persisted Telegram ON/OFF state for the session. Some(bot_id) means the
     /// bridge should be reattached when the session is restored or woken.
     pub async fn set_telegram_bot_id(&self, id: Uuid, bot_id: Option<String>) {
@@ -2725,7 +2768,17 @@ impl SessionManager {
         binding: Option<CodingAgentBinding>,
     ) -> Result<(), String> {
         let permit = acquire_carrier_mutation_permit().await;
-        let mut state = self.carrier_state_write(&permit).await;
+        self.install_pending_coding_agent_binding_with_carrier_permit(&permit, pending, binding)
+            .await
+    }
+
+    pub(crate) async fn install_pending_coding_agent_binding_with_carrier_permit(
+        &self,
+        permit: &CarrierMutationPermit,
+        pending: PendingCreateBinding,
+        binding: Option<CodingAgentBinding>,
+    ) -> Result<(), String> {
+        let mut state = self.carrier_state_write(permit).await;
         if !binding_matches(&state, pending) {
             return Err("pending coding-agent binding capability mismatch".to_string());
         }
@@ -2777,7 +2830,16 @@ impl SessionManager {
         recipes: Vec<(CodingAgentBinding, serde_json::Value)>,
     ) {
         let permit = acquire_carrier_mutation_permit().await;
-        let mut state = self.carrier_state_write(&permit).await;
+        self.refresh_failed_binding_recipes_with_carrier_permit(&permit, recipes)
+            .await
+    }
+
+    pub(crate) async fn refresh_failed_binding_recipes_with_carrier_permit(
+        &self,
+        permit: &CarrierMutationPermit,
+        recipes: Vec<(CodingAgentBinding, serde_json::Value)>,
+    ) {
+        let mut state = self.carrier_state_write(permit).await;
         for (binding, recipe) in recipes {
             if let Some(seed) = binding.seed {
                 state
@@ -3768,6 +3830,117 @@ mod tests {
                 serde_json::json!({"sessionsPath":"C:/sessions.json","rawFileSHA256":"witness","originalOrdinal":3}),
             ),
         }
+    }
+
+    #[tokio::test]
+    async fn response_close_borrowed_binding_helpers_keep_admission_and_validation() {
+        let manager = SessionManager::new();
+        let (session, pending) = pending_fixture(&manager, false).await;
+        let birth = birth_binding();
+        let permit = acquire_carrier_mutation_permit().await;
+        let wrong = PendingCreateBinding::new(pending.session_id(), Uuid::new_v4());
+        assert_eq!(
+            manager
+                .install_pending_coding_agent_binding_with_carrier_permit(&permit, wrong, None)
+                .await,
+            Err("pending coding-agent binding capability mismatch".into())
+        );
+        manager
+            .install_pending_coding_agent_binding_with_carrier_permit(&permit, pending, None)
+            .await
+            .unwrap();
+        assert!(manager.coding_agent_binding(session.id).await.is_none());
+        let mut malformed = birth.clone();
+        malformed.id = "not-a-uuid".into();
+        assert_eq!(
+            manager
+                .install_pending_coding_agent_binding_with_carrier_permit(
+                    &permit,
+                    pending,
+                    Some(malformed),
+                )
+                .await,
+            Err("invalid_coding_agent_binding".into())
+        );
+        let mut malformed = birth.clone();
+        malformed.seed =
+            Some(serde_json::json!({"identityRevision":"", "originalAgentId":"original"}));
+        assert_eq!(
+            manager
+                .install_pending_coding_agent_binding_with_carrier_permit(
+                    &permit,
+                    pending,
+                    Some(malformed),
+                )
+                .await,
+            Err("invalid_coding_agent_binding_seed".into())
+        );
+        manager
+            .install_pending_coding_agent_binding_with_carrier_permit(
+                &permit,
+                pending,
+                Some(birth.clone()),
+            )
+            .await
+            .unwrap();
+        let mut conflict = birth.clone();
+        conflict.seed.as_mut().unwrap()["originalAgentId"] = serde_json::json!("different");
+        assert_eq!(
+            manager
+                .install_pending_coding_agent_binding_with_carrier_permit(
+                    &permit,
+                    pending,
+                    Some(conflict),
+                )
+                .await,
+            Err("coding_agent_binding_seed_conflict".into())
+        );
+        assert_eq!(
+            manager.coding_agent_binding(session.id).await.unwrap().seed,
+            birth.seed
+        );
+        manager
+            .rollback_pending_create_with_carrier_permit(&permit, pending)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn response_close_borrowed_failed_recipes_keep_only_enrolled_rows_and_original_seed() {
+        let manager = SessionManager::new();
+        let birth = birth_binding();
+        let foreign = birth_binding();
+        let original_seed = birth.seed.clone().unwrap();
+        {
+            let mut state = manager.state.write().await;
+            state
+                .binding_seeds
+                .insert(birth.id.clone(), original_seed.clone());
+            state
+                .failed_binding_recipes
+                .insert(birth.id.clone(), serde_json::json!({"old":true}));
+        }
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut updated = birth.clone();
+        updated.seed.as_mut().unwrap()["originalAgentId"] = serde_json::json!("new-seed");
+        updated.origin = Some(serde_json::json!({"updated":true}));
+        let recipe = serde_json::json!({"retained":true});
+        manager
+            .refresh_failed_binding_recipes_with_carrier_permit(
+                &permit,
+                vec![
+                    (updated.clone(), recipe.clone()),
+                    (foreign.clone(), recipe.clone()),
+                ],
+            )
+            .await;
+        let snapshot = manager.aggregate_snapshot().await;
+        assert_eq!(snapshot.failed_binding_recipes.len(), 1);
+        assert_eq!(snapshot.failed_binding_recipes[&birth.id], recipe);
+        assert_eq!(snapshot.binding_seeds[&birth.id], original_seed);
+        assert_eq!(snapshot.binding_origins[&birth.id], updated.origin.unwrap());
+        assert_eq!(snapshot.binding_seeds[&foreign.id], foreign.seed.unwrap());
+        assert!(snapshot.sessions.is_empty());
     }
 
     #[tokio::test]

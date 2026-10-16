@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -25,7 +25,8 @@ use crate::resource_monitor::{
     ResourceLogicalAgentSlot, ResourceMonitorState,
 };
 use crate::session::manager::{
-    CommitDecision, LifecycleMutations, PendingCreateBinding, SessionManager,
+    acquire_carrier_mutation_permit, CommitDecision, LifecycleMutations, PendingCreateBinding,
+    SessionManager,
 };
 use crate::session::profile::{
     idle_tuning_for, idle_tuning_for_launch, locate_pi_command, CodingAgentKind, IdleTuning,
@@ -449,16 +450,20 @@ struct DeferredCreateOutput {
     info: SessionInfo,
     binding: PendingCreateBinding,
     warnings: Vec<SessionWarning>,
+    // Keep admission through the enclosing retained transaction's finalization.
+    _create_admission: Arc<Mutex<OwnedCreateAdmission>>,
 }
 
 enum CreateCompletion {
+    Retained,
     Finalized(SessionInfo),
     Deferred(DeferredCreateOutput),
 }
 
 impl CreateCompletion {
-    fn into_finalized(self) -> Result<SessionInfo, String> {
+    async fn into_finalized(self) -> Result<SessionInfo, String> {
         match self {
+            Self::Retained => std::future::pending().await,
             Self::Finalized(info) => Ok(info),
             Self::Deferred(_) => Err("create unexpectedly deferred finalization".to_string()),
         }
@@ -1684,6 +1689,210 @@ pub(crate) mod restart_reader_seam {
 ///   `RespawnExited` match, today driven exclusively by deferred-non-coord
 ///   `Exited(0)` records — and `restart_session` when its caller passes
 ///   `Some(false)`).
+/// Owned launch inputs retained before a response replacement starts effects.
+/// The executor alone supplies app state and a real lexical target proof.
+#[derive(Debug, Clone)]
+pub(crate) struct OwnedReplacementCreateRequest {
+    pub(crate) shell: String,
+    pub(crate) shell_args: Vec<String>,
+    pub(crate) cwd: String,
+    pub(crate) name: Option<String>,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) agent_label: Option<String>,
+    pub(crate) skip_tooling_save: bool,
+    pub(crate) git_repos: Vec<SessionRepo>,
+    pub(crate) resolved_spawn: Option<AgentSpawnCommand>,
+    pub(crate) host_shell: Option<ResolvedAgentHostShell>,
+}
+
+#[derive(Debug)]
+pub(crate) enum OwnedReplacementCreateStep {
+    Finalized(SessionInfo),
+    Retained,
+}
+
+/// Owns the original locks only across the admitted test create cut. These
+/// values never enter the retained operation record.
+#[cfg(test)]
+pub(crate) struct FixturePtyCutLease {
+    pub(crate) gate: Arc<crate::api::message_store::PtyInputTargetGate>,
+    pub(crate) target: String,
+    pub(crate) exact: crate::api::message_store::PtyInputTargetGuard,
+    pub(crate) stripe: crate::api::message_store::PtyInputStripeGuard,
+}
+
+#[cfg(test)]
+pub(crate) enum FixtureReplacementLease {
+    OrdinaryMoved(FixturePtyCutLease),
+    PtyCutShared(Arc<FixturePtyCutLease>),
+}
+
+#[cfg(test)]
+pub(crate) struct FixtureReplacementInput {
+    pub(crate) request: OwnedReplacementCreateRequest,
+    pub(crate) continuation: crate::session::selection::OwnedReplacementContinuation,
+    pub(crate) lease: FixtureReplacementLease,
+}
+
+#[cfg(test)]
+pub(crate) struct FixtureReplacementResult {
+    pub(crate) outcome: Result<OwnedReplacementCreateStep, String>,
+    pub(crate) ordinary_lease: Option<FixturePtyCutLease>,
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for FixtureReplacementInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FixtureReplacementInput")
+            .field("continuation", &self.continuation)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn execute_inline_replacement_fixture<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    input: FixtureReplacementInput,
+) -> FixtureReplacementResult {
+    let FixtureReplacementInput {
+        request,
+        continuation,
+        lease,
+    } = input;
+    let observed = continuation.clone();
+    if !observed
+        .fixture_reached(crate::session::selection::ReplacementFixtureCut::BeforeSourceValidation)
+        .await
+    {
+        return FixtureReplacementResult {
+            outcome: Ok(OwnedReplacementCreateStep::Retained),
+            ordinary_lease: match lease {
+                FixtureReplacementLease::OrdinaryMoved(lease) => Some(lease),
+                FixtureReplacementLease::PtyCutShared(lease) => {
+                    drop(lease);
+                    None
+                }
+            },
+        };
+    }
+    let borrowed = match &lease {
+        FixtureReplacementLease::OrdinaryMoved(lease) => lease,
+        FixtureReplacementLease::PtyCutShared(lease) => lease.as_ref(),
+    };
+    let mut outcome =
+        match borrowed
+            .gate
+            .target_ownership(&borrowed.target, &borrowed.stripe, &borrowed.exact)
+        {
+            Ok(proof) => {
+                create_owned_response_replacement_in_context(
+                    transaction.app(),
+                    request,
+                    continuation,
+                    &proof,
+                    Some((
+                        transaction,
+                        SelectionCause::SessionCreated(
+                            crate::session::selection::TrustedCreateIntent::Background,
+                        ),
+                    )),
+                )
+                .await
+            }
+            Err(_) => Ok(OwnedReplacementCreateStep::Retained),
+        };
+    if !observed
+        .fixture_reached(
+            crate::session::selection::ReplacementFixtureCut::AdapterOutcomeBeforeLeaseDrop,
+        )
+        .await
+        && outcome.is_ok()
+    {
+        outcome = Ok(OwnedReplacementCreateStep::Retained);
+    }
+    let ordinary_lease = match lease {
+        FixtureReplacementLease::OrdinaryMoved(lease) => Some(lease),
+        FixtureReplacementLease::PtyCutShared(lease) => {
+            drop(lease);
+            None
+        }
+    };
+    FixtureReplacementResult {
+        outcome,
+        ordinary_lease,
+    }
+}
+
+pub(crate) async fn create_owned_response_replacement<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    request: OwnedReplacementCreateRequest,
+    continuation: crate::session::selection::OwnedReplacementContinuation,
+    target: &crate::api::message_store::PtyInputTargetOwnership<'_>,
+) -> Result<OwnedReplacementCreateStep, String> {
+    create_owned_response_replacement_in_context(app, request, continuation, target, None).await
+}
+
+// An inline caller must supply its actual current selection turn and cause.
+// Absence selects the existing external finalization ticket, never an inferred
+// restore or lifecycle capability.
+async fn create_owned_response_replacement_in_context<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    request: OwnedReplacementCreateRequest,
+    continuation: crate::session::selection::OwnedReplacementContinuation,
+    target: &crate::api::message_store::PtyInputTargetOwnership<'_>,
+    inline: Option<(&SelectionTransaction<R>, SelectionCause)>,
+) -> Result<OwnedReplacementCreateStep, String> {
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .inner()
+        .clone();
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let completion = create_session_inner_impl(
+        app,
+        &manager,
+        &pty,
+        request.shell,
+        request.shell_args,
+        request.cwd,
+        request.name,
+        request.agent_id,
+        request.agent_label,
+        request.skip_tooling_save,
+        request.git_repos,
+        false,
+        request.resolved_spawn,
+        request.host_shell,
+        None,
+        CreateSelectionIntent::Background,
+        None,
+        None,
+        inline.as_ref().map(|(transaction, _)| *transaction),
+        inline.map(|(_, cause)| cause),
+        false,
+        Some(target),
+        crate::config::sessions_persistence::default_creation_gate_enforcement(),
+        None,
+        None,
+        Some(continuation.clone()),
+    )
+    .await;
+    let completion = match completion {
+        Ok(completion) => completion,
+        Err(error) => {
+            let manager = manager.read().await.clone();
+            continuation
+                .rollback_failed_create(&manager, &pty, &error)
+                .await;
+            return Err(error);
+        }
+    };
+    match completion {
+        CreateCompletion::Finalized(info) => Ok(OwnedReplacementCreateStep::Finalized(info)),
+        CreateCompletion::Retained => Ok(OwnedReplacementCreateStep::Retained),
+        CreateCompletion::Deferred(_) => Err("create unexpectedly deferred finalization".into()),
+    }
+}
+
 // Shared by Tauri command + restore path; collapsing args would force a context struct.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_session_inner<R: tauri::Runtime>(
@@ -1731,9 +1940,18 @@ pub async fn create_session_inner<R: tauri::Runtime>(
         None,
         crate::config::sessions_persistence::default_creation_gate_enforcement(),
         None,
+        None,
+        None,
     )
     .await?
     .into_finalized()
+    .await
+}
+
+#[derive(Debug)]
+pub(crate) enum PtyTargetCreateStep {
+    Finalized(SessionInfo),
+    Retained,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1755,8 +1973,8 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
     viewport: Option<PtyViewport>,
     selection_intent: CreateSelectionIntent,
     target_ownership: &crate::api::message_store::PtyInputTargetOwnership<'_>,
-) -> Result<SessionInfo, String> {
-    create_session_inner_impl(
+) -> Result<PtyTargetCreateStep, String> {
+    let completion = create_session_inner_impl(
         app,
         session_mgr,
         pty_mgr,
@@ -1781,9 +1999,15 @@ pub(crate) async fn create_session_inner_with_pty_target_ownership<R: tauri::Run
         Some(target_ownership),
         crate::config::sessions_persistence::default_creation_gate_enforcement(),
         None,
+        None,
+        None,
     )
-    .await?
-    .into_finalized()
+    .await?;
+    match completion {
+        CreateCompletion::Finalized(info) => Ok(PtyTargetCreateStep::Finalized(info)),
+        CreateCompletion::Retained => Ok(PtyTargetCreateStep::Retained),
+        CreateCompletion::Deferred(_) => Err("create unexpectedly deferred finalization".into()),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1832,9 +2056,12 @@ pub(crate) async fn create_session_inner_for_restore<R: tauri::Runtime>(
         None,
         crate::config::sessions_persistence::default_creation_gate_enforcement(),
         coding_agent_binding,
+        None,
+        None,
     )
     .await?
     .into_finalized()
+    .await
 }
 
 /// #552 Coordinator create/reopen: seed the badge clock and clear both close markers.
@@ -2055,8 +2282,844 @@ impl<R: tauri::Runtime> Drop for CoordinatorCreateTicket<R> {
     }
 }
 
+/// The accepted create core retains this record independently of its waiter.
+/// Reservations are renewed only under U, against current ALL-scope facts.
+struct CreateResourceAdmission {
+    monitor: Arc<ResourceMonitorState>,
+    settings: SettingsState,
+    permit: Option<AgentLaunchPermit>,
+    needed: bool,
+    in_region: bool,
+    released: bool,
+}
+
+impl Drop for CreateResourceAdmission {
+    fn drop(&mut self) {
+        if let Some(permit) = self.permit.take() {
+            self.monitor.release_unregistered_permit(permit);
+        }
+    }
+}
+
+struct CreateResourceRegion<'a> {
+    local: &'a mut Option<AgentLaunchPermit>,
+    resource: Arc<Mutex<CreateResourceAdmission>>,
+}
+
+impl Drop for CreateResourceRegion<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut resource) = self.resource.lock() {
+            *self.local = resource.permit.take();
+            resource.in_region = false;
+        }
+    }
+}
+
+async fn with_create_resource_region<T>(
+    owner: &Arc<Mutex<OwnedCreateAdmission>>,
+    local: &mut Option<AgentLaunchPermit>,
+    effect: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let resource = owner
+        .lock()
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?
+        .resource
+        .clone();
+    let Some(resource) = resource else {
+        return effect.await;
+    };
+    {
+        let mut state = resource
+            .lock()
+            .map_err(|_| "resource admission unavailable".to_string())?;
+        if state.in_region || state.permit.is_some() {
+            return Err("resource admission already owned".to_string());
+        }
+        state.permit = local.take();
+        state.in_region = true;
+        state.released = false;
+    }
+    let region = CreateResourceRegion { local, resource };
+    let result = effect.await;
+    drop(region);
+    result
+}
+
+async fn revalidate_owned_create_effect(
+    owner: &Arc<Mutex<OwnedCreateAdmission>>,
+    resource: &mut Option<AgentLaunchPermit>,
+    monitor: &Arc<ResourceMonitorState>,
+    manager: &SessionManager,
+    pty: &Arc<Mutex<PtyManager>>,
+) -> Result<(), String> {
+    let continuation = owner
+        .lock()
+        .ok()
+        .and_then(|owner| owner.owned_replacement.clone());
+    let Some(continuation) = continuation else {
+        release_resource_launch_permit(monitor, resource);
+        return Err("targetCreateGateUnavailable".into());
+    };
+    let result = with_create_resource_region(owner, resource, async {
+        if continuation.validate_pre_effect_region(manager, pty).await {
+            Ok(())
+        } else {
+            Err("targetCreateGateUnavailable".to_string())
+        }
+    })
+    .await;
+    if result.is_err() {
+        release_resource_launch_permit(monitor, resource);
+        if let Ok(mut owner) = owner.lock() {
+            owner.blocked_bound = true;
+        }
+    }
+    result
+}
+
+#[derive(Clone)]
+struct CreateCapacityContext {
+    ticket: Arc<Mutex<Option<crate::session::selection::CreateFinalizationTicket>>>,
+    coordinator: SelectionCoordinator,
+}
+
+struct OwnedCreateTargetLease {
+    key: String,
+    gate: Arc<crate::api::message_store::PtyInputTargetGate>,
+    replica: crate::path_identity::VerifiedPathIdentity,
+    // Exact precedes stripe in actual drop order.
+    guards: Option<(
+        crate::api::message_store::PtyInputTargetGuard,
+        crate::api::message_store::PtyInputStripeGuard,
+    )>,
+}
+
+struct OwnedCreateAdmission {
+    preheld_target: bool,
+    owned_replacement: Option<crate::session::selection::OwnedReplacementContinuation>,
+    replacement_pty: Option<Arc<Mutex<PtyManager>>>,
+    tracker: crate::pty::manager::ResponseCloseState,
+    target: String,
+    cwd: PathBuf,
+    nonce: Uuid,
+    binding: PendingCreateBinding,
+    reservation: Option<crate::pty::manager::CreateOwnerReservation>,
+    failed_foreign: bool,
+    owned_target: Option<OwnedCreateTargetLease>,
+    capacity: Option<CreateCapacityContext>,
+    resource: Option<Arc<Mutex<CreateResourceAdmission>>>,
+    blocked_bound: bool,
+    capacity_error: Option<String>,
+}
+
+impl OwnedCreateAdmission {
+    fn classify_current(
+        &self,
+        scope: crate::config::sessions_persistence::CreateCarrierScope,
+        current: &crate::session::manager::CarrierSnapshot,
+    ) -> Option<(crate::pty::manager::CreateClassification, bool)> {
+        use crate::config::sessions_persistence::CreateCarrierScope;
+        use crate::pty::manager::CreateClassification;
+        Some(match scope {
+            CreateCarrierScope::Foreign { publication_epoch } => {
+                (CreateClassification::Foreign { publication_epoch }, true)
+            }
+            CreateCarrierScope::Waiting => return None,
+            CreateCarrierScope::Protected {
+                target,
+                session_id,
+                token,
+                version,
+                epoch,
+                preparing_owner,
+            } => {
+                let Some(row) = current.rows.iter().find(|row| {
+                    row.id == session_id
+                        && row.token == token
+                        && !current.pending_ids.contains(&row.id)
+                }) else {
+                    return None;
+                };
+                if current.versions.get(&session_id) != Some(&version) {
+                    return None;
+                }
+                let Some(generation) = self.tracker.generation(session_id) else {
+                    return None;
+                };
+                let identity = crate::pty::manager::ResponseRouteIdentity {
+                    target,
+                    session_id,
+                    token,
+                    generation,
+                    backend: row.backend_kind,
+                    carrier_version: version,
+                };
+                match preparing_owner {
+                    Some(owner_nonce) => (
+                        CreateClassification::Preparing {
+                            owner_nonce,
+                            identity,
+                            publication_epoch: epoch,
+                        },
+                        owner_nonce == self.nonce,
+                    ),
+                    None => (
+                        CreateClassification::Protected {
+                            identity,
+                            publication_epoch: epoch,
+                        },
+                        false,
+                    ),
+                }
+            }
+        })
+    }
+
+    fn reserve_current(
+        &mut self,
+        scope: crate::config::sessions_persistence::CreateCarrierScope,
+        current: &crate::session::manager::CarrierSnapshot,
+    ) -> bool {
+        use crate::pty::manager::{CreateAdmission, CreateClassification, ResponseCloseError};
+        self.failed_foreign = false;
+        self.reservation = None;
+        let Some((classification, may_mutate)) = self.classify_current(scope, current) else {
+            return false;
+        };
+        // Generic G never reserves an exclusive Protected claim while waiting
+        // for R. That would veto the owner whose progress G needs.
+        self.reservation = None;
+        if !may_mutate {
+            return false;
+        }
+        let foreign = matches!(&classification, CreateClassification::Foreign { .. });
+        let protected_generation = match &classification {
+            CreateClassification::Protected { identity, .. }
+            | CreateClassification::Preparing { identity, .. } => {
+                Some((identity.session_id, identity.generation))
+            }
+            _ => None,
+        };
+        match self
+            .tracker
+            .reserve_create_owner(&self.target, self.nonce, classification)
+        {
+            Ok(CreateAdmission::Reserved(reservation)) => {
+                self.reservation = Some(reservation);
+                may_mutate
+                    && protected_generation.is_none_or(|(id, generation)| {
+                        self.tracker.generation(id) == Some(generation)
+                    })
+            }
+            Err(ResponseCloseError::Unavailable)
+                if foreign && !self.tracker.target_is_closing(&self.target) =>
+            {
+                // Unavailable is permanently latched by this exact tracker.
+                // The upper owner stays alive; this is not a reset or a proof
+                // inferred from missing facts, poison, or a different tracker.
+                self.failed_foreign = true;
+                self.failed_foreign
+            }
+            _ => false,
+        }
+    }
+}
+
+fn release_owned_create_target(owner: &Arc<Mutex<OwnedCreateAdmission>>) {
+    let released = owner.lock().ok().map(|mut owner| {
+        owner.reservation = None;
+        let guards = owner
+            .owned_target
+            .as_mut()
+            .and_then(|lease| lease.guards.take());
+        (guards, owner.capacity.clone(), owner.resource.clone())
+    });
+    let Some((guards, capacity, resource)) = released else {
+        return;
+    };
+    drop(guards);
+    if let Some(resource) = resource {
+        if let Ok(mut resource) = resource.lock() {
+            if resource.in_region && resource.needed {
+                if let Some(permit) = resource.permit.take() {
+                    resource.monitor.release_unregistered_permit(permit);
+                }
+                resource.released = true;
+            }
+        }
+    }
+    if let Some(capacity) = capacity {
+        let unbound = capacity
+            .ticket
+            .lock()
+            .ok()
+            .and_then(|mut ticket| {
+                ticket
+                    .as_mut()
+                    .map(|ticket| ticket.release_capacity_for_wait())
+            })
+            .unwrap_or(false);
+        if !unbound {
+            if let Ok(mut owner) = owner.lock() {
+                owner.blocked_bound = true;
+            }
+        }
+    }
+}
+
+fn resume_owned_create_capacity(owner: &Arc<Mutex<OwnedCreateAdmission>>) -> Result<(), String> {
+    let capacity = owner
+        .lock()
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?
+        .capacity
+        .clone();
+    let Some(capacity) = capacity else {
+        return Ok(());
+    };
+    let mut ticket = capacity
+        .ticket
+        .lock()
+        .map_err(|_| "create ticket unavailable".to_string())?;
+    let Some(ticket) = ticket.as_mut() else {
+        return Err("create ticket unavailable".to_string());
+    };
+    ticket
+        .resume_unbound_capacity(&capacity.coordinator)
+        .map_err(|error| error.to_string())
+}
+
+async fn resume_create_resource_admission(
+    owner: &Arc<Mutex<OwnedCreateAdmission>>,
+) -> Result<(), String> {
+    let resource = owner
+        .lock()
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?
+        .resource
+        .clone();
+    let Some(resource) = resource else {
+        return Ok(());
+    };
+    let (monitor, settings) = {
+        let resource = resource
+            .lock()
+            .map_err(|_| "resource admission unavailable".to_string())?;
+        if !resource.in_region || !resource.released || !resource.needed {
+            return Ok(());
+        }
+        (resource.monitor.clone(), resource.settings.clone())
+    };
+    loop {
+        // Do not occupy quota needed by the protected owner while G waits.
+        // This is only a preflight probe; target/U/M admission still follows.
+        let permit = acquire_carrier_mutation_permit().await;
+        let eligible = owner.lock().ok().is_some_and(|owner| {
+            use crate::config::sessions_persistence::CreateCarrierScope;
+            match crate::config::sessions_persistence::classify_create_carrier_scope(
+                &permit,
+                &owner.target,
+                &owner.cwd,
+            ) {
+                CreateCarrierScope::Foreign { .. } => true,
+                CreateCarrierScope::Protected {
+                    preparing_owner: Some(nonce),
+                    ..
+                } => nonce == owner.nonce,
+                _ => false,
+            }
+        });
+        drop(permit);
+        if eligible {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    // Fresh limits, outside U/S/target guards. No retry on a real quota error.
+    let cfg = settings.read().await;
+    let next = monitor.try_reserve_agent_slot(ResourceLimits::from(&*cfg))?;
+    drop(cfg);
+    let mut state = match resource.lock() {
+        Ok(state) => state,
+        Err(_) => {
+            if let Some(permit) = next {
+                monitor.release_unregistered_permit(permit);
+            }
+            return Err("resource admission unavailable".to_string());
+        }
+    };
+    if !state.in_region || !state.released || state.permit.is_some() {
+        if let Some(permit) = next {
+            monitor.release_unregistered_permit(permit);
+        }
+        return Err("resource admission ownership changed".to_string());
+    }
+    state.permit = next;
+    state.released = false;
+    Ok(())
+}
+
+async fn ensure_owned_create_target(
+    owner: &Arc<Mutex<OwnedCreateAdmission>>,
+) -> Result<(), String> {
+    // Archive invokes this preparation before acquiring its settings write
+    // guard. Its later settings-first admission remains a pure U check.
+    let replacement = owner
+        .lock()
+        .ok()
+        .and_then(|owner| owner.owned_replacement.clone());
+    if let Some(replacement) = replacement {
+        if !replacement.validate_source().await {
+            return Err("targetCreateGateUnavailable".into());
+        }
+    }
+    let (blocked_bound, capacity_error) = {
+        let owner = owner
+            .lock()
+            .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+        (owner.blocked_bound, owner.capacity_error.clone())
+    };
+    if let Some(error) = capacity_error {
+        return Err(error);
+    }
+    if blocked_bound {
+        // A new conflicting protection across admitted Pending is an invariant
+        // violation. Keep the accepted core/binding unsafe, with no target or
+        // finalizer capacity and no invented public outcome or repeated effect.
+        return std::future::pending().await;
+    }
+    resume_create_resource_admission(owner).await?;
+    let required = {
+        let owner = owner
+            .lock()
+            .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+        owner
+            .owned_target
+            .as_ref()
+            .filter(|lease| lease.guards.is_none())
+            .map(|lease| {
+                (
+                    lease.gate.clone(),
+                    lease.key.clone(),
+                    lease.replica.clone(),
+                    owner.cwd.clone(),
+                )
+            })
+    };
+    let Some((gate, key, replica, cwd)) = required else {
+        return Ok(());
+    };
+    let stripe = gate
+        .acquire_target_lock(&key)
+        .await
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+    let exact = gate.acquire_exact(&key).await;
+    let current = crate::path_identity::verify_directory(&replica.canonical_path)
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+    let current_key = crate::config::teams::pty_input_create_gate_key_from_cwd(&cwd)
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+    if current.object_id != replica.object_id
+        || current.canonical_path != replica.canonical_path
+        || current_key.as_deref() != Some(key.as_str())
+    {
+        return Err("targetCreateGateUnavailable".to_string());
+    }
+    let mut owner = owner
+        .lock()
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+    let Some(lease) = owner.owned_target.as_mut() else {
+        return Err("targetCreateGateUnavailable".to_string());
+    };
+    if lease.key != key || lease.guards.is_some() {
+        return Err("targetCreateGateUnavailable".to_string());
+    }
+    lease.guards = Some((exact, stripe));
+    Ok(())
+}
+
+async fn try_acquire_create_publication_region(
+    owner: &Arc<Mutex<OwnedCreateAdmission>>,
+    manager: &SessionManager,
+) -> Option<crate::session::manager::CarrierMutationPermit> {
+    try_acquire_create_publication_region_checked(owner, manager, || true).await
+}
+
+async fn try_acquire_create_publication_region_checked(
+    owner: &Arc<Mutex<OwnedCreateAdmission>>,
+    manager: &SessionManager,
+    context_is_current: impl Fn() -> bool,
+) -> Option<crate::session::manager::CarrierMutationPermit> {
+    if owner
+        .lock()
+        .ok()?
+        .owned_target
+        .as_ref()
+        .is_some_and(|lease| lease.guards.is_none())
+    {
+        return None;
+    }
+    let permit = acquire_carrier_mutation_permit().await;
+    let scope = owner.lock().ok().map(|owner| {
+        crate::config::sessions_persistence::classify_create_carrier_scope(
+            &permit,
+            &owner.target,
+            &owner.cwd,
+        )
+    })?;
+    let admitted = manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            owner.lock().ok().is_some_and(|mut owner| {
+                context_is_current()
+                    && match (
+                        owner.owned_replacement.as_ref(),
+                        owner.replacement_pty.as_ref(),
+                    ) {
+                        (Some(continuation), Some(pty)) => continuation.validate_create_region(
+                            &permit,
+                            current,
+                            &owner.tracker,
+                            pty,
+                        ),
+                        (None, _) => owner.reserve_current(scope, current),
+                        _ => false,
+                    }
+            })
+        })
+        .await;
+    if admitted {
+        if let Err(error) = resume_owned_create_capacity(owner) {
+            if let Ok(mut owner) = owner.lock() {
+                owner.capacity_error = Some(error);
+            }
+            drop(permit);
+            release_owned_create_target(owner);
+            return None;
+        }
+        Some(permit)
+    } else {
+        drop(permit);
+        release_owned_create_target(owner);
+        None
+    }
+}
+
+async fn acquire_create_publication_region(
+    owner: &Arc<Mutex<OwnedCreateAdmission>>,
+    manager: &SessionManager,
+) -> Result<crate::session::manager::CarrierMutationPermit, String> {
+    loop {
+        ensure_owned_create_target(owner).await?;
+        if let Some(permit) = try_acquire_create_publication_region(owner, manager).await {
+            return Ok(permit);
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+/// A borrowed lifecycle lease cannot be released by common create. A changed
+/// region returns through the explicit private outcome to its lexical owner;
+/// generic creates release and reacquire their actual owned lease and capacity.
+async fn acquire_lifecycle_create_publication_region<R: tauri::Runtime>(
+    owner: &Arc<Mutex<OwnedCreateAdmission>>,
+    manager: &SessionManager,
+    domain: Option<&LifecycleEntryAuthority>,
+    transaction: Option<&SelectionTransaction<R>>,
+) -> Result<crate::session::manager::CarrierMutationPermit, String> {
+    let replacement = owner
+        .lock()
+        .ok()
+        .and_then(|owner| owner.owned_replacement.clone());
+    if let Some(replacement) = replacement {
+        if !replacement.validate_source().await {
+            return Err("targetCreateGateUnavailable".into());
+        }
+        return match try_acquire_create_publication_region(owner, manager).await {
+            Some(permit) => Ok(permit),
+            None => {
+                if let Ok(mut owner) = owner.lock() {
+                    owner.blocked_bound = true;
+                }
+                Err("targetCreateGateUnavailable".into())
+            }
+        };
+    }
+    let Some(domain) = domain else {
+        if owner.lock().ok().is_some_and(|owner| owner.preheld_target) {
+            return match try_acquire_create_publication_region(owner, manager).await {
+                Some(permit) => Ok(permit),
+                None => {
+                    if let Ok(mut owner) = owner.lock() {
+                        owner.blocked_bound = true;
+                    }
+                    Err("targetCreateGateUnavailable".into())
+                }
+            };
+        }
+        if let Some(transaction) =
+            transaction.filter(|transaction| transaction.has_restore_context())
+        {
+            if transaction.has_active_restore_capability() {
+                if let Some(permit) =
+                    try_acquire_create_publication_region_checked(owner, manager, || {
+                        transaction.has_active_restore_capability()
+                    })
+                    .await
+                {
+                    return Ok(permit);
+                }
+            }
+            transaction.invalidate_restore_ownership();
+            release_owned_create_target(owner);
+            return Err(
+                crate::session::selection::SelectionCoordinatorError::Unavailable.to_string(),
+            );
+        }
+        return acquire_create_publication_region(owner, manager).await;
+    };
+    let active_context = transaction.is_some_and(|transaction| {
+        transaction.has_accepted_lifecycle_core() || transaction.has_active_restore_capability()
+    });
+    let cwd = owner.lock().ok().map(|owner| owner.cwd.clone());
+    let valid_destination = cwd.is_some_and(|cwd| {
+        crate::config::teams::pty_input_create_gate_key_from_cwd(&cwd)
+            .is_ok_and(|key| domain.validates_destination(&cwd.to_string_lossy(), key.as_deref()))
+    });
+    if active_context
+        && valid_destination
+        && !domain
+            .interrupted
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        if let Some(permit) = try_acquire_create_publication_region_checked(owner, manager, || {
+            transaction.is_some_and(|transaction| {
+                transaction.has_accepted_lifecycle_core()
+                    || transaction.has_active_restore_capability()
+            })
+        })
+        .await
+        {
+            return Ok(permit);
+        }
+    }
+    if let Some(transaction) = transaction {
+        transaction.invalidate_restore_ownership();
+    }
+    domain
+        .interrupted
+        .store(true, std::sync::atomic::Ordering::Release);
+    Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string())
+}
+
+/// The accepted archive operation owns its application and inputs. Cancelling
+/// the create waiter cannot detach native mutation from settings publication.
+async fn enforce_owned_unarchived_for_spawn<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    cwd: &str,
+    session_label: &str,
+    create_owner: &Arc<Mutex<OwnedCreateAdmission>>,
+    manager: &SessionManager,
+    lifecycle_domain: Option<&LifecycleEntryAuthority>,
+    inline_transaction: Option<&SelectionTransaction<R>>,
+) -> Result<(), String> {
+    if lifecycle_domain.is_some()
+        || inline_transaction.is_some_and(|transaction| transaction.has_restore_context())
+    {
+        // The actual outer lifecycle/restore executor already owns this effect.
+        // Its borrow and outcome must return to that same executor, not a child.
+        let tracker = app
+            .state::<Arc<Mutex<PtyManager>>>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .response_close_state();
+        return crate::config::archive_gate::enforce_unarchived_for_spawn(
+            app,
+            cwd,
+            session_label,
+            || async { ensure_owned_create_target(create_owner).await },
+            || async {
+                acquire_lifecycle_create_publication_region(
+                    create_owner,
+                    manager,
+                    lifecycle_domain,
+                    inline_transaction,
+                )
+                .await
+                .map(Some)
+            },
+            |written| {
+                tracker.apply_settings(
+                    written.response_close_enabled,
+                    written.response_close_idle_seconds,
+                    std::time::Instant::now(),
+                )
+            },
+        )
+        .await;
+    }
+    let create_owner = create_owner.clone();
+    let manager = manager.clone();
+    let app = app.clone();
+    let cwd = cwd.to_owned();
+    let session_label = session_label.to_owned();
+    let tracker = app
+        .state::<Arc<Mutex<PtyManager>>>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .response_close_state();
+    crate::config::sessions_persistence::run_owned_persist_core(async move {
+        crate::config::archive_gate::enforce_unarchived_for_spawn(
+            &app,
+            &cwd,
+            &session_label,
+            || {
+                let owner = create_owner.clone();
+                async move { ensure_owned_create_target(&owner).await }
+            },
+            || {
+                let owner = create_owner.clone();
+                let manager = manager.clone();
+                async move {
+                    let admitted = try_acquire_create_publication_region(&owner, &manager).await;
+                    if admitted.is_none()
+                        && owner.lock().ok().is_some_and(|owner| owner.preheld_target)
+                    {
+                        if let Ok(mut owner) = owner.lock() {
+                            owner.blocked_bound = true;
+                        }
+                        return Err("targetCreateGateUnavailable".to_string());
+                    }
+                    Ok::<_, String>(admitted)
+                }
+            },
+            |written| {
+                tracker.apply_settings(
+                    written.response_close_enabled,
+                    written.response_close_idle_seconds,
+                    std::time::Instant::now(),
+                )
+            },
+        )
+        .await
+    })
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_session_inner_impl<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
+    pty_mgr: &Arc<Mutex<PtyManager>>,
+    shell: String,
+    shell_args: Vec<String>,
+    cwd: String,
+    session_name: Option<String>,
+    agent_id: Option<String>,
+    agent_label: Option<String>,
+    skip_tooling_save: bool,
+    git_repos: Vec<SessionRepo>,
+    skip_auto_resume: bool,
+    resolved_spawn: Option<AgentSpawnCommand>,
+    resolved_agent_host_shell: Option<ResolvedAgentHostShell>,
+    viewport: Option<PtyViewport>,
+    selection_intent: CreateSelectionIntent,
+    pending_start_fresh: Option<bool>,
+    pending_communication: Option<SessionCommunication>,
+    inline_transaction: Option<&SelectionTransaction<R>>,
+    inline_cause: Option<SelectionCause>,
+    defer_inline_finalization: bool,
+    preheld_target: Option<&crate::api::message_store::PtyInputTargetOwnership<'_>>,
+    enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
+    coding_agent_binding: Option<crate::session::manager::CodingAgentBinding>,
+    lifecycle_domain: Option<&LifecycleEntryAuthority>,
+    owned_replacement: Option<crate::session::selection::OwnedReplacementContinuation>,
+) -> Result<CreateCompletion, String> {
+    if inline_transaction.is_some_and(|transaction| {
+        transaction.has_restore_context() && !transaction.has_active_restore_capability()
+    }) {
+        if let Some(domain) = lifecycle_domain {
+            domain
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    if preheld_target.is_some()
+        || inline_transaction.is_some_and(|transaction| {
+            transaction.has_accepted_lifecycle_core() || transaction.has_active_restore_capability()
+        })
+        || lifecycle_domain.is_some()
+    {
+        // Accepted lifecycle jobs already own the one outer create core.
+        // The PTY producer owns its entire operation, target stripe/file and
+        // exact target guard. Its borrowed proof stays in that task's scope.
+        return create_session_inner_core(
+            app,
+            session_mgr,
+            pty_mgr,
+            shell,
+            shell_args,
+            cwd,
+            session_name,
+            agent_id,
+            agent_label,
+            skip_tooling_save,
+            git_repos,
+            skip_auto_resume,
+            resolved_spawn,
+            resolved_agent_host_shell,
+            viewport,
+            selection_intent,
+            pending_start_fresh,
+            pending_communication,
+            inline_transaction,
+            inline_cause,
+            defer_inline_finalization,
+            preheld_target,
+            enforcement,
+            coding_agent_binding,
+            lifecycle_domain,
+            owned_replacement,
+        )
+        .await;
+    }
+    let app = app.clone();
+    let session_mgr = session_mgr.clone();
+    let pty_mgr = pty_mgr.clone();
+    let inline_transaction = inline_transaction.cloned();
+    crate::config::sessions_persistence::run_owned_persist_core(async move {
+        create_session_inner_core(
+            &app,
+            &session_mgr,
+            &pty_mgr,
+            shell,
+            shell_args,
+            cwd,
+            session_name,
+            agent_id,
+            agent_label,
+            skip_tooling_save,
+            git_repos,
+            skip_auto_resume,
+            resolved_spawn,
+            resolved_agent_host_shell,
+            viewport,
+            selection_intent,
+            pending_start_fresh,
+            pending_communication,
+            inline_transaction.as_ref(),
+            inline_cause,
+            defer_inline_finalization,
+            None,
+            enforcement,
+            coding_agent_binding,
+            None,
+            owned_replacement,
+        )
+        .await
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_session_inner_core<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
     pty_mgr: &Arc<Mutex<PtyManager>>,
@@ -2081,6 +3144,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     preheld_target: Option<&crate::api::message_store::PtyInputTargetOwnership<'_>>,
     enforcement: crate::config::sessions_persistence::CreationGateEnforcement,
     coding_agent_binding: Option<crate::session::manager::CodingAgentBinding>,
+    lifecycle_domain: Option<&LifecycleEntryAuthority>,
+    owned_replacement: Option<crate::session::selection::OwnedReplacementContinuation>,
 ) -> Result<CreateCompletion, String> {
     // #1327 - startup coding-agent updates gate: no session may open (GUI,
     // restore, restart, root agent, web, phone) before the startup update run
@@ -2089,30 +3154,67 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     if let Some(gate) = app.try_state::<Arc<crate::agent_update::AgentUpdateGate>>() {
         gate.wait_until_done().await;
     }
-    let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
-    let cwd_path = std::path::Path::new(&cwd);
-    let create_target_key = crate::config::teams::pty_input_create_gate_key_from_cwd(cwd_path)
-        .map_err(|_| "targetCreateGateUnavailable".to_string())?;
-    let create_target_replica_identity = if create_target_key.is_some() {
-        let anchor = crate::config::teams::strict_wg_replica_anchor_from_cwd(cwd_path)
-            .map_err(|_| "targetCreateGateUnavailable".to_string())?
-            .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
-        Some(
-            crate::path_identity::verify_directory(&anchor)
-                .map_err(|_| "targetCreateGateUnavailable".to_string())?,
-        )
-    } else {
-        None
-    };
-    if let Some(preheld) = preheld_target {
-        let target_key = create_target_key
-            .as_deref()
-            .ok_or_else(|| "invalidTargetCreateOwnership".to_string())?;
-        if !preheld.proves(target_key) {
-            return Err("invalidTargetCreateOwnership".to_string());
+    if inline_transaction.is_some_and(|transaction| {
+        transaction.has_restore_context() && !transaction.has_active_restore_capability()
+    }) {
+        if let Some(domain) = lifecycle_domain {
+            domain
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    if !inline_transaction.is_some_and(|transaction| transaction.has_active_restore_capability()) {
+        if let Some(coordinator) = app.try_state::<SelectionCoordinator>() {
+            coordinator.wait_for_restore_release().await?;
         }
     }
-    let _owned_target_gate = if preheld_target.is_none() {
+    let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+    let destination_proof = (|| {
+        let cwd_path = std::path::Path::new(&cwd);
+        let create_target_key = crate::config::teams::pty_input_create_gate_key_from_cwd(cwd_path)
+            .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+        let create_target_replica_identity = if create_target_key.is_some() {
+            let anchor = crate::config::teams::strict_wg_replica_anchor_from_cwd(cwd_path)
+                .map_err(|_| "targetCreateGateUnavailable".to_string())?
+                .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+            Some(
+                crate::path_identity::verify_directory(&anchor)
+                    .map_err(|_| "targetCreateGateUnavailable".to_string())?,
+            )
+        } else {
+            None
+        };
+        if let Some(domain) = lifecycle_domain {
+            if !domain.validates_destination(&cwd, create_target_key.as_deref()) {
+                return Err("invalidTargetCreateOwnership".to_string());
+            }
+        }
+        if let Some(preheld) = preheld_target {
+            let target_key = create_target_key
+                .as_deref()
+                .ok_or_else(|| "invalidTargetCreateOwnership".to_string())?;
+            if !preheld.proves(target_key) {
+                return Err("invalidTargetCreateOwnership".to_string());
+            }
+        }
+        Ok::<_, String>((create_target_key, create_target_replica_identity))
+    })();
+    let (create_target_key, create_target_replica_identity) = match destination_proof {
+        Ok(proof) => proof,
+        Err(error) => {
+            if let Some(domain) = lifecycle_domain {
+                domain
+                    .interrupted
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            if let Some(transaction) = inline_transaction {
+                transaction.invalidate_restore_ownership();
+            }
+            return Err(error);
+        }
+    };
+    let _owned_target_gate = if preheld_target.is_none() && lifecycle_domain.is_none() {
         if let Some(target_key) = create_target_key.as_deref() {
             let gate = app
                 .try_state::<crate::api::message_store::PtyInputTargetGateState>()
@@ -2127,18 +3229,58 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 .await
                 .map_err(|_| "targetCreateGateUnavailable".to_string())?;
             let exact = gate.acquire_exact(target_key).await;
-            Some((stripe, exact))
+            Some(OwnedCreateTargetLease {
+                key: target_key.to_owned(),
+                gate,
+                replica: create_target_replica_identity
+                    .clone()
+                    .ok_or_else(|| "targetCreateGateUnavailable".to_string())?,
+                guards: Some((exact, stripe)),
+            })
         } else {
             None
         }
     } else {
         None
     };
+    let create_manager = session_mgr.read().await.clone();
+    let (create_nonce, create_binding) = match owned_replacement.as_ref() {
+        Some(continuation) => match continuation.binding() {
+            Some(binding) => (continuation.operation(), binding),
+            None => return Ok(CreateCompletion::Retained),
+        },
+        None => (
+            Uuid::new_v4(),
+            create_manager.reserve_carrier_create_binding(),
+        ),
+    };
+    let create_owner = Arc::new(Mutex::new(OwnedCreateAdmission {
+        preheld_target: preheld_target.is_some(),
+        owned_replacement: owned_replacement.clone(),
+        replacement_pty: owned_replacement.as_ref().map(|_| pty_mgr.clone()),
+        tracker: pty_mgr
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .response_close_state(),
+        target: create_target_key
+            .clone()
+            .unwrap_or_else(|| format!("create-cwd:{}", cwd)),
+        cwd: PathBuf::from(&cwd),
+        nonce: create_nonce,
+        binding: create_binding,
+        reservation: None,
+        failed_foreign: false,
+        owned_target: _owned_target_gate,
+        capacity: None,
+        resource: None,
+        blocked_bound: false,
+        capacity_error: None,
+    }));
     let session_label = session_name.as_deref().unwrap_or(&shell).to_string();
     let coordinator = app
         .try_state::<SelectionCoordinator>()
         .ok_or_else(|| "selectionCoordinatorUnavailable".to_string())?;
-    let mut create_ticket = match inline_transaction {
+    let create_ticket = Arc::new(Mutex::new(match inline_transaction {
         Some(_) => None,
         None => Some(match selection_intent.trusted() {
             Some(intent) => coordinator
@@ -2150,8 +3292,25 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 .await
                 .map_err(|error| error.to_string())?,
         }),
-    };
-    let coordinator_shutdown = coordinator.shutdown_token();
+    }));
+    if let Some(continuation) = owned_replacement.as_ref() {
+        if let Some(ticket) = create_ticket
+            .lock()
+            .map_err(|_| "create ticket unavailable".to_string())?
+            .as_mut()
+        {
+            ticket.retain_owned_replacement(continuation.clone())?;
+        }
+    }
+    if inline_transaction.is_none() {
+        create_owner
+            .lock()
+            .map_err(|_| "targetCreateGateUnavailable".to_string())?
+            .capacity = Some(CreateCapacityContext {
+            ticket: create_ticket.clone(),
+            coordinator: coordinator.inner().clone(),
+        });
+    }
     let inline_pending_binding = Arc::new(Mutex::new(None));
     let inline_pending_for_body = Arc::clone(&inline_pending_binding);
     // (#2413) Close-marker ticket of this create; the body fills it, the outer
@@ -2166,8 +3325,26 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // `rollback_pre_created_session`. (dev-rust E: the two call strings
         // at :1443/:1708 are untouched.)
         crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
-        crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label)
-            .await?;
+        enforce_owned_unarchived_for_spawn(
+            app,
+            &cwd,
+            &session_label,
+            &create_owner,
+            &create_manager,
+            lifecycle_domain,
+            inline_transaction,
+        )
+        .await?;
+        // An unarchived path has no native activation/admission callback.
+        // It still reserves healthy ownership before the first create effect.
+        let initial_admission = acquire_lifecycle_create_publication_region(
+            &create_owner,
+            &create_manager,
+            lifecycle_domain,
+            inline_transaction,
+        )
+        .await?;
+        drop(initial_admission);
         let (agent_id, agent_label) = {
             if let Some(spawn) = resolved_spawn.as_ref() {
                 (
@@ -2276,6 +3453,18 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             None
         };
 
+        create_owner
+            .lock()
+            .map_err(|_| "targetCreateGateUnavailable".to_string())?
+            .resource = Some(Arc::new(Mutex::new(CreateResourceAdmission {
+            monitor: resource_monitor.clone(),
+            settings: app.state::<SettingsState>().inner().clone(),
+            permit: None,
+            needed: is_agent_owned_launch,
+            in_region: false,
+            released: false,
+        })));
+
         // Clone the manager handle so the outer RwLock guard drops before spawn awaits.
         let mgr = session_mgr.read().await.clone();
         let backend_kind = resolved_spawn
@@ -2317,6 +3506,68 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             }
             None => None,
         };
+        // Attach the B capability already retained before create effects to
+        // this ticket/inline owner. No binder, default insert, or queue
+        // admission may mint another binding in the publication region.
+        let prepared_binding = create_owner.lock().ok().map(|owner| owner.binding);
+        let Some(prepared_binding) = prepared_binding else {
+            return Ok(CreateCompletion::Retained);
+        };
+        let carrier_u0 = match with_create_resource_region(
+            &create_owner,
+            &mut resource_permit,
+            acquire_lifecycle_create_publication_region(
+                &create_owner,
+                &mgr,
+                lifecycle_domain,
+                inline_transaction,
+            ),
+        )
+        .await
+        {
+            Ok(permit) => permit,
+            Err(error) => {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Err(error);
+            }
+        };
+        let mut inline_reserved = None;
+        if let Some(ticket) = create_ticket
+            .lock()
+            .map_err(|_| "create ticket unavailable".to_string())?
+            .as_mut()
+        {
+            #[cfg(test)]
+            if owned_replacement
+                .as_ref()
+                .is_some_and(|owned| owned.fixture_bind_twice())
+            {
+                assert_eq!(ticket.bind_prepared(prepared_binding)?, prepared_binding);
+            }
+            ticket.bind_prepared(prepared_binding)?;
+        } else if let Some(transaction) = inline_transaction {
+            #[cfg(test)]
+            if owned_replacement
+                .as_ref()
+                .is_some_and(|owned| owned.fixture_bind_twice())
+            {
+                assert_eq!(
+                    transaction
+                        .prepare_inline_create_binding(prepared_binding, &mut inline_reserved)?,
+                    prepared_binding
+                );
+            }
+            transaction.prepare_inline_create_binding(prepared_binding, &mut inline_reserved)?;
+        } else {
+            return Err("inline create transaction is unavailable".to_string());
+        }
+        if let Some(transaction) = inline_transaction {
+            if !transaction.retain_entry_create_binding(prepared_binding) {
+                drop(carrier_u0);
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Ok(CreateCompletion::Retained);
+            }
+        }
         // #1101: the restart replacement create runs while `teardown_old_for_restart`
         // has released the old PTY but RETAINED its canonical manager row (removed only
         // at the atomic commit's `mutations.remove(uuid)`, which runs after this gate).
@@ -2351,6 +3602,7 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 .unwrap_or_else(|error| error.into_inner())
                 .has_pending_spawn_for_replica(target);
             if appeared_session || appeared_spawn {
+                drop(carrier_u0);
                 release_resource_launch_permit(&resource_monitor, &mut resource_permit);
                 return Err("sessionRace".to_string());
             }
@@ -2359,9 +3611,10 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             let pty = pty_mgr.lock().unwrap_or_else(|error| error.into_inner());
             pty.mark_spawning(&cwd, &session_label)
         };
-        let pending_result = if let Some(ticket) = create_ticket.as_mut() {
-            mgr.create_pending_session(
-                ticket,
+        let pending_result = mgr
+            .create_pending_session_with_binding_and_carrier_permit(
+                prepared_binding,
+                &carrier_u0,
                 shell.clone(),
                 shell_args.clone(),
                 cwd.clone(),
@@ -2372,42 +3625,65 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 backend_kind,
             )
             .await
-            .map(|session| {
-                let binding = ticket
-                    .binding()
-                    .expect("manager bound the create ticket before returning");
-                (session, binding)
-            })
-            .map_err(|error| error.to_string())
-        } else if let Some(transaction) = inline_transaction {
-            transaction
-                .create_pending_session(
-                    shell.clone(),
-                    shell_args.clone(),
-                    cwd.clone(),
-                    agent_id.clone(),
-                    agent_label.clone(),
-                    git_repos,
-                    is_coordinator,
-                    backend_kind,
-                )
-                .await
-        } else {
-            Err("inline create transaction is unavailable".to_string())
-        };
+            .map(|session| (session, prepared_binding))
+            .map_err(|error| error.to_string());
         let (mut session, pending_binding) = match pending_result {
             Ok(created) => created,
             Err(e) => {
+                drop(carrier_u0);
                 release_resource_launch_permit(&resource_monitor, &mut resource_permit);
                 return Err(e);
             }
         };
+        if owned_replacement
+            .as_ref()
+            .is_some_and(|continuation| !continuation.mark_pending(pending_binding))
+        {
+            drop(carrier_u0);
+            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            return Ok(CreateCompletion::Retained);
+        }
+        if inline_transaction
+            .is_some_and(|transaction| !transaction.observe_entry_pending_binding(pending_binding))
+        {
+            drop(carrier_u0);
+            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            return Ok(CreateCompletion::Retained);
+        }
+        let previous = match owned_replacement.as_ref() {
+            Some(continuation) => match continuation.previous_for_launch(&carrier_u0) {
+                Some(previous) => Some(previous),
+                None => {
+                    drop(carrier_u0);
+                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                    return Ok(CreateCompletion::Retained);
+                }
+            },
+            None => None,
+        };
+        if let Some(previous) = previous {
+            // Carry is local launch input only. FinalizedOwned performs the
+            // exact persisted carry after B's real finalization/version receipt.
+            // The producer requests resume; A's unconsumed durable fresh intent
+            // still determines the actual runtime argv before launch.
+            skip_auto_resume = previous.start_fresh_on_restore;
+            session.telegram_bot_id = previous.telegram_bot_id;
+            session.communication = previous.communication;
+            session.start_fresh_on_restore = previous.start_fresh_on_restore;
+        }
         if let Err(error) = mgr
-            .install_pending_coding_agent_binding(pending_binding, coding_agent_binding)
+            .install_pending_coding_agent_binding_with_carrier_permit(
+                &carrier_u0,
+                pending_binding,
+                coding_agent_binding,
+            )
             .await
         {
-            if let Some(transaction) = inline_transaction {
-                transaction.rollback_inline_create(pending_binding).await;
+            drop(carrier_u0);
+            if owned_replacement.is_none() {
+                if let Some(transaction) = inline_transaction {
+                    transaction.rollback_inline_create(pending_binding).await;
+                }
             }
             release_resource_launch_permit(&resource_monitor, &mut resource_permit);
             return Err(error);
@@ -2418,17 +3694,27 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 .unwrap_or_else(|error| error.into_inner()) = Some(pending_binding);
         }
         if let Some(value) = pending_start_fresh {
-            mgr.set_pending_start_fresh_on_restore(pending_binding, value)
-                .await
-                .map_err(|error| error.to_string())?;
+            mgr.set_pending_start_fresh_on_restore_with_carrier_permit(
+                &carrier_u0,
+                pending_binding,
+                value,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
             session.start_fresh_on_restore = value;
         }
         if let Some(communication) = pending_communication.clone() {
-            mgr.set_pending_communication(pending_binding, communication.clone())
-                .await
-                .map_err(|error| error.to_string())?;
+            mgr.set_pending_communication_with_carrier_permit(
+                &carrier_u0,
+                pending_binding,
+                communication.clone(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
             session.communication = Some(communication);
         }
+
+        drop(carrier_u0);
 
         // #1063 test-only barrier: the pending row now exists and is visible to a
         // deletion's pending-inclusive snapshot; pause here before any config-seed
@@ -2438,9 +3724,20 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             seed_race_barriers::hit_before_project_gate(&cwd).await;
         }
 
-        if let Err(e) =
-            crate::config::archive_gate::enforce_unarchived_for_spawn(app, &cwd, &session_label)
-                .await
+        if let Err(e) = with_create_resource_region(
+            &create_owner,
+            &mut resource_permit,
+            enforce_owned_unarchived_for_spawn(
+                app,
+                &cwd,
+                &session_label,
+                &create_owner,
+                &create_manager,
+                lifecycle_domain,
+                inline_transaction,
+            ),
+        )
+        .await
         {
             let err = e.to_string();
             release_resource_launch_permit(&resource_monitor, &mut resource_permit);
@@ -2449,6 +3746,24 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             return Err(err);
         }
 
+        let carrier_u1 = match with_create_resource_region(
+            &create_owner,
+            &mut resource_permit,
+            acquire_lifecycle_create_publication_region(
+                &create_owner,
+                &mgr,
+                lifecycle_domain,
+                inline_transaction,
+            ),
+        )
+        .await
+        {
+            Ok(permit) => permit,
+            Err(error) => {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Err(error);
+            }
+        };
         // (#756) Propagate the mirror-forced intent onto the NEW record: the
         // startup-restore path reads ONLY the record, so without this an app close
         // after the forced-fresh reopen would resume the pre-boundary conversation.
@@ -2458,13 +3773,17 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // guard above on every later create, and the record stamp reaches disk
         // with the next persist-any.
         if fresh_forced_by_mirror {
-            mgr.set_pending_start_fresh_on_restore(pending_binding, true)
-                .await
-                .map_err(|error| error.to_string())?;
+            mgr.set_pending_start_fresh_on_restore_with_carrier_permit(
+                &carrier_u1,
+                pending_binding,
+                true,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
         }
 
         if is_root_agent {
-            mgr.set_pending_is_root_agent(pending_binding, true)
+            mgr.set_pending_is_root_agent_with_carrier_permit(&carrier_u1, pending_binding, true)
                 .await
                 .map_err(|error| error.to_string())?;
             session.is_root_agent = true;
@@ -2472,10 +3791,15 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
 
         if let Some(name) = session_name {
             if let Err(e) = mgr
-                .rename_pending_session(pending_binding, name.clone())
+                .rename_pending_session_with_carrier_permit(
+                    &carrier_u1,
+                    pending_binding,
+                    name.clone(),
+                )
                 .await
             {
                 let err = e.to_string();
+                drop(carrier_u1);
                 release_resource_launch_permit(&resource_monitor, &mut resource_permit);
                 drop(mgr);
                 rollback_pre_created_session(app, session_mgr, pty_mgr, session.id, &err).await;
@@ -2491,7 +3815,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 container_path_context.as_ref().map(|context| &context.map),
                 spawn,
             );
-            mgr.set_pending_profile_metadata(
+            mgr.set_pending_profile_metadata_with_carrier_permit(
+                &carrier_u1,
                 pending_binding,
                 Some(spawn.profile_resolution.requested_profile.clone()),
                 Some(spawn.profile_resolution.effective_profile.clone()),
@@ -2540,15 +3865,27 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
 
         // Single source of truth: store the identity on the SessionManager record
         // AND the local clone (the latter feeds the imminent `session_created` emit).
-        mgr.set_pending_agent_kind(pending_binding, agent_kind)
+        mgr.set_pending_agent_kind_with_carrier_permit(&carrier_u1, pending_binding, agent_kind)
             .await
             .map_err(|error| error.to_string())?;
         session.agent_kind = agent_kind;
         let trusted_configured_spawn = resolved_spawn.is_some();
-        mgr.set_pending_trusted_configured_spawn(pending_binding, trusted_configured_spawn)
-            .await
-            .map_err(|error| error.to_string())?;
+        mgr.set_pending_trusted_configured_spawn_with_carrier_permit(
+            &carrier_u1,
+            pending_binding,
+            trusted_configured_spawn,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         session.trusted_configured_spawn = trusted_configured_spawn;
+
+        drop(carrier_u1);
+        if let Some(continuation) = owned_replacement.as_ref() {
+            if !continuation.validate_source().await {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Ok(CreateCompletion::Retained);
+            }
+        }
 
         // #930 - resolve the host-credential copy-in plan for container coding agents
         // BEFORE the resume probe and the container env translation, so both consumers
@@ -2619,12 +3956,38 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         let resolved_claude_projects_dir = resume_probe
             .as_ref()
             .and_then(|probe| probe.host_probe_path.clone());
-        mgr.set_pending_resolved_claude_projects_dir(
+        let carrier_projects = match with_create_resource_region(
+            &create_owner,
+            &mut resource_permit,
+            acquire_lifecycle_create_publication_region(
+                &create_owner,
+                &mgr,
+                lifecycle_domain,
+                inline_transaction,
+            ),
+        )
+        .await
+        {
+            Ok(permit) => permit,
+            Err(error) => {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Err(error);
+            }
+        };
+        mgr.set_pending_resolved_claude_projects_dir_with_carrier_permit(
+            &carrier_projects,
             pending_binding,
             resolved_claude_projects_dir.clone(),
         )
         .await
         .map_err(|error| error.to_string())?;
+        drop(carrier_projects);
+        if let Some(continuation) = owned_replacement.as_ref() {
+            if !continuation.validate_source().await {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Ok(CreateCompletion::Retained);
+            }
+        }
         session.resolved_claude_projects_dir = resolved_claude_projects_dir.clone();
         let claude_project_exists = resume_probe
             .as_ref()
@@ -2799,6 +4162,40 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         };
 
         if let Some(ref target_filename) = target_filename {
+            if owned_replacement.is_some() {
+                revalidate_owned_create_effect(
+                    &create_owner,
+                    &mut resource_permit,
+                    &resource_monitor,
+                    &mgr,
+                    pty_mgr,
+                )
+                .await?;
+            }
+            let context_effect = inline_transaction
+                .and_then(|transaction| {
+                    transaction.start_lifecycle_effect(
+                        crate::session::selection::LifecycleEffectSlot::ContextPreparation,
+                    )
+                })
+                .or_else(|| {
+                    owned_replacement.as_ref().and_then(|continuation| {
+                        continuation.start_effect(
+                            crate::session::selection::LifecycleEffectSlot::ContextPreparation,
+                        )
+                    })
+                });
+            if (owned_replacement.is_some()
+                || inline_transaction.is_some_and(|transaction| transaction.has_lifecycle_entry()))
+                && context_effect.is_none()
+            {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Ok(CreateCompletion::Retained);
+            }
+            #[cfg(test)]
+            let context_fixture = owned_replacement
+                .as_ref()
+                .and_then(|owned| owned.fixture_native(false));
             let context_result = coordinator
                 .run_blocking_seed_work({
                     let cwd = cwd.clone();
@@ -2811,6 +4208,8 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                     let managed_filenames = managed_filenames.clone();
                     let container_repos = container_repos.clone();
                     move || {
+                        #[cfg(test)]
+                        if let Some(control) = context_fixture.as_ref() { control.enter(); }
                         // #1065 Stage F: production records the session-spawn context
                         // read/sync and self-heal under the per-project gate (acquired
                         // inside the blocking worker so the 10-second poll never blocks a
@@ -2850,6 +4249,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                         if start_fresh && context_result.is_ok() {
                             crate::config::agent_memory::rotate_origin_memory_at_spawn(&cwd);
                         }
+                        if let Some(effect) = context_effect {
+                            effect.complete(context_result.as_ref().map(|_| None).map_err(Clone::clone));
+                        }
+                        #[cfg(test)]
+                        if let Some(control) = context_fixture.as_ref() { control.returned(format!("{context_result:?}")); }
                         context_result
                     }
                 })
@@ -2899,9 +4303,38 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // or wrapping in a condition reintroduces the exact bug this plan fixes.
         // See _plans/bug-statusbar-dynamic-launch-args.md §10 and §15 for rationale.
         let effective = shell_args.clone();
-        mgr.set_pending_effective_shell_args(pending_binding, effective.clone())
-            .await
-            .map_err(|error| error.to_string())?;
+        let carrier_args = match with_create_resource_region(
+            &create_owner,
+            &mut resource_permit,
+            acquire_lifecycle_create_publication_region(
+                &create_owner,
+                &mgr,
+                lifecycle_domain,
+                inline_transaction,
+            ),
+        )
+        .await
+        {
+            Ok(permit) => permit,
+            Err(error) => {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Err(error);
+            }
+        };
+        mgr.set_pending_effective_shell_args_with_carrier_permit(
+            &carrier_args,
+            pending_binding,
+            effective.clone(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        drop(carrier_args);
+        if let Some(continuation) = owned_replacement.as_ref() {
+            if !continuation.validate_source().await {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Ok(CreateCompletion::Retained);
+            }
+        }
         session.effective_shell_args = Some(effective);
 
         let extra_env = if agent_id.is_some() {
@@ -3007,9 +4440,47 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             // leak-reclaim sweep stays safe. Clone the Arc out of State first so the
             // owned guard does not borrow a State temporary (E0716).
             let seed = seed.clone();
+            if owned_replacement.is_some() {
+                revalidate_owned_create_effect(
+                    &create_owner,
+                    &mut resource_permit,
+                    &resource_monitor,
+                    &mgr,
+                    pty_mgr,
+                )
+                .await?;
+            }
+            let seed_effect = inline_transaction
+                .and_then(|transaction| {
+                    transaction.start_lifecycle_effect(
+                        crate::session::selection::LifecycleEffectSlot::ConfigSeed,
+                    )
+                })
+                .or_else(|| {
+                    owned_replacement.as_ref().and_then(|continuation| {
+                        continuation.start_effect(
+                            crate::session::selection::LifecycleEffectSlot::ConfigSeed,
+                        )
+                    })
+                });
+            if (inline_transaction.is_some_and(|transaction| transaction.has_lifecycle_entry())
+                || owned_replacement.is_some())
+                && seed_effect.is_none()
+            {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Ok(CreateCompletion::Retained);
+            }
             let lock = app.state::<crate::ConfigSeedLockState>().inner().clone();
+            #[cfg(test)]
+            let seed_fixture = owned_replacement
+                .as_ref()
+                .and_then(|owned| owned.fixture_native(true));
             let seed_result = coordinator
                 .run_blocking_seed_work(move || {
+                    #[cfg(test)]
+                    if let Some(control) = seed_fixture.as_ref() {
+                        control.enter();
+                    }
                     let _seed_guard = lock.blocking_lock_owned();
                     // #1065 Stage F: production records the config-seed publication
                     // under the per-project gate, acquired AFTER this global lock
@@ -3022,11 +4493,23 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                     let activation: Option<
                         crate::config::seed_manifest::ManifestActivationToken,
                     > = None;
-                    crate::config::config_seed::perform_config_seed_recorded(
+                    let report = crate::config::config_seed::perform_config_seed_recorded(
                         &seed,
                         &id.to_string(),
                         activation.as_ref(),
-                    )
+                    );
+                    // The blocking worker records its actual report even when
+                    // the async receiver disappears. Native failure remains the
+                    // existing best-effort report, not a new spawn error.
+                    if let Some(effect) = seed_effect {
+                        effect.complete(Ok(Some(format!("{report:?}"))));
+                    }
+                    drop(_seed_guard);
+                    #[cfg(test)]
+                    if let Some(control) = seed_fixture.as_ref() {
+                        control.returned(format!("{report:?}"));
+                    }
+                    report
                 })
                 .await;
             match seed_result {
@@ -3145,7 +4628,61 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         {
             t.session_may_exist = true;
         }
+        if let Some(continuation) = owned_replacement.as_ref() {
+            if !continuation.validate_source().await {
+                release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                return Ok(CreateCompletion::Retained);
+            }
+        }
+        if owned_replacement.is_some() {
+            revalidate_owned_create_effect(
+                &create_owner,
+                &mut resource_permit,
+                &resource_monitor,
+                &mgr,
+                pty_mgr,
+            )
+            .await?;
+        }
+        let backend_effect = inline_transaction
+            .and_then(|transaction| {
+                transaction.start_lifecycle_effect(
+                    crate::session::selection::LifecycleEffectSlot::BackendSpawn,
+                )
+            })
+            .or_else(|| {
+                owned_replacement.as_ref().and_then(|continuation| {
+                    continuation
+                        .start_effect(crate::session::selection::LifecycleEffectSlot::BackendSpawn)
+                })
+            });
+        if (inline_transaction.is_some_and(|transaction| transaction.has_lifecycle_entry())
+            || owned_replacement.is_some())
+            && backend_effect.is_none()
+        {
+            release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+            return Ok(CreateCompletion::Retained);
+        }
+        #[cfg(test)]
+        if let Some(owned) = owned_replacement.as_ref() {
+            if !owned
+                .fixture_reached(
+                    crate::session::selection::ReplacementFixtureCut::BeforeBackendSpawn,
+                )
+                .await
+            {
+                return Ok(CreateCompletion::Retained);
+            }
+        }
         let spawn_result = PtyManager::spawn(pty_mgr, session.backend_kind, spawn_spec).await;
+        if let Some(effect) = backend_effect {
+            effect.complete(
+                spawn_result
+                    .as_ref()
+                    .map(|_| Some(id.to_string()))
+                    .map_err(|error| error.to_string()),
+            );
+        }
         drop(spawn_mark);
         if let Err(e) = spawn_result {
             if !launch_witness.launched() {
@@ -3168,6 +4705,19 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             return Err(err);
         }
 
+        if let Some(continuation) = owned_replacement.as_ref() {
+            let actual = mgr.get_pending_session(pending_binding).await;
+            let generation = pty_mgr
+                .lock()
+                .ok()
+                .and_then(|pty| pty.route_identities(id).map(|route| route.2));
+            if !actual
+                .zip(generation)
+                .is_some_and(|(row, generation)| continuation.record_launch(&row, generation))
+            {
+                return Ok(CreateCompletion::Retained);
+            }
+        }
         register_session_samplers(app, id, agent_id.clone());
 
         // Auto-inject optional non-credential bootstrap text for agent sessions
@@ -3327,7 +4877,12 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         }
 
         if defer_inline_finalization {
-            if create_ticket.is_some() || inline_transaction.is_none() {
+            if create_ticket
+                .lock()
+                .map_err(|_| "create ticket unavailable".to_string())?
+                .is_some()
+                || inline_transaction.is_none()
+            {
                 return Err(
                     "deferred create finalization requires an inline transaction".to_string(),
                 );
@@ -3345,19 +4900,34 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 info,
                 binding: pending_binding,
                 warnings: finalization_warnings,
+                _create_admission: create_owner.clone(),
             }));
         }
 
-        let finalized = if let Some(ticket) = create_ticket.take() {
-            ticket.finalize(finalization_warnings).await
+        let finalization_ticket = create_ticket
+            .lock()
+            .map_err(|_| "create ticket unavailable".to_string())?
+            .take();
+        let finalized = if let Some(ticket) = finalization_ticket {
+            ticket
+                .finalize_with_owned_outcome(finalization_warnings)
+                .await
         } else {
             let transaction = inline_transaction
                 .ok_or_else(|| "inline create transaction is unavailable".to_string())?;
             let cause =
                 inline_cause.ok_or_else(|| "inline create cause is unavailable".to_string())?;
             transaction
-                .finalize_inline_create(pending_binding, cause, finalization_warnings)
+                .finalize_inline_create(
+                    pending_binding,
+                    cause,
+                    finalization_warnings,
+                    owned_replacement.clone(),
+                )
                 .await
+        };
+        let Some(finalized) = finalized else {
+            return Ok(CreateCompletion::Retained);
         };
         if finalized.is_ok() && inline_transaction.is_some() {
             inline_pending_for_body
@@ -3380,16 +4950,19 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             tauri::async_runtime::spawn(async move {
                 raise_room_reader_demand(&app_for_demand, id).await;
             });
+            if let Some(transaction) = inline_transaction {
+                transaction.observe_entry_reader_demand(
+                    pending_binding,
+                    crate::session::selection::EntryReaderDemandReceipt::LegacyTaskAccepted,
+                );
+            }
         }
         completion
     };
-    let result = tokio::select! {
-        biased;
-        _ = coordinator_shutdown.cancelled() => {
-            Err("selectionCoordinatorUnavailable".to_string())
-        }
-        result = create_body => result,
-    };
+    // This accepted core owns every launched effect and its real result.
+    // Coordinator shutdown may reject finalization, but cannot drop a pending
+    // backend/native effect and manufacture completion for the caller.
+    let mut result = create_body.await;
     let marker = marker_ticket
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -3397,11 +4970,48 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
     if let Some(t) = marker {
         if result.is_err() {
             t.failed();
-        } else {
+        } else if matches!(
+            &result,
+            Ok(CreateCompletion::Finalized(_)) | Ok(CreateCompletion::Deferred(_))
+        ) {
             t.succeeded();
         }
     }
-    if result.is_err() {
+    if let (Err(error), Some(continuation)) = (&result, owned_replacement.as_ref()) {
+        let waiting = continuation.source_stop().is_none()
+            && create_owner
+                .lock()
+                .ok()
+                .is_some_and(|owner| owner.blocked_bound);
+        if !waiting {
+            let manager = session_mgr.read().await.clone();
+            continuation
+                .rollback_failed_create(&manager, pty_mgr, error)
+                .await;
+        }
+    }
+    if let Some(continuation) = owned_replacement.as_ref() {
+        if continuation.source_stop().is_some() {
+            // Validation failure is not a setup Err or whole-source stopped
+            // proof. Retain the real pending owner and its work.
+            result = Ok(CreateCompletion::Retained);
+        } else if create_owner
+            .lock()
+            .ok()
+            .is_some_and(|owner| owner.blocked_bound)
+        {
+            result = Ok(CreateCompletion::Retained);
+        }
+    }
+    if preheld_target.is_some()
+        && create_owner
+            .lock()
+            .ok()
+            .is_some_and(|owner| owner.blocked_bound)
+    {
+        result = Ok(CreateCompletion::Retained);
+    }
+    if result.is_err() && owned_replacement.is_none() {
         let binding = {
             inline_pending_binding
                 .lock()
@@ -3944,10 +5554,662 @@ pub(crate) async fn destroy_sessions_with_source<R: tauri::Runtime>(
         .await
 }
 
+#[derive(Clone)]
+enum ResponseEffectState<T> {
+    NotStarted,
+    Running,
+    Completed(Result<T, String>),
+    Ambiguous,
+}
+
+struct ResponseEffectRecord {
+    stages: Vec<(&'static str, ResponseEffectState<()>)>,
+    group: Option<ResponseEffectState<crate::resource_monitor::ResourceKillResult>>,
+    group_worker: Option<
+        tokio::task::JoinHandle<Result<crate::resource_monitor::ResourceKillResult, String>>,
+    >,
+    sealed: bool,
+}
+
+struct ResponseEffectOwner {
+    ticket: crate::pty::manager::ResponseCloseTicket,
+    registration: crate::session::selection::ResponseCloseRegistration,
+    backend: Arc<dyn crate::pty::backend::PtyBackend>,
+    record: Mutex<ResponseEffectRecord>,
+}
+
+fn response_effect_owners(
+) -> &'static Mutex<std::collections::HashMap<Uuid, Arc<ResponseEffectOwner>>> {
+    static OWNERS: std::sync::OnceLock<
+        Mutex<std::collections::HashMap<Uuid, Arc<ResponseEffectOwner>>>,
+    > = std::sync::OnceLock::new();
+    OWNERS.get_or_init(Default::default)
+}
+
+impl ResponseEffectOwner {
+    fn start(&self, name: &'static str) -> Option<usize> {
+        let mut record = self.record.lock().ok()?;
+        if record.sealed || record.stages.len() == record.stages.capacity() {
+            return None;
+        }
+        let index = record.stages.len();
+        record.stages.push((name, ResponseEffectState::NotStarted));
+        record.stages[index].1 = ResponseEffectState::Running;
+        Some(index)
+    }
+
+    fn complete(&self, index: usize, outcome: Result<(), String>) -> Option<()> {
+        let mut record = self.record.lock().ok()?;
+        let (_, stage) = record.stages.get_mut(index)?;
+        if !matches!(stage, ResponseEffectState::Running) {
+            return None;
+        }
+        *stage = ResponseEffectState::Completed(outcome);
+        Some(())
+    }
+
+    fn terminal(&self) -> bool {
+        let Ok(record) = self.record.lock() else {
+            return false;
+        };
+        record.sealed
+            && record
+                .stages
+                .iter()
+                .all(|(_, stage)| matches!(stage, ResponseEffectState::Completed(_)))
+            && record
+                .group
+                .as_ref()
+                .is_none_or(|stage| matches!(stage, ResponseEffectState::Completed(_)))
+    }
+
+    fn kill_failed(&self) -> bool {
+        self.record.lock().ok().is_some_and(|record| {
+            record.stages.iter().any(|(name, stage)| {
+                *name == "kill" && matches!(stage, ResponseEffectState::Completed(Err(_)))
+            })
+        })
+    }
+
+    fn seal(&self) -> Option<()> {
+        self.record.lock().ok()?.sealed = true;
+        Some(())
+    }
+}
+
+async fn response_group_effect(
+    owner: &Arc<ResponseEffectOwner>,
+    monitor: &Arc<ResourceMonitorState>,
+) -> Option<()> {
+    let id = owner.registration.member.session_id;
+    if !monitor.has_registered_group(id) {
+        return Some(());
+    }
+    {
+        let mut record = owner.record.lock().ok()?;
+        record.group = Some(ResponseEffectState::Running);
+        let monitor = monitor.clone();
+        owner.backend.publish_stop_witness(id, "session-destroy");
+        record.group_worker = Some(tokio::task::spawn_blocking(move || {
+            monitor.kill_group(
+                id,
+                crate::resource_monitor::ResourceKillReason::SessionDestroy,
+            )
+        }));
+    }
+    // The JoinHandle stays in the retained owner while it is polled. Losing
+    // this waiter does not drop the only handle or fabricate a group outcome.
+    std::future::poll_fn(|cx| {
+        use std::future::Future;
+        let Ok(mut record) = owner.record.lock() else {
+            return std::task::Poll::Pending;
+        };
+        let Some(worker) = record.group_worker.as_mut() else {
+            return std::task::Poll::Pending;
+        };
+        match std::pin::Pin::new(worker).poll(cx) {
+            std::task::Poll::Pending => std::task::Poll::Pending,
+            std::task::Poll::Ready(Ok(outcome)) => {
+                if let Err(error) = &outcome {
+                    log::warn!(
+                        "[session] resource cleanup failed session={} source=ResponseClose: {}",
+                        id,
+                        error
+                    );
+                }
+                record.group = Some(ResponseEffectState::Completed(outcome));
+                let _ = record.group_worker.take();
+                std::task::Poll::Ready(Some(()))
+            }
+            std::task::Poll::Ready(Err(error)) => {
+                record.group = Some(ResponseEffectState::Ambiguous);
+                let _ = record.group_worker.take();
+                log::warn!(
+                    "[session] resource cleanup task failed session={} source=ResponseClose: {}",
+                    id,
+                    error
+                );
+                std::task::Poll::Ready(None)
+            }
+        }
+    })
+    .await
+}
+
+pub(crate) async fn execute_response_close_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    ticket: crate::pty::manager::ResponseCloseTicket,
+) -> Result<ResponseCloseDisposition, String> {
+    let id = ticket.committed_binding().member.session_id;
+    execute_destroy_transaction_common(
+        transaction,
+        DestroyRequest {
+            ids: vec![id],
+            source: DestructionSource::BackgroundCleanup,
+            force_destroy_root: false,
+        },
+        Some(ticket),
+    )
+    .await
+    .and_then(|completion| match completion {
+        DestroyCompletion::Response(disposition) => Ok(disposition),
+        DestroyCompletion::Legacy(_) => {
+            unreachable!("conditional close selected the response core")
+        }
+    })
+}
+
+async fn execute_owned_response_close<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    ticket: crate::pty::manager::ResponseCloseTicket,
+) -> Result<ResponseCloseDisposition, String> {
+    let transaction = transaction.clone();
+    crate::config::sessions_persistence::run_owned_persist_core(async move {
+        execute_response_close_core(&transaction, ticket).await
+    })
+    .await
+}
+
+#[derive(Debug)]
+pub(crate) enum ResponseCloseDisposition {
+    Rejected,
+    Dormant,
+    Reopened,
+    ReconcilePending,
+}
+
+enum DestroyCompletion {
+    Legacy(DestroyOutcome),
+    Response(ResponseCloseDisposition),
+}
+
+fn response_close_current_rows<'a>(
+    current: &'a crate::session::manager::CarrierSnapshot,
+    registration: &crate::session::selection::ResponseCloseRegistration,
+) -> Option<(
+    &'a crate::session::session::Session,
+    &'a crate::session::session::Session,
+)> {
+    let find = |identity: &crate::pty::manager::ResponseRouteIdentity| {
+        current.rows.iter().find(|row| {
+            row.id == identity.session_id
+                && row.token == identity.token
+                && row.backend_kind == identity.backend
+                && current.versions.get(&row.id) == Some(&identity.carrier_version)
+                && !current.pending_ids.contains(&row.id)
+                && !matches!(row.status, SessionStatus::Exited(_))
+        })
+    };
+    let member = find(&registration.member)?;
+    let coordinator = find(&registration.coordinator)?;
+    if member.backend_kind != SessionBackendKind::LocalProcess
+        || member.is_coordinator
+        || member.is_root_agent
+        || member.agent_kind.is_none()
+        || !coordinator.is_coordinator
+        || coordinator.is_root_agent
+        || member
+            .communication
+            .as_ref()
+            .is_some_and(|communication| communication.kind == SessionCommunicationKind::CoManaged)
+    {
+        return None;
+    }
+    Some((member, coordinator))
+}
+
+async fn commit_response_close<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    manager: &SessionManager,
+    owner: &Arc<ResponseEffectOwner>,
+) -> bool {
+    let member = &owner.registration.member;
+    let coordinator = &owner.registration.coordinator;
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let Ok(member_route) = PtyManager::snapshot_route_proof(&pty, member.session_id) else {
+        return false;
+    };
+    let Ok(coordinator_route) = PtyManager::snapshot_route_proof(&pty, coordinator.session_id)
+    else {
+        return false;
+    };
+    let Ok(member_authority) = PtyManager::authority_route_proof(&pty, member.session_id) else {
+        return false;
+    };
+    let Ok(coordinator_authority) = PtyManager::authority_route_proof(&pty, coordinator.session_id)
+    else {
+        return false;
+    };
+    if member_route.backend_kind() != SessionBackendKind::LocalProcess
+        || coordinator_route.backend_kind() != coordinator.backend
+    {
+        return false;
+    }
+    let settings_state = app.state::<SettingsState>();
+    let roots = settings_state.read().await.project_paths.clone();
+    if crate::config::teams::verified_wg_coordinator_target(&coordinator.target, &roots).is_none() {
+        return false;
+    }
+    let settings = settings_state.read().await;
+    if settings.project_paths != roots {
+        return false;
+    }
+    let tracker = app
+        .state::<crate::pty::manager::ResponseCloseState>()
+        .inner()
+        .clone();
+    let permit = acquire_carrier_mutation_permit().await;
+    manager.with_current_carrier_snapshot(&permit, |current| {
+        let Some((member_row, coordinator_row)) = response_close_current_rows(current, &owner.registration) else { return false; };
+        if PathBuf::from(&member_row.working_directory) != member_route.saved_cwd().canonical_path
+            || PathBuf::from(&coordinator_row.working_directory) != coordinator_route.saved_cwd().canonical_path { return false; }
+        let now = std::time::Instant::now();
+        tracker.apply_settings(settings.response_close_enabled, settings.response_close_idle_seconds, now);
+        tracker.publish_manager_facts(member.clone(), true, crate::session::session::is_working(member_row), now);
+        tracker.publish_manager_facts(coordinator.clone(), false, crate::session::session::is_working(coordinator_row), now);
+        crate::config::settings::try_with_agents_layer_publication_state(&owner.registration.carrier.directory, |suppressed| {
+            if suppressed { return None; }
+            let _coordinator_guard = coordinator_authority.lock_verified(coordinator.backend, coordinator_route.saved_cwd(), coordinator_route.saved_replica()).ok()?;
+            if tracker.generation(coordinator.session_id) != Some(coordinator.generation) { return None; }
+            crate::config::sessions_persistence::with_confirmed_carrier(&permit, &owner.registration.carrier, current,
+                crate::config::sessions_persistence::CarrierCheckpointTransition::BeginClosing, |_| {
+                    member_authority.try_commit_response_close(&tracker, &owner.ticket, now).ok()
+                })
+        }).ok().flatten().is_some()
+    }).await
+}
+
+async fn execute_response_close_core<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    ticket: crate::pty::manager::ResponseCloseTicket,
+) -> Result<ResponseCloseDisposition, String> {
+    let binding = ticket.committed_binding();
+    if binding.member.backend != SessionBackendKind::LocalProcess {
+        return Ok(ResponseCloseDisposition::Rejected);
+    }
+    let Some(registration) =
+        crate::session::selection::response_close_registration(binding.member.session_id)
+    else {
+        return Ok(ResponseCloseDisposition::Rejected);
+    };
+    if registration.member != binding.member {
+        return Ok(ResponseCloseDisposition::Rejected);
+    }
+    let backend = {
+        let pty = transaction.app().state::<Arc<Mutex<PtyManager>>>();
+        let pty = pty.lock().map_err(|_| "pty_manager_poisoned".to_owned())?;
+        pty.backend_for_kind(binding.member.backend)
+    };
+    let owner = Arc::new(ResponseEffectOwner {
+        ticket,
+        registration,
+        backend,
+        record: Mutex::new(ResponseEffectRecord {
+            stages: Vec::with_capacity(16),
+            group: None,
+            group_worker: None,
+            sealed: false,
+        }),
+    });
+    {
+        let mut owners = response_effect_owners()
+            .lock()
+            .map_err(|_| "response_effect_owner_poisoned".to_owned())?;
+        if owners.contains_key(&binding.member.session_id) {
+            return Ok(ResponseCloseDisposition::ReconcilePending);
+        }
+        owners.insert(binding.member.session_id, owner.clone());
+    }
+    let manager = transaction.manager().await;
+    if !commit_response_close(transaction.app(), &manager, &owner).await {
+        response_effect_owners()
+            .lock()
+            .map_err(|_| "response_effect_owner_poisoned".to_owned())?
+            .remove(&binding.member.session_id);
+        return Ok(ResponseCloseDisposition::Rejected);
+    }
+    let monitor = transaction
+        .app()
+        .state::<Arc<ResourceMonitorState>>()
+        .inner()
+        .clone();
+    if response_group_effect(&owner, &monitor).await.is_none() {
+        return Ok(ResponseCloseDisposition::ReconcilePending);
+    }
+    let Some(kill) = owner.start("kill") else {
+        return Ok(ResponseCloseDisposition::ReconcilePending);
+    };
+    let kill_result = owner
+        .backend
+        .kill(binding.member.session_id)
+        .map_err(|error| error.to_string());
+    let kill_error = kill_result.as_ref().err().cloned();
+    if owner.complete(kill, kill_result).is_none() {
+        return Ok(ResponseCloseDisposition::ReconcilePending);
+    }
+    if owner.backend.has_session(binding.member.session_id) {
+        let _ = owner.seal();
+        return Ok(settle_response_close(transaction.app(), &manager, &owner)
+            .await
+            .unwrap_or(ResponseCloseDisposition::ReconcilePending));
+    }
+    if let Some(error) = kill_error {
+        log::warn!("[session] teardown reported an error after PTY loss session={} source=ResponseClose: {}", binding.member.session_id, error);
+    }
+    run_response_close_auxiliary(transaction, &manager, &owner).await;
+    let _ = owner.seal();
+    Ok(settle_response_close(transaction.app(), &manager, &owner)
+        .await
+        .unwrap_or(ResponseCloseDisposition::ReconcilePending))
+}
+
+async fn detach_response_close_telegram<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: Uuid,
+) -> Result<(), String> {
+    let bridge_shutdown = {
+        let telegram = app.state::<TelegramBridgeState>();
+        let mut telegram = telegram.lock().await;
+        if telegram.has_bridge(id) {
+            telegram
+                .detach(id)
+                .map(Some)
+                .map_err(|error| error.to_string())
+        } else {
+            Ok(None)
+        }
+    };
+    match bridge_shutdown {
+        Ok(Some(shutdown)) => {
+            // Retain the bot assignment on A as resume intent while the live
+            // bridge shuts down; the next owned replacement carries it.
+            let result = app
+                .emit(
+                    "telegram_bridge_detached",
+                    serde_json::json!({ "sessionId": id.to_string() }),
+                )
+                .map_err(|error| error.to_string());
+            shutdown.spawn_wait_or_abort();
+            result
+        }
+        Ok(None) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn run_response_close_auxiliary<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    manager: &SessionManager,
+    owner: &Arc<ResponseEffectOwner>,
+) {
+    let id = owner.registration.member.session_id;
+    let Some(detach) = owner.start("detach") else {
+        return;
+    };
+    let detached_result = transaction
+        .app()
+        .state::<DetachedSessionsState>()
+        .lock()
+        .map(|mut detached| {
+            detached.remove(&id);
+        })
+        .map_err(|_| "detached_sessions_poisoned".to_owned());
+    if owner.complete(detach, detached_result).is_none() {
+        return;
+    }
+
+    let Some(bridge) = owner.start("telegram") else {
+        return;
+    };
+    let bridge_result = detach_response_close_telegram(transaction.app(), id).await;
+    if let Err(error) = &bridge_result {
+        log::warn!(
+            "[session] telegram detach publication failed session={} source=ResponseClose: {}",
+            id,
+            error
+        );
+    }
+    if owner.complete(bridge, bridge_result).is_none() {
+        return;
+    }
+
+    let Some(commit) = owner.start("manager") else {
+        return;
+    };
+    let committed = transaction.commit_response_close_retained(id).await;
+    let committed = match committed {
+        Ok(committed) => {
+            let _ = owner.complete(commit, Ok(()));
+            committed
+        }
+        Err(error) => {
+            let _ = owner.complete(commit, Err(error));
+            return;
+        }
+    };
+    let Some(persist) = owner.start("persist") else {
+        return;
+    };
+    let persisted =
+        crate::config::sessions_persistence::persist_current_state_result(manager).await;
+    if let Err(error) = &persisted {
+        log::warn!(
+            "[selection] persistence failed source={} session={:?}: {}",
+            SelectionSource::BackgroundCleanup,
+            Some(id),
+            error
+        );
+    }
+    if owner.complete(persist, persisted).is_none() {
+        return;
+    }
+
+    let Some(readers) = owner.start("readers") else {
+        return;
+    };
+    crate::commands::telegram::release_all_reader_demands(transaction.app(), id).await;
+    if owner.complete(readers, Ok(())).is_none() {
+        return;
+    }
+
+    let Some(window) = owner.start("window") else {
+        return;
+    };
+    let label = format!("terminal-{}", id.to_string().replace('-', ""));
+    let closed = transaction
+        .app()
+        .get_webview_window(&label)
+        .map_or(Ok(()), |window| {
+            window.destroy().map_err(|error| error.to_string())
+        });
+    if let Err(error) = &closed {
+        log::warn!(
+            "[session] detached window destroy failed session={} source=ResponseClose: {}",
+            id,
+            error
+        );
+    }
+    if owner.complete(window, closed).is_none() {
+        return;
+    }
+
+    let Some(events) = owner.start("events") else {
+        return;
+    };
+    transaction.publish_destroyed(id);
+    reset_substantive_input(transaction.app(), id);
+    for row in &committed.changed_rows {
+        transaction.publish_created(row);
+    }
+    for id in &committed.cleared_raise_hand_ids {
+        transaction.publish_communication_cleared(*id);
+    }
+    if let Some(selection) = &committed.selection {
+        transaction.publish_selection(selection);
+    }
+    let _ = owner.complete(events, Ok(()));
+}
+
+async fn settle_response_close<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    manager: &SessionManager,
+    owner: &Arc<ResponseEffectOwner>,
+) -> Option<ResponseCloseDisposition> {
+    if !owner.terminal() {
+        return None;
+    }
+    let binding = owner.ticket.committed_binding();
+    let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+    let route = PtyManager::snapshot_route_proof(&pty, binding.member.session_id).ok()?;
+    let authority = PtyManager::authority_route_proof(&pty, binding.member.session_id).ok()?;
+    if route.backend_kind() != SessionBackendKind::LocalProcess {
+        return None;
+    }
+    let tracker = app
+        .state::<crate::pty::manager::ResponseCloseState>()
+        .inner()
+        .clone();
+    let permit = acquire_carrier_mutation_permit().await;
+    let settled = manager.with_current_carrier_snapshot(&permit, |current| {
+        let row = current.rows.iter().find(|row| row.id == binding.member.session_id && row.token == binding.member.token
+            && row.backend_kind == SessionBackendKind::LocalProcess && !current.pending_ids.contains(&row.id))?;
+        if PathBuf::from(&row.working_directory) != route.saved_cwd().canonical_path { return None; }
+        let _lifecycle = authority.lock_verified(SessionBackendKind::LocalProcess, route.saved_cwd(), route.saved_replica()).ok()?;
+        if tracker.generation(row.id) != Some(binding.member.generation) { return None; }
+        let absent = !owner.backend.has_session(row.id);
+        let dormant = absent && matches!(row.status, SessionStatus::Exited(0)) && !row.was_detached && current.selection.id() != Some(row.id);
+        let live = !absent && owner.kill_failed() && !matches!(row.status, SessionStatus::Exited(_))
+            && current.versions.get(&row.id).is_some_and(|version|
+                *version >= binding.member.carrier_version && *version < u64::MAX)
+            && owner.backend.context_session_liveness(row.id) == crate::pty::context_scrape::ContextSessionLiveness::Live;
+        if !dormant && !live { return None; }
+        let detached = app.state::<DetachedSessionsState>();
+        if dormant && detached.lock().ok()?.contains(&row.id) { return None; }
+        crate::config::settings::try_with_agents_layer_publication_state(&owner.registration.carrier.directory, |suppressed| {
+            if suppressed { return None; }
+            crate::config::sessions_persistence::with_confirmed_carrier(&permit, &owner.registration.carrier, current,
+                if dormant {
+                    crate::config::sessions_persistence::CarrierCheckpointTransition::FinishDormant {
+                        generation: binding.member.generation,
+                        committed_version: binding.member.carrier_version,
+                        replica: route.saved_replica()?,
+                    }
+                } else {
+                    crate::config::sessions_persistence::CarrierCheckpointTransition::FinishClosing
+                }, |stamp| {
+                    let mut identity = binding.member.clone();
+                    identity.carrier_version = stamp.version;
+                    tracker.publish_manager_facts(identity, !dormant, crate::session::session::is_working(row), std::time::Instant::now());
+                    let outcome = if dormant {
+                        crate::pty::manager::ResponseCloseSettlementOutcome::Dormant {
+                            exact_backend_absent: true, all_effects_completed: true, retained_exited_confirmed: true, selection_settled: true,
+                        }
+                    } else {
+                        crate::pty::manager::ResponseCloseSettlementOutcome::ReopenAfterKillFailure {
+                            terminal_kill_failure: true, all_effects_terminal: true, original_backend_alive: true, original_manager_identity_intact: true,
+                        }
+                    };
+                    tracker.finish_response_close(&owner.ticket, crate::pty::manager::ResponseCloseSettlementEvidence {
+                        committed_binding: binding.clone(),
+                        current_settlement: crate::pty::manager::ResponseCloseCurrentSettlement {
+                            current_carrier_version: stamp.version, confirmed_carrier_version: stamp.version,
+                            checkpoint_nonce: stamp.nonce, current_checkpoint_nonce: stamp.nonce,
+                            publication_epoch: stamp.epoch, current_publication_epoch: stamp.epoch,
+                        }, outcome,
+                    }).ok()?;
+                    Some(if dormant { ResponseCloseDisposition::Dormant } else { ResponseCloseDisposition::Reopened })
+                })
+        }).ok().flatten()
+    }).await;
+    drop(permit);
+    if let Some(disposition) = settled {
+        response_effect_owners()
+            .lock()
+            .ok()?
+            .remove(&binding.member.session_id);
+        crate::session::selection::forget_response_close_registration(binding.member.session_id);
+
+        if matches!(disposition, ResponseCloseDisposition::Dormant) {
+            pty.lock()
+                .ok()?
+                .remove_route_if_kind(binding.member.session_id, binding.member.backend);
+        }
+        return Some(disposition);
+    }
+    None
+}
+
+pub(crate) async fn reconcile_response_closes<R: tauri::Runtime>(app: &AppHandle<R>) {
+    let Some(tracker) = app.try_state::<crate::pty::manager::ResponseCloseState>() else {
+        return;
+    };
+    let owners = response_effect_owners()
+        .lock()
+        .ok()
+        .map(|owners| owners.values().cloned().collect::<Vec<_>>());
+    let Some(owners) = owners.filter(|owners| !owners.is_empty()) else {
+        return;
+    };
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    for owner in owners {
+        if !owner.registration.tracker.same_state(&tracker) || !owner.terminal() {
+            continue;
+        }
+        // Reconcile only the latest carrier, without repeating an observed
+        // kill, group operation, or cleanup after a save/readback failure.
+        if crate::config::sessions_persistence::persist_current_state_result(&manager)
+            .await
+            .is_ok()
+        {
+            let _ = settle_response_close(app, &manager, &owner).await;
+        }
+    }
+}
+
 pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     request: DestroyRequest,
 ) -> Result<DestroyOutcome, String> {
+    match execute_destroy_transaction_common(transaction, request, None).await? {
+        DestroyCompletion::Legacy(outcome) => Ok(outcome),
+        DestroyCompletion::Response(_) => unreachable!("legacy destroy selected its original core"),
+    }
+}
+
+async fn execute_destroy_transaction_common<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: DestroyRequest,
+    response_ticket: Option<crate::pty::manager::ResponseCloseTicket>,
+) -> Result<DestroyCompletion, String> {
+    if let Some(ticket) = response_ticket {
+        return execute_owned_response_close(transaction, ticket)
+            .await
+            .map(DestroyCompletion::Response);
+    }
     let planned = request
         .ids
         .iter()
@@ -3971,6 +6233,24 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
                 .push((session_id, "Session not found".to_string()));
             continue;
         };
+        {
+            let tracker = transaction
+                .app()
+                .state::<Arc<Mutex<PtyManager>>>()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .response_close_state();
+            let permit = acquire_carrier_mutation_permit().await;
+            tracker.invalidate_manager_row(session_id, std::time::Instant::now());
+            if !crate::config::sessions_persistence::retire_carrier_for_discard(&permit, session_id)
+            {
+                outcome
+                    .failed
+                    .push((session_id, "response_close_deferred".to_owned()));
+                continue;
+            }
+            crate::session::selection::forget_response_close_registration(session_id);
+        }
         let is_root_agent = existing.is_root_agent
             || crate::config::root_agent::is_root_agent_path(&existing.working_directory);
 
@@ -4218,7 +6498,7 @@ pub(crate) async fn execute_destroy_transaction<R: tauri::Runtime>(
         transaction.publish_selection(selection);
     }
 
-    Ok(outcome)
+    Ok(DestroyCompletion::Legacy(outcome))
 }
 
 #[tauri::command]
@@ -4715,16 +6995,19 @@ pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
 ) -> Result<SessionInfo, String> {
     let restarted = app
         .state::<SelectionCoordinator>()
-        .restart_lifecycle(RestartJobRequest {
-            session_id: uuid,
-            agent_id,
-            requested_profile,
-            skip_auto_resume,
-            activate_after,
-            intent,
-            communication_override,
-            enforcement,
-        })
+        .restart_lifecycle(
+            app.clone(),
+            RestartJobRequest {
+                session_id: uuid,
+                agent_id,
+                requested_profile,
+                skip_auto_resume,
+                activate_after,
+                intent,
+                communication_override,
+                enforcement,
+            },
+        )
         .await?;
 
     // #2232 phase 4 section 5.2: the restart replaces the session UUID, so
@@ -4738,6 +7021,21 @@ pub(crate) async fn restart_session_inner_with_intent<R: tauri::Runtime>(
 struct RestartTeardownError {
     message: String,
     old_lost: bool,
+}
+
+pub(crate) async fn complete_owned_replacement_retirement<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    session_id: Uuid,
+) {
+    crate::session::selection::forget_response_close_registration(session_id);
+    detach_restart_telegram(transaction, session_id).await;
+    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
+    transaction
+        .app()
+        .state::<DetachedSessionsState>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&session_id);
 }
 
 async fn detach_restart_telegram<R: tauri::Runtime>(
@@ -4902,38 +7200,118 @@ async fn finalize_failed_restart<R: tauri::Runtime>(
     selected: bool,
     intent: TrustedRestartIntent,
 ) -> Result<(), String> {
-    detach_restart_telegram(transaction, session_id).await;
-    let mut mutations = LifecycleMutations::default();
-    mutations.remove(session_id);
-    let committed = transaction
-        .commit(
-            if selected {
-                CommitDecision::Clear
-            } else {
-                CommitDecision::Keep
-            },
-            SelectionCause::Restart(intent),
-            mutations,
-        )
-        .await?;
-    // Section 5.2: the old row is gone, so any old-id reader demand that
-    // survived teardown (or was raised while it was in flight) is released and
-    // its capture slot closed before the destroyed publication.
-    crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
-    transaction
-        .persist(SelectionSource::Restart, Some(session_id))
-        .await;
-    publish_restart_destroyed(transaction, session_id);
-    if let Some(selection) = committed.selection.as_ref() {
-        transaction.publish_selection(selection);
+    let publication = transaction
+        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::Publication);
+    if transaction.has_lifecycle_entry() && publication.is_none() {
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
     }
-    Ok(())
+    let result = async {
+        detach_restart_telegram(transaction, session_id).await;
+        let mut mutations = LifecycleMutations::default();
+        mutations.remove(session_id);
+        let committed = transaction
+            .commit(
+                if selected {
+                    CommitDecision::Clear
+                } else {
+                    CommitDecision::Keep
+                },
+                SelectionCause::Restart(intent),
+                mutations,
+            )
+            .await?;
+        // Section 5.2: the old row is gone, so any old-id reader demand that
+        // survived teardown (or was raised while it was in flight) is released and
+        // its capture slot closed before the destroyed publication.
+        crate::commands::telegram::release_all_reader_demands(transaction.app(), session_id).await;
+        transaction
+            .persist(SelectionSource::Restart, Some(session_id))
+            .await;
+        publish_restart_destroyed(transaction, session_id);
+        if let Some(selection) = committed.selection.as_ref() {
+            transaction.publish_selection(selection);
+        }
+        Ok(())
+    }
+    .await;
+    if let Some(publication) = publication {
+        publication.complete(result.as_ref().map(|_| None).map_err(Clone::clone));
+    }
+    result
+}
+
+enum LifecycleExecutionContext<'a> {
+    ExternalEntry(&'a LifecycleEntryAuthority),
+    RestoreEntry {
+        authority: &'a LifecycleEntryAuthority,
+        root_directory: Option<&'a str>,
+    },
+}
+impl LifecycleExecutionContext<'_> {
+    fn authority(&self) -> Option<&LifecycleEntryAuthority> {
+        match self {
+            Self::ExternalEntry(authority) => Some(authority),
+            Self::RestoreEntry { authority, .. } => Some(authority),
+        }
+    }
 }
 
 pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     request: RestartJobRequest,
 ) -> Result<SessionInfo, String> {
+    if !transaction.has_active_restore_capability() {
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    let (authority, root_directory) =
+        prepare_restore_lifecycle_authority(transaction, Some(request.session_id), false).await?;
+    execute_restart_transaction_in_context(
+        transaction,
+        request,
+        &LifecycleExecutionContext::RestoreEntry {
+            authority: &authority,
+            root_directory: root_directory.as_deref(),
+        },
+    )
+    .await
+}
+
+pub(crate) enum LifecycleEntryOutcome {
+    Returned(Result<SessionInfo, String>),
+    Interrupted,
+}
+
+pub(crate) async fn execute_external_restart_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: RestartJobRequest,
+    authority: &LifecycleEntryAuthority,
+) -> LifecycleEntryOutcome {
+    let result = execute_restart_transaction_in_context(
+        transaction,
+        request,
+        &LifecycleExecutionContext::ExternalEntry(authority),
+    )
+    .await;
+    if authority
+        .interrupted
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        LifecycleEntryOutcome::Interrupted
+    } else {
+        LifecycleEntryOutcome::Returned(result)
+    }
+}
+
+async fn execute_restart_transaction_in_context<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: RestartJobRequest,
+    context: &LifecycleExecutionContext<'_>,
+) -> Result<SessionInfo, String> {
+    if matches!(context, LifecycleExecutionContext::RestoreEntry { .. })
+        && !transaction.has_active_restore_capability()
+    {
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
     let app = transaction.app();
     let session_mgr = app
         .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
@@ -4969,7 +7347,13 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         old_selected,
     ) = {
         let mgr = session_mgr.read().await;
-        let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
+        let session = match mgr.get_session(uuid).await {
+            Some(session) => session,
+            None => {
+                transaction.observe_lifecycle_missing_source();
+                return Err("Session not found".to_string());
+            }
+        };
         let old_selected = mgr.selection_payload().await.id() == Some(uuid);
         (
             session.shell.clone(),
@@ -4990,121 +7374,197 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         )
     };
 
-    let cwd = if is_root_agent {
-        crate::config::root_agent::ensure_root_agent_dir()?
-    } else {
-        cwd
-    };
-    let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
-    crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
-    // §1295 5.1b / B2: the creation gate runs AFTER `probe_spawn_refusal` but
-    // WELL BEFORE `teardown_old_for_restart` (below). A rejected restart of a
-    // live outside-roots session therefore DECLINES: the old session stays
-    // running (live PTY untouched), `Err(sessionCreateBlocked: ...)` propagates,
-    // and no `finalize_failed_restart` runs. Root-agent restarts already
-    // normalized `cwd` to `ensure_root_agent_dir()` above, which the gate
-    // exempts by rule 1.
-    crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
+    let preparation = transaction
+        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::ContextPreparation);
+    if transaction.has_lifecycle_entry() && preparation.is_none() {
+        if let Some(authority) = context.authority() {
+            authority
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    let prepared = async {
+        let cwd = if is_root_agent {
+            ensure_lifecycle_root_directory(transaction, context).await?
+        } else {
+            cwd
+        };
+        let cwd = crate::path_utils::normalize_windows_verbatim_path(&cwd);
+        crate::config::archive_gate::probe_spawn_refusal(app, &cwd).await?;
+        // §1295 5.1b / B2: the creation gate runs AFTER `probe_spawn_refusal` but
+        // WELL BEFORE `teardown_old_for_restart` (below). A rejected restart of a
+        // live outside-roots session therefore DECLINES: the old session stays
+        // running (live PTY untouched), `Err(sessionCreateBlocked: ...)` propagates,
+        // and no `finalize_failed_restart` runs. Root-agent restarts already
+        // normalized `cwd` to `ensure_root_agent_dir()` above, which the gate
+        // exempts by rule 1.
+        crate::config::sessions_persistence::enforce_creation_gate(app, &cwd, enforcement).await?;
 
-    // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
-    let clean_args =
-        crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
+        // 2. Strip auto-injected args before restart so the new session starts from the saved recipe.
+        let clean_args =
+            crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
 
-    let requested_agent_id = agent_id;
-    let selected_requested_profile =
-        effective_restart_requested_profile(requested_profile, stored_requested_profile);
-    // #537 read-side / #2434: resolve the launch agent through the one matched
-    // selection drift also reads, and resolve its spawn under a single settings
-    // read guard. No await is held across the guard; it is dropped at the end of
-    // this block. The #1271 host-shell snapshot is copied from the SAME guard so
-    // program and args can never pair across a configuration change.
-    let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
-        let cfg = settings.read().await;
-        let selection = matched_selection(
-            &cfg,
-            &cwd,
-            requested_agent_id.as_deref(),
-            stored_agent_id.as_deref(),
-            selected_requested_profile.as_deref(),
-        );
-        let (selected_agent_id, resolved_spawn) = match selection {
-            MatchedSelection::NoAgent => (None, None),
-            MatchedSelection::Unresolved { reference } => {
-                return Err(format!(
+        let requested_agent_id = agent_id;
+        let selected_requested_profile =
+            effective_restart_requested_profile(requested_profile, stored_requested_profile);
+        // #537 read-side / #2434: resolve the launch agent through the one matched
+        // selection drift also reads, and resolve its spawn under a single settings
+        // read guard. No await is held across the guard; it is dropped at the end of
+        // this block. The #1271 host-shell snapshot is copied from the SAME guard so
+        // program and args can never pair across a configuration change.
+        let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
+            let cfg = settings.read().await;
+            let selection = matched_selection(
+                &cfg,
+                &cwd,
+                requested_agent_id.as_deref(),
+                stored_agent_id.as_deref(),
+                selected_requested_profile.as_deref(),
+            );
+            let (selected_agent_id, resolved_spawn) = match selection {
+                MatchedSelection::NoAgent => (None, None),
+                MatchedSelection::Unresolved { reference } => {
+                    return Err(format!(
                     "unresolved_coding_agent_reference: '{}' matches no configured coding agent",
                     reference
                 ));
-            }
-            MatchedSelection::Agent {
-                agent_id,
-                profile_letter,
-                authoritative,
-                tier,
-                original_letter,
-            } => {
-                let spawn = resolve_configured_agent_spawn_for_cwd(
-                    &cfg,
-                    &agent_id,
-                    &cwd,
-                    profile_letter.as_deref(),
+                }
+                MatchedSelection::Agent {
+                    agent_id,
+                    profile_letter,
                     authoritative,
-                )?
-                .map(|mut spawn| {
-                    // A matched restart records the ORIGINAL request; the matched
-                    // letter lives in `effective_profile`, its provenance in the
-                    // #2451 carriers.
-                    if authoritative {
-                        if let Some(original) = selected_requested_profile.as_ref() {
-                            spawn.profile_resolution.requested_profile = original.clone();
+                    tier,
+                    original_letter,
+                } => {
+                    let spawn = resolve_configured_agent_spawn_for_cwd(
+                        &cfg,
+                        &agent_id,
+                        &cwd,
+                        profile_letter.as_deref(),
+                        authoritative,
+                    )?
+                    .map(|mut spawn| {
+                        // A matched restart records the ORIGINAL request; the matched
+                        // letter lives in `effective_profile`, its provenance in the
+                        // #2451 carriers.
+                        if authoritative {
+                            if let Some(original) = selected_requested_profile.as_ref() {
+                                spawn.profile_resolution.requested_profile = original.clone();
+                            }
                         }
-                    }
-                    spawn.match_tier = tier.map(|tier| tier.as_wire_str().to_string());
-                    spawn.original_profile_letter = original_letter;
-                    spawn
-                });
-                (Some(agent_id), spawn)
-            }
+                        spawn.match_tier = tier.map(|tier| tier.as_wire_str().to_string());
+                        spawn.original_profile_letter = original_letter;
+                        spawn
+                    });
+                    (Some(agent_id), spawn)
+                }
+            };
+            let resolved_agent_host_shell = if resolved_spawn.is_some() {
+                Some(ResolvedAgentHostShell {
+                    program: cfg.default_shell.clone(),
+                    args: cfg.default_shell_args.clone(),
+                })
+            } else {
+                None
+            };
+            (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
         };
-        let resolved_agent_host_shell = if resolved_spawn.is_some() {
-            Some(ResolvedAgentHostShell {
-                program: cfg.default_shell.clone(),
-                args: cfg.default_shell_args.clone(),
-            })
+        // #2434 - prepare (isolated CODEX_HOME, OpenCode config dir) outside the
+        // settings guard and BEFORE any teardown: a failure aborts the restart and
+        // leaves the old session running.
+        if let Some(spawn) = resolved_spawn.as_ref() {
+            crate::config::agent_command::prepare_agent_spawn_command(spawn)?;
+        }
+        let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
+            (
+                spawn.shell.clone(),
+                spawn.shell_args.clone(),
+                Some(spawn.trusted_agent_label.clone()),
+            )
         } else {
-            None
+            (shell, clean_args, stored_agent_label)
         };
-        (selected_agent_id, resolved_spawn, resolved_agent_host_shell)
-    };
-    // #2434 - prepare (isolated CODEX_HOME, OpenCode config dir) outside the
-    // settings guard and BEFORE any teardown: a failure aborts the restart and
-    // leaves the old session running.
-    if let Some(spawn) = resolved_spawn.as_ref() {
-        crate::config::agent_command::prepare_agent_spawn_command(spawn)?;
+
+        // (#630/#631) Fresh on an explicit "Restart Session" (None -> true), OR if the
+        // session still carries an unconsumed durable fresh intent. Root agents are
+        // scoped out (separate restore path ignores the marker, §8): they are never
+        // stamped below, so `stored_start_fresh` is false for root and this reduces to
+        // today's `effective_restart_skip_auto_resume`.
+        let restart_start_fresh =
+            restart_skip_auto_resume_with_intent(stored_start_fresh, skip_auto_resume);
+        let carried_communication = communication_override
+            .or_else(|| carry_communication_for_restart(stored_communication, restart_start_fresh));
+
+        Ok::<_, String>((
+            shell,
+            shell_args,
+            cwd,
+            selected_agent_id,
+            agent_label,
+            resolved_spawn,
+            resolved_agent_host_shell,
+            restart_start_fresh,
+            carried_communication,
+        ))
     }
-    let (shell, shell_args, agent_label) = if let Some(spawn) = resolved_spawn.as_ref() {
-        (
-            spawn.shell.clone(),
-            spawn.shell_args.clone(),
-            Some(spawn.trusted_agent_label.clone()),
-        )
-    } else {
-        (shell, clean_args, stored_agent_label)
+    .await;
+    if let Some(preparation) = preparation {
+        preparation.complete(prepared.as_ref().map(|_| None).map_err(Clone::clone));
+    }
+    let (
+        shell,
+        shell_args,
+        cwd,
+        selected_agent_id,
+        agent_label,
+        resolved_spawn,
+        resolved_agent_host_shell,
+        restart_start_fresh,
+        carried_communication,
+    ) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            transaction.observe_lifecycle_preparation_failure();
+            return Err(error);
+        }
     };
 
-    // (#630/#631) Fresh on an explicit "Restart Session" (None -> true), OR if the
-    // session still carries an unconsumed durable fresh intent. Root agents are
-    // scoped out (separate restore path ignores the marker, §8): they are never
-    // stamped below, so `stored_start_fresh` is false for root and this reduces to
-    // today's `effective_restart_skip_auto_resume`.
-    let restart_start_fresh =
-        restart_skip_auto_resume_with_intent(stored_start_fresh, skip_auto_resume);
-    let carried_communication = communication_override
-        .or_else(|| carry_communication_for_restart(stored_communication, restart_start_fresh));
+    let retirement = transaction
+        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::Retirement);
+    if transaction.has_lifecycle_entry() && retirement.is_none() {
+        if let Some(authority) = context.authority() {
+            authority
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    if let Some(authority) = context.authority() {
+        if !retire_lifecycle_entry_protection(app, authority).await {
+            transaction.invalidate_restore_ownership();
+            authority
+                .interrupted
+                .store(true, std::sync::atomic::Ordering::Release);
+            // External adapters suppress this internal exit via Interrupted.
+            // Restore unwinds its actual executor/barrier with Unavailable.
+            return Err(
+                crate::session::selection::SelectionCoordinatorError::Unavailable.to_string(),
+            );
+        }
+    }
 
     // 3. Release the old runtime slot while retaining its canonical manager row.
     // Dormant rows skip teardown and remain retryable until replacement success.
     let old_was_dormant = matches!(old_status, SessionStatus::Exited(_));
-    let old_lost = match teardown_old_for_restart(transaction, uuid, old_was_dormant).await {
+    let teardown = teardown_old_for_restart(transaction, uuid, old_was_dormant).await;
+    if let Some(retirement) = retirement {
+        retirement.complete(match &teardown {
+            Ok(old_lost) => Ok(Some(format!("old_lost={old_lost}"))),
+            Err(error) => Err(format!("old_lost={}: {}", error.old_lost, error.message)),
+        });
+    }
+    let old_lost = match teardown {
         Ok(old_lost) => old_lost,
         Err(error) => {
             if error.old_lost {
@@ -5133,6 +7593,11 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     // 4. Spawn the replacement as a pending, unannounced row.
     let binding_manager = session_mgr.read().await.clone();
     let coding_agent_binding = binding_manager.coding_agent_binding(uuid).await;
+    let target_ownership = context
+        .authority()
+        .map(|authority| authority.target_ownership())
+        .transpose()?
+        .flatten();
     let completion = create_session_inner_impl(
         app,
         &session_mgr,
@@ -5155,13 +7620,25 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         Some(transaction),
         Some(SelectionCause::Restart(intent)),
         true,
-        None,
+        target_ownership.as_ref(),
         enforcement,
         coding_agent_binding,
+        context.authority(),
+        None,
     )
     .await;
     let deferred = match completion {
         Ok(CreateCompletion::Deferred(deferred)) => deferred,
+        Ok(CreateCompletion::Retained) => {
+            if let Some(authority) = context.authority() {
+                authority
+                    .interrupted
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            return Err(
+                crate::session::selection::SelectionCoordinatorError::Unavailable.to_string(),
+            );
+        }
         Ok(CreateCompletion::Finalized(_)) => {
             let error = "restart replacement was published before atomic finalization".to_string();
             if old_lost {
@@ -5170,6 +7647,13 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
             return Err(error);
         }
         Err(error) => {
+            if context.authority().is_some_and(|authority| {
+                authority
+                    .interrupted
+                    .load(std::sync::atomic::Ordering::Acquire)
+            }) {
+                return Err(error);
+            }
             if old_lost {
                 if let Err(finalize_error) =
                     finalize_failed_restart(transaction, uuid, old_selected, intent).await
@@ -5217,7 +7701,12 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         CommitDecision::Keep
     };
     let committed = match transaction
-        .commit(decision, SelectionCause::Restart(intent), mutations)
+        .commit_entry_create(
+            deferred.binding,
+            decision,
+            SelectionCause::Restart(intent),
+            mutations,
+        )
         .await
     {
         Ok(committed) => committed,
@@ -5235,6 +7724,11 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         .find(|row| row.id == new_uuid.to_string())
         .cloned()
         .ok_or_else(|| "restart finalization did not produce the replacement row".to_string())?;
+    let publication = transaction
+        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::Publication);
+    if transaction.has_lifecycle_entry() && publication.is_none() {
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
     // Section 5.2: the commit removed the old row. Detach its bridge (dormant
     // old) and sweep every old-id reader demand raised since teardown before
     // the replacement is published or attached; then evaluate the new uuid's
@@ -5252,6 +7746,10 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     }
     crate::commands::telegram::release_all_reader_demands(app, uuid).await;
     raise_room_reader_demand(app, new_uuid).await;
+    transaction.observe_entry_reader_demand(
+        deferred.binding,
+        crate::session::selection::EntryReaderDemandReceipt::Returned,
+    );
     transaction
         .persist(SelectionSource::Restart, Some(new_uuid))
         .await;
@@ -5281,6 +7779,9 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
         attach_local_config_telegram_if_any(app, new_uuid, &cwd).await;
     }
 
+    if let Some(publication) = publication {
+        publication.complete(Ok(Some(session_info.id.clone())));
+    }
     Ok(session_info)
 }
 
@@ -5778,20 +8279,939 @@ pub(crate) async fn create_root_agent_inner_with_intent(
     select_after: bool,
 ) -> Result<SessionInfo, String> {
     app.state::<SelectionCoordinator>()
-        .root_lifecycle(RootJobRequest {
-            requested_agent_id,
-            requested_profile,
-            skip_auto_resume_for_new_session,
-            intent,
-            select_after,
+        .root_lifecycle(
+            app.clone(),
+            RootJobRequest {
+                requested_agent_id,
+                requested_profile,
+                skip_auto_resume_for_new_session,
+                intent,
+                select_after,
+            },
+        )
+        .await
+}
+
+struct LifecycleSourceIdentity {
+    id: Uuid,
+    token: Uuid,
+    version: u64,
+    saved_cwd: String,
+    directory: crate::path_identity::VerifiedPathIdentity,
+    replica: Option<crate::path_identity::VerifiedPathIdentity>,
+}
+
+enum LifecycleTargetLease {
+    Keyed {
+        key: String,
+        destination: crate::path_identity::VerifiedPathIdentity,
+        gate: Arc<crate::api::message_store::PtyInputTargetGate>,
+        exact: crate::api::message_store::PtyInputTargetGuard,
+        stripe: crate::api::message_store::PtyInputStripeGuard,
+    },
+    VerifiedNoReplica {
+        destination: crate::path_identity::VerifiedPathIdentity,
+    },
+    MissingSource {
+        requested: Uuid,
+    },
+}
+
+pub(crate) struct LifecycleEntryAuthority {
+    lease: LifecycleTargetLease,
+    source: Option<LifecycleSourceIdentity>,
+    root_request: bool,
+    operation: Uuid,
+    reservation: Mutex<Option<crate::pty::manager::CreateOwnerReservation>>,
+    interrupted: std::sync::atomic::AtomicBool,
+    discard: Option<crate::config::sessions_persistence::PublishedCarrier>,
+    tracker: Option<crate::pty::manager::ResponseCloseState>,
+}
+
+impl std::fmt::Debug for LifecycleEntryAuthority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LifecycleEntryAuthority")
+            .field("operation", &self.operation)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) enum LifecycleAuthorityAdmission {
+    Ready(LifecycleEntryAuthority),
+    Waiting,
+    NeedsRootDirectory,
+}
+
+impl LifecycleEntryAuthority {
+    pub(crate) fn release(self) -> bool {
+        let claim = match self.reservation.lock() {
+            Ok(mut claim) => claim.take(),
+            Err(_) => return false,
+        };
+        let claimed = claim.is_some();
+        let tracker = self.tracker.clone();
+        drop(claim);
+        drop(self);
+        // Drop's with_inner error permanently latches tracker failure. A
+        // positive existing health query after actual Drop proves that release;
+        // false/unknown keeps this entry unsafe without inspecting newer claims.
+        !claimed || tracker.is_some_and(|tracker| tracker.publishers_bound())
+    }
+    pub(crate) fn has_owned_claim(&self) -> bool {
+        self.reservation
+            .lock()
+            .ok()
+            .is_some_and(|claim| claim.is_some())
+    }
+
+    fn destination(&self) -> Option<&crate::path_identity::VerifiedPathIdentity> {
+        match &self.lease {
+            LifecycleTargetLease::Keyed { destination, .. }
+            | LifecycleTargetLease::VerifiedNoReplica { destination } => Some(destination),
+            LifecycleTargetLease::MissingSource { .. } => None,
+        }
+    }
+
+    fn physical_identity_is_current(&self) -> bool {
+        let matches = |expected: &crate::path_identity::VerifiedPathIdentity| {
+            crate::path_identity::verify_directory(&expected.canonical_path).is_ok_and(|actual| {
+                actual.object_id == expected.object_id
+                    && actual.canonical_path == expected.canonical_path
+            })
+        };
+        self.destination().is_some_and(matches)
+            && self.source.as_ref().is_none_or(|source| {
+                matches(&source.directory) && source.replica.as_ref().is_none_or(matches)
+            })
+    }
+
+    fn target_ownership(
+        &self,
+    ) -> Result<Option<crate::api::message_store::PtyInputTargetOwnership<'_>>, String> {
+        match &self.lease {
+            LifecycleTargetLease::Keyed {
+                key,
+                gate,
+                stripe,
+                exact,
+                ..
+            } => gate
+                .target_ownership(key, stripe, exact)
+                .map(Some)
+                .map_err(|_| "invalidTargetCreateOwnership".to_string()),
+            _ => Ok(None),
+        }
+    }
+
+    fn validates_destination(&self, cwd: &str, key: Option<&str>) -> bool {
+        let Some(expected) = self.destination() else {
+            return false;
+        };
+        let Ok(current) = crate::path_identity::verify_directory(Path::new(cwd)) else {
+            return false;
+        };
+        if current.object_id != expected.object_id
+            || current.canonical_path != expected.canonical_path
+        {
+            return false;
+        }
+        match &self.lease {
+            LifecycleTargetLease::Keyed { key: actual, .. } => key == Some(actual.as_str()),
+            LifecycleTargetLease::VerifiedNoReplica { .. } => key.is_none(),
+            _ => false,
+        }
+    }
+}
+
+struct LifecycleClaim {
+    reservation: Option<crate::pty::manager::CreateOwnerReservation>,
+    discard: Option<crate::config::sessions_persistence::PublishedCarrier>,
+}
+
+struct LifecycleClaimScope<'a> {
+    source: Option<&'a LifecycleSourceIdentity>,
+    source_key: Option<&'a str>,
+    destination: &'a crate::path_identity::VerifiedPathIdentity,
+    destination_key: Option<&'a str>,
+    fallback_target: &'a str,
+}
+
+fn capture_lifecycle_claim(
+    permit: &crate::session::manager::CarrierMutationPermit,
+    current: &crate::session::manager::CarrierSnapshot,
+    scope: LifecycleClaimScope<'_>,
+    operation: Uuid,
+    tracker: &crate::pty::manager::ResponseCloseState,
+    pty: &Arc<Mutex<PtyManager>>,
+    coordinator: Option<&crate::session::selection::SelectionCoordinator>,
+) -> Option<LifecycleClaim> {
+    let LifecycleClaimScope {
+        source,
+        source_key,
+        destination,
+        destination_key,
+        fallback_target,
+    } = scope;
+    use crate::config::sessions_persistence::{
+        classify_lifecycle_carrier_scope, CreateCarrierScope,
+    };
+    use crate::pty::manager::{CreateAdmission, CreateClassification, ResponseRouteIdentity};
+    let destination_scope =
+        classify_lifecycle_carrier_scope(permit, destination_key, &destination.canonical_path);
+    let source_scope = source.map(|source| {
+        classify_lifecycle_carrier_scope(permit, source_key, &source.directory.canonical_path)
+    });
+    let (target, classification, discard) = match source_scope {
+        Some(CreateCarrierScope::Protected {
+            target,
+            session_id,
+            token,
+            version,
+            epoch,
+            preparing_owner: None,
+        }) => {
+            let source = source?;
+            if source.id != session_id || source.token != token || source.version != version {
+                return None;
+            }
+            match destination_scope {
+                CreateCarrierScope::Foreign { .. } => {}
+                CreateCarrierScope::Protected {
+                    target: other_target,
+                    session_id: other_id,
+                    token: other_token,
+                    version: other_version,
+                    epoch: other_epoch,
+                    preparing_owner: None,
+                } if other_target == target
+                    && other_id == session_id
+                    && other_token == token
+                    && other_version == version
+                    && other_epoch == epoch => {}
+                _ => return None,
+            }
+            let carrier = crate::config::sessions_persistence::manual_discard_carrier(
+                permit,
+                &source.directory.canonical_path,
+                &target,
+                session_id,
+                current,
+            )?;
+            let row = current.rows.iter().find(|row| row.id == session_id)?;
+            let generation = if let Some(historical) = carrier.retired_local_generation() {
+                if !carrier.retired_local_replica_matches(source.replica.as_ref()?) {
+                    return None;
+                }
+                if tracker.generation(session_id).is_some()
+                    || !matches!(
+                        PtyManager::snapshot_route_proof(pty, session_id),
+                        Err(crate::errors::AppError::SessionNotFound(_))
+                    )
+                    || pty.lock().ok()?.backend_kind(session_id).is_some()
+                {
+                    return None;
+                }
+                historical
+            } else {
+                if matches!(row.status, SessionStatus::Exited(_)) {
+                    return None;
+                }
+                let generation = tracker.generation(session_id)?;
+                let route = PtyManager::snapshot_route_proof(pty, session_id).ok()?;
+                let actual_generation = pty.lock().ok()?.route_identities(session_id)?.2;
+                if actual_generation != generation
+                    || !route.matches_requester_route(
+                        row.backend_kind,
+                        &source.directory,
+                        source.replica.as_ref(),
+                    )
+                {
+                    return None;
+                }
+                generation
+            };
+            let identity = ResponseRouteIdentity {
+                target: target.clone(),
+                session_id,
+                token,
+                generation,
+                backend: row.backend_kind,
+                carrier_version: version,
+            };
+            (
+                target,
+                CreateClassification::Protected {
+                    identity,
+                    publication_epoch: epoch,
+                },
+                Some(carrier),
+            )
+        }
+        None | Some(CreateCarrierScope::Foreign { .. }) => {
+            let CreateCarrierScope::Foreign { publication_epoch } = destination_scope else {
+                return None;
+            };
+            (
+                fallback_target.to_owned(),
+                CreateClassification::Foreign { publication_epoch },
+                None,
+            )
+        }
+        _ => return None,
+    };
+    let foreign = matches!(&classification, CreateClassification::Foreign { .. });
+    match tracker.reserve_create_owner(&target, operation, classification) {
+        Ok(CreateAdmission::Reserved(reservation)) => Some(LifecycleClaim {
+            reservation: Some(reservation),
+            discard,
+        }),
+        Err(crate::pty::manager::ResponseCloseError::Unavailable)
+            if foreign
+                && !tracker.target_is_closing(&target)
+                && coordinator.is_some_and(|coordinator| {
+                    coordinator.retains_lifecycle_operation(operation)
+                }) =>
+        {
+            // SAME permanently failed tracker, current ALL-scope Foreign and a
+            // real upper retained owner. No healthy/Protected/unknown fallback.
+            Some(LifecycleClaim {
+                reservation: None,
+                discard: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+pub(crate) async fn prepare_lifecycle_entry_authority<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation: Uuid,
+    requested_source: Option<Uuid>,
+    root_request: bool,
+    root_directory: Option<&str>,
+) -> Result<LifecycleAuthorityAdmission, String> {
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    let source_id = if root_request {
+        manager
+            .list_sessions()
+            .await
+            .into_iter()
+            .find(|row| {
+                row.is_root_agent
+                    || crate::config::root_agent::is_root_agent_path(&row.working_directory)
+            })
+            .map(|row| Uuid::parse_str(&row.id))
+            .transpose()
+            .map_err(|error| error.to_string())?
+    } else {
+        requested_source
+    };
+    let snapshot = manager.with_response_close_facts(Clone::clone).await;
+    let source_row = source_id.and_then(|id| {
+        snapshot
+            .rows
+            .iter()
+            .find(|row| row.id == id && !snapshot.pending_ids.contains(&row.id))
+    });
+    if !root_request && source_row.is_none() {
+        // A pending exact UUID is present, not a missing-source validation case.
+        if requested_source.is_some_and(|id| snapshot.rows.iter().any(|row| row.id == id)) {
+            return Ok(LifecycleAuthorityAdmission::Waiting);
+        }
+        let Some(requested) = requested_source else {
+            return Ok(LifecycleAuthorityAdmission::Waiting);
+        };
+        return Ok(LifecycleAuthorityAdmission::Ready(
+            LifecycleEntryAuthority {
+                lease: LifecycleTargetLease::MissingSource { requested },
+                source: None,
+                root_request,
+                operation,
+                reservation: Mutex::new(None),
+                interrupted: std::sync::atomic::AtomicBool::new(false),
+                discard: None,
+                tracker: None,
+            },
+        ));
+    }
+    let needs_root = root_request
+        || source_row.is_some_and(|row| {
+            row.is_root_agent
+                || crate::config::root_agent::is_root_agent_path(&row.working_directory)
+        });
+    if needs_root && root_directory.is_none() {
+        return Ok(LifecycleAuthorityAdmission::NeedsRootDirectory);
+    }
+    let cwd = if needs_root {
+        root_directory.unwrap_or_default()
+    } else {
+        source_row
+            .map(|row| row.working_directory.as_str())
+            .unwrap_or_default()
+    };
+    let Ok(destination) = crate::path_identity::verify_directory(Path::new(cwd)) else {
+        return Ok(LifecycleAuthorityAdmission::Waiting);
+    };
+    let key = crate::config::teams::pty_input_create_gate_key_from_cwd(Path::new(cwd))
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+    let mut source = if let Some(row) = source_row {
+        let Some(version) = snapshot.versions.get(&row.id).copied() else {
+            return Ok(LifecycleAuthorityAdmission::Waiting);
+        };
+        let Ok(directory) =
+            crate::path_identity::verify_directory(Path::new(&row.working_directory))
+        else {
+            return Ok(LifecycleAuthorityAdmission::Waiting);
+        };
+        Some(LifecycleSourceIdentity {
+            id: row.id,
+            token: row.token,
+            version,
+            saved_cwd: row.working_directory.clone(),
+            directory,
+            replica: None,
+        })
+    } else {
+        None
+    };
+    let source_key = source_row
+        .map(|row| {
+            crate::config::teams::pty_input_create_gate_key_from_cwd(Path::new(
+                &row.working_directory,
+            ))
+        })
+        .transpose()
+        .map_err(|_| "targetCreateGateUnavailable".to_string())?
+        .flatten();
+    if let Some(source) = source.as_mut() {
+        source.replica = match crate::config::teams::strict_wg_replica_anchor_from_cwd(Path::new(
+            &source.saved_cwd,
+        )) {
+            Ok(Some(root)) => match crate::path_identity::verify_directory(&root) {
+                Ok(identity) => Some(identity),
+                Err(_) => return Ok(LifecycleAuthorityAdmission::Waiting),
+            },
+            Ok(None) => None,
+            Err(_) => return Ok(LifecycleAuthorityAdmission::Waiting),
+        };
+    }
+    let lease = if let Some(key) = key {
+        let gate = app
+            .try_state::<crate::api::message_store::PtyInputTargetGateState>()
+            .and_then(|state| state.gate.as_ref().ok().map(Arc::clone))
+            .or_else(|| {
+                app.try_state::<crate::api::message_store::MessageStoreState>()
+                    .and_then(|state| state.target_gate.as_ref().ok().map(Arc::clone))
+            })
+            .ok_or_else(|| "targetCreateGateUnavailable".to_string())?;
+        let stripe = gate
+            .acquire_target_lock(&key)
+            .await
+            .map_err(|_| "targetCreateGateUnavailable".to_string())?;
+        let exact = gate.acquire_exact(&key).await;
+        LifecycleTargetLease::Keyed {
+            key,
+            destination,
+            gate,
+            stripe,
+            exact,
+        }
+    } else {
+        LifecycleTargetLease::VerifiedNoReplica { destination }
+    };
+    // Gate acquisition may have suspended. Never admit an identity verified
+    // only before those waits; cancellation drops exact then stripe normally.
+    let physical_matches = |expected: &crate::path_identity::VerifiedPathIdentity| {
+        crate::path_identity::verify_directory(&expected.canonical_path).is_ok_and(|actual| {
+            actual.object_id == expected.object_id
+                && actual.canonical_path == expected.canonical_path
+        })
+    };
+    let destination_matches = match &lease {
+        LifecycleTargetLease::Keyed { destination, .. }
+        | LifecycleTargetLease::VerifiedNoReplica { destination } => physical_matches(destination),
+        LifecycleTargetLease::MissingSource { .. } => false,
+    };
+    if !destination_matches
+        || !source
+            .as_ref()
+            .is_none_or(|source| physical_matches(&source.directory))
+    {
+        drop(lease);
+        return Ok(LifecycleAuthorityAdmission::Waiting);
+    }
+    let destination = match &lease {
+        LifecycleTargetLease::Keyed { destination, .. }
+        | LifecycleTargetLease::VerifiedNoReplica { destination } => destination,
+        _ => unreachable!("prepared destination"),
+    };
+    let destination_key = match &lease {
+        LifecycleTargetLease::Keyed { key, .. } => Some(key.as_str()),
+        _ => None,
+    };
+    let tracker = app
+        .state::<Arc<Mutex<PtyManager>>>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .response_close_state();
+    let target = destination_key
+        .map(str::to_owned)
+        .or(source_key.clone())
+        .unwrap_or_else(|| format!("create-cwd:{}", destination.canonical_path.display()));
+    let permit = acquire_carrier_mutation_permit().await;
+    let reservation = manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            if !lifecycle_source_matches(current, source.as_ref(), root_request) {
+                return None;
+            }
+            capture_lifecycle_claim(
+                &permit,
+                current,
+                LifecycleClaimScope {
+                    source: source.as_ref(),
+                    source_key: source_key.as_deref(),
+                    destination: destination,
+                    destination_key: destination_key,
+                    fallback_target: &target,
+                },
+                operation,
+                &tracker,
+                app.state::<Arc<Mutex<PtyManager>>>().inner(),
+                app.try_state::<crate::session::selection::SelectionCoordinator>()
+                    .as_deref(),
+            )
+        })
+        .await;
+    drop(permit);
+    let Some(reservation) = reservation else {
+        drop(lease);
+        return Ok(LifecycleAuthorityAdmission::Waiting);
+    };
+    Ok(LifecycleAuthorityAdmission::Ready(
+        LifecycleEntryAuthority {
+            lease,
+            source,
+            root_request,
+            operation,
+            reservation: Mutex::new(reservation.reservation),
+            interrupted: std::sync::atomic::AtomicBool::new(false),
+            discard: reservation.discard,
+            tracker: Some(tracker),
+        },
+    ))
+}
+
+pub(crate) async fn validate_lifecycle_entry_authority<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    authority: &mut LifecycleEntryAuthority,
+) -> bool {
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    if let LifecycleTargetLease::MissingSource { requested } = &authority.lease {
+        let permit = acquire_carrier_mutation_permit().await;
+        return manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                !current.rows.iter().any(|row| row.id == *requested)
+            })
+            .await;
+    }
+    let Some(destination) = authority.destination().cloned() else {
+        return false;
+    };
+    if !authority.physical_identity_is_current() {
+        return false;
+    }
+    let Ok(key) =
+        crate::config::teams::pty_input_create_gate_key_from_cwd(&destination.canonical_path)
+    else {
+        return false;
+    };
+    if !authority.validates_destination(
+        &destination.canonical_path.to_string_lossy(),
+        key.as_deref(),
+    ) {
+        return false;
+    }
+    let source_key = match authority
+        .source
+        .as_ref()
+        .map(|source| {
+            crate::config::teams::pty_input_create_gate_key_from_cwd(
+                &source.directory.canonical_path,
+            )
+        })
+        .transpose()
+    {
+        Ok(key) => key.flatten(),
+        Err(_) => return false,
+    };
+    let target = key
+        .clone()
+        .or(source_key.clone())
+        .unwrap_or_else(|| format!("create-cwd:{}", destination.canonical_path.display()));
+    let tracker = app
+        .state::<Arc<Mutex<PtyManager>>>()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .response_close_state();
+    let permit = acquire_carrier_mutation_permit().await;
+    {
+        let Ok(mut owned_claim) = authority.reservation.lock() else {
+            return false;
+        };
+        drop(owned_claim.take());
+    }
+    let reservation = manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            if !lifecycle_source_matches(current, authority.source.as_ref(), authority.root_request)
+            {
+                return None;
+            }
+            capture_lifecycle_claim(
+                &permit,
+                current,
+                LifecycleClaimScope {
+                    source: authority.source.as_ref(),
+                    source_key: source_key.as_deref(),
+                    destination: &destination,
+                    destination_key: key.as_deref(),
+                    fallback_target: &target,
+                },
+                authority.operation,
+                &tracker,
+                app.state::<Arc<Mutex<PtyManager>>>().inner(),
+                app.try_state::<crate::session::selection::SelectionCoordinator>()
+                    .as_deref(),
+            )
+        })
+        .await;
+    drop(permit);
+    let same_discard = match (
+        &authority.discard,
+        reservation
+            .as_ref()
+            .and_then(|claim| claim.discard.as_ref()),
+    ) {
+        (None, None) => true,
+        (Some(expected), Some(actual)) => {
+            expected.session_id == actual.session_id
+                && expected.token == actual.token
+                && expected.version == actual.version
+                && expected.nonce == actual.nonce
+                && expected.target == actual.target
+                && expected.directory == actual.directory
+        }
+        _ => false,
+    };
+    if !same_discard {
+        return false;
+    }
+    let Ok(mut owned_claim) = authority.reservation.lock() else {
+        return false;
+    };
+    let admitted = reservation.is_some();
+    *owned_claim = reservation.and_then(|claim| claim.reservation);
+    admitted
+}
+
+/// Last prerequisite-to-teardown boundary. Re-admit the SAME claim under U/M,
+/// then retire only its exact protection. No waiting or session deletion here.
+async fn retire_lifecycle_entry_protection<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    authority: &LifecycleEntryAuthority,
+) -> bool {
+    if !authority.physical_identity_is_current() {
+        return false;
+    }
+    let Some(destination) = authority.destination() else {
+        return false;
+    };
+    let Ok(destination_key) =
+        crate::config::teams::pty_input_create_gate_key_from_cwd(&destination.canonical_path)
+    else {
+        return false;
+    };
+    if !authority.validates_destination(
+        &destination.canonical_path.to_string_lossy(),
+        destination_key.as_deref(),
+    ) {
+        return false;
+    }
+    let source_key = match authority
+        .source
+        .as_ref()
+        .map(|source| {
+            crate::config::teams::pty_input_create_gate_key_from_cwd(
+                &source.directory.canonical_path,
+            )
+        })
+        .transpose()
+    {
+        Ok(key) => key.flatten(),
+        Err(_) => return false,
+    };
+    let target = destination_key
+        .clone()
+        .or(source_key.clone())
+        .unwrap_or_else(|| format!("create-cwd:{}", destination.canonical_path.display()));
+    let manager = app
+        .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+        .read()
+        .await
+        .clone();
+    let pty = app.state::<Arc<Mutex<PtyManager>>>();
+    let tracker = match pty.lock() {
+        Ok(pty) => pty.response_close_state(),
+        Err(_) => return false,
+    };
+    let permit = acquire_carrier_mutation_permit().await;
+    manager
+        .with_current_carrier_snapshot(&permit, |current| {
+            if !lifecycle_source_matches(current, authority.source.as_ref(), authority.root_request)
+            {
+                return false;
+            }
+            let Ok(mut owned) = authority.reservation.lock() else {
+                return false;
+            };
+            drop(owned.take());
+            let Some(claim) = capture_lifecycle_claim(
+                &permit,
+                current,
+                LifecycleClaimScope {
+                    source: authority.source.as_ref(),
+                    source_key: source_key.as_deref(),
+                    destination: destination,
+                    destination_key: destination_key.as_deref(),
+                    fallback_target: &target,
+                },
+                authority.operation,
+                &tracker,
+                pty.inner(),
+                app.try_state::<crate::session::selection::SelectionCoordinator>()
+                    .as_deref(),
+            ) else {
+                return false;
+            };
+            let exact = match (&authority.discard, &claim.discard) {
+                (None, None) => true,
+                (Some(expected), Some(actual)) => {
+                    expected.session_id == actual.session_id
+                        && expected.token == actual.token
+                        && expected.version == actual.version
+                        && expected.nonce == actual.nonce
+                        && expected.target == actual.target
+                }
+                _ => false,
+            };
+            if !exact {
+                return false;
+            }
+            if let Some(carrier) = &claim.discard {
+                let Some(source) = authority.source.as_ref() else {
+                    return false;
+                };
+                if !crate::config::sessions_persistence::retire_manual_discard_carrier(
+                    &permit,
+                    carrier,
+                    &source.directory.canonical_path,
+                    current,
+                ) {
+                    return false;
+                }
+                tracker.invalidate_manager_row(carrier.session_id, std::time::Instant::now());
+                crate::session::selection::forget_response_close_registration(carrier.session_id);
+            }
+            *owned = claim.reservation;
+            true
         })
         .await
+}
+
+fn lifecycle_source_matches(
+    current: &crate::session::manager::CarrierSnapshot,
+    source: Option<&LifecycleSourceIdentity>,
+    root_request: bool,
+) -> bool {
+    let exact = source.is_none_or(|source| {
+        current.rows.iter().any(|row| {
+            row.id == source.id
+                && row.token == source.token
+                && current.versions.get(&row.id) == Some(&source.version)
+                && !current.pending_ids.contains(&row.id)
+                && row.working_directory == source.saved_cwd
+        })
+    });
+    if !exact {
+        return false;
+    }
+    if root_request {
+        let mut roots = current.rows.iter().filter(|row| {
+            !current.pending_ids.contains(&row.id)
+                && (row.is_root_agent
+                    || crate::config::root_agent::is_root_agent_path(&row.working_directory))
+        });
+        let selected = roots.next().map(|row| row.id);
+        selected == source.map(|source| source.id) && roots.next().is_none()
+    } else {
+        true
+    }
+}
+
+async fn prepare_restore_lifecycle_authority<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    source: Option<Uuid>,
+    root_request: bool,
+) -> Result<(LifecycleEntryAuthority, Option<String>), String> {
+    let Some(operation) = transaction.current_restore_nonce() else {
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    };
+    let mut root_directory = if root_request {
+        Some(crate::config::root_agent::ensure_root_agent_dir()?)
+    } else {
+        None
+    };
+    loop {
+        if !transaction.has_active_restore_capability() {
+            return Err(
+                crate::session::selection::SelectionCoordinatorError::Unavailable.to_string(),
+            );
+        }
+        match prepare_lifecycle_entry_authority(
+            transaction.app(),
+            operation,
+            source,
+            root_request,
+            root_directory.as_deref(),
+        )
+        .await?
+        {
+            LifecycleAuthorityAdmission::Ready(mut authority) => {
+                if authority.discard.is_some() {
+                    transaction.invalidate_restore_ownership();
+                    return Err(
+                        crate::session::selection::SelectionCoordinatorError::Unavailable
+                            .to_string(),
+                    );
+                }
+                if !validate_lifecycle_entry_authority(transaction.app(), &mut authority).await {
+                    transaction.invalidate_restore_ownership();
+                    return Err(
+                        crate::session::selection::SelectionCoordinatorError::Unavailable
+                            .to_string(),
+                    );
+                }
+                return Ok((authority, root_directory));
+            }
+            LifecycleAuthorityAdmission::NeedsRootDirectory => {
+                root_directory = Some(crate::config::root_agent::ensure_root_agent_dir()?);
+            }
+            LifecycleAuthorityAdmission::Waiting => {
+                transaction.invalidate_restore_ownership();
+                // Startup cannot wait for a protected finalizer queued behind
+                // its own real barrier. No ownership is inferred from Running.
+                return Err(
+                    crate::session::selection::SelectionCoordinatorError::Unavailable.to_string(),
+                );
+            }
+        }
+    }
+}
+
+pub(crate) fn ensure_owned_root_directory(
+    effect: crate::session::selection::LifecycleEffectGuard,
+) -> Result<String, String> {
+    let result = crate::config::root_agent::ensure_root_agent_dir();
+    effect.complete(result.clone().map(Some));
+    result
+}
+
+async fn ensure_lifecycle_root_directory<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    context: &LifecycleExecutionContext<'_>,
+) -> Result<String, String> {
+    if let LifecycleExecutionContext::RestoreEntry { root_directory, .. } = context {
+        if !transaction.has_active_restore_capability() {
+            return Err(
+                crate::session::selection::SelectionCoordinatorError::Unavailable.to_string(),
+            );
+        }
+        return root_directory.map(str::to_owned).ok_or_else(|| {
+            crate::session::selection::SelectionCoordinatorError::Unavailable.to_string()
+        });
+    }
+    if !transaction.has_accepted_lifecycle_core() {
+        return std::future::pending().await;
+    }
+    if let Some(outcome) = transaction.lifecycle_root_directory_outcome() {
+        return outcome;
+    }
+    let Some(effect) = transaction
+        .start_lifecycle_effect(crate::session::selection::LifecycleEffectSlot::RootDirectory)
+    else {
+        return std::future::pending().await;
+    };
+    ensure_owned_root_directory(effect)
 }
 
 pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
     transaction: &SelectionTransaction<R>,
     request: RootJobRequest,
 ) -> Result<SessionInfo, String> {
+    if !transaction.has_active_restore_capability() {
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
+    let (authority, root_directory) =
+        prepare_restore_lifecycle_authority(transaction, None, true).await?;
+    execute_root_transaction_in_context(
+        transaction,
+        request,
+        &LifecycleExecutionContext::RestoreEntry {
+            authority: &authority,
+            root_directory: root_directory.as_deref(),
+        },
+    )
+    .await
+}
+
+pub(crate) async fn execute_external_root_transaction<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: RootJobRequest,
+    authority: &LifecycleEntryAuthority,
+) -> LifecycleEntryOutcome {
+    let result = execute_root_transaction_in_context(
+        transaction,
+        request,
+        &LifecycleExecutionContext::ExternalEntry(authority),
+    )
+    .await;
+    if authority
+        .interrupted
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        LifecycleEntryOutcome::Interrupted
+    } else {
+        LifecycleEntryOutcome::Returned(result)
+    }
+}
+
+async fn execute_root_transaction_in_context<R: tauri::Runtime>(
+    transaction: &SelectionTransaction<R>,
+    request: RootJobRequest,
+    context: &LifecycleExecutionContext<'_>,
+) -> Result<SessionInfo, String> {
+    if matches!(context, LifecycleExecutionContext::RestoreEntry { .. })
+        && !transaction.has_active_restore_capability()
+    {
+        return Err(crate::session::selection::SelectionCoordinatorError::Unavailable.to_string());
+    }
     let app = transaction.app();
     let session_mgr = app
         .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
@@ -5799,7 +9219,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         .clone();
     let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
     let settings = app.state::<SettingsState>().inner().clone();
-    let root_agent_path = crate::config::root_agent::ensure_root_agent_dir()?;
+    let root_agent_path = ensure_lifecycle_root_directory(transaction, context).await?;
     let existing = session_mgr
         .read()
         .await
@@ -5824,31 +9244,52 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
             .has_session(session_id);
         match classify_existing_root(&existing.status, has_pty) {
             ExistingRootAction::ReuseLive => {
-                if request.select_after {
-                    let decision = transaction
-                        .live_decision(session_id)
-                        .ok_or_else(|| "Root session has no displayable PTY".to_string())?;
-                    let committed = transaction
-                        .commit(
-                            decision,
-                            SelectionCause::UserSwitch,
-                            LifecycleMutations::default(),
-                        )
-                        .await?;
-                    if let Some(selection) = committed.selection.as_ref() {
-                        transaction
-                            .persist(SelectionSource::UserSwitch, Some(session_id))
-                            .await;
-                        transaction.publish_selection(selection);
-                    }
+                // Reuse has no new binding/backend or replacement effects. Track
+                // its actual selection/persistence/publication and final lookup.
+                let publication = transaction.start_lifecycle_effect(
+                    crate::session::selection::LifecycleEffectSlot::Publication,
+                );
+                if transaction.has_lifecycle_entry() && publication.is_none() {
+                    return std::future::pending().await;
                 }
-                return session_mgr
-                    .read()
-                    .await
-                    .get_session(session_id)
-                    .await
-                    .map(|session| SessionInfo::from(&session))
-                    .ok_or_else(|| "Root session disappeared during reuse".to_string());
+                let result = async {
+                    if request.select_after {
+                        let decision = transaction
+                            .live_decision(session_id)
+                            .ok_or_else(|| "Root session has no displayable PTY".to_string())?;
+                        let committed = transaction
+                            .commit(
+                                decision,
+                                SelectionCause::UserSwitch,
+                                LifecycleMutations::default(),
+                            )
+                            .await?;
+                        if let Some(selection) = committed.selection.as_ref() {
+                            transaction
+                                .persist(SelectionSource::UserSwitch, Some(session_id))
+                                .await;
+                            transaction.publish_selection(selection);
+                        }
+                    }
+                    session_mgr
+                        .read()
+                        .await
+                        .get_session(session_id)
+                        .await
+                        .map(|session| SessionInfo::from(&session))
+                        .ok_or_else(|| "Root session disappeared during reuse".to_string())
+                }
+                .await;
+                if let Some(publication) = publication {
+                    publication.complete(
+                        result
+                            .as_ref()
+                            .map(|info| Some(info.id.clone()))
+                            .map_err(Clone::clone),
+                    );
+                    transaction.observe_reuse_live_result(&result);
+                }
+                return result;
             }
             ExistingRootAction::WakeDormant | ExistingRootAction::DiscardMissingPty => {
                 let wake_dormant = matches!(
@@ -5859,7 +9300,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
                     TrustedCreateIntent::User => TrustedRestartIntent::User,
                     TrustedCreateIntent::Background => TrustedRestartIntent::Background,
                 };
-                return execute_restart_transaction(
+                return execute_restart_transaction_in_context(
                     transaction,
                     RestartJobRequest {
                         session_id,
@@ -5875,6 +9316,7 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
                         communication_override: None,
                         enforcement: crate::config::sessions_persistence::default_creation_gate_enforcement(),
                     },
+                    context,
                 )
                 .await;
             }
@@ -5919,6 +9361,11 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
     } else {
         (shell, shell_args, agent_label)
     };
+    let target_ownership = context
+        .authority()
+        .map(|authority| authority.target_ownership())
+        .transpose()?
+        .flatten();
     let info = create_session_inner_impl(
         app,
         &session_mgr,
@@ -5941,12 +9388,15 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         Some(transaction),
         Some(SelectionCause::SessionCreated(request.intent)),
         false,
-        None,
+        target_ownership.as_ref(),
         crate::config::sessions_persistence::default_creation_gate_enforcement(),
+        None,
+        context.authority(),
         None,
     )
     .await?
-    .into_finalized()?;
+    .into_finalized()
+    .await?;
     let session_id = Uuid::parse_str(&info.id).map_err(|error| error.to_string())?;
     if request.select_after {
         let decision = transaction
@@ -6352,6 +9802,275 @@ mod tests {
     use std::time::Duration;
     use tauri::Manager;
     use uuid::Uuid;
+
+    fn create_admission_owner(
+        tracker: crate::pty::manager::ResponseCloseState,
+        target: &str,
+        cwd: &std::path::Path,
+    ) -> Arc<Mutex<super::OwnedCreateAdmission>> {
+        Arc::new(Mutex::new(super::OwnedCreateAdmission {
+            preheld_target: false,
+            owned_replacement: None,
+            replacement_pty: None,
+            tracker,
+            target: target.to_owned(),
+            cwd: cwd.to_path_buf(),
+            nonce: Uuid::new_v4(),
+            binding: SessionManager::new().reserve_carrier_create_binding(),
+            reservation: None,
+            failed_foreign: false,
+            owned_target: None,
+            capacity: None,
+            resource: None,
+            blocked_bound: false,
+            capacity_error: None,
+        }))
+    }
+
+    #[tokio::test]
+    async fn create_foreign_owners_are_independent_after_first_waiter_loss() {
+        let temp = tempfile::tempdir().unwrap();
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        let manager = SessionManager::new();
+        let target = format!("foreign-create:{}", Uuid::new_v4());
+        let first = create_admission_owner(tracker.clone(), &target, temp.path());
+        let first_nonce = first.lock().unwrap().nonce;
+        let task_manager = manager.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(async move {
+            crate::config::sessions_persistence::run_owned_persist_core(async move {
+                let permit = super::acquire_create_publication_region(&first, &task_manager)
+                    .await
+                    .expect("Foreign region");
+                assert!(first.lock().unwrap().reservation.is_some());
+                drop(permit);
+                started_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                drop(first);
+                finished_tx.send(()).unwrap();
+            })
+            .await;
+        });
+        started_rx.await.unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        let second = create_admission_owner(tracker.clone(), &target, temp.path());
+        let permit = super::try_acquire_create_publication_region(&second, &manager)
+            .await
+            .expect("second Foreign create advances while first accepted core remains retained");
+        assert!(second.lock().unwrap().reservation.is_some());
+        use crate::pty::manager::{CreateAdmission, CreateClassification, ResponseCloseError};
+        assert!(matches!(
+            tracker.reserve_create_owner(
+                &target,
+                first_nonce,
+                CreateClassification::Foreign {
+                    publication_epoch: 0
+                }
+            ),
+            Err(ResponseCloseError::Conflict)
+        ));
+        drop(permit);
+        release_tx.send(()).unwrap();
+        finished_rx.await.unwrap();
+        assert!(matches!(
+            tracker.reserve_create_owner(
+                &target,
+                first_nonce,
+                CreateClassification::Foreign {
+                    publication_epoch: 0
+                }
+            ),
+            Ok(CreateAdmission::Reserved(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_e2_uses_same_permanently_failed_tracker_and_actual_foreign_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        tracker.fail_closed();
+        let manager = SessionManager::new();
+        let owner = create_admission_owner(tracker.clone(), "failed-foreign", temp.path());
+        let permit = super::try_acquire_create_publication_region(&owner, &manager)
+            .await
+            .expect("actual ALL-scope Foreign can use E2 after exact tracker Unavailable");
+        {
+            let owner = owner.lock().unwrap();
+            assert!(owner.tracker.same_state(&tracker));
+            assert!(owner.failed_foreign);
+            assert!(owner.reservation.is_none());
+        }
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                assert!(!owner.lock().unwrap().reserve_current(
+                    crate::config::sessions_persistence::CreateCarrierScope::Waiting,
+                    current
+                ));
+                assert!(
+                    !owner.lock().unwrap().failed_foreign,
+                    "Waiting cannot retain previous E2 admission evidence"
+                );
+            })
+            .await;
+        tracker.apply_settings(true, 30, std::time::Instant::now());
+        assert!(matches!(
+            tracker.reserve_create_owner(
+                "failed-foreign",
+                Uuid::new_v4(),
+                crate::pty::manager::CreateClassification::Foreign {
+                    publication_epoch: 0
+                }
+            ),
+            Err(crate::pty::manager::ResponseCloseError::Unavailable)
+        ));
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn create_protected_owner_is_exclusive_and_failed_tracker_cannot_use_e2() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("member");
+        std::fs::create_dir(&cwd).unwrap();
+        let manager = SessionManager::new();
+        let row = manager
+            .create_session(
+                "bash".into(),
+                vec![],
+                cwd.to_string_lossy().into_owned(),
+                None,
+                None,
+                vec![],
+                false,
+                SessionBackendKind::LocalProcess,
+            )
+            .await
+            .unwrap();
+        manager.set_start_fresh_on_restore(row.id, true).await;
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        let version = manager
+            .with_current_carrier_snapshot(&permit, |current| current.versions[&row.id])
+            .await;
+        drop(permit);
+        let target = format!("protected-create:{}", Uuid::new_v4());
+        let carrier = crate::config::sessions_persistence::persist_initial_carrier(
+            &manager,
+            temp.path().join("config"),
+            vec![temp.path().to_string_lossy().into_owned()],
+            crate::config::sessions_persistence::InitialCarrierIntent::new(
+                target.clone(),
+                row.id,
+                row.token,
+                version,
+                std::fs::canonicalize(&cwd).unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .expect("actual current carrier confirmed");
+        let tracker = crate::pty::manager::ResponseCloseState::default();
+        tracker.register_route(row.id, 1, std::time::Instant::now());
+        let first = create_admission_owner(tracker.clone(), &target, &cwd);
+        assert!(
+            super::try_acquire_create_publication_region(&first, &manager)
+                .await
+                .is_none(),
+            "Protected awaits owned Preparing before any create effect"
+        );
+        assert!(
+            first.lock().unwrap().reservation.is_none(),
+            "generic Protected wait takes no exclusive claim"
+        );
+        let second = create_admission_owner(tracker.clone(), &target, &cwd);
+        assert!(
+            super::try_acquire_create_publication_region(&second, &manager)
+                .await
+                .is_none()
+        );
+        assert!(
+            second.lock().unwrap().reservation.is_none(),
+            "second generic waiter also takes no exclusive claim"
+        );
+        #[cfg(target_os = "windows")]
+        let quota_waiter = {
+            let monitor = Arc::new(crate::resource_monitor::ResourceMonitorState::new());
+            let mut config = crate::config::settings::AppSettings::default();
+            config.resource_monitor_enabled = true;
+            config.max_concurrent_agent_processes = 1;
+            let settings = Arc::new(tokio::sync::RwLock::new(config.clone()));
+            let resource = Arc::new(Mutex::new(super::CreateResourceAdmission {
+                monitor: monitor.clone(),
+                settings: settings.clone(),
+                permit: None,
+                needed: true,
+                in_region: false,
+                released: false,
+            }));
+            let third = create_admission_owner(tracker.clone(), &target, &cwd);
+            third.lock().unwrap().resource = Some(resource.clone());
+            let quota = monitor
+                .try_reserve_agent_slot(ResourceLimits::from(&config))
+                .unwrap()
+                .expect("Windows quota really reserves a slot");
+            let manager = manager.clone();
+            let waiter = tokio::spawn(async move {
+                let mut local = Some(quota);
+                let result = super::with_create_resource_region(
+                    &third,
+                    &mut local,
+                    super::acquire_create_publication_region(&third, &manager),
+                )
+                .await;
+                (result.map(drop), local)
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !resource.lock().unwrap().released {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("blocked create releases its actual quota");
+            let replacement_quota = monitor
+                .try_reserve_agent_slot(ResourceLimits::from(&config))
+                .unwrap()
+                .expect("protected owner can use the released quota");
+            monitor.release_unregistered_permit(replacement_quota);
+            settings.write().await.max_concurrent_agent_processes = 0;
+            waiter
+        };
+        tracker.fail_closed();
+        assert!(
+            super::try_acquire_create_publication_region(&first, &manager)
+                .await
+                .is_none()
+        );
+        assert!(
+            !first.lock().unwrap().failed_foreign,
+            "Protected cannot use E2"
+        );
+        drop(carrier);
+        #[cfg(target_os = "windows")]
+        {
+            let (result, quota) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), quota_waiter)
+                    .await
+                    .expect("unblocked create completes its real fresh quota probe")
+                    .unwrap();
+            assert!(result
+                .unwrap_err()
+                .contains("Resource Monitor cap reached: 0/0"));
+            assert!(
+                quota.is_none(),
+                "failed readmission does not fabricate a permit"
+            );
+        }
+        let permit = super::try_acquire_create_publication_region(&second, &manager).await
+            .expect("same failed tracker permits only freshly classified Foreign after key lifetime ends");
+        assert!(second.lock().unwrap().failed_foreign);
+        drop(permit);
+    }
 
     // Stage E (#1064) selection-intent mapping sentinel (plan section 10.4 item
     // 20, acceptance item 42, 10.6): the internal-alert background create keeps
@@ -9433,6 +13152,9 @@ mod tests {
         )
         .await
         .unwrap();
+        let super::PtyTargetCreateStep::Finalized(created) = created else {
+            panic!("Foreign create must actually finalize");
+        };
         assert_eq!(created.working_directory, first_cwd);
         assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
 
@@ -10193,7 +13915,9 @@ mod tests {
         assert!(fence_at < spawn_at, "fence must precede the spawn await");
         assert!(spawn_at < unfence_at, "unfence only after the spawn result");
         assert_eq!(normalized.matches("has_backend_session").count(), 0);
-        assert!(normalized.contains("letpending_result=ifletSome(ticket)=create_ticket.as_mut(){"));
+        assert!(normalized.contains(
+            "letpending_result=mgr.create_pending_session_with_binding_and_carrier_permit("
+        ));
     }
 
     struct MarkerCreateFixture {
@@ -10360,13 +14084,15 @@ mod tests {
     }
 
     /// Test backend for #2413 T14/T15.
-    /// `block`: `spawn` records the id (live) and parks forever after signaling `entered`.
+    /// `block`: `spawn` records the id (live) and waits for `release` after signaling `entered`.
     /// Otherwise: `spawn` marks the launch witness, then fails with no session.
     #[derive(Default)]
     struct MarkerSpawnBackend {
         block: bool,
+        block_only_first: bool,
+        spawn_count: AtomicUsize,
         entered: tokio::sync::Notify,
-        never: tokio::sync::Notify,
+        release: tokio::sync::Notify,
         live: Mutex<Vec<Uuid>>,
     }
 
@@ -10381,10 +14107,11 @@ mod tests {
         ) -> futures::future::BoxFuture<'_, Result<(), crate::errors::AppError>> {
             Box::pin(async move {
                 spec.launch_witness.mark();
-                if self.block {
+                let index = self.spawn_count.fetch_add(1, Ordering::SeqCst);
+                if self.block && (!self.block_only_first || index == 0) {
                     self.live.lock().unwrap().push(spec.id);
                     self.entered.notify_one();
-                    self.never.notified().await;
+                    self.release.notified().await;
                 }
                 Err(crate::errors::AppError::PtyError(
                     "synthetic post-launch failure".to_string(),
@@ -10463,8 +14190,16 @@ mod tests {
         }
         drop(create);
         assert_eq!(f.auto(), None);
+        assert!(f.ledger(), "accepted core still owns the in-flight spawn");
+        backend.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while f.ledger() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retained create observes its real spawn error");
         assert_eq!(drain(&f.events), vec![auto_event("null")]);
-        assert!(!f.ledger());
         close_test_coordinator(&f.app).await;
 
         // Variant 2: the selection coordinator shuts down mid-spawn.
@@ -10484,17 +14219,97 @@ mod tests {
                 .state::<crate::session::selection::SelectionCoordinator>()
                 .shutdown_token()
                 .cancel();
+            assert!(
+                f.ledger(),
+                "shutdown does not cancel the accepted backend effect"
+            );
+            backend.release.notify_one();
         };
         let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::join!(f.create(), shutdown)
         })
         .await
-        .expect("create ends on shutdown");
+        .expect("create settles after backend result despite shutdown");
         result.expect_err("shutdown ends the create");
         assert_eq!(f.auto(), None);
         assert_eq!(drain(&f.events), vec![auto_event("null")]);
         assert!(!f.ledger());
         close_test_coordinator(&f.app).await;
+    }
+
+    #[tokio::test]
+    async fn foreign_common_create_second_progresses_while_first_core_retained_after_caller_loss() {
+        let backend = Arc::new(MarkerSpawnBackend {
+            block: true,
+            block_only_first: true,
+            ..Default::default()
+        });
+        let fixture = MarkerCreateFixture::new(backend.clone());
+        // This is the existing non-replica common-create path. No legacy
+        // replica target stripe is bypassed to manufacture concurrent progress.
+        assert!(
+            crate::config::teams::pty_input_create_gate_key_from_cwd(std::path::Path::new(
+                &fixture.cwd
+            ))
+            .unwrap()
+            .is_none()
+        );
+        let mut first = Box::pin(fixture.create());
+        tokio::select! {
+            _ = backend.entered.notified() => {},
+            _ = &mut first => panic!("first real core must be parked in backend spawn"),
+        }
+        drop(first);
+        assert!(fixture.ledger(), "first accepted core remains retained");
+        let second = tokio::time::timeout(Duration::from_secs(10), fixture.create()).await
+            .expect("second Foreign create must reach its actual backend result before first is released");
+        assert!(second
+            .unwrap_err()
+            .contains("synthetic post-launch failure"));
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 2);
+        assert!(
+            fixture.ledger(),
+            "second completion cannot drop first create's owner"
+        );
+        backend.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fixture.ledger() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first retained core eventually observes its actual result");
+        close_test_coordinator(&fixture.app).await;
+    }
+
+    #[tokio::test]
+    async fn failed_tracker_foreign_common_create_keeps_real_legacy_backend_result() {
+        let backend = Arc::new(MarkerSpawnBackend::default());
+        let fixture = MarkerCreateFixture::new(backend.clone());
+        let tracker = fixture.pty_mgr.lock().unwrap().response_close_state();
+        tracker.fail_closed();
+        let result = tokio::time::timeout(Duration::from_secs(10), fixture.create())
+            .await
+            .expect("E2 Foreign/nonClosing must reach real common-create completion");
+        assert!(result
+            .unwrap_err()
+            .contains("synthetic post-launch failure"));
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+        assert!(!fixture.ledger());
+        assert!(
+            matches!(
+                tracker.reserve_create_owner(
+                    "still-failed",
+                    Uuid::new_v4(),
+                    crate::pty::manager::CreateClassification::Foreign {
+                        publication_epoch: 0
+                    }
+                ),
+                Err(crate::pty::manager::ResponseCloseError::Unavailable)
+            ),
+            "ordinary create never resets or substitutes the failed tracker"
+        );
+        close_test_coordinator(&fixture.app).await;
     }
 
     /// #2413 T15: a spawn `Err` after the backend launched keeps the markers cleared,
@@ -10550,7 +14365,7 @@ mod tests {
             .next()
             .expect("production session source");
         let normalized = production.split_whitespace().collect::<String>();
-        let gate_call = "crate::config::archive_gate::enforce_unarchived_for_spawn(app,&cwd,&session_label).await";
+        let gate_call = "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,&create_manager,lifecycle_domain,inline_transaction,).await";
         let count = normalized.matches(gate_call).count();
 
         assert_eq!(
@@ -10914,13 +14729,13 @@ mod tests {
             .expect("production session source");
         let normalized = production.split_whitespace().collect::<String>();
         let first_gate = normalized
-            .find("crate::config::archive_gate::enforce_unarchived_for_spawn(app,&cwd,&session_label).await?;")
+            .find("enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,&create_manager,lifecycle_domain,inline_transaction,).await?;")
             .expect("first archive gate");
         let mark = normalized
             .find("letspawn_mark={")
             .expect("spawn mark immediately before pending-session creation");
         let pending_create = normalized
-            .find("letpending_result=ifletSome(ticket)=create_ticket.as_mut(){")
+            .find("letpending_result=mgr.create_pending_session_with_binding_and_carrier_permit(")
             .expect("pending-session creation");
         let spawn = normalized
             .find(
@@ -13157,6 +16972,8 @@ exec claude \"$@\"
             None,
             CreationGateEnforcement::Enforce,
             None,
+            None,
+            None,
         )
         .await;
         let err = match err {
@@ -13222,6 +17039,8 @@ exec claude \"$@\"
             false,
             None,
             CreationGateEnforcement::Enforce,
+            None,
+            None,
             None,
         )
         .await;
@@ -14204,6 +18023,75 @@ exec claude \"$@\"
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, replacement.id, "old row removed");
         close_test_coordinator(&app).await;
+    }
+
+    #[tokio::test]
+    async fn retained_exited_respawn_c19_completed_restarts_reclaim_more_than_64_entries() {
+        let settings = muse_test_settings("muse");
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(CapturingSpawnBackend::default());
+        let pty = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(settings.clone(), manager.clone(), pty.clone());
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let spawn = muse_spawn_for(&settings, &cwd);
+        let initial = super::create_session_inner(
+            app.handle(),
+            &manager,
+            &pty,
+            spawn.shell.clone(),
+            spawn.shell_args.clone(),
+            cwd,
+            Some("C19 actual successful entries".into()),
+            Some(spawn.trusted_agent_id.clone()),
+            Some(spawn.trusted_agent_label.clone()),
+            false,
+            Vec::new(),
+            true,
+            Some(spawn),
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .unwrap();
+        let mut current = Uuid::parse_str(&initial.id).unwrap();
+        let settings = app.state::<crate::config::settings::SettingsState>();
+        for _ in 0..66 {
+            let previous = current;
+            let result = super::restart_session_inner_with_activation(
+                app.handle(),
+                &manager,
+                &pty,
+                settings.inner(),
+                previous,
+                None,
+                None,
+                Some(true),
+                true,
+            )
+            .await
+            .expect("real successful entry releases capacity before next admission");
+            current = Uuid::parse_str(&result.id).unwrap();
+            assert_ne!(current, previous);
+            assert!(!backend.has_session(previous));
+            assert!(backend.has_session(current));
+            assert!(manager.read().await.get_session(previous).await.is_none());
+        }
+        assert_eq!(backend.specs.lock().unwrap().len(), 67);
+        assert_eq!(backend.killed.lock().unwrap().len(), 66);
+        assert_eq!(manager.read().await.list_sessions().await.len(), 1);
+        let report = app
+            .state::<crate::session::selection::SelectionCoordinator>()
+            .close_and_join()
+            .await;
+        assert!(
+            report.persistence_safe,
+            "completed entries must be terminal: {:?}",
+            report.retained
+        );
     }
 
     /// #1873 - a spawn-time `Err` makes exactly one resume attempt, surfaces that one
@@ -15888,11 +19776,24 @@ exec claude \"$@\"
             }),
         );
         let h = RouteHarness::new(route_settings());
+        // C19: actual completed missing-UUID entries release their root capacity.
+        // This exceeds the 64-entry admission bound through the real outer core,
+        // worker response, sidecar/envelope release and independent publication.
+        for _ in 0..65 {
+            assert_eq!(
+                h.restart(Uuid::new_v4(), None).await.unwrap_err(),
+                "Session not found"
+            );
+        }
         let old = h.live(temp.path(), Some("codex"), "codex", &[]).await;
 
-        let err = h.restart(old, None).await.unwrap_err();
-        assert!(err.contains("unresolved_coding_agent_reference"), "{err}");
-        assert!(err.contains("'foreign'"), "{err}");
+        // Actual prerequisite errors also release completed C19 entries. If
+        // they remained ambiguous, this would exhaust the same 64-entry root.
+        for _ in 0..65 {
+            let err = h.restart(old, None).await.unwrap_err();
+            assert!(err.contains("unresolved_coding_agent_reference"), "{err}");
+            assert!(err.contains("'foreign'"), "{err}");
+        }
         // No fallback to the stored `codex`, and no teardown.
         let row = h
             .manager
@@ -17226,6 +21127,60 @@ pub(crate) mod reader_demand_tests {
         assert!(h.captures.slot(&key).is_some());
         h.release_all(id).await;
         h.close().await;
+    }
+
+    #[tokio::test]
+    async fn response_close_bridge_detach_preserves_actual_resume_bot_assignment() {
+        let fixture = room_fixture();
+        configure_room(fixture.room_path(), true);
+        let harness = restart_harness(&fixture);
+        let id = harness
+            .live_session(fixture.coordinator_path(), CodingAgentKind::Claude)
+            .await;
+        harness.attach_bot(id).await;
+        let before = harness
+            .manager
+            .read()
+            .await
+            .get_session(id)
+            .await
+            .unwrap()
+            .telegram_bot_id;
+        assert_eq!(before.as_deref(), Some(PHASE4_BOT_ID));
+        super::detach_response_close_telegram(harness.app.handle(), id)
+            .await
+            .unwrap();
+        {
+            let telegram = harness.bridge().await;
+            let telegram = telegram.lock().await;
+            assert!(!telegram.has_bridge(id), "actual transport detached");
+            assert_eq!(telegram.test_detach_count(id), 1);
+        }
+        super::detach_response_close_telegram(harness.app.handle(), id)
+            .await
+            .unwrap();
+        {
+            let telegram = harness.bridge().await;
+            assert_eq!(
+                telegram.lock().await.test_detach_count(id),
+                1,
+                "retry after completed detach does not repeat the bridge effect"
+            );
+        }
+        assert_eq!(
+            harness
+                .manager
+                .read()
+                .await
+                .get_session(id)
+                .await
+                .unwrap()
+                .telegram_bot_id,
+            before,
+            "retained A keeps the exact bot assignment for its next resume"
+        );
+        harness.release_all(id).await;
+        harness.close().await;
     }
 
     /// B3: a successful **dormant** restart takes the `!old_lost` branch: after
