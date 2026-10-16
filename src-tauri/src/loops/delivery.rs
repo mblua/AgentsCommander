@@ -1181,6 +1181,7 @@ mod tests {
             .insert(
                 letter.to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,

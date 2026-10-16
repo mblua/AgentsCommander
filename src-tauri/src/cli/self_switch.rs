@@ -516,6 +516,7 @@ mod tests {
 
     fn enabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
         crate::config::settings::ProfileCellConfig {
+            id_hash: None,
             preflight: None,
             preflight_timeout_seconds: None,
             enabled: true,
@@ -527,6 +528,7 @@ mod tests {
 
     fn disabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
         crate::config::settings::ProfileCellConfig {
+            id_hash: None,
             preflight: None,
             preflight_timeout_seconds: None,
             enabled: false,

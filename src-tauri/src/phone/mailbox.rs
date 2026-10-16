@@ -27474,6 +27474,7 @@ mod tests {
                             (
                                 (*letter).to_string(),
                                 crate::config::settings::ProfileCellConfig {
+                                    id_hash: None,
                                     preflight: None,
                                     preflight_timeout_seconds: None,
                                     enabled: *enabled,
