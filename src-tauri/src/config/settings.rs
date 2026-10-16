@@ -28635,19 +28635,22 @@ mod tests {
             "agents".into(),
             serde_json::to_value(&increased.agents).unwrap(),
         );
-        assert!(
-            super::validate_physical_identity_delta(&before_identity, &after_identity, true, false)
-                .unwrap_err()
-                .contains("DuplicateConfigurationIdentity")
-        );
+        assert!(super::validate_physical_identity_delta(
+            &before_identity,
+            &after_identity,
+            true,
+            false
+        )
+        .unwrap_err()
+        .contains("DuplicateConfigurationIdentity"));
         let mut edited = written.clone();
         edited.agents[1].command = "repair-extra-character".into();
         let mut partially_deleted = written.clone();
         partially_deleted.agents.remove(1);
         for candidate in [increased, edited, partially_deleted] {
             let before = hash_activation_files(temp.path());
-            let error =
-                super::save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap_err();
+            let error = super::save_settings_to_path_preserving_project_paths(&candidate, &path)
+                .unwrap_err();
             assert!(error.contains("duplicate agent ID 'alpha'"));
             assert!(error.contains("unprovable row correspondence"));
             assert_eq!(hash_activation_files(temp.path()), before);
