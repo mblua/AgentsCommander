@@ -438,6 +438,36 @@ pub(crate) fn frame_from_screen_rows_read(
     }
 }
 
+// ---- #2879 internal activity observation ------------------------------------------------
+
+/// #2879 - what the engine tells an internal activity consumer about one session.
+/// `Present`/`Absent` are verdicts over a complete frame; `Unavailable` says this tick could
+/// not tell; `Validate` checks the consumer is still current; `Retired` ends its sampling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivityObservation {
+    Present,
+    Absent,
+    Unavailable,
+    Retired,
+    Validate,
+}
+
+/// #2879 - one attach of an internal consumer. Returns whether the observation was
+/// accepted, which is false once this attach is no longer the current one.
+pub(crate) type ActivityConsumer = Arc<dyn Fn(ActivityObservation) -> bool + Send + Sync>;
+
+/// #2879 - attaches a consumer to a session at registration, or `None` when nothing wants
+/// to observe it. Fixed at construction; the engine never learns what is behind it.
+pub(crate) type ActivityFactory = Arc<dyn Fn(Uuid) -> Option<ActivityConsumer> + Send + Sync>;
+
+/// #2879 - Codex's COMPLETE status-indicator row: an optional `•`/`◦` activity glyph, the
+/// upstream `fmt_elapsed_compact` duration (`Ns`, `Nm SSs`, `Nh MMm SSs`), the full
+/// `esc to interrupt` hint and an optional ` · ` inline context. Internal, never configured.
+const CODEX_WORKING_PATTERN: &str = r"^[ \t]*(?:[•◦] )?Working[ \t]+\((?:[0-9]+s|[1-9][0-9]*m [0-5][0-9]s|[1-9][0-9]*h [0-5][0-9]m [0-5][0-9]s)[ \t]*•[ \t]*esc[ \t]+to[ \t]+interrupt\)(?: · [^\r\n]+)?[ \t]*$";
+
+/// The observation a tick hands to a consumer once every engine guard is released.
+type ActivityDelivery = Option<(ActivityConsumer, ActivityObservation)>;
+
 // ---- the engine ------------------------------------------------------------------------
 
 /// One session's backend, narrowed to the ONE call the engine is allowed to make on it.
@@ -598,7 +628,15 @@ struct WatcherSessionState {
 
 /// One session the engine is sampling.
 struct RegisteredSession {
-    agent_id: String,
+    /// `None` for a session sampled only by an internal activity consumer (#2879).
+    agent_id: Option<String>,
+    /// #2879 - the internal consumer attached at registration, if any.
+    activity: Option<ActivityConsumer>,
+    /// #2879 - the consumer's own view: the last frame it judged, and whether it must see a
+    /// complete frame again (after `Missing`) before it may trust an `Unchanged`. Separate
+    /// from `stamp`, which belongs to the user watchers.
+    activity_stamp: Option<FrameStamp>,
+    activity_full_read: bool,
     /// Resolved at registration; re-resolved only when a read comes back `Missing` or `Gone`,
     /// which covers a session that changed route.
     reader: Option<SessionFrameReader>,
@@ -638,6 +676,11 @@ pub struct WatcherEngine {
     /// Test-visible: the number of `pattern::compile` calls. The compile site is also the log
     /// site, so this is what "logged once per change, not once per tick" is measured by.
     compiles: AtomicUsize,
+    /// #2879 - fixed at construction. `None` keeps the engine exactly user-watchers-only.
+    activity_factory: Option<ActivityFactory>,
+    /// #2879 - `CODEX_WORKING_PATTERN`, compiled once. `None` with a factory means it did not
+    /// compile, and every verdict is `Unavailable`.
+    codex_working: Option<pattern::WatcherPattern>,
 }
 
 impl WatcherEngine {
@@ -647,6 +690,27 @@ impl WatcherEngine {
         sink: Arc<dyn WatcherEventSink>,
         history: history::WatcherHistoryState,
     ) -> Arc<Self> {
+        Self::new_with_activity_factory(backends, patterns, sink, history, None)
+    }
+
+    /// #2879 - `new`, plus an internal activity factory consulted once per registration.
+    pub(crate) fn new_with_activity_factory(
+        backends: Arc<dyn WatcherBackendSource>,
+        patterns: Arc<dyn WatcherPatternSource>,
+        sink: Arc<dyn WatcherEventSink>,
+        history: history::WatcherHistoryState,
+        activity_factory: Option<ActivityFactory>,
+    ) -> Arc<Self> {
+        let codex_working = activity_factory.as_ref().and_then(|_| {
+            pattern::compile(CODEX_WORKING_PATTERN)
+                .map_err(|err| {
+                    log::error!(
+                        "[watchers] the internal Codex Working pattern does not compile; Codex \
+                         activity will be reported unavailable: {err}"
+                    )
+                })
+                .ok()
+        });
         Arc::new(Self {
             backends,
             patterns,
@@ -657,6 +721,8 @@ impl WatcherEngine {
             compiled: Mutex::new(HashMap::new()),
             ticks: AtomicU64::new(0),
             compiles: AtomicUsize::new(0),
+            activity_factory,
+            codex_working,
         })
     }
 
@@ -701,42 +767,78 @@ impl WatcherEngine {
         });
     }
 
-    /// Start sampling a session. Called once per AGENT session at the spawn chokepoint;
-    /// sessions with no agent are never registered, so a plain shell costs nothing - the same
-    /// rule `ContextScraper` follows (`commands/session.rs:2268-2274`).
+    /// Start sampling a session. Called once per session at the spawn chokepoint. A session
+    /// with no agent and no internal activity consumer is never registered, so a plain shell
+    /// costs nothing - the same rule `ContextScraper` follows (`commands/session.rs:2268-2274`).
+    ///
+    /// #2879 - the factory attaches outside every engine guard, and the attach is validated
+    /// before the entry exists: one invalidated in between never samples, so it can neither
+    /// publish nor reinstate detector state. A replaced entry's consumer is retired outside
+    /// the guards; its identity is its own attach, so that can never release the new one.
     ///
     /// A fresh entry can never meet an existing one: session ids are minted per spawn and AC
     /// never reuses one, not even on respawn. That is also what makes `FrameStamp` safe.
-    pub fn register_session(&self, id: Uuid, agent_id: String) {
+    pub fn register_session(&self, id: Uuid, agent_id: Option<String>) {
+        let activity = self
+            .activity_factory
+            .as_ref()
+            .and_then(|factory| factory(id))
+            .filter(|consumer| consumer(ActivityObservation::Validate));
+        if agent_id.is_none() && activity.is_none() {
+            return;
+        }
         let reader = self.backends.reader_for(id);
         if reader.is_none() {
             // Not fatal and not worth a warning per tick: the first read re-resolves it.
             log::debug!("[watchers] session {id} has no backend route yet; will resolve on read");
         }
-        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
-        self.registered
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                id,
-                RegisteredSession {
-                    agent_id,
-                    reader,
-                    stamp: None,
-                    seq: 0,
-                    diff: frame::FrameDiffState::default(),
-                    watchers: HashMap::new(),
-                },
-            );
+        let replaced = {
+            let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+            self.registered
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(
+                    id,
+                    RegisteredSession {
+                        agent_id,
+                        activity,
+                        activity_stamp: None,
+                        activity_full_read: false,
+                        reader,
+                        stamp: None,
+                        seq: 0,
+                        diff: frame::FrameDiffState::default(),
+                        watchers: HashMap::new(),
+                    },
+                )
+        };
+        if let Some(consumer) = replaced.and_then(|session| session.activity) {
+            consumer(ActivityObservation::Retired);
+        }
     }
 
-    /// Stop sampling a session. Idempotent, so every caller can just call it.
+    /// Stop sampling a session. Idempotent, so every caller can just call it. #2879 - its
+    /// internal consumer, if any, is retired after the engine guards are released.
     pub fn retire_session(&self, id: Uuid) {
-        let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+        let retired = {
+            let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+            self.registered
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id)
+        };
+        if let Some(consumer) = retired.and_then(|session| session.activity) {
+            consumer(ActivityObservation::Retired);
+        }
+    }
+
+    /// #2879 - whether any registered session has an internal consumer to sample for.
+    fn samples_activity(&self) -> bool {
         self.registered
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&id);
+            .values()
+            .any(|session| session.activity.is_some())
     }
 
     pub fn is_session_registered(&self, id: Uuid) -> bool {
@@ -809,7 +911,11 @@ impl WatcherEngine {
         let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
         let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
         for (id, session) in registered.iter() {
-            if resolved.contains_key(&session.agent_id) {
+            // #2879 - a session registered only for internal observation has no user view.
+            let Some(agent_id) = &session.agent_id else {
+                continue;
+            };
+            if resolved.contains_key(agent_id) {
                 continue;
             }
             self.history.publish(
@@ -831,20 +937,32 @@ impl WatcherEngine {
         // delivers "zero cost when unconfigured" - no `screen_parsers` lock, no row allocated,
         // no backend resolved, no liveness probed.
         let resolved = self.patterns.resolve().await;
-        if resolved.is_empty() {
+        // #2879 - an internal consumer is sampled whatever the user configured.
+        if resolved.is_empty() && !self.samples_activity() {
             self.publish_unwatched(&resolved);
             return;
         }
 
-        let compiled = self.compile_for_tick(&resolved);
+        let compiled = if resolved.is_empty() {
+            HashMap::new()
+        } else {
+            self.compile_for_tick(&resolved)
+        };
         self.publish_unwatched(&resolved);
 
-        // Snapshot first: the loop must not mutate `registered` while iterating it.
-        let mut ids: Vec<(Uuid, String)> = {
+        // Snapshot first: the loop must not mutate `registered` while iterating it. The ids
+        // are the union of sessions a user watcher reaches and those with internal consumers.
+        let mut ids: Vec<(Uuid, Option<String>)> = {
             let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
             registered
                 .iter()
-                .filter(|(_, session)| resolved.contains_key(&session.agent_id))
+                .filter(|(_, session)| {
+                    session.activity.is_some()
+                        || session
+                            .agent_id
+                            .as_ref()
+                            .is_some_and(|agent_id| resolved.contains_key(agent_id))
+                })
                 .map(|(id, session)| (*id, session.agent_id.clone()))
                 .collect()
         };
@@ -854,9 +972,9 @@ impl WatcherEngine {
         let at = chrono::Utc::now();
 
         for (id, agent_id) in ids {
-            let Some(agent) = resolved.get(&agent_id) else {
-                continue;
-            };
+            let agent = agent_id
+                .as_ref()
+                .and_then(|agent_id| resolved.get(agent_id));
 
             if probe_liveness
                 && matches!(
@@ -868,9 +986,12 @@ impl WatcherEngine {
                 continue;
             }
 
-            let (batch, retire) = self.tick_session(id, agent, &compiled, at);
+            let (batch, retire, delivery) = self.tick_session(id, agent, &compiled, at);
             if retire {
                 self.retire_session(id);
+            } else if let Some((consumer, observation)) = delivery {
+                // Every engine guard is released; the callback returns before the next tick.
+                consumer(observation);
             }
             if let Some(batch) = batch {
                 self.sink.emit(batch);
@@ -878,34 +999,91 @@ impl WatcherEngine {
         }
     }
 
-    /// One session's whole tick, with both locks scoped inside so retirement and emission
-    /// happen outside them.
+    /// One session's whole tick, with both locks scoped inside so retirement, emission and
+    /// the internal consumer's callback all happen outside them. `agent` is `None` when no
+    /// user watcher reaches the session and only its internal consumer is sampled.
     fn tick_session(
         &self,
         id: Uuid,
-        agent: &AgentResolution,
+        agent: Option<&AgentResolution>,
         compiled: &HashMap<String, Option<Arc<pattern::WatcherPattern>>>,
         at: chrono::DateTime<chrono::Utc>,
-    ) -> (Option<WatcherMatchBatch>, bool) {
+    ) -> (Option<WatcherMatchBatch>, bool, ActivityDelivery) {
         let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
         let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
         let Some(session) = registered.get_mut(&id) else {
-            return (None, false);
+            return (None, false, None);
         };
 
-        let read = self.read_frame(id, session);
-        let frame = match read {
+        // #2879 - one read serves both views. When they disagree on what they last saw (the
+        // consumer owes itself a complete frame after `Missing`, or one view is newer), read
+        // the complete frame and let each view decide below whether it is new to it.
+        let consumer = session.activity.clone();
+        let activity_seen = if session.activity_full_read {
+            None
+        } else {
+            session.activity_stamp
+        };
+        let seen = match (agent.is_some(), consumer.is_some()) {
+            (true, true) if activity_seen != session.stamp => None,
+            (_, true) => activity_seen,
+            _ => session.stamp,
+        };
+        let (frame, missing) = match self.read_frame(id, session, seen) {
+            // The backend says there is nothing behind this id. Retire it now, and publish
+            // nothing: an entry created here is one the purge that follows would have to race.
+            ScreenRowsSince::Gone => return (None, true, None),
+            ScreenRowsSince::Unchanged => (None, false),
+            ScreenRowsSince::Missing => (None, true),
+            ScreenRowsSince::Frame(frame) => (Some(frame), false),
+        };
+        let logical = frame.as_ref().map(frame::logical_rows);
+
+        // #2879 - the internal verdict: ANY complete-indicator logical row is `Present`.
+        // Independent of every user watcher, cap, suspension and budget.
+        let delivery = consumer.and_then(|consumer| {
+            let observation = match &frame {
+                Some(frame) if !(frame.stamp.is_some() && frame.stamp == activity_seen) => {
+                    session.activity_stamp = frame.stamp;
+                    session.activity_full_read = false;
+                    Some(match &self.codex_working {
+                        Some(working) => {
+                            let rows = logical.as_deref().unwrap_or_default();
+                            if rows.iter().any(|row| working.regex().is_match(&row.text)) {
+                                ActivityObservation::Present
+                            } else {
+                                ActivityObservation::Absent
+                            }
+                        }
+                        None => ActivityObservation::Unavailable,
+                    })
+                }
+                // The same frame it already judged: its verdict stands.
+                Some(_) => None,
+                // Unreadable: the verdict stands, and only a complete frame may refresh it.
+                None if missing => {
+                    session.activity_full_read = true;
+                    Some(ActivityObservation::Unavailable)
+                }
+                None => None,
+            };
+            observation.map(|observation| (consumer, observation))
+        });
+
+        let Some(agent) = agent else {
+            return (None, false, delivery);
+        };
+        // A frame the user view already saw is its `Unchanged`: a recovery read made for the
+        // internal consumer must not advance the diff or re-emit anything.
+        let Some(frame) = frame
+            .as_ref()
+            .filter(|frame| !(frame.stamp.is_some() && frame.stamp == session.stamp))
+        else {
             // Nothing changed, so nothing can have started or stopped matching. No rows were
             // cloned to reach this arm - but the session HAS been ticked, so its status is
             // published and `warmedUp` becomes true.
-            ScreenRowsSince::Unchanged | ScreenRowsSince::Missing => {
-                self.history.publish(id, status_of(session, agent));
-                return (None, false);
-            }
-            // The backend says there is nothing behind this id. Retire it now, and publish
-            // nothing: an entry created here is one the purge that follows would have to race.
-            ScreenRowsSince::Gone => return (None, true),
-            ScreenRowsSince::Frame(frame) => frame,
+            self.history.publish(id, status_of(session, agent));
+            return (None, false, delivery);
         };
         session.stamp = frame.stamp;
 
@@ -917,8 +1095,8 @@ impl WatcherEngine {
 
         // The diff is advanced for EVERY session on every changed frame, whatever modes are
         // configured, so switching a watcher to `occurrence` at runtime needs no reseed.
-        let evaluable = session.diff.advance(&frame);
-        let logical = frame::logical_rows(&frame);
+        let evaluable = session.diff.advance(frame);
+        let logical = logical.unwrap_or_default();
         let selected = frame::select_logical(&logical, &evaluable);
 
         let now = std::time::Instant::now();
@@ -1034,7 +1212,7 @@ impl WatcherEngine {
         self.history.publish(id, status_of(session, agent));
 
         if matches.is_empty() {
-            return (None, false);
+            return (None, false, delivery);
         }
         (
             Some(WatcherMatchBatch {
@@ -1042,22 +1220,28 @@ impl WatcherEngine {
                 matches,
             }),
             false,
+            delivery,
         )
     }
 
     /// Read a session's frame, re-resolving its backend once when the read says the route may
     /// have changed. The re-resolution is the only thing on this path that touches
     /// `PtyManager`, and it does not run on a healthy tick.
-    fn read_frame(&self, id: Uuid, session: &mut RegisteredSession) -> ScreenRowsSince {
+    fn read_frame(
+        &self,
+        id: Uuid,
+        session: &mut RegisteredSession,
+        seen: Option<FrameStamp>,
+    ) -> ScreenRowsSince {
         let first = match &session.reader {
-            Some(reader) => reader.read(id, session.stamp),
+            Some(reader) => reader.read(id, seen),
             None => ScreenRowsSince::Missing,
         };
         match first {
             ScreenRowsSince::Missing | ScreenRowsSince::Gone => {
                 match self.backends.reader_for(id) {
                     Some(reader) => {
-                        let again = reader.read(id, session.stamp);
+                        let again = reader.read(id, seen);
                         session.reader = Some(reader);
                         again
                     }
@@ -1265,11 +1449,14 @@ mod engine_tests {
     use std::collections::VecDeque;
 
     /// What the scripted backend paints on the next read.
-    enum Painted {
+    pub(super) enum Painted {
         Frame(Vec<String>, Vec<bool>, u16),
         Unchanged,
         Missing,
         Gone,
+        /// #2879 - the last frame again under its SAME stamp, answered as a real backend
+        /// would: `Unchanged` to a reader that already saw that stamp, the frame otherwise.
+        Same,
     }
 
     /// The rows of a frame with their wrap flags and cursor row: what a repaint replays.
@@ -1278,22 +1465,24 @@ mod engine_tests {
     /// A `PtyBackend` whose only real method is the watcher seam. Every other method is a
     /// stub, which is exactly the point: the engine never calls one.
     #[derive(Default)]
-    struct ScriptedBackend {
+    pub(super) struct ScriptedBackend {
         script: Mutex<HashMap<Uuid, VecDeque<Painted>>>,
         last: Mutex<HashMap<Uuid, PaintedRows>>,
         sequence: Mutex<HashMap<Uuid, u64>>,
-        reads: AtomicUsize,
+        pub(super) reads: AtomicUsize,
+        /// #2879 - the `seen` stamp of every read, in order.
+        pub(super) seen: Mutex<Vec<Option<FrameStamp>>>,
     }
 
     impl ScriptedBackend {
         /// Paint a screen with the cursor parked on row 0, so a row arriving by scroll is
         /// evaluated on arrival. `paint_with_cursor` is for the tests that are ABOUT the
         /// cursor rule.
-        fn paint(&self, id: Uuid, rows: &[&str]) {
+        pub(super) fn paint(&self, id: Uuid, rows: &[&str]) {
             self.paint_with_cursor(id, rows, 0);
         }
 
-        fn paint_with_cursor(&self, id: Uuid, rows: &[&str], cursor_row: u16) {
+        pub(super) fn paint_with_cursor(&self, id: Uuid, rows: &[&str], cursor_row: u16) {
             self.push(
                 id,
                 Painted::Frame(
@@ -1304,7 +1493,7 @@ mod engine_tests {
             );
         }
 
-        fn push(&self, id: Uuid, painted: Painted) {
+        pub(super) fn push(&self, id: Uuid, painted: Painted) {
             self.script
                 .lock()
                 .unwrap()
@@ -1364,8 +1553,9 @@ mod engine_tests {
             (0, 0)
         }
 
-        fn screen_rows_since(&self, id: Uuid, _seen: Option<FrameStamp>) -> ScreenRowsSince {
+        fn screen_rows_since(&self, id: Uuid, seen: Option<FrameStamp>) -> ScreenRowsSince {
             self.reads.fetch_add(1, Ordering::Relaxed);
+            self.seen.lock().unwrap().push(seen);
             let next = self
                 .script
                 .lock()
@@ -1376,6 +1566,29 @@ mod engine_tests {
                 Some(Painted::Missing) => return ScreenRowsSince::Missing,
                 Some(Painted::Gone) => return ScreenRowsSince::Gone,
                 Some(Painted::Unchanged) => return ScreenRowsSince::Unchanged,
+                Some(Painted::Same) => {
+                    let (rows, wrapped, cursor_row) = self
+                        .last
+                        .lock()
+                        .unwrap()
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let stamp = FrameStamp {
+                        sequence: self.sequence.lock().unwrap().get(&id).copied().unwrap_or(0),
+                        rows: rows.len() as u16,
+                        cols: 120,
+                    };
+                    if seen == Some(stamp) {
+                        return ScreenRowsSince::Unchanged;
+                    }
+                    return ScreenRowsSince::Frame(ScreenFrame {
+                        rows,
+                        wrapped,
+                        cursor_row,
+                        stamp: Some(stamp),
+                    });
+                }
                 Some(Painted::Frame(rows, wrapped, cursor_row)) => {
                     self.last
                         .lock()
@@ -1409,11 +1622,11 @@ mod engine_tests {
         }
     }
 
-    struct FakeBackends {
-        backend: Arc<ScriptedBackend>,
-        liveness: Mutex<HashMap<Uuid, ContextSessionLiveness>>,
-        resolutions: AtomicUsize,
-        liveness_calls: AtomicUsize,
+    pub(super) struct FakeBackends {
+        pub(super) backend: Arc<ScriptedBackend>,
+        pub(super) liveness: Mutex<HashMap<Uuid, ContextSessionLiveness>>,
+        pub(super) resolutions: AtomicUsize,
+        pub(super) liveness_calls: AtomicUsize,
     }
 
     impl WatcherBackendSource for FakeBackends {
@@ -1436,7 +1649,7 @@ mod engine_tests {
     }
 
     #[derive(Default)]
-    struct FakePatterns(Mutex<HashMap<String, AgentResolution>>);
+    pub(super) struct FakePatterns(Mutex<HashMap<String, AgentResolution>>);
 
     impl WatcherPatternSource for FakePatterns {
         fn resolve(&self) -> BoxFuture<'_, HashMap<String, AgentResolution>> {
@@ -1445,7 +1658,7 @@ mod engine_tests {
     }
 
     #[derive(Default)]
-    struct FakeSink(Mutex<Vec<WatcherMatchBatch>>);
+    pub(super) struct FakeSink(Mutex<Vec<WatcherMatchBatch>>);
 
     impl WatcherEventSink for FakeSink {
         fn emit(&self, batch: WatcherMatchBatch) {
@@ -1453,17 +1666,26 @@ mod engine_tests {
         }
     }
 
-    struct Harness {
-        engine: Arc<WatcherEngine>,
-        backend: Arc<ScriptedBackend>,
-        backends: Arc<FakeBackends>,
-        patterns: Arc<FakePatterns>,
-        sink: Arc<FakeSink>,
-        history: history::WatcherHistoryState,
+    pub(super) struct Harness {
+        pub(super) engine: Arc<WatcherEngine>,
+        pub(super) backend: Arc<ScriptedBackend>,
+        pub(super) backends: Arc<FakeBackends>,
+        pub(super) patterns: Arc<FakePatterns>,
+        pub(super) sink: Arc<FakeSink>,
+        pub(super) history: history::WatcherHistoryState,
     }
 
     impl Harness {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
+            Self::build(None)
+        }
+
+        /// #2879 - the same harness with an internal activity factory.
+        pub(super) fn with_activity_factory(factory: ActivityFactory) -> Self {
+            Self::build(Some(factory))
+        }
+
+        fn build(factory: Option<ActivityFactory>) -> Self {
             let backend = Arc::new(ScriptedBackend::default());
             let backends = Arc::new(FakeBackends {
                 backend: Arc::clone(&backend),
@@ -1475,13 +1697,25 @@ mod engine_tests {
             let sink = Arc::new(FakeSink::default());
             let history: history::WatcherHistoryState =
                 Arc::new(history::WatcherHistory::default());
-            Self {
-                engine: WatcherEngine::new(
-                    Arc::clone(&backends) as Arc<dyn WatcherBackendSource>,
-                    Arc::clone(&patterns) as Arc<dyn WatcherPatternSource>,
-                    Arc::clone(&sink) as Arc<dyn WatcherEventSink>,
+            let (backends_dyn, patterns_dyn, sink_dyn) = (
+                Arc::clone(&backends) as Arc<dyn WatcherBackendSource>,
+                Arc::clone(&patterns) as Arc<dyn WatcherPatternSource>,
+                Arc::clone(&sink) as Arc<dyn WatcherEventSink>,
+            );
+            let engine = match factory {
+                None => {
+                    WatcherEngine::new(backends_dyn, patterns_dyn, sink_dyn, Arc::clone(&history))
+                }
+                factory => WatcherEngine::new_with_activity_factory(
+                    backends_dyn,
+                    patterns_dyn,
+                    sink_dyn,
                     Arc::clone(&history),
+                    factory,
                 ),
+            };
+            Self {
+                engine,
                 backend,
                 backends,
                 patterns,
@@ -1490,7 +1724,7 @@ mod engine_tests {
             }
         }
 
-        fn configure(&self, agent_id: &str, watchers: Vec<ResolvedWatcher>) {
+        pub(super) fn configure(&self, agent_id: &str, watchers: Vec<ResolvedWatcher>) {
             self.patterns.0.lock().unwrap().insert(
                 agent_id.to_string(),
                 AgentResolution {
@@ -1500,13 +1734,13 @@ mod engine_tests {
             );
         }
 
-        async fn ticks(&self, count: usize) {
+        pub(super) async fn ticks(&self, count: usize) {
             for _ in 0..count {
                 self.engine.tick().await;
             }
         }
 
-        fn emitted(&self) -> Vec<WatcherMatchPayload> {
+        pub(super) fn emitted(&self) -> Vec<WatcherMatchPayload> {
             self.sink
                 .0
                 .lock()
@@ -1516,12 +1750,12 @@ mod engine_tests {
                 .collect()
         }
 
-        fn batches(&self) -> usize {
+        pub(super) fn batches(&self) -> usize {
             self.sink.0.lock().unwrap().len()
         }
     }
 
-    fn state_watcher(id: &str, pattern: &str) -> ResolvedWatcher {
+    pub(super) fn state_watcher(id: &str, pattern: &str) -> ResolvedWatcher {
         ResolvedWatcher {
             id: id.to_string(),
             mode: WatcherMode::State,
@@ -1541,7 +1775,7 @@ mod engine_tests {
     async fn an_unconfigured_app_touches_no_session_and_resolves_no_backend_per_tick() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
 
         harness.ticks(10).await;
 
@@ -1566,7 +1800,7 @@ mod engine_tests {
     async fn a_state_watcher_emits_once_for_a_value_that_does_not_change() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("ctx", r"Context (\d+)%")]);
         harness.backend.paint(id, &["idle", "Context 42%"]);
 
@@ -1585,7 +1819,7 @@ mod engine_tests {
     async fn a_state_watcher_emits_again_when_the_matched_row_changes() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("ctx", r"Context (\d+)%")]);
         harness.backend.paint(id, &["Context 42%"]);
         harness.backend.paint(id, &["Context 42%"]);
@@ -1608,7 +1842,7 @@ mod engine_tests {
     async fn a_state_watcher_that_stops_matching_emits_nothing_and_re_emits_on_reappearance() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
         harness.backend.paint(id, &["Permission required"]);
         harness.backend.paint(id, &["gone"]);
@@ -1631,7 +1865,7 @@ mod engine_tests {
     async fn a_second_identical_match_appearing_above_an_existing_one_emits() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
         harness.backend.paint(id, &["Permission required", "idle"]);
         harness
@@ -1655,7 +1889,7 @@ mod engine_tests {
     async fn a_scroll_that_leaves_the_match_count_unchanged_emits_nothing() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
         harness
             .backend
@@ -1678,7 +1912,7 @@ mod engine_tests {
     async fn the_lowest_matching_logical_row_wins() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("ctx", r"Context (\d+)%")]);
         harness
             .backend
@@ -1695,7 +1929,7 @@ mod engine_tests {
     async fn an_uncompilable_pattern_is_compiled_once_across_ten_ticks() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("broken", r"Read \((.+")]);
         harness.backend.paint(id, &["anything"]);
 
@@ -1711,7 +1945,7 @@ mod engine_tests {
     async fn editing_a_pattern_recompiles_and_clears_that_watchers_gate() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("w", "alpha")]);
         harness.backend.paint(id, &["alpha beta"]);
         harness.ticks(3).await;
@@ -1735,7 +1969,7 @@ mod engine_tests {
     async fn a_session_reported_gone_is_retired_on_that_tick() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("w", "x")]);
         harness.backend.push(id, Painted::Gone);
         harness.backend.push(id, Painted::Gone);
@@ -1751,7 +1985,7 @@ mod engine_tests {
     async fn a_session_reported_missing_is_kept() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("w", "x")]);
         harness.backend.push(id, Painted::Missing);
         harness.backend.push(id, Painted::Missing);
@@ -1768,7 +2002,7 @@ mod engine_tests {
     async fn liveness_is_probed_on_the_twenty_fifth_tick_and_retires_a_dead_session() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("w", "never")]);
         harness.backend.paint(id, &["idle"]);
         harness
@@ -1793,7 +2027,7 @@ mod engine_tests {
     async fn one_event_carries_all_of_a_ticks_matches_for_a_session() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![
@@ -1821,7 +2055,7 @@ mod engine_tests {
     async fn an_unchanged_frame_produces_no_event() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("w", "match me")]);
         harness.backend.push(id, Painted::Unchanged);
         harness.backend.push(id, Painted::Unchanged);
@@ -1838,8 +2072,12 @@ mod engine_tests {
         let harness = Harness::new();
         let watched = Uuid::new_v4();
         let ignored = Uuid::new_v4();
-        harness.engine.register_session(watched, "a1".to_string());
-        harness.engine.register_session(ignored, "a2".to_string());
+        harness
+            .engine
+            .register_session(watched, Some("a1".to_string()));
+        harness
+            .engine
+            .register_session(ignored, Some("a2".to_string()));
         harness.configure("a1", vec![state_watcher("w", "hit")]);
         harness.backend.paint(watched, &["hit"]);
         harness.backend.paint(ignored, &["hit"]);
@@ -1857,7 +2095,7 @@ mod engine_tests {
     async fn a_state_watcher_matches_across_a_wrapped_row() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("read", r"Read \((.+)\)")]);
         harness.backend.push(
             id,
@@ -1886,7 +2124,7 @@ mod engine_tests {
     async fn an_over_long_row_is_truncated_on_a_char_boundary_and_flagged() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("w", "start")]);
         // 3-byte chars, so the cap lands mid-character unless the boundary is respected.
         let long = format!("start{}", "\u{4e2d}".repeat(200));
@@ -1900,11 +2138,11 @@ mod engine_tests {
         assert!(long.starts_with(&emitted[0].row));
     }
 
-    fn as_refs(rows: &[String]) -> Vec<&str> {
+    pub(super) fn as_refs(rows: &[String]) -> Vec<&str> {
         rows.iter().map(|row| row.as_str()).collect()
     }
 
-    fn occurrence_watcher(
+    pub(super) fn occurrence_watcher(
         id: &str,
         pattern: &str,
         dedupe: WatcherDedupe,
@@ -1929,7 +2167,7 @@ mod engine_tests {
     async fn a_row_written_in_two_chunks_produces_one_event_with_the_complete_capture() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![occurrence_watcher(
@@ -1975,7 +2213,7 @@ mod engine_tests {
     async fn the_same_text_arriving_twice_counts_twice_with_different_seq() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![occurrence_watcher(
@@ -2005,7 +2243,7 @@ mod engine_tests {
         for (dedupe, expected) in [(WatcherDedupe::Capture, 1), (WatcherDedupe::None, 2)] {
             let harness = Harness::new();
             let id = Uuid::new_v4();
-            harness.engine.register_session(id, "a1".to_string());
+            harness.engine.register_session(id, Some("a1".to_string()));
             harness.configure(
                 "a1",
                 vec![occurrence_watcher("read", r"Read (\S+)", dedupe, 60_000)],
@@ -2035,7 +2273,7 @@ mod engine_tests {
     async fn a_repeated_key_is_admitted_again_once_the_dedupe_window_has_passed() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![occurrence_watcher("done", "Done", WatcherDedupe::Row, 1)],
@@ -2062,7 +2300,7 @@ mod engine_tests {
     async fn the_per_tick_caps_bound_the_batch_and_mark_the_watchers_degraded() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![
@@ -2115,7 +2353,7 @@ mod engine_tests {
     async fn a_state_match_dropped_by_the_session_cap_still_emits_on_the_next_tick() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![
@@ -2185,7 +2423,7 @@ mod engine_tests {
     async fn a_session_no_watcher_reaches_is_warmed_up_with_no_active_watchers() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.backend.paint(id, &["idle"]);
 
         // Before the first tick: the engine really has not run.
@@ -2225,7 +2463,7 @@ mod engine_tests {
     async fn a_pair_saturated_for_twenty_five_ticks_is_suspended_and_then_retried() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![occurrence_watcher(
@@ -2279,7 +2517,7 @@ mod engine_tests {
     async fn a_burst_larger_than_the_screen_reports_matches_and_admits_it_may_have_missed_some() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![occurrence_watcher("row", "row", WatcherDedupe::None, 2000)],
@@ -2308,7 +2546,7 @@ mod engine_tests {
     async fn an_occurrence_watcher_fires_only_when_the_diff_declares_a_row_evaluable() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![occurrence_watcher("hit", "hit", WatcherDedupe::None, 2000)],
@@ -2354,7 +2592,7 @@ mod engine_tests {
     async fn the_engine_publishes_status_every_tick_and_the_ring_shares_the_events_seq() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure(
             "a1",
             vec![
@@ -2406,7 +2644,7 @@ mod engine_tests {
     async fn a_session_that_dies_on_its_own_is_retired_but_keeps_its_history() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
         harness.backend.paint(id, &["Permission required"]);
         harness.ticks(1).await;
@@ -2431,7 +2669,7 @@ mod engine_tests {
     async fn purging_a_destroyed_session_retires_it_first_and_the_entry_never_returns() {
         let harness = Harness::new();
         let id = Uuid::new_v4();
-        harness.engine.register_session(id, "a1".to_string());
+        harness.engine.register_session(id, Some("a1".to_string()));
         harness.configure("a1", vec![state_watcher("perm", "Permission required")]);
         harness.backend.paint(id, &["Permission required"]);
         harness.ticks(1).await;
@@ -2569,6 +2807,422 @@ mod engine_tests {
         assert_eq!(object["captures"], serde_json::json!([]));
         assert_eq!(object["rowTruncated"], serde_json::json!(false));
         assert_eq!(object["mode"], serde_json::json!("state"));
+    }
+}
+
+/// #2879 - the internal Codex activity observation, through the engine's own harness.
+#[cfg(test)]
+mod tests {
+    use super::engine_tests::{as_refs, occurrence_watcher, Harness, Painted};
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use ActivityObservation::{Absent, Present, Retired, Unavailable, Validate};
+
+    const WORKING: &str = "• Working (5s • esc to interrupt)";
+
+    type Observed = Arc<Mutex<Vec<(Uuid, ActivityObservation)>>>;
+
+    /// A factory whose consumers accept and record every observation.
+    fn recording_factory() -> (ActivityFactory, Observed) {
+        let observed: Observed = Arc::default();
+        let sink = Arc::clone(&observed);
+        let factory: ActivityFactory = Arc::new(move |id: Uuid| {
+            let sink = Arc::clone(&sink);
+            let consumer: ActivityConsumer = Arc::new(move |observation: ActivityObservation| {
+                sink.lock().unwrap().push((id, observation));
+                true
+            });
+            Some(consumer)
+        });
+        (factory, observed)
+    }
+
+    fn observations(observed: &Observed, id: Uuid) -> Vec<ActivityObservation> {
+        observed
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(observed_id, _)| *observed_id == id)
+            .map(|(_, observation)| *observation)
+            .collect()
+    }
+
+    /// The production pattern: both glyph prefixes or none, `s`/`m`/`h` durations, inline
+    /// context, every logical row of a multi-row frame; and the near misses it must refuse.
+    #[test]
+    fn i2879_feature_grammar() {
+        let pattern = pattern::compile(CODEX_WORKING_PATTERN).expect("compiles");
+        for row in [
+            "Working (0s • esc to interrupt)",
+            "• Working (12s • esc to interrupt)",
+            "◦ Working (59s • esc to interrupt)",
+            "  Working (1m 05s • esc to interrupt)",
+            "\tWorking (59m 59s • esc to interrupt)  ",
+            "Working (1h 00m 00s • esc to interrupt)",
+            "Working  (3s  •  esc  to  interrupt)",
+            "Working (12h 03m 09s • esc to interrupt) · Running hook",
+            "• Working (3s • esc to interrupt) · Reading src/main.r…",
+        ] {
+            assert!(pattern.regex().is_match(row), "must match: {row:?}");
+        }
+        for row in [
+            "Working",
+            "Working (",
+            "Worked for 1m 05s",
+            "Worked (5s • esc to interrupt)",
+            "⠋ Working (5s • esc to interrupt)",
+            "* Working (5s • esc to interrupt)",
+            "› Working (5s • esc to interrupt)",
+            "•Working (5s • esc to interrupt)",
+            "Working(5s • esc to interrupt)",
+            "Working (5s • esc to interrupt",
+            "Working (5s • esc to",
+            "Working (5s)",
+            "Working (5s • ctrl+c to interrupt)",
+            "Working (5s • esc to interrupt) context",
+            "Working (5s • esc to interrupt) · ",
+            "Working (1m 60s • esc to interrupt)",
+            "Working (1m 5s • esc to interrupt)",
+            "Working (0m 05s • esc to interrupt)",
+            "Working (01m 05s • esc to interrupt)",
+            "Working (1h 60m 00s • esc to interrupt)",
+            "Working (5 s • esc to interrupt)",
+        ] {
+            assert!(!pattern.regex().is_match(row), "must not match: {row:?}");
+        }
+
+        let matching = |rows: &[&str], wrapped: &[bool]| -> Vec<(usize, usize)> {
+            let frame = ScreenFrame {
+                rows: rows.iter().map(|row| row.to_string()).collect(),
+                wrapped: wrapped.to_vec(),
+                cursor_row: 0,
+                stamp: None,
+            };
+            frame::logical_rows(&frame)
+                .iter()
+                .filter(|row| pattern.regex().is_match(&row.text))
+                .map(|row| (row.start, row.end))
+                .collect()
+        };
+        assert_eq!(
+            matching(
+                &[
+                    "› transcript",
+                    "Working (2h 03m 09s • esc to interrupt)",
+                    "",
+                    "› prompt"
+                ],
+                &[false; 4]
+            ),
+            vec![(1, 1)],
+            "any row of the frame, not only the cursor's"
+        );
+        assert_eq!(
+            matching(
+                &["x", "◦ Working (1m 0", "5s • esc to interrupt) · ctx"],
+                &[false, true, false]
+            ),
+            vec![(1, 2)],
+            "a wrapped indicator is one logical row"
+        );
+    }
+
+    /// After `Missing`, the consumer re-reads with `seen = None` - through an `Unchanged`
+    /// too - until a complete frame arrives; an identical frame then recovers `Present`
+    /// and a negative one releases it.
+    #[tokio::test]
+    async fn i2879_feature_missing_recovery() {
+        let (factory, observed) = recording_factory();
+        let harness = Harness::with_activity_factory(factory);
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, None);
+        harness.backend.paint(id, &["› run", WORKING]);
+        harness.backend.push(id, Painted::Missing);
+        harness.backend.push(id, Painted::Missing);
+        harness.backend.push(id, Painted::Unchanged);
+        harness.backend.push(id, Painted::Same);
+        harness.backend.paint(id, &["› run", "Worked for 5s"]);
+
+        harness.ticks(5).await;
+
+        let first = Some(FrameStamp {
+            sequence: 1,
+            rows: 2,
+            cols: 120,
+        });
+        assert_eq!(
+            *harness.backend.seen.lock().unwrap(),
+            vec![None, first, first, None, None, first],
+            "Missing (read and re-resolved) forces full reads until a frame is complete"
+        );
+        assert_eq!(
+            observations(&observed, id),
+            vec![Validate, Present, Unavailable, Present, Absent]
+        );
+    }
+
+    /// With no user watcher and no agent, an internal consumer still reads and observes,
+    /// with every engine guard released at each callback, and leaves sink and history
+    /// empty. Without a consumer, or when the factory declines, nothing is even read.
+    #[tokio::test]
+    async fn i2879_feature_internal_only() {
+        let engine_cell: Arc<std::sync::OnceLock<std::sync::Weak<WatcherEngine>>> = Arc::default();
+        let guards_free: Arc<Mutex<Vec<bool>>> = Arc::default();
+        let (inner, observed) = recording_factory();
+        let factory: ActivityFactory = {
+            let (engine_cell, guards_free) = (Arc::clone(&engine_cell), Arc::clone(&guards_free));
+            Arc::new(move |id: Uuid| {
+                let inner = inner(id)?;
+                let (engine_cell, guards_free) =
+                    (Arc::clone(&engine_cell), Arc::clone(&guards_free));
+                let consumer: ActivityConsumer =
+                    Arc::new(move |observation: ActivityObservation| {
+                        if let Some(engine) = engine_cell.get().and_then(std::sync::Weak::upgrade) {
+                            let free = engine.sequence.try_lock().is_ok()
+                                && engine.registered.try_lock().is_ok();
+                            guards_free.lock().unwrap().push(free);
+                        }
+                        inner(observation)
+                    });
+                Some(consumer)
+            })
+        };
+        let harness = Harness::with_activity_factory(factory);
+        engine_cell
+            .set(Arc::downgrade(&harness.engine))
+            .expect("set once");
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, None);
+        assert!(harness.engine.is_session_registered(id));
+        harness.backend.paint(id, &["› run", WORKING]);
+
+        harness.ticks(2).await;
+
+        assert_eq!(harness.backend.reads.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            observations(&observed, id),
+            vec![Validate, Present, Present]
+        );
+        assert_eq!(harness.batches(), 0, "nothing reaches the sink");
+        assert!(
+            !harness.history.snapshot(id, None).warmed_up,
+            "an internal-only session publishes no history"
+        );
+
+        // A confirmed Gone retires it and the consumer hears so, outside the guards.
+        harness.backend.push(id, Painted::Gone);
+        harness.backend.push(id, Painted::Gone);
+        harness.ticks(1).await;
+        assert!(!harness.engine.is_session_registered(id));
+        assert_eq!(observations(&observed, id).last(), Some(&Retired));
+        assert_eq!(*guards_free.lock().unwrap(), vec![true; 4]);
+
+        // The control: no factory, or a factory that declines, and no agent - zero reads.
+        let declining: ActivityFactory = Arc::new(|_: Uuid| -> Option<ActivityConsumer> { None });
+        for harness in [Harness::new(), Harness::with_activity_factory(declining)] {
+            let shell = Uuid::new_v4();
+            harness.engine.register_session(shell, None);
+            harness.backend.paint(shell, &[WORKING]);
+            harness.ticks(3).await;
+            assert!(!harness.engine.is_session_registered(shell));
+            assert_eq!(harness.backend.reads.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    /// What the user watchers produced, for comparing an engine with an internal consumer
+    /// against one without: the events, the counters and the frame-diff status.
+    type UserView = (Vec<(u64, String, String)>, u64, Vec<(String, u64, bool)>);
+
+    fn user_view(harness: &Harness, id: Uuid) -> UserView {
+        let snapshot = harness.history.snapshot(id, None);
+        (
+            harness
+                .emitted()
+                .into_iter()
+                .map(|m| (m.seq, m.watcher_id, m.row))
+                .collect(),
+            snapshot.possibly_missed_frames,
+            snapshot
+                .active_watchers
+                .iter()
+                .map(|c| (c.watcher_id.clone(), c.count, c.degraded))
+                .collect(),
+        )
+    }
+
+    /// User caps and suspension never slow the internal consumer, and its `Missing`
+    /// recovery read never advances the user diff or duplicates a user match: the user
+    /// view is identical to an engine that has no consumer at all.
+    #[tokio::test]
+    async fn i2879_feature_user_isolation() {
+        let (factory, observed) = recording_factory();
+        let with = Harness::with_activity_factory(factory);
+        let without = Harness::new();
+        let id = Uuid::new_v4();
+        let transcript: Vec<String> = (0..1000).map(|i| format!("row {i}")).collect();
+        for harness in [&with, &without] {
+            harness.engine.register_session(id, Some("a1".to_string()));
+            harness.configure(
+                "a1",
+                vec![
+                    occurrence_watcher("flood", "row", WatcherDedupe::None, 2000),
+                    occurrence_watcher("keep", "keep", WatcherDedupe::None, 2000),
+                ],
+            );
+            for tick in 0..40usize {
+                let mut rows = transcript[tick * 10..tick * 10 + 29].to_vec();
+                rows.push(WORKING.to_string());
+                harness.backend.paint(id, &as_refs(&rows));
+            }
+            harness.ticks(40).await;
+            let (degraded, suspended, _) =
+                harness.engine.watcher_state(id, "flood").expect("state");
+            assert!(
+                degraded && suspended,
+                "the user pair is capped and suspended"
+            );
+        }
+        assert_eq!(
+            observations(&observed, id),
+            [vec![Validate], vec![Present; 40]].concat(),
+            "a suspended, saturated user watcher never slows the internal consumer"
+        );
+        assert_eq!(user_view(&with, id), user_view(&without, id));
+
+        for harness in [&with, &without] {
+            harness.backend.paint(id, &["keep", WORKING]);
+            harness.backend.push(id, Painted::Missing);
+            harness.backend.push(id, Painted::Missing);
+            harness.backend.push(id, Painted::Same);
+            harness.ticks(3).await;
+        }
+        assert_eq!(
+            observations(&observed, id)[41..],
+            [Present, Unavailable, Present],
+            "the full recovery read restores the internal verdict"
+        );
+        assert_ne!(
+            with.backend.seen.lock().unwrap().last(),
+            without.backend.seen.lock().unwrap().last(),
+            "the control: only the engine with a consumer made the full recovery read"
+        );
+        assert_eq!(
+            user_view(&with, id),
+            user_view(&without, id),
+            "the recovery read is the user's Unchanged"
+        );
+        for harness in [&with, &without] {
+            harness.ticks(2).await;
+        }
+        assert_eq!(user_view(&with, id), user_view(&without, id));
+    }
+
+    /// Real detector tokens through the production composition: a delivery delayed past a
+    /// replacement is rejected, the old attach's retirement does not release the new one,
+    /// and an attach invalidated before its validation never starts sampling.
+    #[test]
+    fn i2879_feature_attach_race() {
+        use crate::session::profile::{idle_tuning_for, CodingAgentKind};
+        use std::sync::mpsc;
+
+        let codex = idle_tuning_for(Some(CodingAgentKind::Codex));
+        let detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
+        let real = crate::codex_activity_factory(&detector);
+        type Log = Arc<Mutex<Vec<(usize, ActivityObservation, bool)>>>;
+        let log: Log = Arc::default();
+        let attaches = Arc::new(AtomicUsize::new(0));
+        let (arrived_tx, arrived_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let gate = Arc::new(Mutex::new(Some((arrived_tx, release_rx))));
+        let invalidate: Arc<Mutex<Option<(usize, Uuid)>>> = Arc::default();
+        let factory: ActivityFactory = {
+            let (log, attaches, gate, invalidate, detector) = (
+                Arc::clone(&log),
+                Arc::clone(&attaches),
+                Arc::clone(&gate),
+                Arc::clone(&invalidate),
+                Arc::clone(&detector),
+            );
+            Arc::new(move |id: Uuid| {
+                let inner = real(id)?;
+                let n = attaches.fetch_add(1, Ordering::SeqCst) + 1;
+                if *invalidate.lock().unwrap() == Some((n, id)) {
+                    // A re-registration lands between this attach and its validation.
+                    detector.register_session(id, codex);
+                }
+                let (log, gate) = (Arc::clone(&log), Arc::clone(&gate));
+                let consumer: ActivityConsumer =
+                    Arc::new(move |observation: ActivityObservation| {
+                        if n == 1 && observation == Present {
+                            let parked = gate.lock().unwrap().take();
+                            if let Some((arrived, release)) = parked {
+                                arrived.send(()).unwrap();
+                                release.recv().unwrap();
+                            }
+                        }
+                        let accepted = inner(observation);
+                        log.lock().unwrap().push((n, observation, accepted));
+                        accepted
+                    });
+                Some(consumer)
+            })
+        };
+        let harness = Harness::with_activity_factory(factory);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let id = Uuid::new_v4();
+        detector.register_session(id, codex);
+        harness.engine.register_session(id, None);
+        harness.backend.paint(id, &[WORKING]);
+        let ticker = {
+            let engine = Arc::clone(&harness.engine);
+            std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(engine.tick());
+            })
+        };
+        // The tick has released every engine guard and is delivering attach 1's Present.
+        // Replace the registration while that delivery is held back; this would deadlock
+        // if the tick still held the engine's locks.
+        arrived_rx.recv().expect("delivery reached");
+        harness.engine.register_session(id, None);
+        release_tx.send(()).expect("release");
+        ticker.join().expect("ticker");
+        rt.block_on(harness.ticks(1));
+        harness.engine.retire_session(id);
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                (1, Validate, true),
+                (2, Validate, true),
+                (1, Retired, false),
+                (1, Present, false),
+                (2, Present, true),
+                (2, Retired, true),
+            ],
+            "the late delivery and the old retirement are both rejected; the new attach lives"
+        );
+
+        // Identity invalidated during attach: validation fails, nothing is registered or read.
+        let other = Uuid::new_v4();
+        detector.register_session(other, codex);
+        *invalidate.lock().unwrap() = Some((3, other));
+        let reads = harness.backend.reads.load(Ordering::Relaxed);
+        harness.engine.register_session(other, None);
+        assert!(!harness.engine.is_session_registered(other));
+        assert_eq!(log.lock().unwrap().last(), Some(&(3, Validate, false)));
+        harness.backend.paint(other, &[WORKING]);
+        rt.block_on(harness.ticks(2));
+        assert_eq!(harness.backend.reads.load(Ordering::Relaxed), reads);
+        // The control: a fresh attach to the re-registered session is accepted.
+        let fresh = detector.activity_consumer(other).expect("attach");
+        assert!((fresh.observe)(None));
     }
 }
 
