@@ -4895,7 +4895,11 @@ mod tests {
                 .map(String::as_str),
             Some("physical-home")
         );
-        (temp, path, Arc::new(RwLock::new(written)))
+        (
+            temp,
+            path,
+            crate::config::settings::new_settings_state(written),
+        )
     }
 
     fn hash_activation_assert_written(
@@ -5166,7 +5170,7 @@ mod tests {
     }
 
     fn state_for(settings: AppSettings) -> SettingsState {
-        Arc::new(RwLock::new(settings))
+        crate::config::settings::new_settings_state(settings)
     }
 
     #[tokio::test]

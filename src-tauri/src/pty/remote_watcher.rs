@@ -2838,7 +2838,7 @@ mod tests {
                 Arc::new(move || *publication_value.lock().unwrap_or_else(|e| e.into_inner()))
             };
 
-            let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
+            let settings: SettingsState = crate::config::settings::new_settings_state(settings);
             let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
             let (sweeper, transitions) = RemoteSweeper::with_capacity(
                 sessions,
@@ -5383,7 +5383,8 @@ mod tests {
         };
         let local_git: LocalGitRunner =
             Arc::new(|_path, _args| Box::pin(async { Err("unused".to_string()) }));
-        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let settings: SettingsState =
+            crate::config::settings::new_settings_state(AppSettings::default());
         let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (sweeper, _receiver) = RemoteSweeper::new(
             sessions,
@@ -5428,7 +5429,8 @@ mod tests {
         };
         let local_git: LocalGitRunner =
             Arc::new(|_path, _args| Box::pin(async { Err("unused".to_string()) }));
-        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let settings: SettingsState =
+            crate::config::settings::new_settings_state(AppSettings::default());
         let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (sweeper, _receiver) = RemoteSweeper::new(
             sessions,
@@ -5490,7 +5492,7 @@ mod tests {
             branch_staleness_enabled: false,
             ..AppSettings::default()
         };
-        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
+        let settings: SettingsState = crate::config::settings::new_settings_state(settings);
         let sessions = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (sweeper, _receiver) = RemoteSweeper::new(
             sessions,

@@ -5744,7 +5744,7 @@ mod tests {
     }
 
     fn settings_state(settings: AppSettings) -> SettingsState {
-        Arc::new(tokio::sync::RwLock::new(settings))
+        crate::config::settings::new_settings_state(settings)
     }
 
     fn profile_cell(command: &str) -> crate::config::settings::ProfileCellConfig {

@@ -1518,7 +1518,7 @@ mod tests {
     }
 
     fn placement_state(settings: AppSettings) -> SettingsState {
-        Arc::new(tokio::sync::RwLock::new(settings))
+        crate::config::settings::new_settings_state(settings)
     }
 
     fn write_placement_base(path: &std::path::Path, placement: serde_json::Value) {

@@ -4432,7 +4432,7 @@ mod tests {
             ..AppSettings::default()
         };
         let state: crate::config::settings::SettingsState =
-            Arc::new(tokio::sync::RwLock::new(settings.clone()));
+            crate::config::settings::new_settings_state(settings.clone());
         let app = tauri::test::mock_builder()
             .manage(state)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

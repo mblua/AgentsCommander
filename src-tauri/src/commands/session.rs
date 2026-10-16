@@ -8059,7 +8059,7 @@ mod tests {
             store_dir.path().to_path_buf(),
         );
         let mut builder = tauri::test::mock_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(Arc::new(
                 crate::resource_monitor::ResourceMonitorState::new(),
             ))
@@ -16737,7 +16737,7 @@ pub(crate) mod reader_demand_tests {
             .to_string_lossy()
             .into_owned()];
         let app = tauri::test::mock_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(Arc::clone(&manager))
             .manage(bridge_state)
             .manage(OutboundNetwork::new_for_tests(1))
@@ -18915,7 +18915,7 @@ pub(crate) mod co_managed_tests {
         manager: Arc<tokio::sync::RwLock<SessionManager>>,
     ) -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(manager)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build co-managed session test app")

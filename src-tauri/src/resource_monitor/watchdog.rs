@@ -559,7 +559,7 @@ mod tests {
             resource_monitor_enabled: true,
             ..AppSettings::default()
         };
-        let settings = Arc::new(tokio::sync::RwLock::new(cfg));
+        let settings = crate::config::settings::new_settings_state(cfg);
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let coordinator = SelectionCoordinator::new(manager, CancellationToken::new());
         let shutdown = ShutdownSignal::new();
@@ -895,7 +895,7 @@ mod tests {
         // The public row never existed, so the coordinator can only answer NoPublicSession.
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (_app, coordinator) = running_coordinator(manager, Arc::clone(&monitor)).await;
-        let settings = Arc::new(tokio::sync::RwLock::new(cfg));
+        let settings = crate::config::settings::new_settings_state(cfg);
 
         run_tick(&monitor, &settings, &coordinator).await;
 
@@ -935,7 +935,7 @@ mod tests {
 
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (_app, coordinator) = running_coordinator(manager, Arc::clone(&monitor)).await;
-        let settings = Arc::new(tokio::sync::RwLock::new(cfg));
+        let settings = crate::config::settings::new_settings_state(cfg);
 
         // Phase 1: kill_started_at was set microseconds ago by the setup's kill_group, so
         // the 15s backoff cannot have elapsed and the gate must skip this group.
@@ -1025,7 +1025,7 @@ mod tests {
 
             let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
             let (_app, coordinator) = running_coordinator(manager, Arc::clone(&monitor)).await;
-            let settings = Arc::new(tokio::sync::RwLock::new(cfg));
+            let settings = crate::config::settings::new_settings_state(cfg);
 
             run_tick(&monitor, &settings, &coordinator).await;
 
@@ -1170,7 +1170,7 @@ mod tests {
         let group_limits = ResourceLimits::from(&cfg);
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let (_app, coordinator) = running_coordinator(manager, Arc::clone(&monitor)).await;
-        let settings = Arc::new(tokio::sync::RwLock::new(cfg));
+        let settings = crate::config::settings::new_settings_state(cfg);
 
         for cycle in 0..3u32 {
             let session_id = Uuid::new_v4();

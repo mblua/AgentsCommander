@@ -14675,6 +14675,10 @@ fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), Sett
 
 pub type SettingsState = Arc<RwLock<AppSettings>>;
 
+pub fn new_settings_state(settings: AppSettings) -> SettingsState {
+    Arc::new(RwLock::new(settings))
+}
+
 #[cfg(test)]
 mod tests {
     mod issue_3047_schema {
@@ -19370,7 +19374,8 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let path = seed(temp.path(), Some(&base_fixture()), None);
             let original = load_settings_from_path(&path);
-            let state: SettingsState = Arc::new(RwLock::new(original.clone()));
+            let state: SettingsState =
+                crate::config::settings::new_settings_state(original.clone());
             let before = disk_bytes(temp.path());
             for seconds in [0, 3601, 999999] {
                 let mut invalid = original.clone();
@@ -20154,7 +20159,7 @@ mod tests {
         let original = AppSettings::default();
         assert_eq!(original.typing_hold_seconds, 30);
         let state: super::SettingsState =
-            std::sync::Arc::new(tokio::sync::RwLock::new(original.clone()));
+            crate::config::settings::new_settings_state(original.clone());
 
         let mut invalid = original;
         invalid.typing_hold_seconds = 0;

@@ -331,13 +331,13 @@ fn make_test_app(
         TelegramBridgeManager::new(Arc::clone(&output_senders)),
     ));
     let idle_detector = IdleDetector::new(|_| {}, |_| {});
-    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new({
+    let settings: SettingsState = agentscommander_lib::config::settings::new_settings_state({
         let mut s = AppSettings::default();
         s.default_shell = "powershell.exe".to_string();
         s.default_shell_args = vec!["-NoLogo".to_string()];
         s.project_paths = vec![path_to_string(repo_root)];
         s
-    }));
+    });
     let git_app = Box::leak(Box::new(
         tauri::Builder::default()
             .any_thread()

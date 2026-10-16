@@ -5,7 +5,7 @@
 <h1 align="center">Agents Commander</h1>
 
 <p align="center">
-  <b>Turn what you learn into an agent ecosystem you can reuse.</b> For developers working solo or in Teams: keep roles, skills, and recorded experience in your repository, refine them from real work, and bring the setup to your next task. Your coding agents run in real terminals; you decide how they work together.
+  <b>Stop letting your experience disappear between sessions. Build it into your own agent ecosystem.</b> For developers working solo or in Teams: keep roles, skills, and recorded experience in your repository, refine them from real work, and bring the setup to your next task. Your coding agents run in real terminals; you decide how they work together.
 </p>
 
 <p align="center">
@@ -13,109 +13,114 @@
   <a href="https://github.com/mblua/AgentsCommander/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/mblua/AgentsCommander/release.yml?style=flat-square&label=build" alt="Build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License: MIT" /></a>
   <a href="https://github.com/mblua/AgentsCommander/stargazers"><img src="https://img.shields.io/github/stars/mblua/AgentsCommander?style=flat-square&color=00d4ff&label=stars" alt="GitHub stars" /></a>
-  <a href="CODE_SIGNING_POLICY.md"><img src="https://img.shields.io/badge/code--signing-pending-00d4ff?style=flat-square&logo=windows" alt="Code signing pending" /></a>
   <a href="https://tauri.app"><img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri%202-dea584?style=flat-square&logo=rust" alt="Built with Rust + Tauri 2" /></a>
-  <a href="https://app.codecov.io/gh/mblua/AgentsCommander/tree/main">Frontend coverage <img src="https://codecov.io/gh/mblua/AgentsCommander/branch/main/graph/badge.svg?flag=frontend" alt="Frontend coverage" /></a>
 </p>
 
-Frontend coverage shows the latest successfully processed frontend report. Badges can cache or lag; compare the report commit and date with `main`.
 
 <p align="center">
-  <a href="#install-with-a-coding-agent"><b>Install with a Coding Agent</b></a>
+  <a href="https://agentscommander.org/"><b>Explore the ecosystem</b></a>
   &nbsp;·&nbsp;
-  <a href="docs/install-with-agent.md#support-gates"><b>Platform support</b></a>
+  <a href="#get-started"><b>Get started</b></a>
   &nbsp;·&nbsp;
-  <a href="docs/install-with-agent.md#manual-alternatives"><b>Manual install</b></a>
-  &nbsp;·&nbsp;
-  <a href="#60-second-quickstart"><b>▶ Quickstart</b></a>
+  <a href="docs/quickstart.md"><b>Your first team</b></a>
 </p>
 
----
+<p align="center">
+  <img src="docs/screenshots/hero.png" alt="AgentsCommander desktop with agent terminals and the active agent sidebar" />
+</p>
 
-## Installation
+## Get started
 
 <a id="install-with-a-coding-agent"></a>
 
-### Install with a trusted Coding Agent
+Bring your own coding-agent CLIs, accounts, and model access. Choose how you want to install AgentsCommander.
 
-Paste this prompt into a Coding Agent you already trust. It inspects first, shows you an exact plan, and waits before changing your machine.
+### 1. Install with npm
 
-```text
-Install AgentsCommander safely using only the official `mblua/AgentsCommander` repository, its latest stable GitHub Release, and the canonical guide: https://github.com/mblua/AgentsCommander/blob/main/docs/install-with-agent.md
+Requires Node.js 18 or newer and npm. Run:
 
-First resolve/report the current `main` snapshot's full commit SHA, then read the guide at that pinned commit. Treat the entire pinned guide, especially `Support gates`, `Use only pinned official evidence`, `Storage, backup, and upgrades`, and `Coding Agent contract`, as binding. Fail closed on every stop condition and on missing, ambiguous, or conflicting required evidence.
-
-Before any download or mutation, perform/report every required read-only preflight and the complete plan: OS/version/architectures/support tier and Linux distribution; existing install/version/provenance; independently resolved target stable tag; storage, backup, upgrade, and uninstall-state requirements from the canonical owner https://github.com/mblua/AgentsCommander/issues/1118 (`main` is not published-binary evidence); mapped release/asset URLs and exact checksum record; destination, commands, created/overwritten files, privilege, PATH/system-wide effects, preservation, validation, and rollback. Apply the guide's gates exactly: Windows 10 1809+/11 x86_64/AMD64 is full; Linux x86_64/AMD64 is supported with medium test coverage and requires the limitations explained plus explicit confirmation; macOS is supported via npm only with very low test coverage, so warn that errors are expected, get explicit confirmation, and use no other macOS route; all other platforms stop. On Linux, identify the distro from read-only OS information using ID first, then recognized ID_LIKE family tokens: Debian/Ubuntu selects DEB, Fedora/RHEL selects RPM, other Linux selects AppImage. Conflicting family evidence or a missing exact mapped asset stops. Prefer least privilege. Await plan approval plus separate consent for elevation, system-wide/PATH changes, overwrites, and unsigned execution.
-
-Only afterward follow the guide's exact same-release download, one-record full-SHA-256 verification, data preservation under #1118, approved execution, exact-path validation/reporting, and rollback rules. Stop an existing-install update or uninstall if canonical guidance is insufficient; do not invent storage or migration behavior. Warn that Windows artifacts and the macOS `.app` bundle may be unsigned, and that a matching release checksum detects corruption/asset mismatch, not publisher/repository-account compromise. Enforce all prohibitions: silent security bypass, automatic elevation, `curl | shell`, mirrors, source fallback, emulation/substitute assets, npm fallback outside the macOS route, and installing/authenticating a Coding Agent CLI for me.
+```bash
+npm install -g @mblua/agentscommander@latest
 ```
 
-Read the complete [installation contract, platform matrix, trust boundaries, and rollback rules](docs/install-with-agent.md). Prefer a manual release download, or npm? See the [other routes](docs/install-with-agent.md#manual-alternatives), including the npm-only macOS route, under the same platform policy.
+Then launch:
 
-## The 30-second pitch
+```bash
+agentscommander
+```
 
-> **Build a coding-agent setup that keeps the lessons from your work.** Start with one agent and refine its role, skills, and written notes, or define a Team and activate it as a Room for each task. Review the outputs and messages, update the reusable files, and carry those changes into the next task. You choose what to record and improve; this is an explicit workflow, not automatic learning.
+See the [npm guide](npm/README.md) for supported platforms, verification, and preserving your configuration when upgrading.
 
-- **Bring your coding agents and model access.** Claude Code, Codex, Antigravity, and Pi have dedicated integrations; you can configure other shell-based CLIs, including OpenCode, through custom agents. Each session runs in a real PTY. You supply the CLI, account, and authentication; custom commands do not necessarily support every integration feature.
-- **Direct multiple Rooms from the Root Agent.** The Agent Commander / Root Agent gives you one place to steer work across Teams. Ask it to talk to Room orchestrators, send work to different Teams, and keep initiatives aligned across parallel Rooms.
-- **Give each Room its own working copies.** AC creates a separate workspace with repository clones, agent replicas, a messaging area, and build or test state. Each agent's context carries write-restriction instructions that ask it to stay inside its Room; that is documented policy the agents follow, not a sandbox the product enforces. Each session invokes the installed AgentsCommander executable with credentials whose token and root values are scoped to that Room. Run multiple Teams, or multiple Rooms for the same Team, without mixing one task's source changes or build and test state into another's.
-- **Return without rebuilding the map.** A Room keeps its task, agent replicas, repository clones, and messages on disk. Come back later, reopen a Room's closed session, and AC asks Claude Code, Codex, Antigravity, or Pi to continue the prior conversation in that same workspace.
-- **Continue from a written handoff.** With a compatible CLI, an agent can write `SELF-HANDOFF.md`, request a context clear, and continue from that note. Clearing is best-effort and depends on the provider mapping; unrecognized shell wrappers are unsupported. The note records what to carry forward rather than preserving the entire conversation automatically.
-- **Share configuration as source code.** A Project's `.ac/` tree holds canonical agent roles, skills, and plans; Team rosters and repo access; and Loop prompts and schedules in reviewable Markdown, JSON, and TOML. Commit the shared files so teammates can pull the same reviewed setup instead of recreating it.
-- **Coordinate Teams through auditable files.** Agents exchange Markdown messages in a `messaging/` folder you can read with `cat`, inspect in an editor, search, and audit directly on disk. The whole organization fits in `ls`.
-- **Phone-ready updates with images.** The Telegram bridge can stream session output and send photos or screenshots captured by agents, so remote status can include the actual screen or report.
-- **Local state, no telemetry.** Shared team state stays in each project's `.ac/` tree. Follow the [canonical storage, backup, upgrade, and uninstall-state contract](https://github.com/mblua/AgentsCommander/issues/1118) before moving or deleting application state.
+### 2. Install with winget on Windows
 
-You bring the coding agents. AgentsCommander coordinates them.
+```powershell
+winget install --id mblua.AgentsCommander --exact --source winget
+```
 
-## See it work
+### 3. Ask your coding agent
 
-<p align="center">
-  <img src="docs/screenshots/hero.png" alt="Agents Commander home screen with quick start guide and active agent sidebar" />
-</p>
+Paste this into the coding agent you already use:
+
+```text
+Install the stable version of AgentsCommander with npm install -g @mblua/agentscommander@latest.
+Verify that it works, tell me how to launch it, and explain the basic concepts used by AgentsCommander: Agents-Matrix, Teams, and Rooms.
+```
+
+Prefer a release download? See [GitHub Releases](https://github.com/mblua/AgentsCommander/releases/latest) and the [installation guide](docs/install-with-agent.md) for the right asset and verification steps. macOS uses the npm route.
+
+**Platform support:** Windows is the primary supported platform. Linux has medium test coverage; macOS uses npm and has very low test coverage. Check the [platform details](#platform-support) before installing. Before updating an existing installation, follow the [configuration backup guidance](npm/README.md#resolve-versions-and-preserve-configuration).
+
+## Your experience belongs in your next task
+
+A useful session leaves more than code: a clearer role, a tested skill, a recorded mistake, or a better way to delegate. Keep those lessons in files you can review and improve, then bring the setup to your next task.
+
+**AgentsCommander is an open source playground and meta-harness for coding agents.** Your agents keep their own tools and run in real terminals. AgentsCommander adds the surrounding workspace for roles, skills, reusable Teams, Rooms, and coordination you can inspect.
+
+Start with one agent configured your way, or build a Team with an orchestrator and the specialists you choose. You bring your CLIs, accounts, and model access.
+
+## Create → Use → Refine → Reuse
+
+1. **Create your setup.** Define agents, their roles and skills. Use one agent day to day, or group agents into a Team.
+2. **Use it on real work.** Activate a Team as a Room, give its orchestrator a task, and follow the terminals and messages. Open another Room for another task.
+3. **Refine it from evidence.** Review messages, recorded errors, plans, notes, tests, and diffs. You can do this yourself or prepare a team of agents for that review.
+4. **Reuse what works.** Improve the roles, skills, and instructions you maintain, version the reusable configuration, and carry it into the next task.
+
+You decide what to record and improve. This workflow preserves explicit knowledge in files; it does not automatically train models or guarantee better results.
+
+## Start with one agent. Grow your own ecosystem.
+
+- **Solo:** give an agent a role and the skills it needs. Keep refining its setup as you learn what works.
+- **Teams:** define an orchestrator and specialist agents once. Activate the Team as a Room for each task, with its own agent replicas and repository clones.
+- **Multiple Rooms:** run independent tasks in separate workspaces and steer their orchestrators from the Root Agent.
+
+Roles, skills, messages, recorded errors, plans, and notes are plain files you can inspect with ordinary developer tools. Share reviewed configuration through Git; keep credentials and machine-local runtime state separate. Not every runtime file belongs in version control.
+
+## The harness around your coding agents
+
+- **Real terminals, real CLIs.** Claude Code, Codex, Antigravity, and Pi have dedicated integrations. Other shell-based CLIs, including OpenCode, can use custom agents; not every integration feature is available to custom commands.
+- **Delegation you can inspect.** Orchestrators send briefs and collect replies as timestamped Markdown messages on disk.
+- **Separate workspaces for separate tasks.** Rooms have their own repository clones and working state. Agent write restrictions are instructions, not an enforced security sandbox.
+- **Resume from explicit state.** Rooms retain files and messages. Compatible CLIs can also use a written handoff and best-effort context clearing; unsupported wrappers may not support that flow.
+- **Experiment with your setup.** Rerun a brief with different roles, skills, or CLI profiles, then inspect tests, diffs, messages, and terminal output yourself.
+- **Keep work visible.** Follow agent terminals and session states from one desktop window. Optionally connect Telegram for updates, replies, and images.
+- **Local project state, no telemetry.** See the [storage and backup contract](https://github.com/mblua/AgentsCommander/issues/1118) before moving or deleting application state, and [Privacy](PRIVACY.md) for optional external services.
 
 <a id="60-second-quickstart"></a>
 
 ## Quickstart: first team
 
-1. **Install and validate** AgentsCommander with the [reviewable Coding Agent plan](#install-with-a-coding-agent). If you choose a secondary route, follow the [canonical platform and trust rules](docs/install-with-agent.md). Start the validated executable from its approved location.
+1. **Install and launch** using [npm or your coding agent](#get-started), then open AgentsCommander.
 2. **Open a project**: click `New Project` in the sidebar and point it at an empty folder. AC creates a Project AC Root (`.ac/`) there.
 3. **Create a Team**: add an orchestrator and one worker agent, each with a role prompt. [Teams and rooms](docs/agents/teams-and-workgroups.md) walks through this.
 4. **Launch the orchestrator**: pick Claude Code, Codex, Antigravity, Pi, or OpenCode from the dropdown. Ask it to send the worker a hello message. The worker terminal receives a file notification and responds in real time.
 
 Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
 
-## Why this exists
+## What will you build?
 
-The useful part of a session can outlast its conversation: a clearer role, a tested skill, a recorded failure, or a better brief. AgentsCommander gives you a place to keep and refine that experience as plain files alongside your project. Use one agent day to day or organize Teams for different tasks; review their work and decide which changes belong in your reusable setup.
+Use your ecosystem for feature development, independent reviews, coordinated refactoring, research, or long-running tasks with phone check-ins. Build different teams for different jobs and refine them using evidence from their work.
 
-Your coding agents keep their own tools and run as real OS processes. AgentsCommander adds terminal sessions, Rooms, and inspectable Markdown messaging around them. Share reviewed configuration through Git while keeping credentials and machine-local runtime state separate.
-
-## What you can build
-
-| Use case | Setup |
-|---|---|
-| **A reusable solo setup** | Give one agent a role and skills, record useful lessons in notes, and revise those files as you learn what works. |
-| **Parallel feature development** | Activate one Room per parallel task, even when reusing the same Team. Every Room gets its own repository clones and build or test state; direct the Room orchestrators from the Root Agent. |
-| **Code-review swarm** | One agent ships a PR; two others review independently. You read both reviews in their own terminals before merging. |
-| **Coordinated refactor Team** | Assign an orchestrator and workers to a multi-file refactor. Have agents run tests, inspect failures, and propose fixes using their own tools. |
-| **Compare agent setups** | Manually rerun the same brief with different roles, skills, or CLI profiles, then compare terminal output, messages, test results, and diffs. You make the comparison; AC does not score the runs. |
-| **Long-running agent with phone alerts** | Pair a session with a [Telegram bot](docs/features/telegram-bridge.md), kick off a build from your phone, and receive text updates plus screenshots or image artifacts. |
-
-Recipes for parallel development, review, refactoring, and Telegram: [`docs/use-cases.md`](docs/use-cases.md).
-
-## How it compares
-
-| | AgentsCommander | LangGraph | AutoGen / AG2 | CrewAI | Aider | Claude Code alone |
-|---|---|---|---|---|---|---|
-| **Operates real CLI coding agents** | ✅ Claude Code, Codex, Antigravity, Pi, OpenCode | ❌ Python LLM calls | ❌ Python conversation | ❌ Python library | Partial (one agent) | ✅ (one agent) |
-| **Real PTY per agent** | ✅ ConPTY / Unix PTY | ❌ | ❌ | ❌ | ✅ | ✅ |
-| **Filesystem-first messaging** | ✅ Markdown in `messaging/` | ❌ DB / Python state | ❌ Python objects | ❌ Python tasks | n/a | n/a |
-| **Standalone runtime** | ✅ Rust / Tauri | ❌ Python library | ❌ Python library | ❌ Python library | ❌ Python app | ✅ standalone CLI |
-| **Multi-agent on the same repo** | ✅ | Partial | Partial | Partial | ❌ | ❌ |
-| **Desktop UI** | ✅ Tauri app | ❌ | ❌ | ❌ | TUI only | TUI only |
-
-Full comparison with trade-offs and honest losses: [`docs/comparison.md`](docs/comparison.md).
+See the [workflow recipes](docs/use-cases.md), or share your own setup with the community.
 
 ## Design principles
 
@@ -128,7 +133,8 @@ These are not accidents.
 
 ## Documentation
 
-- [Install with a Coding Agent](docs/install-with-agent.md): platform gates, approved assets, checksum verification, and rollback
+- [Installation guide](docs/install-with-agent.md): release downloads, platform support, verification, and rollback
+- [npm guide](npm/README.md): package installation, launch, and upgrades
 - [Quickstart](docs/quickstart.md): installed app to first running agent
 - [Concepts](docs/concepts.md): agent, team, room, orchestrator, brief
 - [Teams and rooms](docs/agents/teams-and-workgroups.md): orchestrators, members, briefs, messaging
@@ -149,15 +155,7 @@ An artifact on a release is not a support promise. The [canonical installation g
 
 ## Trust
 
-AgentsCommander does not collect telemetry, analytics, or usage data. Optional features (Telegram Bridge, Voice-to-Text, and Jev classification for [Co-managed rooms](docs/features/co-managed-rooms.md), which sends captured agent text only when the global `coManagedEnabled` switch, off by default while in development, is on, a room's flag is on and a Jev key is set) transmit data to external services only when you enable them; see [`PRIVACY.md`](PRIVACY.md). Windows code signing is planned through [SignPath Foundation](https://signpath.org) with free signing courtesy of [SignPath.io](https://signpath.io), but current Windows release artifacts may be unsigned until [epic #717](https://github.com/mblua/AgentsCommander/issues/717) is complete. Verify the exact downloaded asset against the same release's `SHASUMS256.txt`; on Windows you can inspect signature status separately with:
-
-```powershell
-Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1") -ErrorAction Stop
-Get-AuthenticodeSignature -LiteralPath ".\Agents.Commander_<version>_x64-setup.exe"
-```
-
-A release checksum detects corruption or a file that differs from the release record. It does not protect you if an attacker can replace both the asset and checksum through a compromised publisher or repository account. Full verification steps are in the [installation guide](docs/install-with-agent.md#verify-a-downloaded-asset-manually); signing policy is in [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
-
+AgentsCommander does not collect telemetry, analytics, or usage data. Optional features (Telegram Bridge, Voice-to-Text, and Jev classification for [Co-managed rooms](docs/features/co-managed-rooms.md), which sends captured agent text only when the global `coManagedEnabled` switch, off by default while in development, is on, a room's flag is on and a Jev key is set) transmit data to external services only when you enable them; see [`PRIVACY.md`](PRIVACY.md).
 ## Community
 
 - **Discuss setups and share what you learn**: join the [official Discord](https://discord.gg/EcwW5KvDCy).
@@ -186,7 +184,7 @@ Also: Tauri, SolidJS, xterm.js, portable-pty, axum, tokio; the toolchain layer t
 
 Mariano is passionate about software development, AI, and blockchain. He approaches the world with deep curiosity, always amazed by life and the universe. Above all, he is a father, which remains the most wonderful part of his life.
 
-**Mariano Blua**: [GitHub](https://github.com/mblua) · [LinkedIn](https://www.linkedin.com/in/mariano-blua/) · [🇦🇷 MarianoBlua](https://x.com/MarianoBlua) · [🇺🇸 MarianoBluaEN (English)](https://x.com/MarianoBluaEN)
+**Mariano Blua**: [GitHub](https://github.com/mblua) · [LinkedIn](https://www.linkedin.com/in/mariano-blua/) · [X](https://x.com/MarianoBlua)
 
 ## License
 
