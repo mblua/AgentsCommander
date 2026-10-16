@@ -1631,10 +1631,16 @@ mod tests {
     fn e2992_p41_owner_ignore() {
         ignore_rows_are_unique_and_byte_sorted_by_name();
         assert_eq!(SETTINGS_OWNER_LOCK_FILE_NAME, "settings.owner.no-git.lock");
-        assert_eq!(SETTINGS_OWNER_ENDPOINT_FILE_NAME, "settings-owner.endpoint.no-git.json");
+        assert_eq!(
+            SETTINGS_OWNER_ENDPOINT_FILE_NAME,
+            "settings-owner.endpoint.no-git.json"
+        );
         assert_ne!(SETTINGS_OWNER_LOCK_FILE_NAME, SETTINGS_LOCK_FILE_NAME);
         assert_ne!(SETTINGS_OWNER_LOCK_FILE_NAME, SETTINGS_RETIRED_LOCK_NAME);
-        for name in [SETTINGS_OWNER_LOCK_FILE_NAME, SETTINGS_OWNER_ENDPOINT_FILE_NAME] {
+        for name in [
+            SETTINGS_OWNER_LOCK_FILE_NAME,
+            SETTINGS_OWNER_ENDPOINT_FILE_NAME,
+        ] {
             let rows: Vec<&InstanceArtifact> = INSTANCE_ARTIFACTS
                 .iter()
                 .filter(|row| row.name == name)
@@ -1645,7 +1651,11 @@ mod tests {
         }
         // Neighbouring rows survive unchanged: the transactional lock and the
         // retired lock are still Ignore rows of their own.
-        for name in [SETTINGS_LOCK_FILE_NAME, SETTINGS_RETIRED_LOCK_NAME, "sessions.json"] {
+        for name in [
+            SETTINGS_LOCK_FILE_NAME,
+            SETTINGS_RETIRED_LOCK_NAME,
+            "sessions.json",
+        ] {
             assert!(ignore_rows().iter().any(|row| row.name == name), "{name}");
         }
     }

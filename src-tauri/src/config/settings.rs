@@ -14975,8 +14975,8 @@ impl SettingsOwnerLease {
             Ok(()) | Err(crate::path_identity::PathRule::ComponentIsLink) => {}
             Err(_) => return Err(identity("lock_identity_rejected")),
         }
-        let physical_parent = std::fs::canonicalize(parent)
-            .map_err(|_| identity("lock_identity_rejected"))?;
+        let physical_parent =
+            std::fs::canonicalize(parent).map_err(|_| identity("lock_identity_rejected"))?;
         let retained = crate::path_identity::retain_directory(&physical_parent)
             .map_err(|_| identity("lock_identity_rejected"))?;
         let physical = retained.identity().canonical_path.join(leaf);
@@ -15116,7 +15116,10 @@ impl SettingsOperationGuard<'_> {
         self.effect = OperationEffect::Possible;
         log::debug!("[settings-owner] publisher start: {publisher:?}");
         let result = run(&self.transaction.path);
-        log::debug!("[settings-owner] publisher end: {publisher:?} ok={}", result.is_ok());
+        log::debug!(
+            "[settings-owner] publisher end: {publisher:?} ok={}",
+            result.is_ok()
+        );
         result
     }
 }
@@ -15145,7 +15148,10 @@ impl CapturedSource {
         match self {
             Self::Absent => "absent".to_string(),
             Self::Present { witness, .. } => match witness.content_sha256 {
-                Some(digest) => digest[..4].iter().map(|byte| format!("{byte:02x}")).collect(),
+                Some(digest) => digest[..4]
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
                 None => format!("len{}", witness.metadata.len),
             },
         }
@@ -15356,9 +15362,9 @@ impl SettingsOwner {
         );
         let initial = {
             let lease = owner.lease_guard();
-            let lease = lease
-                .as_ref()
-                .ok_or(SettingsOwnerError::Unavailable(SettingsAvailability::Closed))?;
+            let lease = lease.as_ref().ok_or(SettingsOwnerError::Unavailable(
+                SettingsAvailability::Closed,
+            ))?;
             let guard = owner.operation_guard(lease)?;
             let captured = capture_sources_locked(&guard)?;
             compose_captured_sources(&captured, CapturePolicy::Startup)?
@@ -15370,7 +15376,11 @@ impl SettingsOwner {
             control.availability = SettingsAvailability::Ready;
             control.epoch = 1;
         }
-        log::debug!("[settings-owner] {} ready in {:?}", owner.instance_id, started.elapsed());
+        log::debug!(
+            "[settings-owner] {} ready in {:?}",
+            owner.instance_id,
+            started.elapsed()
+        );
         Ok(Arc::new(owner))
     }
 
@@ -15435,7 +15445,10 @@ impl SettingsOwner {
             control.availability = SettingsAvailability::Invalid;
         }
         let epoch = control.epoch;
-        log::debug!("[settings-owner] {} invalid at {stage} epoch={epoch}", self.instance_id);
+        log::debug!(
+            "[settings-owner] {} invalid at {stage} epoch={epoch}",
+            self.instance_id
+        );
     }
 
     /// A borrowed read validated against availability on admission and again
@@ -15601,9 +15614,9 @@ impl SettingsOwner {
         let started = std::time::Instant::now();
         let mut state = self.settings.blocking_write();
         let lease = self.lease_guard();
-        let lease = lease
-            .as_ref()
-            .ok_or(SettingsOwnerError::Unavailable(SettingsAvailability::Closed))?;
+        let lease = lease.as_ref().ok_or(SettingsOwnerError::Unavailable(
+            SettingsAvailability::Closed,
+        ))?;
         let mut guard = self.operation_guard(lease)?;
         // Sources that do not compose at admission reject the operation before
         // any publisher; RAM keeps the last adopted value.
@@ -15698,7 +15711,11 @@ impl SettingsOwner {
         drop(control);
         let lease = self.lease_guard().take();
         drop(lease);
-        log::debug!("[settings-owner] {} closed in {:?}", self.instance_id, started.elapsed());
+        log::debug!(
+            "[settings-owner] {} closed in {:?}",
+            self.instance_id,
+            started.elapsed()
+        );
     }
 
     fn staged_forwarding(&self) {
@@ -33321,7 +33338,10 @@ mod e2992_p41_owner_tests {
         owner.drain_blocking(SOFT_DEADLINE);
         let startup = SettingsOwner::open_active(&path, WAIT).unwrap();
         let snapshot = startup.blocking_current_snapshot().unwrap();
-        assert!(matches!(snapshot.agents_layer, AgentsLayerState::Unreadable { .. }));
+        assert!(matches!(
+            snapshot.agents_layer,
+            AgentsLayerState::Unreadable { .. }
+        ));
         startup.drain_blocking(SOFT_DEADLINE);
         std::fs::remove_file(agents).unwrap();
 
@@ -33396,7 +33416,11 @@ mod e2992_p41_owner_tests {
                     Err("TempWrite".to_string())
                 })
                 .unwrap();
-            assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown, "{publisher:?}");
+            assert_eq!(
+                report.outcome,
+                OperationOutcome::PartialOrUnknown,
+                "{publisher:?}"
+            );
             assert_eq!(report.availability, SettingsAvailability::Ready);
             assert!(report.error.is_some());
             assert!(!voice_enabled(&owner));
@@ -33431,7 +33455,9 @@ mod e2992_p41_owner_tests {
             let denied = owner.with_operation_blocking("after", |_, _| Ok(()));
             assert!(matches!(
                 denied,
-                Err(SettingsOwnerError::Unavailable(SettingsAvailability::Invalid))
+                Err(SettingsOwnerError::Unavailable(
+                    SettingsAvailability::Invalid
+                ))
             ));
             // The authority is still held until the owner closes.
             let second = SettingsOwner::open_active(&path, Duration::ZERO);
@@ -33487,13 +33513,20 @@ mod e2992_p41_owner_tests {
                 assert!(owner.current_retention().await.is_ok());
             }
         });
-        assert_eq!(counts(&owner), before, "memory reads touch no source or lock");
+        assert_eq!(
+            counts(&owner),
+            before,
+            "memory reads touch no source or lock"
+        );
 
         // Positive control: a mutation does attempt the transactional lock.
         let error = owner
             .with_operation_blocking("apply", |_, _| Ok(()))
             .unwrap_err();
-        assert!(matches!(error, SettingsOwnerError::TransactionLock(_)), "{error:?}");
+        assert!(
+            matches!(error, SettingsOwnerError::TransactionLock(_)),
+            "{error:?}"
+        );
         assert_eq!(counts(&owner), [before[0] + 1, before[1], before[2]]);
         drop(held);
 
@@ -33523,7 +33556,10 @@ mod e2992_p41_owner_tests {
         assert!(staged.blocking_read().voice_to_text_enabled);
         assert!(voice_enabled(&staged));
         let refused = staged.with_operation_blocking("staged", |_, _| Ok(()));
-        assert!(matches!(refused, Err(SettingsOwnerError::OperationsNotEnabled)));
+        assert!(matches!(
+            refused,
+            Err(SettingsOwnerError::OperationsNotEnabled)
+        ));
         assert_eq!(counts(&staged), [0, 0, 0]);
     }
 
@@ -33546,10 +33582,16 @@ mod e2992_p41_owner_tests {
         // An identity that cannot be established is an error, never "free".
         let parent_alias = dir.path().join("sub").join("..").join(SETTINGS_FILE_NAME);
         let error = SettingsOwner::open_active(&parent_alias, Duration::ZERO).unwrap_err();
-        assert!(matches!(error, SettingsOwnerError::Lifecycle(_)), "{error:?}");
+        assert!(
+            matches!(error, SettingsOwnerError::Lifecycle(_)),
+            "{error:?}"
+        );
         let missing = dir.path().join("missing").join(SETTINGS_FILE_NAME);
         let error = SettingsOwner::open_active(&missing, Duration::ZERO).unwrap_err();
-        assert!(matches!(error, SettingsOwnerError::Lifecycle(_)), "{error:?}");
+        assert!(
+            matches!(error, SettingsOwnerError::Lifecycle(_)),
+            "{error:?}"
+        );
 
         // Only the holder touched the sources.
         assert_eq!(counts(&first), before);
