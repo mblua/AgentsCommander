@@ -13,6 +13,7 @@ function mkEntry(id: number): ErrorLogEntry {
     level: "ERROR",
     target: "agentscommander_lib::test",
     message: `error #${id}`,
+    typeId: `type-${id % 2}`,
   };
 }
 
@@ -71,6 +72,17 @@ describe("errorModalStore", () => {
     // createMemo stays quiet and does not steal focus / reset "Copied!".
     expect(errorModalStore.current).toBe(before);
     expect(errorModalStore.current).toBe(a);
+  });
+
+  it("#3037 keeps already-queued entries of any typeId (store applies no mute filter)", () => {
+    const [a, b] = mkEntries(2);
+    errorModalStore.enqueue([a, b]);
+    const lateSameType = { ...mkEntry(2), typeId: a.typeId };
+    errorModalStore.enqueue([lateSameType]);
+    expect(errorModalStore.entries).toEqual([a, b, lateSameType]);
+    errorModalStore.dismissCurrent();
+    expect(errorModalStore.current).toBe(b);
+    expect(errorModalStore.total).toBe(3);
   });
 
   it("enqueue([]) is a no-op", () => {

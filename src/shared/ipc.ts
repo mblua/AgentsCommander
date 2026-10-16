@@ -847,6 +847,12 @@ export const DebugAPI = {
     transport.invoke<void>("save_debug_logs", { content }),
   drainErrorLogs: () =>
     transport.invoke<ErrorLogEntry[]>("drain_error_logs"),
+  /** #3037 - sorted muted error type IDs for this process. */
+  getErrorPopupMutes: () =>
+    transport.invoke<string[]>("get_error_popup_mutes"),
+  /** #3037 - mute/unmute future popups of one type; resolves to sorted muted IDs. */
+  setErrorPopupMuted: (typeId: string, muted: boolean) =>
+    transport.invoke<string[]>("set_error_popup_muted", { typeId, muted }),
 };
 
 export const AutomationAPI = {
