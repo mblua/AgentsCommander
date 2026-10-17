@@ -1934,9 +1934,11 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       expect(parseFloat(menu.style.top) + menu.getBoundingClientRect().height).toBeGreaterThan(
         window.innerHeight,
       );
-      expect(rafCallbacks).toHaveLength(1);
+      expect(rafCallbacks.length).toBeGreaterThan(0);
 
-      rafCallbacks.shift()!(0);
+      // Run one frame's batch; halo tracking can queue the following frame.
+      const pendingFrame = rafCallbacks.splice(0);
+      for (const callback of pendingFrame) callback(0);
       await waitFor(() =>
         expect(parseFloat(menu.style.top) + menu.getBoundingClientRect().height).toBeLessThanOrEqual(
           window.innerHeight,
