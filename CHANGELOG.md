@@ -6,6 +6,24 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+### Added
+
+- Native selection screenshots are saved in the active replica's screenshots/ directory, created when needed. Existing captures and explicit window-screenshot --output destinations are unchanged. (#3070, #3074)
+
+### Fixed
+
+- Codex activity detection recognizes complete Working indicators on physical terminal rows when logical row reconstruction misses them. (#3059, #3065)
+- An open replica context menu's halo follows its sidebar card when preceding cards change height. (#3069, #3076)
+
+### Changed
+
+- Profile cells derive informational identity hashes from the final agent command/environment and profile arguments/environment. Stable agent IDs, references, sessions and HOME remain unchanged; client metadata mirroring is still pending. (#3050, #3054, #3051, #3067)
+- README and quickstart present reusable agent experience, the desktop view and installation options. Settings documentation explains canonical command fields and legacy fallback. (#3044, #3049, #3022, #3055)
+
+### Notes
+
+- Internal preparation adds a persisted container-options preference, centralized settings constructors and strict Matrix copy/provenance helpers. Container UI hiding, exclusive settings ownership and team-creation use of the copy helpers remain inactive. (#3062, #3064, #2993, #3053, #3071, #3075)
+
 ## 0.45.0
 
 ### Added
