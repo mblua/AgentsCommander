@@ -8416,8 +8416,8 @@ mod snapshot_null_tests {
     #[test]
     fn project_file_difference_serializes_count_contract() {
         let json_of = |count| serde_json::to_value(ProjectFileDifference { count }).unwrap();
-        assert_eq!(json_of(Some(0)), json!({ "count": 0 }));
-        assert_eq!(json_of(None), json!({ "count": null }));
-        assert_eq!(json_of(Some(7)), json!({ "count": 7 }));
+        assert_eq!(json_of(Some(0)), serde_json::json!({ "count": 0 }));
+        assert_eq!(json_of(None), serde_json::json!({ "count": null }));
+        assert_eq!(json_of(Some(7)), serde_json::json!({ "count": 7 }));
     }
 }
