@@ -8376,7 +8376,7 @@ mod snapshot_null_tests {
         assert_eq!(read(b"a.txt").await.count, None);
         assert_eq!(read(b"a.txt\0\0").await.count, None);
 
-        let failing = read_project_file_difference(&project, limit, |_, _| {
+        let failing = read_project_file_difference(project, limit, |_, _| {
             std::future::ready(Err::<Vec<u8>, String>("spawn failed".to_string()))
         })
         .await;
