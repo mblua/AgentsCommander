@@ -290,6 +290,33 @@ fn derive_root_project_dir(root: &str) -> Result<Option<String>, String> {
     }
 }
 
+fn archive_send_file(
+    root: &Path,
+    root_is_root_agent: bool,
+    resolved_to: &str,
+    project_paths: &[String],
+    source: &Path,
+    basename: &str,
+) -> Result<PathBuf, String> {
+    let room = if root_is_root_agent {
+        crate::config::teams::verified_wg_coordinator_target(resolved_to, project_paths)
+            .and_then(|target| target.replica_dir.parent().map(Path::to_path_buf))
+            .ok_or("cannot verify destination room for archive")?
+    } else {
+        crate::phone::messaging::workgroup_root(root).map_err(|e| e.to_string())?
+    };
+    crate::phone::messaging::ensure_workgroup_root_is_authoritative(&room)?;
+    let ac_root = room.parent().ok_or("room has no Project AC Root")?;
+    let snapshot = std::fs::read(source).map_err(|e| {
+        format!(
+            "{} -> {}: {e}",
+            source.display(),
+            ac_root.join("message-archive").display()
+        )
+    })?;
+    crate::phone::messaging::archive_message_snapshot(ac_root, source, basename, &snapshot)
+}
+
 /// #2232 phase 7: nothing but the in-process supervisor may write the
 /// Co-managed provenance queue. `--outbox` takes an arbitrary path, so without
 /// this guard any caller holding a token could forge a Co-managed-origin
@@ -1073,6 +1100,21 @@ pub fn execute(args: SendArgs) -> i32 {
             return 1;
         }
 
+        if let Err(error) = archive_send_file(
+            Path::new(&root),
+            root_is_root_agent,
+            &resolved_to,
+            &effective_project_paths,
+            &abs,
+            filename,
+        ) {
+            eprintln!(
+                "Message archive warning: {} -> {}: {}",
+                abs.display(),
+                resolved_to,
+                error
+            );
+        }
         body
     } else {
         String::new()
@@ -1981,6 +2023,13 @@ mod tests {
     /// the message file in place and a dedicated outbox dir. Returns
     /// `(exit code, fixture tempdir, outbox tempdir)`.
     fn enqueue_send_fixture(extra: &[&str]) -> (i32, tempfile::TempDir, tempfile::TempDir) {
+        enqueue_send_fixture_prepared(extra, |_| {})
+    }
+
+    fn enqueue_send_fixture_prepared(
+        extra: &[&str],
+        prepare: impl FnOnce(&Path),
+    ) -> (i32, tempfile::TempDir, tempfile::TempDir) {
         use clap::Parser;
         let (temp, _paths) = make_verified_coordinator_fixture();
         let wg_root = temp.path().join("proj-a").join(".ac").join("wg-1-dev-team");
@@ -1991,6 +2040,7 @@ mod tests {
             "# Hello from fixture\n\nBody.",
         )
         .unwrap();
+        prepare(&wg_root);
         let outbox = tempfile::TempDir::new().unwrap();
         let agent_root = wg_root.join("__agent_dev-rust");
         let mut argv = vec![
@@ -2017,6 +2067,77 @@ mod tests {
         let code = execute(args);
         let _ = watcher.join();
         (code, temp, outbox)
+    }
+
+    #[test]
+    fn issue_3081_cli_archive_failure_keeps_enqueue_result() {
+        let (code, temp, _outbox) = enqueue_send_fixture_prepared(&[], |room| {
+            std::fs::write(room.parent().unwrap().join("message-archive"), b"blocked").unwrap();
+        });
+        assert_eq!(code, 0);
+        let room = temp.path().join("proj-a/.ac/wg-1-dev-team");
+        assert_eq!(
+            std::fs::read(room.join("messaging/20260704-000000-wg1-a-to-wg1-b-x.md")).unwrap(),
+            b"# Hello from fixture\n\nBody."
+        );
+    }
+
+    #[test]
+    fn issue_3081_cli_uses_sender_project_and_verified_root_destination() {
+        let (temp, paths) = make_verified_coordinator_fixture();
+        let room = temp.path().join("proj-a/.ac/wg-1-dev-team");
+        let replica = room.join("__agent_tech-lead");
+        let name = "20261017-000000-wg1-a-to-wg1-b-snapshot.md";
+        let source = room.join(name);
+        std::fs::write(&source, b"\xff\r\n").unwrap();
+        let source = std::fs::canonicalize(source).unwrap();
+        let peer = "proj-a:wg-1-dev-team/dev-rust";
+        let first = archive_send_file(&replica, false, peer, &paths, &source, name).unwrap();
+        let to_root = archive_send_file(
+            &replica,
+            false,
+            crate::config::root_agent::ROOT_AGENT_SENDER,
+            &paths,
+            &source,
+            name,
+        )
+        .unwrap();
+        assert_eq!(first, to_root);
+        let global = temp.path().join("global-root");
+        std::fs::create_dir_all(&global).unwrap();
+        let root_source = global.join(name);
+        std::fs::write(&root_source, b"Root source").unwrap();
+        let root_source = std::fs::canonicalize(root_source).unwrap();
+        let from_root = archive_send_file(
+            &global,
+            true,
+            "proj-a:wg-1-dev-team/tech-lead",
+            &paths,
+            &root_source,
+            name,
+        )
+        .unwrap();
+        assert_eq!(
+            first.parent().unwrap().parent(),
+            from_root.parent().unwrap().parent()
+        );
+        assert_eq!(std::fs::read(from_root).unwrap(), b"Root source");
+        assert!(first.starts_with(
+            std::fs::canonicalize(room.parent().unwrap())
+                .unwrap()
+                .join("message-archive")
+        ));
+        assert!(!global.join("message-archive").exists());
+        assert!(archive_send_file(
+            &global,
+            true,
+            "unknown:wg-1-team/lead",
+            &paths,
+            &source,
+            name
+        )
+        .is_err());
+        assert_eq!(std::fs::read(first).unwrap(), b"\xff\r\n");
     }
 
     /// F5 (step 9): run `execute` with `--outbox` = `<wg_root>/<alias>` so the
