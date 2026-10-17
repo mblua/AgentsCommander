@@ -645,11 +645,14 @@ enum MatrixCopyStage {
     BeforeCleanup,
 }
 
+#[cfg(test)]
+type MatrixCopyCallback<'a> = dyn FnMut(MatrixCopyStage, &Path) -> Result<(), String> + 'a;
+
 #[derive(Default)]
 #[allow(dead_code)] // P02 integration.
 struct MatrixCopyHooks<'a> {
     #[cfg(test)]
-    callback: Option<&'a mut dyn FnMut(MatrixCopyStage, &Path) -> Result<(), String>>,
+    callback: Option<&'a mut MatrixCopyCallback<'a>>,
     #[cfg(test)]
     classification: Option<(bool, u32, bool, bool)>,
     marker: std::marker::PhantomData<&'a ()>,
