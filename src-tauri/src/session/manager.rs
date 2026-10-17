@@ -79,6 +79,70 @@ pub(crate) struct CarrierSnapshot {
     pub selection: SessionSelection,
 }
 
+impl CarrierSnapshot {
+    pub(crate) fn is_local_interactive_carrier(row: &Session) -> bool {
+        row.backend_kind == SessionBackendKind::LocalProcess
+            && !row.is_root_agent
+            && !row.is_coordinator
+            && !row.was_detached
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CarrierPhysicalIdentity(crate::path_identity::VerifiedPathIdentity);
+
+impl From<crate::path_identity::VerifiedPathIdentity> for CarrierPhysicalIdentity {
+    fn from(value: crate::path_identity::VerifiedPathIdentity) -> Self {
+        Self(value)
+    }
+}
+
+impl CarrierPhysicalIdentity {
+    pub(crate) fn canonical_path(&self) -> &std::path::Path {
+        &self.0.canonical_path
+    }
+
+    pub(crate) fn is_dir(&self) -> bool {
+        self.0.metadata.is_dir
+    }
+
+    pub(crate) fn same_object(&self, other: &Self) -> bool {
+        self.0.object_id == other.0.object_id
+    }
+
+    pub(crate) fn matches_route_observations(
+        &self,
+        cwd: Option<&crate::path_identity::VerifiedPathIdentity>,
+        replica: Option<&crate::path_identity::VerifiedPathIdentity>,
+        expected_replica: Option<&Self>,
+    ) -> bool {
+        cwd.is_some_and(|cwd| cwd.object_id == self.0.object_id)
+            && match (replica, expected_replica) {
+                (Some(actual), Some(expected)) => actual.object_id == expected.0.object_id,
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+pub(crate) enum RetiredCarrierRouteObservation {
+    Absent,
+    Present,
+    Unknown,
+}
+
+impl From<Result<crate::pty::manager::PtySnapshotRouteProof, AppError>>
+    for RetiredCarrierRouteObservation
+{
+    fn from(value: Result<crate::pty::manager::PtySnapshotRouteProof, AppError>) -> Self {
+        match value {
+            Err(AppError::SessionNotFound(_)) => Self::Absent,
+            Ok(_) => Self::Present,
+            Err(_) => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CarrierDisposition {
     Protected,
@@ -563,6 +627,13 @@ impl SessionManager {
     // Session record is created with the full set of fields up front; splitting
     // into a builder would just defer the same parameter list.
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     pub(crate) async fn create_pending_session(
         &self,
         ticket: &mut crate::session::selection::CreateFinalizationTicket,
@@ -592,6 +663,13 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     pub(super) async fn create_transaction_pending_session(
         &self,
         shell: String,
@@ -621,6 +699,13 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     async fn insert_new_pending_session(
         &self,
         binding: PendingCreateBinding,
@@ -778,6 +863,10 @@ impl SessionManager {
         Ok(())
     }
 
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(crate) async fn rename_pending_session(
         &self,
         binding: PendingCreateBinding,
@@ -855,6 +944,10 @@ impl SessionManager {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(crate) async fn set_pending_is_root_agent(
         &self,
         binding: PendingCreateBinding,
@@ -1203,6 +1296,13 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     pub(crate) async fn prepare_pty_input_boundary<'a, F, G>(
         &self,
         id: Uuid,
@@ -1801,6 +1901,10 @@ impl SessionManager {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(crate) async fn set_pending_start_fresh_on_restore(
         &self,
         binding: PendingCreateBinding,
@@ -1824,6 +1928,10 @@ impl SessionManager {
         .await
     }
 
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(crate) async fn set_pending_communication(
         &self,
         binding: PendingCreateBinding,
@@ -1993,6 +2101,10 @@ impl SessionManager {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(crate) async fn set_pending_agent_kind(
         &self,
         binding: PendingCreateBinding,
@@ -2016,6 +2128,10 @@ impl SessionManager {
         .await
     }
 
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(crate) async fn set_pending_trusted_configured_spawn(
         &self,
         binding: PendingCreateBinding,
@@ -2103,6 +2219,13 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     pub(crate) async fn set_pending_profile_metadata(
         &self,
         binding: PendingCreateBinding,
@@ -2180,6 +2303,10 @@ impl SessionManager {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(crate) async fn set_pending_resolved_claude_projects_dir(
         &self,
         binding: PendingCreateBinding,
@@ -2351,6 +2478,10 @@ impl SessionManager {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(crate) async fn set_pending_effective_shell_args(
         &self,
         binding: PendingCreateBinding,
@@ -2762,6 +2893,13 @@ impl SessionManager {
     }
 
     /// Only pending rows accept a birth binding; capture its seed before insertion.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     pub(crate) async fn install_pending_coding_agent_binding(
         &self,
         pending: PendingCreateBinding,
@@ -2825,6 +2963,13 @@ impl SessionManager {
     }
 
     /// D09 enrolls receipt-affected failures; ordinary retention stays unchanged.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     pub(crate) async fn refresh_failed_binding_recipes(
         &self,
         recipes: Vec<(CodingAgentBinding, serde_json::Value)>,
@@ -2932,6 +3077,10 @@ impl SessionManager {
         Ok(())
     }
 
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(super) async fn insert_transaction_pending_record(
         &self,
         session: Session,
@@ -3203,6 +3352,13 @@ impl SessionManager {
     /// concurrent `close-session` that listed an id just before the prune fails
     /// once with `AppError::SessionNotFound` and reports a now-missing row;
     /// one-shot, no retry loop (dev-rust caveat B).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     pub(crate) async fn remove_exited_sessions(&self, ids: &[Uuid]) -> usize {
         let permit = acquire_carrier_mutation_permit().await;
         self.remove_exited_sessions_with_carrier_permit(ids, &permit, |_, _| {

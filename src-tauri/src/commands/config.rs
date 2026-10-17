@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use sha2::{Digest, Sha256};
@@ -774,7 +774,22 @@ pub async fn update_settings(
     settings: State<'_, SettingsState>,
     new_settings: AppSettings,
 ) -> Result<(), String> {
-    let saved = persist_protected_settings_update(settings.inner(), new_settings).await?;
+    let response_close = app
+        .state::<crate::pty::manager::ResponseCloseState>()
+        .inner()
+        .clone();
+    let saved = persist_protected_settings_update_with_publication(
+        settings.inner(),
+        new_settings,
+        |written| {
+            response_close.apply_settings(
+                written.response_close_enabled,
+                written.response_close_idle_seconds,
+                std::time::Instant::now(),
+            );
+        },
+    )
+    .await?;
     purge_sessions_after_settings_update(&saved).await;
     // #714 re-register the (possibly changed) hotkey. Syntax was already validated
     // before persistence; an OS-level registration conflict must NOT turn this
@@ -798,7 +813,22 @@ pub async fn save_settings_draft(
     settings: State<'_, SettingsState>,
     draft: AppSettings,
 ) -> Result<(), String> {
-    let (saved, events) = persist_settings_draft_update(settings.inner(), draft).await?;
+    let response_close = app
+        .state::<crate::pty::manager::ResponseCloseState>()
+        .inner()
+        .clone();
+    let (saved, events) = persist_settings_draft_update_with_publication(
+        settings.inner(),
+        draft,
+        |written| {
+            response_close.apply_settings(
+                written.response_close_enabled,
+                written.response_close_idle_seconds,
+                std::time::Instant::now(),
+            );
+        },
+    )
+    .await?;
     purge_sessions_after_settings_update(&saved).await;
     // #714 same non-failing hotkey re-registration as update_settings: persisted
     // save stays successful even if the OS refuses the hotkey.
@@ -825,11 +855,28 @@ pub async fn save_settings_draft(
 
 #[tauri::command]
 pub async fn set_terminal_snapshots_enabled(
+    app: AppHandle,
     settings: State<'_, SettingsState>,
     expected: bool,
     enabled: bool,
 ) -> Result<(), String> {
-    set_terminal_snapshots_enabled_inner(settings.inner(), expected, enabled).await
+    let response_close = app
+        .state::<crate::pty::manager::ResponseCloseState>()
+        .inner()
+        .clone();
+    set_terminal_snapshots_enabled_inner_with_publication(
+        settings.inner(),
+        expected,
+        enabled,
+        |written| {
+            response_close.apply_settings(
+                written.response_close_enabled,
+                written.response_close_idle_seconds,
+                std::time::Instant::now(),
+            );
+        },
+    )
+    .await
 }
 
 /// Shared #1173 owner used by native Tauri and browser WebSocket transports.
@@ -840,10 +887,20 @@ pub(crate) async fn set_terminal_snapshots_enabled_inner(
     expected: bool,
     enabled: bool,
 ) -> Result<(), String> {
+    set_terminal_snapshots_enabled_inner_with_publication(settings, expected, enabled, |_| {}).await
+}
+
+pub(crate) async fn set_terminal_snapshots_enabled_inner_with_publication(
+    settings: &SettingsState,
+    expected: bool,
+    enabled: bool,
+    mut publish: impl FnMut(&AppSettings),
+) -> Result<(), String> {
     let mut guard = settings.write().await;
     let written = crate::config::settings::compare_and_set_terminal_snapshots_enabled(
         &guard, expected, enabled,
     )?;
+    publish(&written);
     *guard = written;
     Ok(())
 }
@@ -855,15 +912,45 @@ pub(crate) async fn persist_protected_settings_update(
     persist_protected_settings_update_with_saver(settings, new_settings, save_settings).await
 }
 
+pub(crate) async fn persist_protected_settings_update_with_publication(
+    settings: &SettingsState,
+    new_settings: AppSettings,
+    publish: impl FnMut(&AppSettings),
+) -> Result<AppSettings, String> {
+    persist_protected_settings_update_with_saver_and_publication(
+        settings,
+        new_settings,
+        save_settings,
+        publish,
+    )
+    .await
+}
+
 async fn persist_protected_settings_update_with_saver(
     settings: &SettingsState,
     new_settings: AppSettings,
     save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
 ) -> Result<AppSettings, String> {
+    persist_protected_settings_update_with_saver_and_publication(
+        settings,
+        new_settings,
+        save,
+        |_| {},
+    )
+    .await
+}
+
+async fn persist_protected_settings_update_with_saver_and_publication(
+    settings: &SettingsState,
+    new_settings: AppSettings,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+    mut publish: impl FnMut(&AppSettings),
+) -> Result<AppSettings, String> {
     let mut s = settings.write().await;
     let current = s.clone();
     let candidate = build_protected_settings_candidate(&current, new_settings)?;
     let written = save(&candidate)?;
+    publish(&written);
     *s = written.clone();
     Ok(written)
 }
@@ -958,10 +1045,33 @@ pub(crate) async fn persist_settings_draft_update(
     persist_settings_draft_update_with_saver(settings, draft, save_settings).await
 }
 
+pub(crate) async fn persist_settings_draft_update_with_publication(
+    settings: &SettingsState,
+    draft: AppSettings,
+    publish: impl FnMut(&AppSettings),
+) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
+    persist_settings_draft_update_with_saver_and_publication(
+        settings,
+        draft,
+        save_settings,
+        publish,
+    )
+    .await
+}
+
 async fn persist_settings_draft_update_with_saver(
+    settings: &SettingsState,
+    draft: AppSettings,
+    save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
+    persist_settings_draft_update_with_saver_and_publication(settings, draft, save, |_| {}).await
+}
+
+async fn persist_settings_draft_update_with_saver_and_publication(
     settings: &SettingsState,
     mut draft: AppSettings,
     save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
+    mut publish: impl FnMut(&AppSettings),
 ) -> Result<(AppSettings, SettingsDraftUpdateEvents), String> {
     let mut s = settings.write().await;
     let current = s.clone();
@@ -990,6 +1100,7 @@ async fn persist_settings_draft_update_with_saver(
     validate_and_repair_settings(&mut draft)?;
     let events = settings_draft_update_events(&current, &draft);
     let written = save(&draft)?;
+    publish(&written);
     *s = written.clone();
     Ok((written, events))
 }

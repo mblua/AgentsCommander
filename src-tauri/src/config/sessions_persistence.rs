@@ -326,13 +326,69 @@ fn orphan_archive_max_bytes() -> u64 {
 /// instance contention pattern.
 #[derive(Debug)]
 pub(crate) struct RenameDiagnostics {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     op_id: u64,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     pid: u32,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     instance_id: String,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     tmp_exists_before: bool,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     final_exists_before: bool,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     attempts: u32,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     last_os_error: Option<i32>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing cfg(test) seed error formatting reads this diagnostic field"
+        )
+    )]
     duration: std::time::Duration,
 }
 
@@ -1932,7 +1988,7 @@ struct RetiredLocalCarrierFact {
     target: String,
     protection_nonce: Uuid,
     canonical_replica: PathBuf,
-    physical_replica: crate::path_identity::VerifiedPathIdentity,
+    physical_replica: crate::session::manager::CarrierPhysicalIdentity,
     generation: u64,
     committed_version: u64,
     settled_version: u64,
@@ -2133,11 +2189,11 @@ impl PublishedCarrier {
     }
     pub(crate) fn retired_local_replica_matches(
         &self,
-        physical: &crate::path_identity::VerifiedPathIdentity,
+        physical: &crate::session::manager::CarrierPhysicalIdentity,
     ) -> bool {
         self.retired_local
             .as_ref()
-            .is_some_and(|fact| crate::path_identity::same_object(&fact.physical_replica, physical))
+            .is_some_and(|fact| fact.physical_replica.same_object(physical))
     }
 
     /// Read-only first-write check under the injector's existing current M and
@@ -2231,11 +2287,8 @@ fn prepare_protected_publication(
         if !captured.rows.iter().any(|current| {
             current.id == protection.session_id
                 && current.token == protection.token
-                && current.backend_kind == crate::pty::backend::SessionBackendKind::LocalProcess
+                && crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(current)
                 && matches!(current.status, SessionStatus::Exited(0))
-                && !current.is_root_agent
-                && !current.is_coordinator
-                && !current.was_detached
                 && current.working_directory == protection.row.working_directory
         }) {
             protection.retired_local = None;
@@ -2349,10 +2402,7 @@ pub(crate) fn retained_carrier_for_replacement(
     let row = current.rows.iter().find(|row| {
         row.id == session_id
             && matches!(row.status, SessionStatus::Exited(0))
-            && row.backend_kind == crate::pty::backend::SessionBackendKind::LocalProcess
-            && !row.is_root_agent
-            && !row.is_coordinator
-            && !row.was_detached
+            && crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row)
             && !current.pending_ids.contains(&row.id)
     })?;
     let version = *current.versions.get(&session_id)?;
@@ -2599,10 +2649,7 @@ pub(crate) fn renew_carrier_replacement(
     })?;
     if carrier.session_id == previous
         && (!matches!(row.status, SessionStatus::Exited(0))
-            || row.backend_kind != crate::pty::backend::SessionBackendKind::LocalProcess
-            || row.is_root_agent
-            || row.is_coordinator
-            || row.was_detached)
+            || !crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row))
     {
         return None;
     }
@@ -2665,7 +2712,7 @@ pub(crate) fn current_protected_carrier(
             && !current.pending_ids.contains(&row.id)
     })?;
     let version = *current.versions.get(&row.id)?;
-    if version >= u64::MAX {
+    if version == u64::MAX {
         return None;
     }
     if !matches!(classify_create_carrier_scope(permit, &carrier.target, Path::new(&row.working_directory)),
@@ -2838,7 +2885,7 @@ pub(crate) enum CarrierCheckpointTransition<'a> {
     FinishDormant {
         generation: u64,
         committed_version: u64,
-        replica: &'a crate::path_identity::VerifiedPathIdentity,
+        replica: &'a crate::session::manager::CarrierPhysicalIdentity,
     },
 }
 
@@ -2910,14 +2957,11 @@ pub(crate) fn with_confirmed_carrier<T>(
             if committed_version != carrier.version
                 || committed_version > version
                 || row.token != carrier.token
-                || row.backend_kind != crate::pty::backend::SessionBackendKind::LocalProcess
+                || !crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row)
                 || !matches!(row.status, SessionStatus::Exited(0))
-                || row.is_root_agent
-                || row.is_coordinator
-                || row.was_detached
                 || current.selection.id() == Some(row.id)
-                || replica.canonical_path != protection.canonical_cwd
-                || !replica.metadata.is_dir
+                || replica.canonical_path() != protection.canonical_cwd
+                || !replica.is_dir()
             {
                 return None;
             }
@@ -3120,7 +3164,7 @@ pub(crate) fn classify_lifecycle_carrier_scope(
     let mut related = None;
     for protection in protections {
         let intersects = canonical.starts_with(&protection.canonical_cwd)
-            || protection.canonical_cwd.starts_with(&canonical);
+            || protection.canonical_cwd.starts_with(canonical);
         let same_target = target.is_some_and(|target| protection.target == target);
         if !same_target && !intersects {
             continue;
@@ -3462,7 +3506,7 @@ async fn save_file_snapshot_guarded(
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(
-            RENAME_BACKOFFS_MS[attempt],
+            RENAME_BACKOFFS_MS[attempt as usize],
         ))
         .await;
     }
@@ -3632,13 +3676,20 @@ async fn save_current_snapshot_guarded(
         }
         // No M, suppression, lifecycle, or leaf guard crosses this backoff.
         tokio::time::sleep(std::time::Duration::from_millis(
-            RENAME_BACKOFFS_MS[attempt],
+            RENAME_BACKOFFS_MS[attempt as usize],
         ))
         .await;
     }
     unreachable!("RENAME_ATTEMPTS is positive")
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )
+)]
 fn sessions_save_lock() -> &'static tokio::sync::Mutex<()> {
     crate::session::manager::process_carrier_publication_gate().as_ref()
 }
@@ -3824,10 +3875,7 @@ where
     };
     let Some(b) = captured.rows.iter().find(|row| {
         row.id == replacement
-            && row.backend_kind == crate::pty::backend::SessionBackendKind::LocalProcess
-            && !row.is_root_agent
-            && !row.is_coordinator
-            && !row.was_detached
+            && crate::session::manager::CarrierSnapshot::is_local_interactive_carrier(row)
             && !matches!(row.status, SessionStatus::Exited(_))
             && !captured.pending_ids.contains(&replacement)
     }) else {
@@ -5632,10 +5680,7 @@ mod tests {
     #[cfg(windows)]
     use super::{deduplicate, load_sessions_from_path};
     use crate::config::settings::AppSettings;
-    use crate::session::manager::{
-        acquire_carrier_mutation_permit, CarrierDisposition, CarrierMutationPermit,
-        RaiseCarrierOutcome, SessionManager,
-    };
+    use crate::session::manager::{acquire_carrier_mutation_permit, SessionManager};
     use crate::session::session::{SessionCommunication, SessionCommunicationKind, SessionStatus};
     use std::sync::Arc;
     use std::time::Duration;
@@ -5784,10 +5829,11 @@ mod tests {
                         .is_none(),
                     "Closing cannot be manually adopted"
                 );
+                let physical_domain = physical_replica.clone().into();
                 let transition = super::CarrierCheckpointTransition::FinishDormant {
                     generation: 7,
                     committed_version: initial.version,
-                    replica: &physical_replica,
+                    replica: &physical_domain,
                 };
                 assert!(
                     super::with_confirmed_carrier(
@@ -5820,113 +5866,300 @@ mod tests {
             .await
             .unwrap();
         let permit = acquire_carrier_mutation_permit().await;
-        manager.with_current_carrier_snapshot(&permit, |current| {
-            let carrier = super::retained_carrier_for_replacement(&permit, &directory, &target, row.id, current)
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                let carrier = super::retained_carrier_for_replacement(
+                    &permit, &directory, &target, row.id, current,
+                )
                 .expect("fresh Confirmed Exited A");
-            assert!(carrier.version > initial.version);
-            assert!(matches!(super::classify_lifecycle_carrier_scope(&permit, None, &physical_cwd),
-                super::CreateCarrierScope::Protected { session_id, target: actual_target, .. }
-                if session_id == row.id && actual_target == target),
-                "None key is a domain fact, never a fabricated Foreign scope");
-            assert!(carrier.retired_local.as_ref().unwrap().settled_version < carrier.version,
-                "same-A saves preserve historical settlement without relabeling its version");
-            assert_eq!(carrier.retired_local_generation(), Some(7));
-            assert!(carrier.retired_local_replica_matches(&physical_replica));
-            assert!(!carrier.retired_local_replica_matches(&replaced_object),
-                "the same pathname cannot adopt a different physical replica");
-            let manual = super::manual_discard_carrier(&permit, &physical_cwd, &target,
-                row.id, current).expect("retired ManualDiscard requires the same strict history");
-            assert_eq!(manual.nonce, carrier.nonce);
-            assert_eq!(manual.retired_local_generation(), Some(7));
-            assert!(initial.retired_local_generation().is_none(), "historical handles are not relabeled");
-            for fault in 0..7 {
-                let mut changed = current.clone();
-                let actual = changed.rows.iter_mut().find(|actual| actual.id == row.id).unwrap();
-                match fault {
-                    0 => actual.token = uuid::Uuid::new_v4(),
-                    1 => actual.status = SessionStatus::Running,
-                    2 => actual.backend_kind = crate::pty::backend::SessionBackendKind::ContainerTransport,
-                    3 => actual.is_root_agent = true,
-                    4 => actual.is_coordinator = true,
-                    5 => actual.was_detached = true,
-                    _ => { changed.pending_ids.insert(row.id); }
-                }
-                assert!(super::retained_carrier_for_replacement(
-                    &permit, &directory, &target, row.id, &changed).is_none(),
-                    "changed current identity is never authorized by retirement history");
-            }
-            assert!(!super::begin_carrier_replacement(&permit, &initial, owner, binding.session_id(), current),
-                "initial old version is not relabeled as current");
-            assert!(super::retained_carrier_for_replacement(&permit, &directory.join("other"), &target, row.id, current).is_none(),
-                "a different directory cannot adopt A");
-            // Fault-control only: exhaust the publication clock consistently without
-            // performing another native write or claiming a new readback proof.
-            let saved_epoch = {
-                let mut state = carrier.slot.lock().unwrap();
-                let saved = state.epoch;
-                state.epoch = u64::MAX;
-                state.checkpoint.as_mut().unwrap().epoch = u64::MAX;
-                for protection in &mut state.protections {
-                    protection.epoch = u64::MAX;
-                }
-                saved
-            };
-            assert!(super::retained_carrier_for_replacement(
-                &permit, &directory, &target, row.id, current).is_none());
-            assert!(super::register_published_carrier(&permit, &carrier, current,
-                |_| -> Option<()> { panic!("exhausted epoch must not register") }).is_none());
-            assert!(!super::begin_carrier_replacement(
-                &permit, &carrier, owner, binding.session_id(), current));
-            assert!(super::with_confirmed_carrier(&permit, &carrier, current,
-                super::CarrierCheckpointTransition::BeginClosing,
-                |_| -> Option<()> { panic!("exhausted epoch must not begin closing") }).is_none());
-            {
-                let mut state = carrier.slot.lock().unwrap();
-                assert!(state.protections[0].phase == super::ProtectionPhase::Protected);
-                state.protections[0].phase = super::ProtectionPhase::Closing;
-            }
-            assert_eq!(super::with_confirmed_carrier(&permit, &carrier, current,
-                super::CarrierCheckpointTransition::FinishClosing,
-                |stamp| Some(stamp.epoch)), Some(u64::MAX),
-                "exhaustion does not strand an already committed closing owner");
-            {
-                let mut state = carrier.slot.lock().unwrap();
-                state.epoch = saved_epoch;
-                state.checkpoint.as_mut().unwrap().epoch = saved_epoch;
-                for protection in &mut state.protections {
-                    protection.epoch = saved_epoch;
-                    protection.retired_local = carrier.retired_local.clone();
-                }
-            }
-            assert!(super::begin_carrier_replacement(&permit, &carrier, owner, binding.session_id(), current));
-            assert!(!super::begin_carrier_replacement(&permit, &carrier, uuid::Uuid::new_v4(),
-                uuid::Uuid::new_v4(), current), "another owner cannot replace Preparing");
-            assert!(matches!(super::classify_create_carrier_scope(&permit, &target, &cwd),
-                super::CreateCarrierScope::Protected { preparing_owner: Some(actual), .. } if actual == owner));
-            assert!(!super::retire_carrier_for_discard(&permit, row.id),
-                "manual discard cannot delete a Preparing replacement owner");
-            assert!(super::retained_carrier_for_replacement(
-                &permit, &directory, &target, row.id, current).is_none(),
-                "a historical Protected handle does not recapture Preparing");
-            assert!(!super::abort_owned_carrier_replacement(
-                &permit, &carrier, uuid::Uuid::new_v4(), binding.session_id(), current),
-                "wrong owner cannot release Preparing");
-            let mut with_b = current.clone();
-            let mut b = row.clone();
-            b.id = binding.session_id();
-            with_b.rows.push(b);
-            assert!(!super::abort_owned_carrier_replacement(
-                &permit, &carrier, owner, binding.session_id(), &with_b),
-                "a surviving B prevents precommit rollback release");
-            assert!(super::abort_owned_carrier_replacement(
-                &permit, &carrier, owner, binding.session_id(), current));
-            assert!(matches!(super::classify_create_carrier_scope(&permit, &target, &cwd),
-                super::CreateCarrierScope::Protected { preparing_owner: None, .. }));
-            assert!(super::begin_carrier_replacement(
-                &permit, &carrier, owner, binding.session_id(), current),
-                "aborting preserves the actual A carrier and retirement history");
-        }).await;
+                assert_retired_replacement_current_facts(
+                    &permit,
+                    current,
+                    &carrier,
+                    &initial,
+                    &directory,
+                    &target,
+                    row.id,
+                    &physical_cwd,
+                    &physical_replica,
+                    &replaced_object,
+                    owner,
+                    binding,
+                );
+                assert_retired_replacement_epoch_exhaustion(
+                    &permit, current, &carrier, &directory, &target, row.id, owner, binding,
+                );
+                assert_retired_replacement_preparing_owner(
+                    &permit, current, &carrier, owner, binding, &target, &cwd, &row, &directory,
+                );
+            })
+            .await;
         drop(permit);
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 checks the same current snapshot and separately owned historical/physical facts without recapture."
+    )]
+    fn assert_retired_replacement_current_facts(
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        carrier: &super::PublishedCarrier,
+        initial: &super::PublishedCarrier,
+        directory: &std::path::Path,
+        target: &str,
+        row_id: uuid::Uuid,
+        physical_cwd: &std::path::Path,
+        physical_replica: &crate::path_identity::VerifiedPathIdentity,
+        replaced_object: &crate::path_identity::VerifiedPathIdentity,
+        owner: uuid::Uuid,
+        binding: crate::session::manager::PendingCreateBinding,
+    ) {
+        assert!(carrier.version > initial.version);
+        assert!(
+            matches!(super::classify_lifecycle_carrier_scope(permit, None, physical_cwd),
+            super::CreateCarrierScope::Protected { session_id, target: actual_target, .. }
+            if session_id == row_id && actual_target == target),
+            "None key is a domain fact, never a fabricated Foreign scope"
+        );
+        assert!(
+            carrier.retired_local.as_ref().unwrap().settled_version < carrier.version,
+            "same-A saves preserve historical settlement without relabeling its version"
+        );
+        assert_eq!(carrier.retired_local_generation(), Some(7));
+        assert!(carrier.retired_local_replica_matches(&(*physical_replica).clone().into()));
+        assert!(
+            !carrier.retired_local_replica_matches(&(*replaced_object).clone().into()),
+            "the same pathname cannot adopt a different physical replica"
+        );
+        let manual = super::manual_discard_carrier(permit, physical_cwd, target, row_id, current)
+            .expect("retired ManualDiscard requires the same strict history");
+        assert_eq!(manual.nonce, carrier.nonce);
+        assert_eq!(manual.retired_local_generation(), Some(7));
+        assert!(
+            initial.retired_local_generation().is_none(),
+            "historical handles are not relabeled"
+        );
+        for fault in 0..7 {
+            let mut changed = current.clone();
+            let actual = changed
+                .rows
+                .iter_mut()
+                .find(|actual| actual.id == row_id)
+                .unwrap();
+            match fault {
+                0 => actual.token = uuid::Uuid::new_v4(),
+                1 => actual.status = SessionStatus::Running,
+                2 => {
+                    actual.backend_kind =
+                        crate::pty::backend::SessionBackendKind::ContainerTransport
+                }
+                3 => actual.is_root_agent = true,
+                4 => actual.is_coordinator = true,
+                5 => actual.was_detached = true,
+                _ => {
+                    changed.pending_ids.insert(row_id);
+                }
+            }
+            assert!(
+                super::retained_carrier_for_replacement(
+                    permit, directory, target, row_id, &changed
+                )
+                .is_none(),
+                "changed current identity is never authorized by retirement history"
+            );
+        }
+        assert!(
+            !super::begin_carrier_replacement(
+                permit,
+                initial,
+                owner,
+                binding.session_id(),
+                current
+            ),
+            "initial old version is not relabeled as current"
+        );
+        assert!(
+            super::retained_carrier_for_replacement(
+                permit,
+                &directory.join("other"),
+                target,
+                row_id,
+                current
+            )
+            .is_none(),
+            "a different directory cannot adopt A"
+        );
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 exhausts and restores the same carrier slot under the original borrowed permit."
+    )]
+    fn assert_retired_replacement_epoch_exhaustion(
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        carrier: &super::PublishedCarrier,
+        directory: &std::path::Path,
+        target: &str,
+        row_id: uuid::Uuid,
+        owner: uuid::Uuid,
+        binding: crate::session::manager::PendingCreateBinding,
+    ) {
+        // Fault-control only: exhaust the publication clock consistently without
+        // performing another native write or claiming a new readback proof.
+        let saved_epoch = {
+            let mut state = carrier.slot.lock().unwrap();
+            let saved = state.epoch;
+            state.epoch = u64::MAX;
+            state.checkpoint.as_mut().unwrap().epoch = u64::MAX;
+            for protection in &mut state.protections {
+                protection.epoch = u64::MAX;
+            }
+            saved
+        };
+        assert!(super::retained_carrier_for_replacement(
+            permit, directory, target, row_id, current
+        )
+        .is_none());
+        assert!(
+            super::register_published_carrier(permit, carrier, current, |_| -> Option<()> {
+                panic!("exhausted epoch must not register")
+            })
+            .is_none()
+        );
+        assert!(!super::begin_carrier_replacement(
+            permit,
+            carrier,
+            owner,
+            binding.session_id(),
+            current
+        ));
+        assert!(super::with_confirmed_carrier(
+            permit,
+            carrier,
+            current,
+            super::CarrierCheckpointTransition::BeginClosing,
+            |_| -> Option<()> { panic!("exhausted epoch must not begin closing") }
+        )
+        .is_none());
+        {
+            let mut state = carrier.slot.lock().unwrap();
+            assert!(state.protections[0].phase == super::ProtectionPhase::Protected);
+            state.protections[0].phase = super::ProtectionPhase::Closing;
+        }
+        assert_eq!(
+            super::with_confirmed_carrier(
+                permit,
+                carrier,
+                current,
+                super::CarrierCheckpointTransition::FinishClosing,
+                |stamp| Some(stamp.epoch)
+            ),
+            Some(u64::MAX),
+            "exhaustion does not strand an already committed closing owner"
+        );
+        {
+            let mut state = carrier.slot.lock().unwrap();
+            state.epoch = saved_epoch;
+            state.checkpoint.as_mut().unwrap().epoch = saved_epoch;
+            for protection in &mut state.protections {
+                protection.epoch = saved_epoch;
+                protection.retired_local = carrier.retired_local.clone();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "P05 preserves distinct owner, binding, current row and carrier rollback assertions."
+    )]
+    fn assert_retired_replacement_preparing_owner(
+        permit: &crate::session::manager::CarrierMutationPermit,
+        current: &crate::session::manager::CarrierSnapshot,
+        carrier: &super::PublishedCarrier,
+        owner: uuid::Uuid,
+        binding: crate::session::manager::PendingCreateBinding,
+        target: &str,
+        cwd: &std::path::Path,
+        row: &crate::session::session::Session,
+        directory: &std::path::Path,
+    ) {
+        assert!(super::begin_carrier_replacement(
+            permit,
+            carrier,
+            owner,
+            binding.session_id(),
+            current
+        ));
+        assert!(
+            !super::begin_carrier_replacement(
+                permit,
+                carrier,
+                uuid::Uuid::new_v4(),
+                uuid::Uuid::new_v4(),
+                current
+            ),
+            "another owner cannot replace Preparing"
+        );
+        assert!(
+            matches!(super::classify_create_carrier_scope(permit, target, cwd),
+            super::CreateCarrierScope::Protected { preparing_owner: Some(actual), .. } if actual == owner)
+        );
+        assert!(
+            !super::retire_carrier_for_discard(permit, row.id),
+            "manual discard cannot delete a Preparing replacement owner"
+        );
+        assert!(
+            super::retained_carrier_for_replacement(permit, directory, target, row.id, current)
+                .is_none(),
+            "a historical Protected handle does not recapture Preparing"
+        );
+        assert!(
+            !super::abort_owned_carrier_replacement(
+                permit,
+                carrier,
+                uuid::Uuid::new_v4(),
+                binding.session_id(),
+                current
+            ),
+            "wrong owner cannot release Preparing"
+        );
+        let mut with_b = current.clone();
+        let mut b = (*row).clone();
+        b.id = binding.session_id();
+        with_b.rows.push(b);
+        assert!(
+            !super::abort_owned_carrier_replacement(
+                permit,
+                carrier,
+                owner,
+                binding.session_id(),
+                &with_b
+            ),
+            "a surviving B prevents precommit rollback release"
+        );
+        assert!(super::abort_owned_carrier_replacement(
+            permit,
+            carrier,
+            owner,
+            binding.session_id(),
+            current
+        ));
+        assert!(matches!(
+            super::classify_create_carrier_scope(permit, target, cwd),
+            super::CreateCarrierScope::Protected {
+                preparing_owner: None,
+                ..
+            }
+        ));
+        assert!(
+            super::begin_carrier_replacement(permit, carrier, owner, binding.session_id(), current),
+            "aborting preserves the actual A carrier and retirement history"
+        );
     }
 
     #[tokio::test]

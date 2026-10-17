@@ -105,34 +105,6 @@
       }
     },
     {
-      "id": "rust:src-tauri/src/commands/session.rs::execute_destroy_transaction",
-      "sites": {
-        "windows": [
-          "3de3e5b76bb8"
-        ],
-        "linux": [
-          "3de3e5b76bb8"
-        ],
-        "macos": [
-          "3de3e5b76bb8"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/commands/session.rs::execute_restart_transaction",
-      "sites": {
-        "windows": [
-          "bee66e294490"
-        ],
-        "linux": [
-          "bee66e294490"
-        ],
-        "macos": [
-          "bee66e294490"
-        ]
-      }
-    },
-    {
       "id": "rust:src-tauri/src/config/root_agent.rs::mod:tests::ensure_root_agent_dir_at_creates_layout_role_and_config",
       "sites": {
         "windows": [
@@ -216,20 +188,6 @@
         ],
         "macos": [
           "bb794053ede9"
-        ]
-      }
-    },
-    {
-      "id": "rust:src-tauri/src/phone/mailbox.rs::impl:MailboxPoller::dispatch_pty_input_operation",
-      "sites": {
-        "windows": [
-          "106d13910f26"
-        ],
-        "linux": [
-          "106d13910f26"
-        ],
-        "macos": [
-          "106d13910f26"
         ]
       }
     },

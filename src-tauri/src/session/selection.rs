@@ -1398,33 +1398,133 @@ pub(super) enum FinalizedOwnedCarryOutcome {
 }
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "C20 retains complete owned recovery work; preserve both variants and separate deep copies"
+)]
 pub(crate) enum OwnedReplacementWork {
     OrdinaryOwned {
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         message_id: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         body: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         payload: serde_json::Value,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         recipient: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         request: serde_json::Value,
     },
     PtyDurableReference {
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         version: u32,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         injection_id: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         op_id: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         sender: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         target: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         source_plane: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         payload_sha256: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         payload_bytes: u64,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         issued_at: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         expires_at: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         queued_at: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         lease_owner: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         attempt: i64,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         authority_session_id: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         authority_client_id: Option<String>,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         authority_client_generation: Option<String>,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         sender_identity_fingerprint: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         target_identity_fingerprint: String,
+        #[expect(
+            dead_code,
+            reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+        )]
         requested_agent_id: Option<String>,
     },
 }
@@ -1436,6 +1536,10 @@ pub(crate) struct ResolvedReplacement {
     pub(crate) previous: crate::session::session::Session,
     pub(crate) carrier: crate::config::sessions_persistence::PublishedCarrier,
     pub(crate) requested_agent_id: Option<String>,
+    #[expect(
+        dead_code,
+        reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+    )]
     pub(crate) requested_profile: Option<String>,
     pub(crate) shell: String,
     pub(crate) shell_args: Vec<String>,
@@ -1443,8 +1547,8 @@ pub(crate) struct ResolvedReplacement {
     pub(crate) cwd: String,
     pub(crate) backend: crate::pty::backend::SessionBackendKind,
     pub(crate) work: OwnedReplacementWork,
-    pub(crate) cwd_identity: crate::path_identity::VerifiedPathIdentity,
-    pub(crate) replica_identity: Option<crate::path_identity::VerifiedPathIdentity>,
+    pub(crate) cwd_identity: crate::session::manager::CarrierPhysicalIdentity,
+    pub(crate) replica_identity: Option<crate::session::manager::CarrierPhysicalIdentity>,
 }
 
 impl fmt::Debug for ResolvedReplacement {
@@ -1465,8 +1569,8 @@ struct OwnedLaunchReceipt {
     generation: u64,
     backend: crate::pty::backend::SessionBackendKind,
     info: SessionInfo,
-    cwd_identity: crate::path_identity::VerifiedPathIdentity,
-    replica_identity: Option<crate::path_identity::VerifiedPathIdentity>,
+    cwd_identity: crate::session::manager::CarrierPhysicalIdentity,
+    replica_identity: Option<crate::session::manager::CarrierPhysicalIdentity>,
 }
 
 struct InitialFinalizationReceipt {
@@ -1510,6 +1614,10 @@ struct ReplacementProgress {
     create_reservation: Option<crate::pty::manager::CreateOwnerReservation>,
     work_reservation: Option<crate::pty::manager::WorkDeliveryReservation>,
     tracker: Option<crate::pty::manager::ResponseCloseState>,
+    #[expect(
+        dead_code,
+        reason = "C20 requires complete inert retained source data; this field grants no replay authority"
+    )]
     accepted_work: OwnedReplacementWork,
     cleanup: ReplacementCleanupAuthority,
     preparing_started: bool,
@@ -1737,6 +1845,7 @@ pub(crate) struct ReplacementFixtureOwnerObservation {
     pub(crate) source_unwound: bool,
     pub(crate) source_stopped: bool,
     pub(crate) source_active: bool,
+    pub(crate) source_returned_failed: Option<bool>,
     pub(crate) cleanup_disarmed: bool,
     pub(crate) cleanup_claimed: bool,
     pub(crate) rollback_completed: bool,
@@ -1765,6 +1874,8 @@ pub(crate) struct ReplacementFixtureReceipt {
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct ReplacementFixtureControl {
+    pub(crate) native_await_panic: Mutex<Option<NativeAwaitPanicOnce>>,
+    pub(crate) context_notification: Mutex<FixtureContextNotification>,
     pub(crate) restoration_failed: std::sync::atomic::AtomicBool,
     pub(crate) restoration_shared: std::sync::atomic::AtomicBool,
     pub(crate) preaccept_identity: Mutex<Option<String>>,
@@ -1788,11 +1899,55 @@ pub(crate) struct ReplacementFixtureControl {
 }
 
 #[cfg(test)]
+#[derive(Debug)]
+pub(crate) enum NativeAwaitPanicOnce {
+    Context(oneshot::Receiver<()>),
+    Seed(oneshot::Receiver<()>),
+}
+
+#[cfg(test)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) enum FixtureContextNotification {
+    #[default]
+    Unarmed,
+    Armed,
+    Consumed {
+        operation: Uuid,
+        executor: Uuid,
+        binding: PendingCreateBinding,
+        error: String,
+        title: String,
+        message: String,
+    },
+}
+
+#[cfg(test)]
 pub(crate) struct ReplacementFixtureNativeInvocation {
     control: Arc<ReplacementFixtureControl>,
     identity: (Uuid, Uuid, PendingCreateBinding),
     enter: ReplacementFixtureCut,
     returned: ReplacementFixtureCut,
+}
+
+#[cfg(test)]
+pub(crate) async fn await_fixture_native<F: std::future::Future>(
+    native: F,
+    panic: Option<oneshot::Receiver<()>>,
+) -> F::Output {
+    tokio::pin!(native);
+    let signal = async {
+        if let Some(receiver) = panic {
+            if receiver.await.is_ok() {
+                return;
+            }
+        }
+        std::future::pending::<()>().await;
+    };
+    tokio::select! {
+        biased;
+        actual = &mut native => actual,
+        () = signal => panic!("selected actual native-await source unwind"),
+    }
 }
 
 #[cfg(test)]
@@ -1917,6 +2072,10 @@ impl ReplacementFixtureControl {
                     | SourceExecutorObservation::Returned { failed: true }
             ),
             source_active: progress.source_executor == SourceExecutorObservation::Active,
+            source_returned_failed: match progress.source_executor {
+                SourceExecutorObservation::Returned { failed } => Some(failed),
+                _ => None,
+            },
             cleanup_disarmed: progress.cleanup == ReplacementCleanupAuthority::Disarmed,
             cleanup_claimed: matches!(progress.cleanup, ReplacementCleanupAuthority::Claimed(_)),
             rollback_completed: progress.rollback_completed,
@@ -2198,6 +2357,138 @@ impl PreparedOwnedReplacement {
 
 impl OwnedReplacementContinuation {
     #[cfg(test)]
+    pub(crate) fn fixture_take_native_await_panic(
+        &self,
+        seed: bool,
+    ) -> Option<oneshot::Receiver<()>> {
+        let control = self.fixture.as_ref()?;
+        control.validate_identity(self);
+        let mut selected = control
+            .native_await_panic
+            .lock()
+            .expect("native await panic");
+        if matches!(
+            (&*selected, seed),
+            (Some(NativeAwaitPanicOnce::Context(_)), false)
+                | (Some(NativeAwaitPanicOnce::Seed(_)), true)
+        ) {
+            selected.take().map(|selected| match selected {
+                NativeAwaitPanicOnce::Context(receiver) | NativeAwaitPanicOnce::Seed(receiver) => {
+                    receiver
+                }
+            })
+        } else {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_observe_context_failure(
+        &self,
+        error: &str,
+        title: &str,
+        message: &str,
+    ) -> bool {
+        let Some(control) = self.fixture.as_ref() else {
+            return false;
+        };
+        {
+            let observation = control
+                .context_notification
+                .lock()
+                .expect("context notification");
+            match &*observation {
+                FixtureContextNotification::Unarmed => return false,
+                FixtureContextNotification::Consumed { .. } => {
+                    drop(observation);
+                    panic!("duplicate context failure notification");
+                }
+                FixtureContextNotification::Armed => {}
+            }
+        }
+        control.validate_identity(self);
+        let binding = {
+            let state = self.owner.state.lock().expect("context failure owner");
+            assert_eq!(state.executor_nonce, self.executor_nonce);
+            assert!(
+                matches!(&state.effects[LifecycleEffectSlot::ContextPreparation as usize],
+                OwnedEffectState::Completed { outcome: Err(actual), .. } if actual == error)
+            );
+            state
+                .replacement
+                .as_ref()
+                .expect("context replacement")
+                .binding
+        };
+        let mut observation = control
+            .context_notification
+            .lock()
+            .expect("context notification");
+        if !matches!(*observation, FixtureContextNotification::Armed) {
+            drop(observation);
+            panic!("context failure notification changed before consumption");
+        }
+        *observation = FixtureContextNotification::Consumed {
+            operation: self.owner.operation,
+            executor: self.executor_nonce,
+            binding,
+            error: error.to_owned(),
+            title: title.to_owned(),
+            message: message.to_owned(),
+        };
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_assert_context_failure_observer(
+        &self,
+        error: &str,
+        title: &str,
+        message: &str,
+    ) {
+        let Some(original) = self.fixture.as_ref() else {
+            return;
+        };
+        if !matches!(
+            *original
+                .context_notification
+                .lock()
+                .expect("context notification"),
+            FixtureContextNotification::Armed
+        ) {
+            return;
+        }
+        // Reuse this SAME completed native failure for primitive assertions;
+        // leave the real command's armed control untouched.
+        let temporary = Arc::new(ReplacementFixtureControl::default());
+        let mut probe = self.clone();
+        probe.fixture = Some(temporary.clone());
+        assert!(!probe.fixture_observe_context_failure("not the actual error", title, message));
+        assert!(temporary.identity.lock().unwrap().is_none());
+        assert!(matches!(
+            *temporary.context_notification.lock().unwrap(),
+            FixtureContextNotification::Unarmed
+        ));
+        *temporary.context_notification.lock().unwrap() = FixtureContextNotification::Armed;
+        assert!(probe.fixture_observe_context_failure(error, title, message));
+        let first = temporary.context_notification.lock().unwrap().clone();
+        assert!(matches!(&first, FixtureContextNotification::Consumed {
+            operation, executor, binding, error: actual, title: actual_title, message: actual_message,
+        } if *operation == self.owner.operation && *executor == self.executor_nonce
+            && Some(*binding) == self.binding() && actual == error
+            && actual_title == title && actual_message == message));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            probe.fixture_observe_context_failure(error, title, message)
+        }))
+        .is_err());
+        assert_eq!(*temporary.context_notification.lock().unwrap(), first);
+        assert!(matches!(
+            *original.context_notification.lock().unwrap(),
+            FixtureContextNotification::Armed
+        ));
+    }
+
+    #[cfg(test)]
     pub(crate) fn fixture_inserted(&self) {
         if let Some(control) = self.fixture.as_ref() {
             control.record(self, ReplacementFixtureCut::Inserted);
@@ -2400,7 +2691,12 @@ impl OwnedReplacementContinuation {
             proof.backend_kind() == launch.backend
                 && proof.matches_requester_route(
                     launch.backend,
-                    &launch.cwd_identity,
+                    proof.saved_cwd(),
+                    proof.saved_replica(),
+                )
+                && launch.cwd_identity.matches_route_observations(
+                    Some(proof.saved_cwd()),
+                    proof.saved_replica(),
                     launch.replica_identity.as_ref(),
                 )
         })
@@ -2527,7 +2823,7 @@ impl OwnedReplacementContinuation {
             return false;
         };
         Self::launch_is_current(&launch, current, pty)
-            && carrier.matches_owned_work_snapshot(current, &launch.cwd_identity.canonical_path)
+            && carrier.matches_owned_work_snapshot(current, launch.cwd_identity.canonical_path())
     }
     pub(crate) fn validate_create_region(
         &self,
@@ -2756,18 +3052,14 @@ impl OwnedReplacementContinuation {
             let Some((Some(cwd), replica, generation)) = pty.route_identities(row.id) else {
                 return false;
             };
-            let replica_matches = match (replica.as_ref(), launch.replica_identity.as_ref()) {
-                (Some(actual), Some(expected)) => {
-                    crate::path_identity::same_object(actual, expected)
-                }
-                (None, None) => true,
-                _ => false,
-            };
             generation == launch.generation
                 && pty.backend_kind(row.id) == Some(launch.backend)
                 && pty.has_session(row.id)
-                && crate::path_identity::same_object(&cwd, &launch.cwd_identity)
-                && replica_matches
+                && launch.cwd_identity.matches_route_observations(
+                    Some(&cwd),
+                    replica.as_ref(),
+                    launch.replica_identity.as_ref(),
+                )
         })
     }
 
@@ -2783,6 +3075,44 @@ impl OwnedReplacementContinuation {
             selection: committed.selection.clone(),
             activity: committed.activity.clone(),
         })
+    }
+
+    #[cfg(test)]
+    fn fixture_stop_exact_b(
+        &self,
+        pty: &Arc<Mutex<PtyManager>>,
+        launch: &OwnedLaunchReceipt,
+        _permit: &crate::session::manager::CarrierMutationPermit,
+    ) {
+        let stop = self
+            .fixture
+            .as_ref()
+            .and_then(|control| {
+                control.take_action(self, |action| {
+                    matches!(action, ReplacementFixtureAction::FixtureStopExactB)
+                })
+            })
+            .is_some();
+        if stop {
+            assert!(
+                self.fixture
+                    .as_ref()
+                    .is_some_and(|control| control.mock_backend.load(Ordering::Acquire)),
+                "stop-exact-B requires fixture mock backend"
+            );
+            let pty = pty.lock().expect("fixture mock backend lock");
+            assert_eq!(
+                pty.backend_kind(launch.binding.session_id()),
+                Some(launch.backend)
+            );
+            assert_eq!(
+                pty.response_close_state()
+                    .generation(launch.binding.session_id()),
+                Some(launch.generation)
+            );
+            pty.kill_for_kind(launch.binding.session_id(), launch.backend)
+                .expect("fixture stop exact B");
+        }
     }
 
     /// None is an internal retained outcome. It is never translated into a
@@ -2880,35 +3210,7 @@ impl OwnedReplacementContinuation {
             {
                 return None;
             }
-            let stop = self
-                .fixture
-                .as_ref()
-                .and_then(|control| {
-                    control.take_action(self, |action| {
-                        matches!(action, ReplacementFixtureAction::FixtureStopExactB)
-                    })
-                })
-                .is_some();
-            if stop {
-                assert!(
-                    self.fixture
-                        .as_ref()
-                        .is_some_and(|control| control.mock_backend.load(Ordering::Acquire)),
-                    "stop-exact-B requires fixture mock backend"
-                );
-                let pty = pty.lock().expect("fixture mock backend lock");
-                assert_eq!(
-                    pty.backend_kind(launch.binding.session_id()),
-                    Some(launch.backend)
-                );
-                assert_eq!(
-                    pty.response_close_state()
-                        .generation(launch.binding.session_id()),
-                    Some(launch.generation)
-                );
-                pty.kill_for_kind(launch.binding.session_id(), launch.backend)
-                    .expect("fixture stop exact B");
-            }
+            self.fixture_stop_exact_b(&pty, &launch, &permit);
         }
         let baseline = manager
             .with_current_carrier_snapshot(&permit, |current| {
@@ -3115,7 +3417,7 @@ impl OwnedReplacementContinuation {
             .as_ref()
             .filter(|physical| previous_carrier.retired_local_replica_matches(physical))?;
         let current_version = *current.versions.get(&binding.session_id())?;
-        if current_version >= u64::MAX {
+        if current_version == u64::MAX {
             return None;
         }
         {
@@ -3910,16 +4212,14 @@ impl OwnedReplacementContinuation {
         let Some((Some(cwd), replica, generation)) = pty.route_identities(id) else {
             return false;
         };
-        let replica_matches = match (replica.as_ref(), launch.replica_identity.as_ref()) {
-            (Some(actual), Some(expected)) => crate::path_identity::same_object(actual, expected),
-            (None, None) => true,
-            _ => false,
-        };
         launch.binding == binding
             && launch.backend == kind
             && launch.generation == generation
-            && crate::path_identity::same_object(&cwd, &launch.cwd_identity)
-            && replica_matches
+            && launch.cwd_identity.matches_route_observations(
+                Some(&cwd),
+                replica.as_ref(),
+                launch.replica_identity.as_ref(),
+            )
     }
 
     // The caller holds U; this decision holds only the owner lock and never awaits.
@@ -4774,6 +5074,13 @@ impl SelectionCoordinator {
         Ok(())
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Existing fixture consumes the unchanged coordinator shutdown token"
+        )
+    )]
     pub(crate) fn shutdown_token(&self) -> CancellationToken {
         self.inner.shutdown.clone()
     }
@@ -6279,6 +6586,19 @@ impl SelectionCoordinator {
             .await
     }
 
+    #[cfg(test)]
+    pub(crate) fn fixture_native_work_counts(&self) -> Option<(usize, usize)> {
+        let state = self.inner.blocking_seed_work.state.lock().ok()?;
+        Some((
+            state.work.len(),
+            state
+                .work
+                .values()
+                .filter(|work| matches!(work, BlockingSeedWorkState::Started))
+                .count(),
+        ))
+    }
+
     async fn close_and_join_with_budget(&self, budget: Duration) -> SelectionShutdownReport {
         let started_at = Instant::now();
         let deadline = started_at.checked_add(budget).unwrap_or(started_at);
@@ -6548,6 +6868,13 @@ impl CreateFinalizationTicket {
         Ok(())
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     pub(super) fn bind(&mut self, session_id: Uuid) -> Result<PendingCreateBinding, String> {
         self.check_unbound()?;
         self.bind_prepared(PendingCreateBinding::new(session_id, Uuid::new_v4()))
@@ -6562,6 +6889,13 @@ impl CreateFinalizationTicket {
         Ok(binding)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+        )
+    )]
     pub(crate) fn binding(&self) -> Option<PendingCreateBinding> {
         self.binding
     }
@@ -7141,6 +7475,10 @@ impl<R: Runtime> SelectionTransaction<R> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )]
     pub(crate) async fn create_pending_session(
         &self,
         shell: String,

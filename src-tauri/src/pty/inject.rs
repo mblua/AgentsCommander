@@ -405,6 +405,13 @@ pub async fn inject_text_into_session<R: tauri::Runtime>(
 /// keeps the plain `inject_text_into_session` above: that body was already
 /// marked delivered when the command half succeeded, so a hold armed during the
 /// detached idle wait must not drop it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )
+)]
 pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: Uuid,
@@ -425,6 +432,13 @@ pub(crate) async fn inject_peer_wake_text_into_session<R: tauri::Runtime>(
 
 /// Peer delivery retains its hold policy and completion cleanup while allowing
 /// the caller to validate immediately before the serialized first write.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P05 callers use guarded prepared paths; preserve this compatibility facade"
+    )
+)]
 pub(crate) async fn inject_peer_wake_text_into_session_with_pre_write_check<R, F>(
     app: &tauri::AppHandle<R>,
     session_id: Uuid,
@@ -620,6 +634,92 @@ where
     .await
 }
 
+async fn write_injected_text_checked<F>(
+    manager: &SessionManager,
+    pty_manager: &Arc<Mutex<PtyManager>>,
+    permit: &crate::pty::manager::PtyInputPermit,
+    session_id: uuid::Uuid,
+    text: &str,
+    legacy_check: Option<F>,
+) -> Result<(), String>
+where
+    F: FnOnce(
+        Option<&Session>,
+        Option<&crate::session::manager::CarrierSnapshot>,
+    ) -> Result<(), String>,
+{
+    if let Some(check) = legacy_check {
+        // Snapshotting a typed route is pure registry access. The verified
+        // guard validates that same kind/generation/identity against our
+        // already-held writer; it writes directly, without reacquiring itself.
+        let route = PtyManager::snapshot_route_proof(pty_manager, session_id).ok();
+        manager
+            .with_response_close_facts(|current| {
+                let route_guard = match route
+                    .as_ref()
+                    .and_then(|route| route.saved_replica().map(|replica| (route, replica)))
+                {
+                    Some((route, replica)) => PtyManager::lock_route_for_verified_write(
+                        permit,
+                        route.backend_kind(),
+                        route.saved_cwd(),
+                        replica,
+                    ),
+                    None => PtyManager::lock_route_for_write(permit),
+                };
+                let route_guard =
+                    route_guard.map_err(|error| format!("PTY write failed: {}", error))?;
+                let session = current.rows.iter().find(|session| session.id == session_id);
+                check(session, Some(current))?;
+                route_guard
+                    .write(text.as_bytes())
+                    .map_err(|error| format!("PTY write failed: {}", error))
+            })
+            .await
+    } else {
+        PtyManager::write_with_permit(permit, text.as_bytes())
+            .map_err(|error| format!("PTY write failed: {}", error))
+    }
+}
+
+async fn check_injection_hold<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: uuid::Uuid,
+    hold_policy: &HoldPolicy<'_>,
+) -> Result<(), String> {
+    if let Some(menu_guard) = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>() {
+        if menu_guard.is_blocked(session_id) {
+            return Err(format!(
+                "{}: session {} is blocked by interactive menu",
+                crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED,
+                session_id
+            ));
+        }
+    }
+
+    // #2336 - the typing hold gate, still under the per-session writer permit so
+    // a key written against this session is observed before any payload byte.
+    // Peer wakes record their IDs; internal notices defer without registering
+    // an ID. Plain, restart-resume and logical follow-up writes remain exempt.
+    if let HoldPolicy::PeerWake(message_id) = hold_policy {
+        if crate::commands::pty::typing_hold_defers_injection(app, session_id).await {
+            crate::commands::pty::note_held_wake(app, session_id, message_id);
+            return Err(format!(
+                "{}: session {} is holding peer wake injection while the user is typing",
+                crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED,
+                session_id
+            ));
+        }
+    }
+
+    if matches!(hold_policy, HoldPolicy::InternalNotice) {
+        if let Some(reason) = internal_notice_block_reason(app, session_id).await {
+            return Err(reason);
+        }
+    }
+    Ok(())
+}
+
 async fn inject_text_into_session_impl<R, F>(
     app: &tauri::AppHandle<R>,
     session_id: Uuid,
@@ -661,36 +761,7 @@ where
         .await
         .map_err(|error| error.to_string())?;
 
-    if let Some(menu_guard) = app.try_state::<Arc<crate::pty::menu_guard::MenuGuard>>() {
-        if menu_guard.is_blocked(session_id) {
-            return Err(format!(
-                "{}: session {} is blocked by interactive menu",
-                crate::pty::menu_guard::ERR_MENU_GUARD_DEFERRED,
-                session_id
-            ));
-        }
-    }
-
-    // #2336 - the typing hold gate, still under the per-session writer permit so
-    // a key written against this session is observed before any payload byte.
-    // Peer wakes record their IDs; internal notices defer without registering
-    // an ID. Plain, restart-resume and logical follow-up writes remain exempt.
-    if let HoldPolicy::PeerWake(message_id) = hold_policy {
-        if crate::commands::pty::typing_hold_defers_injection(app, session_id).await {
-            crate::commands::pty::note_held_wake(app, session_id, message_id);
-            return Err(format!(
-                "{}: session {} is holding peer wake injection while the user is typing",
-                crate::pty::menu_guard::ERR_TYPING_HOLD_DEFERRED,
-                session_id
-            ));
-        }
-    }
-
-    if matches!(hold_policy, HoldPolicy::InternalNotice) {
-        if let Some(reason) = internal_notice_block_reason(app, session_id).await {
-            return Err(reason);
-        }
-    }
+    check_injection_hold(app, session_id, &hold_policy).await?;
 
     // Deliberately synchronous and immediately adjacent to the serialized write
     // boundary. Callers of the supported variant perform their final
@@ -714,38 +785,15 @@ where
     };
 
     // Write the text block through the held permit.
-    let written = if let Some(check) = legacy_check {
-        // Snapshotting a typed route is pure registry access. The verified
-        // guard validates that same kind/generation/identity against our
-        // already-held writer; it writes directly, without reacquiring itself.
-        let route = PtyManager::snapshot_route_proof(&pty_manager, session_id).ok();
-        manager
-            .with_response_close_facts(|current| {
-                let route_guard = match route
-                    .as_ref()
-                    .and_then(|route| route.saved_replica().map(|replica| (route, replica)))
-                {
-                    Some((route, replica)) => PtyManager::lock_route_for_verified_write(
-                        &permit,
-                        route.backend_kind(),
-                        route.saved_cwd(),
-                        replica,
-                    ),
-                    None => PtyManager::lock_route_for_write(&permit),
-                };
-                let route_guard =
-                    route_guard.map_err(|error| format!("PTY write failed: {}", error))?;
-                let session = current.rows.iter().find(|session| session.id == session_id);
-                check(session, Some(current))?;
-                route_guard
-                    .write(text.as_bytes())
-                    .map_err(|error| format!("PTY write failed: {}", error))
-            })
-            .await
-    } else {
-        PtyManager::write_with_permit(&permit, text.as_bytes())
-            .map_err(|error| format!("PTY write failed: {}", error))
-    };
+    let written = write_injected_text_checked(
+        &manager,
+        &pty_manager,
+        &permit,
+        session_id,
+        text,
+        legacy_check,
+    )
+    .await;
     written.map_err(|error| {
         if error == OWNED_WORK_SCOPE_WAIT {
             return error;

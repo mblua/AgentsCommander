@@ -4851,7 +4851,14 @@ pub fn run(
                 let guard = managed.read().await;
                 guard.clone()
             });
-            if !response_close_wiring_matches(&response_close_for_setup, &manager, &pty_mgr.lock().unwrap(), &idle_detector_for_setup, &menu_guard) {
+            let wiring_matches = response_close_wiring_matches(
+                &response_close_for_setup,
+                &manager,
+                &pty_mgr.lock().unwrap(),
+                &idle_detector_for_setup,
+                &menu_guard,
+            );
+            if !wiring_matches || response_close_for_setup.try_enable_readiness().is_err() {
                 response_close_for_setup.fail_closed();
                 log::warn!("[response-close] safety publisher wiring unavailable; readiness remains disabled");
             }
