@@ -1802,7 +1802,8 @@ async fn save_selection(
         tokio::task::spawn_blocking(move || -> Result<PathBuf, (Option<PathBuf>, String)> {
             // Revalidate the destination immediately before creating the file.
             revalidate_replica_target(&target).map_err(|e| (None, e))?;
-            let (path, file) = create_png_file(&target, &filename).map_err(|e| (None, e))?;
+            let screenshots = prepare_screenshots_directory(&target).map_err(|e| (None, e))?;
+            let (path, file) = create_png_file(&screenshots, &filename).map_err(|e| (None, e))?;
 
             let cropped = image::imageops::crop_imm(&image, sx, sy, sw, sh).to_image();
             let mut writer = std::io::BufWriter::new(file);
@@ -1816,28 +1817,48 @@ async fn save_selection(
             }
             drop(writer);
 
-            // Final containment check: the canonical saved file must live directly
-            // inside the canonical replica root.
+            // Recheck root identity and the real child after writing. These path-based
+            // guards retain the existing non-atomic replacement limitation.
+            revalidate_replica_target(&target).map_err(|e| (Some(path.clone()), e))?;
+            let meta = std::fs::symlink_metadata(&screenshots).map_err(|e| {
+                (
+                    Some(path.clone()),
+                    format!("Cannot read screenshots directory: {e}"),
+                )
+            })?;
+            if !meta.is_dir() || is_link_or_reparse(&meta) {
+                return Err((
+                    Some(path),
+                    "Screenshots path is not a real directory".to_string(),
+                ));
+            }
+            let canonical_child = std::fs::canonicalize(&screenshots).map_err(|e| {
+                (
+                    Some(path.clone()),
+                    format!("Cannot canonicalize screenshots directory: {e}"),
+                )
+            })?;
+            if canonical_child != screenshots || canonical_child.parent() != Some(target.as_path())
+            {
+                return Err((
+                    Some(path),
+                    "Screenshots directory changed during save".to_string(),
+                ));
+            }
             let canonical = std::fs::canonicalize(&path).map_err(|e| {
                 (
                     Some(path.clone()),
                     format!("canonicalize saved file failed: {e}"),
                 )
             })?;
-            let canonical_target = std::fs::canonicalize(&target).map_err(|e| {
-                (
-                    Some(canonical.clone()),
-                    format!("canonicalize target failed: {e}"),
-                )
-            })?;
             let parent_ok = canonical
                 .parent()
-                .map(|p| p == canonical_target)
+                .map(|p| p == canonical_child)
                 .unwrap_or(false);
             if !parent_ok {
                 return Err((
-                    Some(canonical),
-                    "saved file escaped the replica root".to_string(),
+                    Some(path),
+                    "saved file escaped the screenshots directory".to_string(),
                 ));
             }
             Ok(canonical)
@@ -1861,6 +1882,27 @@ async fn save_selection(
         session_id: capture.target_session_id.to_string(),
         session_name: capture.target_session_name,
     })
+}
+
+/// Lazily create only the direct child of the already validated canonical root.
+fn prepare_screenshots_directory(root: &Path) -> Result<PathBuf, String> {
+    let child = root.join("screenshots");
+    match std::fs::create_dir(&child) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(format!("Cannot create screenshots directory: {e}")),
+    }
+    let meta = std::fs::symlink_metadata(&child)
+        .map_err(|e| format!("Cannot read screenshots directory: {e}"))?;
+    if !meta.is_dir() || is_link_or_reparse(&meta) {
+        return Err("Screenshots path is not a real directory".to_string());
+    }
+    let canonical = std::fs::canonicalize(&child)
+        .map_err(|e| format!("Cannot canonicalize screenshots directory: {e}"))?;
+    if canonical != child || canonical.parent() != Some(root) {
+        return Err("Screenshots directory is not directly inside the replica root".to_string());
+    }
+    Ok(canonical)
 }
 
 fn validate_selection(
@@ -2506,9 +2548,11 @@ mod tests {
     fn create_png_file_never_overwrites() {
         let dir = std::env::temp_dir().join(format!("ac-shot-{}", Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
+        let dir = prepare_screenshots_directory(&std::fs::canonicalize(&dir).unwrap()).unwrap();
 
         let (p0, f0) = create_png_file(&dir, "shot.png").unwrap();
         drop(f0);
+        std::fs::write(&p0, b"original").unwrap();
         assert!(p0.ends_with("shot.png"));
 
         let (p1, f1) = create_png_file(&dir, "shot.png").unwrap();
@@ -2516,8 +2560,113 @@ mod tests {
         assert!(p1.ends_with("shot-1.png"), "got {p1:?}");
         assert_ne!(p0, p1);
         assert!(p0.exists() && p1.exists());
+        assert_eq!(std::fs::read(&p0).unwrap(), b"original");
 
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    fn screenshot_replica_fixture() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let ac = temp.path().join("project").join(".ac");
+        let matrix = ac.join("_agent_shot");
+        let replica = ac.join("room-6-test").join("__agent_shot");
+        std::fs::create_dir_all(&matrix).unwrap();
+        std::fs::write(matrix.join("Role.md"), "# Shot\n").unwrap();
+        std::fs::create_dir_all(replica.join("nested")).unwrap();
+        std::fs::write(
+            replica.join("config.json"),
+            r#"{"identity":"../../_agent_shot"}"#,
+        )
+        .unwrap();
+        let root = resolve_session_replica_root(&replica.join("nested").to_string_lossy()).unwrap();
+        revalidate_replica_target(&root).unwrap();
+        (temp, root)
+    }
+
+    fn synthetic_selection_capture(root: &Path) -> (ActiveScreenshotCapture, ScreenshotSelection) {
+        let id = Uuid::new_v4();
+        let image =
+            image::RgbaImage::from_fn(4, 4, |x, y| image::Rgba([x as u8, y as u8, 127, 255]));
+        (
+            ActiveScreenshotCapture {
+                id,
+                target_session_id: id,
+                target_session_name: "synthetic".to_string(),
+                target_directory: root.to_path_buf(),
+                monitors: vec![CapturedMonitor {
+                    monitor_id: 0,
+                    name: "synthetic".to_string(),
+                    x: 0,
+                    y: 0,
+                    width: 4,
+                    height: 4,
+                    scale_factor: 1.0,
+                    image,
+                    preview_data_url: String::new(),
+                }],
+                overlay_labels: vec![],
+                created_at: Utc::now(),
+            },
+            ScreenshotSelection {
+                capture_id: id.to_string(),
+                monitor_id: 0,
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 2,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn save_selection_creates_and_reuses_screenshots_child() {
+        let (_temp, root) = screenshot_replica_fixture();
+        let child = root.join("screenshots");
+        assert!(!child.exists());
+        let mut paths = Vec::new();
+        for _ in 0..2 {
+            let (capture, selection) = synthetic_selection_capture(&root);
+            let session_id = capture.target_session_id.to_string();
+            let result = save_selection(capture, &selection).await.unwrap();
+            let path = std::fs::canonicalize(&result.path).unwrap();
+            assert_eq!(path.parent(), Some(child.as_path()));
+            assert_eq!(
+                result.path,
+                crate::path_utils::path_to_string_without_windows_verbatim_prefix(&path)
+            );
+            assert_eq!(result.session_id, session_id);
+            assert_eq!(result.session_name, "synthetic");
+            let decoded = image::open(&path).unwrap().to_rgba8();
+            assert_eq!(decoded.dimensions(), (2, 2));
+            for (x, y, pixel) in decoded.enumerate_pixels() {
+                assert_eq!(
+                    *pixel,
+                    image::Rgba([(x + 1) as u8, (y + 1) as u8, 127, 255])
+                );
+            }
+            paths.push(path);
+        }
+        assert_ne!(paths[0], paths[1]);
+        assert_eq!(std::fs::read_dir(&child).unwrap().count(), 2);
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|ext| ext != "png")));
+    }
+
+    #[tokio::test]
+    async fn save_selection_rejects_file_named_screenshots() {
+        let (_temp, root) = screenshot_replica_fixture();
+        let child = root.join("screenshots");
+        std::fs::write(&child, b"sentinel").unwrap();
+        let before = std::fs::read_dir(&root).unwrap().count();
+        let (capture, selection) = synthetic_selection_capture(&root);
+        let (partial, error) = save_selection(capture, &selection).await.unwrap_err();
+        assert!(partial.is_none());
+        assert!(error.contains("not a real directory"), "{error}");
+        assert_eq!(std::fs::read(&child).unwrap(), b"sentinel");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), before);
     }
 
     #[test]
