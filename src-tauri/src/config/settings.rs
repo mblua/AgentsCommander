@@ -33727,28 +33727,41 @@ mod e2992_p41_owner_tests {
         let before = counts(&first);
 
         // Physical aliases: different spellings that name the same directory
-        // object, found without creating any link. Each one meets the same
-        // authority, times out, and reads no source.
-        let aliases = physical_aliases(dir.path());
+        // object. Each one meets the same authority, times out, and reads no
+        // source.
+        #[allow(unused_mut)]
+        let mut aliases = physical_aliases(dir.path());
         if cfg!(windows) {
             // NTFS is case-insensitive and canonicalize yields a verbatim
             // spelling, so Windows always has both aliases.
             assert_eq!(aliases.len(), 2, "{aliases:?}");
         }
-        assert!(
-            !aliases.is_empty() || cfg!(target_os = "linux"),
-            "only a case-sensitive, link-free temp directory may lack a physical alias"
-        );
+        // Linux temp directories are usually case-sensitive and link-free, so
+        // the test owns one directory symlink to the instance directory. It
+        // lives in a separate test-owned tempdir (no cycle inside the target)
+        // and is the waiter's alias even when an ambient alias also exists.
+        #[cfg(target_os = "linux")]
+        let (link_dir, link) = {
+            let link_dir = tempfile::tempdir().unwrap();
+            let link = link_dir.path().join("owner-alias");
+            let target = std::fs::canonicalize(dir.path()).unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(std::fs::canonicalize(&link).unwrap(), target);
+            assert_ne!(link, dir.path());
+            aliases.insert(0, link.clone());
+            (link_dir, link)
+        };
+        assert!(!aliases.is_empty(), "every platform needs a physical alias");
         for alias_dir in &aliases {
             let alias = alias_dir.join(SETTINGS_FILE_NAME);
             let error = SettingsOwner::open_active(&alias, Duration::from_millis(100));
             assert_eq!(error.unwrap_err(), SettingsOwnerError::LifecycleTimedOut);
         }
-        let alias = aliases
-            .first()
-            .cloned()
-            .unwrap_or_else(|| dir.path().to_path_buf())
-            .join(SETTINGS_FILE_NAME);
+        let alias = aliases[0].join(SETTINGS_FILE_NAME);
 
         // An identity that cannot be established is an error, never "free".
         let parent_alias = dir.path().join("sub").join("..").join(SETTINGS_FILE_NAME);
@@ -33766,7 +33779,7 @@ mod e2992_p41_owner_tests {
 
         // Only the holder touched the sources.
         assert_eq!(counts(&first), before);
-        assert_eq!(std::fs::read(path).unwrap(), base);
+        assert_eq!(std::fs::read(&path).unwrap(), base);
 
         // A second handle waits, then acquires once the holder releases.
         let waiter = std::thread::spawn(move || SettingsOwner::open_active(&alias, WAIT));
@@ -33780,5 +33793,17 @@ mod e2992_p41_owner_tests {
         second.drain_blocking(SOFT_DEADLINE);
         // The stable sidecar is never unlinked.
         assert!(sidecar.is_file());
+
+        // Remove only the link, never its target, then close its tempdir.
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::remove_file(&link).unwrap();
+            let gone = std::fs::symlink_metadata(&link).unwrap_err();
+            assert_eq!(gone.kind(), std::io::ErrorKind::NotFound);
+            assert!(dir.path().is_dir());
+            assert_eq!(std::fs::read(&path).unwrap(), base);
+            assert!(sidecar.is_file());
+            link_dir.close().unwrap();
+        }
     }
 }
