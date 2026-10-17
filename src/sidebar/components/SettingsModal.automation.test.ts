@@ -303,6 +303,7 @@ describe("SettingsModal automation hooks", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings()));
     settingsStoreMock.current = undefined;
   });
 
@@ -749,7 +750,47 @@ describe("SettingsModal automation hooks", () => {
     dispose();
   });
 
+
+  for (const flag of [undefined, false, true]) {
+    for (const kind of ["localProcess", "containerTransport"] as const) {
+      it("round-trips saved " + kind + " with visibility " + flag, async () => {
+        const snapshot = settings({ containerOptionsEnabled: flag, containerCredentialsFromHost: false });
+        if (flag === undefined) delete snapshot.containerOptionsEnabled;
+        snapshot.agents[0].backend = { kind, image: "  saved:image  " };
+        vi.mocked(SettingsAPI.get).mockResolvedValue(snapshot);
+        const root = document.createElement("div");
+        document.body.append(root);
+        const dispose = render(() => SettingsModal({ onClose: () => {}, section: "agents" }), root);
+        try {
+          await settle();
+          expandAgentRow(0);
+          await settle();
+          const selector = (suffix: string) => root.querySelector('[data-ac-testid="settings.agentRow.0.' + suffix + '"]');
+          expect(!!selector("runtimeKind")).toBe(flag === true);
+          const containerVisible = flag === true && kind === "containerTransport";
+          expect(!!selector("containerImage")).toBe(containerVisible);
+          expect(!!selector("containerHint.inProgress")).toBe(containerVisible);
+          if (flag !== true) {
+            expect(root.querySelectorAll('[data-ac-testid*=".containerHint."], [data-ac-testid*=".containerWarning."]')).toHaveLength(0);
+            expect(root.textContent).not.toContain("Runtime");
+          }
+          const label = byTestId<HTMLInputElement>("settings.agentRow.0.label");
+          label.value = "Edited local field";
+          label.dispatchEvent(new Event("input", { bubbles: true }));
+          const saved = await saveAndReadDraft();
+          expect(saved?.agents[0]?.label).toBe("Edited local field");
+          expect(saved?.containerOptionsEnabled).toBe(flag);
+          expect(saved?.containerCredentialsFromHost).toBe(false);
+          if (flag !== true) expect(saved?.agents[0]?.backend).toEqual(snapshot.agents[0].backend);
+          else if (kind === "containerTransport") expect(saved?.agents[0]?.backend).toEqual({ kind, image: "saved:image" });
+          else expect(saved?.agents[0]).not.toHaveProperty("backend");
+        } finally { dispose(); }
+      });
+    }
+  }
+
   it("shows the runtime selector and reveals container-only fields with soft warnings", async () => {
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -827,6 +868,7 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("does not synthesize a container image when the field is left blank", async () => {
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -860,6 +902,7 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("saves a container runtime image through the settings draft", async () => {
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -2652,6 +2695,7 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("round-trips containerCredentialsFromHost through the General reuse checkbox (#930)", async () => {
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -2683,6 +2727,7 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("shows the host-login-on hint when Container runtime is selected (default #930)", async () => {
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -2747,6 +2792,7 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("shows the host-login-off hint when reuse is disabled and Container is selected (#930)", async () => {
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(
@@ -2794,6 +2840,7 @@ describe("SettingsModal automation hooks", () => {
   });
 
   it("discloses the container first-run stamping in the General hint (#930)", async () => {
+    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
     const dispose = render(

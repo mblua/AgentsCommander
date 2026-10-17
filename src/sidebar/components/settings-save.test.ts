@@ -128,6 +128,7 @@ describe("mergeSettingsForSavePreservingProjects (#598 configSeed normalization)
 describe("mergeSettingsForSavePreservingProjects (#868 backend normalization)", () => {
   it("drops absent, empty, and explicit Local backend objects", () => {
     const draft = settings({
+      containerOptionsEnabled: true,
       agents: [
         agent({ id: "absent" }),
         agent({ id: "empty", backend: {} }),
@@ -143,6 +144,7 @@ describe("mergeSettingsForSavePreservingProjects (#868 backend normalization)", 
 
   it("keeps a container backend kind and trims the image", () => {
     const draft = settings({
+      containerOptionsEnabled: true,
       agents: [
         agent({
           backend: {
@@ -162,6 +164,7 @@ describe("mergeSettingsForSavePreservingProjects (#868 backend normalization)", 
 
   it("omits empty container images while preserving the container kind", () => {
     const draft = settings({
+      containerOptionsEnabled: true,
       agents: [
         agent({ id: "empty", backend: { kind: "containerTransport", image: "" } }),
         agent({ id: "spaces", backend: { kind: "containerTransport", image: "   " } }),
@@ -175,6 +178,7 @@ describe("mergeSettingsForSavePreservingProjects (#868 backend normalization)", 
 
   it("drops a Local backend even when the live draft has a hidden image", () => {
     const draft = settings({
+      containerOptionsEnabled: true,
       agents: [
         agent({
           backend: {
@@ -435,5 +439,35 @@ describe("response close preference rebasing (#2851)", () => {
       settings({ responseCloseEnabled: true, responseCloseIdleSeconds: 90 }), seed);
     expect(mixed.responseCloseEnabled).toBe(false);
     expect(mixed.responseCloseIdleSeconds).toBe(90);
+  });
+});
+
+
+describe("manual container visibility save ownership", () => {
+  for (const flag of [undefined, false, true]) {
+    for (const image of ["", "   ", "image:latest", "  image:latest  "]) {
+      it("preserves backend/flag ownership: " + flag + "/" + JSON.stringify(image), () => {
+        const backend = { kind: "containerTransport" as const, image };
+        const draft = settings({ containerOptionsEnabled: flag, containerCredentialsFromHost: false,
+          agents: [agent({ backend })], npmUpdateNotificationsEnabled: false });
+        if (flag === undefined) delete draft.containerOptionsEnabled;
+        const fresh = settings({ containerOptionsEnabled: flag !== true });
+        const merged = mergeSettingsForSavePreservingProjects(draft, fresh, draft);
+        expect(merged.containerOptionsEnabled).toBe(fresh.containerOptionsEnabled);
+        expect(merged.containerCredentialsFromHost).toBe(false);
+        expect(merged.npmUpdateNotificationsEnabled).toBe(false);
+        if (flag !== true) expect(merged.agents[0]?.backend).toBe(backend);
+        else expect(merged.agents[0]?.backend).toEqual(image.trim()
+          ? { kind: "containerTransport", image: image.trim() } : { kind: "containerTransport" });
+      });
+    }
+  }
+  it("preserves an absent fresh flag and explicit local backend", () => {
+    const backend = { kind: "localProcess" as const, image: "  keep  " };
+    const fresh = settings();
+    delete fresh.containerOptionsEnabled;
+    const merged = mergeSettingsForSavePreservingProjects(settings({ agents: [agent({ backend })] }), fresh);
+    expect(merged.containerOptionsEnabled).toBeUndefined();
+    expect(merged.agents[0]?.backend).toBe(backend);
   });
 });
