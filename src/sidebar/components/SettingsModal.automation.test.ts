@@ -789,7 +789,7 @@ describe("SettingsModal automation hooks", () => {
     }
   }
 
-  it("shows the runtime selector and reveals container-only fields with soft warnings", async () => {
+  it("shows runtime fields/warnings and saves blank and explicit container images", async () => {
     vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
     const root = document.createElement("div");
     document.body.append(root);
@@ -846,8 +846,39 @@ describe("SettingsModal automation hooks", () => {
       "loopback API bind",
     );
 
-    runtime.value = "localProcess";
-    runtime.dispatchEvent(new Event("change", { bubbles: true }));
+    // Save the blank image, then the explicit image, through the same runtime flow.
+    expect(document.body.textContent).not.toContain(
+      "agentscommander/session-bridge:latest",
+    );
+    expect(byTestId<HTMLInputElement>("settings.agentRow.0.containerImage").value).toBe("");
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(saved?.agents[0]?.backend).toEqual({
+      kind: "containerTransport",
+    });
+    expect(saved?.agents[0]?.backend?.image).toBeUndefined();
+
+    vi.mocked(SettingsAPI.saveDraft).mockClear();
+    const reloadedImage = byTestId<HTMLInputElement>("settings.agentRow.0.containerImage");
+    reloadedImage.value = "  ghcr.io/ac/custom-agent:latest  ";
+    reloadedImage.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+
+    byTestId<HTMLButtonElement>("settings.save").click();
+    await settle();
+
+    const savedWithImage = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
+    expect(savedWithImage?.agents[0]?.backend).toEqual({
+      kind: "containerTransport",
+      image: "ghcr.io/ac/custom-agent:latest",
+    });
+
+    const reloadedRuntime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
+    reloadedRuntime.value = "localProcess";
+    reloadedRuntime.dispatchEvent(new Event("change", { bubbles: true }));
     await settle();
 
     expect(document.querySelector('[data-ac-testid="settings.agentRow.0.containerImage"]')).toBeNull();
@@ -863,74 +894,6 @@ describe("SettingsModal automation hooks", () => {
     expect(
       document.querySelector('[data-ac-testid="settings.agentRow.0.containerHint.env"]'),
     ).toBeNull();
-
-    dispose();
-  });
-
-  it("does not synthesize a container image when the field is left blank", async () => {
-    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {}, section: "agents" }),
-      root,
-    );
-    await settle();
-    expandAgentRow(0);
-    await settle();
-
-    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
-    runtime.value = "containerTransport";
-    runtime.dispatchEvent(new Event("change", { bubbles: true }));
-    await settle();
-
-    expect(document.body.textContent).not.toContain(
-      "agentscommander/session-bridge:latest",
-    );
-    expect(byTestId<HTMLInputElement>("settings.agentRow.0.containerImage").value).toBe("");
-
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
-
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
-    expect(saved?.agents[0]?.backend).toEqual({
-      kind: "containerTransport",
-    });
-    expect(saved?.agents[0]?.backend?.image).toBeUndefined();
-
-    dispose();
-  });
-
-  it("saves a container runtime image through the settings draft", async () => {
-    vi.mocked(SettingsAPI.get).mockImplementation(() => Promise.resolve(settings({ containerOptionsEnabled: true })));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const dispose = render(
-      () => SettingsModal({ onClose: () => {}, section: "agents" }),
-      root,
-    );
-    await settle();
-    expandAgentRow(0);
-    await settle();
-
-    const runtime = byTestId<HTMLSelectElement>("settings.agentRow.0.runtimeKind");
-    runtime.value = "containerTransport";
-    runtime.dispatchEvent(new Event("change", { bubbles: true }));
-    await settle();
-
-    const image = byTestId<HTMLInputElement>("settings.agentRow.0.containerImage");
-    image.value = "  ghcr.io/ac/custom-agent:latest  ";
-    image.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
-
-    byTestId<HTMLButtonElement>("settings.save").click();
-    await settle();
-
-    const saved = vi.mocked(SettingsAPI.saveDraft).mock.calls[0]?.[0];
-    expect(saved?.agents[0]?.backend).toEqual({
-      kind: "containerTransport",
-      image: "ghcr.io/ac/custom-agent:latest",
-    });
 
     dispose();
   });
