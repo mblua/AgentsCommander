@@ -837,7 +837,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [activeTab, setActiveTab] = createSignal<SettingsTab>(initialTab);
   const [generalCategory, setGeneralCategory] = createSignal<GeneralCategoryId>("appearance");
   const [generalQuery, setGeneralQuery] = createSignal("");
-  const generalResults = createMemo(() => searchGeneralSettings(generalQuery()));
+  const containerOptionsEnabled = () => settings.data?.containerOptionsEnabled === true;
+  const generalResults = createMemo(() => searchGeneralSettings(generalQuery())
+    .filter((entry) => containerOptionsEnabled() || entry.key !== "containerCredentialsFromHost"));
   const generalCounts = createMemo(() => countByCategory(generalResults()));
   const generalSearching = () => generalQuery().trim() !== "";
   let generalLayoutRef: HTMLDivElement | undefined;
@@ -3297,40 +3299,42 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               </label>
             </div>
 
-            <div class="settings-section">
-              <div class="settings-section-title">Container Coding Agents</div>
-              <label data-ac-setting="containerCredentialsFromHost" class="settings-checkbox-field">
-                <input
-                  type="checkbox"
-                  class="settings-checkbox"
-                  checked={settings.data!.containerCredentialsFromHost}
-                  disabled={saving()}
-                  onChange={(e) =>
-                    updateField("containerCredentialsFromHost", e.currentTarget.checked)
-                  }
-                  data-ac-testid="settings.general.containerCredentialsFromHost"
-                />
-                <span>Reuse host login for container coding agents</span>
-              </label>
-              <div
-                class="settings-hint"
-                data-ac-testid="settings.general.containerCredentialsFromHost.hint"
-              >
-                In progress: a container coding agent cannot reach your repos yet (#935), so keep repo
-                work on the Local runtime. On by default. When a coding agent runs under the Container
-                runtime, AC copies your host credential file for that agent (for Claude,
-                ~/.claude/.credentials.json) into the container at launch and deletes it when the
-                session stops. So the agent starts signed in instead of stopping at its first-run
-                prompts, AC also writes that agent's first-run state inside the container: onboarding
-                is marked complete, and the container's
-                /workspace folder is marked as trusted. That means AC answers the "do you trust this
-                folder?" safety prompt on your behalf, for that agent's replica folder, which AC
-                mounts into the container. Your host config is never modified. Turn this off to supply
-                credentials yourself (for example a CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is
-                copied and nothing is marked. Host and containers share one login, so a token refresh
-                in one place can require re-login in another.
+            <Show when={containerOptionsEnabled()}>
+              <div class="settings-section">
+                <div class="settings-section-title">Container Coding Agents</div>
+                <label data-ac-setting="containerCredentialsFromHost" class="settings-checkbox-field">
+                  <input
+                    type="checkbox"
+                    class="settings-checkbox"
+                    checked={settings.data!.containerCredentialsFromHost}
+                    disabled={saving()}
+                    onChange={(e) =>
+                      updateField("containerCredentialsFromHost", e.currentTarget.checked)
+                    }
+                    data-ac-testid="settings.general.containerCredentialsFromHost"
+                  />
+                  <span>Reuse host login for container coding agents</span>
+                </label>
+                <div
+                  class="settings-hint"
+                  data-ac-testid="settings.general.containerCredentialsFromHost.hint"
+                >
+                  In progress: a container coding agent cannot reach your repos yet (#935), so keep repo
+                  work on the Local runtime. On by default. When a coding agent runs under the Container
+                  runtime, AC copies your host credential file for that agent (for Claude,
+                  ~/.claude/.credentials.json) into the container at launch and deletes it when the
+                  session stops. So the agent starts signed in instead of stopping at its first-run
+                  prompts, AC also writes that agent's first-run state inside the container: onboarding
+                  is marked complete, and the container's
+                  /workspace folder is marked as trusted. That means AC answers the "do you trust this
+                  folder?" safety prompt on your behalf, for that agent's replica folder, which AC
+                  mounts into the container. Your host config is never modified. Turn this off to supply
+                  credentials yourself (for example a CLAUDE_CODE_OAUTH_TOKEN env row); then nothing is
+                  copied and nothing is marked. Host and containers share one login, so a token refresh
+                  in one place can require re-login in another.
+                </div>
               </div>
-            </div>
+            </Show>
           </>)}
           {generalPane("network", <>
             <div class="settings-section">
@@ -4022,23 +4026,25 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             >
               Applies to every Coding Agent using this command.
             </div>
-            <label class="settings-field">
-              <span class="settings-label">Runtime</span>
-              <select
-                class="settings-input"
-                value={agentBackendKind()}
-                onChange={(e) =>
-                  setAgentBackendKind(i(), e.currentTarget.value as SessionBackendKind)
-                }
-                data-ac-testid={`settings.agentRow.${i()}.runtimeKind`}
-                data-ac-role="combobox"
-                data-ac-state={agentBackendKind()}
-              >
-                <option value="localProcess">Local (default)</option>
-                <option value="containerTransport">Container (Docker)</option>
-              </select>
-            </label>
-            <Show when={agentBackendKind() === "containerTransport"}>
+            <Show when={containerOptionsEnabled()}>
+              <label class="settings-field">
+                <span class="settings-label">Runtime</span>
+                <select
+                  class="settings-input"
+                  value={agentBackendKind()}
+                  onChange={(e) =>
+                    setAgentBackendKind(i(), e.currentTarget.value as SessionBackendKind)
+                  }
+                  data-ac-testid={`settings.agentRow.${i()}.runtimeKind`}
+                  data-ac-role="combobox"
+                  data-ac-state={agentBackendKind()}
+                >
+                  <option value="localProcess">Local (default)</option>
+                  <option value="containerTransport">Container (Docker)</option>
+                </select>
+              </label>
+            </Show>
+            <Show when={containerOptionsEnabled() && agentBackendKind() === "containerTransport"}>
               <div
                 class="settings-hint settings-hint-warning"
                 data-ac-testid={`settings.agentRow.${i()}.containerHint.inProgress`}

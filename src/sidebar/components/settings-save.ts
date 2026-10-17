@@ -79,10 +79,11 @@ export function mergeSettingsForSavePreservingProjects(
       .map(normalizeAgentInstructionsFilename)
       .map(normalizeAgentConfigSeed)
       .map(normalizeAgentContextRegex)
-      .map(normalizeAgentBackend),
+      .map((agent) => draft.containerOptionsEnabled === true ? normalizeAgentBackend(agent) : agent),
     projectPaths: fresh.projectPaths ?? [],
     projectPath: fresh.projectPath ?? null,
     archivedProjectPaths: fresh.archivedProjectPaths ?? [],
     terminalSnapshotsEnabled: fresh.terminalSnapshotsEnabled,
+    containerOptionsEnabled: fresh.containerOptionsEnabled,
   };
 }

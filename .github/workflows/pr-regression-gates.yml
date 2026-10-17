@@ -1043,14 +1043,15 @@ jobs:
         run: |
           set -euo pipefail
           FILTER='screenshot::native::tests::'
-          # 19 pre-existing + overlay_window_traits_match_target + two save_selection tests + the two
+          # 19 pre-existing + overlay_window_traits_match_target + the two
           # Linux-gated tests + the nine IS #2173 monitor-wiring tests
           # (xcap_logical_frame_divides_bitmap_by_xcap_scale, the five
           # match_monitor_*, the two build_placement_* and
           # placement_frame_matches_target). #2173 also deleted
           # xcap_origin_conversion_is_identity_unless_logical and
-          # placement_size_uses_bitmap_only_when_flagged. LINUX count (Windows
-          # runs 31, macOS 32); update it in the same commit that adds or
+          # placement_size_uses_bitmap_only_when_flagged. #3074 adds two
+          # save_selection_* tests. LINUX count (Windows runs 31, macOS 32);
+          # update it in the same commit that adds or
           # removes a test in that module.
           EXPECTED=33
           cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-1842.log
@@ -2160,14 +2161,15 @@ jobs:
         run: |
           set -euo pipefail
           FILTER='screenshot::native::tests::'
-          # 19 pre-existing + overlay_window_traits_match_target + two save_selection tests + the
+          # 19 pre-existing + overlay_window_traits_match_target + the
           # macOS-gated test + the nine IS #2173 monitor-wiring tests
           # (xcap_logical_frame_divides_bitmap_by_xcap_scale, the five
           # match_monitor_*, the two build_placement_* and
           # placement_frame_matches_target). #2173 also deleted
           # xcap_origin_conversion_is_identity_unless_logical and
-          # placement_size_uses_bitmap_only_when_flagged. MACOS count (Windows
-          # runs 31, Linux 33); update it in the same commit that adds or
+          # placement_size_uses_bitmap_only_when_flagged. #3074 adds two
+          # save_selection_* tests. MACOS count (Windows runs 31, Linux 33);
+          # update it in the same commit that adds or
           # removes a test in that module.
           EXPECTED=32
           cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2079.log
