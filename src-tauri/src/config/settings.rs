@@ -5840,6 +5840,10 @@ pub struct AppSettings {
     /// Fresh settings and older files without this key keep the actions hidden.
     #[serde(default)]
     pub coding_agent_install_enabled: bool,
+    /// Show container UI options only after a manual settings.json opt-in.
+    /// Takes effect after reloading settings or restarting the app.
+    #[serde(default)]
+    pub container_options_enabled: bool,
     /// Auto-execute (send Enter) after voice transcription
     #[serde(default = "default_true")]
     pub voice_auto_execute: bool,
@@ -6641,6 +6645,7 @@ impl Default for AppSettings {
             jev_margin: default_jev_margin(),
             co_managed_enabled: false,
             coding_agent_install_enabled: false,
+            container_options_enabled: false,
             voice_auto_execute: true,
             voice_auto_execute_delay: default_voice_delay(),
             sidebar_zoom: default_zoom(),
@@ -22863,6 +22868,56 @@ mod tests {
         assert!(back.coding_agent_install_enabled);
         assert_eq!(
             serde_json::to_value(back).unwrap()["codingAgentInstallEnabled"],
+            serde_json::Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn container_options_enabled_default_impl_is_false() {
+        assert!(!AppSettings::default().container_options_enabled);
+    }
+
+    #[test]
+    fn container_options_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+        let settings: AppSettings =
+            serde_json::from_str(json).expect("deserialize legacy settings");
+        assert!(!settings.container_options_enabled);
+    }
+
+    #[test]
+    fn container_options_enabled_explicit_false_round_trips() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["containerOptionsEnabled"] = serde_json::Value::Bool(false);
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(!settings.container_options_enabled);
+        assert_eq!(
+            serde_json::to_value(settings).unwrap()["containerOptionsEnabled"],
+            serde_json::Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn container_options_enabled_true_round_trips_under_camel_case_key() {
+        let settings = AppSettings {
+            container_options_enabled: true,
+            ..AppSettings::default()
+        };
+        let value = serde_json::to_value(settings).unwrap();
+        assert_eq!(
+            value["containerOptionsEnabled"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(value.get("container_options_enabled").is_none());
+        let back: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(back.container_options_enabled);
+        assert_eq!(
+            serde_json::to_value(back).unwrap()["containerOptionsEnabled"],
             serde_json::Value::Bool(true)
         );
     }
