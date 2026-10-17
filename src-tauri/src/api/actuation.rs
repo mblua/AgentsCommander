@@ -60,6 +60,7 @@ pub fn build_send_body(bound_root: &str, basename: &str, from: &str) -> Result<S
 pub struct SendFileContent {
     pub body: String,
     pub source_ref: String,
+    pub archive_warning: Option<String>,
 }
 
 pub fn read_send_file_content(
@@ -77,9 +78,25 @@ pub fn read_send_file_content(
     }
     let body = String::from_utf8(bytes)
         .map_err(|e| ApiError::BadRequest(format!("message file is not UTF-8: {}", e)))?;
+    let archive_warning = (|| -> Result<(), String> {
+        let room = crate::phone::messaging::workgroup_root(Path::new(bound_root))
+            .map_err(|e| e.to_string())?;
+        crate::phone::messaging::ensure_workgroup_root_is_authoritative(&room)?;
+        let ac_root = room.parent().ok_or("room has no Project AC Root")?;
+        crate::phone::messaging::archive_message_snapshot(
+            ac_root,
+            &abs,
+            basename,
+            body.as_bytes(),
+        )?;
+        Ok(())
+    })()
+    .err()
+    .map(|error| format!("Message archive warning: {}: {error}", abs.display()));
     Ok(SendFileContent {
         body,
         source_ref: basename.to_string(),
+        archive_warning,
     })
 }
 
@@ -148,6 +165,37 @@ pub fn lean_peers_via_api(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue_3081_bound_room_archives_exact_validated_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let room = temp.path().join("project/.ac/wg-1-team");
+        let replica = room.join("__agent_a");
+        let messaging = room.join("messaging");
+        std::fs::create_dir_all(&replica).unwrap();
+        std::fs::create_dir_all(&messaging).unwrap();
+        let name = "20261017-000000-wg1-a-to-wg1-b-snapshot.md";
+        let bytes = b"\xef\xbb\xbf# hello\r\n\x00";
+        std::fs::write(messaging.join(name), bytes).unwrap();
+        let content = read_send_file_content(replica.to_str().unwrap(), name).unwrap();
+        assert_eq!(content.body.as_bytes(), bytes);
+        assert!(
+            content.archive_warning.is_none(),
+            "{:?}",
+            content.archive_warning
+        );
+        let archive = room.parent().unwrap().join("message-archive");
+        let dir = std::fs::read_dir(&archive)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let archived = dir.join(name);
+        assert_eq!(std::fs::read(&archived).unwrap(), bytes);
+        std::fs::remove_dir_all(&room).unwrap();
+        assert_eq!(std::fs::read(archived).unwrap(), bytes);
+    }
 
     #[test]
     fn reject_if_root_blocks_root_target_and_sender() {
