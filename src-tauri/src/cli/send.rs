@@ -2071,14 +2071,53 @@ mod tests {
 
     #[test]
     fn issue_3081_cli_archive_failure_keeps_enqueue_result() {
-        let (code, temp, _outbox) = enqueue_send_fixture_prepared(&[], |room| {
+        // Positive control through execute: removing its archive call must fail.
+        let (code, temp, _outbox) = enqueue_send_fixture(&[]);
+        assert_eq!(code, 0);
+        let archive = temp.path().join("proj-a/.ac/message-archive");
+        let copies: Vec<_> = std::fs::read_dir(archive)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(
+            std::fs::read(copies[0].join("20260704-000000-wg1-a-to-wg1-b-x.md")).unwrap(),
+            b"# Hello from fixture\n\nBody."
+        );
+
+        let (code, temp, outbox) = enqueue_send_fixture_prepared(&[], |room| {
             std::fs::write(room.parent().unwrap().join("message-archive"), b"blocked").unwrap();
         });
         assert_eq!(code, 0);
         let room = temp.path().join("proj-a/.ac/wg-1-dev-team");
+        let source = room.join("messaging/20260704-000000-wg1-a-to-wg1-b-x.md");
         assert_eq!(
-            std::fs::read(room.join("messaging/20260704-000000-wg1-a-to-wg1-b-x.md")).unwrap(),
+            std::fs::read(&source).unwrap(),
             b"# Hello from fixture\n\nBody."
+        );
+        let queued: Vec<_> = std::fs::read_dir(outbox.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension().and_then(|extension| extension.to_str()) == Some("json")
+            })
+            .collect();
+        assert_eq!(
+            queued.len(),
+            1,
+            "archive failure must leave the message in the outbox"
+        );
+        let message: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&queued[0]).unwrap()).unwrap();
+        assert_eq!(message["to"], "proj-a:wg-1-dev-team/dev-rust");
+        let pointer = message["body"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("Process this inter-agent message: ")
+            .unwrap();
+        assert_eq!(
+            std::fs::canonicalize(pointer).unwrap(),
+            std::fs::canonicalize(source).unwrap()
         );
     }
 
