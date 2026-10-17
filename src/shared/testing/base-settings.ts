@@ -101,6 +101,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     autoSelfClearEnabled: true,
     autoSelfClearByAgent: {},
     agentAutoUpdateByCommand: {},
+    containerOptionsEnabled: false,
     containerCredentialsFromHost: true,
     logLevel: null,
     activityLogEnabled: false,
