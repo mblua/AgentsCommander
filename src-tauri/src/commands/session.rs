@@ -11301,6 +11301,7 @@ mod tests {
             .insert(
                 "C".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -11384,6 +11385,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -11438,6 +11440,7 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -13976,6 +13979,7 @@ exec claude \"$@\"
             .insert(
                 "A".to_string(),
                 crate::config::settings::ProfileCellConfig {
+                    id_hash: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -15649,6 +15653,7 @@ exec claude \"$@\"
                 .insert(
                     letter.to_string(),
                     ProfileCellConfig {
+                        id_hash: None,
                         preflight: None,
                         preflight_timeout_seconds: None,
                         enabled: true,
@@ -16328,6 +16333,7 @@ exec claude \"$@\"
             backend: Default::default(),
         };
         let cell = |enabled: bool, command: &str| ProfileCellConfig {
+            id_hash: None,
             preflight: None,
             preflight_timeout_seconds: None,
             enabled,
