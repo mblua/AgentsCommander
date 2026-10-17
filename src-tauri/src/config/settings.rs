@@ -29024,13 +29024,20 @@ mod tests {
                                 Some((path.clone(), super::SettingsSaveStage::AtomicReplace))
                         });
                     }
+                    let (records, _capture_guard) = capture_settings_save_diagnostics();
                     let gui = super::load_settings_from_path(&path);
-                    // Inspect the same existing failure boundary's diagnostic;
-                    // the loader reports it and retains its repaired in-memory view.
+                    // Inspect the GUI diagnostic and the same typed failure boundary.
                     if fail_publish {
-                        let error =
-                            super::save_settings_to_path_preserving_project_paths(&gui, &path)
-                                .unwrap_err();
+                        let captured = records.borrow();
+                        assert_eq!(captured.len(), 1);
+                        let fields = parse_settings_save_diagnostic(&captured[0]);
+                        assert_eq!(fields["stage"], "atomic_replace");
+                        assert_eq!(fields["target_path"], super::render_diagnostic_path(&path));
+                        drop(captured);
+                        let error = super::save_settings_to_path_preserving_project_paths_typed(
+                            &gui, &path,
+                        )
+                        .unwrap_err();
                         assert_eq!(error.stage, super::SettingsSaveStage::AtomicReplace);
                         assert_eq!(error.target_path.as_ref(), &path);
                     }
