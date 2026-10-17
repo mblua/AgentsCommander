@@ -3494,7 +3494,9 @@ fn list_all_agents_for_destination(
                 description: fm_description.unwrap_or_default(),
                 path: path.to_string_lossy().to_string(),
                 project_name: project_name.clone(),
-                project_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(base),
+                project_path: crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+                    base,
+                ),
                 is_local: destination.map(|destination| destination == identity),
             });
         }
@@ -3568,7 +3570,9 @@ fn preflight_team_sources(
         let handle = OwnedCopyArtifacts::open_existing(&matrix, MatrixCopyKind::Directory)?;
         drop(handle);
         let canonical_matrix = matrix.canonicalize().map_err(|e| e.to_string())?;
-        let parent = canonical_matrix.parent().ok_or("Source Matrix has no parent")?;
+        let parent = canonical_matrix
+            .parent()
+            .ok_or("Source Matrix has no parent")?;
         let parent_handle = OwnedCopyArtifacts::open_existing(parent, MatrixCopyKind::Directory)?;
         let ac_handle = OwnedCopyArtifacts::open_existing(&source_ac, MatrixCopyKind::Directory)?;
         if OwnedCopyArtifacts::handle_identity(&parent_handle)?
@@ -3595,12 +3599,8 @@ fn verify_owned_entry(owned: &OwnedCopyArtifacts, entry: &OwnedCopyEntry) -> Res
         return Err(format!("Output replaced: {}", path.display()));
     }
     if entry.kind == MatrixCopyKind::File {
-        let stamp = OwnedCopyArtifacts::read_file(
-            &path,
-            None,
-            None,
-            &mut MatrixCopyHooks::default(),
-        )?;
+        let stamp =
+            OwnedCopyArtifacts::read_file(&path, None, None, &mut MatrixCopyHooks::default())?;
         if stamp.digest != entry.digest {
             return Err(format!("Output modified: {}", path.display()));
         }
@@ -3613,8 +3613,8 @@ fn verify_team_copies(copies: &[OwnedCopyArtifacts]) -> Result<(), String> {
         for entry in &copy.entries {
             verify_owned_entry(copy, entry)?;
         }
-        let history = std::fs::read(copy.root.join(COPY_PROVENANCE_FILE))
-            .map_err(|e| e.to_string())?;
+        let history =
+            std::fs::read(copy.root.join(COPY_PROVENANCE_FILE)).map_err(|e| e.to_string())?;
         validate_copy_provenance(Some(&history))?;
     }
     Ok(())
@@ -5447,7 +5447,13 @@ mod tests {
         sources: Option<Vec<TeamAgentSource>>,
         hooks: &mut MatrixCopyHooks<'_>,
     ) -> Result<PathBuf, String> {
-        create_team_from_sources(destination.parent().unwrap(), "copied", config, sources, hooks)
+        create_team_from_sources(
+            destination.parent().unwrap(),
+            "copied",
+            config,
+            sources,
+            hooks,
+        )
     }
 
     #[test]
@@ -5494,13 +5500,22 @@ mod tests {
         .unwrap();
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(team.join("config.json")).unwrap()).unwrap();
-        assert_eq!(value["agents"], serde_json::json!(["_agent_alpha", "_agent_beta"]));
+        assert_eq!(
+            value["agents"],
+            serde_json::json!(["_agent_alpha", "_agent_beta"])
+        );
         assert_eq!(value["coordinator"], "_agent_alpha");
         assert_eq!(value["repos"][0]["agents"], value["agents"]);
         assert!(value.get("agentSources").is_none());
         assert_eq!(before, issue_3068_inventory(&source));
         for agent in ["alpha", "beta"] {
-            assert_eq!(issue_3068_history(&destination.join(format!("_agent_{agent}")))["copies"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                issue_3068_history(&destination.join(format!("_agent_{agent}")))["copies"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
         }
         assert_eq!(std::fs::read_dir(&team).unwrap().count(), 3);
         assert!(team.join("memory").is_dir());
@@ -5515,13 +5530,31 @@ mod tests {
         let (_tmp, project, _source, destination) = issue_3068_fixture();
         let cases = [
             (issue_3068_team_config(&["alpha"]), vec![]),
-            (issue_3068_team_config(&["alpha"]), issue_3068_sources(&project, &["alpha", "beta"])),
-            (issue_3068_team_config(&["alpha"]), issue_3068_sources(&project, &["alpha", "_agent_alpha"])),
-            (issue_3068_team_config(&["alpha", "_agent_alpha"]), issue_3068_sources(&project, &["alpha"])),
-            (issue_3068_team_config(&["../alpha"]), issue_3068_sources(&project, &["../alpha"])),
+            (
+                issue_3068_team_config(&["alpha"]),
+                issue_3068_sources(&project, &["alpha", "beta"]),
+            ),
+            (
+                issue_3068_team_config(&["alpha"]),
+                issue_3068_sources(&project, &["alpha", "_agent_alpha"]),
+            ),
+            (
+                issue_3068_team_config(&["alpha", "_agent_alpha"]),
+                issue_3068_sources(&project, &["alpha"]),
+            ),
+            (
+                issue_3068_team_config(&["../alpha"]),
+                issue_3068_sources(&project, &["../alpha"]),
+            ),
         ];
         for (config, sources) in cases {
-            assert!(issue_3068_create(&destination, config, Some(sources), &mut MatrixCopyHooks::default()).is_err());
+            assert!(issue_3068_create(
+                &destination,
+                config,
+                Some(sources),
+                &mut MatrixCopyHooks::default()
+            )
+            .is_err());
             assert!(!destination.join("_agent_alpha").exists());
             assert!(!destination.join("_team_copied").exists());
         }
@@ -5535,7 +5568,13 @@ mod tests {
             } else {
                 config.repos[0].agents.push("outsider".into());
             }
-            assert!(issue_3068_create(&destination, config, Some(issue_3068_sources(&project, &["alpha"])), &mut MatrixCopyHooks::default()).is_err());
+            assert!(issue_3068_create(
+                &destination,
+                config,
+                Some(issue_3068_sources(&project, &["alpha"])),
+                &mut MatrixCopyHooks::default()
+            )
+            .is_err());
             assert!(!destination.join("_agent_alpha").exists());
         }
     }
@@ -5552,18 +5591,26 @@ mod tests {
                 issue_3068_team_config(&["alpha"]),
                 Some(issue_3068_sources(&project, &["alpha"])),
                 &mut MatrixCopyHooks::default(),
-            ).is_err());
-            assert_eq!(std::fs::read(existing.join("foreign")).unwrap(), b"untouched");
+            )
+            .is_err());
+            assert_eq!(
+                std::fs::read(existing.join("foreign")).unwrap(),
+                b"untouched"
+            );
         }
         let (_tmp, project, _source, destination) = issue_3068_fixture();
         let mut sources = issue_3068_sources(&project, &["alpha"]);
-        sources.extend(issue_3068_sources(destination.parent().unwrap(), &["alpha"]));
+        sources.extend(issue_3068_sources(
+            destination.parent().unwrap(),
+            &["alpha"],
+        ));
         assert!(issue_3068_create(
             &destination,
             issue_3068_team_config(&["alpha"]),
             Some(sources),
             &mut MatrixCopyHooks::default(),
-        ).is_err());
+        )
+        .is_err());
         assert!(!destination.join("_agent_alpha").exists());
     }
 
@@ -5593,7 +5640,8 @@ mod tests {
                     callback: Some(&mut callback),
                     ..Default::default()
                 },
-            ).unwrap_err();
+            )
+            .unwrap_err();
             assert!(triggered);
             assert!(error.contains("injected second Matrix failure"));
             for root in ["_agent_alpha", "_agent_beta", "_team_copied"] {
@@ -5620,11 +5668,15 @@ mod tests {
                 callback: Some(&mut callback),
                 ..Default::default()
             },
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(triggered);
         assert!(error.contains("residues"), "{error}");
         let team = destination.join("_team_copied");
-        assert_eq!(std::fs::read(team.join(filename)).unwrap(), b"external bytes");
+        assert_eq!(
+            std::fs::read(team.join(filename)).unwrap(),
+            b"external bytes"
+        );
         assert_eq!(std::fs::read_dir(&team).unwrap().count(), 1);
         assert!(!destination.join("_agent_alpha").exists());
     }
@@ -5645,9 +5697,9 @@ mod tests {
         let mut saw_complete_config = false;
         let mut callback = |stage, team: &Path| {
             if stage == MatrixCopyStage::TeamUnlink {
-                let value: serde_json::Value = serde_json::from_slice(
-                    &std::fs::read(team.join("config.json")).unwrap(),
-                ).unwrap();
+                let value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(team.join("config.json")).unwrap())
+                        .unwrap();
                 assert_eq!(value["agents"], serde_json::json!(["_agent_alpha"]));
                 saw_complete_config = true;
                 return Err("injected unlink failure".into());
@@ -5662,7 +5714,8 @@ mod tests {
                 callback: Some(&mut callback),
                 ..Default::default()
             },
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(saw_complete_config);
         assert!(error.contains("injected unlink failure"));
         assert!(!destination.join("_team_copied").exists(), "{error}");
@@ -5687,12 +5740,19 @@ mod tests {
                 callback: Some(&mut callback),
                 ..Default::default()
             },
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(error.contains("Output modified"), "{error}");
         assert!(error.contains("residues"), "{error}");
         assert!(!destination.join("_team_copied").exists());
-        assert_eq!(std::fs::read(destination.join("_agent_alpha/Role.md")).unwrap(), b"external edit");
-        assert_eq!(std::fs::read(destination.join("_agent_alpha/added")).unwrap(), b"external file");
+        assert_eq!(
+            std::fs::read(destination.join("_agent_alpha/Role.md")).unwrap(),
+            b"external edit"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("_agent_alpha/added")).unwrap(),
+            b"external file"
+        );
     }
 
     #[test]
@@ -5701,15 +5761,17 @@ mod tests {
         let barrier = std::sync::Barrier::new(2);
         let successes = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..2)
-                .map(|_| scope.spawn(|| {
-                    barrier.wait();
-                    issue_3068_create(
-                        &destination,
-                        issue_3068_team_config(&["alpha"]),
-                        Some(issue_3068_sources(&project, &["alpha"])),
-                        &mut MatrixCopyHooks::default(),
-                    )
-                }))
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        issue_3068_create(
+                            &destination,
+                            issue_3068_team_config(&["alpha"]),
+                            Some(issue_3068_sources(&project, &["alpha"])),
+                            &mut MatrixCopyHooks::default(),
+                        )
+                    })
+                })
                 .collect();
             handles
                 .into_iter()
@@ -5720,9 +5782,16 @@ mod tests {
         assert_eq!(successes, 1);
         let config: TeamConfigResult = serde_json::from_slice(
             &std::fs::read(destination.join("_team_copied/config.json")).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(config.agents, ["_agent_alpha"]);
-        assert_eq!(issue_3068_history(&destination.join("_agent_alpha"))["copies"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            issue_3068_history(&destination.join("_agent_alpha"))["copies"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -5741,7 +5810,8 @@ mod tests {
                     classification: Some(classification),
                     ..Default::default()
                 },
-            ).is_err());
+            )
+            .is_err());
             assert!(!destination.join("_agent_alpha").exists());
             assert!(!destination.join("_team_copied").exists());
         }
@@ -5758,31 +5828,62 @@ mod tests {
             .map(|path| path.to_string_lossy().into_owned())
             .collect();
         let destination_alias = project.join(".");
-        let listed = list_all_agents_for_destination(
-            &paths,
-            Some(destination_alias.to_str().unwrap()),
-        ).unwrap();
+        let listed =
+            list_all_agents_for_destination(&paths, Some(destination_alias.to_str().unwrap()))
+                .unwrap();
         assert_eq!(listed.len(), 2);
-        assert!(listed.iter().all(|agent| agent.project_name == "source-project"));
-        assert_eq!(listed.iter().find(|agent| agent.name == "alpha").unwrap().is_local, Some(true));
-        assert_eq!(listed.iter().find(|agent| agent.name == "other").unwrap().is_local, Some(false));
-        assert!(listed.iter().all(|agent| !agent.project_path.starts_with("\\\\?\\")));
-        assert!(list_all_agents_for_destination(&paths, None).unwrap().iter().all(|agent| agent.is_local.is_none()));
-        assert!(list_all_agents_for_destination(&paths, Some("invalid-project-that-does-not-exist")).is_err());
+        assert!(listed
+            .iter()
+            .all(|agent| agent.project_name == "source-project"));
+        assert_eq!(
+            listed
+                .iter()
+                .find(|agent| agent.name == "alpha")
+                .unwrap()
+                .is_local,
+            Some(true)
+        );
+        assert_eq!(
+            listed
+                .iter()
+                .find(|agent| agent.name == "other")
+                .unwrap()
+                .is_local,
+            Some(false)
+        );
+        assert!(listed
+            .iter()
+            .all(|agent| !agent.project_path.starts_with("\\\\?\\")));
+        assert!(list_all_agents_for_destination(&paths, None)
+            .unwrap()
+            .iter()
+            .all(|agent| agent.is_local.is_none()));
+        assert!(list_all_agents_for_destination(
+            &paths,
+            Some("invalid-project-that-does-not-exist")
+        )
+        .is_err());
         issue_3068_create(
             &destination,
             issue_3068_team_config(&["alpha"]),
             Some(issue_3068_sources(&project, &["alpha"])),
             &mut MatrixCopyHooks::default(),
-        ).unwrap();
+        )
+        .unwrap();
         let copied = list_all_agents_for_destination(
             &[target.to_string_lossy().into_owned()],
             Some(target.to_str().unwrap()),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(copied.len(), 1);
         assert_eq!(copied[0].is_local, Some(true));
         assert_eq!(copied[0].project_name, "destination");
-        assert_eq!(copied[0].project_path, crate::path_utils::path_to_string_without_windows_verbatim_prefix(&target.canonicalize().unwrap()));
+        assert_eq!(
+            copied[0].project_path,
+            crate::path_utils::path_to_string_without_windows_verbatim_prefix(
+                &target.canonicalize().unwrap()
+            )
+        );
     }
 
     #[cfg(windows)]
@@ -5793,7 +5894,8 @@ mod tests {
         let entries = list_all_agents_for_destination(
             &[project.to_string_lossy().into_owned()],
             Some(&alias),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(entries[0].is_local, Some(true));
         create_team_from_sources(
             &project,
@@ -5804,7 +5906,8 @@ mod tests {
                 source_project_path: alias,
             }]),
             &mut MatrixCopyHooks::default(),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(!source.join(COPY_PROVENANCE_FILE).exists());
     }
 
