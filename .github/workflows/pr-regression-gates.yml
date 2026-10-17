@@ -1049,10 +1049,11 @@ jobs:
           # match_monitor_*, the two build_placement_* and
           # placement_frame_matches_target). #2173 also deleted
           # xcap_origin_conversion_is_identity_unless_logical and
-          # placement_size_uses_bitmap_only_when_flagged. LINUX count (Windows
-          # runs 29, macOS 30); update it in the same commit that adds or
+          # placement_size_uses_bitmap_only_when_flagged. #3074 adds two
+          # save_selection_* tests. LINUX count (Windows runs 31, macOS 32);
+          # update it in the same commit that adds or
           # removes a test in that module.
-          EXPECTED=31
+          EXPECTED=33
           cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-1842.log
 
           # Three guards, matching the #1577 step, none redundant:
@@ -2166,10 +2167,11 @@ jobs:
           # match_monitor_*, the two build_placement_* and
           # placement_frame_matches_target). #2173 also deleted
           # xcap_origin_conversion_is_identity_unless_logical and
-          # placement_size_uses_bitmap_only_when_flagged. MACOS count (Windows
-          # runs 29, Linux 31); update it in the same commit that adds or
+          # placement_size_uses_bitmap_only_when_flagged. #3074 adds two
+          # save_selection_* tests. MACOS count (Windows runs 31, Linux 33);
+          # update it in the same commit that adds or
           # removes a test in that module.
-          EXPECTED=30
+          EXPECTED=32
           cargo test --locked --lib "$FILTER" -- --test-threads=1 --nocapture 2>&1 | tee test-2079.log
 
           # Three guards, matching the #1842 step, none redundant:
