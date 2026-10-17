@@ -24608,6 +24608,9 @@ mod tests {
             assert!(!object.contains_key("codingAgentInstallEnabled"));
             // #2800 extends the schema; the historical captured control stays intact.
             object.insert("codingAgentInstallEnabled".to_string(), Value::Bool(false));
+            assert!(!object.contains_key("containerOptionsEnabled"));
+            // #3062 adds a default-false field without changing the historical control.
+            object.insert("containerOptionsEnabled".to_string(), Value::Bool(false));
             assert!(!object.contains_key("responseCloseEnabled"));
             assert!(!object.contains_key("responseCloseIdleSeconds"));
             object.insert("responseCloseEnabled".to_string(), Value::Bool(true));
