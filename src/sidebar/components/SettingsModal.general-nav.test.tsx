@@ -91,7 +91,11 @@ describe("SettingsModal General categories + search (#2704)", () => {
 
   async function renderModal(overrides: Partial<AppSettings> = {}) {
     const fake = new FakeTransport();
-    fake.resolve("get_settings", settingsSnapshot(overrides));
+    const snapshot = settingsSnapshot(overrides);
+    if ("containerOptionsEnabled" in overrides && overrides.containerOptionsEnabled === undefined) {
+      delete snapshot.containerOptionsEnabled;
+    }
+    fake.resolve("get_settings", snapshot);
     fake.resolve("get_web_server_status", false);
     fake.resolve("get_coding_agent_catalog", []);
     fake.resolve("list_reseedable_agent_commands", []);
@@ -114,6 +118,32 @@ describe("SettingsModal General categories + search (#2704)", () => {
   function key(el: Element, k: string) {
     el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
   }
+
+
+  it.each([undefined, false, true])("filters container controls and search with flag %s", async (flag) => {
+    const { rendered, $ } = await renderModal({ containerOptionsEnabled: flag });
+    try {
+      expect(!!rendered.root.querySelector(tid("settings.general.containerCredentialsFromHost"))).toBe(flag === true);
+      expect(rendered.root.textContent?.includes("Container Coding Agents")).toBe(flag === true);
+      expect(rendered.root.querySelector('[data-ac-setting="containerOptionsEnabled"]')).toBeNull();
+      for (const query of ["container", "docker", "credentials"]) {
+        type($<HTMLInputElement>(SEARCH), query);
+        const expected = searchGeneralSettings(query).filter(e => flag === true || e.key !== "containerCredentialsFromHost");
+        expect(rendered.root.querySelectorAll(".settings-general-result")).toHaveLength(expected.length);
+        const counts = Array.from(rendered.root.querySelectorAll(".settings-general-cat-count"))
+          .reduce((sum, el) => sum + Number(el.textContent), 0);
+        expect(counts).toBe(expected.length);
+        expect(!!rendered.root.querySelector(tid("settings.general.result.containerCredentialsFromHost"))).toBe(flag === true);
+      }
+      if (flag === true) {
+        $<HTMLButtonElement>(tid("settings.general.result.containerCredentialsFromHost")).click();
+        await waitFor(() => expect(document.activeElement).toBe($(tid("settings.general.containerCredentialsFromHost"))));
+      } else {
+        key($(SEARCH), "Enter");
+        expect(document.activeElement?.getAttribute("data-ac-testid")).not.toBe("settings.general.containerCredentialsFromHost");
+      }
+    } finally { rendered.cleanup(); }
+  });
 
   it("opens on Appearance with the other panes hidden", async () => {
     const { rendered, $ } = await renderModal();
@@ -148,7 +178,7 @@ describe("SettingsModal General categories + search (#2704)", () => {
   });
 
   it("indexes every rendered General control exactly once", async () => {
-    const { rendered, $ } = await renderModal({ apiServerEnabled: true, webServerEnabled: true });
+    const { rendered, $ } = await renderModal({ containerOptionsEnabled: true, apiServerEnabled: true, webServerEnabled: true });
     try {
       await waitFor(() => expect($(tid("settings.general.apiServerEnabled"))).toBeTruthy());
       const indexKeys = GENERAL_SETTINGS_INDEX.map((e) => e.key);
@@ -240,7 +270,7 @@ describe("SettingsModal General categories + search (#2704)", () => {
   });
 
   it("keeps every pre-existing General testid in the DOM", async () => {
-    const { rendered } = await renderModal();
+    const { rendered } = await renderModal({ containerOptionsEnabled: true });
     try {
       for (const id of PRE_EXISTING_TESTIDS) {
         expect(rendered.root.querySelector(tid(id)), id).toBeTruthy();
