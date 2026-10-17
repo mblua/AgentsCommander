@@ -33654,85 +33654,105 @@ mod e2992_p41_owner_tests {
         ];
         for publisher in publishers {
             let (_dir, path) = instance(Some(voice(true)));
-            let owner = SettingsOwner::open_active(&path, WAIT).unwrap();
-            let epoch = owner.identity().epoch;
-
-            // Failure before any publisher: Rejected, RAM and epoch unchanged.
-            let report = owner
-                .with_operation_blocking("pre", |_, _| -> Result<(), String> {
-                    Err("validation".to_string())
-                })
-                .unwrap();
-            assert_eq!(report.outcome, OperationOutcome::Rejected);
-            assert_eq!(owner.identity().epoch, epoch);
-
-            // A publisher wrote, then the principal TempWrite failed. The owner
-            // keeps its authority through recovery and adopts reality as
-            // PartialOrUnknown, never as success or rollback.
-            let alias = path.clone();
-            let report = owner
-                .with_operation_blocking("partial", move |_, guard| -> Result<(), String> {
-                    guard.publish(publisher, |settings_path| {
-                        write_json(settings_path, &voice(false));
-                        let second = SettingsOwner::open_active(&alias, Duration::ZERO);
-                        let held = matches!(second, Err(SettingsOwnerError::LifecycleTimedOut));
-                        assert!(held, "authority is retained during the operation");
-                        Ok(())
-                    })?;
-                    assert_eq!(guard.effect(), OperationEffect::Possible);
-                    Err("TempWrite".to_string())
-                })
-                .unwrap();
-            assert_eq!(
-                report.outcome,
-                OperationOutcome::PartialOrUnknown,
-                "{publisher:?}"
-            );
-            assert_eq!(report.availability, SettingsAvailability::Ready);
-            assert!(report.error.is_some());
-            assert!(!voice_enabled(&owner));
-
-            // A panic after a publisher is classified, never abandoned.
-            let report = owner
-                .with_operation_blocking("panic", move |_, guard| -> Result<(), String> {
-                    guard.publish(publisher, |settings_path| {
-                        write_json(settings_path, &voice(true));
-                        Ok(())
-                    })?;
-                    panic!("injected");
-                })
-                .unwrap();
-            assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
-            assert!(voice_enabled(&owner));
-
-            // An invalid recapture is Invalid: no current read, no default save.
-            let report = owner
-                .with_operation_blocking("corrupt", move |_, guard| -> Result<(), String> {
-                    guard.publish(publisher, |settings_path| write_raw(settings_path, b"{"))?;
-                    Err("ReDecode".to_string())
-                })
-                .unwrap();
-            assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
-            assert_eq!(report.availability, SettingsAvailability::Invalid);
-            assert_eq!(
-                owner.blocking_current_snapshot().unwrap_err(),
-                SettingsOwnerError::Unavailable(SettingsAvailability::Invalid)
-            );
-            assert_eq!(std::fs::read(&path).unwrap(), b"{");
-            let denied = owner.with_operation_blocking("after", |_, _| Ok(()));
-            assert!(matches!(
-                denied,
-                Err(SettingsOwnerError::Unavailable(
-                    SettingsAvailability::Invalid
-                ))
-            ));
-            // The authority is still held until the owner closes.
-            let second = SettingsOwner::open_active(&path, Duration::ZERO);
-            assert!(matches!(second, Err(SettingsOwnerError::LifecycleTimedOut)));
-            owner.drain_blocking(SOFT_DEADLINE);
-            assert_eq!(owner.availability(), SettingsAvailability::Closed);
+            let owner = publisher_partial_cases(&path, publisher);
+            publisher_invalid_recapture(&owner, &path, publisher);
         }
+        panic_classification_cases();
+    }
 
+    /// Rejected before any publisher, then PartialOrUnknown after `publisher`
+    /// wrote and the principal failed or panicked.
+    fn publisher_partial_cases(path: &Path, publisher: SettingsPublisher) -> SettingsOwner {
+        let owner = SettingsOwner::open_active(path, WAIT).unwrap();
+        let epoch = owner.identity().epoch;
+
+        // Failure before any publisher: Rejected, RAM and epoch unchanged.
+        let report = owner
+            .with_operation_blocking("pre", |_, _| -> Result<(), String> {
+                Err("validation".to_string())
+            })
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::Rejected);
+        assert_eq!(owner.identity().epoch, epoch);
+
+        // A publisher wrote, then the principal TempWrite failed. The owner
+        // keeps its authority through recovery and adopts reality as
+        // PartialOrUnknown, never as success or rollback.
+        let alias = path.to_path_buf();
+        let report = owner
+            .with_operation_blocking("partial", move |_, guard| -> Result<(), String> {
+                guard.publish(publisher, |settings_path| {
+                    write_json(settings_path, &voice(false));
+                    let second = SettingsOwner::open_active(&alias, Duration::ZERO);
+                    let held = matches!(second, Err(SettingsOwnerError::LifecycleTimedOut));
+                    assert!(held, "authority is retained during the operation");
+                    Ok(())
+                })?;
+                assert_eq!(guard.effect(), OperationEffect::Possible);
+                Err("TempWrite".to_string())
+            })
+            .unwrap();
+        assert_eq!(
+            report.outcome,
+            OperationOutcome::PartialOrUnknown,
+            "{publisher:?}"
+        );
+        assert_eq!(report.availability, SettingsAvailability::Ready);
+        assert!(report.error.is_some());
+        assert!(!voice_enabled(&owner));
+
+        // A panic after a publisher is classified, never abandoned.
+        let report = owner
+            .with_operation_blocking("panic", move |_, guard| -> Result<(), String> {
+                guard.publish(publisher, |settings_path| {
+                    write_json(settings_path, &voice(true));
+                    Ok(())
+                })?;
+                panic!("injected");
+            })
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert!(voice_enabled(&owner));
+        owner
+    }
+
+    /// An invalid recapture after `publisher` is sticky Invalid until close.
+    fn publisher_invalid_recapture(
+        owner: &SettingsOwner,
+        path: &Path,
+        publisher: SettingsPublisher,
+    ) {
+        // An invalid recapture is Invalid: no current read, no default save.
+        let report = owner
+            .with_operation_blocking("corrupt", move |_, guard| -> Result<(), String> {
+                guard.publish(publisher, |settings_path| write_raw(settings_path, b"{"))?;
+                Err("ReDecode".to_string())
+            })
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        assert_eq!(
+            owner.blocking_current_snapshot().unwrap_err(),
+            SettingsOwnerError::Unavailable(SettingsAvailability::Invalid)
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"{");
+        let denied = owner.with_operation_blocking("after", |_, _| Ok(()));
+        assert!(matches!(
+            denied,
+            Err(SettingsOwnerError::Unavailable(
+                SettingsAvailability::Invalid
+            ))
+        ));
+        // The authority is still held until the owner closes.
+        let second = SettingsOwner::open_active(path, Duration::ZERO);
+        assert!(matches!(second, Err(SettingsOwnerError::LifecycleTimedOut)));
+        owner.drain_blocking(SOFT_DEADLINE);
+        assert_eq!(owner.availability(), SettingsAvailability::Closed);
+    }
+
+    /// The async form, then panics in the admission capture, in the recapture
+    /// and before the guards.
+    fn panic_classification_cases() {
         // The async form runs the same body on a blocking worker.
         let (_dir, path) = instance(Some(voice(false)));
         let owner = SettingsOwner::open_active(&path, WAIT).unwrap();
