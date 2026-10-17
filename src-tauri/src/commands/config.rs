@@ -1039,6 +1039,16 @@ fn settings_draft_update_events(
         }
     }
 
+    let mut before_profiles = before.coding_agent_profiles.clone();
+    let mut after_profiles = after.coding_agent_profiles.clone();
+    for profiles in [&mut before_profiles, &mut after_profiles] {
+        for cells in profiles.profiles_by_agent.values_mut() {
+            for cell in cells.values_mut() {
+                cell.id_hash = None;
+            }
+        }
+    }
+
     SettingsDraftUpdateEvents {
         // #592/#597 - the drift content-hash fingerprints the EFFECTIVE command
         // (agent base command + cell command, via compose_effective_command), so a
@@ -1048,7 +1058,7 @@ fn settings_draft_update_events(
         // here the SettingsModal save path emits NO refresh event and the outdated
         // badge never updates. coding_agent_profiles_updated drives
         // refreshProfileOutdated in the sidebar, so route base-command edits through it.
-        profiles_changed: before.coding_agent_profiles != after.coding_agent_profiles
+        profiles_changed: before_profiles != after_profiles
             || agent_commands_by_id(before) != agent_commands_by_id(after),
         env_agent_ids,
     }
@@ -4980,9 +4990,38 @@ mod tests {
             serde_json::to_value(&written.agents).unwrap()
         );
         assert_ne!(written.agents[0].id_hash, original.agents[0].id_hash);
+        let mut expected_profiles = original.coding_agent_profiles.profiles_by_agent.clone();
+        for (letter, cell) in expected_profiles.get_mut("agent-0").unwrap() {
+            // Independent preimage from the final command, restored live env and
+            // the original payload. Disabled env rows still participate.
+            let mut preimage = written.agents[0].command.clone();
+            for env in &original.agents[0].envs {
+                preimage.push_str(&env.key);
+                preimage.push_str(&env.value);
+            }
+            preimage.push_str(&cell.command);
+            for (key, value) in &cell.env {
+                preimage.push_str(key);
+                preimage.push_str(value);
+            }
+            let mut chars: Vec<_> = preimage
+                .chars()
+                .flat_map(char::to_lowercase)
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            chars.sort_unstable();
+            cell.id_hash = Some(format!(
+                "cid1:{:x}",
+                Sha256::digest(chars.iter().collect::<String>())
+            ));
+            assert_eq!(
+                written.coding_agent_profiles.profiles_by_agent["agent-0"][letter].id_hash,
+                cell.id_hash
+            );
+        }
         assert_eq!(
             written.coding_agent_profiles.profiles_by_agent,
-            original.coding_agent_profiles.profiles_by_agent
+            expected_profiles
         );
         let before = serde_json::to_value(&original).unwrap();
         let after = serde_json::to_value(&written).unwrap();
@@ -6971,6 +7010,101 @@ mod tests {
     }
 
     #[test]
+    fn id_hash_activation_events_ignore_only_cell_metadata() {
+        let mut before = settings_with_single_agent();
+        crate::config::settings::validate_and_repair_settings(&mut before).unwrap();
+        let mut metadata = before.clone();
+        metadata
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash = Some("client-metadata".into());
+        let events = super::settings_draft_update_events(&before, &metadata);
+        assert!(!events.profiles_changed);
+        assert!(events.env_agent_ids.is_empty());
+        assert_ne!(before.coding_agent_profiles, metadata.coding_agent_profiles);
+        for change in [
+            "command",
+            "env",
+            "enabled",
+            "notes",
+            "preflight",
+            "timeout",
+            "cell",
+            "agent",
+            "default",
+            "label",
+            "slots",
+            "schema",
+            "identity",
+            "home",
+        ] {
+            let mut after = metadata.clone();
+            let profiles = &mut after.coding_agent_profiles;
+            let cell = profiles
+                .profiles_by_agent
+                .get_mut("agent-0")
+                .unwrap()
+                .get_mut("A")
+                .unwrap();
+            match change {
+                "command" => cell.command.push_str("--real"),
+                "env" => {
+                    cell.env.insert("K".into(), "V".into());
+                }
+                "enabled" => cell.enabled = !cell.enabled,
+                "notes" => cell.notes.push_str("real"),
+                "preflight" => cell.preflight = Some("real".into()),
+                "timeout" => cell.preflight_timeout_seconds = Some(99),
+                "cell" => {
+                    profiles
+                        .profiles_by_agent
+                        .get_mut("agent-0")
+                        .unwrap()
+                        .remove("A");
+                }
+                "agent" => {
+                    profiles
+                        .profiles_by_agent
+                        .insert("new".into(), BTreeMap::new());
+                }
+                "default" => {
+                    profiles
+                        .default_profile_by_agent
+                        .insert("agent-0".into(), "B".into());
+                }
+                "label" => {
+                    profiles.profile_labels_by_agent.insert(
+                        "agent-0".into(),
+                        BTreeMap::from([("A".into(), "real".into())]),
+                    );
+                }
+                "slots" => {
+                    profiles.profile_slots.clear();
+                }
+                "schema" => profiles.schema_version += 1,
+                "identity" => {
+                    profiles
+                        .identity_by_agent
+                        .insert("agent-0".into(), "real".into());
+                }
+                "home" => {
+                    profiles
+                        .codex_home_key_by_agent
+                        .insert("agent-0".into(), "real".into());
+                }
+                _ => unreachable!(),
+            }
+            let events = super::settings_draft_update_events(&before, &after);
+            assert!(events.profiles_changed, "{change}");
+            assert!(events.env_agent_ids.is_empty(), "{change}");
+        }
+    }
+
+    #[test]
     fn settings_draft_events_quiet_for_non_drift_field_edit() {
         // A non-drift field (label) changing must NOT emit a profiles refresh, so the
         // fix does not over-fire on unrelated settings saves.
@@ -6987,8 +7121,9 @@ mod tests {
     fn settings_draft_events_flag_agent_env_edit() {
         // Regression guard: the pre-existing env path still flags the agent id (the
         // base env is also a drift-hash input, surfaced via the env event).
-        let before = settings_with_single_agent();
-        let mut after = settings_with_single_agent();
+        let mut before = settings_with_single_agent();
+        crate::config::settings::validate_and_repair_settings(&mut before).unwrap();
+        let mut after = before.clone();
         after.agents[0].envs = vec![CodingAgentEnv {
             key: "FOO".to_string(),
             value: "bar".to_string(),
@@ -6996,6 +7131,14 @@ mod tests {
             enabled: true,
         }];
 
+        after
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash = Some("derived-after-env-edit".into());
         let events = super::settings_draft_update_events(&before, &after);
         assert_eq!(events.env_agent_ids, vec!["agent-0".to_string()]);
         assert!(
