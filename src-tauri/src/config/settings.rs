@@ -24788,14 +24788,27 @@ mod tests {
             }
             // S6 never seeded profile cells. Their generated defaults are fresh
             // canonical rows and must not acquire invented historical fields.
-            for cells in object["codingAgentProfiles"]["profilesByAgent"]
+            // Independent ASCII preimages: empty cell/env means the base text.
+            let pair_hashes = BTreeMap::from([
+                (
+                    "claude",
+                    "cid1:15a3fc2b7f142361454b99d62429610d12f5f7aedb12b8500a2bfa32d379837d",
+                ),
+                (
+                    "codex",
+                    "cid1:2cf586be28b9573af75bfbdadfe0bd8760e3382b547cfe2c527eea368920a8e5",
+                ),
+            ]);
+            for (id, cells) in object["codingAgentProfiles"]["profilesByAgent"]
                 .as_object_mut()
                 .unwrap()
-                .values_mut()
+                .iter_mut()
             {
                 for cell in cells.as_object_mut().unwrap().values_mut() {
                     let command = cell.as_object_mut().unwrap().remove("command").unwrap();
                     cell["additionalArguments"] = command;
+                    assert!(cell.get("id_hash").is_none());
+                    cell["id_hash"] = json!(pair_hashes[id.as_str()]);
                 }
             }
             let sorted: BTreeMap<String, Value> =
@@ -27557,15 +27570,15 @@ mod tests {
         let settings = super::load_settings_from_path(&path);
         assert_eq!(order_2306_ids(&settings.agents), ["only-b", "only-a"]);
         assert_eq!(order_2306_positions(&settings.agents), [Some(0), Some(1)]);
-        // The fresh-install save writes a base file, but the base never owned
-        // `agents`, so the save restores the serialized default empty array: no
-        // overlay record or overlay ordinal may leak into it.
+        // Whole-group protection preserves physical absence. The effective
+        // overlay order is independent of materializing a base agents array.
         let disk = disk_object(&path);
-        assert_eq!(
-            disk.get("agents"),
-            Some(&serde_json::json!([])),
-            "the absent base restores its default empty agents array: {disk:?}"
+        assert!(
+            !disk.contains_key("agents"),
+            "the absent base agents key must stay absent: {disk:?}"
         );
+        let sidecar = super::agents_instance_path(&path);
+        assert!(!sidecar.exists() || !disk_object(&sidecar).contains_key("agents"));
         assert_eq!(std::fs::read(&local_path).unwrap(), overlay_before);
     }
 
@@ -30501,6 +30514,7 @@ mod tests {
     fn b3_assert_split_matches_seed(path: &std::path::Path, seeded: &[u8], skip: &[&str]) {
         let seed: serde_json::Value = serde_json::from_slice(seeded).unwrap();
         let mut seed = seed.as_object().unwrap().clone();
+        let physical_agents = seed.get("agents").cloned();
         let mut disk = b3_object(path);
         let sidecar = b3_object(&super::agents_instance_path(path));
         for key in super::AGENTS_INSTANCE_KEYS {
@@ -30550,10 +30564,56 @@ mod tests {
                         if field == "profilesByAgent" {
                             // Compare the complete original cells, including old
                             // command values, plus only the new physical leaf.
-                            for cells in expected.as_object_mut().unwrap().values_mut() {
+                            for (id, cells) in expected.as_object_mut().unwrap().iter_mut() {
+                                // First raw ID wins before decoding, including an
+                                // unresolvable first row. Never use effective/held.
+                                let base = physical_agents
+                                    .as_ref()
+                                    .and_then(serde_json::Value::as_array)
+                                    .and_then(|rows| {
+                                        rows.iter().find(|row| {
+                                            row.get("id").and_then(serde_json::Value::as_str)
+                                                == Some(id.as_str())
+                                        })
+                                    })
+                                    .and_then(|row| {
+                                        serde_json::from_value::<super::AgentConfig>(row.clone())
+                                            .ok()
+                                    });
                                 for cell in cells.as_object_mut().unwrap().values_mut() {
                                     assert!(cell.get("additionalArguments").is_none());
                                     cell["additionalArguments"] = cell["command"].clone();
+                                    let profile: super::ProfileCellConfig =
+                                        serde_json::from_value(cell.clone()).unwrap();
+                                    let hash = base.as_ref().map(|base| {
+                                        // Independent raw-field preimage, every base
+                                        // env row (disabled included), then cell env.
+                                        let parts = std::iter::once(base.command.as_str())
+                                            .chain(base.envs.iter().flat_map(|env| {
+                                                [env.key.as_str(), env.value.as_str()]
+                                            }))
+                                            .chain(std::iter::once(profile.command.as_str()))
+                                            .chain(profile.env.iter().flat_map(|(key, value)| {
+                                                [key.as_str(), value.as_str()]
+                                            }));
+                                        let mut chars: Vec<char> = parts
+                                            .flat_map(str::chars)
+                                            .flat_map(char::to_lowercase)
+                                            .filter(|c| !c.is_whitespace())
+                                            .collect();
+                                        chars.sort_unstable();
+                                        serde_json::Value::String(format!(
+                                            "cid1:{:x}",
+                                            <sha2::Sha256 as sha2::Digest>::digest(
+                                                chars.iter().collect::<String>()
+                                            )
+                                        ))
+                                    });
+                                    // Replace only expected derived metadata. None
+                                    // asserts concrete absence; observed stays raw.
+                                    let object = cell.as_object_mut().unwrap();
+                                    object.remove("id_hash");
+                                    object.extend(hash.map(|hash| ("id_hash".to_string(), hash)));
                                 }
                             }
                         }

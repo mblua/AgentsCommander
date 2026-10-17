@@ -9088,142 +9088,290 @@ mod tests {
         // P5
         #[tokio::test]
         async fn a_profile_edit_persists_except_for_the_overlay_introduced_agent() {
-            let temp = tempfile::tempdir().unwrap();
-            let path = seed(temp.path(), &scratch_agent_overlay());
-            let loaded = load_settings_from_path(&path);
-            assert!(loaded
-                .coding_agent_profiles
-                .profiles_by_agent
-                .contains_key("scratch-agent"));
-            let state = state_for(loaded.clone());
+            for protected in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let overlay = if protected {
+                    scratch_agent_overlay()
+                } else {
+                    json!({})
+                };
+                let path = seed(temp.path(), &overlay);
+                let mut expected_raw = disk(&path)["codingAgentProfiles"].clone();
+                // Independent #2450 preimages for these two fixed seed rows.
+                expected_raw["identityByAgent"] = json!({
+                    "codex":"460361e30eb7c7a5", "claude":"57bf1d23533f9c40"
+                });
+                let loaded = load_settings_from_path(&path);
+                assert_eq!(
+                    loaded
+                        .local_overlay_state
+                        .owns_top_level("codingAgentProfiles"),
+                    protected
+                );
+                assert_eq!(
+                    loaded
+                        .coding_agent_profiles
+                        .profiles_by_agent
+                        .contains_key("scratch-agent"),
+                    protected
+                );
 
-            let mut draft = renderer_round_trip(&loaded);
-            draft
-                .coding_agent_profiles
-                .profiles_by_agent
-                .get_mut("codex")
-                .unwrap()
-                .get_mut("A")
-                .unwrap()
-                .command = "codex --edited".to_string();
-            draft.coding_agent_profiles.profile_slots.insert(
-                "B".to_string(),
-                crate::config::settings::ProfileSlotConfig {
-                    label: "Second".to_string(),
-                },
-            );
-            draft
-                .coding_agent_profiles
-                .default_profile_by_agent
-                .insert("codex".to_string(), "A".to_string());
+                let state = state_for(loaded.clone());
 
-            let path2 = path.clone();
-            persist_settings_draft_update_with_saver(&state, draft, move |candidate| {
-                save_settings_to_path_preserving_project_paths(candidate, &path2)
-            })
-            .await
-            .unwrap();
+                let mut draft = renderer_round_trip(&loaded);
+                draft
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .get_mut("codex")
+                    .unwrap()
+                    .get_mut("A")
+                    .unwrap()
+                    .command = "codex --edited".to_string();
+                draft.coding_agent_profiles.profile_slots.insert(
+                    "B".to_string(),
+                    crate::config::settings::ProfileSlotConfig {
+                        label: "Second".to_string(),
+                    },
+                );
+                draft
+                    .coding_agent_profiles
+                    .default_profile_by_agent
+                    .insert("codex".to_string(), "A".to_string());
 
-            let profiles = disk(&path)["codingAgentProfiles"].clone();
-            assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
-                json!("codex --edited")
-            );
-            assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["command"],
-                json!("codex")
-            );
-            assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
-            assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
-            assert!(
-                profiles["profilesByAgent"].get("scratch-agent").is_none(),
-                "only the overlay-introduced agent's cells are frozen: {profiles}"
-            );
+                let path2 = path.clone();
+                let (saved, _events) =
+                    persist_settings_draft_update_with_saver(&state, draft, move |candidate| {
+                        save_settings_to_path_preserving_project_paths(candidate, &path2)
+                    })
+                    .await
+                    .unwrap();
+
+                let physical_path = if protected {
+                    path.clone()
+                } else {
+                    path.with_file_name("agents.30.instance.no-git.json")
+                };
+                let profiles = disk(&physical_path)["codingAgentProfiles"].clone();
+                if protected {
+                    assert_eq!(
+                        profiles, expected_raw,
+                        "whole protected group, only existing identity output excepted"
+                    );
+                } else {
+                    assert_eq!(
+                        profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
+                        json!("codex --edited")
+                    );
+                    assert_eq!(
+                        profiles["profilesByAgent"]["codex"]["A"]["command"],
+                        json!("codex")
+                    );
+                    assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
+                    assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
+                }
+                assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                let expected_command = if protected { "codex" } else { "codex --edited" };
+                let expected_hash = if protected {
+                    "cid1:439b584f39ee418c1c6e59bb9b06e7f04b83c2b338d48580f1fb8b7a1750703d"
+                } else {
+                    "cid1:2d09a350fb33981f1d78f968766bba7ba46ae78531a2ee157653926809a03114"
+                };
+                assert_eq!(
+                    saved.coding_agent_profiles.profiles_by_agent["codex"]["A"].command,
+                    expected_command
+                );
+                assert_eq!(
+                    saved.coding_agent_profiles.profiles_by_agent["codex"]["A"]
+                        .id_hash
+                        .as_deref(),
+                    Some(expected_hash)
+                );
+                let reloaded = load_settings_from_path(&path);
+                assert_eq!(saved.coding_agent_profiles, reloaded.coding_agent_profiles);
+                assert_eq!(
+                    state.read().await.coding_agent_profiles,
+                    saved.coding_agent_profiles
+                );
+            }
         }
 
         // P6
         #[test]
         fn the_dedicated_profiles_command_shape_has_the_same_outcome() {
-            let temp = tempfile::tempdir().unwrap();
-            let path = seed(temp.path(), &scratch_agent_overlay());
-            let loaded = load_settings_from_path(&path);
+            for protected in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let overlay = if protected {
+                    scratch_agent_overlay()
+                } else {
+                    json!({})
+                };
+                let path = seed(temp.path(), &overlay);
+                let mut expected_raw = disk(&path)["codingAgentProfiles"].clone();
+                // Independent #2450 preimages for these two fixed seed rows.
+                expected_raw["identityByAgent"] = json!({
+                    "codex":"460361e30eb7c7a5", "claude":"57bf1d23533f9c40"
+                });
+                let loaded = load_settings_from_path(&path);
+                assert_eq!(
+                    loaded
+                        .local_overlay_state
+                        .owns_top_level("codingAgentProfiles"),
+                    protected
+                );
+                assert_eq!(
+                    loaded
+                        .coding_agent_profiles
+                        .profiles_by_agent
+                        .contains_key("scratch-agent"),
+                    protected
+                );
 
-            // `persist_coding_agent_profiles_update` clones the live guard, assigns
-            // the payload and saves; `save_settings` delegates to the path-taking
-            // preserving writer for a resolved path. Reproduced here because that
-            // helper takes no injectable saver and redirecting `save_settings`
-            // would need a process-global env mutation.
-            let mut candidate = loaded.clone();
-            candidate
-                .coding_agent_profiles
-                .profiles_by_agent
-                .get_mut("codex")
-                .unwrap()
-                .get_mut("A")
-                .unwrap()
-                .command = "codex --edited".to_string();
-            candidate.coding_agent_profiles.profile_slots.insert(
-                "B".to_string(),
-                crate::config::settings::ProfileSlotConfig {
-                    label: "Second".to_string(),
-                },
-            );
-            candidate
-                .coding_agent_profiles
-                .default_profile_by_agent
-                .insert("codex".to_string(), "A".to_string());
-            validate_and_repair_settings(&mut candidate).unwrap();
-            save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+                // `persist_coding_agent_profiles_update` clones the live guard, assigns
+                // the payload and saves; `save_settings` delegates to the path-taking
+                // preserving writer for a resolved path. Reproduced here because that
+                // helper takes no injectable saver and redirecting `save_settings`
+                // would need a process-global env mutation.
+                let mut candidate = loaded.clone();
+                candidate
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .get_mut("codex")
+                    .unwrap()
+                    .get_mut("A")
+                    .unwrap()
+                    .command = "codex --edited".to_string();
+                candidate.coding_agent_profiles.profile_slots.insert(
+                    "B".to_string(),
+                    crate::config::settings::ProfileSlotConfig {
+                        label: "Second".to_string(),
+                    },
+                );
+                candidate
+                    .coding_agent_profiles
+                    .default_profile_by_agent
+                    .insert("codex".to_string(), "A".to_string());
+                validate_and_repair_settings(&mut candidate).unwrap();
+                let saved =
+                    save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
-            let profiles = disk(&path)["codingAgentProfiles"].clone();
-            assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
-                json!("codex --edited")
-            );
-            assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["command"],
-                json!("codex")
-            );
-            assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
-            assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
-            assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                let physical_path = if protected {
+                    path.clone()
+                } else {
+                    path.with_file_name("agents.30.instance.no-git.json")
+                };
+                let profiles = disk(&physical_path)["codingAgentProfiles"].clone();
+                if protected {
+                    assert_eq!(
+                        profiles, expected_raw,
+                        "whole protected group, only existing identity output excepted"
+                    );
+                } else {
+                    assert_eq!(
+                        profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
+                        json!("codex --edited")
+                    );
+                    assert_eq!(
+                        profiles["profilesByAgent"]["codex"]["A"]["command"],
+                        json!("codex")
+                    );
+                    assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
+                    assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
+                }
+                assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                let expected_command = if protected { "codex" } else { "codex --edited" };
+                let expected_hash = if protected {
+                    "cid1:439b584f39ee418c1c6e59bb9b06e7f04b83c2b338d48580f1fb8b7a1750703d"
+                } else {
+                    "cid1:2d09a350fb33981f1d78f968766bba7ba46ae78531a2ee157653926809a03114"
+                };
+                assert_eq!(
+                    saved.coding_agent_profiles.profiles_by_agent["codex"]["A"].command,
+                    expected_command
+                );
+                assert_eq!(
+                    saved.coding_agent_profiles.profiles_by_agent["codex"]["A"]
+                        .id_hash
+                        .as_deref(),
+                    Some(expected_hash)
+                );
+                let reloaded = load_settings_from_path(&path);
+                assert_eq!(saved.coding_agent_profiles, reloaded.coding_agent_profiles);
+            }
         }
 
         // P7
         #[test]
         fn an_agent_delete_removes_its_default_profile_entry_from_the_base_file() {
-            let temp = tempfile::tempdir().unwrap();
-            let path = seed(temp.path(), &scratch_agent_overlay());
-            let mut seeded = load_settings_from_path(&path);
-            seeded
-                .coding_agent_profiles
-                .default_profile_by_agent
-                .insert("claude".to_string(), "A".to_string());
-            save_settings_to_path_preserving_project_paths(&seeded, &path).unwrap();
-            assert_eq!(
-                disk(&path)["codingAgentProfiles"]["defaultProfileByAgent"]["claude"],
-                json!("A")
-            );
-
-            // The agent-delete shape: remove the entry from a clone of the live
-            // guard and save.
-            let loaded = load_settings_from_path(&path);
-            let mut candidate = loaded.clone();
-            candidate
-                .coding_agent_profiles
-                .default_profile_by_agent
-                .remove("claude");
-            save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
-
-            assert!(
-                disk(&path)["codingAgentProfiles"]["defaultProfileByAgent"]
-                    .get("claude")
-                    .is_none(),
-                "the removal must persist"
-            );
-            assert!(disk(&path)["codingAgentProfiles"]["profilesByAgent"]
-                .get("scratch-agent")
-                .is_none());
+            for protected in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let overlay = if protected {
+                    scratch_agent_overlay()
+                } else {
+                    json!({})
+                };
+                let path = seed(temp.path(), &overlay);
+                // Seed the physical default before protection. The negative
+                // must prove an existing A survives, not that absent stays absent.
+                let mut raw = disk(&path);
+                raw["codingAgentProfiles"]["defaultProfileByAgent"]["claude"] = json!("A");
+                let mut expected_raw = raw["codingAgentProfiles"].clone();
+                expected_raw["identityByAgent"] = json!({
+                    "codex":"460361e30eb7c7a5", "claude":"57bf1d23533f9c40"
+                });
+                std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+                let loaded = load_settings_from_path(&path);
+                assert_eq!(
+                    loaded
+                        .local_overlay_state
+                        .owns_top_level("codingAgentProfiles"),
+                    protected
+                );
+                let physical_path = if protected {
+                    path.clone()
+                } else {
+                    path.with_file_name("agents.30.instance.no-git.json")
+                };
+                assert_eq!(
+                    disk(&physical_path)["codingAgentProfiles"]["defaultProfileByAgent"]["claude"],
+                    json!("A")
+                );
+                let mut candidate = loaded.clone();
+                assert_eq!(
+                    candidate
+                        .coding_agent_profiles
+                        .default_profile_by_agent
+                        .remove("claude"),
+                    Some("A".to_string())
+                );
+                let saved =
+                    save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+                let profiles = disk(&physical_path)["codingAgentProfiles"].clone();
+                if protected {
+                    assert_eq!(profiles, expected_raw);
+                    assert_eq!(profiles["defaultProfileByAgent"]["claude"], json!("A"));
+                    assert_eq!(
+                        saved
+                            .coding_agent_profiles
+                            .default_profile_by_agent
+                            .get("claude"),
+                        Some(&"A".to_string())
+                    );
+                } else {
+                    assert!(
+                        profiles["defaultProfileByAgent"].get("claude").is_none(),
+                        "the editable removal must persist"
+                    );
+                    assert!(!saved
+                        .coding_agent_profiles
+                        .default_profile_by_agent
+                        .contains_key("claude"));
+                }
+                assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                assert_eq!(
+                    saved.coding_agent_profiles,
+                    load_settings_from_path(&path).coding_agent_profiles
+                );
+            }
         }
     }
 
