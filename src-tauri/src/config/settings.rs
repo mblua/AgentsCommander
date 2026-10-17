@@ -14988,6 +14988,14 @@ impl SettingsOwnerLease {
         let leaf = settings_path
             .file_name()
             .ok_or_else(|| identity("missing_file_name"))?;
+        // The chain check stops at the first link, so a `..` after a tolerated
+        // link (macOS `/var`) would otherwise be resolved by canonicalize.
+        if parent
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+        {
+            return Err(identity("lock_identity_rejected"));
+        }
         match crate::path_identity::verify_component_chain_reason(parent) {
             Ok(()) | Err(crate::path_identity::PathRule::ComponentIsLink) => {}
             Err(_) => return Err(identity("lock_identity_rejected")),
@@ -33820,9 +33828,14 @@ mod e2992_p41_owner_tests {
 
     #[test]
     fn e2992_p41_memory_zero_io() {
-        let (_dir, path) = instance(Some(voice(true)));
+        let (dir, path) = instance(Some(voice(true)));
         let owner = SettingsOwner::open_active(&path, WAIT).unwrap();
-        let held = SettingsFileLock::acquire(&path, Duration::from_secs(2)).unwrap();
+        // The owner's transactions lock the physical spelling (macOS temp dirs
+        // sit under the `/var` link, which the transactional lock rejects).
+        let physical = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .join(SETTINGS_FILE_NAME);
+        let held = SettingsFileLock::acquire(&physical, Duration::from_secs(2)).unwrap();
         let before = counts(&owner);
         for _ in 0..100 {
             assert!(voice_enabled(&owner));
