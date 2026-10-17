@@ -5,7 +5,7 @@ Status: `REVIEW_REQUIRED`. This generated bundle is not approval to implement, t
 Repository: `mblua/AgentsCommander`  
 Release issue: https://github.com/mblua/AgentsCommander/issues/3078  
 Candidate: `0.45.1` / `v0.45.1`  
-Planning base: `1a11c4c16aaed89a8e688f357c2e8f7fe854f521`  
+Planning base: `fe59d4dcce5b95ab72e931168a2bc051c326b65d`  
 Predecessor: `v0.45.0`
 
 ## 1. Exact review identity
@@ -60,8 +60,8 @@ The hardening allowlist is closed at the release workflow plus these evidence pa
 
 ## 2. Frozen read-only facts
 
-- Git remote main and GitHub API agree at `1a11c4c16aaed89a8e688f357c2e8f7fe854f521`.
-- Ordered planning-base parents: [85ed7f5bcc1d12de4e32f06244e8178f6654b868, 3949fbdb2c37d4b2b463a3404a00f03aefc0ddb4].
+- Git remote main and GitHub API agree at `fe59d4dcce5b95ab72e931168a2bc051c326b65d`.
+- Ordered planning-base parents: [2aec52210b7213dd12079941e0c2862402ff77af, 397d42dabaf542d46b35679b102a2dbfe4b0fb6c].
 - Base `.github/workflows/release.yml` blob: `ed64253db473dd0de792d6c214b2eb164652c93b`; content SHA-256: `5fc231d824614084cfaa37ec5567dc5d32eadc797c5e38a99643134a2e508aad`.
 - Predecessor annotated object: `6cca6f826c894a903765d30c68aa8d21b0d19dd7`; peeled commit: `d0f91a3d5a33edadfd3b2c0e337654f4cd5acc6f`.
 - Predecessor immutable GitHub Release id: `415384311`.
@@ -97,10 +97,12 @@ Approved scope:
 - docs: docs: document canonical command fields (refs #3022) ([#3022](https://github.com/mblua/AgentsCommander/issues/3022), [PR #3055](https://github.com/mblua/AgentsCommander/pull/3055))
 - docs: docs: refresh ecosystem README and quickstart (refs #3044) ([#3044](https://github.com/mblua/AgentsCommander/issues/3044), [PR #3049](https://github.com/mblua/AgentsCommander/pull/3049))
 - feature: feat(config): add optional profile hash schema (refs #3050) ([#3050](https://github.com/mblua/AgentsCommander/issues/3050), [PR #3054](https://github.com/mblua/AgentsCommander/pull/3054))
+- fix: fix(profiles): derive identity hashes per agent profile pair (refs #3051) ([#3051](https://github.com/mblua/AgentsCommander/issues/3051), [PR #3067](https://github.com/mblua/AgentsCommander/pull/3067))
 - fix: fix(pty): recognize complete physical Codex Working rows (refs #3059) ([#3059](https://github.com/mblua/AgentsCommander/issues/3059), [PR #3065](https://github.com/mblua/AgentsCommander/pull/3065))
 - feature: feat(settings): persist container options opt-in (refs #3062) ([#3062](https://github.com/mblua/AgentsCommander/issues/3062), [PR #3064](https://github.com/mblua/AgentsCommander/pull/3064))
 - fix: fix(sidebar): keep context-menu halo on its origin refs #3069 ([#3069](https://github.com/mblua/AgentsCommander/issues/3069), [PR #3076](https://github.com/mblua/AgentsCommander/pull/3076))
 - feature: feat(screenshot): save captures in replica screenshots folder (refs #3070) ([#3070](https://github.com/mblua/AgentsCommander/issues/3070), [PR #3074](https://github.com/mblua/AgentsCommander/pull/3074))
+- maintenance: feat(matrix): preserve complete copies and lineage (refs #3071) ([#3071](https://github.com/mblua/AgentsCommander/issues/3071), [PR #3075](https://github.com/mblua/AgentsCommander/pull/3075))
 
 ## 3. One mandatory order
 
@@ -121,7 +123,7 @@ No implementation, PR, merge, tag, or publication occurs before steps 1-5. There
 
 ## 4. Planning-base gate
 
-Before implementation, independently query remote main through raw Git and the GitHub ref API. Both must equal `1a11c4c16aaed89a8e688f357c2e8f7fe854f521`; the GitHub commit API must return the ordered parent list [85ed7f5bcc1d12de4e32f06244e8178f6654b868, 3949fbdb2c37d4b2b463a3404a00f03aefc0ddb4]; the contents API must return workflow blob `ed64253db473dd0de792d6c214b2eb164652c93b`. Any mismatch is `FROZEN_INPUT_CHANGED`: discard the bundle and run the generator again from a new config/output path.
+Before implementation, independently query remote main through raw Git and the GitHub ref API. Both must equal `fe59d4dcce5b95ab72e931168a2bc051c326b65d`; the GitHub commit API must return the ordered parent list [2aec52210b7213dd12079941e0c2862402ff77af, 397d42dabaf542d46b35679b102a2dbfe4b0fb6c]; the contents API must return workflow blob `ed64253db473dd0de792d6c214b2eb164652c93b`. Any mismatch is `FROZEN_INPUT_CHANGED`: discard the bundle and run the generator again from a new config/output path.
 
 This gate is not reused after required merges. Later gates bind `FINAL_CANDIDATE_MAIN` instead.
 
@@ -146,7 +148,7 @@ The allowlist is closed: no wildcard and no other changed path is permitted. Its
 For the selected merge method, record `HARDENING_HEAD` only after exact-head review. After protected merge, require a two-parent merge commit and assert the ordered parent vector is exactly:
 
 ```text
-[1a11c4c16aaed89a8e688f357c2e8f7fe854f521, HARDENING_HEAD]
+[fe59d4dcce5b95ab72e931168a2bc051c326b65d, HARDENING_HEAD]
 ```
 
 Set `HARDENING_MERGE_SHA` to that merge commit. A squash, rebase, reversed parent order, extra parent, or intervening main commit invalidates this bundle.

@@ -19,11 +19,12 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ### Changed
 
+- Profile cells derive informational identity hashes from the final agent command/environment and profile arguments/environment. Stable agent IDs, references, sessions and HOME remain unchanged; client metadata mirroring is still pending. (#3050, #3054, #3051, #3067)
 - README and quickstart present reusable agent experience, the desktop view and installation options. Settings documentation explains canonical command fields and legacy fallback. (#3044, #3049, #3022, #3055)
 
 ### Notes
 
-- Internal preparation adds optional profile-cell identity metadata, a persisted container-options preference and centralized settings constructors. Pair-hash derivation, container UI hiding and exclusive settings ownership are not activated by these changes. (#3050, #3054, #3062, #3064, #2993, #3053)
+- Internal preparation adds a persisted container-options preference, centralized settings constructors and strict Matrix copy/provenance helpers. Container UI hiding, exclusive settings ownership and team-creation use of the copy helpers remain inactive. (#3062, #3064, #2993, #3053, #3071, #3075)
 ## 0.45.0
 
 ### Added
