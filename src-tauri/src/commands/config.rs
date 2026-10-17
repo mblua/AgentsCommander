@@ -5012,7 +5012,7 @@ mod tests {
             chars.sort_unstable();
             cell.id_hash = Some(format!(
                 "cid1:{:x}",
-                Sha256::digest(chars.iter().collect::<String>())
+                <super::Sha256 as super::Digest>::digest(chars.iter().collect::<String>())
             ));
             assert_eq!(
                 written.coding_agent_profiles.profiles_by_agent["agent-0"][letter].id_hash,
