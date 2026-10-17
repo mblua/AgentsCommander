@@ -593,6 +593,614 @@ fn selected_ac_root(project: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| format!(".ac directory not found in {}", project.display()))
 }
 
+// P01 internal copy capability; P02 connects these private helpers to create_team.
+#[allow(dead_code)]
+const COPY_PROVENANCE_FILE: &str = ".ac-copy-provenance.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // P02 integration.
+enum MatrixCopyKind {
+    Directory,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // P02 integration.
+struct MatrixCopyStamp {
+    kind: MatrixCopyKind,
+    size: u64,
+    modified: std::time::SystemTime,
+    digest: Option<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // P02 integration.
+struct MatrixCopyIdentity(u64, u64);
+
+#[derive(Debug)]
+#[allow(dead_code)] // P02 integration.
+struct OwnedCopyEntry {
+    relative: PathBuf,
+    identity: MatrixCopyIdentity,
+    kind: MatrixCopyKind,
+    digest: Option<[u8; 32]>,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)] // P02 integration; retained on success for team rollback.
+struct OwnedCopyArtifacts {
+    root: PathBuf,
+    entries: Vec<OwnedCopyEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // P02 integration; hooks have no production callback.
+enum MatrixCopyStage {
+    Reserved,
+    Classify,
+    Streaming,
+    BeforeVerify,
+    Provenance,
+    ProvenanceWritten,
+    BeforeCleanup,
+}
+
+#[cfg(test)]
+type MatrixCopyCallback<'a> = dyn FnMut(MatrixCopyStage, &Path) -> Result<(), String> + 'a;
+
+#[derive(Default)]
+#[allow(dead_code)] // P02 integration.
+struct MatrixCopyHooks<'a> {
+    #[cfg(test)]
+    callback: Option<&'a mut MatrixCopyCallback<'a>>,
+    #[cfg(test)]
+    classification: Option<(bool, u32, bool, bool)>,
+    marker: std::marker::PhantomData<&'a ()>,
+}
+
+#[allow(dead_code)] // P02 integration.
+impl MatrixCopyHooks<'_> {
+    fn run(&mut self, stage: MatrixCopyStage, path: &Path) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(callback) = &mut self.callback {
+            return callback(stage, path);
+        }
+        let _ = (stage, path);
+        Ok(())
+    }
+}
+
+#[allow(dead_code)] // P02 integration.
+impl OwnedCopyArtifacts {
+    fn handle_identity(file: &File) -> Result<MatrixCopyIdentity, String> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = file.metadata().map_err(|e| e.to_string())?;
+            Ok(MatrixCopyIdentity(metadata.dev(), metadata.ino()))
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            };
+            let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) }
+                == 0
+            {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            let information = unsafe { information.assume_init() };
+            Ok(MatrixCopyIdentity(
+                u64::from(information.dwVolumeSerialNumber),
+                (u64::from(information.nFileIndexHigh) << 32)
+                    | u64::from(information.nFileIndexLow),
+            ))
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = file;
+            Err("Matrix copy identity unsupported on this platform".into())
+        }
+    }
+
+    fn kind(metadata: &std::fs::Metadata) -> Result<MatrixCopyKind, String> {
+        if metadata_is_link_or_reparse(metadata) {
+            return Err("Matrix copy rejects links/reparse points".into());
+        }
+        Self::classify(false, 0, metadata.is_dir(), metadata.is_file())
+    }
+
+    fn classify(
+        symlink: bool,
+        attributes: u32,
+        directory: bool,
+        file: bool,
+    ) -> Result<MatrixCopyKind, String> {
+        if metadata_parts_are_link_or_reparse(symlink, attributes) {
+            return Err("Matrix copy rejects links/reparse points".into());
+        }
+        if directory {
+            Ok(MatrixCopyKind::Directory)
+        } else if file {
+            Ok(MatrixCopyKind::File)
+        } else {
+            Err("Matrix copy rejects special entries".into())
+        }
+    }
+
+    fn source_kind(
+        metadata: &std::fs::Metadata,
+        hooks: &MatrixCopyHooks<'_>,
+    ) -> Result<MatrixCopyKind, String> {
+        #[cfg(test)]
+        if let Some((symlink, attributes, directory, file)) = hooks.classification {
+            return Self::classify(symlink, attributes, directory, file);
+        }
+        let _ = hooks;
+        Self::kind(metadata)
+    }
+
+    fn open_existing(path: &Path, kind: MatrixCopyKind) -> Result<File, String> {
+        let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if Self::kind(&metadata)? != kind {
+            return Err(format!("Unexpected copy entry type: {}", path.display()));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+                FILE_SHARE_READ, FILE_SHARE_WRITE,
+            };
+            options
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+            if kind == MatrixCopyKind::Directory {
+                options.access_mode(0);
+            }
+        }
+        let file = options.open(path).map_err(|e| e.to_string())?;
+        if Self::kind(&file.metadata().map_err(|e| e.to_string())?)? != kind {
+            return Err("Opened copy entry has unexpected type".into());
+        }
+        Ok(file)
+    }
+
+    fn verify_directories(&self, relative: &Path) -> Result<(), String> {
+        for entry in &self.entries {
+            if entry.kind == MatrixCopyKind::Directory && relative.starts_with(&entry.relative) {
+                let path = self.root.join(&entry.relative);
+                let file = Self::open_existing(&path, MatrixCopyKind::Directory)?;
+                if Self::handle_identity(&file)? != entry.identity {
+                    return Err(format!("Copy directory replaced: {}", path.display()));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn create_directory(&mut self, relative: &Path) -> Result<(), String> {
+        self.verify_directories(relative)?;
+        let path = self.root.join(relative);
+        std::fs::create_dir(&path).map_err(|e| e.to_string())?;
+        // If capture fails, the unrecorded directory is deliberately retained.
+        let file = Self::open_existing(&path, MatrixCopyKind::Directory)
+            .map_err(|e| format!("{e}; residue: {}", path.display()))?;
+        let identity = Self::handle_identity(&file)
+            .map_err(|e| format!("{e}; residue: {}", path.display()))?;
+        self.entries.push(OwnedCopyEntry {
+            relative: relative.to_path_buf(),
+            identity,
+            kind: MatrixCopyKind::Directory,
+            digest: None,
+        });
+        Ok(())
+    }
+
+    fn create_file(&mut self, relative: &Path) -> Result<File, String> {
+        self.verify_directories(relative)?;
+        let path = self.root.join(relative);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let identity = Self::handle_identity(&file)
+            .map_err(|e| format!("{e}; residue: {}", path.display()))?;
+        self.entries.push(OwnedCopyEntry {
+            relative: relative.to_path_buf(),
+            identity,
+            kind: MatrixCopyKind::File,
+            digest: Some(Self::digest_bytes(&[])),
+        });
+        Ok(file)
+    }
+
+    fn digest_bytes(bytes: &[u8]) -> [u8; 32] {
+        use sha2::Digest;
+        sha2::Sha256::digest(bytes).into()
+    }
+
+    fn stamp(
+        metadata: &std::fs::Metadata,
+        digest: Option<[u8; 32]>,
+    ) -> Result<MatrixCopyStamp, String> {
+        Ok(MatrixCopyStamp {
+            kind: Self::kind(metadata)?,
+            size: metadata.len(),
+            modified: metadata.modified().map_err(|e| e.to_string())?,
+            digest,
+        })
+    }
+
+    fn read_file(
+        path: &Path,
+        mut output: Option<(&mut File, &mut OwnedCopyEntry)>,
+        mut buffer: Option<&mut Vec<u8>>,
+        hooks: &mut MatrixCopyHooks<'_>,
+    ) -> Result<MatrixCopyStamp, String> {
+        use sha2::Digest;
+        use std::io::{Read, Write};
+        hooks.run(MatrixCopyStage::Classify, path)?;
+        let before = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if Self::source_kind(&before, hooks)? != MatrixCopyKind::File {
+            return Err("Expected regular Matrix file".into());
+        }
+        let mut input = Self::open_existing(path, MatrixCopyKind::File)?;
+        if Self::stamp(&before, None)?
+            != Self::stamp(&input.metadata().map_err(|e| e.to_string())?, None)?
+        {
+            return Err("Matrix file changed before reading".into());
+        }
+        let mut digest = sha2::Sha256::new();
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            let count = input.read(&mut chunk).map_err(|e| e.to_string())?;
+            if count == 0 {
+                break;
+            }
+            if let Some((file, entry)) = output.as_mut() {
+                let mut remaining = &chunk[..count];
+                while !remaining.is_empty() {
+                    let written = file.write(remaining).map_err(|e| e.to_string())?;
+                    if written == 0 {
+                        return Err("Matrix copy write made no progress".into());
+                    }
+                    digest.update(&remaining[..written]);
+                    entry.digest = Some(digest.clone().finalize().into());
+                    remaining = &remaining[written..];
+                }
+            } else {
+                digest.update(&chunk[..count]);
+            }
+            if let Some(bytes) = &mut buffer {
+                bytes.extend_from_slice(&chunk[..count]);
+            }
+            hooks.run(MatrixCopyStage::Streaming, path)?;
+        }
+        let after = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        let before_stamp = Self::stamp(&before, None)?;
+        if before_stamp != Self::stamp(&after, None)?
+            || before_stamp != Self::stamp(&input.metadata().map_err(|e| e.to_string())?, None)?
+        {
+            return Err(format!("Matrix file changed: {}", path.display()));
+        }
+        Self::stamp(&after, Some(digest.finalize().into()))
+    }
+
+    fn scan(
+        source: &Path,
+        relative: &Path,
+        mut output: Option<&mut Self>,
+        inventory: &mut std::collections::BTreeMap<PathBuf, MatrixCopyStamp>,
+        history: &mut Option<Vec<u8>>,
+        hooks: &mut MatrixCopyHooks<'_>,
+    ) -> Result<(), String> {
+        let path = source.join(relative);
+        hooks.run(MatrixCopyStage::Classify, &path)?;
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        let kind = Self::source_kind(&metadata, hooks)?;
+        if relative == Path::new(COPY_PROVENANCE_FILE) && kind != MatrixCopyKind::File {
+            return Err("Copy provenance must be a regular file".into());
+        }
+        if kind == MatrixCopyKind::Directory {
+            let stamp = Self::stamp(&metadata, None)?;
+            inventory.insert(relative.to_path_buf(), stamp.clone());
+            if !relative.as_os_str().is_empty() {
+                if let Some(owned) = &mut output {
+                    owned.create_directory(relative)?;
+                }
+            }
+            let mut children = std::fs::read_dir(&path)
+                .map_err(|e| e.to_string())?
+                .map(|entry| entry.map(|e| e.file_name()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            children.sort();
+            for child in children {
+                Self::scan(
+                    source,
+                    &relative.join(child),
+                    output.as_deref_mut(),
+                    inventory,
+                    history,
+                    hooks,
+                )?;
+            }
+            let after = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            if stamp != Self::stamp(&after, None)? {
+                return Err("Matrix directory changed".into());
+            }
+        } else if relative == Path::new(COPY_PROVENANCE_FILE) {
+            let mut bytes = Vec::new();
+            let capture = output.is_some();
+            let stamp = Self::read_file(
+                &path,
+                None,
+                if capture { Some(&mut bytes) } else { None },
+                hooks,
+            )?;
+            inventory.insert(relative.to_path_buf(), stamp);
+            if capture {
+                *history = Some(bytes);
+            }
+        } else {
+            let stamp = if let Some(owned) = output {
+                let mut file = owned.create_file(relative)?;
+                let entry = owned.entries.last_mut().expect("created file entry");
+                Self::read_file(&path, Some((&mut file, entry)), None, hooks)?
+            } else {
+                Self::read_file(&path, None, None, hooks)?
+            };
+            inventory.insert(relative.to_path_buf(), stamp);
+        }
+        Ok(())
+    }
+}
+
+#[allow(dead_code)] // P02 integration.
+fn validate_copy_provenance(history: Option<&[u8]>) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value = match history {
+        Some(bytes) => {
+            serde_json::from_slice(bytes).map_err(|e| format!("Invalid copy provenance: {e}"))?
+        }
+        None => serde_json::json!({"schemaVersion": 1, "copies": []}),
+    };
+    if value.get("schemaVersion").and_then(|v| v.as_u64()) != Some(1) {
+        return Err("Unsupported copy provenance schemaVersion".into());
+    }
+    let copies = value
+        .get("copies")
+        .and_then(|v| v.as_array())
+        .ok_or("Invalid copy provenance copies")?;
+    for event in copies {
+        for key in [
+            "sourceProjectName",
+            "sourceProjectPath",
+            "sourceAgentRef",
+            "copiedAt",
+        ] {
+            if event
+                .get(key)
+                .and_then(|v| v.as_str())
+                .is_none_or(|v| v.trim().is_empty())
+            {
+                return Err(format!("Invalid copy provenance {key}"));
+            }
+        }
+        let reference = event["sourceAgentRef"].as_str().expect("validated string");
+        let bare = reference
+            .strip_prefix("_agent_")
+            .ok_or("Invalid provenance agent ref")?;
+        validate_existing_name(bare, "Agent")?;
+        if reference.contains(['/', '\\', ':', '\0']) {
+            return Err("Invalid provenance agent ref".into());
+        }
+        let time = chrono::DateTime::parse_from_rfc3339(
+            event["copiedAt"].as_str().expect("validated string"),
+        )
+        .map_err(|e| format!("Invalid copy provenance time: {e}"))?;
+        if time.offset().local_minus_utc() != 0 {
+            return Err("Copy provenance time must be UTC".into());
+        }
+    }
+    Ok(value)
+}
+
+#[allow(dead_code)] // P02 integration; Value preserves unknown document/event fields.
+fn append_copy_provenance(
+    mut value: serde_json::Value,
+    source_project: &Path,
+    source_ref: &str,
+) -> Result<serde_json::Value, String> {
+    let name = source_project
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or("Invalid source project name")?;
+    value["copies"].as_array_mut().ok_or("Invalid copy provenance copies")?.push(serde_json::json!({
+        "sourceProjectName": name,
+        "sourceProjectPath": crate::path_utils::path_to_string_without_windows_verbatim_prefix(source_project),
+        "sourceAgentRef": source_ref,
+        "copiedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+    }));
+    Ok(value)
+}
+
+#[allow(dead_code)] // P02 integration.
+fn cleanup_owned_copy_artifacts(owned: &OwnedCopyArtifacts) -> Result<(), String> {
+    let mut residues = Vec::new();
+    for entry in owned.entries.iter().rev() {
+        let path = owned.root.join(&entry.relative);
+        let remove = (|| -> Result<(), String> {
+            owned.verify_directories(&entry.relative)?;
+            let file = OwnedCopyArtifacts::open_existing(&path, entry.kind)?;
+            if OwnedCopyArtifacts::handle_identity(&file)? != entry.identity {
+                return Err("copy output replaced".into());
+            }
+            if entry.kind == MatrixCopyKind::File {
+                let stamp = OwnedCopyArtifacts::read_file(
+                    &path,
+                    None,
+                    None,
+                    &mut MatrixCopyHooks::default(),
+                )?;
+                if stamp.digest != entry.digest {
+                    return Err("copy output modified".into());
+                }
+                drop(file);
+                owned.verify_directories(&entry.relative)?;
+                let current = OwnedCopyArtifacts::open_existing(&path, entry.kind)?;
+                if OwnedCopyArtifacts::handle_identity(&current)? != entry.identity {
+                    return Err("copy output replaced".into());
+                }
+                drop(current);
+                std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+            } else {
+                drop(file);
+                owned.verify_directories(&entry.relative)?;
+                std::fs::remove_dir(&path).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = remove {
+            residues.push(format!("{}: {error}", path.display()));
+        }
+    }
+    if residues.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("copy cleanup residues: {}", residues.join("; ")))
+    }
+}
+
+#[allow(dead_code)] // P02 integration.
+fn copy_agent_matrix_strict(
+    source_project: &Path,
+    source_ref: &str,
+    destination_ac: &Path,
+    destination_ref: &str,
+) -> Result<OwnedCopyArtifacts, String> {
+    copy_agent_matrix_strict_with_hooks(
+        source_project,
+        source_ref,
+        destination_ac,
+        destination_ref,
+        &mut MatrixCopyHooks::default(),
+    )
+}
+
+#[allow(dead_code)] // P02 integration; test hooks share the production core.
+fn copy_agent_matrix_strict_with_hooks(
+    source_project: &Path,
+    source_ref: &str,
+    destination_ac: &Path,
+    destination_ref: &str,
+    hooks: &mut MatrixCopyHooks<'_>,
+) -> Result<OwnedCopyArtifacts, String> {
+    use std::io::Write;
+    let project = source_project.canonicalize().map_err(|e| e.to_string())?;
+    let ac = selected_ac_root(&project)?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let source_ref = resolve_agent_ref(&ac, source_ref)?;
+    let source = ac.join(&source_ref);
+    if OwnedCopyArtifacts::kind(&std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?)?
+        != MatrixCopyKind::Directory
+    {
+        return Err("Source Matrix must be a directory".into());
+    }
+    let canonical_source = source.canonicalize().map_err(|e| e.to_string())?;
+    let parent = canonical_source
+        .parent()
+        .ok_or("Source Matrix has no parent")?;
+    #[cfg(windows)]
+    let same_parent = path_key_for_delete_without_canonicalize(parent)
+        == path_key_for_delete_without_canonicalize(&ac);
+    #[cfg(not(windows))]
+    let same_parent = parent == ac;
+    if !same_parent {
+        return Err("Source Matrix is not a direct project child".into());
+    }
+    let source_ref = canonical_source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Source Matrix has no portable name")?;
+    let source_name = source_ref
+        .strip_prefix("_agent_")
+        .ok_or("Invalid source Matrix name")?;
+    validate_existing_name(source_name, "Agent")?;
+    let bare = destination_ref
+        .strip_prefix("_agent_")
+        .ok_or("Invalid destination agent ref")?;
+    validate_existing_name(bare, "Agent")?;
+    if destination_ref.contains(['/', '\\', ':', '\0']) {
+        return Err("Invalid destination agent ref".into());
+    }
+    let destination_ac = destination_ac.canonicalize().map_err(|e| e.to_string())?;
+    let root = destination_ac.join(destination_ref);
+    if root.starts_with(&canonical_source) {
+        return Err("Copy destination lies inside source Matrix".into());
+    }
+    let mut owned = OwnedCopyArtifacts {
+        root,
+        entries: Vec::new(),
+    };
+    owned.create_directory(Path::new(""))?;
+    let result = (|| -> Result<(), String> {
+        hooks.run(MatrixCopyStage::Reserved, &owned.root)?;
+        let mut first = std::collections::BTreeMap::new();
+        let mut history = None;
+        OwnedCopyArtifacts::scan(
+            &source,
+            Path::new(""),
+            Some(&mut owned),
+            &mut first,
+            &mut history,
+            hooks,
+        )?;
+        let provenance = validate_copy_provenance(history.as_deref())?;
+        hooks.run(MatrixCopyStage::BeforeVerify, &source)?;
+        let mut second = std::collections::BTreeMap::new();
+        OwnedCopyArtifacts::scan(&source, Path::new(""), None, &mut second, &mut None, hooks)?;
+        if first != second {
+            return Err("Source Matrix changed during copy".into());
+        }
+        let provenance = append_copy_provenance(provenance, &project, source_ref)?;
+        let bytes = serde_json::to_vec_pretty(&provenance).map_err(|e| e.to_string())?;
+        hooks.run(MatrixCopyStage::Provenance, &owned.root)?;
+        let mut output = owned.create_file(Path::new(COPY_PROVENANCE_FILE))?;
+        let entry = owned.entries.last_mut().expect("created provenance entry");
+        let mut written = 0;
+        while written < bytes.len() {
+            let count = output.write(&bytes[written..]).map_err(|e| e.to_string())?;
+            if count == 0 {
+                return Err("Provenance write made no progress".into());
+            }
+            written += count;
+            entry.digest = Some(OwnedCopyArtifacts::digest_bytes(&bytes[..written]));
+            hooks.run(MatrixCopyStage::ProvenanceWritten, &owned.root)?;
+        }
+        output.flush().map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if let Err(primary) = result {
+        let hook_error = hooks.run(MatrixCopyStage::BeforeCleanup, &owned.root).err();
+        let cleanup = cleanup_owned_copy_artifacts(&owned).err();
+        return Err(format!(
+            "Matrix copy failed: {primary}{}{}",
+            hook_error
+                .map(|e| format!("; cleanup hook: {e}"))
+                .unwrap_or_default(),
+            cleanup.map(|e| format!("; {e}")).unwrap_or_default()
+        ));
+    }
+    Ok(owned)
+}
+
 const TEAM_CONFIG_MUTATION_LOCK_NAME: &str = ".team-config-write.lock";
 const TEAM_CONFIG_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const TEAM_CONFIG_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
@@ -4526,6 +5134,632 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering as TestOrdering};
+
+    fn issue_3068_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("source-project");
+        let source = project.join(".ac/_agent_alpha");
+        let destination = tmp.path().join("destination/.ac");
+        for directory in [
+            "memory",
+            "memory-archive/old",
+            "plans",
+            "skills",
+            "inbox",
+            "outbox",
+            "empty",
+            "unknown/.hidden",
+        ] {
+            std::fs::create_dir_all(source.join(directory)).unwrap();
+        }
+        std::fs::create_dir_all(&destination).unwrap();
+        for (name, bytes) in [
+            ("Role.md", b"arbitrary role\0\xff".as_slice()),
+            ("config.json", b"{\"custom\":true}".as_slice()),
+            ("memory-archive/old/blob", &[0, 255, 1, 128]),
+            (".hidden", b"hidden".as_slice()),
+            ("unknown/.hidden/data", b"unknown".as_slice()),
+            ("inbox/message", b"inbox".as_slice()),
+            ("outbox/message", b"outbox".as_slice()),
+        ] {
+            std::fs::write(source.join(name), bytes).unwrap();
+        }
+        (tmp, project, source, destination)
+    }
+
+    fn issue_3068_inventory(source: &Path) -> BTreeMap<PathBuf, MatrixCopyStamp> {
+        let mut inventory = BTreeMap::new();
+        OwnedCopyArtifacts::scan(
+            source,
+            Path::new(""),
+            None,
+            &mut inventory,
+            &mut None,
+            &mut MatrixCopyHooks::default(),
+        )
+        .unwrap();
+        inventory
+    }
+
+    fn issue_3068_history(root: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(root.join(COPY_PROVENANCE_FILE)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn issue_3068_complete_independent_tree_and_multiple_copies() {
+        let (_tmp, project, source, destination) = issue_3068_fixture();
+        let before = issue_3068_inventory(&source);
+        let first =
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_first").unwrap();
+        let second =
+            copy_agent_matrix_strict(&project, "_agent_alpha", &destination, "_agent_second")
+                .unwrap();
+        assert_eq!(before, issue_3068_inventory(&source));
+        for (relative, stamp) in &before {
+            if stamp.kind == MatrixCopyKind::Directory {
+                assert!(first.root.join(relative).is_dir());
+            } else {
+                assert_eq!(
+                    std::fs::read(source.join(relative)).unwrap(),
+                    std::fs::read(first.root.join(relative)).unwrap()
+                );
+            }
+        }
+        std::fs::write(first.root.join("Role.md"), b"destination edit").unwrap();
+        assert_eq!(before, issue_3068_inventory(&source));
+        std::fs::write(source.join("config.json"), b"source edit").unwrap();
+        assert_eq!(
+            std::fs::read(first.root.join("config.json")).unwrap(),
+            b"{\"custom\":true}"
+        );
+        assert_ne!(
+            std::fs::read(first.root.join("Role.md")).unwrap(),
+            std::fs::read(second.root.join("Role.md")).unwrap()
+        );
+        cleanup_owned_copy_artifacts(&second).unwrap();
+        assert!(!second.root.exists());
+    }
+
+    #[test]
+    fn issue_3068_three_hops_preserve_history_and_unknown_fields() {
+        let (tmp, project, source, destination) = issue_3068_fixture();
+        let before = chrono::Utc::now();
+        let first =
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_beta").unwrap();
+        let a = issue_3068_history(&first.root);
+        assert_eq!(a["copies"].as_array().unwrap().len(), 1);
+        assert_eq!(a["copies"][0]["sourceProjectName"], "source-project");
+        assert_eq!(a["copies"][0]["sourceAgentRef"], "_agent_alpha");
+        let mut enriched = a.clone();
+        enriched["unknownDocument"] = serde_json::json!({"keep": [1, 2]});
+        enriched["copies"][0]["unknownEvent"] = serde_json::json!(["keep"]);
+        std::fs::write(
+            first.root.join(COPY_PROVENANCE_FILE),
+            serde_json::to_vec(&enriched).unwrap(),
+        )
+        .unwrap();
+        let c_project = tmp.path().join("third-project");
+        std::fs::create_dir_all(c_project.join(".ac")).unwrap();
+        let second = copy_agent_matrix_strict(
+            destination.parent().unwrap(),
+            "beta",
+            &c_project.join(".ac"),
+            "_agent_gamma",
+        )
+        .unwrap();
+        let b = issue_3068_history(&second.root);
+        assert_eq!(b["copies"].as_array().unwrap().len(), 2);
+        assert_eq!(b["copies"][0], enriched["copies"][0]);
+        assert_eq!(b["unknownDocument"], enriched["unknownDocument"]);
+        let d_project = tmp.path().join("fourth-project");
+        std::fs::create_dir_all(d_project.join(".ac")).unwrap();
+        let third =
+            copy_agent_matrix_strict(&c_project, "gamma", &d_project.join(".ac"), "_agent_delta")
+                .unwrap();
+        let c = issue_3068_history(&third.root);
+        assert_eq!(c["copies"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            &c["copies"].as_array().unwrap()[..2],
+            b["copies"].as_array().unwrap()
+        );
+        assert_eq!(c["copies"][2]["sourceProjectName"], "third-project");
+        assert_eq!(c["copies"][2]["sourceAgentRef"], "_agent_gamma");
+        for event in c["copies"].as_array().unwrap() {
+            let text = event["copiedAt"].as_str().unwrap();
+            assert!(text.ends_with('Z'));
+            let timestamp = chrono::DateTime::parse_from_rfc3339(text)
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            assert!(timestamp >= before && timestamp <= chrono::Utc::now());
+        }
+        assert!(!source.join(COPY_PROVENANCE_FILE).exists());
+        let entry = third
+            .entries
+            .iter()
+            .find(|e| e.relative == Path::new(COPY_PROVENANCE_FILE))
+            .unwrap();
+        assert_eq!(
+            entry.digest,
+            Some(OwnedCopyArtifacts::digest_bytes(
+                &std::fs::read(third.root.join(COPY_PROVENANCE_FILE)).unwrap()
+            ))
+        );
+        cleanup_owned_copy_artifacts(&third).unwrap();
+    }
+
+    #[test]
+    fn issue_3068_provenance_validation_and_source_intact() {
+        for history in [
+            b"{\"schemaVersion\":1,\"copies\":[]}".as_slice(),
+            b"not json".as_slice(),
+            b"{\"schemaVersion\":2,\"copies\":[]}".as_slice(),
+            br#"{"schemaVersion":1,"copies":[{"sourceProjectName":"p","sourceProjectPath":"/p","sourceAgentRef":"_agent_a","copiedAt":"yesterday"}]}"#.as_slice(),
+            br#"{"schemaVersion":1,"copies":[{"sourceProjectName":"","sourceProjectPath":"/p","sourceAgentRef":"_agent_a","copiedAt":"2026-01-01T00:00:00Z"}]}"#.as_slice(),
+            br#"{"schemaVersion":1,"copies":[{"sourceProjectName":"p","sourceProjectPath":"/p","sourceAgentRef":"../a","copiedAt":"2026-01-01T00:00:00Z"}]}"#.as_slice(),
+            br#"{"schemaVersion":1,"copies":[{"sourceProjectName":"p","sourceProjectPath":"/p","sourceAgentRef":"_agent_a","copiedAt":"2026-01-01T00:00:00+02:00"}]}"#.as_slice(),
+        ] {
+            let (_tmp, project, source, destination) = issue_3068_fixture();
+            std::fs::write(source.join(COPY_PROVENANCE_FILE), history).unwrap();
+            let before = issue_3068_inventory(&source);
+            let result = copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy");
+            if history == b"{\"schemaVersion\":1,\"copies\":[]}" {
+                let owned = result.unwrap();
+                assert_eq!(issue_3068_history(&owned.root)["copies"].as_array().unwrap().len(), 1);
+                cleanup_owned_copy_artifacts(&owned).unwrap();
+            } else {
+                assert!(result.is_err(), "{history:?}");
+                assert!(!destination.join("_agent_copy").exists());
+            }
+            assert_eq!(before, issue_3068_inventory(&source));
+        }
+    }
+
+    #[test]
+    fn issue_3068_provenance_changed_before_verify() {
+        let (_tmp, project, source, destination) = issue_3068_fixture();
+        std::fs::write(
+            source.join(COPY_PROVENANCE_FILE),
+            br#"{"schemaVersion":1,"copies":[],"tag":1}"#,
+        )
+        .unwrap();
+        let mut callback = |stage, path: &Path| {
+            if stage == MatrixCopyStage::BeforeVerify {
+                std::fs::write(
+                    path.join(COPY_PROVENANCE_FILE),
+                    br#"{"schemaVersion":1,"copies":[],"tag":2}"#,
+                )
+                .unwrap();
+            }
+            Ok(())
+        };
+        let error = copy_agent_matrix_strict_with_hooks(
+            &project,
+            "alpha",
+            &destination,
+            "_agent_copy",
+            &mut MatrixCopyHooks {
+                callback: Some(&mut callback),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("changed"), "{error}");
+        assert!(!destination.join("_agent_copy").exists());
+        assert!(std::fs::read_to_string(source.join(COPY_PROVENANCE_FILE))
+            .unwrap()
+            .contains("\"tag\":2"));
+    }
+
+    #[test]
+    fn issue_3068_readonly_source_bytes_only() {
+        let (_tmp, project, source, destination) = issue_3068_fixture();
+        let file = source.join("Role.md");
+        struct RestorePermissions(PathBuf, std::fs::Permissions);
+        impl Drop for RestorePermissions {
+            fn drop(&mut self) {
+                std::fs::set_permissions(&self.0, self.1.clone()).unwrap();
+            }
+        }
+        let original = std::fs::metadata(&file).unwrap().permissions();
+        let _restore = RestorePermissions(file.clone(), original.clone());
+        let mut readonly = original;
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&file, readonly).unwrap();
+        let before = issue_3068_inventory(&source);
+        let owned =
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").unwrap();
+        assert!(std::fs::metadata(&file).unwrap().permissions().readonly());
+        assert!(!std::fs::metadata(owned.root.join("Role.md"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert_eq!(before, issue_3068_inventory(&source));
+        cleanup_owned_copy_artifacts(&owned).unwrap();
+        assert!(!owned.root.exists());
+        assert!(std::fs::metadata(&file).unwrap().permissions().readonly());
+    }
+
+    #[test]
+    fn issue_3068_collision_and_invalid_reference_never_clobber() {
+        let (_tmp, project, _source, destination) = issue_3068_fixture();
+        let collision = destination.join("_agent_copy");
+        std::fs::create_dir(&collision).unwrap();
+        std::fs::write(collision.join("sentinel"), b"external").unwrap();
+        assert!(copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").is_err());
+        assert_eq!(
+            std::fs::read(collision.join("sentinel")).unwrap(),
+            b"external"
+        );
+        for invalid in ["../alpha", "/alpha", "a/b", r"a\b", "C:alpha"] {
+            assert!(
+                copy_agent_matrix_strict(&project, invalid, &destination, "_agent_new").is_err()
+            );
+            assert!(copy_agent_matrix_strict(&project, "alpha", &destination, invalid).is_err());
+        }
+        assert!(!destination.join("_agent_new").exists());
+    }
+
+    #[test]
+    fn issue_3068_injected_failures_cleanup_owned_output() {
+        for failure_stage in [
+            MatrixCopyStage::Reserved,
+            MatrixCopyStage::Streaming,
+            MatrixCopyStage::Provenance,
+            MatrixCopyStage::ProvenanceWritten,
+        ] {
+            let (_tmp, project, source, destination) = issue_3068_fixture();
+            std::fs::write(source.join("large.bin"), vec![77u8; 192 * 1024]).unwrap();
+            let mut triggered = false;
+            let mut callback = |stage, path: &Path| {
+                if stage == failure_stage
+                    && (stage != MatrixCopyStage::Streaming || path.ends_with("large.bin"))
+                {
+                    if stage == MatrixCopyStage::Streaming {
+                        let size = std::fs::metadata(destination.join("_agent_copy/large.bin"))
+                            .unwrap()
+                            .len();
+                        assert!(size > 0 && size < 192 * 1024);
+                    }
+                    triggered = true;
+                    return Err("injected primary failure".into());
+                }
+                Ok(())
+            };
+            let error = copy_agent_matrix_strict_with_hooks(
+                &project,
+                "alpha",
+                &destination,
+                "_agent_copy",
+                &mut MatrixCopyHooks {
+                    callback: Some(&mut callback),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(triggered);
+            assert!(error.contains("injected primary failure"));
+            assert!(!destination.join("_agent_copy").exists(), "{error}");
+        }
+    }
+
+    #[test]
+    fn issue_3068_source_changes_are_detected() {
+        for mutation in 0..5 {
+            let (_tmp, project, _source, destination) = issue_3068_fixture();
+            let mut callback = |stage, source: &Path| {
+                if stage == MatrixCopyStage::BeforeVerify {
+                    match mutation {
+                        0 => std::fs::write(source.join("added"), b"new").unwrap(),
+                        1 => std::fs::remove_file(source.join("Role.md")).unwrap(),
+                        2 => std::fs::write(source.join("Role.md"), b"changed bytes").unwrap(),
+                        3 => {
+                            std::fs::remove_file(source.join("Role.md")).unwrap();
+                            std::fs::create_dir(source.join("Role.md")).unwrap();
+                        }
+                        _ => std::fs::write(
+                            source.join(COPY_PROVENANCE_FILE),
+                            br#"{"schemaVersion":1,"copies":[]}"#,
+                        )
+                        .unwrap(),
+                    }
+                }
+                Ok(())
+            };
+            assert!(copy_agent_matrix_strict_with_hooks(
+                &project,
+                "alpha",
+                &destination,
+                "_agent_copy",
+                &mut MatrixCopyHooks {
+                    callback: Some(&mut callback),
+                    ..Default::default()
+                }
+            )
+            .is_err());
+            assert!(!destination.join("_agent_copy").exists());
+        }
+    }
+
+    #[test]
+    fn issue_3068_classifier_rejects_links_reparse_and_specials() {
+        for classification in [
+            (true, 0, false, true),
+            (false, FILE_ATTRIBUTE_REPARSE_POINT, true, false),
+            (false, 0, false, false),
+        ] {
+            let (_tmp, project, _source, destination) = issue_3068_fixture();
+            let error = copy_agent_matrix_strict_with_hooks(
+                &project,
+                "alpha",
+                &destination,
+                "_agent_copy",
+                &mut MatrixCopyHooks {
+                    classification: Some(classification),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains("rejects"), "{error}");
+            assert!(!destination.join("_agent_copy").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issue_3068_real_special_file_is_rejected() {
+        let (_tmp, project, source, destination) = issue_3068_fixture();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("socket")).unwrap();
+        let error =
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").unwrap_err();
+        assert!(error.contains("special"), "{error}");
+        assert!(!destination.join("_agent_copy").exists());
+    }
+
+    #[test]
+    fn issue_3068_cleanup_preserves_external_added_and_modified_files() {
+        let (_tmp, project, _source, destination) = issue_3068_fixture();
+        let mut callback = |stage, path: &Path| {
+            if stage == MatrixCopyStage::Provenance {
+                return Err("primary metadata failure".into());
+            }
+            if stage == MatrixCopyStage::BeforeCleanup {
+                std::fs::write(path.join("external"), b"external").unwrap();
+                std::fs::write(path.join("Role.md"), b"external modification").unwrap();
+            }
+            Ok(())
+        };
+        let error = copy_agent_matrix_strict_with_hooks(
+            &project,
+            "alpha",
+            &destination,
+            "_agent_copy",
+            &mut MatrixCopyHooks {
+                callback: Some(&mut callback),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("primary metadata failure") && error.contains("residues"),
+            "{error}"
+        );
+        let root = destination.join("_agent_copy");
+        assert_eq!(std::fs::read(root.join("external")).unwrap(), b"external");
+        assert_eq!(
+            std::fs::read(root.join("Role.md")).unwrap(),
+            b"external modification"
+        );
+        assert!(!root.join("config.json").exists());
+    }
+
+    fn issue_3068_replaced_directory_cleanup() {
+        for replace_root in [false, true] {
+            let (_tmp, project, _source, destination) = issue_3068_fixture();
+            let mut callback = |stage, root: &Path| {
+                if stage == MatrixCopyStage::Provenance {
+                    return Err("primary metadata failure".into());
+                }
+                if stage == MatrixCopyStage::BeforeCleanup {
+                    let selected = if replace_root {
+                        root.to_path_buf()
+                    } else {
+                        root.join("unknown")
+                    };
+                    let moved = destination.join("moved-owned-directory");
+                    std::fs::rename(&selected, &moved).unwrap();
+                    std::fs::create_dir(&selected).unwrap();
+                    if !replace_root {
+                        std::fs::create_dir(selected.join(".hidden")).unwrap();
+                        std::fs::write(selected.join(".hidden/data"), b"unknown").unwrap();
+                    }
+                    std::fs::write(selected.join("sentinel"), b"external").unwrap();
+                }
+                Ok(())
+            };
+            let error = copy_agent_matrix_strict_with_hooks(
+                &project,
+                "alpha",
+                &destination,
+                "_agent_copy",
+                &mut MatrixCopyHooks {
+                    callback: Some(&mut callback),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("primary metadata failure") && error.contains("residues"),
+                "{error}"
+            );
+            let selected = if replace_root {
+                destination.join("_agent_copy")
+            } else {
+                destination.join("_agent_copy/unknown")
+            };
+            assert_eq!(
+                std::fs::read(selected.join("sentinel")).unwrap(),
+                b"external"
+            );
+            if !replace_root {
+                assert_eq!(
+                    std::fs::read(selected.join(".hidden/data")).unwrap(),
+                    b"unknown"
+                );
+            }
+            assert!(destination.join("moved-owned-directory").exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn issue_3068_cleanup_preserves_replaced_directory_windows() {
+        issue_3068_replaced_directory_cleanup();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issue_3068_cleanup_preserves_replaced_directory_unix() {
+        issue_3068_replaced_directory_cleanup();
+    }
+
+    #[test]
+    fn issue_3068_cleanup_preserves_same_bytes_replacement_and_uncertain_identity() {
+        let (_tmp, project, _source, destination) = issue_3068_fixture();
+        let mut owned =
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").unwrap();
+        let path = owned.root.join("Role.md");
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::rename(&path, destination.join("moved-file")).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let error = cleanup_owned_copy_artifacts(&owned).unwrap_err();
+        assert!(error.contains("replaced"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        // An uncertain identity must preserve even a byte-identical root.
+        owned.entries[0].identity = MatrixCopyIdentity(0, 0);
+        assert!(cleanup_owned_copy_artifacts(&owned)
+            .unwrap_err()
+            .contains("residues"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn issue_3068_provenance_destination_is_created_exclusively() {
+        let (_tmp, project, _source, destination) = issue_3068_fixture();
+        let mut callback = |stage, root: &Path| {
+            if stage == MatrixCopyStage::Provenance {
+                std::fs::write(root.join(COPY_PROVENANCE_FILE), b"foreign provenance").unwrap();
+            }
+            Ok(())
+        };
+        let error = copy_agent_matrix_strict_with_hooks(
+            &project,
+            "alpha",
+            &destination,
+            "_agent_copy",
+            &mut MatrixCopyHooks {
+                callback: Some(&mut callback),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("residues"));
+        assert_eq!(
+            std::fs::read(destination.join("_agent_copy").join(COPY_PROVENANCE_FILE)).unwrap(),
+            b"foreign provenance"
+        );
+    }
+
+    #[test]
+    fn issue_3068_hardlinked_source_creates_independent_output_files() {
+        let (_tmp, project, source, destination) = issue_3068_fixture();
+        std::fs::hard_link(source.join("Role.md"), source.join("Role-linked.md")).unwrap();
+        let before = issue_3068_inventory(&source);
+        let owned =
+            copy_agent_matrix_strict(&project, "alpha", &destination, "_agent_copy").unwrap();
+        let first = File::open(owned.root.join("Role.md")).unwrap();
+        let second = File::open(owned.root.join("Role-linked.md")).unwrap();
+        let original = File::open(source.join("Role.md")).unwrap();
+        assert_ne!(
+            OwnedCopyArtifacts::handle_identity(&first).unwrap(),
+            OwnedCopyArtifacts::handle_identity(&second).unwrap()
+        );
+        assert_ne!(
+            OwnedCopyArtifacts::handle_identity(&first).unwrap(),
+            OwnedCopyArtifacts::handle_identity(&original).unwrap()
+        );
+        drop((first, second, original));
+        std::fs::write(owned.root.join("Role-linked.md"), b"copy changed").unwrap();
+        assert_eq!(before, issue_3068_inventory(&source));
+        assert_ne!(
+            std::fs::read(owned.root.join("Role-linked.md")).unwrap(),
+            std::fs::read(owned.root.join("Role.md")).unwrap()
+        );
+    }
+
+    #[test]
+    fn issue_3068_source_changes_during_streaming_fail() {
+        let (_tmp, project, source, destination) = issue_3068_fixture();
+        std::fs::write(source.join("large.bin"), vec![8u8; 192 * 1024]).unwrap();
+        let mut changed = false;
+        let mut callback = |stage, path: &Path| {
+            if stage == MatrixCopyStage::Streaming && path.ends_with("large.bin") && !changed {
+                use std::io::Write;
+                OpenOptions::new()
+                    .append(true)
+                    .open(path)
+                    .unwrap()
+                    .write_all(b"mutation")
+                    .unwrap();
+                changed = true;
+            }
+            Ok(())
+        };
+        let error = copy_agent_matrix_strict_with_hooks(
+            &project,
+            "alpha",
+            &destination,
+            "_agent_copy",
+            &mut MatrixCopyHooks {
+                callback: Some(&mut callback),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(changed);
+        assert!(error.contains("changed"), "{error}");
+        assert!(!destination.join("_agent_copy").exists());
+    }
+
+    #[test]
+    fn issue_3068_replaced_output_root_stops_child_creation() {
+        let (_tmp, project, _source, destination) = issue_3068_fixture();
+        let mut callback = |stage, root: &Path| {
+            if stage == MatrixCopyStage::Reserved {
+                std::fs::rename(root, destination.join("moved-reservation")).unwrap();
+                std::fs::create_dir(root).unwrap();
+                std::fs::write(root.join("sentinel"), b"external").unwrap();
+            }
+            Ok(())
+        };
+        let error = copy_agent_matrix_strict_with_hooks(
+            &project,
+            "alpha",
+            &destination,
+            "_agent_copy",
+            &mut MatrixCopyHooks {
+                callback: Some(&mut callback),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("replaced") && error.contains("residues"),
+            "{error}"
+        );
+        let root = destination.join("_agent_copy");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        assert_eq!(std::fs::read(root.join("sentinel")).unwrap(), b"external");
+    }
 
     // Test-only synchronous wrapper: acquires the mutation guard around
     // write_team_config_guarded.
