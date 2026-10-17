@@ -6,6 +6,8 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+## 0.45.1
+
 ### Added
 
 - Native selection screenshots are saved in the active replica's screenshots/ directory, created when needed. Existing captures and explicit window-screenshot --output destinations are unchanged. (#3070, #3074)
@@ -22,7 +24,6 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 ### Notes
 
 - Internal preparation adds optional profile-cell identity metadata, a persisted container-options preference and centralized settings constructors. Pair-hash derivation, container UI hiding and exclusive settings ownership are not activated by these changes. (#3050, #3054, #3062, #3064, #2993, #3053)
-
 ## 0.45.0
 
 ### Added
