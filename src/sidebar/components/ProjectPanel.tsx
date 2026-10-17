@@ -1407,9 +1407,11 @@ const ProjectPanel: Component = () => {
             return;
           }
           let raf: number | undefined;
+          let cancelled = false;
+          const useAnimationFrame = typeof window.requestAnimationFrame === "function";
+          const current = () => !cancelled && haloOrigin() === o;
           const measure = () => {
-            raf = undefined;
-            if (haloOrigin() !== o) return;
+            if (!current()) return;
             const rect = o.el.getBoundingClientRect();
             if (!o.el.isConnected || rect.width === 0 || rect.height === 0) {
               closeReplicaCtxMenu();
@@ -1435,33 +1437,49 @@ const ProjectPanel: Component = () => {
               closeReplicaCtxMenu();
               return;
             }
-            setHaloBox({
+            const next = {
               clip: { left, top, width: right - left, height: bottom - top },
               row: { left: rect.left - left, top: rect.top - top, width: rect.width, height: rect.height },
-            });
+            };
+            setHaloBox((previous) =>
+              previous &&
+              previous.clip.left === next.clip.left && previous.clip.top === next.clip.top &&
+              previous.clip.width === next.clip.width && previous.clip.height === next.clip.height &&
+              previous.row.left === next.row.left && previous.row.top === next.row.top &&
+              previous.row.width === next.row.width && previous.row.height === next.row.height
+                ? previous : next
+            );
+          };
+          const tick = () => {
+            if (!current()) return;
+            raf = undefined;
+            measure();
+            if (useAnimationFrame) schedule();
           };
           const schedule = () => {
-            if (raf !== undefined) return;
-            raf = typeof window.requestAnimationFrame === "function"
-              ? window.requestAnimationFrame(measure)
-              : window.setTimeout(measure, 0);
+            if (!current() || raf !== undefined) return;
+            raf = useAnimationFrame
+              ? window.requestAnimationFrame(tick)
+              : window.setTimeout(tick, 0);
           };
           const scrollOpts = { capture: true, passive: true } as const;
           window.addEventListener("scroll", schedule, scrollOpts);
           window.addEventListener("resize", schedule);
           const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
           observer?.observe(o.el);
-          measure();
           onCleanup(() => {
+            cancelled = true;
             window.removeEventListener("scroll", schedule, scrollOpts);
             window.removeEventListener("resize", schedule);
             observer?.disconnect();
             if (raf !== undefined) {
-              if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(raf);
+              if (useAnimationFrame) window.cancelAnimationFrame(raf);
               else window.clearTimeout(raf);
             }
             setHaloBox(null);
           });
+          measure();
+          if (useAnimationFrame) schedule();
         }));
         const groupErrorPinned = () => groupFlyoutOpen() && groupFlyoutHasError();
         const scheduleReplicaCtxMenuClose = () => {
