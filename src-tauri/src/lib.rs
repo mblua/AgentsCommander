@@ -5637,6 +5637,7 @@ pub fn run(
                 commands::ac_discovery::unarchive_project,
                 commands::ac_discovery::list_archived_projects,
                 commands::ac_discovery::discover_project,
+                commands::ac_discovery::get_project_file_difference,
                 commands::project_settings::get_project_groups,
                 commands::project_settings::update_project_groups,
                 commands::non_stop::non_stop_report,

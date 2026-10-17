@@ -424,6 +424,188 @@ async fn detect_repo_branch(dir: &str) -> Option<String> {
     }
 }
 
+// --- Project file difference (#3060) ---
+
+/// One total bound for every Git read of a single `get_project_file_difference` request.
+const PROJECT_FILE_DIFFERENCE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Inherited Git controls that would point the child at another repository or index.
+const PROJECT_GIT_REDIRECT_ENV: [&str; 6] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+/// Distinct paths of the Project's own repository that differ from the cached
+/// `origin/main`, untracked non-ignored files included. `None` = unknown; never
+/// a zero substituted for a failed read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileDifference {
+    pub count: Option<u32>,
+}
+
+/// Shared by the Tauri command and the WebSocket `BrowserProject` route.
+pub async fn get_project_file_difference_inner(path: &str) -> ProjectFileDifference {
+    read_project_file_difference(
+        Path::new(path),
+        PROJECT_FILE_DIFFERENCE_TIMEOUT,
+        run_project_git,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_project_file_difference(path: String) -> Result<ProjectFileDifference, String> {
+    Ok(get_project_file_difference_inner(&path).await)
+}
+
+/// Runner and bound are parameters so tests can inject a stalled or malformed Git;
+/// production always passes `run_project_git` and `PROJECT_FILE_DIFFERENCE_TIMEOUT`.
+async fn read_project_file_difference<R, Fut>(
+    project: &Path,
+    limit: Duration,
+    run: R,
+) -> ProjectFileDifference
+where
+    R: Fn(PathBuf, Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    let count =
+        match tokio::time::timeout(limit, count_project_file_difference(project, &run)).await {
+            Ok(Ok(count)) => Some(count),
+            Ok(Err(reason)) => {
+                log::debug!(
+                    "[discovery] project file difference unknown for {}: {reason}",
+                    project.display()
+                );
+                None
+            }
+            // Dropping the future drops the in-flight child, which `kill_on_drop` terminates.
+            Err(_) => {
+                log::debug!(
+                    "[discovery] project file difference timed out after {limit:?}: {}",
+                    project.display()
+                );
+                None
+            }
+        };
+    ProjectFileDifference { count }
+}
+
+async fn count_project_file_difference<R, Fut>(project: &Path, run: &R) -> Result<u32, String>
+where
+    R: Fn(PathBuf, Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    if existing_ac_root(project).is_none() {
+        return Err("not an AC project root".to_string());
+    }
+    let project_canonical =
+        std::fs::canonicalize(project).map_err(|e| format!("canonicalize project: {e}"))?;
+    let git = |args: &[&str]| run(project.to_path_buf(), project_git_args(args));
+
+    // A Project nested inside another repository must not report the parent's count.
+    let toplevel = git(&["rev-parse", "--show-toplevel"]).await?;
+    let toplevel = std::str::from_utf8(strip_line_terminator(&toplevel))
+        .map_err(|_| "toplevel is not UTF-8".to_string())?;
+    let toplevel_canonical =
+        std::fs::canonicalize(toplevel).map_err(|e| format!("canonicalize toplevel: {e}"))?;
+    if toplevel_canonical != project_canonical {
+        return Err("project is not its repository toplevel".to_string());
+    }
+
+    // Pin the OID so both reads compare against the same commit.
+    let oid = git(&["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"]).await?;
+    let oid = std::str::from_utf8(strip_line_terminator(&oid))
+        .ok()
+        .filter(|oid| !oid.is_empty() && oid.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| "origin/main did not resolve to an OID".to_string())?
+        .to_string();
+
+    let diff = git(&[
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        &oid,
+        "--",
+    ])
+    .await?;
+    let untracked = git(&["ls-files", "--others", "--exclude-standard", "-z", "--"]).await?;
+
+    let mut paths = std::collections::HashSet::new();
+    paths.extend(parse_nul_records(&diff)?);
+    paths.extend(parse_nul_records(&untracked)?);
+    u32::try_from(paths.len()).map_err(|_| "path count exceeds u32".to_string())
+}
+
+fn project_git_args(args: &[&str]) -> Vec<String> {
+    ["--no-optional-locks", "-c", "core.fsmonitor=false"]
+        .iter()
+        .chain(args)
+        .map(|arg| arg.to_string())
+        .collect()
+}
+
+/// Strips one trailing LF or CRLF only; spaces in a path are preserved.
+fn strip_line_terminator(bytes: &[u8]) -> &[u8] {
+    let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    bytes.strip_suffix(b"\r").unwrap_or(bytes)
+}
+
+/// NUL-terminated `-z` records as raw bytes. Non-empty output that is not
+/// NUL-terminated, or an empty record, is malformed.
+fn parse_nul_records(bytes: &[u8]) -> Result<Vec<&[u8]>, String> {
+    let Some(body) = bytes.strip_suffix(b"\0") else {
+        return if bytes.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err("git output is not NUL-terminated".to_string())
+        };
+    };
+    let records: Vec<&[u8]> = body.split(|b| *b == 0).collect();
+    if records.iter().any(|record| record.is_empty()) {
+        return Err("git output has an empty record".to_string());
+    }
+    Ok(records)
+}
+
+async fn run_project_git(cwd: PathBuf, args: Vec<String>) -> Result<Vec<u8>, String> {
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut cmd = tokio::process::Command::new("git");
+    crate::pty::credentials::scrub_credentials_from_tokio_command(&mut cmd);
+    crate::config::agent_path::apply_search_path_to_tokio_command(&mut cmd);
+    for var in PROJECT_GIT_REDIRECT_ENV {
+        cmd.env_remove(var);
+    }
+    cmd.args(&args)
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    // args[3] is the subcommand after the shared prefix; stderr stays out of the result.
+    let subcommand = args.get(3).map(String::as_str).unwrap_or("?");
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| format!("spawn git {subcommand}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("git {subcommand} exited with {}", out.status));
+    }
+    Ok(out.stdout)
+}
+
 // --- Discovery Branch Watcher ---
 
 const BRANCH_POLL_INTERVAL: Duration = Duration::from_secs(15);
@@ -7960,5 +8142,282 @@ mod snapshot_null_tests {
             .unwrap();
         assert!(missing.task.is_none());
         assert!(missing.task_title.is_none());
+    }
+
+    // --- Project file difference (#3060) ---
+
+    /// Runs fixture Git with a local identity and no signing; global config is never written.
+    fn fixture_git(dir: &Path, args: &[&str]) {
+        let mut cmd = std::process::Command::new("git");
+        for var in PROJECT_GIT_REDIRECT_ENV {
+            cmd.env_remove(var);
+        }
+        let status = cmd
+            .args([
+                "-c",
+                "user.name=AC Test",
+                "-c",
+                "user.email=ac-test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.autocrlf=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("spawn fixture git");
+        assert!(status.success(), "fixture git {args:?} failed");
+    }
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(path, contents).expect("write fixture file");
+    }
+
+    /// A committed Project (`.ac` included) whose `origin/main` is its base commit.
+    fn project_file_difference_fixture() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        write_file(&project.join("a.txt"), "a\n");
+        write_file(&project.join("b.txt"), "b\n");
+        write_file(&project.join(".ac").join("keep.md"), "keep\n");
+        write_file(&project.join(".gitignore"), "ignored.txt\n.ac/room-*/\n");
+        fixture_git(&project, &["init", "-q", "-b", "main"]);
+        fixture_git(&project, &["add", "-A"]);
+        fixture_git(&project, &["commit", "-q", "-m", "base"]);
+        fixture_git(
+            &project,
+            &["update-ref", "refs/remotes/origin/main", "HEAD"],
+        );
+        (temp, project)
+    }
+
+    async fn project_file_difference_count(project: &Path) -> Option<u32> {
+        get_project_file_difference_inner(project.to_str().expect("utf8 path"))
+            .await
+            .count
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_clean_is_zero_and_tracked_change_is_one() {
+        let (_temp, project) = project_file_difference_fixture();
+        assert_eq!(project_file_difference_count(&project).await, Some(0));
+
+        // Positive control: a constant zero or null counter fails here.
+        write_file(&project.join("a.txt"), "changed\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(1));
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_counts_each_kind_of_difference() {
+        let (_temp, project) = project_file_difference_fixture();
+
+        // committed-only: HEAD moved past origin/main, worktree equals HEAD
+        write_file(&project.join("a.txt"), "committed\n");
+        fixture_git(&project, &["commit", "-q", "-am", "ahead"]);
+        assert_eq!(project_file_difference_count(&project).await, Some(1));
+
+        // staged-only
+        write_file(&project.join("b.txt"), "staged\n");
+        fixture_git(&project, &["add", "b.txt"]);
+        assert_eq!(project_file_difference_count(&project).await, Some(2));
+
+        // deletion, then restoring it removes the difference again
+        std::fs::remove_file(project.join(".gitignore")).expect("delete");
+        assert_eq!(project_file_difference_count(&project).await, Some(3));
+        write_file(&project.join(".gitignore"), "ignored.txt\n.ac/room-*/\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(2));
+
+        // added to the index
+        write_file(&project.join("added.txt"), "added\n");
+        fixture_git(&project, &["add", "added.txt"]);
+        assert_eq!(project_file_difference_count(&project).await, Some(3));
+
+        // untracked
+        write_file(&project.join("untracked.txt"), "new\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(4));
+
+        // ignored does not count
+        write_file(&project.join("ignored.txt"), "ignored\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(4));
+
+        // versionable `.ac` content gets no special exclusion: one modified, one new
+        write_file(&project.join(".ac").join("keep.md"), "changed\n");
+        write_file(&project.join(".ac").join("new.md"), "new\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(6));
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_unstaged_deleted_and_staged_plus_unstaged_count_once() {
+        let (_temp, project) = project_file_difference_fixture();
+
+        write_file(&project.join("a.txt"), "staged\n");
+        fixture_git(&project, &["add", "a.txt"]);
+        write_file(&project.join("a.txt"), "staged then unstaged\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(1));
+
+        std::fs::remove_file(project.join("b.txt")).expect("delete");
+        assert_eq!(project_file_difference_count(&project).await, Some(2));
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_is_net_and_rename_is_two_paths() {
+        let (_temp, project) = project_file_difference_fixture();
+
+        // committed away and back again: worktree equals origin/main
+        write_file(&project.join("a.txt"), "temporary\n");
+        fixture_git(&project, &["commit", "-q", "-am", "temporary"]);
+        write_file(&project.join("a.txt"), "a\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(0));
+
+        fixture_git(&project, &["mv", "b.txt", "renamed.txt"]);
+        assert_eq!(project_file_difference_count(&project).await, Some(2));
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_counts_spaced_and_unicode_names() {
+        let (_temp, project) = project_file_difference_fixture();
+        write_file(
+            &project.join("spaced name \u{f1} \u{fc} \u{6f22}.txt"),
+            "x\n",
+        );
+        write_file(&project.join(" leading space.txt"), "x\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(2));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn project_file_difference_counts_newline_name_once() {
+        let (_temp, project) = project_file_difference_fixture();
+        write_file(&project.join("line\nbreak.txt"), "x\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(1));
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_ignores_room_clones_but_counts_project() {
+        let (_temp, project) = project_file_difference_fixture();
+        let clone = project.join(".ac").join("room-01").join("repo-x");
+        write_file(&clone.join("inner.txt"), "inner\n");
+        fixture_git(&clone, &["init", "-q", "-b", "main"]);
+        fixture_git(&clone, &["add", "-A"]);
+        fixture_git(&clone, &["commit", "-q", "-m", "inner"]);
+        write_file(&clone.join("inner.txt"), "inner changed\n");
+        write_file(&clone.join("inner-new.txt"), "new\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(0));
+
+        write_file(&project.join("a.txt"), "changed\n");
+        assert_eq!(project_file_difference_count(&project).await, Some(1));
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_is_unknown_without_origin_main() {
+        let (_temp, project) = project_file_difference_fixture();
+        fixture_git(&project, &["update-ref", "-d", "refs/remotes/origin/main"]);
+        assert_eq!(project_file_difference_count(&project).await, None);
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_is_unknown_for_non_project_and_nested_project() {
+        let (temp, project) = project_file_difference_fixture();
+
+        // a Project nested inside another repository never reports the parent's count
+        write_file(&project.join("a.txt"), "changed\n");
+        let nested = project.join("nested");
+        std::fs::create_dir_all(nested.join(".ac")).expect("nested .ac");
+        assert_eq!(project_file_difference_count(&nested).await, None);
+
+        // a repository without `.ac` is not a Project
+        std::fs::remove_dir_all(project.join(".ac")).expect("remove .ac");
+        assert_eq!(project_file_difference_count(&project).await, None);
+
+        // a `.ac` directory with no repository of its own
+        let bare = temp.path().join("bare");
+        std::fs::create_dir_all(bare.join(".ac")).expect("bare .ac");
+        assert_eq!(project_file_difference_count(&bare).await, None);
+    }
+
+    /// Answers the reads like Git would for `project`, with `diff` scripted.
+    fn scripted_git(
+        project: PathBuf,
+        diff: &'static [u8],
+    ) -> impl Fn(PathBuf, Vec<String>) -> std::future::Ready<Result<Vec<u8>, String>> {
+        move |_cwd, args| {
+            let out = match args.get(3).map(String::as_str) {
+                Some("rev-parse") if args.iter().any(|a| a == "--show-toplevel") => {
+                    format!("{}\n", project.display()).into_bytes()
+                }
+                Some("rev-parse") => b"0123456789abcdef0123456789abcdef01234567\n".to_vec(),
+                Some("diff") => diff.to_vec(),
+                Some("ls-files") => Vec::new(),
+                other => return std::future::ready(Err(format!("unexpected {other:?}"))),
+            };
+            std::future::ready(Ok(out))
+        }
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_scripted_reads_parse_or_are_unknown() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(project.join(".ac")).expect(".ac");
+        let limit = Duration::from_secs(5);
+        let project: &Path = &project;
+        let read = move |diff: &'static [u8]| {
+            read_project_file_difference(project, limit, scripted_git(project.to_path_buf(), diff))
+        };
+
+        // Sensitivity control for the scripted runner itself; duplicates count once.
+        assert_eq!(read(b"a.txt\0b.txt\0a.txt\0").await.count, Some(2));
+        assert_eq!(read(b"").await.count, Some(0));
+        // not NUL-terminated, and an empty record, are malformed
+        assert_eq!(read(b"a.txt").await.count, None);
+        assert_eq!(read(b"a.txt\0\0").await.count, None);
+
+        let failing = read_project_file_difference(project, limit, |_, _| {
+            std::future::ready(Err::<Vec<u8>, String>("spawn failed".to_string()))
+        })
+        .await;
+        assert_eq!(failing.count, None);
+    }
+
+    #[test]
+    fn project_file_difference_parser_keeps_raw_bytes() {
+        let records = parse_nul_records(b"new\nline\0\xff\xfe\0 spaced \0").expect("parse");
+        assert_eq!(
+            records,
+            vec![&b"new\nline"[..], &b"\xff\xfe"[..], &b" spaced "[..]]
+        );
+        assert_eq!(strip_line_terminator(b" path \r\n"), b" path ");
+        assert_eq!(strip_line_terminator(b" path \n"), b" path ");
+        assert_eq!(strip_line_terminator(b" path "), b" path ");
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_timeout_is_unknown_and_bounded() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(project.join(".ac")).expect(".ac");
+
+        // The outer bound fails if the internal timeout is removed.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            read_project_file_difference(&project, Duration::from_millis(50), |_, _| {
+                std::future::pending::<Result<Vec<u8>, String>>()
+            }),
+        )
+        .await
+        .expect("internal timeout must bound a stalled git");
+        assert_eq!(result.count, None);
+    }
+
+    #[test]
+    fn project_file_difference_serializes_count_contract() {
+        let json_of = |count| serde_json::to_value(ProjectFileDifference { count }).unwrap();
+        assert_eq!(json_of(Some(0)), serde_json::json!({ "count": 0 }));
+        assert_eq!(json_of(None), serde_json::json!({ "count": null }));
+        assert_eq!(json_of(Some(7)), serde_json::json!({ "count": 7 }));
     }
 }

@@ -29,6 +29,7 @@ pub struct WsState {
 enum BrowserProjectCommand {
     CheckProjectPath,
     DiscoverProject,
+    GetProjectFileDifference,
     GetProjectGroups,
     UpdateProjectGroups,
     OpenProject,
@@ -92,6 +93,9 @@ fn route_web_command(cmd: &str) -> WebCommandRoute {
         }
         "discover_project" => {
             WebCommandRoute::BrowserProject(BrowserProjectCommand::DiscoverProject)
+        }
+        "get_project_file_difference" => {
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::GetProjectFileDifference)
         }
         "get_project_groups" => {
             WebCommandRoute::BrowserProject(BrowserProjectCommand::GetProjectGroups)
@@ -1096,6 +1100,10 @@ async fn dispatch_browser_project_command(
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
 
+        BrowserProjectCommand::GetProjectFileDifference => {
+            project_file_difference_value(args).await
+        }
+
         BrowserProjectCommand::GetProjectGroups => {
             let path = require_str(args, "path")?;
             let result = crate::commands::project_settings::get_project_groups_inner(&path)?;
@@ -1194,6 +1202,13 @@ pub fn broadcast_all_r<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &str
 }
 
 // --- Arg helpers ---
+
+/// Same helper as the Tauri command; a failed read is `{count: null}`, not an error.
+async fn project_file_difference_value(args: &Value) -> Result<Value, String> {
+    let path = require_str(args, "path")?;
+    let result = crate::commands::ac_discovery::get_project_file_difference_inner(&path).await;
+    serde_json::to_value(result).map_err(|e| e.to_string())
+}
 
 fn require_str(args: &Value, key: &str) -> Result<String, String> {
     args.get(key)
@@ -1450,6 +1465,10 @@ mod tests {
             ("open_project", BrowserProjectCommand::OpenProject),
             ("discover_project", BrowserProjectCommand::DiscoverProject),
             (
+                "get_project_file_difference",
+                BrowserProjectCommand::GetProjectFileDifference,
+            ),
+            (
                 "check_project_path",
                 BrowserProjectCommand::CheckProjectPath,
             ),
@@ -1477,6 +1496,25 @@ mod tests {
                 "{command} should be routed before Unknown command"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn project_file_difference_web_route_reaches_shared_helper() {
+        assert_eq!(
+            route_web_command("get_project_file_difference"),
+            WebCommandRoute::BrowserProject(BrowserProjectCommand::GetProjectFileDifference)
+        );
+
+        // A directory without `.ac` reaches the helper and comes back unknown, not an error.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().to_str().expect("utf8 path");
+        assert_eq!(
+            project_file_difference_value(&json!({ "path": path }))
+                .await
+                .expect("helper result"),
+            json!({ "count": null })
+        );
+        assert!(project_file_difference_value(&json!({})).await.is_err());
     }
 
     #[test]
