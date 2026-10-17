@@ -1,6 +1,6 @@
 import { createEffect, onCleanup } from "solid-js";
 import type { AcWorkgroup } from "../../shared/types";
-import { findReplicaSession, workgroupCiRunning } from "../components/workgroup-session";
+import { findReplicaSession, roomCiRunning } from "../components/room-session";
 import { projectStore, type ProjectState } from "./project";
 import { sessionsStore } from "./sessions";
 import { normalizeProjectPathForCompare } from "./project-refresh";
@@ -30,7 +30,7 @@ function pruneGone(seen: Set<string>): void {
 
 /** #2202 - stamps `lastActivityBySessionId` on a room's CI falling edge, so a room
  *  whose CI just finished floats under sort-by-activity exactly as a session that
- *  just stopped working does. Reads `workgroupCiRunning`, the same predicate the
+ *  just stopped working does. Reads `roomCiRunning`, the same predicate the
  *  rail counter, dot, tooltip, row tint and watchdog read, so the stamp cannot
  *  disagree with what the user sees. Call once, from a component body. */
 export function startCiActivityStamp(): void {
@@ -40,7 +40,7 @@ export function startCiActivityStamp(): void {
       for (const wg of project.workgroups) {
         const key = keyFor(project, wg);
         seen.add(key);
-        const now = workgroupCiRunning(wg);
+        const now = roomCiRunning(wg);
         const before = previous.get(key);
         previous.set(key, now);
         if (before !== true || now) continue; // stamp only on true -> false

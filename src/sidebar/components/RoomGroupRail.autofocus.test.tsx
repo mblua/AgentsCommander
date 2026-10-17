@@ -22,7 +22,7 @@ import {
   activeWorkgroupGroupSelectionKey,
   createSidebarSelectionScrollReset,
 } from "../App";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import RoomGroupRail from "./RoomGroupRail";
 import ProjectPanel from "./ProjectPanel";
 
 // #810 - Two backslash Windows paths (grinch F4). Forward-slash or simplified
@@ -167,7 +167,7 @@ const SidebarHarness: Component = () => {
   createSidebarSelectionScrollReset(() => scrollableEl);
   return (
     <div class="sidebar-body">
-      <WorkgroupGroupRail projects={projectStore.projects} />
+      <RoomGroupRail projects={projectStore.projects} />
       <div class="sidebar-scrollable" ref={scrollableEl}>
         <ProjectPanel />
       </div>
@@ -175,7 +175,7 @@ const SidebarHarness: Component = () => {
   );
 };
 
-describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
+describe("RoomGroupRail selection focus (#810/#941)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

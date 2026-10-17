@@ -20,12 +20,12 @@ import {
   exactGroupRegexForWorkgroup,
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import RoomGroupRail from "./RoomGroupRail";
 
 const projectPath = "C:\\Project";
 const otherProjectPath = "C:\\OtherProject";
 
-function wg(name: string, root = projectPath): AcWorkgroup {
+function room(name: string, root = projectPath): AcWorkgroup {
   return {
     name,
     path: `${root}\\.ac\\${name}`,
@@ -46,7 +46,7 @@ function project(): ProjectState {
   return {
     path: projectPath,
     folderName: "Project",
-    workgroups: [wg("wg-1-dev-team"), wg("wg-2-rust-team"), wg("wg-3-docs-team")],
+    workgroups: [room("wg-1-dev-team"), room("wg-2-rust-team"), room("wg-3-docs-team")],
     agents: [],
     teams: [],
     loops: [],
@@ -55,11 +55,11 @@ function project(): ProjectState {
 }
 
 /** A session that makes the given workgroup "working" (running dot). */
-function replicaSession(wgName: string): Session {
+function replicaSession(roomName: string): Session {
   return session({
-    id: `session-${wgName}`,
-    name: `${wgName}/dev-webpage-ui`,
-    workingDirectory: `${projectPath}\\.ac\\${wgName}\\__agent_dev-webpage-ui`,
+    id: `session-${roomName}`,
+    name: `${roomName}/dev-webpage-ui`,
+    workingDirectory: `${projectPath}\\.ac\\${roomName}\\__agent_dev-webpage-ui`,
     status: "running",
   });
 }
@@ -196,14 +196,14 @@ async function seedProjectStore(fake: FakeTransport, paths: string[]): Promise<v
     return discovery({
       workgroups:
         path === projectPath
-          ? [wg("wg-1-dev-team"), wg("wg-2-rust-team"), wg("wg-3-docs-team")]
-          : [wg("wg-9-ops-team", path)],
+          ? [room("wg-1-dev-team"), room("wg-2-rust-team"), room("wg-3-docs-team")]
+          : [room("wg-9-ops-team", path)],
     });
   });
   for (const path of paths) await projectStore.createAndLoad(path);
 }
 
-describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
+describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
   beforeEach(() => {
     resetUiStoresForTests();
   });
@@ -222,7 +222,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
     it("issues no set_rail_collapse and leaves every header expanded, while the ProjectPanel auto-focus still fires", async () => {
       const fake = railFake();
       const rendered = renderWithFakeTransport(
-        () => <WorkgroupGroupRail projects={projectStore.projects} />,
+        () => <RoomGroupRail projects={projectStore.projects} />,
         fake
       );
       try {
@@ -252,7 +252,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
   describe("collapsible headers", () => {
     it("folds a project section on header click, persists the snapshot, and restores aria-expanded", async () => {
       const fake = railFake();
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(target("workgroupGroups.button.ui")).toBeTruthy());
         const header = target<HTMLElement>("workgroupGroups.projectLabel.Project");
@@ -283,7 +283,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
     it("keeps the config error badge visible while the section is collapsed", async () => {
       const fake = railFake();
       fake.reject("get_project_groups", "disk denied");
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() =>
           expect(document.querySelector(".workgroup-group-rail-error")).toBeTruthy()
@@ -312,7 +312,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
           ],
         })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.ui"]));
         const header = target<HTMLElement>("workgroupGroups.favorites.header");
@@ -337,7 +337,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
   describe("favorite / unfavorite via the context menu", () => {
     it("offers Favorite on a user group, renders it in Favorites, and KEEPS it in its project section", async () => {
       const fake = railFake();
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(target("workgroupGroups.button.rust")).toBeTruthy());
         expect(maybeTarget("workgroupGroups.favorites")).toBeNull();
@@ -368,7 +368,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
           ],
         })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.ui"]));
 
@@ -393,7 +393,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
           ],
         })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.ui"]));
 
@@ -410,7 +410,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
 
     it("exposes no favorite option on All / Ungrouped or the project header", async () => {
       const fake = railFake(groupsConfig({ nonStop: { ...defaultNonStop(), show: true } }));
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(target("workgroupGroups.button.nonstop")).toBeTruthy());
 
@@ -436,7 +436,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
   describe("the Non-stop pseudo-group is favoritable (#1257)", () => {
     it("offers Favorite on the Non-stop entry, renders it in Favorites, and KEEPS it in its project section", async () => {
       const fake = railFake(groupsConfig({ nonStop: { ...defaultNonStop(), show: true } }));
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(target("workgroupGroups.button.nonstop")).toBeTruthy());
         expect(maybeTarget("workgroupGroups.favorites")).toBeNull();
@@ -471,7 +471,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
       const fake = railFake(
         groupsConfig({ nonStop: { ...defaultNonStop(), show: true, favorite: true } })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(nonStopFavoriteKeys()).toEqual(["Project"]));
 
@@ -492,7 +492,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
       const fake = railFake(
         groupsConfig({ nonStop: { ...defaultNonStop(), show: false, favorite: true } })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(target("workgroupGroups.button.ui")).toBeTruthy());
 
@@ -508,7 +508,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
 
     it("auto-closes the Non-stop context menu when Non-stop is switched off underneath it", async () => {
       const fake = railFake(groupsConfig({ nonStop: { ...defaultNonStop(), show: true } }));
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(target("workgroupGroups.button.nonstop")).toBeTruthy());
         await openMenuOn(target("workgroupGroups.button.nonstop"));
@@ -540,7 +540,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
           nonStop: { ...defaultNonStop(), show: true, favorite: true },
         })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(nonStopFavoriteKeys()).toEqual(["Project"]));
 
@@ -583,7 +583,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
           nonStop: { ...defaultNonStop(), show: true, favorite: true },
         })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         // (#1257 D4) First within its own project's block, mirroring the project
         // section's own order (All, Ungrouped, Non-stop, then groups).
@@ -603,7 +603,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
       const fake = railFake(
         groupsConfig({ nonStop: { ...defaultNonStop(), show: true, favorite: true } })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(nonStopFavoriteKeys()).toEqual(["Project"]));
 
@@ -626,7 +626,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
       const fake = railFake(
         groupsConfig({ nonStop: { ...defaultNonStop(), show: false, favorite: true } })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(target("workgroupGroups.button.ui")).toBeTruthy());
         expect(maybeTarget("workgroupGroups.favorites")).toBeNull();
@@ -658,7 +658,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
         })
       );
       const rendered = renderWithFakeTransport(
-        () => <WorkgroupGroupRail projects={projectStore.projects} />,
+        () => <RoomGroupRail projects={projectStore.projects} />,
         fake
       );
       try {
@@ -692,7 +692,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
     it("keeps the project-section testid namespaces byte-identical when a group is favorited", async () => {
       const fake = railFake();
       sessionsStore.setSessions([replicaSession("wg-1-dev-team")]);
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(target("workgroupGroups.button.ui")).toBeTruthy());
         const orderBefore = railButtonOrder();
@@ -741,7 +741,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
       );
       const rendered = renderWithFakeTransport(
         () => (
-          <WorkgroupGroupRail projects={[{ ...project(), workgroups: [wg(astralName)] }]} />
+          <RoomGroupRail projects={[{ ...project(), workgroups: [room(astralName)] }]} />
         ),
         fake
       );
@@ -764,7 +764,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
     // the group to the front and PERSIST it.
     it("does not reorder when the header is clicked mid-drag (G3 cancels the gesture)", async () => {
       const fake = railFake();
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
         const rail = target<HTMLElement>("workgroupGroups.rail.Project");
@@ -813,7 +813,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
     // `if (candidates.length === 0) return null`, this reorders `docs` to index 0.
     it("does not reorder when every drop candidate has collapsed away (G1)", async () => {
       const fake = railFake();
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
         const rail = target<HTMLElement>("workgroupGroups.rail.Project");
@@ -852,7 +852,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
           ],
         })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.rust"]));
         expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]);
@@ -891,7 +891,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
           ],
         })
       );
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.ui"]));
         const favorite = target<HTMLElement>("workgroupGroups.favoriteButton.Project.ui");
@@ -922,7 +922,7 @@ describe("WorkgroupGroupRail favorites + collapsible rail (#965)", () => {
         })
       );
       sessionsStore.setSessions([replicaSession("wg-1-dev-team")]);
-      const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
         await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.ui"]));
 

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ProjectPanel from "./ProjectPanel";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import RoomGroupRail from "./RoomGroupRail";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   click,
@@ -224,7 +224,7 @@ describe("ProjectPanel collapse state", () => {
     const rendered = renderWithFakeTransport(
       () => (
         <div class="sidebar-body">
-          <WorkgroupGroupRail projects={projectStore.projects} />
+          <RoomGroupRail projects={projectStore.projects} />
           <div class="sidebar-scrollable">
             <ProjectPanel />
           </div>

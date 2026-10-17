@@ -16,8 +16,8 @@ import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import { automationIdPart } from "./replica-repo-badges";
 import { remoteActivityStore } from "../stores/remote-activity";
-import { splitWorkgroupsByActive, splitWorkgroupsByWorking } from "./workgroup-session";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import { splitRoomsByActive, splitRoomsByWorking } from "./room-session";
+import RoomGroupRail from "./RoomGroupRail";
 import type { CiState } from "../../shared/types";
 
 // #1755 leg 2 — ProjectPanel must put `working` on the right elements in the
@@ -114,7 +114,7 @@ async function mountCiPanel(options: { withRail?: boolean } = {}) {
     () =>
       options.withRail ? (
         <div>
-          <WorkgroupGroupRail projects={projectStore.projects} />
+          <RoomGroupRail projects={projectStore.projects} />
           <ProjectPanel />
         </div>
       ) : (
@@ -156,8 +156,8 @@ function chip(root: HTMLElement, context: string, replica: string, wg: string = 
   return el;
 }
 
-/** The rail's working dots and counters come from splitWorkgroupsByWorking; these are
- *  the selectors WorkgroupGroupRail.test.tsx uses. */
+/** The rail's working dots and counters come from splitRoomsByWorking; these are
+ *  the selectors RoomGroupRail.test.tsx uses. */
 function railDots(root: HTMLElement): string[] {
   return Array.from(
     root.querySelectorAll<HTMLElement>('[data-ac-testid^="workgroupGroups.dot."]')
@@ -358,7 +358,7 @@ describe("ProjectPanel working tint (#1755)", () => {
   });
 
   it("3. a room where only the orchestrator works is a working room", async () => {
-    // Required behaviour 4. workgroupIsWorking iterates wg.agents, which
+    // Required behaviour 4. roomIsWorking iterates wg.agents, which
     // contains the coordinator replica, so this needs no extra predicate.
     const rendered = await mount();
     try {
@@ -790,12 +790,12 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
       );
 
       // #2202 - the session-only primitive is unchanged: neither room is WORKING.
-      const split = splitWorkgroupsByWorking(projectStore.projects[0].workgroups);
+      const split = splitRoomsByWorking(projectStore.projects[0].workgroups);
       expect(split.working.map((group) => group.name)).toEqual([]);
       expect(split.notWorking.map((group) => group.name)).toEqual([wgName, IDLE_ROOM]);
       // ...but the CI room IS active, and that is what every user-facing surface
       // reads: the room wash, the rail dot and the rail counter.
-      const active = splitWorkgroupsByActive(projectStore.projects[0].workgroups);
+      const active = splitRoomsByActive(projectStore.projects[0].workgroups);
       expect(active.active.map((group) => group.name)).toEqual([wgName]);
       expect(active.notActive.map((group) => group.name)).toEqual([IDLE_ROOM]);
       await waitFor(() => expect(anySubgroupWorking(rendered.root)).toBe(true));
@@ -869,7 +869,7 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
 
       // The session-only primitive is unchanged...
       expect(
-        splitWorkgroupsByWorking(projectStore.projects[0].workgroups).working
+        splitRoomsByWorking(projectStore.projects[0].workgroups).working
       ).toEqual([]);
       // ...and the rail counts the same room the strip tinted: AC 6, one frame,
       // one CI definition shared by both surfaces.

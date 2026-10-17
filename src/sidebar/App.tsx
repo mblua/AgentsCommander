@@ -77,7 +77,7 @@ import Titlebar from "./components/Titlebar";
 import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
-import WorkgroupGroupRail from "./components/WorkgroupGroupRail";
+import RoomGroupRail from "./components/RoomGroupRail";
 import OnboardingModal from "./components/OnboardingModal";
 import ContextTemplateUpdateModal from "./components/ContextTemplateUpdateModal";
 import AutoUnarchiveModal from "./components/AutoUnarchiveModal";
@@ -1126,13 +1126,13 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         <RootAgentBanner compact={sidebarCompact()} railSide={railSide()} />
         <div class="sidebar-body" data-rail-side={railSide()}>
           <Show when={railSide() === "left"}>
-            <WorkgroupGroupRail projects={projectStore.projects} />
+            <RoomGroupRail projects={projectStore.projects} />
           </Show>
           <div class="sidebar-scrollable" ref={sidebarScrollableEl}>
             <ProjectPanel />
           </div>
           <Show when={railSide() === "right"}>
-            <WorkgroupGroupRail projects={projectStore.projects} />
+            <RoomGroupRail projects={projectStore.projects} />
           </Show>
         </div>
       </div>

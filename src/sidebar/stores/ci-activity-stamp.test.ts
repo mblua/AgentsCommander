@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // #2202 - the CI-stop activity stamp. The watcher is a falling-edge detector over
-// `workgroupCiRunning`, the same predicate the rail counter, dot, tooltip, row
+// `roomCiRunning`, the same predicate the rail counter, dot, tooltip, row
 // tint and watchdog read, so the stamp cannot disagree with what the user sees.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createRoot } from "solid-js";
