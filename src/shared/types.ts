@@ -888,6 +888,8 @@ export interface AppSettings {
   coManagedEnabled?: boolean;
   /** Installation actions are opt-in. Absent or false = off. */
   codingAgentInstallEnabled?: boolean;
+  /** Controls container options visibility only; does not change runtime behavior. */
+  containerOptionsEnabled?: boolean;
 }
 
 // ── #2265/#2232 Co-managed: the phase-2 command wire shapes ──────────────────

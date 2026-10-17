@@ -318,6 +318,107 @@ pub fn validate_filename_shape(name: &str) -> Result<(), MessagingError> {
     Ok(())
 }
 
+/// Publish a snapshot without modifying the validated source or an existing copy.
+pub(crate) fn archive_message_snapshot(
+    ac_root: &Path,
+    canonical_source: &Path,
+    basename: &str,
+    snapshot: &[u8],
+) -> Result<PathBuf, String> {
+    archive_message_snapshot_with(ac_root, canonical_source, basename, snapshot, |_, _| Ok(()))
+}
+
+fn archive_message_snapshot_with(
+    ac_root: &Path,
+    canonical_source: &Path,
+    basename: &str,
+    snapshot: &[u8],
+    mut before: impl FnMut(&str, &Path) -> std::io::Result<()>,
+) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+
+    validate_filename_only(basename).map_err(|e| e.to_string())?;
+    let root = std::fs::canonicalize(ac_root).map_err(|e| e.to_string())?;
+    let key = format!(
+        "{:x}",
+        Sha256::digest(canonical_source.as_os_str().as_encoded_bytes())
+    );
+    let mut dir = root.clone();
+    for component in ["message-archive", &key] {
+        dir.push(component);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
+        if !dir.starts_with(&root) {
+            return Err("archive directory escapes Project AC Root".into());
+        }
+    }
+    let final_path = dir.join(basename);
+    fn compare(path: &Path, snapshot: &[u8]) -> Result<(), String> {
+        if !std::fs::symlink_metadata(path)
+            .map_err(|e| e.to_string())?
+            .is_file()
+        {
+            return Err("existing archive is not a regular file".into());
+        }
+        if std::fs::read(path).map_err(|e| e.to_string())? != snapshot {
+            return Err("archive conflict: source path already has different bytes".into());
+        }
+        Ok(())
+    }
+    let mut publish = || -> Result<PathBuf, String> {
+        match std::fs::symlink_metadata(&final_path) {
+            Ok(_) => return compare(&final_path, snapshot).map(|()| final_path.clone()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        let mut owned = None;
+        for _ in 0..3 {
+            let temp = dir.join(format!(".archive-{}.tmp", uuid::Uuid::new_v4()));
+            match OpenOptions::new().write(true).create_new(true).open(&temp) {
+                Ok(file) => {
+                    owned = Some((temp, file));
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        let (temp, mut file) = owned.ok_or("archive temporary name collisions exhausted")?;
+        let written = (|| -> Result<(), String> {
+            before("write", &final_path).map_err(|e| e.to_string())?;
+            file.write_all(snapshot).map_err(|e| e.to_string())?;
+            before("flush", &final_path).map_err(|e| e.to_string())?;
+            file.flush().map_err(|e| e.to_string())
+        })();
+        drop(file);
+        let result = written.and_then(|()| {
+            before("link", &final_path).map_err(|e| e.to_string())?;
+            match std::fs::hard_link(&temp, &final_path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    compare(&final_path, snapshot)
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        });
+        let cleanup = before("cleanup", &final_path).and_then(|()| std::fs::remove_file(&temp));
+        match (result, cleanup) {
+            (Ok(()), Ok(())) => Ok(final_path.clone()),
+            (Err(e), Ok(())) => Err(e),
+            (Ok(()), Err(e)) => Err(format!("copy published but temporary cleanup failed: {e}")),
+            (Err(e), Err(cleanup)) => Err(format!("{e}; temporary cleanup failed: {cleanup}")),
+        }
+    };
+    publish().map_err(|e| {
+        format!(
+            "{} -> {}: {e}",
+            canonical_source.display(),
+            final_path.display()
+        )
+    })
+}
+
 /// Atomically allocate a non-colliding path in `messaging_dir` starting from
 /// `base_filename`. Returns the absolute path and an open file handle
 /// (write-only, freshly created via `create_new`).
@@ -457,6 +558,188 @@ fn sanitize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    const ARCHIVE_NAME: &str = "20261017-000000-room1-a-to-room1-b-snapshot.md";
+
+    #[test]
+    fn issue_3081_bytes_identity_conflict_and_room_removal() {
+        let temp = tempfile::tempdir().unwrap();
+        let ac = temp.path().join(".ac");
+        let room = ac.join("room-1-team");
+        std::fs::create_dir_all(&room).unwrap();
+        let source = room.join(ARCHIVE_NAME);
+        let bytes = b"\xef\xbb\xbf# bytes\r\n\x00\xff";
+        std::fs::write(&source, bytes).unwrap();
+        let source = std::fs::canonicalize(source).unwrap();
+        let archived = super::archive_message_snapshot(&ac, &source, ARCHIVE_NAME, bytes).unwrap();
+        assert_eq!(std::fs::read(&archived).unwrap(), bytes);
+        assert_eq!(
+            super::archive_message_snapshot(&ac, &source, ARCHIVE_NAME, bytes).unwrap(),
+            archived
+        );
+        std::fs::write(&source, b"edited").unwrap();
+        assert!(
+            super::archive_message_snapshot(&ac, &source, ARCHIVE_NAME, b"edited")
+                .unwrap_err()
+                .contains("conflict")
+        );
+        let other = room.join("other").join(ARCHIVE_NAME);
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, b"other").unwrap();
+        let other = std::fs::canonicalize(other).unwrap();
+        let second = super::archive_message_snapshot(&ac, &other, ARCHIVE_NAME, b"other").unwrap();
+        assert_ne!(archived, second);
+        std::fs::remove_dir_all(&room).unwrap();
+        assert_eq!(std::fs::read(archived).unwrap(), bytes);
+        assert_eq!(std::fs::read(second).unwrap(), b"other");
+    }
+
+    #[test]
+    fn issue_3081_failures_clean_only_owned_temporary_and_keep_source() {
+        for stage in ["write", "flush", "link", "cleanup"] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join(ARCHIVE_NAME);
+            std::fs::write(&source, b"source").unwrap();
+            let source = std::fs::canonicalize(source).unwrap();
+            let mut destination = None;
+            let error = super::archive_message_snapshot_with(
+                temp.path(),
+                &source,
+                ARCHIVE_NAME,
+                b"snapshot",
+                |at, path| {
+                    destination = Some(path.to_path_buf());
+                    if at == stage {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            format!("injected {stage}"),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains(stage));
+            let destination = destination.unwrap();
+            assert_eq!(std::fs::read(source).unwrap(), b"source");
+            let entries: Vec<_> = std::fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            if stage == "cleanup" {
+                assert_eq!(std::fs::read(destination).unwrap(), b"snapshot");
+                assert_eq!(entries.len(), 2);
+            } else {
+                assert!(!destination.exists());
+                assert!(entries.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn issue_3081_concurrent_publication_is_complete_and_never_overwrites() {
+        for same in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join(ARCHIVE_NAME);
+            std::fs::write(&source, b"source").unwrap();
+            let source = std::fs::canonicalize(source).unwrap();
+            let barrier = std::sync::Barrier::new(2);
+            let snapshots = [vec![b'a'; 8192], vec![if same { b'a' } else { b'b' }; 8192]];
+            let results = std::thread::scope(|scope| {
+                let handles: Vec<_> = snapshots
+                    .iter()
+                    .map(|bytes| {
+                        let barrier = &barrier;
+                        let source = &source;
+                        let root = temp.path();
+                        scope.spawn(move || {
+                            super::archive_message_snapshot_with(
+                                root,
+                                source,
+                                ARCHIVE_NAME,
+                                bytes,
+                                |stage, final_path| {
+                                    if stage == "link" {
+                                        assert!(
+                                            !final_path.exists(),
+                                            "no final is visible while both writers are paused"
+                                        );
+                                        barrier.wait();
+                                    }
+                                    Ok(())
+                                },
+                            )
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(
+                results.iter().filter(|r| r.is_ok()).count(),
+                if same { 2 } else { 1 }
+            );
+            let path = results.iter().find_map(|r| r.as_ref().ok()).unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            assert!(snapshots.contains(&bytes));
+            assert_eq!(
+                std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn issue_3081_nonregular_final_is_preserved() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join(ARCHIVE_NAME);
+        std::fs::write(&source, b"source").unwrap();
+        let source = std::fs::canonicalize(source).unwrap();
+        let path =
+            super::archive_message_snapshot(temp.path(), &source, ARCHIVE_NAME, b"source").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            super::archive_message_snapshot(temp.path(), &source, ARCHIVE_NAME, b"source")
+                .unwrap_err()
+                .contains("regular file")
+        );
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn issue_3081_primary_error_and_foreign_temporary_survive_cleanup_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join(ARCHIVE_NAME);
+        std::fs::write(&source, b"source").unwrap();
+        let source = std::fs::canonicalize(source).unwrap();
+        let mut foreign = None;
+        let error = super::archive_message_snapshot_with(
+            temp.path(),
+            &source,
+            ARCHIVE_NAME,
+            b"snapshot",
+            |stage, final_path| {
+                let path = final_path.with_file_name(".archive-foreign.tmp");
+                if stage == "write" {
+                    std::fs::write(&path, b"foreign")?;
+                    foreign = Some(path);
+                    return Err(std::io::Error::other("primary write failure"));
+                }
+                if stage == "cleanup" {
+                    return Err(std::io::Error::other("cleanup failure"));
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("primary write failure"));
+        assert!(error.contains("cleanup failure"));
+        assert_eq!(std::fs::read(foreign.unwrap()).unwrap(), b"foreign");
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
+    }
     use super::*;
     use chrono::TimeZone;
 
