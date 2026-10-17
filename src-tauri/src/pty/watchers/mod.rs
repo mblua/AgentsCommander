@@ -2898,7 +2898,9 @@ mod tests {
             vec![25, 26, 27, 28, 29],
             "the shared policy still omits the top wrap group"
         );
-        assert!(logical.iter().all(|row| !pattern.regex().is_match(&row.text)));
+        assert!(logical
+            .iter()
+            .all(|row| !pattern.regex().is_match(&row.text)));
     }
 
     #[tokio::test]
@@ -2952,7 +2954,9 @@ mod tests {
         let logical = frame::logical_rows(&frame);
         assert_eq!((logical[1].start, logical[1].end), (1, 2));
         assert_eq!(logical[1].text, format!("{WORKING}Tip: guidance"));
-        assert!(logical.iter().all(|row| !pattern.regex().is_match(&row.text)));
+        assert!(logical
+            .iter()
+            .all(|row| !pattern.regex().is_match(&row.text)));
         harness.backend.push(
             id,
             Painted::Frame(frame.rows, frame.wrapped, frame.cursor_row),
