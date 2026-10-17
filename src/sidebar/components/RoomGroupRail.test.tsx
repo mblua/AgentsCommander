@@ -23,11 +23,11 @@ import {
   workgroupGroupsStore,
 } from "../stores/workgroup-groups";
 import { entityDirNumber, entityShortLabel } from "../../shared/entity-prefix";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import RoomGroupRail from "./RoomGroupRail";
 
 const projectPath = "C:\\Project";
 
-function wg(name: string): AcWorkgroup {
+function room(name: string): AcWorkgroup {
   return {
     name,
     path: `${projectPath}\\.ac\\${name}`,
@@ -48,7 +48,7 @@ function project(): ProjectState {
   return {
     path: projectPath,
     folderName: "Project",
-    workgroups: [wg("wg-1-dev-team"), wg("wg-2-rust-team"), wg("wg-3-docs-team")],
+    workgroups: [room("wg-1-dev-team"), room("wg-2-rust-team"), room("wg-3-docs-team")],
     agents: [],
     teams: [],
     loops: [],
@@ -170,11 +170,11 @@ async function openGroupsEditorFrom(el: Element): Promise<void> {
 }
 
 /** A session that makes the given workgroup "working" (running dot class). */
-function replicaSession(wgName: string, overrides: Partial<Session> = {}): Session {
+function replicaSession(roomName: string, overrides: Partial<Session> = {}): Session {
   return session({
-    id: `session-${wgName}`,
-    name: `${wgName}/dev-webpage-ui`,
-    workingDirectory: `${projectPath}\\.ac\\${wgName}\\__agent_dev-webpage-ui`,
+    id: `session-${roomName}`,
+    name: `${roomName}/dev-webpage-ui`,
+    workingDirectory: `${projectPath}\\.ac\\${roomName}\\__agent_dev-webpage-ui`,
     status: "running",
     ...overrides,
   });
@@ -184,7 +184,7 @@ function replicaSession(wgName: string, overrides: Partial<Session> = {}): Sessi
 // the EXACT string the remote-activity payload is keyed by (the map normalizes
 // nothing), and the store replaces the WHOLE map per update, so every repo of
 // interest is published in ONE call.
-const ciRepoPath = (wgName: string): string => `${projectPath}\\.ac\\${wgName}\\repo-AgentsCommander`;
+const ciRepoPath = (roomName: string): string => `${projectPath}\\.ac\\${roomName}\\repo-AgentsCommander`;
 
 function publishCi(entries: [string, CiState][]): void {
   remoteActivityStore.applyRemoteActivityUpdate({
@@ -222,7 +222,7 @@ function ciProject(names: string[], coordinator = true): ProjectState {
   };
 }
 
-describe("WorkgroupGroupRail", () => {
+describe("RoomGroupRail", () => {
   beforeEach(() => {
     resetUiStoresForTests();
   });
@@ -239,7 +239,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
 
@@ -270,7 +270,7 @@ describe("WorkgroupGroupRail", () => {
     fake.onInvoke("update_project_groups", (args) => args.config);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(), otherProject()]} />,
+      () => <RoomGroupRail projects={[project(), otherProject()]} />,
       fake
     );
     try {
@@ -302,7 +302,7 @@ describe("WorkgroupGroupRail", () => {
     );
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(), otherProject()]} />,
+      () => <RoomGroupRail projects={[project(), otherProject()]} />,
       fake
     );
     try {
@@ -343,7 +343,7 @@ describe("WorkgroupGroupRail", () => {
     );
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(), otherProject()]} />,
+      () => <RoomGroupRail projects={[project(), otherProject()]} />,
       fake
     );
     try {
@@ -378,7 +378,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     const [projects, setProjects] = createSignal<ProjectState[]>([project(), otherProject()]);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={projects()} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={projects()} />, fake);
     try {
       await waitFor(() => expect(railButton("OtherProject", "all")).not.toBeNull());
 
@@ -403,7 +403,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
 
@@ -455,7 +455,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       click(target("workgroupGroups.button.ungrouped"));
@@ -481,7 +481,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([replicaSession("wg-1-dev-team")]);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       await waitFor(() => expect(railDots()).toEqual(["all", "ui"]));
@@ -505,7 +505,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     sessionsStore.setSessions([replicaSession("wg-3-docs-team")]);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       await waitFor(() => expect(railDots()).toEqual(["all", "ungrouped"]));
@@ -522,7 +522,7 @@ describe("WorkgroupGroupRail", () => {
       replicaSession("wg-2-rust-team", { pendingReview: true }),
     ]);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       expect(railDots()).toEqual([]);
@@ -536,7 +536,7 @@ describe("WorkgroupGroupRail", () => {
     const fake = new FakeTransport();
     fake.resolve("get_project_groups", groupsConfig());
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
 
@@ -580,7 +580,7 @@ describe("WorkgroupGroupRail", () => {
     // wg-1 is working (running session) -> counter 1/1 + dot.
     sessionsStore.setSessions([replicaSession("wg-1-dev-team")]);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() =>
         expect(railButtonOrder()).toEqual(["all", "ungrouped", "nonstop", "ui", "rust"])
@@ -597,7 +597,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig({ nonStop: { ...defaultNonStop(), show: false } }));
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       expect(document.querySelector('[data-ac-testid="workgroupGroups.button.nonstop"]')).toBeNull();
@@ -621,7 +621,7 @@ describe("WorkgroupGroupRail", () => {
     );
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() =>
         expect(railButtonOrder()).toEqual(["all", "ungrouped", "nonstop", "ui"])
@@ -649,7 +649,7 @@ describe("WorkgroupGroupRail", () => {
     );
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       // Mirrors the panel's locked `hidden_alert_me_match_stays_excluded_from_ungrouped`.
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui"]));
@@ -664,7 +664,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       const ui = target<HTMLElement>("workgroupGroups.button.ui");
@@ -689,7 +689,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
@@ -739,7 +739,7 @@ describe("WorkgroupGroupRail", () => {
     );
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
       const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
@@ -778,7 +778,7 @@ describe("WorkgroupGroupRail", () => {
     );
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
       const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
@@ -820,7 +820,7 @@ describe("WorkgroupGroupRail", () => {
     );
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
       const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
@@ -860,7 +860,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     fake.reject("update_project_groups", "disk denied");
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
@@ -897,7 +897,7 @@ describe("WorkgroupGroupRail", () => {
     fake.resolve("get_project_groups", groupsConfig());
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       const ui = target<HTMLElement>("workgroupGroups.button.ui");
@@ -936,7 +936,7 @@ describe("WorkgroupGroupRail", () => {
     fake.onInvoke("update_project_groups", (args) => args.config);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(), otherProject()]} />,
+      () => <RoomGroupRail projects={[project(), otherProject()]} />,
       fake
     );
     try {
@@ -961,8 +961,8 @@ describe("WorkgroupGroupRail", () => {
   });
 });
 
-// #1614 section 9.1 frontend tests / section 15.4. F4 (`WorkgroupGroupRail.tsx:67`,
-// `wgNumber`, the rail SORT KEY) and F5 (`:72`, `wgTooltipLabel`, the visible
+// #1614 section 9.1 frontend tests / section 15.4. F4 (`RoomGroupRail.tsx:67`,
+// `roomNumber`, the rail SORT KEY) and F5 (`:72`, `roomTooltipLabel`, the visible
 // tooltip row). Left unrewired, F4 collapses every Room to
 // `Number.MAX_SAFE_INTEGER` and sorts it last, and F5 shows the raw directory
 // name instead of a short label. Neither fails loudly, which is why they get a
@@ -971,7 +971,7 @@ describe("WorkgroupGroupRail", () => {
 // The legacy `wg-*` projects above are deliberately untouched (Rule P2): the
 // label is an IDENTITY, so decision D7 requires a Room to read ROOM1 and a
 // legacy Workgroup to keep reading WG1 in the very same rail.
-describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
+describe("RoomGroupRail, Rooms (#1614 F4/F5)", () => {
   beforeEach(() => {
     resetUiStoresForTests();
   });
@@ -989,7 +989,7 @@ describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
       folderName: "Project",
       // A mixed root: a Room and a legacy Workgroup, plus a second Room at a
       // higher slot so the sort key is actually exercised.
-      workgroups: [wg("room-2-rust-team"), wg("wg-1-dev-team"), wg("room-1-dev-team")],
+      workgroups: [room("room-2-rust-team"), room("wg-1-dev-team"), room("room-1-dev-team")],
       agents: [],
       teams: [],
       loops: [],
@@ -1008,7 +1008,7 @@ describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
     ]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[mixedProject()]} />,
+      () => <RoomGroupRail projects={[mixedProject()]} />,
       fake
     );
     try {
@@ -1036,23 +1036,23 @@ describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
   });
 
   it("F4 gives a Room a real slot number, so it is not sorted last", () => {
-    // `wgNumber` and `wgTooltipLabel` are module-private one-line wrappers;
+    // `roomNumber` and `roomTooltipLabel` are module-private one-line wrappers;
     // their exact bodies are reproduced here so the semantics the rail depends
     // on are pinned even though the functions are not exported.
-    const wgNumber = (name: string) => entityDirNumber(name) ?? Number.MAX_SAFE_INTEGER;
-    const wgTooltipLabel = (name: string) => entityShortLabel(name) ?? name;
+    const roomNumber = (name: string) => entityDirNumber(name) ?? Number.MAX_SAFE_INTEGER;
+    const roomTooltipLabel = (name: string) => entityShortLabel(name) ?? name;
 
-    expect(wgNumber("room-1-dev-team")).toBe(1);
-    expect(wgNumber("wg-1-dev-team")).toBe(1);
-    expect(wgNumber("room-12-dev-team")).toBe(12);
-    expect(wgNumber("not-an-entity")).toBe(Number.MAX_SAFE_INTEGER);
+    expect(roomNumber("room-1-dev-team")).toBe(1);
+    expect(roomNumber("wg-1-dev-team")).toBe(1);
+    expect(roomNumber("room-12-dev-team")).toBe(12);
+    expect(roomNumber("not-an-entity")).toBe(Number.MAX_SAFE_INTEGER);
 
     // Display-only, so deliberately case-INSENSITIVE, unlike F6's gate.
-    expect(wgNumber("ROOM-3-team")).toBe(3);
-    expect(wgTooltipLabel("room-1-dev-team")).toBe("ROOM1");
-    expect(wgTooltipLabel("wg-1-dev-team")).toBe("WG1");
-    expect(wgTooltipLabel("ROOM-1-dev-team")).toBe("ROOM1");
-    expect(wgTooltipLabel("not-an-entity")).toBe("not-an-entity");
+    expect(roomNumber("ROOM-3-team")).toBe(3);
+    expect(roomTooltipLabel("room-1-dev-team")).toBe("ROOM1");
+    expect(roomTooltipLabel("wg-1-dev-team")).toBe("WG1");
+    expect(roomTooltipLabel("ROOM-1-dev-team")).toBe("ROOM1");
+    expect(roomTooltipLabel("not-an-entity")).toBe("not-an-entity");
   });
 
   it("#2202 counts a CI-only room in the counter, the dot and the tooltip", async () => {
@@ -1061,7 +1061,7 @@ describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
     publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[ciProject(["wg-1-dev-team"])]} />,
+      () => <RoomGroupRail projects={[ciProject(["wg-1-dev-team"])]} />,
       fake
     );
     try {
@@ -1087,7 +1087,7 @@ describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
     publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[ciProject(["wg-1-dev-team"])]} />,
+      () => <RoomGroupRail projects={[ciProject(["wg-1-dev-team"])]} />,
       fake
     );
     try {
@@ -1110,7 +1110,7 @@ describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
     publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[ciProject(["wg-1-dev-team"], false)]} />,
+      () => <RoomGroupRail projects={[ciProject(["wg-1-dev-team"], false)]} />,
       fake
     );
     try {
@@ -1134,7 +1134,7 @@ describe("WorkgroupGroupRail, Rooms (#1614 F4/F5)", () => {
     publishCi([[ciRepoPath("wg-1-dev-team"), "running"]]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[ciProject(["wg-1-dev-team", "wg-2-rust-team"])]} />,
+      () => <RoomGroupRail projects={[ciProject(["wg-1-dev-team", "wg-2-rust-team"])]} />,
       fake
     );
     try {

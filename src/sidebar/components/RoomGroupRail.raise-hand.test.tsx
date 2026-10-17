@@ -15,14 +15,14 @@ import {
   defaultNonStop,
   exactGroupRegexForWorkgroup,
 } from "../stores/workgroup-groups";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
-import { workgroupHasRaisedHand } from "./workgroup-session";
+import RoomGroupRail from "./RoomGroupRail";
+import { roomHasRaisedHand } from "./room-session";
 
 const projectPath = "C:\\Project";
 
 /** A workgroup with one coordinator replica. `taskTitle` defaults to a real
  *  title so the #763 `!!wg.taskTitle` gate passes; pass null to exercise it. */
-function wg(
+function room(
   name: string,
   opts: { taskTitle?: string | null; coordinator?: boolean } = {}
 ): AcWorkgroup {
@@ -43,11 +43,11 @@ function wg(
   };
 }
 
-function project(workgroups: AcWorkgroup[]): ProjectState {
+function project(rooms: AcWorkgroup[]): ProjectState {
   return {
     path: projectPath,
     folderName: "Project",
-    workgroups,
+    workgroups: rooms,
     agents: [],
     teams: [],
     loops: [],
@@ -69,17 +69,17 @@ function groupsConfig(overrides: Partial<WorkgroupGroupsConfig> = {}): Workgroup
 }
 
 const defaultWorkgroups = () => [
-  wg("wg-1-dev-team"),
-  wg("wg-2-rust-team"),
-  wg("wg-3-docs-team"),
+  room("wg-1-dev-team"),
+  room("wg-2-rust-team"),
+  room("wg-3-docs-team"),
 ];
 
 /** A session for the workgroup's coordinator with a raised hand up. */
-function raisedSession(wgName: string, overrides: Partial<Session> = {}): Session {
+function raisedSession(roomName: string, overrides: Partial<Session> = {}): Session {
   return session({
-    id: `session-${wgName}`,
-    name: `${wgName}/dev-webpage-ui`,
-    workingDirectory: `${projectPath}\\.ac\\${wgName}\\__agent_dev-webpage-ui`,
+    id: `session-${roomName}`,
+    name: `${roomName}/dev-webpage-ui`,
+    workingDirectory: `${projectPath}\\.ac\\${roomName}\\__agent_dev-webpage-ui`,
     status: "running",
     isCoordinator: true,
     communication: { kind: "raiseHand", visible: true, updatedAt: "2026-07-03T00:00:00Z" },
@@ -105,20 +105,20 @@ function railRaiseHands(): string[] {
   ).map((el) => el.dataset.acTestid!.replace("workgroupGroups.raiseHand.", ""));
 }
 
-describe("workgroupHasRaisedHand (#763 predicate — mirrors the #747 row)", () => {
+describe("roomHasRaisedHand (#763 predicate — mirrors the #747 row)", () => {
   beforeEach(() => resetUiStoresForTests());
   afterEach(() => resetUiStoresForTests());
 
   it("is true for a coordinator with a visible raised hand and a task title", () => {
     sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
-    expect(workgroupHasRaisedHand(wg("wg-1-dev-team"))).toBe(true);
+    expect(roomHasRaisedHand(room("wg-1-dev-team"))).toBe(true);
   });
 
   it("stays true when the coordinator session has EXITED (no live gate — #747/decision C)", () => {
     // The whole point of decision C: a restored/dormant coordinator keeps its
     // persisted hand, so the tab must light even though the PTY is gone.
     sessionsStore.setSessions([raisedSession("wg-1-dev-team", { status: { exited: 0 } })]);
-    expect(workgroupHasRaisedHand(wg("wg-1-dev-team"))).toBe(true);
+    expect(roomHasRaisedHand(room("wg-1-dev-team"))).toBe(true);
   });
 
   it("is false when the hand is not visible", () => {
@@ -127,31 +127,31 @@ describe("workgroupHasRaisedHand (#763 predicate — mirrors the #747 row)", () 
         communication: { kind: "raiseHand", visible: false, updatedAt: "2026-07-03T00:00:00Z" },
       }),
     ]);
-    expect(workgroupHasRaisedHand(wg("wg-1-dev-team"))).toBe(false);
+    expect(roomHasRaisedHand(room("wg-1-dev-team"))).toBe(false);
   });
 
   it("is false when there is no communication at all", () => {
     sessionsStore.setSessions([raisedSession("wg-1-dev-team", { communication: null })]);
-    expect(workgroupHasRaisedHand(wg("wg-1-dev-team"))).toBe(false);
+    expect(roomHasRaisedHand(room("wg-1-dev-team"))).toBe(false);
   });
 
   it("is false when the workgroup has no task title (mirrors the row's !!taskTitle gate)", () => {
     sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
-    expect(workgroupHasRaisedHand(wg("wg-1-dev-team", { taskTitle: null }))).toBe(false);
+    expect(roomHasRaisedHand(room("wg-1-dev-team", { taskTitle: null }))).toBe(false);
   });
 
   it("is false when the raised replica is not a coordinator", () => {
     sessionsStore.setSessions([raisedSession("wg-1-dev-team", { isCoordinator: false })]);
-    expect(workgroupHasRaisedHand(wg("wg-1-dev-team", { coordinator: false }))).toBe(false);
+    expect(roomHasRaisedHand(room("wg-1-dev-team", { coordinator: false }))).toBe(false);
   });
 
   it("is false when no session matches the replica", () => {
     sessionsStore.setSessions([]);
-    expect(workgroupHasRaisedHand(wg("wg-1-dev-team"))).toBe(false);
+    expect(roomHasRaisedHand(room("wg-1-dev-team"))).toBe(false);
   });
 });
 
-describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () => {
+describe("RoomGroupRail raise-hand badge (#763 render + aggregation)", () => {
   beforeEach(() => resetUiStoresForTests());
   afterEach(() => {
     resetUiStoresForTests();
@@ -164,7 +164,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      () => <RoomGroupRail projects={[project(defaultWorkgroups())]} />,
       fake
     );
     try {
@@ -206,7 +206,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     ]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      () => <RoomGroupRail projects={[project(defaultWorkgroups())]} />,
       fake
     );
     try {
@@ -225,7 +225,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     sessionsStore.setSessions([raisedSession("wg-3-docs-team")]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      () => <RoomGroupRail projects={[project(defaultWorkgroups())]} />,
       fake
     );
     try {
@@ -243,7 +243,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     sessionsStore.setSessions([raisedSession("wg-1-dev-team", { communication: null })]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      () => <RoomGroupRail projects={[project(defaultWorkgroups())]} />,
       fake
     );
     try {
@@ -259,7 +259,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     fake.resolve("get_project_groups", groupsConfig());
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      () => <RoomGroupRail projects={[project(defaultWorkgroups())]} />,
       fake
     );
     try {
@@ -283,7 +283,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     fake.resolve("get_project_groups", groupsConfig());
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      () => <RoomGroupRail projects={[project(defaultWorkgroups())]} />,
       fake
     );
     try {
@@ -313,7 +313,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     );
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      () => <RoomGroupRail projects={[project(defaultWorkgroups())]} />,
       fake
     );
     try {
@@ -349,7 +349,7 @@ describe("WorkgroupGroupRail raise-hand badge (#763 render + aggregation)", () =
     sessionsStore.setSessions([raisedSession("wg-1-dev-team")]);
 
     const rendered = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+      () => <RoomGroupRail projects={[project(defaultWorkgroups())]} />,
       fake
     );
     try {
