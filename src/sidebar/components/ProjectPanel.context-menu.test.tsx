@@ -2030,10 +2030,25 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
     let addSpy: ReturnType<typeof vi.spyOn> | null = null;
     let removeSpy: ReturnType<typeof vi.spyOn> | null = null;
     let rafSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let cancelRafSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let nextFrameId = 0;
+    const frameRequests: { id: number; callback: FrameRequestCallback }[] = [];
+    const pendingFrames = new Map<number, FrameRequestCallback>();
+    const cancelledFrames = new Set<number>();
     let replacementRectSpy: ReturnType<typeof vi.spyOn> | null = null;
     try {
       Object.defineProperty(window, "innerWidth", { configurable: true, value: 300 });
       Object.defineProperty(window, "innerHeight", { configurable: true, value: 200 });
+      rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        const id = ++nextFrameId;
+        frameRequests.push({ id, callback });
+        pendingFrames.set(id, callback);
+        return id;
+      });
+      cancelRafSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+        cancelledFrames.add(id);
+        pendingFrames.delete(id);
+      });
       const fake = await setupPanel();
       fake.onInvoke("get_settings", () => gate.promise);
       addSpy = vi.spyOn(window, "addEventListener");
@@ -2041,18 +2056,15 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
 
       const menuA = await openMenu(undefined, 40, 120);
       const menuAListeners = await captureDismissListeners(addSpy);
-      const rafCallbacks: FrameRequestCallback[] = [];
-      rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-        rafCallbacks.push(callback);
-        return rafCallbacks.length;
-      });
       click(findExactMenuButton(menuA, "Attach Telegram")!);
       await waitFor(() => expect(fake.callsFor("get_settings")).toHaveLength(1));
+      const responseOffset = frameRequests.length;
       settled = true;
       gate.resolve({ telegramBots: [botOne, botTwo] });
       await waitFor(() => expect(menuA.querySelectorAll(".settings-color-dot")).toHaveLength(2));
-      expect(rafCallbacks).toHaveLength(1);
-      const staleReclamp = rafCallbacks.shift()!;
+      const responseRequests = frameRequests.slice(responseOffset);
+      expect(responseRequests).toHaveLength(1);
+      const staleReclamp = responseRequests[0];
 
       dispatchDismiss("escape");
       await waitFor(() => expect(replicaMenu()).toBeNull());
@@ -2080,7 +2092,9 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
         toJSON: () => ({}),
       } as DOMRect);
 
-      staleReclamp(0);
+      // Deliberately deliver the old response callback even if dismissal cancelled it.
+      pendingFrames.delete(staleReclamp.id);
+      staleReclamp.callback(0);
       await Promise.resolve();
       expect(replicaMenu()).toBe(replacement);
       expect(replacement.style.left).toBe(left);
@@ -2097,15 +2111,26 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       await waitFor(() => expect(replicaMenu()).toBeNull());
       expect(listenerWasRemoved(removeSpy, "click", replacementListeners.click)).toBe(true);
     } finally {
-      if (!settled) gate.resolve({ telegramBots: [] });
-      if (replicaMenu()) dispatchDismiss("click");
-      replacementRectSpy?.mockRestore();
-      rafSpy?.mockRestore();
-      removeSpy?.mockRestore();
-      addSpy?.mockRestore();
-      if (innerWidthDescriptor) Object.defineProperty(window, "innerWidth", innerWidthDescriptor);
-      if (innerHeightDescriptor) {
-        Object.defineProperty(window, "innerHeight", innerHeightDescriptor);
+      try {
+        if (!settled) gate.resolve({ telegramBots: [] });
+        if (replicaMenu()) dispatchDismiss("click");
+      } finally {
+        try {
+          rendered?.cleanup();
+          rendered = null;
+        } finally {
+          pendingFrames.clear();
+          cancelledFrames.clear();
+          replacementRectSpy?.mockRestore();
+          cancelRafSpy?.mockRestore();
+          rafSpy?.mockRestore();
+          removeSpy?.mockRestore();
+          addSpy?.mockRestore();
+          if (innerWidthDescriptor) Object.defineProperty(window, "innerWidth", innerWidthDescriptor);
+          if (innerHeightDescriptor) {
+            Object.defineProperty(window, "innerHeight", innerHeightDescriptor);
+          }
+        }
       }
     }
   });
