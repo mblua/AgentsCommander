@@ -5035,7 +5035,10 @@ pub fn configuration_identity(command: &str, envs: &[CodingAgentEnv]) -> String 
 
 fn configuration_identity_debug(command: &str, envs: &[CodingAgentEnv]) -> Vec<String> {
     std::iter::once(command.to_owned())
-        .chain(envs.iter().flat_map(|row| [row.key.clone(), row.value.clone()]))
+        .chain(
+            envs.iter()
+                .flat_map(|row| [row.key.clone(), row.value.clone()]),
+        )
         .collect()
 }
 
@@ -8533,7 +8536,10 @@ fn save_agents_instance_file(
                     );
                     object.insert(
                         "id_hash_debug".into(),
-                        serde_json::json!(configuration_identity_debug(&agent.command, &agent.envs)),
+                        serde_json::json!(configuration_identity_debug(
+                            &agent.command,
+                            &agent.envs
+                        )),
                     );
                 }
             }
@@ -29196,7 +29202,10 @@ mod tests {
             "cid1:{:x}",
             Sha256::digest(normalize(&[&base_preimage, &profile_preimage]))
         );
-        assert_eq!(profiles.profiles_by_agent["a"]["A"].id_hash, Some(expected_hash));
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash,
+            Some(expected_hash)
+        );
         assert_eq!(
             profiles.profiles_by_agent["a"]["A"].id_hash_debug,
             Some(pair.into_iter().map(String::from).collect())
@@ -29229,7 +29238,10 @@ mod tests {
         );
         assert!(!profiles.profiles_by_agent["a"].contains_key("C"));
         assert_eq!(profiles.profiles_by_agent["orphan"]["A"].id_hash, None);
-        assert_eq!(profiles.profiles_by_agent["orphan"]["A"].id_hash_debug, None);
+        assert_eq!(
+            profiles.profiles_by_agent["orphan"]["A"].id_hash_debug,
+            None
+        );
         assert_eq!(
             original.id_hash_debug,
             Some(vec!["İ A\u{2003}b".into(), " XY".into()])
@@ -29649,8 +29661,9 @@ mod tests {
             super::configuration_identity("codexKV--modelxPQ", &[])
         );
         let mut expected = before;
-        expected["profilesByAgent"]["a"]["A"]["id_hash"] =
-            serde_json::json!("cid1:87849ab8d8f223bc755ecbc34b1e772ca61469dd5651dcf52063949e23001036");
+        expected["profilesByAgent"]["a"]["A"]["id_hash"] = serde_json::json!(
+            "cid1:87849ab8d8f223bc755ecbc34b1e772ca61469dd5651dcf52063949e23001036"
+        );
         expected["profilesByAgent"]["a"]["A"]["id_hash_debug"] =
             serde_json::json!(["codex", "K", "V", "--model x", "P", "Q"]);
         assert_eq!(profiles, expected);
