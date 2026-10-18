@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AcWorkgroup, Session, WorkgroupGroupsConfig } from "../../shared/types";
+import type { AcWorkgroup, Session } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   renderWithFakeTransport,
@@ -8,21 +8,20 @@ import {
   session,
   waitFor,
 } from "../../shared/testing/ui-harness";
-import type { ProjectState } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
-import { defaultGroupsConfig, exactGroupRegexForWorkgroup } from "../stores/workgroup-groups";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import RoomGroupRail from "./RoomGroupRail";
+import { createRailProject as project, createIndicatorGroupsConfig as groupsConfig, defaultIndicatorRooms } from "./room-group-rail-fixtures";
 
 // #1859 — the rail is the outermost level that can hide a blocked menu: a
 // collapsed project rail tab shows no rows at all. This file mirrors
-// WorkgroupGroupRail.raise-hand.test.tsx in structure and fixtures on purpose,
+// RoomGroupRail.raise-hand.test.tsx in structure and fixtures on purpose,
 // because the two indicators share the render site and the same aggregation.
 
 const projectPath = "C:\\Project";
 
 /** A workgroup with one replica. Unlike the raise-hand rollup, the blocked-menu
  *  rollup has no coordinator and no task-title gate: any replica counts. */
-function wg(name: string, opts: { coordinator?: boolean } = {}): AcWorkgroup {
+function room(name: string, opts: { coordinator?: boolean } = {}): AcWorkgroup {
   const { coordinator = true } = opts;
   return {
     name,
@@ -40,38 +39,13 @@ function wg(name: string, opts: { coordinator?: boolean } = {}): AcWorkgroup {
   };
 }
 
-function project(workgroups: AcWorkgroup[]): ProjectState {
-  return {
-    path: projectPath,
-    folderName: "Project",
-    workgroups,
-    agents: [],
-    teams: [],
-    loops: [],
-    contextTemplateUpdates: [],
-  };
-}
+const defaultWorkgroups = () => defaultIndicatorRooms(room);
 
-/** ui -> wg-1-dev-team, rust -> wg-2-rust-team; wg-3-docs-team stays ungrouped. */
-function groupsConfig(overrides: Partial<WorkgroupGroupsConfig> = {}): WorkgroupGroupsConfig {
-  return {
-    ...defaultGroupsConfig(),
-    ...overrides,
-    groups:
-      overrides.groups ?? [
-        { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
-        { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
-      ],
-  };
-}
-
-const defaultWorkgroups = () => [wg("wg-1-dev-team"), wg("wg-2-rust-team"), wg("wg-3-docs-team")];
-
-function sessionFor(wgName: string, overrides: Partial<Session> = {}): Session {
+function sessionFor(roomName: string, overrides: Partial<Session> = {}): Session {
   return session({
-    id: `session-${wgName}`,
-    name: `${wgName}/dev-webpage-ui`,
-    workingDirectory: `${projectPath}\\.ac\\${wgName}\\__agent_dev-webpage-ui`,
+    id: `session-${roomName}`,
+    name: `${roomName}/dev-webpage-ui`,
+    workingDirectory: `${projectPath}\\.ac\\${roomName}\\__agent_dev-webpage-ui`,
     status: "running",
     isCoordinator: true,
     ...overrides,
@@ -79,8 +53,8 @@ function sessionFor(wgName: string, overrides: Partial<Session> = {}): Session {
 }
 
 /** A session whose replica is stuck on an interactive menu. */
-function blockedSession(wgName: string): Session {
-  return sessionFor(wgName, {
+function blockedSession(roomName: string): Session {
+  return sessionFor(roomName, {
     communication: {
       kind: "blockedMenu",
       visible: true,
@@ -91,8 +65,8 @@ function blockedSession(wgName: string): Session {
 }
 
 /** The same replica with a raised hand instead. */
-function raisedSession(wgName: string): Session {
-  return sessionFor(wgName, {
+function raisedSession(roomName: string): Session {
+  return sessionFor(roomName, {
     communication: { kind: "raiseHand", visible: true, updatedAt: "2026-09-07T00:00:00Z" },
   });
 }
@@ -118,12 +92,12 @@ function mountRail(sessions: Session[]) {
   fake.resolve("get_project_groups", groupsConfig());
   sessionsStore.setSessions(sessions);
   return renderWithFakeTransport(
-    () => <WorkgroupGroupRail projects={[project(defaultWorkgroups())]} />,
+    () => <RoomGroupRail projects={[project(defaultWorkgroups())]} />,
     fake
   );
 }
 
-describe("WorkgroupGroupRail blocked-menu rollup (#1859)", () => {
+describe("RoomGroupRail blocked-menu rollup (#1859)", () => {
   beforeEach(() => resetUiStoresForTests());
   afterEach(() => {
     resetUiStoresForTests();
@@ -194,7 +168,7 @@ describe("WorkgroupGroupRail blocked-menu rollup (#1859)", () => {
     // Two workgroups in the same group would need a second group regex, so put
     // the two states on the two replicas of one group's single workgroup.
     const both: AcWorkgroup = {
-      ...wg("wg-1-dev-team"),
+      ...room("wg-1-dev-team"),
       agents: [
         {
           name: "dev-webpage-ui",
@@ -229,8 +203,8 @@ describe("WorkgroupGroupRail blocked-menu rollup (#1859)", () => {
     ]);
     const rendered = renderWithFakeTransport(
       () => (
-        <WorkgroupGroupRail
-          projects={[project([both, wg("wg-2-rust-team"), wg("wg-3-docs-team")])]}
+        <RoomGroupRail
+          projects={[project([both, room("wg-2-rust-team"), room("wg-3-docs-team")])]}
         />
       ),
       fake

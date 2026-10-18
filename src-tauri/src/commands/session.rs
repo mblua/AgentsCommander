@@ -10290,7 +10290,7 @@ mod tests {
                 max_concurrent_agent_processes: 1,
                 ..Default::default()
             };
-            let settings = Arc::new(tokio::sync::RwLock::new(config.clone()));
+            let settings = crate::config::settings::new_settings_state(config.clone());
             let resource = Arc::new(Mutex::new(super::CreateResourceAdmission {
                 monitor: monitor.clone(),
                 settings: settings.clone(),
@@ -10899,6 +10899,7 @@ mod tests {
                     preflight_timeout_seconds: None,
                     id: "claude".to_string(),
                     id_hash: None,
+                    id_hash_debug: None,
                     label: "Claude Code".to_string(),
                     command: "claude".to_string(),
                     color: "#d97706".to_string(),
@@ -10916,6 +10917,7 @@ mod tests {
                     preflight_timeout_seconds: None,
                     id: "codex".to_string(),
                     id_hash: None,
+                    id_hash_debug: None,
                     label: "Codex".to_string(),
                     command: "codex".to_string(),
                     color: "#10b981".to_string(),
@@ -11153,6 +11155,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "pi".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "Pi".to_string(),
                 command: "pi".to_string(),
                 color: "#10b981".to_string(),
@@ -11213,6 +11216,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "pi".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "Pi".to_string(),
                 command: "pi".to_string(),
                 color: "#10b981".to_string(),
@@ -12066,7 +12070,7 @@ mod tests {
             store_dir.path().to_path_buf(),
         );
         let mut builder = tauri::test::mock_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(Arc::new(
                 crate::resource_monitor::ResourceMonitorState::new(),
             ))
@@ -15404,6 +15408,8 @@ mod tests {
             .insert(
                 "C".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -15487,6 +15493,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -15541,6 +15549,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -15969,6 +15979,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "unrelated-cmd".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "Unrelated cmd recipe".to_string(),
                 command: "cmd".to_string(),
                 color: "#000000".to_string(),
@@ -16263,6 +16274,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: "codex-yolo".to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: "Codex Yolo".to_string(),
             command: "codex --yolo".to_string(),
             color: "#10b981".to_string(),
@@ -16347,6 +16359,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: "broken-codex".to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: "Broken Codex".to_string(),
             command: "codex \"unterminated".to_string(),
             color: "#10b981".to_string(),
@@ -17644,6 +17657,7 @@ exec claude \"$@\"
             preflight_timeout_seconds: None,
             id: "muse".to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: "Muse Code".to_string(),
             command: command.to_string(),
             color: "#0668E1".to_string(),
@@ -18083,6 +18097,8 @@ exec claude \"$@\"
             .insert(
                 "A".to_string(),
                 crate::config::settings::ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -19796,6 +19812,7 @@ exec claude \"$@\"
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: label.to_string(),
             command: command.to_string(),
             color: "#10b981".to_string(),
@@ -19825,6 +19842,8 @@ exec claude \"$@\"
                 .insert(
                     letter.to_string(),
                     ProfileCellConfig {
+                        id_hash: None,
+                        id_hash_debug: None,
                         preflight: None,
                         preflight_timeout_seconds: None,
                         enabled: true,
@@ -20504,6 +20523,7 @@ exec claude \"$@\"
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: id.to_string(),
             command: command.to_string(),
             color: "#10b981".to_string(),
@@ -20517,6 +20537,8 @@ exec claude \"$@\"
             backend: Default::default(),
         };
         let cell = |enabled: bool, command: &str| ProfileCellConfig {
+            id_hash: None,
+            id_hash_debug: None,
             preflight: None,
             preflight_timeout_seconds: None,
             enabled,
@@ -20920,7 +20942,7 @@ pub(crate) mod reader_demand_tests {
             .to_string_lossy()
             .into_owned()];
         let app = tauri::test::mock_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(Arc::clone(&manager))
             .manage(bridge_state)
             .manage(OutboundNetwork::new_for_tests(1))
@@ -23152,7 +23174,7 @@ pub(crate) mod co_managed_tests {
         manager: Arc<tokio::sync::RwLock<SessionManager>>,
     ) -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(manager)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build co-managed session test app")

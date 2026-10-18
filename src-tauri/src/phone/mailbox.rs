@@ -18504,6 +18504,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.into(),
             id_hash: None,
+            id_hash_debug: None,
             label: label.into(),
             command: command.into(),
             color: "#10b981".into(),
@@ -18560,7 +18561,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string(),
             ))
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(session_mgr.clone())
             .manage(pty_mgr) // #885 E-3: real PtyManager for pty_live probes
             .manage(Arc::new(tokio::sync::Mutex::new(
@@ -36000,6 +36001,8 @@ mod tests {
                             (
                                 (*letter).to_string(),
                                 crate::config::settings::ProfileCellConfig {
+                                    id_hash: None,
+                                    id_hash_debug: None,
                                     preflight: None,
                                     preflight_timeout_seconds: None,
                                     enabled: *enabled,
@@ -38715,7 +38718,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string(),
             ))
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(session_mgr.clone())
             .manage(pty_mgr)
             .manage(telegram)

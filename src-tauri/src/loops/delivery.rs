@@ -943,6 +943,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
@@ -1142,6 +1143,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
@@ -1181,6 +1183,8 @@ mod tests {
             .insert(
                 letter.to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -1600,7 +1604,9 @@ mod tests {
         crate::test_support::test_builder()
             .manage(Arc::clone(&session_mgr))
             .manage(pty_mgr)
-            .manage(Arc::new(tokio::sync::RwLock::new(AppSettings::default())))
+            .manage(crate::config::settings::new_settings_state(
+                AppSettings::default(),
+            ))
             .manage(coordinator)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build loop delivery app")
@@ -1639,7 +1645,7 @@ mod tests {
         );
         let pty_mgr = Arc::new(Mutex::new(PtyManager::new_for_test(backend)));
         let app = crate::test_support::test_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(Arc::new(
                 crate::resource_monitor::ResourceMonitorState::new(),
             ))

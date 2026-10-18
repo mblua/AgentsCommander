@@ -1,3 +1,4 @@
+import { acquireRoomActivityObserver } from "./stores/room-activity";
 import { Component, createSignal, createEffect, createMemo, on, onMount, onCleanup, untrack, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
@@ -77,7 +78,7 @@ import Titlebar from "./components/Titlebar";
 import ActionBar from "./components/ActionBar";
 import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
-import WorkgroupGroupRail from "./components/WorkgroupGroupRail";
+import RoomGroupRail from "./components/RoomGroupRail";
 import OnboardingModal from "./components/OnboardingModal";
 import ContextTemplateUpdateModal from "./components/ContextTemplateUpdateModal";
 import AutoUnarchiveModal from "./components/AutoUnarchiveModal";
@@ -201,6 +202,8 @@ function resolveSidebarStyle(style: string): string {
 }
 
 const SidebarApp: Component<SidebarAppProps> = (props) => {
+  const releaseRoomActivityObserver = acquireRoomActivityObserver();
+  onCleanup(releaseRoomActivityObserver);
   const [showOnboarding, setShowOnboarding] = createSignal(false);
   const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
   const [settingsRailSide, setSettingsRailSide] = createSignal<MainSidebarSide>("right");
@@ -1126,13 +1129,13 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         <RootAgentBanner compact={sidebarCompact()} railSide={railSide()} />
         <div class="sidebar-body" data-rail-side={railSide()}>
           <Show when={railSide() === "left"}>
-            <WorkgroupGroupRail projects={projectStore.projects} />
+            <RoomGroupRail projects={projectStore.projects} surface={props.embedded ? "embedded" : "sidebar"} />
           </Show>
           <div class="sidebar-scrollable" ref={sidebarScrollableEl}>
             <ProjectPanel />
           </div>
           <Show when={railSide() === "right"}>
-            <WorkgroupGroupRail projects={projectStore.projects} />
+            <RoomGroupRail projects={projectStore.projects} surface={props.embedded ? "embedded" : "sidebar"} />
           </Show>
         </div>
       </div>

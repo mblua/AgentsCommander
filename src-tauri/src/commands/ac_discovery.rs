@@ -3637,7 +3637,7 @@ mod tests {
     );
 
     fn archive_command_app(settings: AppSettings) -> ArchiveCommandApp {
-        let settings_state: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
+        let settings_state: SettingsState = crate::config::settings::new_settings_state(settings);
         let broadcaster = WsBroadcaster::new();
         let receiver = broadcaster.subscribe();
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
@@ -4733,7 +4733,7 @@ mod tests {
             project_path: Some(a.clone()),
             ..Default::default()
         };
-        let state: SettingsState = std::sync::Arc::new(tokio::sync::RwLock::new(settings));
+        let state: SettingsState = crate::config::settings::new_settings_state(settings);
 
         let disk = || -> Vec<String> {
             let value: serde_json::Value = serde_json::from_str(
@@ -4794,7 +4794,7 @@ mod tests {
         let project = temp.path().join("project");
         let project_text = project.to_string_lossy().to_string();
         let state: SettingsState =
-            std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+            crate::config::settings::new_settings_state(AppSettings::default());
         let hooks = NewProjectTransactionHooks {
             fail_settings_save: true,
             ..NewProjectTransactionHooks::default()
@@ -4830,7 +4830,7 @@ mod tests {
         let project = temp.path().join("project");
         let project_text = project.to_string_lossy().to_string();
         let state: SettingsState =
-            std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+            crate::config::settings::new_settings_state(AppSettings::default());
         let hooks = NewProjectTransactionHooks {
             before_final_revalidation: Some(std::sync::Arc::new(|ac_root| {
                 let detached = ac_root.with_extension("ac-detached-after-save");
@@ -4876,7 +4876,7 @@ mod tests {
         let project = temp.path().join("project");
         let project_text = project.to_string_lossy().to_string();
         let state: SettingsState =
-            std::sync::Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+            crate::config::settings::new_settings_state(AppSettings::default());
         let hooks = NewProjectTransactionHooks {
             before_final_revalidation: Some(std::sync::Arc::new(|ac_root| {
                 let lock = ac_root.join(crate::config::seed_manifest::SEED_MANIFEST_LOCK_FILENAME);
@@ -4928,7 +4928,7 @@ mod tests {
             project_path: Some(x.clone()),
             ..Default::default()
         };
-        let state: SettingsState = std::sync::Arc::new(tokio::sync::RwLock::new(settings));
+        let state: SettingsState = crate::config::settings::new_settings_state(settings);
 
         let err = open_project_inner_with_settings_path(&state, &y, Some(&settings_path))
             .await
@@ -6937,12 +6937,13 @@ mod tests {
             )
             .expect("write replica config");
         }
-        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings {
+        let settings: SettingsState = crate::config::settings::new_settings_state(AppSettings {
             agents: vec![crate::config::settings::AgentConfig {
                 preflight: None,
                 preflight_timeout_seconds: None,
                 id: "codex".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "Codex".to_string(),
                 command: "codex".to_string(),
                 color: "#000000".to_string(),
@@ -6957,7 +6958,7 @@ mod tests {
             }],
             project_paths: vec![project.to_string_lossy().to_string()],
             ..AppSettings::default()
-        }));
+        });
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let clocks: crate::config::coordinator_clocks::CoordinatorClocksState = Arc::new(
             std::sync::Mutex::new(crate::config::coordinator_clocks::CoordinatorClocks::default()),
@@ -7227,6 +7228,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: label.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
@@ -7603,10 +7605,10 @@ mod snapshot_refresh_tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join(".ac/room-1");
         std::fs::create_dir_all(&root).unwrap();
-        let settings = Arc::new(tokio::sync::RwLock::new(AppSettings {
+        let settings = crate::config::settings::new_settings_state(AppSettings {
             project_paths: vec![dir.path().to_string_lossy().into_owned()],
             ..Default::default()
-        }));
+        });
         (
             dir,
             root,

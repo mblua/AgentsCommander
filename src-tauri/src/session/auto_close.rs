@@ -1025,7 +1025,7 @@ mod tests {
             coordinator_auto_close_skip_telegram_assigned: false,
             ..AppSettings::default()
         };
-        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
+        let settings: SettingsState = crate::config::settings::new_settings_state(settings);
         let clocks = Arc::new(Mutex::new(CoordinatorClocks::default()));
         clocks.lock().unwrap().note_user_message(
             "myproj:wg-1-team/lead",

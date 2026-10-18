@@ -13,6 +13,7 @@ use crate::config::instance_artifacts::{
     BLOCKING_MENUS_REMOTE_CHECK_FILE_NAME, BLOCKING_MENUS_REMOTE_FILE_NAME,
     BLOCKING_MENUS_SHIPPED_FILE_NAME, SETTINGS_BACKUP_PREFIX, SETTINGS_BACKUP_SUFFIX,
     SETTINGS_FILE_NAME, SETTINGS_LOCAL_OVERRIDE_FILE_NAME, SETTINGS_LOCK_FILE_NAME,
+    SETTINGS_OWNER_LOCK_FILE_NAME,
 };
 use crate::config::local_overlay::{DerivedIdClosure, LocalSettingsOverlay, PairedLeaf};
 use crate::config::placeholders::AC_PLACEHOLDER_TOKENS;
@@ -264,6 +265,7 @@ fn known_agent_field(key: &str) -> bool {
     matches!(
         key,
         "id" | "id_hash"
+            | "id_hash_debug"
             | "label"
             | "command"
             | "baseCommand"
@@ -287,6 +289,7 @@ fn comparable_agent(agent: &AgentConfig) -> Result<Value, String> {
     if let Some(object) = value.as_object_mut() {
         object.remove("order");
         object.remove("id_hash");
+        object.remove("id_hash_debug");
     }
     Ok(value)
 }
@@ -442,7 +445,14 @@ pub struct AgentConfig {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_agent_id_hash"
     )]
+    // Base-command legacy metadata; profile-cell id_hash identifies a command/profile pair.
     pub id_hash: Option<String>,
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id_hash_debug: Option<Vec<String>>,
     pub label: String,
     #[serde(rename = "baseCommand")]
     pub command: String,
@@ -518,6 +528,12 @@ struct AgentConfigWire {
         deserialize_with = "deserialize_agent_id_hash"
     )]
     pub id_hash: Option<String>,
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        deserialize_with = "deserialize_agent_id_hash_debug"
+    )]
+    pub id_hash_debug: Option<Vec<String>>,
     pub label: String,
     #[serde(
         default,
@@ -572,6 +588,7 @@ impl<'de> Deserialize<'de> for AgentConfig {
         Ok(Self {
             id: wire.id,
             id_hash: wire.id_hash,
+            id_hash_debug: wire.id_hash_debug,
             label: wire.label,
             command,
             preflight: wire.preflight,
@@ -614,6 +631,24 @@ where
     let value = Option::<Value>::deserialize(deserializer)?;
     Ok(value.and_then(|value| match value {
         Value::String(hash) => Some(hash),
+        _ => None,
+    }))
+}
+
+/// Optional debug leaves are accepted only as a complete array of strings.
+fn deserialize_agent_id_hash_debug<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        Value::Array(values) => values
+            .into_iter()
+            .map(|value| match value {
+                Value::String(value) => Some(value),
+                _ => None,
+            })
+            .collect(),
         _ => None,
     }))
 }
@@ -776,6 +811,14 @@ pub struct ProfileSlotConfig {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileCellConfig {
+    #[serde(default, rename = "id_hash", skip_serializing_if = "Option::is_none")]
+    pub id_hash: Option<String>,
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id_hash_debug: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -794,6 +837,18 @@ pub struct ProfileCellConfig {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProfileCellConfigWire {
+    #[serde(
+        default,
+        rename = "id_hash",
+        deserialize_with = "deserialize_agent_id_hash"
+    )]
+    pub id_hash: Option<String>,
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        deserialize_with = "deserialize_agent_id_hash_debug"
+    )]
+    pub id_hash_debug: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(
@@ -830,6 +885,8 @@ impl<'de> Deserialize<'de> for ProfileCellConfig {
         .unwrap_or_default()
         .to_owned();
         Ok(Self {
+            id_hash: wire.id_hash,
+            id_hash_debug: wire.id_hash_debug,
             enabled: wire.enabled,
             command,
             preflight: wire.preflight,
@@ -4977,10 +5034,115 @@ pub fn configuration_identity(command: &str, envs: &[CodingAgentEnv]) -> String 
     identity_digest("cid1:", &configuration_identity_preimage(command, envs))
 }
 
+fn configuration_identity_debug(command: &str, envs: &[CodingAgentEnv]) -> Vec<String> {
+    std::iter::once(command.to_owned())
+        .chain(
+            envs.iter()
+                .flat_map(|row| [row.key.clone(), row.value.clone()]),
+        )
+        .collect()
+}
+
+fn pair_identity_debug(
+    command: &str,
+    envs: &[CodingAgentEnv],
+    profile: &ProfileCellConfig,
+) -> Vec<String> {
+    let mut leaves = configuration_identity_debug(command, envs);
+    leaves.push(profile.command.clone());
+    leaves.extend(
+        profile
+            .env
+            .iter()
+            .flat_map(|(key, value)| [key.clone(), value.clone()]),
+    );
+    leaves
+}
+
 /// Refresh informational metadata only; stable IDs and row order stay untouched.
 pub fn refresh_agent_id_hashes(agents: &mut [AgentConfig]) {
     for agent in agents {
         agent.id_hash = Some(configuration_identity(&agent.command, &agent.envs));
+        agent.id_hash_debug = Some(configuration_identity_debug(&agent.command, &agent.envs));
+    }
+}
+
+/// Informational identity of one base/profile pair, using the existing scalar rules.
+fn pair_identity(command: &str, envs: &[CodingAgentEnv], profile: &ProfileCellConfig) -> String {
+    identity_digest(
+        "cid1:",
+        &identity_preimage([
+            configuration_identity_preimage(command, envs),
+            profile_identity_preimage(profile),
+        ]),
+    )
+}
+
+fn refresh_pair_id_hashes(agents: &[AgentConfig], profiles: &mut CodingAgentProfilesConfig) {
+    for (id, cells) in &mut profiles.profiles_by_agent {
+        // Historical duplicate IDs use the same first-match rule as spawn.
+        let agent = agents.iter().find(|agent| agent.id == *id);
+        for cell in cells.values_mut() {
+            cell.id_hash = agent.map(|agent| pair_identity(&agent.command, &agent.envs, cell));
+            cell.id_hash_debug =
+                agent.map(|agent| pair_identity_debug(&agent.command, &agent.envs, cell));
+        }
+    }
+}
+
+/// Project only identity inputs from the first physical row. Protected groups
+/// are best effort here; their existing full decoders still own save errors.
+fn physical_pair_base(agents: Option<&Value>, id: &str) -> Option<(String, Vec<CodingAgentEnv>)> {
+    let row = agents?
+        .as_array()?
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(id))?
+        .as_object()?;
+    let command = raw_configuration_command(row, "baseCommand")
+        .ok()?
+        .unwrap_or_default();
+    let envs = match row.get("envs") {
+        Some(value) => serde_json::from_value(value.clone()).ok()?,
+        None => Vec::new(),
+    };
+    Some((command.to_owned(), envs))
+}
+
+fn refresh_physical_pair_id_hashes(agents: Option<&Value>, profiles: &mut Value) {
+    let Some(rows) = profiles
+        .get_mut("profilesByAgent")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    for (id, cells) in rows {
+        let base = physical_pair_base(agents, id);
+        for raw in cells
+            .as_object_mut()
+            .into_iter()
+            .flat_map(|cells| cells.values_mut())
+        {
+            let metadata = base.as_ref().and_then(|(command, envs)| {
+                // Decode the cell's existing aliases/env contract without rewriting it.
+                let cell: ProfileCellConfig = serde_json::from_value(raw.clone()).ok()?;
+                Some((
+                    pair_identity(command, envs, &cell),
+                    pair_identity_debug(command, envs, &cell),
+                ))
+            });
+            if let Some(object) = raw.as_object_mut() {
+                match metadata {
+                    Some((hash, debug)) => {
+                        object.insert("id_hash".into(), Value::String(hash));
+                        object.insert("id_hash_debug".into(), serde_json::json!(debug));
+                    }
+                    None => {
+                        object.remove("id_hash");
+                        object.remove("id_hash_debug");
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5319,6 +5481,20 @@ mod source_identity_tests {
         assert_eq!(
             configuration_identity("Ba--", &[env(" Z\t", "İß É\u{00a0}OO", false)]),
             "cid1:7eccb85b0439780c9cb0fcd45fdfdf0e6ee28906a805ea0a1a1bfcd34d875199"
+        );
+        let mut agent: AgentConfig = serde_json::from_value(serde_json::json!({
+            "id":"unicode", "label":"ignored", "color":"red", "baseCommand":"Ba--",
+            "envs":[{"key":" Z\t","value":"İß É\u{00a0}OO","enabled":false}]
+        }))
+        .unwrap();
+        refresh_agent_id_hashes(std::slice::from_mut(&mut agent));
+        assert_eq!(
+            agent.id_hash.as_deref(),
+            Some("cid1:7eccb85b0439780c9cb0fcd45fdfdf0e6ee28906a805ea0a1a1bfcd34d875199")
+        );
+        assert_eq!(
+            agent.id_hash_debug,
+            Some(vec!["Ba--".into(), " Z\t".into(), "İß É\u{00a0}OO".into()])
         );
     }
 
@@ -5830,6 +6006,10 @@ pub struct AppSettings {
     /// Fresh settings and older files without this key keep the actions hidden.
     #[serde(default)]
     pub coding_agent_install_enabled: bool,
+    /// Show container UI options only after a manual settings.json opt-in.
+    /// Takes effect after reloading settings or restarting the app.
+    #[serde(default)]
+    pub container_options_enabled: bool,
     /// Auto-execute (send Enter) after voice transcription
     #[serde(default = "default_true")]
     pub voice_auto_execute: bool,
@@ -6631,6 +6811,7 @@ impl Default for AppSettings {
             jev_margin: default_jev_margin(),
             co_managed_enabled: false,
             coding_agent_install_enabled: false,
+            container_options_enabled: false,
             voice_auto_execute: true,
             voice_auto_execute_delay: default_voice_delay(),
             sidebar_zoom: default_zoom(),
@@ -7833,7 +8014,16 @@ fn read_agents_instance_file_labeled(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("could not read {}: {e}", label.display())),
     };
-    let map = match serde_json::from_str::<Value>(&contents) {
+    parse_agents_instance_contents(&contents, label).map(Some)
+}
+
+/// The decode half of `read_agents_instance_file_labeled`, shared with the owner's
+/// single capture so both judge the same bytes the same way.
+fn parse_agents_instance_contents(
+    contents: &str,
+    label: &Path,
+) -> Result<Map<String, Value>, String> {
+    let map = match serde_json::from_str::<Value>(contents) {
         Ok(Value::Object(map)) => map,
         Ok(_) => return Err(format!("{} is not a JSON object", label.display())),
         Err(e) => return Err(format!("{} is not valid JSON: {e}", label.display())),
@@ -7850,7 +8040,7 @@ fn read_agents_instance_file_labeled(
             )
         })?;
     }
-    Ok(Some(map))
+    Ok(map)
 }
 
 /// #2716 (B3) - the groups `object` actually holds, key by key.
@@ -8016,9 +8206,21 @@ fn merge_agents_instance_file_with_capture(
     capture: Option<&mut Option<StartupAgentRows>>,
 ) -> AgentsLayerState {
     let path = agents_instance_path(settings_path);
+    let read = read_agents_instance_file_labeled(&agents_instance_path(io_path), &path);
+    merge_agents_instance_groups(path, read, base, capture)
+}
+
+/// The merge half of `merge_agents_instance_file_with_capture`, over a read the
+/// caller already made, so one capture never reads the agents file twice.
+fn merge_agents_instance_groups(
+    path: PathBuf,
+    read: AgentsInstanceRead,
+    base: &mut Value,
+    capture: Option<&mut Option<StartupAgentRows>>,
+) -> AgentsLayerState {
     let mut sidecar_owner = false;
     let mut sidecar_absent = false;
-    let state = match read_agents_instance_file_labeled(&agents_instance_path(io_path), &path) {
+    let state = match read {
         Ok(None) => {
             sidecar_absent = true;
             AgentsLayerState::Readable
@@ -8354,8 +8556,26 @@ fn save_agents_instance_file(
                         "id_hash".to_string(),
                         Value::String(configuration_identity(&agent.command, &agent.envs)),
                     );
+                    object.insert(
+                        "id_hash_debug".into(),
+                        serde_json::json!(configuration_identity_debug(
+                            &agent.command,
+                            &agent.envs
+                        )),
+                    );
                 }
             }
+        }
+    }
+    if editable_profiles {
+        // A present empty physical agents array is authoritative. Never substitute
+        // the effective (possibly overlay-owned) base for physical metadata.
+        let agents = target
+            .get("agents")
+            .or_else(|| before.get("agents"))
+            .cloned();
+        if let Some(profiles) = target.get_mut("codingAgentProfiles") {
+            refresh_physical_pair_id_hashes(agents.as_ref(), profiles);
         }
     }
     if editable_agents || editable_profiles {
@@ -8523,20 +8743,76 @@ fn parse_settings_with_startup(
     io_path: Option<&Path>,
     settings_path: Option<&Path>,
     projection: Option<&Map<String, Value>>,
-    mut startup: Option<&mut Option<StartupAgentRows>>,
+    startup: Option<&mut Option<StartupAgentRows>>,
 ) -> Result<(AppSettings, bool), String> {
-    let mut value: Value = serde_json::from_str(contents)
+    let value: Value = serde_json::from_str(contents)
         .map_err(|e| format!("Failed to parse settings file: {}", e))?;
+    // One read of the agents file serves both the physical-group census and the
+    // layer-30 merge; the merge label is the settings path, as before.
+    let agents = io_path.map(|io| {
+        read_agents_instance_file_labeled(
+            &agents_instance_path(io),
+            &agents_instance_path(settings_path.unwrap_or(io)),
+        )
+    });
+    let (mut settings, legacy_profiles, agents_layer) = compose_settings_parts(
+        value,
+        source,
+        settings_path,
+        projection,
+        agents,
+        |value| match io_path {
+            Some(p) => LocalSettingsOverlay::load_and_merge_paired(
+                p,
+                value,
+                OVERLAY_INELIGIBLE_DISK_KEYS,
+                OVERLAY_INELIGIBLE_LEGACY_KEYS,
+                OVERLAY_DERIVED_ID_CLOSURES,
+                CONFIGURATION_COMMAND_PAIRS,
+            ),
+            None => LocalSettingsOverlay::default(),
+        },
+        startup,
+    )?;
+    if let (Some(p), Some(state)) = (settings_path, agents_layer) {
+        set_agents_layer_state(&mut settings, p, state);
+    }
+    repair_loaded_response_close_settings(&mut settings, source);
+    Ok((settings, legacy_profiles))
+}
+
+/// One read of the agents file: `Ok(None)` is verified absence.
+type AgentsInstanceRead = Result<Option<Map<String, Value>>, String>;
+
+/// Settings, the legacy-profiles flag and the agents layer state, unregistered.
+type ComposedSettings = (AppSettings, bool, Option<AgentsLayerState>);
+
+/// The pure composition core of `parse_settings_with_startup`: projection, the
+/// six-field decode, agents groups, carrier and physical identity, the overlay
+/// over the same lists and pairs, serde, order and id hashes. It performs no IO
+/// itself; the agents read and the overlay merge are supplied by the caller, so
+/// the owner's single capture reuses this exact sequence over captured bytes.
+/// `merge_label` is the settings path that enables the agents merge and the
+/// undecodable-overlay fallback. The agents layer state is returned, not
+/// registered, so the caller decides whether a process-wide registry changes.
+fn compose_settings_parts(
+    mut value: Value,
+    source: &str,
+    merge_label: Option<&Path>,
+    projection: Option<&Map<String, Value>>,
+    agents: Option<AgentsInstanceRead>,
+    overlay_merge: impl FnOnce(&mut Value) -> LocalSettingsOverlay,
+    mut startup: Option<&mut Option<StartupAgentRows>>,
+) -> Result<ComposedSettings, String> {
+    let settings_path = merge_label;
     if let (Some(object), Some(projection)) = (value.as_object_mut(), projection) {
         replace_project_projection(object, projection);
     }
     let legacy_profiles = value.as_object().is_some_and(legacy_profiles_shape_present);
-    let physical_groups = io_path
-        .and_then(|path| {
-            read_agents_instance_file(&agents_instance_path(path))
-                .ok()
-                .flatten()
-        })
+    let physical_groups = agents
+        .as_ref()
+        .and_then(|read| read.as_ref().ok())
+        .and_then(Option::as_ref)
         .map(|groups| {
             groups
                 .keys()
@@ -8549,8 +8825,13 @@ fn parse_settings_with_startup(
     // merged into the raw base object here: after the detection above, so
     // `legacy_profiles` stays a property of the settings file, and before the
     // `pre_merge` clone, so the undecodable fallback carries its groups.
-    let agents_layer = io_path.zip(settings_path).map(|(io, label)| {
-        merge_agents_instance_file_with_capture(io, label, &mut value, startup.as_deref_mut())
+    let agents_layer = settings_path.zip(agents).map(|(label, read)| {
+        merge_agents_instance_groups(
+            agents_instance_path(label),
+            read,
+            &mut value,
+            startup.as_deref_mut(),
+        )
     });
     // #1737 (D21): the clone must be taken BEFORE the merge, because the merge is
     // in place and the overlay's presence is not known until it returns. Gated on
@@ -8560,17 +8841,7 @@ fn parse_settings_with_startup(
     // #1737 (D5): the merge point, after the legacy-shape detection and before the
     // project decode. Merging after the detection keeps the `legacy_profiles` flag
     // a property of the base file alone and makes the B7 cross-key edge impossible.
-    let mut overlay = match io_path {
-        Some(p) => LocalSettingsOverlay::load_and_merge_paired(
-            p,
-            &mut value,
-            OVERLAY_INELIGIBLE_DISK_KEYS,
-            OVERLAY_INELIGIBLE_LEGACY_KEYS,
-            OVERLAY_DERIVED_ID_CLOSURES,
-            CONFIGURATION_COMMAND_PAIRS,
-        ),
-        None => LocalSettingsOverlay::default(),
-    };
+    let mut overlay = overlay_merge(&mut value);
     if let (Some(object), Some(base)) = (value.as_object_mut(), &pre_merge) {
         restore_codex_home_carrier(object, base.get("codingAgentProfiles"));
     }
@@ -8627,6 +8898,7 @@ fn parse_settings_with_startup(
     // disk write or a backup rotation.
     finalize_agent_order(&mut settings.agents);
     refresh_agent_id_hashes(&mut settings.agents);
+    refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
     report_overlay_diagnostics(source, &overlay);
     settings.local_overlay_state = Arc::new(overlay);
     if settings.local_overlay_state.owns_top_level("agents") {
@@ -8634,11 +8906,7 @@ fn parse_settings_with_startup(
             *startup = None;
         }
     }
-    if let (Some(p), Some(state)) = (settings_path, agents_layer) {
-        set_agents_layer_state(&mut settings, p, state);
-    }
-    repair_loaded_response_close_settings(&mut settings, source);
-    Ok((settings, legacy_profiles))
+    Ok((settings, legacy_profiles, agents_layer))
 }
 
 /// #2015: legacy pre-v2 codingAgentProfiles are no longer migrated. Detection only;
@@ -8736,6 +9004,7 @@ fn default_settings_with_overlay_captured(
             // the defaults-plus-overlay view; still no write.
             finalize_agent_order(&mut settings.agents);
             refresh_agent_id_hashes(&mut settings.agents);
+            refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
             settings.local_overlay_state = Arc::new(overlay);
             repair_loaded_response_close_settings(&mut settings, source);
             settings
@@ -8971,6 +9240,8 @@ fn capture_project_settings_with_startup(
 
 pub fn empty_profile_cell() -> ProfileCellConfig {
     ProfileCellConfig {
+        id_hash: None,
+        id_hash_debug: None,
         preflight: None,
         preflight_timeout_seconds: None,
         enabled: true,
@@ -9079,7 +9350,14 @@ fn is_profile_gap(profiles: &CodingAgentProfilesConfig, id: &str) -> bool {
     let no_cells = match profiles.profiles_by_agent.get(id) {
         None => true,
         Some(cells) => {
-            cells.is_empty() || (cells.len() == 1 && cells.get("A") == Some(&empty_profile_cell()))
+            cells.is_empty()
+                || (cells.len() == 1
+                    && cells.get("A").is_some_and(|cell| {
+                        let mut content = cell.clone();
+                        content.id_hash = None;
+                        content.id_hash_debug = None;
+                        content == empty_profile_cell()
+                    }))
         }
     };
     no_labels && no_cells
@@ -9279,7 +9557,7 @@ pub(crate) fn coding_agent_identity_projection_hash(
         if !ids.insert(id.to_string()) {
             return Err("coding_agent_identity_duplicate".to_string());
         }
-        for key in ["order", "name", "label", "color"] {
+        for key in ["order", "name", "label", "color", "id_hash_debug"] {
             object.remove(key);
         }
     }
@@ -9296,6 +9574,17 @@ pub(crate) fn coding_agent_identity_projection_hash(
         for slot in slots.values_mut() {
             if let Some(slot) = slot.as_object_mut() {
                 slot.remove("label");
+            }
+        }
+    }
+    if let Some(profiles) = projection
+        .get_mut("codingAgentProfiles")
+        .and_then(|profiles| profiles.get_mut("profilesByAgent"))
+        .and_then(Value::as_object_mut)
+    {
+        for cells in profiles.values_mut().filter_map(Value::as_object_mut) {
+            for cell in cells.values_mut().filter_map(Value::as_object_mut) {
+                cell.remove("id_hash_debug");
             }
         }
     }
@@ -9629,6 +9918,7 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
     validate_agent_commands(settings)?;
     refresh_agent_id_hashes(&mut settings.agents);
+    refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
     validate_screenshot_hotkey(&settings.screenshot_capture_hotkey)?;
     validate_sidebar_compact_hotkey(&settings.sidebar_compact_hotkey)?;
     validate_room_number_mask(&settings.room_number_mask)?;
@@ -10077,6 +10367,7 @@ fn load_settings_from_path_with_blocking_menus_publish(
     settings.coding_agent_identity_physical = capture_project_settings(path, false)
         .ok()
         .and_then(|(captured, _, _)| captured.coding_agent_identity_physical);
+    refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
     settings
 }
 
@@ -10400,6 +10691,8 @@ fn load_settings_for_cli_from_path(path: &Path) -> AppSettings {
     adopt_orphaned_profiles(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
 
+    refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
+
     // NO root_token auto-gen, NO save_settings call.
     settings
 }
@@ -10463,6 +10756,7 @@ fn load_settings_for_cli_strict_from_path(path: Option<&Path>) -> Result<AppSett
     apply_issue_248_migration(&mut settings);
     adopt_orphaned_profiles(&mut settings);
     repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents);
+    refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
 
     Ok(settings)
 }
@@ -12019,6 +12313,17 @@ fn read_raw_project_source_labeled_with_limit(
     let Some(bytes) = read_project_source_bytes_labeled_with_limit(path, label, limit)? else {
         return Ok(None);
     };
+    raw_project_source_from_bytes(bytes, path, label, legacy_settings_diagnostic).map(Some)
+}
+
+/// The decode half of the raw project-source reader, shared with the owner's
+/// single capture so selection judges captured bytes exactly like read ones.
+fn raw_project_source_from_bytes(
+    bytes: Vec<u8>,
+    path: &Path,
+    label: &Path,
+    legacy_settings_diagnostic: bool,
+) -> Result<RawProjectSource, SettingsSaveError> {
     let value = crate::path_identity::parse_json_no_duplicates(&bytes).map_err(|reason| {
         let mut error = project_migration_error_labeled(
             path,
@@ -12042,7 +12347,7 @@ fn read_raw_project_source_labeled_with_limit(
             "project_paths_source_not_object",
         ));
     };
-    Ok(Some(RawProjectSource { object, bytes }))
+    Ok(RawProjectSource { object, bytes })
 }
 
 #[derive(Debug)]
@@ -12086,6 +12391,24 @@ fn select_project_source_at_labeled_path_with_limit(
         limit,
         false,
     )?;
+    select_project_source_from_raw(
+        legacy,
+        destination,
+        label,
+        &destination_path,
+        &destination_label,
+    )
+}
+
+/// The pure selector over both raw sources: the destination wins, and a non-empty
+/// legacy projection that differs from it is a conflict, never a silent choice.
+fn select_project_source_from_raw(
+    legacy: Option<RawProjectSource>,
+    destination: Option<RawProjectSource>,
+    label: &Path,
+    destination_path: &Path,
+    destination_label: &Path,
+) -> Result<SelectedProjectSource, SettingsSaveError> {
     let legacy_projection = legacy
         .as_ref()
         .map(|source| raw_project_projection(&source.object))
@@ -12095,7 +12418,7 @@ fn select_project_source_at_labeled_path_with_limit(
         Some(source) => {
             let projection = raw_project_projection(&source.object);
             if !legacy_projection.is_empty() && legacy_projection != projection {
-                return Err(project_migration_error_labeled(&destination_path, &destination_label, SettingsSaveStage::ProjectPathsRefreshDiskGate,
+                return Err(project_migration_error_labeled(destination_path, destination_label, SettingsSaveStage::ProjectPathsRefreshDiskGate,
                     &format!("project_paths_conflict; source={}; destination={}; preserve both files and reconcile raw projections to equality", label.display(), destination_label.display())));
             }
             projection
@@ -12786,6 +13109,7 @@ fn settings_lock_debug_emit(event: &SettingsLockDebugEvent) {
 impl SettingsLockDebugAttempt {
     fn prepare(
         settings_path: &Path,
+        lock_name: &str,
         operation: &'static str,
         caller: &'static std::panic::Location<'static>,
     ) -> Option<Self> {
@@ -12809,7 +13133,7 @@ impl SettingsLockDebugAttempt {
         let lock_path = settings_path
             .parent()
             .unwrap_or_else(|| Path::new(""))
-            .join(SETTINGS_LOCK_FILE_NAME);
+            .join(lock_name);
         let (sidecar, sidecar_truncated) = settings_lock_debug_path(&lock_path);
         let debug = Self {
             context: Arc::new(SettingsLockDebugContext {
@@ -12918,13 +13242,25 @@ impl SettingsFileLock {
         timeout: std::time::Duration,
         operation: &'static str,
     ) -> Result<Self, SettingsSaveError> {
+        Self::acquire_named(settings_path, SETTINGS_LOCK_FILE_NAME, timeout, operation)
+    }
+
+    /// The same acquisition over another stable sidecar beside the settings file.
+    #[track_caller]
+    fn acquire_named(
+        settings_path: &Path,
+        lock_name: &str,
+        timeout: std::time::Duration,
+        operation: &'static str,
+    ) -> Result<Self, SettingsSaveError> {
         let mut debug = SettingsLockDebugAttempt::prepare(
             settings_path,
+            lock_name,
             operation,
             std::panic::Location::caller(),
         );
         // Inner failure drops every opened file before a diagnostic is enqueued.
-        let file = match Self::acquire_file(settings_path, timeout, &mut debug) {
+        let file = match Self::acquire_file(settings_path, lock_name, timeout, &mut debug) {
             Ok(file) => file,
             Err(error) => {
                 if let Some(debug) = &debug {
@@ -12941,6 +13277,7 @@ impl SettingsFileLock {
 
     fn acquire_file(
         settings_path: &Path,
+        lock_name: &str,
         timeout: std::time::Duration,
         debug: &mut Option<SettingsLockDebugAttempt>,
     ) -> Result<std::fs::File, SettingsSaveError> {
@@ -12971,7 +13308,7 @@ impl SettingsFileLock {
                 SettingsSaveLegacyOutward::SettingsLockUnavailable,
             )
         })?;
-        let lock_path = parent.join(SETTINGS_LOCK_FILE_NAME);
+        let lock_path = parent.join(lock_name);
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]
@@ -13372,6 +13709,51 @@ fn save_settings_value_locked(
     )
 }
 
+fn restore_protected_agents_instance_groups(
+    out: &mut Map<String, Value>,
+    disk: Option<&Map<String, Value>>,
+    overlay: &LocalSettingsOverlay,
+    agents_groups: &Map<String, Value>,
+) {
+    let identity_rows = out
+        .get("codingAgentProfiles")
+        .and_then(|profiles| profiles.get("identityByAgent"))
+        .cloned();
+    for key in AGENTS_INSTANCE_KEYS {
+        if !overlay.owns_top_level(key) || agents_groups.contains_key(key) {
+            continue;
+        }
+        match disk.and_then(|disk| disk.get(key)) {
+            Some(raw) => {
+                out.insert(key.to_owned(), raw.clone());
+            }
+            None => {
+                out.remove(key);
+            }
+        }
+        // Only legacy MAIN identities retain the existing #2450 writer output.
+        // All other fields of a protected profiles group remain raw disk values.
+        if key == "codingAgentProfiles" {
+            match &identity_rows {
+                Some(rows) => {
+                    let profiles = out
+                        .entry(key.to_owned())
+                        .or_insert_with(|| Value::Object(Map::new()));
+                    profiles
+                        .as_object_mut()
+                        .expect("validated profiles object")
+                        .insert("identityByAgent".to_owned(), rows.clone());
+                }
+                None => {
+                    if let Some(profiles) = out.get_mut(key).and_then(Value::as_object_mut) {
+                        profiles.remove("identityByAgent");
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn save_settings_value_locked_with_startup(
     settings: &AppSettings,
     path: &Path,
@@ -13599,6 +13981,14 @@ fn save_settings_value_locked_with_startup(
     // A synthesized legacy state (direct-constructed AppSettings) has no dirty
     // repair, so the eligible branches above never fire for it; its groups are
     // written verbatim from the live settings/disk, matching pre-#1077 behavior.
+    // Restore complete protected groups after every retention/repair stage.
+    // Sidecar key presence, including empty values, takes precedence over main.
+    restore_protected_agents_instance_groups(
+        &mut out,
+        disk.as_ref(),
+        &settings.local_overlay_state,
+        &agents_groups,
+    );
     let value = Value::Object(out);
     let written_bytes = write_value_atomic(&value, path)?;
     if let Some(previous) = previous_contents {
@@ -13641,6 +14031,7 @@ fn save_settings_value_locked_with_startup(
         )
     })?;
     refresh_agent_id_hashes(&mut written.agents);
+    refresh_pair_id_hashes(&written.agents, &mut written.coding_agent_profiles);
     written.project_path_state = Arc::new(fresh_state);
     written.coding_agent_identity_physical = Some(Arc::new(identity_physical));
     written.local_overlay_state = settings.local_overlay_state.clone();
@@ -14041,6 +14432,7 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     // base `agents` array before writing the file.
     finalize_agent_order(&mut settings.agents);
     refresh_agent_id_hashes(&mut settings.agents);
+    refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
     repair_loaded_response_close_settings(&mut settings, &settings_path.display().to_string());
     Ok(settings)
 }
@@ -14656,10 +15048,1231 @@ fn save_settings_to_path(settings: &AppSettings, path: &Path) -> Result<(), Sett
     write_value_atomic(&value, path).map(|_| ())
 }
 
-pub type SettingsState = Arc<RwLock<AppSettings>>;
+// ---------------------------------------------------------------------------
+// #2994 (E2992 P41) - the settings owner
+// ---------------------------------------------------------------------------
+//
+// One authoritative `AppSettings` lives in the owner's `RwLock`. Until P50 the
+// product runs the owner in `StagedCompatibility`: bootstrap, CLI and persistence
+// keep their current paths through the forwarding methods below, and managed
+// operations stay disabled. `Active` owners hold the lifecycle lease and run the
+// complete operation contract; only tests construct them before P46.
+
+/// Lifecycle availability of a settings owner. Owner metadata, changed only under
+/// its control mutex. `Invalid` is sticky: it denies current reads, mutation and
+/// authorization, and leaves only diagnostics and a validated close or restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsAvailability {
+    Starting,
+    Ready,
+    Invalid,
+    Draining,
+    Closed,
+}
+
+/// Errors of the owner contract. Messages carry stages and reason codes only,
+/// never payloads, tokens or paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsOwnerError {
+    /// The owner is not `Ready`, or admission is sealed.
+    Unavailable(SettingsAvailability),
+    /// A try-acquisition found the state lock held.
+    Busy,
+    /// Managed operations are not enabled on this owner (StagedCompatibility).
+    OperationsNotEnabled,
+    /// The lifecycle lock is held by another owner past the wait deadline.
+    LifecycleTimedOut,
+    /// The lifecycle lock or its directory identity could not be established.
+    /// Never evidence that the authority is free.
+    Lifecycle(String),
+    /// The transactional lock could not be taken for an operation.
+    TransactionLock(String),
+    /// A source could not be captured; IO, identity or malformation, never absence.
+    Capture(String),
+    /// The captured sources do not compose under the requested policy.
+    Compose(String),
+    /// The blocking worker could not be joined.
+    Worker(String),
+}
+
+impl std::fmt::Display for SettingsOwnerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(availability) => {
+                write!(formatter, "settings owner unavailable ({availability:?})")
+            }
+            Self::Busy => formatter.write_str("settings owner state lock is busy"),
+            Self::OperationsNotEnabled => {
+                formatter.write_str("settings owner managed operations are not enabled")
+            }
+            Self::LifecycleTimedOut => {
+                formatter.write_str("settings owner lifecycle lock is held by another owner")
+            }
+            Self::Lifecycle(reason) => write!(formatter, "settings owner lifecycle: {reason}"),
+            Self::TransactionLock(reason) => {
+                write!(formatter, "settings owner transaction lock: {reason}")
+            }
+            Self::Capture(reason) => write!(formatter, "settings owner capture: {reason}"),
+            Self::Compose(reason) => write!(formatter, "settings owner composition: {reason}"),
+            Self::Worker(reason) => write!(formatter, "settings owner worker: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for SettingsOwnerError {}
+
+/// Stage and reason code of a settings save error, without its paths.
+fn owner_save_error_text(error: &SettingsSaveError) -> String {
+    let reason = match &error.cause {
+        SettingsSaveCause::Io(source) => io_error_kind_as_str(source.kind()),
+        SettingsSaveCause::Json(source) => json_error_category_as_str(source.classify()),
+        SettingsSaveCause::Semantic(reason) => reason.as_str(),
+    };
+    format!("{error} ({:?}: {reason})", error.stage)
+}
+
+fn owner_transaction_error(error: SettingsSaveError) -> SettingsOwnerError {
+    SettingsOwnerError::TransactionLock(owner_save_error_text(&error))
+}
+
+/// Identity the owner reports upward: no transport, no `AppHandle`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsOwnerIdentity {
+    pub instance_id: uuid::Uuid,
+    pub epoch: u64,
+    pub availability: SettingsAvailability,
+    pub managed_operations_enabled: bool,
+}
+
+/// Project retention captured from RAM. A `source_error` means the lists are
+/// unknown, never empty: no consumer may purge on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsRetention {
+    pub active: Vec<String>,
+    pub archived: Vec<String>,
+    pub source_error: Option<String>,
+}
+
+/// Whether an operation may already have touched a persistent source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationEffect {
+    None,
+    Possible,
+}
+
+/// How an operation ended. `PartialOrUnknown` is an honest error: never a
+/// success and never a rollback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationOutcome {
+    Committed,
+    Rejected,
+    PartialOrUnknown,
+}
+
+/// The publishers a locked operation may run. Each one flips the effect to
+/// `Possible` before it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPublisher {
+    PreflightBackup,
+    ProjectPathsMigration,
+    ProjectPathsBackup,
+    ProjectPathsCleanup,
+    BlockingMenusExport,
+    AgentsExport,
+    AgentsSave,
+    SettingsSave,
+    AuxCache,
+    Stamp,
+}
+
+/// Composition policy. Startup keeps overlay and agents rejections as metadata;
+/// recovery requires every affected source to be valid. Both keep legitimate
+/// absence and neither turns IO or a base decode failure into defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapturePolicy {
+    Startup,
+    Recovery,
+}
+
+/// The result an operation returns once the owner has adopted (or refused) the
+/// effective reality.
+#[derive(Debug)]
+pub struct SettingsOperationReport<T> {
+    pub outcome: OperationOutcome,
+    pub value: Option<T>,
+    pub error: Option<String>,
+    pub epoch: u64,
+    pub availability: SettingsAvailability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsOwnerStage {
+    StagedCompatibility,
+    Active,
+}
+
+#[derive(Debug)]
+struct SettingsOwnerControl {
+    availability: SettingsAvailability,
+    epoch: u64,
+    permits: usize,
+    operations: usize,
+    sealed: bool,
+    managed_operations_enabled: bool,
+}
+
+/// Counters for tests and DEBUG diagnostics; no payloads.
+#[derive(Debug, Default)]
+struct SettingsOwnerCounters {
+    transaction_lock_attempts: AtomicU64,
+    captures: AtomicU64,
+    source_reads: AtomicU64,
+    operations: AtomicU64,
+}
+
+/// The lifecycle lease: an exclusive lock on the stable owner sidecar inside a
+/// retained physical directory. Dropping it unlocks; the sidecar is never
+/// unlinked.
+struct SettingsOwnerLease {
+    _lock: SettingsFileLock,
+    retained: crate::path_identity::RetainedDirectory,
+    settings_path: PathBuf,
+}
+
+impl SettingsOwnerLease {
+    fn acquire(
+        settings_path: &Path,
+        wait: std::time::Duration,
+    ) -> Result<Self, SettingsOwnerError> {
+        let identity = |reason: &str| SettingsOwnerError::Lifecycle(reason.to_string());
+        let parent = settings_path
+            .parent()
+            .ok_or_else(|| identity("missing_parent_directory"))?;
+        let leaf = settings_path
+            .file_name()
+            .ok_or_else(|| identity("missing_file_name"))?;
+        // The chain check stops at the first link, so a `..` after a tolerated
+        // link (macOS `/var`) would otherwise be resolved by canonicalize.
+        if parent
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+        {
+            return Err(identity("lock_identity_rejected"));
+        }
+        match crate::path_identity::verify_component_chain_reason(parent) {
+            Ok(()) | Err(crate::path_identity::PathRule::ComponentIsLink) => {}
+            Err(_) => return Err(identity("lock_identity_rejected")),
+        }
+        let physical_parent =
+            std::fs::canonicalize(parent).map_err(|_| identity("lock_identity_rejected"))?;
+        let retained = crate::path_identity::retain_directory(&physical_parent)
+            .map_err(|_| identity("lock_identity_rejected"))?;
+        let physical = retained.identity().canonical_path.join(leaf);
+        let lock = SettingsFileLock::acquire_named(
+            &physical,
+            SETTINGS_OWNER_LOCK_FILE_NAME,
+            wait,
+            "settings_owner_lifecycle",
+        )
+        .map_err(|error| match error.cause {
+            SettingsSaveCause::Semantic(SettingsSaveReason::LockTimedOut) => {
+                SettingsOwnerError::LifecycleTimedOut
+            }
+            _ => SettingsOwnerError::Lifecycle(owner_save_error_text(&error)),
+        })?;
+        retained
+            .verify_current()
+            .map_err(|_| identity("lock_identity_rejected"))?;
+        Ok(Self {
+            _lock: lock,
+            retained,
+            settings_path: physical,
+        })
+    }
+
+    fn verify(&self) -> Result<(), SettingsOwnerError> {
+        self.retained
+            .verify_current()
+            .map_err(|_| SettingsOwnerError::Lifecycle("lock_identity_rejected".to_string()))
+    }
+}
+
+/// The single settings owner. `SettingsState` is `Arc<SettingsOwner>`.
+pub struct SettingsOwner {
+    settings: Arc<RwLock<AppSettings>>,
+    stage: SettingsOwnerStage,
+    instance_id: uuid::Uuid,
+    control: std::sync::Mutex<SettingsOwnerControl>,
+    released: std::sync::Condvar,
+    lease: std::sync::Mutex<Option<SettingsOwnerLease>>,
+    counters: SettingsOwnerCounters,
+}
+
+impl std::fmt::Debug for SettingsOwner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SettingsOwner")
+            .field("stage", &self.stage)
+            .field("instance_id", &self.instance_id)
+            .field("control", &*self.control())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Admission of one read permit; releasing it wakes a draining owner.
+struct SettingsPermitAdmission<'a> {
+    owner: &'a SettingsOwner,
+}
+
+impl Drop for SettingsPermitAdmission<'_> {
+    fn drop(&mut self) {
+        self.owner.release_permit();
+    }
+}
+
+/// Admission of one managed operation. It is released on every path, unwinding
+/// included, which is what lets a drain terminate.
+struct SettingsOperationAdmission<'a> {
+    owner: &'a SettingsOwner,
+}
+
+impl Drop for SettingsOperationAdmission<'_> {
+    fn drop(&mut self) {
+        self.owner.finish_operation();
+    }
+}
+
+/// Outcome, builder value and error of one classified operation.
+type OperationParts<T> = (OperationOutcome, Option<T>, Option<String>);
+
+/// A borrowed, validated read of the current settings.
+pub struct SettingsReadGuard<'a> {
+    guard: tokio::sync::RwLockReadGuard<'a, AppSettings>,
+    _admission: SettingsPermitAdmission<'a>,
+}
+
+impl std::ops::Deref for SettingsReadGuard<'_> {
+    type Target = AppSettings;
+
+    fn deref(&self) -> &AppSettings {
+        &self.guard
+    }
+}
+
+/// An owned, validated read permit: the state guard plus the owner it belongs to.
+/// A PTY route write keeps it until the write ends.
+pub struct SettingsReadPermit {
+    guard: Option<tokio::sync::OwnedRwLockReadGuard<AppSettings>>,
+    owner: Arc<SettingsOwner>,
+}
+
+impl SettingsReadPermit {
+    pub fn owner(&self) -> &Arc<SettingsOwner> {
+        &self.owner
+    }
+}
+
+impl std::ops::Deref for SettingsReadPermit {
+    type Target = AppSettings;
+
+    fn deref(&self) -> &AppSettings {
+        self.guard
+            .as_deref()
+            .expect("a settings read permit holds its guard until drop")
+    }
+}
+
+impl Drop for SettingsReadPermit {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        self.owner.release_permit();
+    }
+}
+
+/// Proof that an operation holds the owner's lifecycle authority and the current
+/// transactional lock. Constructed only inside the owner; the locked halves take
+/// it instead of reacquiring the transactional lock.
+pub struct SettingsOperationGuard<'a> {
+    lease: &'a SettingsOwnerLease,
+    transaction: ProjectPathsWriteTransaction,
+    counters: &'a SettingsOwnerCounters,
+    effect: OperationEffect,
+}
+
+impl SettingsOperationGuard<'_> {
+    /// The physical settings path under the retained directory.
+    pub fn settings_path(&self) -> &Path {
+        &self.transaction.path
+    }
+
+    pub fn effect(&self) -> OperationEffect {
+        self.effect
+    }
+
+    /// Runs one publisher. The effect becomes `Possible` BEFORE the publisher
+    /// starts, so a failure from here on classifies as `PartialOrUnknown`.
+    pub fn publish<R>(
+        &mut self,
+        publisher: SettingsPublisher,
+        run: impl FnOnce(&Path) -> Result<R, String>,
+    ) -> Result<R, String> {
+        self.effect = OperationEffect::Possible;
+        log::debug!("[settings-owner] publisher start: {publisher:?}");
+        let result = run(&self.transaction.path);
+        log::debug!(
+            "[settings-owner] publisher end: {publisher:?} ok={}",
+            result.is_ok()
+        );
+        result
+    }
+}
+
+/// One captured source: verified absence, or its bytes with the identity witness
+/// of the object they were read from.
+#[derive(Debug, Clone)]
+pub(crate) enum CapturedSource {
+    Absent,
+    Present {
+        bytes: Vec<u8>,
+        witness: crate::path_identity::VerifiedPathIdentity,
+    },
+}
+
+impl CapturedSource {
+    fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Absent => None,
+            Self::Present { bytes, .. } => Some(bytes),
+        }
+    }
+
+    /// A short, non-reversible witness label for DEBUG diagnostics.
+    fn witness_label(&self) -> String {
+        match self {
+            Self::Absent => "absent".to_string(),
+            Self::Present { witness, .. } => match witness.content_sha256 {
+                Some(digest) => digest[..4]
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+                None => format!("len{}", witness.metadata.len),
+            },
+        }
+    }
+}
+
+/// The four settings sources, captured once under the transactional lock.
+#[derive(Debug, Clone)]
+pub(crate) struct CapturedSettingsSources {
+    settings_path: PathBuf,
+    base: CapturedSource,
+    project_paths: CapturedSource,
+    agents: CapturedSource,
+    overlay: CapturedSource,
+}
+
+const SETTINGS_CAPTURE_LIMIT: usize = 16 * 1024 * 1024;
+
+fn capture_source_file(
+    path: &Path,
+    counters: &SettingsOwnerCounters,
+) -> Result<CapturedSource, SettingsOwnerError> {
+    counters.source_reads.fetch_add(1, Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CapturedSource::Absent);
+        }
+        Err(error) => {
+            let kind = io_error_kind_as_str(error.kind());
+            return Err(SettingsOwnerError::Capture(format!("{name}: {kind}")));
+        }
+    }
+    // A source that vanishes after the metadata probe is a race, not absence.
+    crate::path_identity::read_bounded_regular(path, SETTINGS_CAPTURE_LIMIT)
+        .map(|(bytes, witness)| CapturedSource::Present { bytes, witness })
+        .map_err(|reason| SettingsOwnerError::Capture(format!("{name}: {reason}")))
+}
+
+// Test seam: the next owner capture on this thread panics, so the panic is
+// raised outside the builder while the operation's guards are held.
+#[cfg(test)]
+thread_local! {
+    static OWNER_CAPTURE_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Captures base, project-paths, agents and overlay exactly once while the guard
+/// holds the transactional lock. No directory creation, migration or write.
+fn capture_sources_locked(
+    guard: &SettingsOperationGuard<'_>,
+) -> Result<CapturedSettingsSources, SettingsOwnerError> {
+    guard.counters.captures.fetch_add(1, Ordering::Relaxed);
+    #[cfg(test)]
+    OWNER_CAPTURE_PANIC.with(|armed| {
+        if armed.replace(false) {
+            panic!("injected settings owner capture panic");
+        }
+    });
+    let path = guard.settings_path();
+    let captured = CapturedSettingsSources {
+        settings_path: path.to_path_buf(),
+        base: capture_source_file(path, guard.counters)?,
+        project_paths: capture_source_file(&project_paths_path(path), guard.counters)?,
+        agents: capture_source_file(&agents_instance_path(path), guard.counters)?,
+        overlay: capture_source_file(
+            &path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+            guard.counters,
+        )?,
+    };
+    guard.lease.verify()?;
+    log::debug!(
+        "[settings-owner] captured base={} project={} agents={} overlay={}",
+        captured.base.witness_label(),
+        captured.project_paths.witness_label(),
+        captured.agents.witness_label(),
+        captured.overlay.witness_label()
+    );
+    Ok(captured)
+}
+
+fn recover_composition(
+    captured: &CapturedSettingsSources,
+) -> Result<AppSettings, SettingsOwnerError> {
+    compose_captured_sources(captured, CapturePolicy::Recovery)
+}
+
+/// Composes captured bytes through the same selector and parser core the loaders
+/// use. No second read, no defaults for a present source that fails.
+fn compose_captured_sources(
+    captured: &CapturedSettingsSources,
+    policy: CapturePolicy,
+) -> Result<AppSettings, SettingsOwnerError> {
+    let path = captured.settings_path.as_path();
+    let destination_path = project_paths_path(path);
+    let selection_error = |error: SettingsSaveError| {
+        SettingsOwnerError::Compose(format!("selection: {}", owner_save_error_text(&error)))
+    };
+    let raw = |source: &CapturedSource, label: &Path, legacy: bool| {
+        source
+            .bytes()
+            .map(|bytes| raw_project_source_from_bytes(bytes.to_vec(), label, label, legacy))
+            .transpose()
+    };
+    let legacy = raw(&captured.base, path, true).map_err(selection_error)?;
+    let destination = raw(&captured.project_paths, &destination_path, false);
+    let destination = destination.map_err(selection_error)?;
+    let selected = select_project_source_from_raw(
+        legacy,
+        destination,
+        path,
+        &destination_path,
+        &destination_path,
+    )
+    .map_err(selection_error)?;
+    let agents_label = agents_instance_path(path);
+    let agents = match captured.agents.bytes() {
+        None => Ok(None),
+        Some(bytes) => std::str::from_utf8(bytes)
+            .map_err(|_| format!("{} is not valid UTF-8", agents_label.display()))
+            .and_then(|contents| parse_agents_instance_contents(contents, &agents_label))
+            .map(Some),
+    };
+    if policy == CapturePolicy::Recovery && agents.is_err() {
+        let reason = "agents source is invalid during recovery";
+        return Err(SettingsOwnerError::Compose(reason.to_string()));
+    }
+    let source = path.to_string_lossy();
+    // Only a verified-absent base composes over serialized defaults.
+    let value = match &selected.legacy {
+        Some(legacy) => Value::Object(legacy.object.clone()),
+        None => serde_json::to_value(AppSettings::default())
+            .map_err(|error| SettingsOwnerError::Compose(format!("defaults: {error}")))?,
+    };
+    let overlay_bytes = captured.overlay.bytes();
+    let (mut settings, _legacy_profiles, agents_layer) = compose_settings_parts(
+        value,
+        &source,
+        Some(path),
+        Some(&selected.projection),
+        Some(agents),
+        |value| match overlay_bytes {
+            Some(bytes) => LocalSettingsOverlay::from_overlay_bytes_paired(
+                value,
+                bytes,
+                OVERLAY_INELIGIBLE_DISK_KEYS,
+                OVERLAY_INELIGIBLE_LEGACY_KEYS,
+                OVERLAY_DERIVED_ID_CLOSURES,
+                CONFIGURATION_COMMAND_PAIRS,
+            ),
+            None => LocalSettingsOverlay::default(),
+        },
+        None,
+    )
+    .map_err(|_| SettingsOwnerError::Compose("base settings do not decode".to_string()))?;
+    let overlay_rejected = settings.local_overlay_state.rejection().is_some();
+    if policy == CapturePolicy::Recovery && overlay_rejected {
+        let reason = "overlay rejected during recovery";
+        return Err(SettingsOwnerError::Compose(reason.to_string()));
+    }
+    if let Some(state) = agents_layer {
+        settings.agents_layer = state;
+    }
+    repair_loaded_response_close_settings(&mut settings, &source);
+    Ok(settings)
+}
+
+impl SettingsOwner {
+    /// StagedCompatibility owner around already-loaded settings: the P40
+    /// constructor path. Ready, with managed operations disabled.
+    fn staged(settings: AppSettings) -> Self {
+        Self::with_stage(
+            settings,
+            SettingsOwnerStage::StagedCompatibility,
+            SettingsAvailability::Ready,
+            None,
+        )
+    }
+
+    fn with_stage(
+        settings: AppSettings,
+        stage: SettingsOwnerStage,
+        availability: SettingsAvailability,
+        lease: Option<SettingsOwnerLease>,
+    ) -> Self {
+        Self {
+            settings: Arc::new(RwLock::new(settings)),
+            stage,
+            instance_id: uuid::Uuid::new_v4(),
+            control: std::sync::Mutex::new(SettingsOwnerControl {
+                availability,
+                epoch: 0,
+                permits: 0,
+                operations: 0,
+                sealed: false,
+                managed_operations_enabled: stage == SettingsOwnerStage::Active,
+            }),
+            released: std::sync::Condvar::new(),
+            lease: std::sync::Mutex::new(lease),
+            counters: SettingsOwnerCounters::default(),
+        }
+    }
+
+    /// Opens an Active owner: lifecycle authority first, then the transactional
+    /// lock, one capture and a Startup composition before `Ready`. Another owner
+    /// holding the authority makes this wait up to `wait`, then fail.
+    pub fn open_active(
+        settings_path: &Path,
+        wait: std::time::Duration,
+    ) -> Result<Arc<Self>, SettingsOwnerError> {
+        let started = std::time::Instant::now();
+        let lease = SettingsOwnerLease::acquire(settings_path, wait)?;
+        let mut owner = Self::with_stage(
+            AppSettings::default(),
+            SettingsOwnerStage::Active,
+            SettingsAvailability::Starting,
+            Some(lease),
+        );
+        let initial = {
+            let lease = owner.lease_guard();
+            let lease = lease.as_ref().ok_or(SettingsOwnerError::Unavailable(
+                SettingsAvailability::Closed,
+            ))?;
+            let guard = owner.operation_guard(lease)?;
+            let captured = capture_sources_locked(&guard)?;
+            compose_captured_sources(&captured, CapturePolicy::Startup)?
+        };
+        // Not shared yet: the initial value replaces the placeholder without a lock.
+        owner.settings = Arc::new(RwLock::new(initial));
+        {
+            let mut control = owner.control();
+            control.availability = SettingsAvailability::Ready;
+            control.epoch = 1;
+        }
+        log::debug!(
+            "[settings-owner] {} ready in {:?}",
+            owner.instance_id,
+            started.elapsed()
+        );
+        Ok(Arc::new(owner))
+    }
+
+    fn control(&self) -> std::sync::MutexGuard<'_, SettingsOwnerControl> {
+        self.control
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn lease_guard(&self) -> std::sync::MutexGuard<'_, Option<SettingsOwnerLease>> {
+        self.lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn identity(&self) -> SettingsOwnerIdentity {
+        let control = self.control();
+        SettingsOwnerIdentity {
+            instance_id: self.instance_id,
+            epoch: control.epoch,
+            availability: control.availability,
+            managed_operations_enabled: control.managed_operations_enabled,
+        }
+    }
+
+    pub fn availability(&self) -> SettingsAvailability {
+        self.control().availability
+    }
+
+    fn admit_permit(&self) -> Result<SettingsPermitAdmission<'_>, SettingsOwnerError> {
+        let mut control = self.control();
+        if control.sealed || control.availability != SettingsAvailability::Ready {
+            return Err(SettingsOwnerError::Unavailable(control.availability));
+        }
+        control.permits += 1;
+        Ok(SettingsPermitAdmission { owner: self })
+    }
+
+    fn release_permit(&self) {
+        let mut control = self.control();
+        control.permits = control.permits.saturating_sub(1);
+        if control.permits == 0 {
+            self.released.notify_all();
+        }
+    }
+
+    fn revalidate(&self) -> Result<(), SettingsOwnerError> {
+        let control = self.control();
+        if control.availability == SettingsAvailability::Ready {
+            Ok(())
+        } else {
+            Err(SettingsOwnerError::Unavailable(control.availability))
+        }
+    }
+
+    fn mark_invalid(&self, stage: &str) {
+        let mut control = self.control();
+        if !matches!(
+            control.availability,
+            SettingsAvailability::Draining | SettingsAvailability::Closed
+        ) {
+            control.availability = SettingsAvailability::Invalid;
+        }
+        let epoch = control.epoch;
+        log::debug!(
+            "[settings-owner] {} invalid at {stage} epoch={epoch}",
+            self.instance_id
+        );
+    }
+
+    /// A borrowed read validated against availability on admission and again
+    /// once the state lock is held.
+    pub async fn current_read(&self) -> Result<SettingsReadGuard<'_>, SettingsOwnerError> {
+        let admission = self.admit_permit()?;
+        let guard = self.settings.read().await;
+        self.revalidate()?;
+        Ok(SettingsReadGuard {
+            guard,
+            _admission: admission,
+        })
+    }
+
+    pub fn try_current_read(&self) -> Result<SettingsReadGuard<'_>, SettingsOwnerError> {
+        let admission = self.admit_permit()?;
+        let guard = self
+            .settings
+            .try_read()
+            .map_err(|_| SettingsOwnerError::Busy)?;
+        self.revalidate()?;
+        Ok(SettingsReadGuard {
+            guard,
+            _admission: admission,
+        })
+    }
+
+    pub fn blocking_current_read(&self) -> Result<SettingsReadGuard<'_>, SettingsOwnerError> {
+        let admission = self.admit_permit()?;
+        let guard = self.settings.blocking_read();
+        self.revalidate()?;
+        Ok(SettingsReadGuard {
+            guard,
+            _admission: admission,
+        })
+    }
+
+    /// An owned permit holding the state guard and this owner.
+    pub fn try_current_read_owned(
+        self: &Arc<Self>,
+    ) -> Result<SettingsReadPermit, SettingsOwnerError> {
+        let admission = self.admit_permit()?;
+        let guard = Arc::clone(&self.settings)
+            .try_read_owned()
+            .map_err(|_| SettingsOwnerError::Busy)?;
+        // The permit now owns the admission and releases it on drop.
+        std::mem::forget(admission);
+        let permit = SettingsReadPermit {
+            guard: Some(guard),
+            owner: Arc::clone(self),
+        };
+        self.revalidate()?;
+        Ok(permit)
+    }
+
+    /// Clones RAM through a validated guard: no filesystem, no transactional lock.
+    pub async fn current_snapshot(&self) -> Result<AppSettings, SettingsOwnerError> {
+        self.current_read().await.map(|guard| guard.clone())
+    }
+
+    pub fn blocking_current_snapshot(&self) -> Result<AppSettings, SettingsOwnerError> {
+        self.blocking_current_read().map(|guard| guard.clone())
+    }
+
+    fn retention_of(settings: &AppSettings) -> SettingsRetention {
+        SettingsRetention {
+            active: settings.project_paths.clone(),
+            archived: settings.archived_project_paths.clone(),
+            source_error: settings.project_paths_persistence_error.clone(),
+        }
+    }
+
+    /// Retention from RAM, captured before any sessions lock is taken.
+    pub async fn current_retention(&self) -> Result<SettingsRetention, SettingsOwnerError> {
+        self.current_read()
+            .await
+            .map(|guard| Self::retention_of(&guard))
+    }
+
+    pub fn blocking_current_retention(&self) -> Result<SettingsRetention, SettingsOwnerError> {
+        self.blocking_current_read()
+            .map(|guard| Self::retention_of(&guard))
+    }
+
+    fn operation_guard<'a>(
+        &'a self,
+        lease: &'a SettingsOwnerLease,
+    ) -> Result<SettingsOperationGuard<'a>, SettingsOwnerError> {
+        lease.verify()?;
+        let attempts = &self.counters.transaction_lock_attempts;
+        attempts.fetch_add(1, Ordering::Relaxed);
+        let operation = "settings_owner_operation";
+        let transaction = empty_project_transaction(&lease.settings_path, operation);
+        let transaction = transaction.map_err(owner_transaction_error)?;
+        Ok(SettingsOperationGuard {
+            lease,
+            transaction,
+            counters: &self.counters,
+            effect: OperationEffect::None,
+        })
+    }
+
+    fn admit_operation(&self) -> Result<SettingsOperationAdmission<'_>, SettingsOwnerError> {
+        let mut control = self.control();
+        if !control.managed_operations_enabled {
+            return Err(SettingsOwnerError::OperationsNotEnabled);
+        }
+        if control.sealed || control.availability != SettingsAvailability::Ready {
+            return Err(SettingsOwnerError::Unavailable(control.availability));
+        }
+        control.operations += 1;
+        Ok(SettingsOperationAdmission { owner: self })
+    }
+
+    fn finish_operation(&self) {
+        let mut control = self.control();
+        control.operations = control.operations.saturating_sub(1);
+        if control.operations == 0 {
+            self.released.notify_all();
+        }
+    }
+
+    /// Runs one complete synchronous operation: admission, state guard, current
+    /// transactional lock, builder over the captured current settings, publishers,
+    /// adoption of the effective reality, then release. Host effects belong to
+    /// the caller, after this returns. Never nests a runtime.
+    ///
+    /// The admission is released on every path, panics included, so a drain
+    /// always terminates. A panic before the guards are held published nothing
+    /// and is a worker error; a panic while they are held is classified under
+    /// them (see `run_operation`).
+    pub fn with_operation_blocking<T>(
+        &self,
+        name: &'static str,
+        builder: impl FnOnce(&AppSettings, &mut SettingsOperationGuard<'_>) -> Result<T, String>,
+    ) -> Result<SettingsOperationReport<T>, SettingsOwnerError> {
+        let _admission = self.admit_operation()?;
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.run_operation(name, builder)
+        }));
+        match run {
+            Ok(result) => result,
+            Err(_) => {
+                let reason = "operation panicked before its guards were held";
+                Err(SettingsOwnerError::Worker(reason.to_string()))
+            }
+        }
+    }
+
+    /// The async form: the same body on a blocking worker that retains its
+    /// owner handle. The future must not be awaited while holding any guard.
+    pub async fn with_operation<T, F>(
+        self: &Arc<Self>,
+        name: &'static str,
+        builder: F,
+    ) -> Result<SettingsOperationReport<T>, SettingsOwnerError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&AppSettings, &mut SettingsOperationGuard<'_>) -> Result<T, String>
+            + Send
+            + 'static,
+    {
+        let owner = Arc::clone(self);
+        tokio::task::spawn_blocking(move || owner.with_operation_blocking(name, builder))
+            .await
+            .map_err(|error| SettingsOwnerError::Worker(error.to_string()))?
+    }
+
+    fn run_operation<T>(
+        &self,
+        name: &'static str,
+        builder: impl FnOnce(&AppSettings, &mut SettingsOperationGuard<'_>) -> Result<T, String>,
+    ) -> Result<SettingsOperationReport<T>, SettingsOwnerError> {
+        let operation = self.counters.operations.fetch_add(1, Ordering::Relaxed) + 1;
+        let started = std::time::Instant::now();
+        let mut state = self.settings.blocking_write();
+        let lease = self.lease_guard();
+        let lease = lease.as_ref().ok_or(SettingsOwnerError::Unavailable(
+            SettingsAvailability::Closed,
+        ))?;
+        let mut guard = self.operation_guard(lease)?;
+        // Everything that reads sources, runs the builder or adopts reality runs
+        // under this catch, so a panic anywhere is classified while the state
+        // guard, the lease and the transactional lock are all still held.
+        let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.operation_body(&mut state, &mut guard, builder)
+        }));
+        let effect = guard.effect;
+        let (outcome, value, error) = match body {
+            Ok(Ok(parts)) => parts,
+            Ok(Err(error)) => return Err(error),
+            Err(_) if effect == OperationEffect::None => {
+                // No publisher ran and RAM was not replaced: nothing to recover.
+                let reason = "operation panicked before any publisher";
+                (OperationOutcome::Rejected, None, Some(reason.to_string()))
+            }
+            Err(_) => {
+                // A source may have changed and reality could not be adopted.
+                self.mark_invalid("panic");
+                let reason = "operation panicked after a publisher";
+                (
+                    OperationOutcome::PartialOrUnknown,
+                    None,
+                    Some(reason.to_string()),
+                )
+            }
+        };
+        drop(guard);
+        drop(state);
+        let control = self.control();
+        log::debug!(
+            "[settings-owner] {} op={operation} {name} {outcome:?}/{effect:?} epoch={} in {:?}",
+            self.instance_id,
+            control.epoch,
+            started.elapsed()
+        );
+        Ok(SettingsOperationReport {
+            outcome,
+            value,
+            error,
+            epoch: control.epoch,
+            availability: control.availability,
+        })
+    }
+
+    /// Capture, builder, classification and adoption, all under the caller's
+    /// guards. Admission errors return before any publisher can run.
+    fn operation_body<T>(
+        &self,
+        state: &mut AppSettings,
+        guard: &mut SettingsOperationGuard<'_>,
+        builder: impl FnOnce(&AppSettings, &mut SettingsOperationGuard<'_>) -> Result<T, String>,
+    ) -> Result<OperationParts<T>, SettingsOwnerError> {
+        // Sources that do not compose at admission reject the operation before
+        // any publisher; RAM keeps the last adopted value.
+        let captured = capture_sources_locked(guard)?;
+        let current = compose_captured_sources(&captured, CapturePolicy::Recovery)?;
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            builder(&current, &mut *guard)
+        }));
+        let effect = guard.effect;
+        let (value, error) = match built {
+            Ok(Ok(value)) => (Some(value), None),
+            Ok(Err(error)) => (None, Some(error)),
+            Err(_) => (None, Some("operation panicked".to_string())),
+        };
+        let outcome = if error.is_none() {
+            OperationOutcome::Committed
+        } else if effect == OperationEffect::None {
+            OperationOutcome::Rejected
+        } else {
+            OperationOutcome::PartialOrUnknown
+        };
+        // Rejected changed nothing: keep RAM. A success that published nothing
+        // adopts the composition it already captured, without a second capture.
+        // Otherwise recapture under the same guard and adopt reality, or become
+        // Invalid without saving defaults.
+        let outcome = if outcome == OperationOutcome::Rejected {
+            outcome
+        } else if effect == OperationEffect::None {
+            *state = current;
+            self.control().epoch += 1;
+            outcome
+        } else {
+            let recaptured = capture_sources_locked(guard);
+            match recaptured.and_then(|captured| recover_composition(&captured)) {
+                Ok(effective) => {
+                    *state = effective;
+                    self.control().epoch += 1;
+                    outcome
+                }
+                Err(_) => {
+                    self.mark_invalid("recapture");
+                    OperationOutcome::PartialOrUnknown
+                }
+            }
+        };
+        Ok((outcome, value, error))
+    }
+
+    /// Seals admission, waits for every permit and operation, then releases the
+    /// lifecycle authority LAST. The soft deadline only diagnoses; it never
+    /// detaches or unlocks early.
+    pub fn drain_blocking(&self, soft_deadline: std::time::Duration) {
+        let started = std::time::Instant::now();
+        let mut control = self.control();
+        control.sealed = true;
+        if control.availability != SettingsAvailability::Closed {
+            control.availability = SettingsAvailability::Draining;
+        }
+        let mut reported = false;
+        while control.permits > 0 || control.operations > 0 {
+            let (next, timeout) = self
+                .released
+                .wait_timeout(control, std::time::Duration::from_millis(50))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            control = next;
+            if timeout.timed_out() && !reported && started.elapsed() >= soft_deadline {
+                reported = true;
+                log::debug!(
+                    "[settings-owner] {} drain past soft deadline permits={} operations={}",
+                    self.instance_id,
+                    control.permits,
+                    control.operations
+                );
+            }
+        }
+        control.availability = SettingsAvailability::Closed;
+        drop(control);
+        let lease = self.lease_guard().take();
+        drop(lease);
+        log::debug!(
+            "[settings-owner] {} closed in {:?}",
+            self.instance_id,
+            started.elapsed()
+        );
+    }
+
+    fn staged_forwarding(&self) {
+        debug_assert_eq!(
+            self.stage,
+            SettingsOwnerStage::StagedCompatibility,
+            "lock forwarding is StagedCompatibility only"
+        );
+    }
+
+    // StagedCompatibility forwarding: the pre-owner RwLock surface, kept only so
+    // consumers not yet migrated compile and behave exactly as before. P50
+    // retires it from the product.
+
+    pub async fn read(&self) -> tokio::sync::RwLockReadGuard<'_, AppSettings> {
+        self.staged_forwarding();
+        self.settings.read().await
+    }
+
+    pub async fn write(&self) -> tokio::sync::RwLockWriteGuard<'_, AppSettings> {
+        self.staged_forwarding();
+        self.settings.write().await
+    }
+
+    pub fn try_read(
+        &self,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, AppSettings>, tokio::sync::TryLockError> {
+        self.staged_forwarding();
+        self.settings.try_read()
+    }
+
+    pub fn try_write(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, AppSettings>, tokio::sync::TryLockError> {
+        self.staged_forwarding();
+        self.settings.try_write()
+    }
+
+    pub fn blocking_read(&self) -> tokio::sync::RwLockReadGuard<'_, AppSettings> {
+        self.staged_forwarding();
+        self.settings.blocking_read()
+    }
+
+    pub fn blocking_write(&self) -> tokio::sync::RwLockWriteGuard<'_, AppSettings> {
+        self.staged_forwarding();
+        self.settings.blocking_write()
+    }
+
+    pub async fn read_owned(self: Arc<Self>) -> tokio::sync::OwnedRwLockReadGuard<AppSettings> {
+        self.staged_forwarding();
+        Arc::clone(&self.settings).read_owned().await
+    }
+
+    pub async fn write_owned(self: Arc<Self>) -> tokio::sync::OwnedRwLockWriteGuard<AppSettings> {
+        self.staged_forwarding();
+        Arc::clone(&self.settings).write_owned().await
+    }
+
+    pub fn try_read_owned(
+        self: Arc<Self>,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<AppSettings>, tokio::sync::TryLockError> {
+        self.staged_forwarding();
+        Arc::clone(&self.settings).try_read_owned()
+    }
+}
+
+pub type SettingsState = Arc<SettingsOwner>;
+
+pub fn new_settings_state(settings: AppSettings) -> SettingsState {
+    Arc::new(SettingsOwner::staged(settings))
+}
 
 #[cfg(test)]
 mod tests {
+    mod issue_3047_schema {
+        use super::super::*;
+        use serde_json::json;
+
+        #[test]
+        fn issue_3047_schema_tolerates_metadata_types() {
+            let cases = [
+                (None, None),
+                (Some(Value::Null), None),
+                (Some(json!(true)), None),
+                (Some(json!(17)), None),
+                (Some(json!([])), None),
+                (Some(json!({})), None),
+                (Some(json!("forged")), Some("forged")),
+                (Some(json!("")), Some("")),
+            ];
+            for (input, expected) in cases {
+                let mut value = json!({"additionalArguments": "--keep"});
+                if let Some(input) = input {
+                    value["id_hash"] = input;
+                }
+                let cell: ProfileCellConfig = serde_json::from_value(value).unwrap();
+                assert_eq!(cell.id_hash.as_deref(), expected);
+                assert_eq!(cell.command, "--keep");
+                let encoded = serde_json::to_value(&cell).unwrap();
+                assert!(encoded.get("idHash").is_none());
+                assert_eq!(encoded.get("id_hash"), expected.map(|s| json!(s)).as_ref());
+            }
+        }
+
+        #[test]
+        fn issue_3047_schema_roundtrip_preserves_content_and_alias() {
+            for (commands, expected) in [
+                (json!({"command": "--legacy"}), "--legacy"),
+                (json!({"additionalArguments": "--canonical"}), "--canonical"),
+                (
+                    json!({"command": "--legacy", "additionalArguments": "--canonical"}),
+                    "--canonical",
+                ),
+            ] {
+                let mut value = json!({
+                    "id_hash": "untrusted",
+                    "enabled": false,
+                    "env": {"KEY": "value"},
+                    "notes": "keep",
+                    "preflight": "echo ready",
+                    "preflightTimeoutSeconds": 7
+                });
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(commands.as_object().unwrap().clone());
+                let cell: ProfileCellConfig = serde_json::from_value(value).unwrap();
+                assert_eq!(cell.command, expected);
+                assert_eq!(cell.env.get("KEY").map(String::as_str), Some("value"));
+                assert_eq!(cell.id_hash.as_deref(), Some("untrusted"));
+                assert!(!cell.enabled);
+                assert_eq!(cell.notes, "keep");
+                assert_eq!(cell.preflight.as_deref(), Some("echo ready"));
+                assert_eq!(cell.preflight_timeout_seconds, Some(7));
+                let encoded = serde_json::to_value(&cell).unwrap();
+                assert_eq!(encoded["additionalArguments"], expected);
+                assert_eq!(encoded["id_hash"], "untrusted");
+                assert!(encoded.get("command").is_none());
+                assert!(encoded.get("idHash").is_none());
+                assert_eq!(
+                    serde_json::from_value::<ProfileCellConfig>(encoded).unwrap(),
+                    cell
+                );
+            }
+        }
+
+        #[test]
+        fn issue_3047_schema_gap_ignores_only_hash() {
+            let mut profiles = CodingAgentProfilesConfig::default();
+            assert!(is_profile_gap(&profiles, "n"));
+            for hash in [None, Some("forged".to_string())] {
+                let mut cell = empty_profile_cell();
+                cell.id_hash = hash;
+                profiles
+                    .profiles_by_agent
+                    .insert("n".into(), BTreeMap::from([("A".into(), cell.clone())]));
+                assert!(is_profile_gap(&profiles, "n"));
+                let before = profiles.clone();
+                assert!(is_profile_gap(&profiles, "n"));
+                assert_eq!(profiles, before);
+                for (field, value) in [
+                    ("notes", json!("keep")),
+                    ("env", json!({"KEY": "value"})),
+                    ("additionalArguments", json!("--keep")),
+                    ("preflight", json!("echo ready")),
+                    ("preflightTimeoutSeconds", json!(7)),
+                    ("enabled", json!(false)),
+                ] {
+                    let mut value_cell = serde_json::to_value(&cell).unwrap();
+                    value_cell[field] = value;
+                    let mut real: ProfileCellConfig = serde_json::from_value(value_cell).unwrap();
+                    real.id_hash = None;
+                    profiles
+                        .profiles_by_agent
+                        .insert("n".into(), BTreeMap::from([("A".into(), real)]));
+                    assert!(!is_profile_gap(&profiles, "n"), "{field}");
+                }
+                profiles
+                    .profiles_by_agent
+                    .insert("n".into(), BTreeMap::from([("A".into(), cell)]));
+                profiles
+                    .profile_labels_by_agent
+                    .insert("n".into(), BTreeMap::from([("A".into(), "Mine".into())]));
+                assert!(!is_profile_gap(&profiles, "n"));
+                profiles.profile_labels_by_agent.clear();
+            }
+            let mut hashed = empty_profile_cell();
+            hashed.id_hash = Some("forged".into());
+            assert_ne!(hashed, empty_profile_cell());
+        }
+    }
+
     // Each logger scenario runs in its own process. No test installs or changes
     // the logger of the parent harness or shares runtime filters with siblings.
     const SETTINGS_LOCK_DEBUG_HARNESS_TIMEOUT: std::time::Duration =
@@ -15289,9 +16902,13 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let path = fixture.path().join("settings.json");
         let mut debug = Some(debug);
-        let file =
-            super::SettingsFileLock::acquire_file(&path, std::time::Duration::ZERO, &mut debug)
-                .unwrap_or_else(|_| panic!("disconnected diagnostics affected acquisition"));
+        let file = super::SettingsFileLock::acquire_file(
+            &path,
+            super::SETTINGS_LOCK_FILE_NAME,
+            std::time::Duration::ZERO,
+            &mut debug,
+        )
+        .unwrap_or_else(|_| panic!("disconnected diagnostics affected acquisition"));
         drop(super::SettingsFileLock {
             file: Some(file),
             debug,
@@ -15315,6 +16932,121 @@ mod tests {
         assert!(truncated);
         assert!(escaped.len() <= super::SETTINGS_LOCK_DEBUG_PATH_BYTES);
         assert!(serde_json::from_str::<String>(&escaped).is_ok());
+    }
+
+    #[test]
+    fn id_hash_debug_exclusions_preserve_real_content_and_clear_orphans() {
+        let agent: super::AgentConfig = serde_json::from_value(serde_json::json!({
+            "id":"alpha", "label":"Alpha", "baseCommand":"tool", "color":"red"
+        }))
+        .unwrap();
+        let mut supplied = agent.clone();
+        supplied.id_hash_debug = Some(vec!["forged".into()]);
+        assert!(super::known_agent_field("id_hash_debug"));
+        assert!(!super::known_agent_field("idHashDebug"));
+        assert_eq!(
+            super::comparable_agent(&agent),
+            super::comparable_agent(&supplied)
+        );
+        supplied.command.push_str(" --real");
+        assert_ne!(
+            super::comparable_agent(&agent),
+            super::comparable_agent(&supplied)
+        );
+
+        let mut profiles = super::CodingAgentProfilesConfig::default();
+        let mut cell = super::empty_profile_cell();
+        cell.id_hash = Some("stale".into());
+        cell.id_hash_debug = Some(vec!["stale".into()]);
+        profiles
+            .profiles_by_agent
+            .insert("orphan".into(), BTreeMap::from([("A".into(), cell)]));
+        assert!(super::is_profile_gap(&profiles, "orphan"));
+        profiles
+            .profiles_by_agent
+            .get_mut("orphan")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .notes = "real".into();
+        assert!(!super::is_profile_gap(&profiles, "orphan"));
+        super::refresh_pair_id_hashes(&[agent], &mut profiles);
+        let orphan = &profiles.profiles_by_agent["orphan"]["A"];
+        assert_eq!(orphan.id_hash, None);
+        assert_eq!(orphan.id_hash_debug, None);
+        assert_eq!(orphan.notes, "real");
+    }
+
+    #[test]
+    fn id_hash_debug_schema_tolerates_metadata_and_preserves_real_errors() {
+        let agent = serde_json::json!({
+            "id": "custom-tool", "label": "Custom", "baseCommand": "tool", "color": "red"
+        });
+        let cell = serde_json::json!({"additionalArguments": "--flag"});
+        for (is_agent, baseline) in [(true, agent), (false, cell)] {
+            let decode = |raw: serde_json::Value| {
+                if is_agent {
+                    serde_json::from_value::<super::AgentConfig>(raw).map(|value| {
+                        (
+                            value.id_hash_debug.clone(),
+                            serde_json::to_value(value).unwrap(),
+                        )
+                    })
+                } else {
+                    serde_json::from_value::<super::ProfileCellConfig>(raw).map(|value| {
+                        (
+                            value.id_hash_debug.clone(),
+                            serde_json::to_value(value).unwrap(),
+                        )
+                    })
+                }
+            };
+            let (debug, expected) = decode(baseline.clone()).unwrap();
+            assert_eq!(debug, None);
+            assert!(expected.get("id_hash_debug").is_none());
+            for raw in [
+                serde_json::json!(null),
+                serde_json::json!(42),
+                serde_json::json!(true),
+                serde_json::json!("wrong"),
+                serde_json::json!({}),
+                serde_json::json!(["valid", 42]),
+                serde_json::json!([null]),
+                serde_json::json!([[]]),
+            ] {
+                let mut supplied = baseline.clone();
+                supplied["id_hash_debug"] = raw;
+                assert_eq!(decode(supplied).unwrap(), (None, expected.clone()));
+            }
+            let mut camel = baseline.clone();
+            camel["idHashDebug"] = serde_json::json!(["ignored"]);
+            assert_eq!(decode(camel).unwrap(), (None, expected.clone()));
+            for leaves in [vec![], vec![""], vec![" Tool Ω ", "--Flag", "", "Tool"]] {
+                let mut supplied = baseline.clone();
+                supplied["id_hash_debug"] = serde_json::json!(leaves);
+                let expected_leaves: Vec<String> =
+                    leaves.iter().map(|value| (*value).into()).collect();
+                let mut expected_record = expected.clone();
+                expected_record["id_hash_debug"] = serde_json::json!(leaves);
+                let (debug, encoded) = decode(supplied).unwrap();
+                assert_eq!(debug, Some(expected_leaves));
+                assert_eq!(encoded, expected_record);
+                assert!(encoded.get("idHashDebug").is_none());
+                assert_eq!(decode(encoded.clone()).unwrap().1, encoded);
+            }
+            let command_key = if is_agent {
+                "baseCommand"
+            } else {
+                "additionalArguments"
+            };
+            let env_key = if is_agent { "envs" } else { "env" };
+            for key in [command_key, env_key] {
+                let mut invalid = baseline.clone();
+                invalid[key] = serde_json::json!(42);
+                invalid["id_hash_debug"] = serde_json::json!(["ok", false]);
+                assert!(decode(invalid).is_err(), "real field {key}");
+            }
+        }
     }
 
     #[test]
@@ -19235,7 +20967,8 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let path = seed(temp.path(), Some(&base_fixture()), None);
             let original = load_settings_from_path(&path);
-            let state: SettingsState = Arc::new(RwLock::new(original.clone()));
+            let state: SettingsState =
+                crate::config::settings::new_settings_state(original.clone());
             let before = disk_bytes(temp.path());
             for seconds in [0, 3601, 999999] {
                 let mut invalid = original.clone();
@@ -19516,6 +21249,7 @@ mod tests {
                     preflight_timeout_seconds: None,
                     id: format!("agent-{idx}"),
                     id_hash: None,
+                    id_hash_debug: None,
                     label: (*label).to_string(),
                     command: (*command).to_string(),
                     color: "#000000".to_string(),
@@ -19621,6 +21355,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: "claude".to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: "Claude".to_string(),
             command: "claude".to_string(),
             color: "#fff".to_string(),
@@ -20019,7 +21754,7 @@ mod tests {
         let original = AppSettings::default();
         assert_eq!(original.typing_hold_seconds, 30);
         let state: super::SettingsState =
-            std::sync::Arc::new(tokio::sync::RwLock::new(original.clone()));
+            crate::config::settings::new_settings_state(original.clone());
 
         let mut invalid = original;
         invalid.typing_hold_seconds = 0;
@@ -20417,6 +22152,8 @@ mod tests {
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -20476,6 +22213,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -20505,6 +22244,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -20570,6 +22311,8 @@ mod tests {
                     .insert(
                         "A".to_string(),
                         ProfileCellConfig {
+                            id_hash: None,
+                            id_hash_debug: None,
                             preflight: None,
                             preflight_timeout_seconds: None,
                             enabled: true,
@@ -20614,6 +22357,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -22723,6 +24468,56 @@ mod tests {
     }
 
     #[test]
+    fn container_options_enabled_default_impl_is_false() {
+        assert!(!AppSettings::default().container_options_enabled);
+    }
+
+    #[test]
+    fn container_options_enabled_defaults_false_when_missing_from_json() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "telegramBots": []
+        }"#;
+        let settings: AppSettings =
+            serde_json::from_str(json).expect("deserialize legacy settings");
+        assert!(!settings.container_options_enabled);
+    }
+
+    #[test]
+    fn container_options_enabled_explicit_false_round_trips() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["containerOptionsEnabled"] = serde_json::Value::Bool(false);
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(!settings.container_options_enabled);
+        assert_eq!(
+            serde_json::to_value(settings).unwrap()["containerOptionsEnabled"],
+            serde_json::Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn container_options_enabled_true_round_trips_under_camel_case_key() {
+        let settings = AppSettings {
+            container_options_enabled: true,
+            ..AppSettings::default()
+        };
+        let value = serde_json::to_value(settings).unwrap();
+        assert_eq!(
+            value["containerOptionsEnabled"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(value.get("container_options_enabled").is_none());
+        let back: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(back.container_options_enabled);
+        assert_eq!(
+            serde_json::to_value(back).unwrap()["containerOptionsEnabled"],
+            serde_json::Value::Bool(true)
+        );
+    }
+
+    #[test]
     fn co_managed_enabled_defaults_false_when_missing_from_json() {
         let json = r#"{
             "defaultShell": "bash",
@@ -23109,6 +24904,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
@@ -23394,6 +25190,8 @@ mod tests {
 
         fn cell(command: &str) -> ProfileCellConfig {
             ProfileCellConfig {
+                id_hash: None,
+                id_hash_debug: None,
                 preflight: None,
                 preflight_timeout_seconds: None,
                 command: command.to_string(),
@@ -23589,10 +25387,12 @@ mod tests {
 
             let object = disk_object(&crate::config::settings::agents_instance_path(&path));
             let profiles = &object["codingAgentProfiles"];
-            assert_eq!(
-                profiles["profilesByAgent"]["agent_2_bbbbbb"]["A"],
-                cell_value("--special")
-            );
+            assert_eq!(profiles["profilesByAgent"]["agent_2_bbbbbb"]["A"], {
+                let mut expected = cell_value("--special");
+                expected["id_hash"] = json!(configuration_identity("claude--special", &[]));
+                expected["id_hash_debug"] = json!(["claude", "--special"]);
+                expected
+            });
             assert_eq!(
                 profiles["profileLabelsByAgent"]["agent_2_bbbbbb"],
                 json!({"A": "Mine"})
@@ -23631,7 +25431,14 @@ mod tests {
             validate_and_repair_settings(&mut settings).unwrap();
             let cells = &settings.coding_agent_profiles.profiles_by_agent["n"];
             assert_eq!(cells["B"].command, "--b");
-            assert_eq!(cells.get("A"), Some(&empty_profile_cell()));
+            let mut expected_a = empty_profile_cell();
+            expected_a.id_hash = Some(configuration_identity("claude", &[]));
+            expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
+            assert_eq!(cells.get("A"), Some(&expected_a));
+            assert_eq!(
+                cells["B"].id_hash,
+                Some(configuration_identity("claude--b", &[]))
+            );
         }
 
         // 7
@@ -23644,6 +25451,25 @@ mod tests {
             );
             validate_and_repair_settings(&mut settings).unwrap();
             assert_eq!(a_command(&settings, "n").as_deref(), Some("--special"));
+        }
+
+        #[test]
+        fn issue_3047_schema_orphan_adopts_gap_with_metadata() {
+            for hash in [None, Some("forged".to_string())] {
+                let mut settings = gap_and_matching_orphan();
+                let mut gap = empty_profile_cell();
+                gap.id_hash = hash;
+                settings
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .insert("n".into(), BTreeMap::from([("A".into(), gap)]));
+                assert!(adopt_orphaned_profiles(&mut settings));
+                assert_eq!(a_command(&settings, "n").as_deref(), Some("--special"));
+                assert!(!settings
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .contains_key("o"));
+            }
         }
 
         // 8
@@ -23865,10 +25691,12 @@ mod tests {
             assert_eq!(a_command(&settings, "n").as_deref(), Some("--special"));
             let profiles = &disk_object(&crate::config::settings::agents_instance_path(&path))
                 ["codingAgentProfiles"];
-            assert_eq!(
-                profiles["profilesByAgent"]["n"]["A"],
-                cell_value("--special")
-            );
+            assert_eq!(profiles["profilesByAgent"]["n"]["A"], {
+                let mut expected = cell_value("--special");
+                expected["id_hash"] = json!(configuration_identity("claude--special", &[]));
+                expected["id_hash_debug"] = json!(["claude", "--special"]);
+                expected
+            });
             assert_eq!(
                 profiles["profileLabelsByAgent"]["n"],
                 json!({"A": "Special"})
@@ -23904,8 +25732,17 @@ mod tests {
             validate_and_repair_settings(&mut settings).unwrap();
             let cells = &settings.coding_agent_profiles.profiles_by_agent;
             assert_eq!(cells["n"]["B"].command, "--b");
-            assert_eq!(cells["n"]["A"], empty_profile_cell());
-            assert_eq!(cells["k"]["A"], empty_profile_cell());
+            let mut expected_a = empty_profile_cell();
+            expected_a.id_hash = Some(configuration_identity("claude", &[]));
+            expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
+            assert_eq!(cells["n"]["A"], expected_a);
+            expected_a.id_hash = Some(configuration_identity("codex", &[]));
+            expected_a.id_hash_debug = Some(vec!["codex".into(), "".into()]);
+            assert_eq!(cells["k"]["A"], expected_a);
+            assert_eq!(
+                cells["n"]["B"].id_hash,
+                Some(configuration_identity("claude--b", &[]))
+            );
         }
     }
 
@@ -24388,6 +26225,9 @@ mod tests {
             assert!(!object.contains_key("codingAgentInstallEnabled"));
             // #2800 extends the schema; the historical captured control stays intact.
             object.insert("codingAgentInstallEnabled".to_string(), Value::Bool(false));
+            assert!(!object.contains_key("containerOptionsEnabled"));
+            // #3062 adds a default-false field without changing the historical control.
+            object.insert("containerOptionsEnabled".to_string(), Value::Bool(false));
             assert!(!object.contains_key("responseCloseEnabled"));
             assert!(!object.contains_key("responseCloseIdleSeconds"));
             object.insert("responseCloseEnabled".to_string(), Value::Bool(true));
@@ -24400,19 +26240,38 @@ mod tests {
                     "id_hash".to_string(),
                     Value::String(configuration_identity(&agent.command, &agent.envs)),
                 );
+                let mut leaves = vec![agent.command.clone()];
+                for env in &agent.envs {
+                    leaves.extend([env.key.clone(), env.value.clone()]);
+                }
+                raw["id_hash_debug"] = json!(leaves);
                 // The physical legacy agent text survives the canonical write.
                 raw["baseCommand"] = raw["command"].clone();
             }
             // S6 never seeded profile cells. Their generated defaults are fresh
             // canonical rows and must not acquire invented historical fields.
-            for cells in object["codingAgentProfiles"]["profilesByAgent"]
+            // Independent ASCII preimages: empty cell/env means the base text.
+            let pair_hashes = BTreeMap::from([
+                (
+                    "claude",
+                    "cid1:15a3fc2b7f142361454b99d62429610d12f5f7aedb12b8500a2bfa32d379837d",
+                ),
+                (
+                    "codex",
+                    "cid1:2cf586be28b9573af75bfbdadfe0bd8760e3382b547cfe2c527eea368920a8e5",
+                ),
+            ]);
+            for (id, cells) in object["codingAgentProfiles"]["profilesByAgent"]
                 .as_object_mut()
                 .unwrap()
-                .values_mut()
+                .iter_mut()
             {
                 for cell in cells.as_object_mut().unwrap().values_mut() {
                     let command = cell.as_object_mut().unwrap().remove("command").unwrap();
                     cell["additionalArguments"] = command;
+                    assert!(cell.get("id_hash").is_none());
+                    cell["id_hash"] = json!(pair_hashes[id.as_str()]);
+                    cell["id_hash_debug"] = json!([id, ""]);
                 }
             }
             let sorted: BTreeMap<String, Value> =
@@ -26707,6 +28566,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "grok-1".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "grok-1".to_string(),
                 command: "grok".to_string(),
                 color: "#000000".to_string(),
@@ -27174,15 +29034,15 @@ mod tests {
         let settings = super::load_settings_from_path(&path);
         assert_eq!(order_2306_ids(&settings.agents), ["only-b", "only-a"]);
         assert_eq!(order_2306_positions(&settings.agents), [Some(0), Some(1)]);
-        // The fresh-install save writes a base file, but the base never owned
-        // `agents`, so the save restores the serialized default empty array: no
-        // overlay record or overlay ordinal may leak into it.
+        // Whole-group protection preserves physical absence. The effective
+        // overlay order is independent of materializing a base agents array.
         let disk = disk_object(&path);
-        assert_eq!(
-            disk.get("agents"),
-            Some(&serde_json::json!([])),
-            "the absent base restores its default empty agents array: {disk:?}"
+        assert!(
+            !disk.contains_key("agents"),
+            "the absent base agents key must stay absent: {disk:?}"
         );
+        let sidecar = super::agents_instance_path(&path);
+        assert!(!sidecar.exists() || !disk_object(&sidecar).contains_key("agents"));
         assert_eq!(std::fs::read(&local_path).unwrap(), overlay_before);
     }
 
@@ -28401,8 +30261,935 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn issue_3047_pair_table_and_independent_preimages() {
+        use sha2::{Digest, Sha256};
+        // Independently reproduce both normalization stages of a pair.
+        let normalize = |parts: &[&str]| {
+            let mut chars: Vec<char> = parts
+                .concat()
+                .chars()
+                .flat_map(char::to_lowercase)
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            chars.sort_unstable();
+            chars.iter().collect::<String>()
+        };
+        let expected = |base_parts: &[&str], profile_parts: &[&str]| {
+            let base = normalize(base_parts);
+            let profile = normalize(profile_parts);
+            format!("cid1:{:x}", Sha256::digest(normalize(&[&base, &profile])))
+        };
+        let mut agents: Vec<super::AgentConfig> = serde_json::from_value(serde_json::json!([
+            {"id":"a","label":"Alpha","color":"red","baseCommand":"Codex",
+             "envs":[{"key":"K","value":"V","enabled":false}]},
+            {"id":"b","label":"Beta","color":"blue","baseCommand":"Claude"}
+        ]))
+        .unwrap();
+        let mut profiles: super::CodingAgentProfilesConfig =
+            serde_json::from_value(serde_json::json!({"profilesByAgent": {
+                "a":{"A":{"additionalArguments":"--model x","env":{"P":"Q"}},
+                     "B":{"additionalArguments":"--model y","enabled":false}},
+                "b":{"A":{"additionalArguments":"--effort low"},
+                     "B":{"additionalArguments":"--effort high"}}
+            }}))
+            .unwrap();
+        super::refresh_agent_id_hashes(&mut agents);
+        let base = agents[0].id_hash.clone();
+        super::refresh_pair_id_hashes(&agents, &mut profiles);
+        let original = profiles.clone();
+        for (id, letter, leaves) in [
+            ("a", "A", vec!["Codex", "K", "V", "--model x", "P", "Q"]),
+            ("a", "B", vec!["Codex", "K", "V", "--model y"]),
+            ("b", "A", vec!["Claude", "--effort low"]),
+            ("b", "B", vec!["Claude", "--effort high"]),
+        ] {
+            assert_eq!(
+                profiles.profiles_by_agent[id][letter].id_hash_debug,
+                Some(leaves.into_iter().map(String::from).collect())
+            );
+        }
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash,
+            Some(expected(&["Codex", "K", "V"], &["--model x", "P", "Q"]))
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["B"].id_hash,
+            Some(expected(&["Codex", "K", "V"], &["--model y"]))
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["b"]["A"].id_hash,
+            Some(expected(&["Claude"], &["--effort low"]))
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["b"]["B"].id_hash,
+            Some(expected(&["Claude"], &["--effort high"]))
+        );
+        assert_ne!(
+            profiles.profiles_by_agent["b"]["A"].id_hash,
+            profiles.profiles_by_agent["b"]["B"].id_hash
+        );
+        profiles
+            .profiles_by_agent
+            .get_mut("a")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .command = "--model z".into();
+        super::refresh_pair_id_hashes(&agents, &mut profiles);
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash,
+            Some(expected(&["Codex", "K", "V"], &["--model z", "P", "Q"]))
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["B"],
+            original.profiles_by_agent["a"]["B"]
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["b"],
+            original.profiles_by_agent["b"]
+        );
+        assert_eq!(agents[0].id_hash, base);
+        agents[0].command = "Other".into();
+        agents[0].envs[0].value = "W".into();
+        super::refresh_pair_id_hashes(&agents, &mut profiles);
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash,
+            Some(expected(&["Other", "K", "W"], &["--model z", "P", "Q"]))
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["B"].id_hash,
+            Some(expected(&["Other", "K", "W"], &["--model y"]))
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["b"],
+            original.profiles_by_agent["b"]
+        );
+        profiles
+            .profiles_by_agent
+            .get_mut("a")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .env
+            .insert("P".into(), "R".into());
+        super::refresh_pair_id_hashes(&agents, &mut profiles);
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash,
+            Some(expected(&["Other", "K", "W"], &["--model z", "P", "R"]))
+        );
+        assert_eq!(
+            agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        // Original leaves retain vector order, disabled/duplicate/empty rows,
+        // whitespace and Unicode. Expected hashes use two separate stages.
+        agents[0].command = "İΣΣ\u{2003} oo --".into();
+        agents[0].envs = serde_json::from_value(serde_json::json!([
+            {"key":" K ","value":"İ","enabled":false},
+            {"key":"","value":""},
+            {"key":" K ","value":"İ","enabled":true}
+        ]))
+        .unwrap();
+        let cell = profiles
+            .profiles_by_agent
+            .get_mut("a")
+            .unwrap()
+            .get_mut("A")
+            .unwrap();
+        cell.command = "Σ İ\u{a0}oo".into();
+        cell.env = BTreeMap::from([("Z".into(), "Last".into()), ("A".into(), "".into())]);
+        cell.id_hash_debug = Some(vec!["forged-pair".into()]);
+        super::refresh_agent_id_hashes(&mut agents);
+        let leaves = vec!["İΣΣ\u{2003} oo --", " K ", "İ", "", "", " K ", "İ"];
+        assert_eq!(
+            agents[0].id_hash_debug,
+            Some(leaves.iter().map(|s| (*s).into()).collect())
+        );
+        let base_hash = agents[0].id_hash.clone();
+        agents[0].id_hash_debug = Some(vec!["forged-base".into()]);
+        super::refresh_pair_id_hashes(&agents, &mut profiles);
+        let mut pair = leaves.clone();
+        pair.extend(["Σ İ\u{a0}oo", "A", "", "Z", "Last"]);
+        let base_preimage = normalize(&leaves);
+        let profile_preimage = normalize(&pair[leaves.len()..]);
+        let expected_hash = format!(
+            "cid1:{:x}",
+            Sha256::digest(normalize(&[&base_preimage, &profile_preimage]))
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash,
+            Some(expected_hash)
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash_debug,
+            Some(pair.into_iter().map(String::from).collect())
+        );
+        assert_eq!(agents[0].id_hash, base_hash);
+    }
+
+    #[test]
+    fn issue_3047_pair_equivalence_exclusions_empty_orphan_and_first_match() {
+        let mut agents: Vec<super::AgentConfig> = serde_json::from_value(serde_json::json!([
+            {"id":"a","label":"First","color":"red","command":"İ A\u{2003}b"},
+            {"id":"a","label":"Second","color":"blue","command":"wrong"}
+        ]))
+        .unwrap();
+        let mut profiles: super::CodingAgentProfilesConfig =
+            serde_json::from_value(serde_json::json!({"profilesByAgent": {
+                "a":{"A":{"command":" XY"},"B":{}},
+                "orphan":{"A":{"id_hash":"forged","id_hash_debug":["forged"]}}
+            }}))
+            .unwrap();
+        super::refresh_pair_id_hashes(&agents, &mut profiles);
+        let original = profiles.profiles_by_agent["a"]["A"].clone();
+        assert_eq!(
+            original.id_hash,
+            Some(super::configuration_identity("i\u{307}abxy", &[]))
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["B"].id_hash,
+            Some(super::configuration_identity(&agents[0].command, &[]))
+        );
+        assert!(!profiles.profiles_by_agent["a"].contains_key("C"));
+        assert_eq!(profiles.profiles_by_agent["orphan"]["A"].id_hash, None);
+        assert_eq!(
+            profiles.profiles_by_agent["orphan"]["A"].id_hash_debug,
+            None
+        );
+        assert_eq!(
+            original.id_hash_debug,
+            Some(vec!["İ A\u{2003}b".into(), " XY".into()])
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["B"].id_hash_debug,
+            Some(vec!["İ A\u{2003}b".into(), "".into()])
+        );
+        agents[0].label = "Renamed".into();
+        agents[0].command = "b aİ".into();
+        profiles
+            .default_profile_by_agent
+            .insert("a".into(), "B".into());
+        profiles.profile_labels_by_agent.insert(
+            "a".into(),
+            std::collections::BTreeMap::from([("A".into(), "Renamed profile".into())]),
+        );
+        let cell = profiles
+            .profiles_by_agent
+            .get_mut("a")
+            .unwrap()
+            .get_mut("A")
+            .unwrap();
+        cell.command = "y\u{a0}x".into();
+        cell.enabled = false;
+        cell.notes = "ignored".into();
+        cell.preflight = Some("ignored too".into());
+        super::refresh_pair_id_hashes(&agents, &mut profiles);
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash,
+            original.id_hash
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash_debug,
+            Some(vec!["b aİ".into(), "y\u{a0}x".into()])
+        );
+        assert_ne!(
+            profiles.profiles_by_agent["a"]["A"].id_hash_debug,
+            original.id_hash_debug
+        );
+        let cell = &profiles.profiles_by_agent["a"]["A"];
+        let pid = super::profile_identity(cell);
+        let mut forged = cell.clone();
+        forged.id_hash = Some("client".into());
+        assert_eq!(super::profile_identity(&forged), pid);
+        assert_ne!(
+            super::pair_identity("ab", &[], cell),
+            super::pair_identity("aab", &[], cell)
+        );
+    }
+
+    fn assert_issue_3047_pair_adoption_view(
+        settings: &super::AppSettings,
+        orphan: &str,
+        sidecar: bool,
+    ) {
+        let cells = &settings.coding_agent_profiles.profiles_by_agent["alpha"];
+        let mut expected_a = super::empty_profile_cell();
+        expected_a.id_hash = Some(super::configuration_identity("claude", &[]));
+        expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
+        if orphan == "A" {
+            expected_a.command = "--special".into();
+            expected_a.notes = "payload".into();
+            expected_a.id_hash = Some(super::configuration_identity("claude--special", &[]));
+            expected_a.id_hash_debug = Some(vec!["claude".into(), "--special".into()]);
+        }
+        assert_eq!(cells["A"], expected_a, "{sidecar}/{orphan}");
+        if orphan == "B" {
+            assert_eq!(cells["B"].command, "--special");
+            assert_eq!(cells["B"].notes, "payload");
+            assert_eq!(
+                cells["B"].id_hash,
+                Some(super::configuration_identity("claude--special", &[]))
+            );
+        }
+        if orphan == "unmatched" {
+            assert_eq!(
+                settings.coding_agent_profiles.profiles_by_agent["o"]["A"].id_hash,
+                None
+            );
+        } else {
+            assert!(!settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .contains_key("o"));
+        }
+    }
+
+    fn check_issue_3047_pair_adoption_case(sidecar: bool, orphan: &str, fail_publish: bool) {
+        let (temp, path) = hash_activation_seed(sidecar);
+        let physical = if sidecar {
+            b3_sidecar_path(temp.path())
+        } else {
+            path.clone()
+        };
+        let mut raw = serde_json::Value::Object(b3_object(&physical));
+        let agent: super::AgentConfig = serde_json::from_value(raw["agents"][0].clone()).unwrap();
+        raw["codingAgentProfiles"]["profilesByAgent"] = serde_json::json!({});
+        raw["codingAgentProfiles"]["identityByAgent"] = serde_json::json!({});
+        raw["codingAgentProfiles"]["profileLabelsByAgent"] = serde_json::json!({});
+        if orphan != "missing" {
+            let letter = if orphan == "B" { "B" } else { "A" };
+            raw["codingAgentProfiles"]["profilesByAgent"]["o"] = serde_json::json!({
+                letter:{"additionalArguments":"--special","notes":"payload"}
+            });
+            raw["codingAgentProfiles"]["identityByAgent"]["o"] =
+                serde_json::json!(if orphan == "unmatched" {
+                    "1234567890abcdef".to_string()
+                } else {
+                    super::agent_profile_identity(&agent)
+                });
+        }
+        b3_write(&physical, &raw);
+        let before = hash_activation_files(temp.path());
+        let cli = super::load_settings_for_cli_from_path(&path);
+        let strict = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        for settings in [&cli, &strict] {
+            assert_issue_3047_pair_adoption_view(settings, orphan, sidecar);
+        }
+        assert_eq!(hash_activation_files(temp.path()), before);
+        let main_before = std::fs::read(&path).unwrap();
+        if fail_publish {
+            super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+                *slot.borrow_mut() = Some((path.clone(), super::SettingsSaveStage::AtomicReplace))
+            });
+        }
+        let (records, _capture_guard) = capture_settings_save_diagnostics();
+        let gui = super::load_settings_from_path(&path);
+        // Inspect the GUI diagnostic and the same typed failure boundary.
+        if fail_publish {
+            let captured = records.borrow();
+            assert_eq!(captured.len(), 1);
+            let fields = parse_settings_save_diagnostic(&captured[0]);
+            assert_eq!(fields["stage"], "atomic_replace");
+            assert_eq!(fields["target_path"], super::render_diagnostic_path(&path));
+            drop(captured);
+            let error = super::save_settings_to_path_preserving_project_paths_typed(&gui, &path)
+                .unwrap_err();
+            assert_eq!(error.stage, super::SettingsSaveStage::AtomicReplace);
+            assert_eq!(error.target_path.as_ref(), &path);
+        }
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+        assert_eq!(
+            gui.coding_agent_profiles.profiles_by_agent,
+            strict.coding_agent_profiles.profiles_by_agent
+        );
+        if fail_publish {
+            assert_eq!(std::fs::read(&path).unwrap(), main_before);
+            assert!(
+                b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]["profilesByAgent"]
+                    ["alpha"]["A"]["id_hash"]
+                    .is_string()
+            );
+        } else {
+            let reload = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert_eq!(gui.coding_agent_profiles, reload.coding_agent_profiles);
+        }
+    }
+
+    #[test]
+    fn issue_3047_pair_load_save_fixed_point_and_untrusted_metadata() {
+        for sidecar in [false, true] {
+            for supplied in [
+                serde_json::json!(null),
+                serde_json::json!(false),
+                serde_json::json!(42),
+                serde_json::json!(1.5),
+                serde_json::json!([]),
+                serde_json::json!({}),
+                serde_json::json!(""),
+                serde_json::json!("forged"),
+                serde_json::json!(["forged", ""]),
+                serde_json::json!(["mixed", 42]),
+            ] {
+                let (temp, path) = hash_activation_seed(sidecar);
+                let physical = if sidecar {
+                    b3_sidecar_path(temp.path())
+                } else {
+                    path.clone()
+                };
+                let mut raw = serde_json::Value::Object(b3_object(&physical));
+                raw["codingAgentProfiles"]["profilesByAgent"] = serde_json::json!({
+                    "alpha":{"A":{"additionalArguments":"--model x","id_hash":supplied,"id_hash_debug":supplied,
+                        "sentinel":{"keep":true}}}
+                });
+                b3_write(&physical, &raw);
+                let before = hash_activation_files(temp.path());
+                for (loader, loaded) in b3_all_loaders(&path) {
+                    let cell = &loaded.coding_agent_profiles.profiles_by_agent["alpha"]["A"];
+                    assert_eq!(
+                        cell.id_hash_debug,
+                        Some(vec!["claude".into(), "--model x".into()])
+                    );
+                    assert_eq!(
+                        cell.id_hash,
+                        Some(super::configuration_identity("claude--modelx", &[])),
+                        "{loader}"
+                    );
+                    assert_eq!(hash_activation_files(temp.path()), before, "{loader}");
+                }
+                let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+                let written =
+                    super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+                let groups = b3_object(&b3_sidecar_path(temp.path()));
+                assert_eq!(
+                    groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"],
+                    serde_json::json!(["claude", "--model x"])
+                );
+                assert_eq!(
+                    groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
+                    written.coding_agent_profiles.profiles_by_agent["alpha"]["A"]
+                        .id_hash
+                        .clone()
+                        .unwrap()
+                );
+                let stable = hash_activation_files(temp.path());
+                let reloaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+                super::save_settings_to_path_preserving_project_paths(&reloaded, &path).unwrap();
+                assert_eq!(hash_activation_files(temp.path()), stable);
+                let mut stale = reloaded.clone();
+                stale
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .get_mut("alpha")
+                    .unwrap()
+                    .get_mut("A")
+                    .unwrap()
+                    .id_hash = Some("stale".into());
+                stale
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .get_mut("alpha")
+                    .unwrap()
+                    .get_mut("A")
+                    .unwrap()
+                    .id_hash_debug = Some(vec!["stale".into()]);
+                let cas = super::compare_and_set_terminal_snapshots_enabled_at_path(
+                    &stale,
+                    &path,
+                    stale.terminal_snapshots_enabled,
+                    stale.terminal_snapshots_enabled,
+                )
+                .unwrap();
+                assert_eq!(cas.coding_agent_profiles, reloaded.coding_agent_profiles);
+            }
+        }
+        // Missing-A repair and matching orphan adoption happen after parse.
+        // Both CLI loaders must return final hashes without publishing anything.
+        for sidecar in [false, true] {
+            for orphan in ["missing", "A", "B", "unmatched"] {
+                for fail_publish in [false, true] {
+                    check_issue_3047_pair_adoption_case(sidecar, orphan, fail_publish);
+                }
+            }
+        }
+    }
+
+    fn assert_issue_3047_pair_projection_rejection(
+        error: super::SettingsSaveError,
+        sidecar: bool,
+        path: &std::path::Path,
+        sidecar_path: &std::path::Path,
+    ) {
+        assert_eq!(error.stage, super::SettingsSaveStage::PreserveDiskGate);
+        if sidecar {
+            assert_eq!(error.target_path.as_path(), sidecar_path);
+            assert!(matches!(&error.legacy_outward,
+                super::SettingsSaveLegacyOutward::DiskRead(text)
+                if text.contains("Refusing to overwrite") && text.contains("undecodable agents array")));
+        } else {
+            assert_eq!(error.target_path.as_path(), path);
+            assert!(matches!(
+                error.cause,
+                super::SettingsSaveCause::Semantic(
+                    super::SettingsSaveReason::DiskSettingsValidationRejected
+                )
+            ));
+            assert!(matches!(&error.legacy_outward,
+                super::SettingsSaveLegacyOutward::DiskValidation(text)
+                if text.contains("non-project fields are invalid")));
+            assert!(!sidecar_path.exists());
+        }
+    }
+
+    #[test]
+    fn issue_3047_pair_protected_base_projection_and_early_rejections() {
+        for sidecar in [false, true] {
+            for invalid in [false, true] {
+                let (temp, path) = hash_activation_seed(sidecar);
+                let physical = if sidecar {
+                    b3_sidecar_path(temp.path())
+                } else {
+                    path.clone()
+                };
+                let mut raw = serde_json::Value::Object(b3_object(&physical));
+                raw["agents"][0]["sentinel"] = serde_json::json!({"keep":19});
+                raw["codingAgentProfiles"]["profilesByAgent"] = serde_json::json!({
+                    "alpha":{"A":{"additionalArguments":"--model x","sentinel":"cell"}}
+                });
+                b3_write(&physical, &raw);
+                let mut overlay_agent = b3_agent("alpha", "Overlay");
+                overlay_agent["command"] = serde_json::json!("codex --overlay");
+                b3_write(
+                    &b3_overlay_path(temp.path()),
+                    &serde_json::json!({"agents":[overlay_agent]}),
+                );
+                let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+                assert!(loaded.local_overlay_state.owns_top_level("agents"));
+                if invalid {
+                    raw["agents"][0]["label"] = serde_json::json!(17);
+                    b3_write(&physical, &raw);
+                }
+                if !sidecar {
+                    std::fs::remove_file(b3_sidecar_path(temp.path())).unwrap();
+                }
+                let before = std::fs::read(&physical).unwrap();
+                let mut out = serde_json::to_value(&loaded).unwrap();
+                out["codingAgentProfiles"] = raw["codingAgentProfiles"].clone();
+                let result = super::save_agents_instance_file(
+                    &loaded,
+                    &path,
+                    &super::ProjectWriteMode::Preserve,
+                    None,
+                    out.as_object().unwrap(),
+                    super::SettingsSaveStage::PreserveDiskGate,
+                    None,
+                );
+                if invalid {
+                    let error = result.unwrap_err();
+                    assert_issue_3047_pair_projection_rejection(
+                        error,
+                        sidecar,
+                        &path,
+                        &b3_sidecar_path(temp.path()),
+                    );
+                    assert_eq!(std::fs::read(&physical).unwrap(), before);
+                } else {
+                    let groups = result.unwrap();
+                    assert_eq!(
+                        groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
+                        super::configuration_identity("claude--modelx", &[])
+                    );
+                    assert_eq!(
+                        groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["sentinel"],
+                        "cell"
+                    );
+                    if sidecar {
+                        assert_eq!(groups["agents"], raw["agents"]);
+                    } else {
+                        assert_eq!(b3_object(&path)["agents"], raw["agents"]);
+                        assert!(!groups.contains_key("agents"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn issue_3047_pair_unresolvable_first_row_and_empty_physical_base() {
+        for first in [
+            serde_json::json!({"id":"a","baseCommand":17}),
+            serde_json::json!({"id":"a","baseCommand":"codex","envs":"bad"}),
+        ] {
+            let agents = serde_json::json!([first, {"id":"a","baseCommand":"valid"}]);
+            let before = agents.clone();
+            let mut profiles = serde_json::json!({"profilesByAgent":{
+                "a":{"A":{"command":"--model x","id_hash":"stale","id_hash_debug":["stale"],"unknown":1}}
+            }});
+            super::refresh_physical_pair_id_hashes(Some(&agents), &mut profiles);
+            assert!(profiles["profilesByAgent"]["a"]["A"]
+                .get("id_hash_debug")
+                .is_none());
+            assert!(profiles["profilesByAgent"]["a"]["A"]
+                .get("id_hash")
+                .is_none());
+            assert_eq!(profiles["profilesByAgent"]["a"]["A"]["unknown"], 1);
+            assert_eq!(agents, before);
+            let (temp, path) = hash_activation_seed(true);
+            let mut groups = serde_json::Value::Object(b3_object(&b3_sidecar_path(temp.path())));
+            groups["agents"] = agents;
+            b3_write(&b3_sidecar_path(temp.path()), &groups);
+            let bytes = std::fs::read(b3_sidecar_path(temp.path())).unwrap();
+            assert!(super::save_agents_instance_file(
+                &super::AppSettings::default(),
+                &path,
+                &super::ProjectWriteMode::Preserve,
+                None,
+                &serde_json::Map::new(),
+                super::SettingsSaveStage::PreserveDiskGate,
+                None,
+            )
+            .is_err());
+            assert_eq!(std::fs::read(b3_sidecar_path(temp.path())).unwrap(), bytes);
+        }
+        for agents in [None, Some(serde_json::json!([]))] {
+            let mut profiles = serde_json::json!({"profilesByAgent":{
+                "a":{"A":{"id_hash":"stale","id_hash_debug":["stale"]}}
+            }});
+            super::refresh_physical_pair_id_hashes(agents.as_ref(), &mut profiles);
+            assert!(profiles["profilesByAgent"]["a"]["A"]
+                .get("id_hash_debug")
+                .is_none());
+            assert!(profiles["profilesByAgent"]["a"]["A"]
+                .get("id_hash")
+                .is_none());
+        }
+        let agents = serde_json::json!([{"id":"a","command":"codex","label":17,
+            "envs":[{"key":"K","value":"V","enabled":false}]},
+            {"id":"a","baseCommand":"wrong"}]);
+        let mut profiles = serde_json::json!({"profilesByAgent":{
+            "a":{"A":{"command":"--model x","env":{"P":"Q"},"unknown":1}}
+        }});
+        let before = profiles.clone();
+        super::refresh_physical_pair_id_hashes(Some(&agents), &mut profiles);
+        assert_eq!(
+            profiles["profilesByAgent"]["a"]["A"]["id_hash"],
+            super::configuration_identity("codexKV--modelxPQ", &[])
+        );
+        let mut expected = before;
+        expected["profilesByAgent"]["a"]["A"]["id_hash"] = serde_json::json!(
+            "cid1:87849ab8d8f223bc755ecbc34b1e772ca61469dd5651dcf52063949e23001036"
+        );
+        expected["profilesByAgent"]["a"]["A"]["id_hash_debug"] =
+            serde_json::json!(["codex", "K", "V", "--model x", "P", "Q"]);
+        assert_eq!(profiles, expected);
+        let mut profiles = serde_json::json!({"profilesByAgent":{
+            "a":{"A":{},"B":{"additionalArguments":17,"id_hash":"stale",
+                "id_hash_debug":["stale"],"unknown":7},"C":false}
+        }});
+        super::refresh_physical_pair_id_hashes(Some(&agents), &mut profiles);
+        assert_eq!(
+            profiles["profilesByAgent"]["a"]["A"]["id_hash_debug"],
+            serde_json::json!(["codex", "K", "V", ""])
+        );
+        assert_eq!(
+            profiles["profilesByAgent"]["a"]["B"],
+            serde_json::json!({"additionalArguments":17,"unknown":7})
+        );
+        assert_eq!(profiles["profilesByAgent"]["a"]["C"], false);
+    }
+
+    fn check_issue_3047_pair_ownership_case(sidecar: bool, protected: &str) {
+        let (temp, path) = hash_activation_seed(sidecar);
+        let physical = if sidecar {
+            b3_sidecar_path(temp.path())
+        } else {
+            path.clone()
+        };
+        let mut raw = serde_json::Value::Object(b3_object(&physical));
+        raw["agents"][0]["sentinel"] = serde_json::json!({"agent": 19});
+        raw["codingAgentProfiles"] = serde_json::json!({
+            "schemaVersion": 2,
+            "sentinel": {"sibling": 23},
+            "profilesByAgent": {"alpha":{"A":{"command":"--model x","id_hash":"physical", "id_hash_debug":["forged-physical"], "sentinel":17}}}
+        });
+        b3_write(&physical, &raw);
+        if protected != "neither" {
+            let mut overlay = serde_json::Map::new();
+            let mut value = raw[protected].clone();
+            if protected == "agents" {
+                value[0].as_object_mut().unwrap().remove("baseCommand");
+                value[0]["command"] = serde_json::json!("codex");
+            } else {
+                value["profilesByAgent"]["alpha"]["A"]["command"] =
+                    serde_json::json!("--effort high");
+            }
+            overlay.insert(protected.into(), value);
+            b3_write(
+                &b3_overlay_path(temp.path()),
+                &serde_json::Value::Object(overlay),
+            );
+        }
+        let mut loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        if protected == "agents" {
+            loaded
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get_mut("alpha")
+                .unwrap()
+                .get_mut("A")
+                .unwrap()
+                .command = "--model y".into();
+        } else {
+            loaded.agents[0].command = "other-base".into();
+        }
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        let cell = &written.coding_agent_profiles.profiles_by_agent["alpha"]["A"];
+        let effective_base = if protected == "agents" {
+            "codex"
+        } else {
+            "other-base"
+        };
+        let effective_args = if protected == "codingAgentProfiles" {
+            "--effort high"
+        } else if protected == "agents" {
+            "--model y"
+        } else {
+            "--model x"
+        };
+        assert_eq!(
+            cell.id_hash_debug,
+            Some(vec![effective_base.into(), effective_args.into()])
+        );
+        assert_eq!(
+            cell.id_hash,
+            Some(super::configuration_identity(
+                &format!("{effective_base}{effective_args}"),
+                &[]
+            ))
+        );
+        let groups = b3_object(&b3_sidecar_path(temp.path()));
+        if protected == "codingAgentProfiles" {
+            let retained = groups
+                .get(protected)
+                .cloned()
+                .unwrap_or_else(|| b3_object(&path)[protected].clone());
+            let mut expected = raw[protected].clone();
+            if !sidecar {
+                expected["identityByAgent"] = serde_json::json!({
+                    "alpha": super::agent_profile_identity(&written.agents[0])
+                });
+            }
+            assert_eq!(retained, expected);
+        } else {
+            let expected_base = if protected == "agents" {
+                "claude"
+            } else {
+                "other-base"
+            };
+            let expected_args = if protected == "agents" {
+                "--model y"
+            } else {
+                "--model x"
+            };
+            assert_eq!(
+                groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"],
+                serde_json::json!([expected_base, expected_args])
+            );
+            assert_eq!(
+                groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
+                super::configuration_identity(&format!("{expected_base}{expected_args}"), &[])
+            );
+        }
+        if protected == "agents" {
+            let retained = groups
+                .get("agents")
+                .cloned()
+                .unwrap_or_else(|| b3_object(&path)["agents"].clone());
+            assert_eq!(retained, raw["agents"]);
+        }
+        let reloaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        assert_eq!(
+            reloaded.coding_agent_profiles,
+            written.coding_agent_profiles
+        );
+    }
+
+    #[test]
+    fn issue_3047_pair_ownership_matrix_and_base_or_profile_only_edits() {
+        for sidecar in [false, true] {
+            for protected in ["agents", "codingAgentProfiles", "neither"] {
+                check_issue_3047_pair_ownership_case(sidecar, protected);
+            }
+        }
+        // Presence is independent of emptiness. Exercise the real writer with
+        // sparse legacy groups, including D13's partially protected group.
+        for case in [
+            "present-absent",
+            "absent-present",
+            "absent-absent",
+            "empty-present",
+            "sidecar-empty",
+        ] {
+            let (temp, path) = hash_activation_seed(false);
+            let mut raw = serde_json::Value::Object(b3_object(&path));
+            raw["agents"] = serde_json::json!([]);
+            let sparse =
+                serde_json::json!({"schemaVersion":2,"sentinel":{"raw":29},"profilesByAgent":{}});
+            if case.starts_with("absent-") {
+                raw.as_object_mut().unwrap().remove("codingAgentProfiles");
+            } else {
+                raw["codingAgentProfiles"] = sparse.clone();
+            }
+            let overlay = match case {
+                "present-absent" => {
+                    serde_json::json!({"codingAgentProfiles":{"identityByAgent":{"o":"1234567890abcdef"}}})
+                }
+                "absent-present" => {
+                    serde_json::json!({"agents":[b3_agent("alpha", "Effective only")]})
+                }
+                _ => {
+                    serde_json::json!({"codingAgentProfiles":{"profilesByAgent":{"o":{"A":{"command":"--model x"}}}}})
+                }
+            };
+            if case == "sidecar-empty" {
+                b3_write(
+                    &b3_sidecar_path(temp.path()),
+                    &serde_json::json!({"agents":[],"codingAgentProfiles":{}}),
+                );
+            }
+            b3_write(&path, &raw);
+            b3_write(&b3_overlay_path(temp.path()), &overlay);
+            let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert!(
+                loaded
+                    .local_overlay_state
+                    .owns_top_level("codingAgentProfiles"),
+                "{case}"
+            );
+            super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            let main = b3_object(&path);
+            let groups = b3_object(&b3_sidecar_path(temp.path()));
+            match case {
+                "present-absent" => assert_eq!(main["codingAgentProfiles"], sparse),
+                "absent-present" => assert_eq!(
+                    main["codingAgentProfiles"],
+                    serde_json::json!({"identityByAgent":{}})
+                ),
+                "absent-absent" => assert!(!main.contains_key("codingAgentProfiles")),
+                "empty-present" => {
+                    let mut expected = sparse.clone();
+                    expected["identityByAgent"] = serde_json::json!({});
+                    assert_eq!(main["codingAgentProfiles"], expected);
+                }
+                "sidecar-empty" => {
+                    assert!(!main.contains_key("codingAgentProfiles"));
+                    assert_eq!(groups["codingAgentProfiles"], serde_json::json!({}));
+                }
+                _ => unreachable!(),
+            }
+            if case != "sidecar-empty" {
+                assert!(!groups.contains_key("codingAgentProfiles"), "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn issue_3047_pair_effective_base_without_physical_base_and_rejected_overlay() {
+        let (temp, path) = hash_activation_seed(true);
+        let sidecar = b3_sidecar_path(temp.path());
+        let mut groups = serde_json::Value::Object(b3_object(&sidecar));
+        groups.as_object_mut().unwrap().remove("agents");
+        groups["codingAgentProfiles"]["profilesByAgent"] = serde_json::json!({
+            "alpha":{"A":{"additionalArguments":"--model x","id_hash":"stale"}}
+        });
+        b3_write(&sidecar, &groups);
+        b3_write(
+            &b3_overlay_path(temp.path()),
+            &serde_json::json!({
+                "agents":[b3_agent("alpha", "Effective only")]
+            }),
+        );
+        let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        assert_eq!(
+            written.coding_agent_profiles.profiles_by_agent["alpha"]["A"].id_hash,
+            Some(super::configuration_identity("claude--modelx", &[]))
+        );
+        let raw = b3_object(&sidecar);
+        assert!(!raw.contains_key("agents"));
+        assert!(loaded
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles"));
+        assert!(!groups.as_object().unwrap().contains_key("agents"));
+        assert_eq!(raw["codingAgentProfiles"], groups["codingAgentProfiles"]);
+        assert_eq!(
+            raw["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
+            "stale"
+        );
+
+        // Rejected overlays still derive the final accepted physical view.
+        let (temp, path) = hash_activation_seed(true);
+        let sidecar = b3_sidecar_path(temp.path());
+        let mut groups = serde_json::Value::Object(b3_object(&sidecar));
+        groups["codingAgentProfiles"]["profilesByAgent"] = serde_json::json!({
+            "alpha":{"A":{"additionalArguments":"--model x","id_hash":"stale"}}
+        });
+        b3_write(&sidecar, &groups);
+        b3_write(
+            &b3_overlay_path(temp.path()),
+            &serde_json::json!({"defaultShellArgs":"bad"}),
+        );
+        let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        assert!(loaded.local_overlay_state.rejection().is_some());
+        assert_eq!(
+            loaded.coding_agent_profiles.profiles_by_agent["alpha"]["A"].id_hash,
+            Some(super::configuration_identity("claude--modelx", &[]))
+        );
+        let previous = std::fs::read(&path).unwrap();
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+            *slot.borrow_mut() = Some((path.clone(), super::SettingsSaveStage::AtomicReplace))
+        });
+        let result = super::save_settings_to_path_preserving_project_paths(&loaded, &path);
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        assert_eq!(
+            b3_object(&sidecar)["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
+            super::configuration_identity("claude--modelx", &[])
+        );
+    }
+
     fn hash_activation_assert(settings: &super::AppSettings) {
         for agent in &settings.agents {
+            let mut leaves = vec![agent.command.clone()];
+            for env in &agent.envs {
+                leaves.extend([env.key.clone(), env.value.clone()]);
+            }
+            assert_eq!(agent.id_hash_debug, Some(leaves.clone()));
+            if let Some(cells) = settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get(&agent.id)
+            {
+                let first = settings
+                    .agents
+                    .iter()
+                    .find(|row| row.id == agent.id)
+                    .unwrap();
+                for cell in cells.values() {
+                    let mut pair = vec![first.command.clone()];
+                    for env in &first.envs {
+                        pair.extend([env.key.clone(), env.value.clone()]);
+                    }
+                    pair.push(cell.command.clone());
+                    for (key, value) in &cell.env {
+                        pair.extend([key.clone(), value.clone()]);
+                    }
+                    assert_eq!(cell.id_hash_debug, Some(pair));
+                }
+            }
             assert_eq!(
                 agent.id_hash.as_ref(),
                 Some(&super::configuration_identity(&agent.command, &agent.envs))
@@ -28414,10 +31201,30 @@ mod tests {
     fn id_hash_activation_three_loaders_derive_without_writes_or_backups() {
         for sidecar in [false, true] {
             let (temp, path) = hash_activation_seed(sidecar);
+            let physical = if sidecar {
+                b3_sidecar_path(temp.path())
+            } else {
+                path.clone()
+            };
+            let mut raw = serde_json::Value::Object(b3_object(&physical));
+            raw["agents"][0]["id_hash_debug"] = serde_json::json!(["old-base"]);
+            raw["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"] =
+                serde_json::json!(["old-pair"]);
+            b3_write(&physical, &raw);
             let before = hash_activation_files(temp.path());
             for (loader, settings) in b3_all_loaders(&path) {
                 assert_eq!(settings.agents[0].id, "alpha", "{loader}");
                 hash_activation_assert(&settings);
+                assert_eq!(
+                    settings.agents[0].id_hash_debug,
+                    Some(vec!["claude".into()]),
+                    "{loader}"
+                );
+                assert_eq!(
+                    settings.coding_agent_profiles.profiles_by_agent["alpha"]["A"].id_hash_debug,
+                    Some(vec!["claude".into(), "".into()]),
+                    "{loader}"
+                );
                 assert_eq!(hash_activation_files(temp.path()), before, "{loader}");
             }
         }
@@ -28461,7 +31268,8 @@ mod tests {
             let (temp, path) = hash_activation_seed(true);
             let sidecar = b3_sidecar_path(temp.path());
             let mut raw = serde_json::Value::Object(b3_object(&sidecar));
-            raw["agents"][0]["id_hash"] = supplied;
+            raw["agents"][0]["id_hash"] = supplied.clone();
+            raw["agents"][0]["id_hash_debug"] = supplied;
             b3_write(&sidecar, &raw);
             let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
             hash_activation_assert(&loaded);
@@ -28470,6 +31278,10 @@ mod tests {
             assert_eq!(
                 b3_object(&sidecar)["agents"][0]["id_hash"],
                 written.agents[0].id_hash.clone().unwrap()
+            );
+            assert_eq!(
+                b3_object(&sidecar)["agents"][0]["id_hash_debug"],
+                serde_json::json!(["claude"])
             );
         }
     }
@@ -28527,6 +31339,7 @@ mod tests {
                 "retained-physical-metadata".into()
             };
             physical["agents"][0]["id_hash"] = serde_json::json!(physical_hash);
+            physical["agents"][0]["id_hash_debug"] = serde_json::json!(["retained-forged"]);
             physical["agents"][0]["unknownRowField"] = serde_json::json!({"keep":9});
             b3_write(&physical_path, &physical);
             let raw_before = physical["agents"].clone();
@@ -29346,6 +32159,7 @@ mod tests {
     fn b3_assert_split_matches_seed(path: &std::path::Path, seeded: &[u8], skip: &[&str]) {
         let seed: serde_json::Value = serde_json::from_slice(seeded).unwrap();
         let mut seed = seed.as_object().unwrap().clone();
+        let physical_agents = seed.get("agents").cloned();
         let mut disk = b3_object(path);
         let sidecar = b3_object(&super::agents_instance_path(path));
         for key in super::AGENTS_INSTANCE_KEYS {
@@ -29364,6 +32178,22 @@ mod tests {
                 (serde_json::Value::Array(seeded_rows), serde_json::Value::Array(held_rows)) => {
                     assert_eq!(seeded_rows.len(), held_rows.len(), "{key} length");
                     for (seeded_row, held_row) in seeded_rows.iter().zip(held_rows) {
+                        let command = seeded_row
+                            .get("baseCommand")
+                            .or_else(|| seeded_row.get("command"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let mut leaves = vec![command.to_string()];
+                        for env in seeded_row
+                            .get("envs")
+                            .and_then(serde_json::Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
+                            leaves.push(env["key"].as_str().unwrap().to_string());
+                            leaves.push(env["value"].as_str().unwrap().to_string());
+                        }
+                        assert_eq!(held_row["id_hash_debug"], serde_json::json!(leaves));
                         if seeded_row.get("blockingMenus").is_none() {
                             b3_assert_blocking_menus_legs(
                                 None,
@@ -29395,10 +32225,71 @@ mod tests {
                         if field == "profilesByAgent" {
                             // Compare the complete original cells, including old
                             // command values, plus only the new physical leaf.
-                            for cells in expected.as_object_mut().unwrap().values_mut() {
+                            for (id, cells) in expected.as_object_mut().unwrap().iter_mut() {
+                                // First raw ID wins before decoding, including an
+                                // unresolvable first row. Never use effective/held.
+                                let base = physical_agents
+                                    .as_ref()
+                                    .and_then(serde_json::Value::as_array)
+                                    .and_then(|rows| {
+                                        rows.iter().find(|row| {
+                                            row.get("id").and_then(serde_json::Value::as_str)
+                                                == Some(id.as_str())
+                                        })
+                                    })
+                                    .and_then(|row| {
+                                        serde_json::from_value::<super::AgentConfig>(row.clone())
+                                            .ok()
+                                    });
                                 for cell in cells.as_object_mut().unwrap().values_mut() {
                                     assert!(cell.get("additionalArguments").is_none());
                                     cell["additionalArguments"] = cell["command"].clone();
+                                    let profile: super::ProfileCellConfig =
+                                        serde_json::from_value(cell.clone()).unwrap();
+                                    let hash = base.as_ref().map(|base| {
+                                        // Independent raw-field preimage, every base
+                                        // env row (disabled included), then cell env.
+                                        let parts = std::iter::once(base.command.as_str())
+                                            .chain(base.envs.iter().flat_map(|env| {
+                                                [env.key.as_str(), env.value.as_str()]
+                                            }))
+                                            .chain(std::iter::once(profile.command.as_str()))
+                                            .chain(profile.env.iter().flat_map(|(key, value)| {
+                                                [key.as_str(), value.as_str()]
+                                            }));
+                                        let mut chars: Vec<char> = parts
+                                            .flat_map(str::chars)
+                                            .flat_map(char::to_lowercase)
+                                            .filter(|c| !c.is_whitespace())
+                                            .collect();
+                                        chars.sort_unstable();
+                                        serde_json::Value::String(format!(
+                                            "cid1:{:x}",
+                                            <sha2::Sha256 as sha2::Digest>::digest(
+                                                chars.iter().collect::<String>()
+                                            )
+                                        ))
+                                    });
+                                    // Replace only expected derived metadata. None
+                                    // asserts concrete absence; observed stays raw.
+                                    let object = cell.as_object_mut().unwrap();
+                                    object.remove("id_hash");
+                                    object.extend(hash.map(|hash| ("id_hash".to_string(), hash)));
+                                    object.remove("id_hash_debug");
+                                    if let Some(base) = &base {
+                                        let mut leaves = vec![base.command.clone()];
+                                        for env in &base.envs {
+                                            leaves.extend([env.key.clone(), env.value.clone()]);
+                                        }
+                                        leaves.push(profile.command.clone());
+                                        for (key, value) in &profile.env {
+                                            leaves.extend([key.clone(), value.clone()]);
+                                        }
+                                        object.insert(
+                                            "id_hash_debug".into(),
+                                            serde_json::json!(leaves),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -31322,6 +34213,84 @@ mod derived_agent_binding_projection_tests {
     }
 
     #[test]
+    fn derived_agent_id_binding_projection_ignores_only_exact_debug_locations() {
+        let mut settings = AppSettings::default();
+        let raw = serde_json::json!({
+            "agents": [{"id":"alpha", "baseCommand":"tool", "id_hash":"base-hash",
+                "unknownIdentity":{"id_hash_debug":["nested-agent"]}}],
+            "codingAgentProfiles":{"profilesByAgent":{"alpha":{"A":{
+                "additionalArguments":"--flag", "id_hash":"pair-hash",
+                "unknownIdentity":{"id_hash_debug":["nested-cell"]}
+            }}}}
+        });
+        settings.coding_agent_identity_physical = Some(Arc::new(raw.clone()));
+        let baseline = bootstrap_identity_revision(&settings).unwrap();
+        let binding = bootstrap_binding_revision(&settings, "alpha").unwrap();
+        // Mutate the same captured raw image directly, without a loader or disk rewrite.
+        for location in ["agent", "cell", "both"] {
+            for debug in [
+                serde_json::json!(["forged"]),
+                serde_json::json!([]),
+                serde_json::json!(["replacement", ""]),
+                serde_json::json!(false),
+                serde_json::json!(["mixed", 9]),
+                serde_json::json!(null),
+            ] {
+                let mut image = raw.clone();
+                if location != "cell" {
+                    image["agents"][0]["id_hash_debug"] = debug.clone();
+                }
+                if location != "agent" {
+                    image["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]
+                        ["id_hash_debug"] = debug;
+                }
+                let mut changed = settings.clone();
+                changed.coding_agent_identity_physical = Some(Arc::new(image));
+                assert_eq!(bootstrap_identity_revision(&changed).unwrap(), baseline);
+                assert_eq!(
+                    bootstrap_binding_revision(&changed, "alpha").unwrap(),
+                    binding
+                );
+            }
+        }
+        for location in ["agent", "cell"] {
+            let command_key = if location == "agent" {
+                "baseCommand"
+            } else {
+                "additionalArguments"
+            };
+            for key in ["id_hash", command_key, "unknownIdentity"] {
+                let mut image = raw.clone();
+                let record = if location == "agent" {
+                    &mut image["agents"][0]
+                } else {
+                    &mut image["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]
+                };
+                record[key] = if key == "unknownIdentity" {
+                    serde_json::json!({"id_hash_debug":["nested-changed"]})
+                } else {
+                    serde_json::json!("changed")
+                };
+                let mut changed = settings.clone();
+                changed.coding_agent_identity_physical = Some(Arc::new(image));
+                assert_ne!(
+                    bootstrap_identity_revision(&changed).unwrap(),
+                    baseline,
+                    "{location}/{key}"
+                );
+            }
+        }
+        assert_eq!(
+            settings
+                .coding_agent_identity_physical
+                .as_ref()
+                .unwrap()
+                .as_ref(),
+            &raw
+        );
+    }
+
+    #[test]
     fn derived_agent_id_binding_projection_changes_for_execution_home_and_quota() {
         let dir = tempfile::tempdir().unwrap();
         let settings = physical_settings(
@@ -32109,5 +35078,514 @@ mod p02_duplicate_row_tests {
         let mut ordinary = typed_candidate(&raw);
         ordinary["agents"] = serde_json::to_value(&loaded.agents).unwrap();
         assert!(retain(&mut ordinary, &raw).is_err());
+    }
+}
+
+#[cfg(test)]
+mod e2992_p41_owner_tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    const WAIT: Duration = Duration::from_secs(5);
+    const SOFT_DEADLINE: Duration = Duration::from_secs(30);
+
+    fn instance(base: Option<Value>) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE_NAME);
+        if let Some(base) = base {
+            write_json(&path, &base);
+        }
+        (dir, path)
+    }
+
+    fn write_json(path: &Path, value: &Value) {
+        let bytes = serde_json::to_vec_pretty(value).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn write_raw(path: &Path, bytes: &[u8]) -> Result<(), String> {
+        std::fs::write(path, bytes).map_err(|error| error.to_string())
+    }
+
+    fn voice_enabled(owner: &SettingsOwner) -> bool {
+        let snapshot = owner.blocking_current_snapshot().unwrap();
+        snapshot.voice_to_text_enabled
+    }
+
+    /// A complete, valid base: `defaultShell` and `defaultShellArgs` are required
+    /// fields, so a partial object is a present-but-undecodable base the owner
+    /// must refuse, never a fixture.
+    fn voice(enabled: bool) -> Value {
+        let mut base = serde_json::to_value(AppSettings::default()).unwrap();
+        base["voiceToTextEnabled"] = json!(enabled);
+        base
+    }
+
+    fn counts(owner: &SettingsOwner) -> [u64; 3] {
+        let counters = &owner.counters;
+        [
+            counters.transaction_lock_attempts.load(Ordering::Relaxed),
+            counters.captures.load(Ordering::Relaxed),
+            counters.source_reads.load(Ordering::Relaxed),
+        ]
+    }
+
+    fn overlay_path(path: &Path) -> PathBuf {
+        path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME)
+    }
+
+    /// Link-free physical aliases of `dir`: its canonical spelling when that
+    /// differs textually (Windows verbatim prefix, macOS `/var` -> `/private/var`),
+    /// and a case variant of its leaf when the filesystem resolves it to the same
+    /// directory. Each is checked to canonicalize to the same directory.
+    fn physical_aliases(dir: &Path) -> Vec<PathBuf> {
+        let canonical = std::fs::canonicalize(dir).unwrap();
+        let mut aliases = Vec::new();
+        if canonical != dir {
+            aliases.push(canonical.clone());
+        }
+        let leaf = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let upper = leaf.to_ascii_uppercase();
+        let flipped = if upper != leaf {
+            upper
+        } else {
+            leaf.to_ascii_lowercase()
+        };
+        let variant = dir.with_file_name(flipped);
+        let same = std::fs::canonicalize(&variant).is_ok_and(|resolved| resolved == canonical);
+        if variant != dir && same {
+            aliases.push(variant);
+        }
+        aliases
+    }
+
+    fn is_compose(error: &SettingsOwnerError) -> bool {
+        matches!(error, SettingsOwnerError::Compose(_))
+    }
+
+    #[test]
+    fn e2992_p41_capture_locked_once() {
+        // Positive control: only the base exists; the other three sources are
+        // legitimately absent and compose without defaults replacing the base.
+        let (_dir, path) = instance(Some(voice(true)));
+        let owner = SettingsOwner::open_active(&path, WAIT).unwrap();
+        assert_eq!(counts(&owner), [1, 1, 4]);
+        let snapshot = owner.blocking_current_snapshot().unwrap();
+        assert!(snapshot.voice_to_text_enabled);
+        assert!(snapshot.project_paths.is_empty());
+        assert_eq!(snapshot.agents_layer, AgentsLayerState::Readable);
+
+        // One operation: one transactional lock attempt and one capture; the
+        // locked halves consume the guard and never reacquire the lock.
+        let report = owner
+            .with_operation_blocking("probe", |current, guard| {
+                assert!(current.voice_to_text_enabled);
+                let reacquire = SettingsFileLock::acquire(guard.settings_path(), Duration::ZERO);
+                assert!(reacquire.is_err(), "the guard holds the transactional lock");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::Committed);
+        assert_eq!(counts(&owner), [2, 2, 8]);
+
+        // A corrupt present agents file is not absence: Recovery refuses it and
+        // leaves its bytes untouched; Startup keeps it as metadata.
+        let agents = agents_instance_path(&path);
+        std::fs::write(&agents, b"{not json").unwrap();
+        let error = owner
+            .with_operation_blocking("corrupt-agents", |_, _| Ok(()))
+            .unwrap_err();
+        assert!(is_compose(&error), "{error:?}");
+        assert_eq!(std::fs::read(&agents).unwrap(), b"{not json");
+        assert!(voice_enabled(&owner));
+        owner.drain_blocking(SOFT_DEADLINE);
+        let startup = SettingsOwner::open_active(&path, WAIT).unwrap();
+        let snapshot = startup.blocking_current_snapshot().unwrap();
+        assert!(matches!(
+            snapshot.agents_layer,
+            AgentsLayerState::Unreadable { .. }
+        ));
+        startup.drain_blocking(SOFT_DEADLINE);
+        std::fs::remove_file(agents).unwrap();
+
+        // A malformed overlay is a Startup warning and a Recovery failure.
+        std::fs::write(overlay_path(&path), b"[1, 2").unwrap();
+        let startup = SettingsOwner::open_active(&path, WAIT).unwrap();
+        let snapshot = startup.blocking_current_snapshot().unwrap();
+        assert!(snapshot.local_overlay_state.rejection().is_some());
+        let error = startup
+            .with_operation_blocking("malformed-overlay", |_, _| Ok(()))
+            .unwrap_err();
+        assert!(is_compose(&error), "{error:?}");
+        startup.drain_blocking(SOFT_DEADLINE);
+        std::fs::remove_file(overlay_path(&path)).unwrap();
+
+        // A corrupt base never becomes defaults.
+        let corrupt: &[u8] = b"{\"voiceToTextEnabled\": tru";
+        std::fs::write(&path, corrupt).unwrap();
+        let error = SettingsOwner::open_active(&path, WAIT).unwrap_err();
+        assert!(is_compose(&error), "{error:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+
+        // A source replaced by a non-regular object is a capture error.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let error = SettingsOwner::open_active(&path, WAIT).unwrap_err();
+        assert!(matches!(error, SettingsOwnerError::Capture(_)), "{error:?}");
+    }
+
+    #[test]
+    fn e2992_p41_publisher_recovery() {
+        let publishers = [
+            SettingsPublisher::PreflightBackup,
+            SettingsPublisher::ProjectPathsMigration,
+            SettingsPublisher::ProjectPathsBackup,
+            SettingsPublisher::ProjectPathsCleanup,
+            SettingsPublisher::BlockingMenusExport,
+            SettingsPublisher::AgentsExport,
+            SettingsPublisher::AgentsSave,
+            SettingsPublisher::SettingsSave,
+            SettingsPublisher::AuxCache,
+            SettingsPublisher::Stamp,
+        ];
+        for publisher in publishers {
+            let (_dir, path) = instance(Some(voice(true)));
+            let owner = publisher_partial_cases(&path, publisher);
+            publisher_invalid_recapture(&owner, &path, publisher);
+        }
+        panic_classification_cases();
+    }
+
+    /// Rejected before any publisher, then PartialOrUnknown after `publisher`
+    /// wrote and the principal failed or panicked.
+    fn publisher_partial_cases(path: &Path, publisher: SettingsPublisher) -> Arc<SettingsOwner> {
+        let owner = SettingsOwner::open_active(path, WAIT).unwrap();
+        let epoch = owner.identity().epoch;
+
+        // Failure before any publisher: Rejected, RAM and epoch unchanged.
+        let report = owner
+            .with_operation_blocking("pre", |_, _| -> Result<(), String> {
+                Err("validation".to_string())
+            })
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::Rejected);
+        assert_eq!(owner.identity().epoch, epoch);
+
+        // A publisher wrote, then the principal TempWrite failed. The owner
+        // keeps its authority through recovery and adopts reality as
+        // PartialOrUnknown, never as success or rollback.
+        let alias = path.to_path_buf();
+        let report = owner
+            .with_operation_blocking("partial", move |_, guard| -> Result<(), String> {
+                guard.publish(publisher, |settings_path| {
+                    write_json(settings_path, &voice(false));
+                    let second = SettingsOwner::open_active(&alias, Duration::ZERO);
+                    let held = matches!(second, Err(SettingsOwnerError::LifecycleTimedOut));
+                    assert!(held, "authority is retained during the operation");
+                    Ok(())
+                })?;
+                assert_eq!(guard.effect(), OperationEffect::Possible);
+                Err("TempWrite".to_string())
+            })
+            .unwrap();
+        assert_eq!(
+            report.outcome,
+            OperationOutcome::PartialOrUnknown,
+            "{publisher:?}"
+        );
+        assert_eq!(report.availability, SettingsAvailability::Ready);
+        assert!(report.error.is_some());
+        assert!(!voice_enabled(&owner));
+
+        // A panic after a publisher is classified, never abandoned.
+        let report = owner
+            .with_operation_blocking("panic", move |_, guard| -> Result<(), String> {
+                guard.publish(publisher, |settings_path| {
+                    write_json(settings_path, &voice(true));
+                    Ok(())
+                })?;
+                panic!("injected");
+            })
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert!(voice_enabled(&owner));
+        owner
+    }
+
+    /// An invalid recapture after `publisher` is sticky Invalid until close.
+    fn publisher_invalid_recapture(
+        owner: &SettingsOwner,
+        path: &Path,
+        publisher: SettingsPublisher,
+    ) {
+        // An invalid recapture is Invalid: no current read, no default save.
+        let report = owner
+            .with_operation_blocking("corrupt", move |_, guard| -> Result<(), String> {
+                guard.publish(publisher, |settings_path| write_raw(settings_path, b"{"))?;
+                Err("ReDecode".to_string())
+            })
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        assert_eq!(
+            owner.blocking_current_snapshot().unwrap_err(),
+            SettingsOwnerError::Unavailable(SettingsAvailability::Invalid)
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"{");
+        let denied = owner.with_operation_blocking("after", |_, _| Ok(()));
+        assert!(matches!(
+            denied,
+            Err(SettingsOwnerError::Unavailable(
+                SettingsAvailability::Invalid
+            ))
+        ));
+        // The authority is still held until the owner closes.
+        let second = SettingsOwner::open_active(path, Duration::ZERO);
+        assert!(matches!(second, Err(SettingsOwnerError::LifecycleTimedOut)));
+        owner.drain_blocking(SOFT_DEADLINE);
+        assert_eq!(owner.availability(), SettingsAvailability::Closed);
+    }
+
+    /// The async form, then panics in the admission capture, in the recapture
+    /// and before the guards.
+    fn panic_classification_cases() {
+        // The async form runs the same body on a blocking worker.
+        let (_dir, path) = instance(Some(voice(false)));
+        let owner = SettingsOwner::open_active(&path, WAIT).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let operation = owner.with_operation("async", |_, guard| {
+            guard.publish(SettingsPublisher::SettingsSave, |settings_path| {
+                write_json(settings_path, &voice(true));
+                Ok(())
+            })
+        });
+        let report = runtime.block_on(operation).unwrap();
+        assert_eq!(report.outcome, OperationOutcome::Committed);
+        let snapshot = runtime.block_on(owner.current_snapshot()).unwrap();
+        assert!(snapshot.voice_to_text_enabled);
+
+        // A panic in the admission capture, outside the builder and before any
+        // publisher, is classified under the guards: Rejected, RAM kept, Ready.
+        OWNER_CAPTURE_PANIC.with(|armed| armed.set(true));
+        let report = owner
+            .with_operation_blocking("capture-panic", |_, _| Ok(()))
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::Rejected);
+        assert_eq!(report.availability, SettingsAvailability::Ready);
+        assert!(report.error.is_some());
+        assert!(voice_enabled(&owner));
+
+        // A panic in the recapture after a publisher cannot adopt reality:
+        // PartialOrUnknown and sticky Invalid, never success.
+        let report = owner
+            .with_operation_blocking("recapture-panic", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |settings_path| {
+                    write_json(settings_path, &voice(false));
+                    Ok(())
+                })?;
+                OWNER_CAPTURE_PANIC.with(|armed| armed.set(true));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        assert!(report.value.is_none());
+        assert!(owner.blocking_current_snapshot().is_err());
+        // Every admission was released, so the drain terminates.
+        owner.drain_blocking(SOFT_DEADLINE);
+        assert_eq!(owner.availability(), SettingsAvailability::Closed);
+
+        // A panic before the guards (a blocking state guard requested from
+        // inside a runtime) published nothing: a worker error, Ready kept, and
+        // the drain still terminates.
+        let (_dir, path) = instance(Some(voice(true)));
+        let owner = SettingsOwner::open_active(&path, WAIT).unwrap();
+        let in_runtime =
+            runtime.block_on(async { owner.with_operation_blocking("in-runtime", |_, _| Ok(())) });
+        assert!(
+            matches!(in_runtime, Err(SettingsOwnerError::Worker(_))),
+            "{in_runtime:?}"
+        );
+        assert_eq!(owner.availability(), SettingsAvailability::Ready);
+        assert!(voice_enabled(&owner));
+        owner.drain_blocking(SOFT_DEADLINE);
+    }
+
+    #[test]
+    fn e2992_p41_memory_zero_io() {
+        let (dir, path) = instance(Some(voice(true)));
+        let owner = SettingsOwner::open_active(&path, WAIT).unwrap();
+        // The owner's transactions lock the physical spelling (macOS temp dirs
+        // sit under the `/var` link, which the transactional lock rejects).
+        let physical = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .join(SETTINGS_FILE_NAME);
+        let held = SettingsFileLock::acquire(&physical, Duration::from_secs(2)).unwrap();
+        let before = counts(&owner);
+        for _ in 0..100 {
+            assert!(voice_enabled(&owner));
+            let retention = owner.blocking_current_retention().unwrap();
+            assert_eq!(retention.source_error, None);
+            let permit = owner.try_current_read_owned().unwrap();
+            assert!(permit.voice_to_text_enabled);
+            assert!(Arc::ptr_eq(permit.owner(), &owner));
+            drop(permit);
+            assert!(owner.blocking_current_read().is_ok());
+            assert!(owner.try_current_read().is_ok());
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for _ in 0..100 {
+                assert!(owner.current_snapshot().await.is_ok());
+                assert!(owner.current_retention().await.is_ok());
+            }
+        });
+        assert_eq!(
+            counts(&owner),
+            before,
+            "memory reads touch no source or lock"
+        );
+
+        // Positive control: a mutation does attempt the transactional lock.
+        let error = owner
+            .with_operation_blocking("apply", |_, _| Ok(()))
+            .unwrap_err();
+        assert!(
+            matches!(error, SettingsOwnerError::TransactionLock(_)),
+            "{error:?}"
+        );
+        assert_eq!(counts(&owner), [before[0] + 1, before[1], before[2]]);
+        drop(held);
+
+        // Invalid denies every read without touching the filesystem.
+        let report = owner
+            .with_operation_blocking("corrupt", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |settings_path| {
+                    write_raw(settings_path, b"[")
+                })
+            })
+            .unwrap();
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        let before = counts(&owner);
+        assert!(owner.blocking_current_snapshot().is_err());
+        assert!(owner.blocking_current_retention().is_err());
+        assert!(owner.try_current_read_owned().is_err());
+        assert!(owner.try_current_read().is_err());
+        assert_eq!(counts(&owner), before);
+        owner.drain_blocking(SOFT_DEADLINE);
+
+        // StagedCompatibility: the P40 constructor keeps the forwarding surface
+        // and refuses managed operations before any lock attempt.
+        let staged = new_settings_state(AppSettings::default());
+        assert!(!staged.identity().managed_operations_enabled);
+        assert_eq!(staged.availability(), SettingsAvailability::Ready);
+        staged.blocking_write().voice_to_text_enabled = true;
+        assert!(staged.blocking_read().voice_to_text_enabled);
+        assert!(voice_enabled(&staged));
+        let refused = staged.with_operation_blocking("staged", |_, _| Ok(()));
+        assert!(matches!(
+            refused,
+            Err(SettingsOwnerError::OperationsNotEnabled)
+        ));
+        assert_eq!(counts(&staged), [0, 0, 0]);
+    }
+
+    #[test]
+    fn e2992_p41_lifecycle_alias() {
+        let (dir, path) = instance(Some(voice(true)));
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let first = SettingsOwner::open_active(&path, WAIT).unwrap();
+        let first_id = first.identity().instance_id;
+        let sidecar = dir.path().join(SETTINGS_OWNER_LOCK_FILE_NAME);
+        assert!(sidecar.is_file());
+        let base = std::fs::read(&path).unwrap();
+        let before = counts(&first);
+
+        // Physical aliases: different spellings that name the same directory
+        // object. Each one meets the same authority, times out, and reads no
+        // source.
+        #[allow(unused_mut)]
+        let mut aliases = physical_aliases(dir.path());
+        if cfg!(windows) {
+            // NTFS is case-insensitive and canonicalize yields a verbatim
+            // spelling, so Windows always has both aliases.
+            assert_eq!(aliases.len(), 2, "{aliases:?}");
+        }
+        // Linux temp directories are usually case-sensitive and link-free, so
+        // the test owns one directory symlink to the instance directory. It
+        // lives in a separate test-owned tempdir (no cycle inside the target)
+        // and is the waiter's alias even when an ambient alias also exists.
+        #[cfg(target_os = "linux")]
+        let (link_dir, link) = {
+            let link_dir = tempfile::tempdir().unwrap();
+            let link = link_dir.path().join("owner-alias");
+            let target = std::fs::canonicalize(dir.path()).unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(std::fs::canonicalize(&link).unwrap(), target);
+            assert_ne!(link, dir.path());
+            aliases.insert(0, link.clone());
+            (link_dir, link)
+        };
+        assert!(!aliases.is_empty(), "every platform needs a physical alias");
+        for alias_dir in &aliases {
+            let alias = alias_dir.join(SETTINGS_FILE_NAME);
+            let error = SettingsOwner::open_active(&alias, Duration::from_millis(100));
+            assert_eq!(error.unwrap_err(), SettingsOwnerError::LifecycleTimedOut);
+        }
+        let alias = aliases[0].join(SETTINGS_FILE_NAME);
+
+        // An identity that cannot be established is an error, never "free".
+        let parent_alias = dir.path().join("sub").join("..").join(SETTINGS_FILE_NAME);
+        let error = SettingsOwner::open_active(&parent_alias, Duration::ZERO).unwrap_err();
+        assert!(
+            matches!(error, SettingsOwnerError::Lifecycle(_)),
+            "{error:?}"
+        );
+        let missing = dir.path().join("missing").join(SETTINGS_FILE_NAME);
+        let error = SettingsOwner::open_active(&missing, Duration::ZERO).unwrap_err();
+        assert!(
+            matches!(error, SettingsOwnerError::Lifecycle(_)),
+            "{error:?}"
+        );
+
+        // Only the holder touched the sources.
+        assert_eq!(counts(&first), before);
+        assert_eq!(std::fs::read(&path).unwrap(), base);
+
+        // A second handle waits, then acquires once the holder releases.
+        let waiter = std::thread::spawn(move || SettingsOwner::open_active(&alias, WAIT));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!waiter.is_finished());
+        first.drain_blocking(SOFT_DEADLINE);
+        let second = waiter.join().unwrap().unwrap();
+        assert_eq!(second.availability(), SettingsAvailability::Ready);
+        assert_ne!(second.identity().instance_id, first_id);
+        assert!(voice_enabled(&second));
+        second.drain_blocking(SOFT_DEADLINE);
+        // The stable sidecar is never unlinked.
+        assert!(sidecar.is_file());
+
+        // Remove only the link, never its target, then close its tempdir.
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::remove_file(&link).unwrap();
+            let gone = std::fs::symlink_metadata(&link).unwrap_err();
+            assert_eq!(gone.kind(), std::io::ErrorKind::NotFound);
+            assert!(dir.path().is_dir());
+            assert_eq!(std::fs::read(&path).unwrap(), base);
+            assert!(sidecar.is_file());
+            link_dir.close().unwrap();
+        }
     }
 }

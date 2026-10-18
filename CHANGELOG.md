@@ -6,6 +6,55 @@ This file follows a lightweight [Keep a Changelog](https://keepachangelog.com/en
 
 ## Unreleased
 
+## 0.45.1
+
+### Added
+
+- Native selection screenshots are saved in the active replica's screenshots/ directory, created when needed. Existing captures and explicit window-screenshot --output destinations are unchanged. (#3070, #3074)
+
+### Fixed
+
+- Codex activity detection recognizes complete Working indicators on physical terminal rows when logical row reconstruction misses them. (#3059, #3065)
+- An open replica context menu's halo follows its sidebar card when preceding cards change height. (#3069, #3076)
+
+### Changed
+
+- Profile cells derive informational identity hashes from the final agent command/environment and profile arguments/environment. Stable agent IDs, references, sessions and HOME remain unchanged; client metadata mirroring is still pending. (#3050, #3054, #3051, #3067)
+- README and quickstart present reusable agent experience, the desktop view and installation options. Settings documentation explains canonical command fields and legacy fallback. (#3044, #3049, #3022, #3055)
+
+### Notes
+
+- Internal preparation adds a persisted container-options preference, centralized settings constructors and strict Matrix copy/provenance helpers. Container UI hiding, exclusive settings ownership and team-creation use of the copy helpers remain inactive. (#3062, #3064, #2993, #3053, #3071, #3075)
+## 0.45.0
+
+### Added
+
+- The error popup offers a checkbox to mute future popups of the same error type until the application closes. Logging, Copy and Dismiss remain available; restarting clears the mute. (#3036, #3037, #3039, #3040)
+- Opening a replica context menu highlights the originating sidebar card with a short accent pulse and a steady outline until the menu closes. (#3027, #3038)
+- The coordinator CLI can replace or clear a task description with `task-set-body`, preserving the title and task status. (#2931, #2941)
+- Settings, General, Terminal shows response-close preferences (enabled, idle seconds 1-3600). Runtime behavior for them is not active yet. (#2850, #2851, #2964, #2965)
+- DEBUG logging attributes settings-lock acquisition, timeout and release to their owner and operation. INFO logging is unchanged. (#2985, #2988)
+- Coding-agent entries carry a derived `id_hash` execution identity next to their unchanged stable `id`, and configured sessions persist a stable binding identity across restore and restart. (#2973, #2974, #2977, #2981, #2983, #2984, #2987, #2989)
+
+### Changed
+
+- Configuration files now write `baseCommand` and `additionalArguments`; the Settings fields are labeled "Base command" and "Additional arguments". The legacy `command` key is still read. (#3019, #3020, #3021, #3023, #3041, #3043)
+- Codex stays Busy while its full "Working (... esc to interrupt)" indicator is visible, even with a frozen counter. (#2879, #3028)
+- `project-paths.json` is the only source of project paths; existing settings migrate with a backup. CLI consumers read project state without saving settings. (#2951, #2952, #2953, #2954, #2955, #2959, #2966, #2967, #2969, #2971)
+- Generated context tells agents to report delegated work to its assigner, teaches the `list-peers-lean --peer` filter, and on Windows prefers Git Bash directly. Unmodified seeded contexts update; customized ones are preserved. (#2871, #2943, #2990, #2991, #3024, #3026)
+- Hovering a task title in the sidebar no longer shows the status overlay; status remains available above the terminal. (#2948, #2949)
+- portable-pty is upgraded to 0.9.0; hidden Windows sessions answer the initial cursor query instead of waiting for a terminal to attach. (#3029, #3035)
+- README describes current solo and team setups and links the official Discord and YouTube channels. (#3030, #3031)
+
+### Fixed
+
+- Saving agent settings preserves the backend-owned Codex HOME keys. (#2972, #2982)
+- PAIR writes revalidate their target before effects and use exclusive staging files. (#2960, #2961)
+
+### Notes
+
+- Internal groundwork for recoverable configuration persistence, selection references and response-close admission landed dormant and does not change current behavior. (#2852, #2853, #2893, #2894, #2895, #2896, #2897, #2947, #2950, #2957, #2958, #2968, #2970, #2986)
+- Frontend coverage is measured and published to Codecov. (#2962, #3025, #3032, #3033, #3042)
 ## 0.44.0
 
 ### Added

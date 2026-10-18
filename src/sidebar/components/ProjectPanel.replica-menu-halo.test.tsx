@@ -205,6 +205,91 @@ describe("ProjectPanel replica context menu origin halo (#3027)", () => {
     expect(document.querySelectorAll(".replica-menu-halo")).toHaveLength(1);
   });
 
+  it("follows position-only changes without events and leaves stable styles untouched (#3069)", async () => {
+    await setupPanel();
+    const frames = installDeterministicAnimationFrames();
+    const raf = vi.spyOn(window, "requestAnimationFrame");
+    try {
+      const row = byTestId(memberRowTestId)!;
+      await openOn(row);
+      await frames.flushFrame();
+      const node = halo()!;
+      const openedMenu = menu()!;
+      const menuStyle = openedMenu.getAttribute("style");
+      const selected = sessionsStore.activeId;
+      const originObserver = observers.find((o) => o.observed.includes(row))!;
+      const observerCount = observers.length;
+      rowRects.set(row, domRect(18, 170, 240, 28));
+      await frames.flushFrame();
+      expectHaloOn(row);
+      expect(halo()).toBe(node);
+      expect(menu()).toBe(openedMenu);
+      expect(openedMenu.getAttribute("style")).toBe(menuStyle);
+      expect(sessionsStore.activeId).toBe(selected);
+      expect(observers).toHaveLength(observerCount);
+      expect(originObserver.disconnect).not.toHaveBeenCalled();
+
+      const mutations: MutationRecord[] = [];
+      const observer = new MutationObserver((records) => mutations.push(...records));
+      observer.observe(haloClip()!, { attributes: true, subtree: true, attributeFilter: ["style"] });
+      try {
+        const calls = raf.mock.calls.length;
+        window.dispatchEvent(new Event("scroll"));
+        window.dispatchEvent(new Event("resize"));
+        originObserver.callback([], {} as ResizeObserver);
+        expect(raf).toHaveBeenCalledTimes(calls);
+        await frames.flushFrame();
+        await frames.flushFrame();
+        expect(mutations).toHaveLength(0);
+        expect(halo()).toBe(node);
+      } finally {
+        observer.disconnect();
+      }
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      await flush();
+      const calls = raf.mock.calls.length;
+      const measure = vi.spyOn(row, "getBoundingClientRect");
+      const measurements = measure.mock.calls.length;
+      await frames.flush();
+      expect(measure).toHaveBeenCalledTimes(measurements);
+      expect(raf).toHaveBeenCalledTimes(calls);
+    } finally {
+      rendered?.cleanup();
+      rendered = null;
+      raf.mockRestore();
+      frames.restore();
+    }
+  });
+
+  it("cancels tracking before unmount and ignores the captured callback", async () => {
+    await setupPanel();
+    const frames = installDeterministicAnimationFrames();
+    const raf = vi.spyOn(window, "requestAnimationFrame");
+    const caf = vi.spyOn(window, "cancelAnimationFrame");
+    try {
+      const row = byTestId(memberRowTestId)!;
+      await openOn(row);
+      const pending = raf.mock.results[raf.mock.results.length - 1].value as number;
+      const captured = raf.mock.calls[raf.mock.calls.length - 1][0];
+      rendered!.cleanup();
+      rendered = null;
+      expect(caf).toHaveBeenCalledWith(pending);
+      const measure = vi.spyOn(row, "getBoundingClientRect");
+      const measurements = measure.mock.calls.length;
+      const calls = raf.mock.calls.length;
+      captured(0);
+      await frames.flush();
+      expect(measure).toHaveBeenCalledTimes(measurements);
+      expect(raf).toHaveBeenCalledTimes(calls);
+      expect(halo()).toBeNull();
+      expect(menu()).toBeNull();
+    } finally {
+      raf.mockRestore();
+      caf.mockRestore();
+      frames.restore();
+    }
+  });
+
   it("keeps the same node while tracking scroll, resize, observer and reclamp", async () => {
     await setupPanel();
     const row = byTestId(memberRowTestId)!;
@@ -442,7 +527,7 @@ describe("ProjectPanel replica context menu origin halo (#3027)", () => {
       await openOn(byTestId(grayRowTestId)!);
       const fresh = halo();
       captured(0);
-      await frames.flush();
+      await frames.flushFrame();
       expect(menu()).not.toBeNull();
       expect(halo()).toBe(fresh);
       expectHaloOn(byTestId(grayRowTestId)!);
@@ -560,7 +645,8 @@ describe("ProjectPanel replica context menu origin halo (#3027)", () => {
 
       const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 5151);
       const caf = vi.spyOn(window, "cancelAnimationFrame");
-      window.dispatchEvent(new Event("scroll")); // leaves a frame pending
+      window.dispatchEvent(new Event("scroll")); // coalesces with the tracking frame
+      await waitFor(() => expect(raf).toHaveBeenCalled());
       let menuAtAttach: HTMLElement | null | undefined;
       let haloAtAttach: HTMLElement | null | undefined;
       fake.onInvoke("telegram_attach", () => {
@@ -663,19 +749,24 @@ describe("ProjectPanel replica context menu origin halo (#3027)", () => {
           const target = next();
           if (name !== "A->A") expect(target).not.toBe(first);
           await openOn(target);
-          await frames.flush();
+          await frames.flushFrame();
           const fresh = halo();
           expect(fresh).not.toBeNull();
           const style = haloClip()!.getAttribute("style") + "|" + fresh!.getAttribute("style");
 
           // The old opening's row now reports a lost origin: if its callback acted, it would close the new menu.
           if (target !== first) rowRects.set(first, domRect(0, 0, 0, 0));
+          const staleMeasure = vi.spyOn(first, "getBoundingClientRect");
+          const measurements = staleMeasure.mock.calls.length;
+          const requests = raf.mock.calls.length;
           captured(0);
+          expect(staleMeasure).toHaveBeenCalledTimes(measurements);
+          expect(raf).toHaveBeenCalledTimes(requests);
           expect(captured).toHaveBeenCalledTimes(1);
           gates[0].resolve({ telegramBots: [botOne, botTwo] });
           await flush();
           await flush();
-          await frames.flush();
+          await frames.flushFrame();
 
           expect(menu()).not.toBeNull();
           expect(halo()).toBe(fresh);

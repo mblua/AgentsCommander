@@ -9,7 +9,7 @@ const { createStartMenuShortcut } = require('./windows-shortcut');
 const { createLaunchpadAlias } = require('./macos-alias');
 const { createDesktopEntry } = require('./linux-desktop-entry');
 
-const VERSION = "0.44.0"; // Must match package.json
+const VERSION = "0.45.1"; // Must match package.json
 const OWNER = 'mblua';
 const REPO = 'AgentsCommander';
 

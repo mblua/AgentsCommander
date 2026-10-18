@@ -500,6 +500,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: label.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
@@ -516,6 +517,8 @@ mod tests {
 
     fn enabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
         crate::config::settings::ProfileCellConfig {
+            id_hash: None,
+            id_hash_debug: None,
             preflight: None,
             preflight_timeout_seconds: None,
             enabled: true,
@@ -527,6 +530,8 @@ mod tests {
 
     fn disabled_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
         crate::config::settings::ProfileCellConfig {
+            id_hash: None,
+            id_hash_debug: None,
             preflight: None,
             preflight_timeout_seconds: None,
             enabled: false,

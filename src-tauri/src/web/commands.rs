@@ -1084,6 +1084,10 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
         }
 
         // --- Debug ---
+        "append_rail_diagnostic" => {
+            crate::commands::config::append_rail_diagnostic(args.get("record").cloned())?;
+            Ok(Value::Null)
+        }
         "save_debug_logs" => {
             let content = require_str(args, "content")?;
             let path = crate::config::config_dir()
@@ -1309,6 +1313,35 @@ fn str_vec_or(args: &Value, key: &str, default: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn issue_3083_web_record_boundary_envelope_and_restore_guard() {
+        let (state, _rx, _gate) = ws_state_with_agent_update(AppSettings::default(), false, true);
+        let valid = json!({"record":{"version":1,
+            "windowId":"fedcba98-7654-4321-8abc-012345678901", "seq":1,
+            "atMs":0,"surface":"sidebar","event":"click"}});
+        assert_eq!(
+            dispatch(&state, 3083, "append_rail_diagnostic", &valid).await,
+            json!({"id":3083,"result":null})
+        );
+        for args in [
+            json!({}),
+            json!({"record":null}),
+            json!({"record":"private/path"}),
+            json!({"record":[]}),
+            json!({"record":{"unknown":{"secret":true}}}),
+        ] {
+            assert_eq!(
+                dispatch(&state, 3083, "append_rail_diagnostic", &args).await,
+                json!({"id":3083,"error":"invalid rail diagnostic"})
+            );
+        }
+        let (blocked, _rx, _gate) = ws_state_with_agent_update(AppSettings::default(), true, false);
+        assert_eq!(
+            dispatch(&blocked, 3083, "append_rail_diagnostic", &valid).await,
+            json!({"id":3083,"error":"selectionCoordinatorBusy"})
+        );
+    }
+
     use super::*;
     use crate::commands::project_settings::{
         get_project_groups_inner, PROJECT_GROUPS_UPDATED_EVENT,
@@ -1567,7 +1600,7 @@ mod tests {
             Some(broadcaster.clone()),
             None,
         )));
-        let settings = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let settings = crate::config::settings::new_settings_state(AppSettings::default());
         let state = WsState {
             session_mgr,
             pty_mgr,
@@ -1641,7 +1674,7 @@ mod tests {
             Some(broadcaster.clone()),
             None,
         )));
-        let settings = Arc::new(tokio::sync::RwLock::new(settings));
+        let settings = crate::config::settings::new_settings_state(settings);
         let state = WsState {
             session_mgr,
             pty_mgr,
@@ -1658,6 +1691,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: id.to_string(),
             command: id.to_string(),
             color: "#10b981".to_string(),
@@ -1957,7 +1991,7 @@ title: 'USER: café'
         let temp = tempfile::tempdir().expect("tempdir");
         let settings = overlay_owned_agents_settings(temp.path());
         let settings_state: crate::config::settings::SettingsState =
-            Arc::new(tokio::sync::RwLock::new(settings));
+            crate::config::settings::new_settings_state(settings);
         let app = tauri::test::mock_builder()
             .invoke_handler(tauri::generate_handler![
                 crate::commands::config::move_coding_agent
@@ -2101,7 +2135,7 @@ title: 'USER: café'
         let settings = overlay_owned_agents_settings(temp.path());
         let overlay_order: Vec<String> = settings.agents.iter().map(|a| a.id.clone()).collect();
         let settings_state: crate::config::settings::SettingsState =
-            Arc::new(tokio::sync::RwLock::new(settings));
+            crate::config::settings::new_settings_state(settings);
         let app = tauri::test::mock_builder()
             .invoke_handler(tauri::generate_handler![
                 crate::commands::config::reorder_coding_agent
@@ -2514,7 +2548,7 @@ title: 'USER: café'
         let (_temp, replica, settings) = selection_lock_web_fixture(true);
         let replica_text = replica.to_string_lossy().to_string();
         let settings_state: crate::config::settings::SettingsState =
-            Arc::new(tokio::sync::RwLock::new(settings));
+            crate::config::settings::new_settings_state(settings);
         let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let app = tauri::test::mock_builder()
             .invoke_handler(tauri::generate_handler![
@@ -2812,7 +2846,7 @@ title: 'USER: café'
             Arc::clone(&session_mgr),
             shutdown.token().clone(),
         );
-        let settings = Arc::new(tokio::sync::RwLock::new(settings));
+        let settings = crate::config::settings::new_settings_state(settings);
 
         let full_app = crate::test_support::test_builder()
             .manage(settings.clone())
@@ -3093,7 +3127,7 @@ title: 'USER: café'
         let state = WsState {
             session_mgr,
             pty_mgr,
-            settings: Arc::new(tokio::sync::RwLock::new(settings)),
+            settings: crate::config::settings::new_settings_state(settings),
             broadcaster,
             app_handle,
         };

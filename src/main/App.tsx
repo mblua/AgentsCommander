@@ -1,3 +1,4 @@
+import { acquireRoomActivityObserver } from "../sidebar/stores/room-activity";
 import { Component, createSignal, onMount, onCleanup, batch, Show } from "solid-js";
 import type { UnlistenFn } from "../shared/transport";
 import {
@@ -250,6 +251,8 @@ const pulsePhase = (
 });
 
 const MainApp: Component = () => {
+  const releaseRoomActivityObserver = acquireRoomActivityObserver();
+  onCleanup(releaseRoomActivityObserver);
   const [sidebarWidth, setSidebarWidth] = createSignal(DEFAULT_MAIN_SIDEBAR_WIDTH);
   const [sidebarSide, setSidebarSide] = createSignal<MainSidebarSide>(DEFAULT_SIDEBAR_SIDE);
   const [dragging, setDragging] = createSignal(false);

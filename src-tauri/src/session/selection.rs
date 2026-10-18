@@ -13197,9 +13197,9 @@ fn commit_selection_transition_with_carrier_permit() {
         let app = tauri::test::mock_builder()
             .manage(Arc::clone(&manager))
             .manage(Arc::clone(&pty))
-            .manage(Arc::new(tokio::sync::RwLock::new(
+            .manage(crate::config::settings::new_settings_state(
                 crate::config::settings::AppSettings::default(),
-            )))
+            ))
             .manage(DetachedSessionsState::default())
             .manage(WsBroadcaster::new())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

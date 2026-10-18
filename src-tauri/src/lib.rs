@@ -4438,7 +4438,7 @@ pub fn run(
     // (#621) Snapshot registered project paths for the startup orphan-clock prune
     // below (taken before the value is moved into the RwLock).
     let startup_project_paths = loaded_settings.project_paths.clone();
-    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(loaded_settings));
+    let settings: SettingsState = crate::config::settings::new_settings_state(loaded_settings);
     // #552 persisted coordinator badge clock + auto-closed marker store (loaded
     // once at startup; flushed by the auto-close tick and on app exit).
     let coordinator_clocks: crate::config::coordinator_clocks::CoordinatorClocksState =
@@ -5615,6 +5615,7 @@ pub fn run(
                 commands::voice::voice_mark_recording,
                 commands::voice::voice_had_typing,
                 commands::config::save_debug_logs,
+                commands::config::append_rail_diagnostic,
                 commands::config::drain_error_logs,
                 commands::config::get_error_popup_mutes,
                 commands::config::set_error_popup_muted,
@@ -6604,7 +6605,7 @@ fn route_co_managed_wake(
     from_fqn: &str,
     to_fqn: &str,
     content: &str,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let (path, pointer) = write_co_managed_message_file(room_root, from_fqn, to_fqn, content)?;
     handle.record_step("messaging_file");
     let display_from = crate::phone::messaging::compose_sender_for_comanaged_origin(from_fqn);
@@ -6620,9 +6621,27 @@ fn route_co_managed_wake(
             crate::phone::messaging::PTY_SAFE_MAX
         ));
     }
-    write_co_managed_queue_message(room_root, from_fqn, to_fqn, &pointer)?;
+    let archive_warning = (|| -> Result<(), String> {
+        let source = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        let snapshot = std::fs::read(&source).map_err(|e| e.to_string())?;
+        let basename = source
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or("invalid message basename")?;
+        let ac_root = room_root.parent().ok_or("room has no Project AC Root")?;
+        crate::phone::messaging::archive_message_snapshot(ac_root, &source, basename, &snapshot)?;
+        Ok(())
+    })()
+    .err()
+    .map(|error| format!("Message archive warning: {}: {error}", path.display()));
+    write_co_managed_queue_message(room_root, from_fqn, to_fqn, &pointer).map_err(|error| {
+        match &archive_warning {
+            Some(warning) => format!("{error}; {warning}"),
+            None => error,
+        }
+    })?;
     handle.record_step("queue_file");
-    Ok(())
+    Ok(archive_warning)
 }
 
 // ── routing decision ────────────────────────────────────────────────────────
@@ -7147,7 +7166,17 @@ async fn perform_co_managed_route<R: tauri::Runtime>(
             content,
             reason,
         } => match route_co_managed_wake(handle, room_root, from_fqn, &to, &content) {
-            Ok(()) => CoManagedOutcome::Done(reason),
+            Ok(warning) => {
+                if let Some(warning) = warning {
+                    surface_co_managed_user_message(
+                        app,
+                        session_id,
+                        format!("Send queued; message archive warning: {warning}"),
+                    )
+                    .await;
+                }
+                CoManagedOutcome::Done(reason)
+            }
             Err(error) => {
                 let message = co_managed_user_message(
                     &format!("routing failed after the effect was reserved: {error}"),
@@ -8575,6 +8604,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "codex".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "Codex".to_string(),
                 command: "codex".to_string(),
                 color: "#10b981".to_string(),
@@ -8599,7 +8629,7 @@ mod tests {
 
     fn resolved(settings: AppSettings) -> std::collections::HashMap<String, String> {
         let source = ScraperPatterns {
-            settings: std::sync::Arc::new(tokio::sync::RwLock::new(settings)) as SettingsState,
+            settings: crate::config::settings::new_settings_state(settings) as SettingsState,
         };
         futures::executor::block_on(source.patterns())
     }
@@ -9129,7 +9159,8 @@ mod tests {
         let session_mgr = Arc::new(tokio::sync::RwLock::new(
             crate::session::manager::SessionManager::new(),
         ));
-        let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
+        let settings: SettingsState =
+            crate::config::settings::new_settings_state(AppSettings::default());
         let app = crate::test_support::test_builder()
             .manage(Arc::clone(&settings))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -9743,7 +9774,7 @@ mod tests {
         let registry = Arc::new(CaptureRegistry::new());
         let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
         let app = tauri::test::mock_builder()
-            .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .manage(session_manager.clone())
             .manage(crate::network::OutboundNetwork::new().expect("shared outbound network"))
             .manage(registry.clone())
@@ -11253,6 +11284,108 @@ mod tests {
         );
     }
 
+    #[test]
+    fn issue_3081_co_managed_post_flush_snapshot_and_queue_failures() {
+        for blocked in [false, true] {
+            let fixture = make_co_managed_fixture();
+            if blocked {
+                std::fs::write(
+                    fixture.room_root.parent().unwrap().join("message-archive"),
+                    b"blocked",
+                )
+                .unwrap();
+            }
+            let (handle, _rx) = CoManagedSupervisorHandle::new();
+            let warning = route_co_managed_wake(
+                &handle,
+                &fixture.room_root,
+                "proj-a:room-1-dev-team/tech-lead",
+                "proj-a:room-1-dev-team/dev-rust",
+                "\u{feff}body\r\n",
+            )
+            .unwrap();
+            assert_eq!(warning.is_some(), blocked);
+            assert_eq!(queue_files(&fixture.room_root).len(), 1);
+            let source = messaging_files(&fixture.room_root).pop().unwrap();
+            assert_eq!(
+                std::fs::read(&source).unwrap(),
+                "\u{feff}body\r\n".as_bytes()
+            );
+            if !blocked {
+                let archive = fixture.room_root.parent().unwrap().join("message-archive");
+                let dir = std::fs::read_dir(archive)
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                assert_eq!(
+                    std::fs::read(dir.join(source.file_name().unwrap())).unwrap(),
+                    std::fs::read(source).unwrap()
+                );
+            }
+        }
+        let fixture = make_co_managed_fixture();
+        std::fs::write(
+            fixture.room_root.parent().unwrap().join("message-archive"),
+            b"blocked",
+        )
+        .unwrap();
+        let queue = crate::config::co_managed::queue_dir(&fixture.room_root);
+        std::fs::create_dir_all(queue.parent().unwrap()).unwrap();
+        std::fs::write(queue, b"blocked queue").unwrap();
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let error = route_co_managed_wake(
+            &handle,
+            &fixture.room_root,
+            "proj-a:room-1-dev-team/tech-lead",
+            "proj-a:room-1-dev-team/dev-rust",
+            "body",
+        )
+        .unwrap_err();
+        assert!(error.contains("queue dir create failed"));
+        assert!(error.contains("Message archive warning"));
+    }
+
+    #[tokio::test]
+    async fn issue_3081_co_managed_archive_failure_surfaces_warning_and_keeps_outcome() {
+        let fixture = make_co_managed_fixture();
+        std::fs::write(
+            fixture.room_root.parent().unwrap().join("message-archive"),
+            b"blocked",
+        )
+        .unwrap();
+        let (endpoint, _hits) = spawn_jev_listener(vec![
+            ("to-peer", 0.9),
+            ("to-user", 0.1),
+            ("to-root", 0.0),
+            ("to-reply", 0.0),
+        ])
+        .await;
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        install_candidate(&registry, session_id, "candidate text");
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        super::handle_co_managed_trigger(
+            app.handle(),
+            &handle,
+            CoManagedTrigger::IdleEdge(session_id),
+        )
+        .await;
+        assert_eq!(queue_files(&fixture.room_root).len(), 1);
+        let communication = session_communication(&manager, session_id).await.unwrap();
+        let message = communication.message.unwrap();
+        assert!(message.contains("Send queued"), "{message}");
+        assert!(message.contains("archive warning"), "{message}");
+        assert!(!message.contains("routing failed"), "{message}");
+    }
+
     // ── #2455 - Co-managed logging, read through the test tee ───────────────
 
     /// The lines the tee saw after `before`, filtered by `needle`. The tee
@@ -12527,7 +12660,7 @@ mod tests {
             ));
             let idle_detector = crate::pty::idle_detector::IdleDetector::new(|_| {}, |_| {});
             let app = tauri::test::mock_builder()
-                .manage(Arc::new(tokio::sync::RwLock::new(settings)))
+                .manage(crate::config::settings::new_settings_state(settings))
                 .manage(manager.clone())
                 .manage(crate::network::OutboundNetwork::new().expect("shared outbound network"))
                 .manage(registry.clone())

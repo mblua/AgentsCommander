@@ -1039,7 +1039,7 @@ impl WatcherEngine {
         };
         let logical = frame.as_ref().map(frame::logical_rows);
 
-        // #2879 - the internal verdict: ANY complete-indicator logical row is `Present`.
+        // #3059 - the internal verdict: ANY complete physical or logical indicator is `Present`.
         // Independent of every user watcher, cap, suspension and budget.
         let delivery = consumer.and_then(|consumer| {
             let observation = match &frame {
@@ -1049,7 +1049,9 @@ impl WatcherEngine {
                     Some(match &self.codex_working {
                         Some(working) => {
                             let rows = logical.as_deref().unwrap_or_default();
-                            if rows.iter().any(|row| working.regex().is_match(&row.text)) {
+                            if frame.rows.iter().any(|row| working.regex().is_match(row))
+                                || rows.iter().any(|row| working.regex().is_match(&row.text))
+                            {
                                 ActivityObservation::Present
                             } else {
                                 ActivityObservation::Absent
@@ -2845,6 +2847,179 @@ mod tests {
             .filter(|(observed_id, _)| *observed_id == id)
             .map(|(_, observation)| *observation)
             .collect()
+    }
+
+    /// Sanitized from shared dev-live-snapshot.json, sequence 1342, 30x120.
+    /// SHA256: 243ffe6321aacf4c2dc821e9e12ad422109aef8fc62b3b691ca3167a0f17c6a9.
+    /// Wrap geometry and row 22 are preserved; unrelated transcript and Tip text are
+    /// substituted. This is not a byte-for-byte terminal replay.
+    fn i3059_sanitized_frame() -> ScreenFrame {
+        let mut rows = vec![String::new(); 30];
+        for row in &mut rows[..22] {
+            *row = "generic transcript".to_string();
+        }
+        rows[22] = "Working (35s • esc to interrupt)".to_string();
+        rows[23] = "  └ Tip: generic guidance".to_string();
+        let mut wrapped = vec![false; 30];
+        wrapped[..24].fill(true);
+        ScreenFrame {
+            rows,
+            wrapped,
+            cursor_row: 26,
+            stamp: Some(FrameStamp {
+                sequence: 1342,
+                rows: 30,
+                cols: 120,
+            }),
+        }
+    }
+
+    #[test]
+    fn i3059_fixture_preserves_snapshot_geometry() {
+        let frame = i3059_sanitized_frame();
+        let pattern = pattern::compile(CODEX_WORKING_PATTERN).expect("compiles");
+        assert_eq!(frame.rows.len(), 30);
+        assert_eq!(frame.stamp.unwrap().rows, 30);
+        assert_eq!(frame.stamp.unwrap().cols, 120);
+        assert_eq!(frame.wrapped, [vec![true; 24], vec![false; 6]].concat());
+        assert_eq!(
+            frame
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| pattern.regex().is_match(row))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>(),
+            vec![22]
+        );
+        let logical = frame::logical_rows(&frame);
+        assert_eq!(
+            logical.iter().map(|row| row.start).collect::<Vec<_>>(),
+            vec![25, 26, 27, 28, 29],
+            "the shared policy still omits the top wrap group"
+        );
+        assert!(logical
+            .iter()
+            .all(|row| !pattern.regex().is_match(&row.text)));
+    }
+
+    #[tokio::test]
+    async fn i3059_top_wrapped_physical_indicator_then_worked() {
+        let (factory, observed) = recording_factory();
+        let harness = Harness::with_activity_factory(factory);
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, None);
+        let mut frame = i3059_sanitized_frame();
+        harness.backend.push(
+            id,
+            Painted::Frame(frame.rows.clone(), frame.wrapped.clone(), frame.cursor_row),
+        );
+        harness.ticks(1).await;
+        assert_eq!(observations(&observed, id), vec![Validate, Present]);
+
+        frame.rows[22] = "Worked (35s • esc to interrupt)".to_string();
+        harness.backend.push(
+            id,
+            Painted::Frame(frame.rows, frame.wrapped, frame.cursor_row),
+        );
+        harness.ticks(1).await;
+        assert_eq!(observations(&observed, id), vec![Validate, Present, Absent]);
+        assert_eq!(
+            *harness.backend.seen.lock().unwrap(),
+            vec![
+                None,
+                Some(FrameStamp {
+                    sequence: 1,
+                    rows: 30,
+                    cols: 120,
+                }),
+            ],
+            "the backend supplies fresh 30x120 stamps"
+        );
+    }
+
+    #[tokio::test]
+    async fn i3059_non_top_indicator_joined_with_tip() {
+        let (factory, observed) = recording_factory();
+        let harness = Harness::with_activity_factory(factory);
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, None);
+        let frame = ScreenFrame {
+            rows: vec!["transcript".into(), WORKING.into(), "Tip: guidance".into()],
+            wrapped: vec![false, true, false],
+            cursor_row: 0,
+            stamp: None,
+        };
+        let pattern = pattern::compile(CODEX_WORKING_PATTERN).expect("compiles");
+        let logical = frame::logical_rows(&frame);
+        assert_eq!((logical[1].start, logical[1].end), (1, 2));
+        assert_eq!(logical[1].text, format!("{WORKING}Tip: guidance"));
+        assert!(logical
+            .iter()
+            .all(|row| !pattern.regex().is_match(&row.text)));
+        harness.backend.push(
+            id,
+            Painted::Frame(frame.rows, frame.wrapped, frame.cursor_row),
+        );
+        harness.ticks(1).await;
+        assert_eq!(observations(&observed, id), vec![Validate, Present]);
+    }
+
+    #[tokio::test]
+    async fn i3059_split_indicator_keeps_logical_recognition() {
+        let (factory, observed) = recording_factory();
+        let harness = Harness::with_activity_factory(factory);
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, None);
+        let frame = ScreenFrame {
+            rows: vec![
+                "transcript".into(),
+                "Working (1m 0".into(),
+                "5s • esc to interrupt)".into(),
+            ],
+            wrapped: vec![false, true, false],
+            cursor_row: 0,
+            stamp: None,
+        };
+        let pattern = pattern::compile(CODEX_WORKING_PATTERN).expect("compiles");
+        assert!(frame.rows.iter().all(|row| !pattern.regex().is_match(row)));
+        assert!(frame::logical_rows(&frame)
+            .iter()
+            .any(|row| pattern.regex().is_match(&row.text)));
+        harness.backend.push(
+            id,
+            Painted::Frame(frame.rows, frame.wrapped, frame.cursor_row),
+        );
+        harness.ticks(1).await;
+        assert_eq!(observations(&observed, id), vec![Validate, Present]);
+    }
+
+    #[tokio::test]
+    async fn i3059_anchored_negatives_deliver_absent() {
+        let (factory, observed) = recording_factory();
+        let harness = Harness::with_activity_factory(factory);
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, None);
+        for negative in [
+            "Worked (5s • esc to interrupt)",
+            "› Working (5s • esc to interrupt)",
+            "Working (5s • esc to",
+            "Working (5s • esc to interrupt) unrelated suffix",
+        ] {
+            harness.backend.push(
+                id,
+                Painted::Frame(
+                    vec!["transcript".into(), negative.into()],
+                    vec![false; 2],
+                    0,
+                ),
+            );
+        }
+        harness.ticks(4).await;
+        assert_eq!(
+            observations(&observed, id),
+            vec![Validate, Absent, Absent, Absent, Absent]
+        );
     }
 
     /// The production pattern: both glyph prefixes or none, `s`/`m`/`h` durations, inline

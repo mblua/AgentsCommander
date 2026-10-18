@@ -121,6 +121,263 @@ pub(crate) struct SettingsDraftUpdateEvents {
     pub env_agent_ids: Vec<String>,
 }
 
+// #3083: closed diagnostic vocabulary; no client-selected target or text.
+const RAIL_DIAGNOSTIC_ERROR: &str = "invalid rail diagnostic";
+const RAIL_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailSurface {
+    Embedded,
+    Sidebar,
+    Store,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailKind {
+    Custom,
+    System,
+    Nonstop,
+    Ungrouped,
+    Project,
+    Favorites,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailPhase {
+    Arming,
+    Dragging,
+    Saving,
+    Idle,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailOutcome {
+    Applied,
+    Unchanged,
+    Stale,
+    Error,
+    Disconnected,
+    Unloaded,
+    Queued,
+    Discarded,
+    Suppressed,
+    Overflow,
+    NoPress,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailTag {
+    Button,
+    Span,
+    Svg,
+    Path,
+    Aside,
+    Body,
+    Input,
+    Textarea,
+    Other,
+    None,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailEvent {
+    Pointerdown,
+    Pointerup,
+    Pointercancel,
+    Mousedown,
+    Mouseup,
+    Click,
+    Gotpointercapture,
+    Lostpointercapture,
+    Focusin,
+    Focusout,
+    WindowFocus,
+    WindowBlur,
+    HandlerEnter,
+    HandlerEnd,
+    SelectionChange,
+    RailMount,
+    RailDispose,
+    SectionMount,
+    SectionDispose,
+    NodeMount,
+    NodeDispose,
+    ProjectList,
+    ProjectButtons,
+    FavoritesEntries,
+    ReloadStart,
+    ReloadEnd,
+    DiscoverStart,
+    DiscoverEnd,
+    SnapshotStart,
+    SnapshotEnd,
+    SnapshotsStart,
+    SnapshotsEnd,
+    TaskStart,
+    TaskEnd,
+    LoopStart,
+    LoopEnd,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RailDiagnosticRecord {
+    version: u8,
+    window_id: Uuid,
+    seq: u64,
+    at_ms: f64,
+    surface: RailSurface,
+    event: RailEvent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rail_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entity_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_node_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    object_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_project_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_group_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<RailKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_kind: Option<RailKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<RailPhase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<RailOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pointer_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    button: Option<i8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_tag: Option<RailTag>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_tag: Option<RailTag>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    primary: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trusted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_connected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    captured: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    document_focused: Option<bool>,
+}
+
+impl RailDiagnosticRecord {
+    fn validate(&self) -> bool {
+        self.version == 1
+            && (1..=RAIL_SAFE_INTEGER).contains(&self.seq)
+            && self.at_ms.is_finite()
+            && self.at_ms >= 0.0
+            && self.duration_ms.is_none_or(|n| n.is_finite() && n >= 0.0)
+            && self.button.is_none_or(|n| (-1..=5).contains(&n))
+            && self
+                .rail_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .operation_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .project_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .group_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .entity_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .node_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .original_node_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .object_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .selection_project_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .selection_group_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self.count.is_none_or(|n| n <= RAIL_SAFE_INTEGER)
+            && self.changed_count.is_none_or(|n| n <= RAIL_SAFE_INTEGER)
+    }
+}
+
+pub(crate) fn rail_diagnostic_line(record: Option<serde_json::Value>) -> Result<String, String> {
+    let invalid = || RAIL_DIAGNOSTIC_ERROR.to_string();
+    let value = record.ok_or_else(invalid)?;
+    // Serde unit enums also accept externally tagged maps; IPC permits scalar fields only.
+    let object = value.as_object().ok_or_else(invalid)?;
+    if object.values().any(|v| v.is_object() || v.is_array()) {
+        return Err(invalid());
+    }
+    let record: RailDiagnosticRecord = serde_json::from_value(value).map_err(|_| invalid())?;
+    if !record.validate() {
+        return Err(invalid());
+    }
+    let json = serde_json::to_string(&record).map_err(|_| invalid())?;
+    if json.len() > 2048 {
+        return Err(invalid());
+    }
+    Ok(format!("[rail-diag]{json}"))
+}
+
+pub(crate) fn append_rail_diagnostic_to(
+    record: Option<serde_json::Value>,
+    logger: &dyn log::Log,
+) -> Result<(), String> {
+    let line = rail_diagnostic_line(record)?;
+    let metadata = log::Metadata::builder()
+        .level(log::Level::Debug)
+        .target("agentscommander_lib::commands::config")
+        .build();
+    if logger.enabled(&metadata) {
+        logger.log(
+            &log::Record::builder()
+                .metadata(metadata)
+                .args(format_args!("{line}"))
+                .build(),
+        );
+    }
+    Ok(())
+}
+
+/// ACK covers validation and dispatch, not file write/fsync. RUST_LOG must allow Debug.
+#[tauri::command]
+pub fn append_rail_diagnostic(record: Option<serde_json::Value>) -> Result<(), String> {
+    append_rail_diagnostic_to(record, log::logger())
+}
+
 #[tauri::command]
 pub async fn save_debug_logs(content: String) -> Result<(), String> {
     let path = crate::config::config_dir()
@@ -1150,6 +1407,17 @@ fn settings_draft_update_events(
         }
     }
 
+    let mut before_profiles = before.coding_agent_profiles.clone();
+    let mut after_profiles = after.coding_agent_profiles.clone();
+    for profiles in [&mut before_profiles, &mut after_profiles] {
+        for cells in profiles.profiles_by_agent.values_mut() {
+            for cell in cells.values_mut() {
+                cell.id_hash = None;
+                cell.id_hash_debug = None;
+            }
+        }
+    }
+
     SettingsDraftUpdateEvents {
         // #592/#597 - the drift content-hash fingerprints the EFFECTIVE command
         // (agent base command + cell command, via compose_effective_command), so a
@@ -1159,7 +1427,7 @@ fn settings_draft_update_events(
         // here the SettingsModal save path emits NO refresh event and the outdated
         // badge never updates. coding_agent_profiles_updated drives
         // refreshProfileOutdated in the sidebar, so route base-command edits through it.
-        profiles_changed: before.coding_agent_profiles != after.coding_agent_profiles
+        profiles_changed: before_profiles != after_profiles
             || agent_commands_by_id(before) != agent_commands_by_id(after),
         env_agent_ids,
     }
@@ -5006,7 +5274,11 @@ mod tests {
                 .map(String::as_str),
             Some("physical-home")
         );
-        (temp, path, Arc::new(RwLock::new(written)))
+        (
+            temp,
+            path,
+            crate::config::settings::new_settings_state(written),
+        )
     }
 
     fn hash_activation_assert_written(
@@ -5033,6 +5305,12 @@ mod tests {
             ))
         );
         assert_eq!(physical_agent.envs, expected_envs);
+        let mut expected_debug = vec![row.command.clone()];
+        for env in expected_envs {
+            expected_debug.extend([env.key.clone(), env.value.clone()]);
+        }
+        assert_eq!(row.id_hash_debug, Some(expected_debug.clone()));
+        assert_eq!(physical_agent.id_hash_debug, Some(expected_debug));
         assert_eq!(row.id, "agent-0");
         assert_eq!(row.order, Some(0));
         assert_eq!(
@@ -5087,9 +5365,47 @@ mod tests {
             serde_json::to_value(&written.agents).unwrap()
         );
         assert_ne!(written.agents[0].id_hash, original.agents[0].id_hash);
+        let mut expected_profiles = original.coding_agent_profiles.profiles_by_agent.clone();
+        for (letter, cell) in expected_profiles.get_mut("agent-0").unwrap() {
+            let mut debug = vec![written.agents[0].command.clone()];
+            for env in &original.agents[0].envs {
+                debug.extend([env.key.clone(), env.value.clone()]);
+            }
+            debug.push(cell.command.clone());
+            for (key, value) in &cell.env {
+                debug.extend([key.clone(), value.clone()]);
+            }
+            cell.id_hash_debug = Some(debug);
+            // Independent preimage from the final command, restored live env and
+            // the original payload. Disabled env rows still participate.
+            let mut preimage = written.agents[0].command.clone();
+            for env in &original.agents[0].envs {
+                preimage.push_str(&env.key);
+                preimage.push_str(&env.value);
+            }
+            preimage.push_str(&cell.command);
+            for (key, value) in &cell.env {
+                preimage.push_str(key);
+                preimage.push_str(value);
+            }
+            let mut chars: Vec<_> = preimage
+                .chars()
+                .flat_map(char::to_lowercase)
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            chars.sort_unstable();
+            cell.id_hash = Some(format!(
+                "cid1:{:x}",
+                <super::Sha256 as super::Digest>::digest(chars.iter().collect::<String>())
+            ));
+            assert_eq!(
+                written.coding_agent_profiles.profiles_by_agent["agent-0"][letter].id_hash,
+                cell.id_hash
+            );
+        }
         assert_eq!(
             written.coding_agent_profiles.profiles_by_agent,
-            original.coding_agent_profiles.profiles_by_agent
+            expected_profiles
         );
         let before = serde_json::to_value(&original).unwrap();
         let after = serde_json::to_value(&written).unwrap();
@@ -5222,6 +5538,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "agent-0".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "Codex".to_string(),
                 command: "codex".to_string(),
                 color: "#000000".to_string(),
@@ -5277,7 +5594,7 @@ mod tests {
     }
 
     fn state_for(settings: AppSettings) -> SettingsState {
-        Arc::new(RwLock::new(settings))
+        crate::config::settings::new_settings_state(settings)
     }
 
     #[tokio::test]
@@ -7078,6 +7395,121 @@ mod tests {
     }
 
     #[test]
+    fn id_hash_activation_events_ignore_only_cell_metadata() {
+        let mut before = settings_with_single_agent();
+        crate::config::settings::validate_and_repair_settings(&mut before).unwrap();
+        before
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash_debug = Some(vec!["old".into()]);
+        let mut metadata = before.clone();
+        metadata.agents[0].id_hash_debug = Some(vec!["forged-base".into()]);
+        metadata
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash_debug = Some(vec!["forged-pair".into()]);
+        let debug_events = super::settings_draft_update_events(&before, &metadata);
+        assert!(!debug_events.profiles_changed);
+        assert!(debug_events.env_agent_ids.is_empty());
+        metadata
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash = Some("client-metadata".into());
+        let events = super::settings_draft_update_events(&before, &metadata);
+        assert!(!events.profiles_changed);
+        assert!(events.env_agent_ids.is_empty());
+        assert_ne!(before.coding_agent_profiles, metadata.coding_agent_profiles);
+        for change in [
+            "command",
+            "env",
+            "enabled",
+            "notes",
+            "preflight",
+            "timeout",
+            "cell",
+            "agent",
+            "default",
+            "label",
+            "slots",
+            "schema",
+            "identity",
+            "home",
+        ] {
+            let mut after = metadata.clone();
+            let profiles = &mut after.coding_agent_profiles;
+            let cell = profiles
+                .profiles_by_agent
+                .get_mut("agent-0")
+                .unwrap()
+                .get_mut("A")
+                .unwrap();
+            match change {
+                "command" => cell.command.push_str("--real"),
+                "env" => {
+                    cell.env.insert("K".into(), "V".into());
+                }
+                "enabled" => cell.enabled = !cell.enabled,
+                "notes" => cell.notes.push_str("real"),
+                "preflight" => cell.preflight = Some("real".into()),
+                "timeout" => cell.preflight_timeout_seconds = Some(99),
+                "cell" => {
+                    profiles
+                        .profiles_by_agent
+                        .get_mut("agent-0")
+                        .unwrap()
+                        .remove("A");
+                }
+                "agent" => {
+                    profiles
+                        .profiles_by_agent
+                        .insert("new".into(), BTreeMap::new());
+                }
+                "default" => {
+                    profiles
+                        .default_profile_by_agent
+                        .insert("agent-0".into(), "B".into());
+                }
+                "label" => {
+                    profiles.profile_labels_by_agent.insert(
+                        "agent-0".into(),
+                        BTreeMap::from([("A".into(), "real".into())]),
+                    );
+                }
+                "slots" => {
+                    profiles.profile_slots.clear();
+                }
+                "schema" => profiles.schema_version += 1,
+                "identity" => {
+                    profiles
+                        .identity_by_agent
+                        .insert("agent-0".into(), "real".into());
+                }
+                "home" => {
+                    profiles
+                        .codex_home_key_by_agent
+                        .insert("agent-0".into(), "real".into());
+                }
+                _ => unreachable!(),
+            }
+            let events = super::settings_draft_update_events(&before, &after);
+            assert!(events.profiles_changed, "{change}");
+            assert!(events.env_agent_ids.is_empty(), "{change}");
+        }
+    }
+
+    #[test]
     fn settings_draft_events_quiet_for_non_drift_field_edit() {
         // A non-drift field (label) changing must NOT emit a profiles refresh, so the
         // fix does not over-fire on unrelated settings saves.
@@ -7094,8 +7526,9 @@ mod tests {
     fn settings_draft_events_flag_agent_env_edit() {
         // Regression guard: the pre-existing env path still flags the agent id (the
         // base env is also a drift-hash input, surfaced via the env event).
-        let before = settings_with_single_agent();
-        let mut after = settings_with_single_agent();
+        let mut before = settings_with_single_agent();
+        crate::config::settings::validate_and_repair_settings(&mut before).unwrap();
+        let mut after = before.clone();
         after.agents[0].envs = vec![CodingAgentEnv {
             key: "FOO".to_string(),
             value: "bar".to_string(),
@@ -7103,6 +7536,22 @@ mod tests {
             enabled: true,
         }];
 
+        after
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash = Some("derived-after-env-edit".into());
+        after
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash_debug = Some(vec!["forged-env-debug".into()]);
         let events = super::settings_draft_update_events(&before, &after);
         assert_eq!(events.env_agent_ids, vec!["agent-0".to_string()]);
         assert!(
@@ -7186,6 +7635,8 @@ mod tests {
             .insert(
                 "A".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -7224,6 +7675,8 @@ mod tests {
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -7251,6 +7704,8 @@ mod tests {
             .insert(
                 "C".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -7370,6 +7825,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: format!("{id}-label"),
             command: format!("{id}-cmd"),
             color: "#000000".to_string(),
@@ -8821,6 +9277,8 @@ mod tests {
             .insert(
                 "B".to_string(),
                 ProfileCellConfig {
+                    id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -9048,142 +9506,290 @@ mod tests {
         // P5
         #[tokio::test]
         async fn a_profile_edit_persists_except_for_the_overlay_introduced_agent() {
-            let temp = tempfile::tempdir().unwrap();
-            let path = seed(temp.path(), &scratch_agent_overlay());
-            let loaded = load_settings_from_path(&path);
-            assert!(loaded
-                .coding_agent_profiles
-                .profiles_by_agent
-                .contains_key("scratch-agent"));
-            let state = state_for(loaded.clone());
+            for protected in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let overlay = if protected {
+                    scratch_agent_overlay()
+                } else {
+                    json!({})
+                };
+                let path = seed(temp.path(), &overlay);
+                let mut expected_raw = disk(&path)["codingAgentProfiles"].clone();
+                // Independent #2450 preimages for these two fixed seed rows.
+                expected_raw["identityByAgent"] = json!({
+                    "codex":"460361e30eb7c7a5", "claude":"57bf1d23533f9c40"
+                });
+                let loaded = load_settings_from_path(&path);
+                assert_eq!(
+                    loaded
+                        .local_overlay_state
+                        .owns_top_level("codingAgentProfiles"),
+                    protected
+                );
+                assert_eq!(
+                    loaded
+                        .coding_agent_profiles
+                        .profiles_by_agent
+                        .contains_key("scratch-agent"),
+                    protected
+                );
 
-            let mut draft = renderer_round_trip(&loaded);
-            draft
-                .coding_agent_profiles
-                .profiles_by_agent
-                .get_mut("codex")
-                .unwrap()
-                .get_mut("A")
-                .unwrap()
-                .command = "codex --edited".to_string();
-            draft.coding_agent_profiles.profile_slots.insert(
-                "B".to_string(),
-                crate::config::settings::ProfileSlotConfig {
-                    label: "Second".to_string(),
-                },
-            );
-            draft
-                .coding_agent_profiles
-                .default_profile_by_agent
-                .insert("codex".to_string(), "A".to_string());
+                let state = state_for(loaded.clone());
 
-            let path2 = path.clone();
-            persist_settings_draft_update_with_saver(&state, draft, move |candidate| {
-                save_settings_to_path_preserving_project_paths(candidate, &path2)
-            })
-            .await
-            .unwrap();
+                let mut draft = renderer_round_trip(&loaded);
+                draft
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .get_mut("codex")
+                    .unwrap()
+                    .get_mut("A")
+                    .unwrap()
+                    .command = "codex --edited".to_string();
+                draft.coding_agent_profiles.profile_slots.insert(
+                    "B".to_string(),
+                    crate::config::settings::ProfileSlotConfig {
+                        label: "Second".to_string(),
+                    },
+                );
+                draft
+                    .coding_agent_profiles
+                    .default_profile_by_agent
+                    .insert("codex".to_string(), "A".to_string());
 
-            let profiles = disk(&path)["codingAgentProfiles"].clone();
-            assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
-                json!("codex --edited")
-            );
-            assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["command"],
-                json!("codex")
-            );
-            assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
-            assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
-            assert!(
-                profiles["profilesByAgent"].get("scratch-agent").is_none(),
-                "only the overlay-introduced agent's cells are frozen: {profiles}"
-            );
+                let path2 = path.clone();
+                let (saved, _events) =
+                    persist_settings_draft_update_with_saver(&state, draft, move |candidate| {
+                        save_settings_to_path_preserving_project_paths(candidate, &path2)
+                    })
+                    .await
+                    .unwrap();
+
+                let physical_path = if protected {
+                    path.clone()
+                } else {
+                    path.with_file_name("agents.30.instance.no-git.json")
+                };
+                let profiles = disk(&physical_path)["codingAgentProfiles"].clone();
+                if protected {
+                    assert_eq!(
+                        profiles, expected_raw,
+                        "whole protected group, only existing identity output excepted"
+                    );
+                } else {
+                    assert_eq!(
+                        profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
+                        json!("codex --edited")
+                    );
+                    assert_eq!(
+                        profiles["profilesByAgent"]["codex"]["A"]["command"],
+                        json!("codex")
+                    );
+                    assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
+                    assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
+                }
+                assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                let expected_command = if protected { "codex" } else { "codex --edited" };
+                let expected_hash = if protected {
+                    "cid1:439b584f39ee418c1c6e59bb9b06e7f04b83c2b338d48580f1fb8b7a1750703d"
+                } else {
+                    "cid1:2d09a350fb33981f1d78f968766bba7ba46ae78531a2ee157653926809a03114"
+                };
+                assert_eq!(
+                    saved.coding_agent_profiles.profiles_by_agent["codex"]["A"].command,
+                    expected_command
+                );
+                assert_eq!(
+                    saved.coding_agent_profiles.profiles_by_agent["codex"]["A"]
+                        .id_hash
+                        .as_deref(),
+                    Some(expected_hash)
+                );
+                let reloaded = load_settings_from_path(&path);
+                assert_eq!(saved.coding_agent_profiles, reloaded.coding_agent_profiles);
+                assert_eq!(
+                    state.read().await.coding_agent_profiles,
+                    saved.coding_agent_profiles
+                );
+            }
         }
 
         // P6
         #[test]
         fn the_dedicated_profiles_command_shape_has_the_same_outcome() {
-            let temp = tempfile::tempdir().unwrap();
-            let path = seed(temp.path(), &scratch_agent_overlay());
-            let loaded = load_settings_from_path(&path);
+            for protected in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let overlay = if protected {
+                    scratch_agent_overlay()
+                } else {
+                    json!({})
+                };
+                let path = seed(temp.path(), &overlay);
+                let mut expected_raw = disk(&path)["codingAgentProfiles"].clone();
+                // Independent #2450 preimages for these two fixed seed rows.
+                expected_raw["identityByAgent"] = json!({
+                    "codex":"460361e30eb7c7a5", "claude":"57bf1d23533f9c40"
+                });
+                let loaded = load_settings_from_path(&path);
+                assert_eq!(
+                    loaded
+                        .local_overlay_state
+                        .owns_top_level("codingAgentProfiles"),
+                    protected
+                );
+                assert_eq!(
+                    loaded
+                        .coding_agent_profiles
+                        .profiles_by_agent
+                        .contains_key("scratch-agent"),
+                    protected
+                );
 
-            // `persist_coding_agent_profiles_update` clones the live guard, assigns
-            // the payload and saves; `save_settings` delegates to the path-taking
-            // preserving writer for a resolved path. Reproduced here because that
-            // helper takes no injectable saver and redirecting `save_settings`
-            // would need a process-global env mutation.
-            let mut candidate = loaded.clone();
-            candidate
-                .coding_agent_profiles
-                .profiles_by_agent
-                .get_mut("codex")
-                .unwrap()
-                .get_mut("A")
-                .unwrap()
-                .command = "codex --edited".to_string();
-            candidate.coding_agent_profiles.profile_slots.insert(
-                "B".to_string(),
-                crate::config::settings::ProfileSlotConfig {
-                    label: "Second".to_string(),
-                },
-            );
-            candidate
-                .coding_agent_profiles
-                .default_profile_by_agent
-                .insert("codex".to_string(), "A".to_string());
-            validate_and_repair_settings(&mut candidate).unwrap();
-            save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+                // `persist_coding_agent_profiles_update` clones the live guard, assigns
+                // the payload and saves; `save_settings` delegates to the path-taking
+                // preserving writer for a resolved path. Reproduced here because that
+                // helper takes no injectable saver and redirecting `save_settings`
+                // would need a process-global env mutation.
+                let mut candidate = loaded.clone();
+                candidate
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .get_mut("codex")
+                    .unwrap()
+                    .get_mut("A")
+                    .unwrap()
+                    .command = "codex --edited".to_string();
+                candidate.coding_agent_profiles.profile_slots.insert(
+                    "B".to_string(),
+                    crate::config::settings::ProfileSlotConfig {
+                        label: "Second".to_string(),
+                    },
+                );
+                candidate
+                    .coding_agent_profiles
+                    .default_profile_by_agent
+                    .insert("codex".to_string(), "A".to_string());
+                validate_and_repair_settings(&mut candidate).unwrap();
+                let saved =
+                    save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
 
-            let profiles = disk(&path)["codingAgentProfiles"].clone();
-            assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
-                json!("codex --edited")
-            );
-            assert_eq!(
-                profiles["profilesByAgent"]["codex"]["A"]["command"],
-                json!("codex")
-            );
-            assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
-            assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
-            assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                let physical_path = if protected {
+                    path.clone()
+                } else {
+                    path.with_file_name("agents.30.instance.no-git.json")
+                };
+                let profiles = disk(&physical_path)["codingAgentProfiles"].clone();
+                if protected {
+                    assert_eq!(
+                        profiles, expected_raw,
+                        "whole protected group, only existing identity output excepted"
+                    );
+                } else {
+                    assert_eq!(
+                        profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
+                        json!("codex --edited")
+                    );
+                    assert_eq!(
+                        profiles["profilesByAgent"]["codex"]["A"]["command"],
+                        json!("codex")
+                    );
+                    assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
+                    assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
+                }
+                assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                let expected_command = if protected { "codex" } else { "codex --edited" };
+                let expected_hash = if protected {
+                    "cid1:439b584f39ee418c1c6e59bb9b06e7f04b83c2b338d48580f1fb8b7a1750703d"
+                } else {
+                    "cid1:2d09a350fb33981f1d78f968766bba7ba46ae78531a2ee157653926809a03114"
+                };
+                assert_eq!(
+                    saved.coding_agent_profiles.profiles_by_agent["codex"]["A"].command,
+                    expected_command
+                );
+                assert_eq!(
+                    saved.coding_agent_profiles.profiles_by_agent["codex"]["A"]
+                        .id_hash
+                        .as_deref(),
+                    Some(expected_hash)
+                );
+                let reloaded = load_settings_from_path(&path);
+                assert_eq!(saved.coding_agent_profiles, reloaded.coding_agent_profiles);
+            }
         }
 
         // P7
         #[test]
         fn an_agent_delete_removes_its_default_profile_entry_from_the_base_file() {
-            let temp = tempfile::tempdir().unwrap();
-            let path = seed(temp.path(), &scratch_agent_overlay());
-            let mut seeded = load_settings_from_path(&path);
-            seeded
-                .coding_agent_profiles
-                .default_profile_by_agent
-                .insert("claude".to_string(), "A".to_string());
-            save_settings_to_path_preserving_project_paths(&seeded, &path).unwrap();
-            assert_eq!(
-                disk(&path)["codingAgentProfiles"]["defaultProfileByAgent"]["claude"],
-                json!("A")
-            );
-
-            // The agent-delete shape: remove the entry from a clone of the live
-            // guard and save.
-            let loaded = load_settings_from_path(&path);
-            let mut candidate = loaded.clone();
-            candidate
-                .coding_agent_profiles
-                .default_profile_by_agent
-                .remove("claude");
-            save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
-
-            assert!(
-                disk(&path)["codingAgentProfiles"]["defaultProfileByAgent"]
-                    .get("claude")
-                    .is_none(),
-                "the removal must persist"
-            );
-            assert!(disk(&path)["codingAgentProfiles"]["profilesByAgent"]
-                .get("scratch-agent")
-                .is_none());
+            for protected in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let overlay = if protected {
+                    scratch_agent_overlay()
+                } else {
+                    json!({})
+                };
+                let path = seed(temp.path(), &overlay);
+                // Seed the physical default before protection. The negative
+                // must prove an existing A survives, not that absent stays absent.
+                let mut raw = disk(&path);
+                raw["codingAgentProfiles"]["defaultProfileByAgent"]["claude"] = json!("A");
+                let mut expected_raw = raw["codingAgentProfiles"].clone();
+                expected_raw["identityByAgent"] = json!({
+                    "codex":"460361e30eb7c7a5", "claude":"57bf1d23533f9c40"
+                });
+                std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+                let loaded = load_settings_from_path(&path);
+                assert_eq!(
+                    loaded
+                        .local_overlay_state
+                        .owns_top_level("codingAgentProfiles"),
+                    protected
+                );
+                let physical_path = if protected {
+                    path.clone()
+                } else {
+                    path.with_file_name("agents.30.instance.no-git.json")
+                };
+                assert_eq!(
+                    disk(&physical_path)["codingAgentProfiles"]["defaultProfileByAgent"]["claude"],
+                    json!("A")
+                );
+                let mut candidate = loaded.clone();
+                assert_eq!(
+                    candidate
+                        .coding_agent_profiles
+                        .default_profile_by_agent
+                        .remove("claude"),
+                    Some("A".to_string())
+                );
+                let saved =
+                    save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+                let profiles = disk(&physical_path)["codingAgentProfiles"].clone();
+                if protected {
+                    assert_eq!(profiles, expected_raw);
+                    assert_eq!(profiles["defaultProfileByAgent"]["claude"], json!("A"));
+                    assert_eq!(
+                        saved
+                            .coding_agent_profiles
+                            .default_profile_by_agent
+                            .get("claude"),
+                        Some(&"A".to_string())
+                    );
+                } else {
+                    assert!(
+                        profiles["defaultProfileByAgent"].get("claude").is_none(),
+                        "the editable removal must persist"
+                    );
+                    assert!(!saved
+                        .coding_agent_profiles
+                        .default_profile_by_agent
+                        .contains_key("claude"));
+                }
+                assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                assert_eq!(
+                    saved.coding_agent_profiles,
+                    load_settings_from_path(&path).coding_agent_profiles
+                );
+            }
         }
     }
 
@@ -13619,5 +14225,233 @@ mod p02_wire_schema_tests {
         let cell = &wire["codingAgentProfiles"]["profilesByAgent"]["one"]["A"];
         assert_eq!(cell["additionalArguments"], "--new");
         assert!(cell.get("command").is_none());
+    }
+}
+
+#[cfg(test)]
+mod issue_3083_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn record() -> Value {
+        json!({"version":1,"windowId":"fedcba98-7654-4321-8abc-012345678901",
+            "seq":1,"atMs":0.0,"surface":"embedded","event":"pointerdown"})
+    }
+
+    #[derive(Default)]
+    struct Counter {
+        enabled: AtomicUsize,
+        emitted: AtomicUsize,
+    }
+    impl log::Log for Counter {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            assert_eq!(metadata.level(), log::Level::Debug);
+            assert_eq!(metadata.target(), "agentscommander_lib::commands::config");
+            self.enabled.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            assert_eq!(record.level(), log::Level::Debug);
+            assert_eq!(record.target(), "agentscommander_lib::commands::config");
+            let line = record.args().to_string();
+            let json = line.strip_prefix("[rail-diag]").unwrap();
+            let parsed: Value = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed["seq"], 1);
+            assert_eq!(serde_json::to_string(&parsed).unwrap().len(), json.len());
+            assert!(!line.contains('\n'));
+            self.emitted.fetch_add(1, Ordering::Relaxed);
+        }
+        fn flush(&self) {}
+    }
+
+    fn reject(value: Option<Value>) {
+        let logger = Counter::default();
+        assert_eq!(
+            append_rail_diagnostic_to(value.clone(), &logger),
+            Err(RAIL_DIAGNOSTIC_ERROR.into())
+        );
+        assert_eq!(
+            append_rail_diagnostic(value),
+            Err(RAIL_DIAGNOSTIC_ERROR.into())
+        );
+        assert_eq!(logger.enabled.load(Ordering::Relaxed), 0);
+        assert_eq!(logger.emitted.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn issue_3083_private_boundary_and_single_debug_emission() {
+        let logger = Counter::default();
+        assert_eq!(append_rail_diagnostic_to(Some(record()), &logger), Ok(()));
+        assert_eq!(logger.enabled.load(Ordering::Relaxed), 1);
+        assert_eq!(logger.emitted.load(Ordering::Relaxed), 1);
+        reject(None);
+        for value in [
+            Value::Null,
+            json!(true),
+            json!("private/path"),
+            json!(3),
+            json!([]),
+            json!({}),
+        ] {
+            reject(Some(value));
+        }
+        let mut extra = record();
+        extra["unknown"] = json!({"nested":"secret"});
+        reject(Some(extra));
+        for (field, value) in [
+            ("surface", json!({"embedded":null})),
+            ("event", json!({"pointerdown":null})),
+            ("kind", json!({"custom":null})),
+            ("windowId", json!([0, 1, 2, 3])),
+        ] {
+            let mut nested = record();
+            nested[field] = value;
+            reject(Some(nested));
+        }
+        let mut huge = record();
+        huge["windowId"] = json!("é".repeat(2049));
+        assert!(serde_json::to_vec(&huge).unwrap().len() > 2048);
+        reject(Some(huge));
+    }
+
+    #[test]
+    fn issue_3083_numeric_type_and_range_validation() {
+        for field in [
+            "seq",
+            "railId",
+            "operationId",
+            "projectId",
+            "groupId",
+            "entityId",
+            "nodeId",
+            "originalNodeId",
+            "objectId",
+            "selectionProjectId",
+            "selectionGroupId",
+        ] {
+            for bad in [
+                json!(0),
+                json!(-1),
+                json!(1.5),
+                json!(9_007_199_254_740_992u64),
+                json!("1"),
+                json!({"unknown":1}),
+            ] {
+                let mut value = record();
+                value[field] = bad;
+                reject(Some(value));
+            }
+            let mut value = record();
+            value[field] = json!(RAIL_SAFE_INTEGER);
+            assert!(rail_diagnostic_line(Some(value)).is_ok());
+        }
+        for field in ["count", "changedCount"] {
+            for bad in [json!(-1), json!(0.5), json!(9_007_199_254_740_992u64)] {
+                let mut value = record();
+                value[field] = bad;
+                reject(Some(value));
+            }
+            let mut value = record();
+            value[field] = json!(0);
+            assert!(rail_diagnostic_line(Some(value)).is_ok());
+        }
+        for (field, bad) in [
+            ("version", json!(2)),
+            ("version", json!("1")),
+            ("windowId", json!("not-a-uuid")),
+            ("atMs", json!(-0.1)),
+            ("atMs", json!("0")),
+            ("durationMs", json!(-1)),
+            ("pointerId", json!(2147483648u64)),
+            ("pointerId", json!(-2147483649i64)),
+            ("button", json!(-2)),
+            ("button", json!(6)),
+        ] {
+            let mut value = record();
+            value[field] = bad;
+            reject(Some(value));
+        }
+        for field in [
+            "primary",
+            "trusted",
+            "connected",
+            "originalConnected",
+            "captured",
+            "documentFocused",
+        ] {
+            let mut value = record();
+            value[field] = json!(1);
+            reject(Some(value));
+        }
+        let mut dto: RailDiagnosticRecord = serde_json::from_value(record()).unwrap();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            dto.at_ms = bad;
+            assert!(!dto.validate());
+            dto.at_ms = 0.0;
+            dto.duration_ms = Some(bad);
+            assert!(!dto.validate());
+            dto.duration_ms = None;
+        }
+    }
+
+    #[test]
+    fn issue_3083_closed_enums_and_full_record() {
+        for (field, values) in [
+            ("surface", "embedded sidebar store"),
+            ("kind", "custom system nonstop ungrouped project favorites"),
+            ("selectionKind", "custom system nonstop ungrouped project favorites"),
+            ("phase", "arming dragging saving idle"),
+            ("outcome", "applied unchanged stale error disconnected unloaded queued discarded suppressed overflow no-press"),
+            ("targetTag", "button span svg path aside body input textarea other none"),
+            ("activeTag", "button span svg path aside body input textarea other none"),
+            ("event", "pointerdown pointerup pointercancel mousedown mouseup click gotpointercapture lostpointercapture focusin focusout window-focus window-blur handler-enter handler-end selection-change rail-mount rail-dispose section-mount section-dispose node-mount node-dispose project-list project-buttons favorites-entries reload-start reload-end discover-start discover-end snapshot-start snapshot-end snapshots-start snapshots-end task-start task-end loop-start loop-end"),
+        ] {
+            for good in values.split_whitespace() {
+                let mut value = record(); value[field] = json!(good);
+                assert!(rail_diagnostic_line(Some(value)).is_ok(), "{field}: {good}");
+            }
+            for bad in [json!("private text"), json!(1), json!({"unknown":"nested"})] {
+                let mut value = record(); value[field] = bad; reject(Some(value));
+            }
+        }
+        let mut full = record();
+        for field in [
+            "railId",
+            "operationId",
+            "projectId",
+            "groupId",
+            "entityId",
+            "nodeId",
+            "originalNodeId",
+            "objectId",
+            "selectionProjectId",
+            "selectionGroupId",
+            "count",
+            "changedCount",
+        ] {
+            full[field] = json!(RAIL_SAFE_INTEGER);
+        }
+        for field in [
+            "primary",
+            "trusted",
+            "connected",
+            "originalConnected",
+            "captured",
+            "documentFocused",
+        ] {
+            full[field] = json!(true);
+        }
+        full["kind"] = json!("custom");
+        full["selectionKind"] = json!("ungrouped");
+        full["phase"] = json!("dragging");
+        full["outcome"] = json!("no-press");
+        full["pointerId"] = json!(i32::MIN);
+        full["button"] = json!(-1);
+        full["targetTag"] = json!("textarea");
+        full["activeTag"] = json!("none");
+        full["durationMs"] = json!(f64::MAX);
+        let line = rail_diagnostic_line(Some(full)).unwrap();
+        assert!(line.len() <= 2048 + "[rail-diag]".len());
     }
 }

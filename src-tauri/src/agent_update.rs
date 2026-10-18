@@ -4649,10 +4649,10 @@ mod tests {
     }
 
     fn bob_settings(root: &Path) -> SettingsState {
-        Arc::new(tokio::sync::RwLock::new(AppSettings {
+        crate::config::settings::new_settings_state(AppSettings {
             project_paths: vec![root.to_string_lossy().to_string()],
             ..AppSettings::default()
-        }))
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -6429,6 +6429,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "agent-0".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "Bob".to_string(),
                 command: "bob-1551-missing".to_string(),
                 color: "#000000".to_string(),
@@ -6444,7 +6445,7 @@ mod tests {
             agent_auto_update_by_command: BTreeMap::from([("bob-1551-missing".to_string(), true)]),
             ..AppSettings::default()
         };
-        let settings_state: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
+        let settings_state: SettingsState = crate::config::settings::new_settings_state(settings);
         let broadcaster = WsBroadcaster::new();
         let mut frames_rx = broadcaster.subscribe();
         let cache = Arc::new(AgentInstallCache::new());
@@ -6533,6 +6534,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "agent-0".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "Bob".to_string(),
                 command: "bob-1551-missing".to_string(),
                 color: "#000000".to_string(),
@@ -6548,7 +6550,7 @@ mod tests {
             agent_auto_update_by_command: BTreeMap::from([("bob-1551-missing".to_string(), true)]),
             ..AppSettings::default()
         };
-        let settings_state: SettingsState = Arc::new(tokio::sync::RwLock::new(settings));
+        let settings_state: SettingsState = crate::config::settings::new_settings_state(settings);
         let broadcaster = WsBroadcaster::new();
         let mut frames_rx = broadcaster.subscribe();
         let cache = Arc::new(AgentInstallCache::new());

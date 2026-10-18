@@ -578,6 +578,7 @@ fn blank_agent() -> AgentConfig {
         preflight_timeout_seconds: None,
         id: String::new(),
         id_hash: None,
+        id_hash_debug: None,
         label: String::new(),
         command: String::new(),
         color: DEFAULT_CUSTOM_COLOR.to_string(),
@@ -602,6 +603,7 @@ fn definition_to_agent_seed(def: &CodingAgentDefinition) -> AgentConfig {
         preflight_timeout_seconds: None,
         id: String::new(),
         id_hash: None,
+        id_hash_debug: None,
         label: def.label.clone(),
         command: def.command.clone(),
         color: def.color.clone(),
@@ -794,6 +796,9 @@ mod tests {
             )
             .unwrap();
             assert_eq!(disk["agents"][0]["id_hash"], payload["agent"]["id_hash"]);
+            let expected_debug = serde_json::json!(["published-command", "MODE", "final-value"]);
+            assert_eq!(payload["agent"]["id_hash_debug"], expected_debug);
+            assert_eq!(disk["agents"][0]["id_hash_debug"], expected_debug);
             let removed_id = row.id.clone();
             let removed = apply_and_save_direct(
                 reload,

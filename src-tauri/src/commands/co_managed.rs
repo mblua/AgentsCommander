@@ -306,7 +306,7 @@ mod tests {
             ..AppSettings::default()
         };
         tauri::test::mock_builder()
-            .manage(std::sync::Arc::new(tokio::sync::RwLock::new(settings)))
+            .manage(crate::config::settings::new_settings_state(settings))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build co-managed test app")
     }

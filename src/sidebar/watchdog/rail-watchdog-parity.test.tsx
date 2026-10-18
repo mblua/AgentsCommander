@@ -12,7 +12,7 @@ import {
   waitFor,
 } from "../../shared/testing/ui-harness";
 import { settingsStore } from "../../shared/stores/settings";
-import WorkgroupGroupRail from "../components/WorkgroupGroupRail";
+import RoomGroupRail from "../components/RoomGroupRail";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { defaultGroupsConfig, defaultNonStop, workgroupGroupsStore } from "../stores/workgroup-groups";
@@ -74,7 +74,7 @@ async function seed(): Promise<() => void> {
 function renderRail(): () => void {
   const root = document.createElement("div");
   document.body.appendChild(root);
-  const dispose = render(() => <WorkgroupGroupRail projects={projectStore.projects} />, root);
+  const dispose = render(() => <RoomGroupRail projects={projectStore.projects} />, root);
   return () => {
     dispose();
     root.remove();
