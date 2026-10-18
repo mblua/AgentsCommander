@@ -5608,6 +5608,7 @@ pub fn run(
                 commands::voice::voice_mark_recording,
                 commands::voice::voice_had_typing,
                 commands::config::save_debug_logs,
+                commands::config::append_rail_diagnostic,
                 commands::config::drain_error_logs,
                 commands::config::get_error_popup_mutes,
                 commands::config::set_error_popup_muted,
