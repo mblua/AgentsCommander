@@ -802,6 +802,17 @@ fn truncate_caption(input: &str) -> String {
     String::from_utf16_lossy(&cut)
 }
 
+/// Send original plain text, discarding remote errors at the CLI boundary.
+pub(crate) async fn perform_send_message(
+    network: &OutboundNetwork,
+    bot: &TelegramBotConfig,
+    text: &str,
+) -> Result<(), &'static str> {
+    crate::telegram::api::send_message(network, &bot.token, bot.chat_id, text)
+        .await
+        .map_err(|_| "Telegram send failed; delivery may be uncertain")
+}
+
 /// Send a local image (or generic file) through a configured Telegram bot.
 ///
 /// v1 contract:

@@ -1988,6 +1988,7 @@ mod tests {
                                 (*letter).to_string(),
                                 ProfileCellConfig {
                                     id_hash: None,
+                                    id_hash_debug: None,
                                     preflight: None,
                                     preflight_timeout_seconds: None,
                                     enabled: true,
@@ -2158,6 +2159,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: "codex".to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: "Codex".to_string(),
             command: "codex".to_string(),
             color: "#000000".to_string(),

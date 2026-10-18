@@ -24,7 +24,7 @@ agentscommander send --token "$AGENTSCOMMANDER_TOKEN" --root "$AGENTSCOMMANDER_R
 
 If token validation keeps failing, restart or respawn the session — live token refresh is not supported.
 
-`list-peers`, `list-peers-lean`, `open-project`, `new-project`, and `telegram-send-image` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local settings and agents files or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-room` requires the caller to be the identity-verified room orchestrator, and the master/root token does NOT bypass that check (a root token has no room).
+`list-peers`, `list-peers-lean`, `open-project`, `new-project`, `telegram-send-image`, and `telegram-send-message` read disk state directly and do not authorize per token at the CLI. `list-sessions` does not require a token at all. `coding-agent`, `loop`, and `injected-messages` also need no token: they mutate the user-local settings and agents files or config directory, which any local process can already write. `api-client` requires host authority: every subcommand takes the master/root token and rejects session UUIDs. `purge-room` requires the caller to be the identity-verified room orchestrator, and the master/root token does NOT bypass that check (a root token has no room).
 
 `task-get` and `task-status-set` perform local task operations without a daemon mailbox identity check. They require explicit token/root flags and use the trusted local orchestrator/root-master checks described [below](#task-status-set).
 
@@ -1096,6 +1096,38 @@ agentscommander loop remove  --project MyProject --loop daily-sync
 Output is JSON for list/create/update/enable/disable. `remove` prints a short message unless `AC_MACHINE_OUTPUT` is set, in which case it prints JSON.
 
 **No token required**: Loop commands mutate project files on disk, which any shell-capable process can already write to.
+
+---
+
+## `telegram-send-message`
+
+Send plain text through a bot in the executable's effective configuration, without an attachment, room, session, bridge or active GUI. No AC token is required.
+
+```bash
+agentscommander telegram-send-message --text "Build finished" --bot-label "Personal bot"
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--text` | Yes | Original plain text. Use `--text=-value` for a leading hyphen. |
+| `--bot-id` | No | Exact configured bot id; first match if ids are duplicated. |
+| `--bot-label` | No | Exact, unique configured bot label. Conflicts with `--bot-id`. |
+
+With one bot, omit both selectors. Missing bots, unknown selectors, duplicate labels or multiple bots without a selector fail with available ids/labels. Configure bots in Settings/Telegram first.
+
+Text is sent unchanged, including spaces and newlines, without formatting, trimming, truncation or splitting. Empty/whitespace text fails before configuration is loaded. The conservative local limit is 4096 UTF-16 code units (4096 BMP characters or 2048 supplementary characters); local acceptance does not guarantee Telegram acceptance.
+
+Configuration follows the executable's existing instance rules: public `AGENTSCOMMANDER_CONFIG_DIR` override, debug-only `AGENTSCOMMANDER_TEST_CONFIG_DIR` override, then executable/location/home defaults. Relative overrides resolve against the current directory. `AGENTSCOMMANDER_ROOT`, `AGENTSCOMMANDER_TOKEN`, `AGENTSCOMMANDER_LOCAL_DIR` and the current room do not select bots. The lenient loader may return defaults for unreadable/corrupt settings, resulting in “No Telegram bots”. This command does not save settings.
+
+Success exits 0 and prints `Sent: bot=<id>` after Telegram accepts the request; this does not confirm that the recipient read it. Operational failures exit 1, with no stdout receipt and a stderr diagnostic:
+
+- `Error: --text must not be empty`
+- `Error: --text must not exceed 4096 UTF-16 code units`
+- `Error: could not initialize Telegram runtime`
+- `Error: could not initialize Telegram network`
+- `Error: Telegram send failed; delivery may be uncertain`
+
+Remote error details, text and bot tokens are excluded from the new flow's diagnostics. Configured ids/labels remain visible; command arguments remain visible to the operating system. Failed delivery can be uncertain, and repeating a send is not idempotent. There are no automatic retries.
 
 ---
 

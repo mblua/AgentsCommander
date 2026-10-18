@@ -208,6 +208,13 @@ pub(crate) const SETTINGS_LOCK_FILE_NAME: &str = SETTINGS_LOCK_TARGET_NAME;
 /// leftover the naming migration deliberately never deletes stays ignored; the
 /// one row deliberately not composed by `layered_name!`.
 pub(crate) const SETTINGS_RETIRED_LOCK_NAME: &str = "settings.json.lock";
+/// #2994 - the settings owner's lifecycle lock: a stable sidecar, separate from
+/// the transactional `SETTINGS_LOCK_FILE_NAME`, retained for the owner's whole
+/// lifetime and never unlinked on close.
+pub(crate) const SETTINGS_OWNER_LOCK_FILE_NAME: &str = "settings.owner.no-git.lock";
+/// #2994 - the settings owner's endpoint metadata. Reserved here so the runtime
+/// artifact is ignored before any writer publishes it.
+pub(crate) const SETTINGS_OWNER_ENDPOINT_FILE_NAME: &str = "settings-owner.endpoint.no-git.json";
 /// Covers every settings migration backup instance. The concrete names are
 /// composed by their own migrations, so this glob is registry-owned and no
 /// writer imports it.
@@ -942,6 +949,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         comment: "# AgentsCommander: persisted session state",
     },
     InstanceArtifact {
+        name: SETTINGS_OWNER_ENDPOINT_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: settings owner endpoint metadata; machine-local runtime state",
+    },
+    InstanceArtifact {
         name: SETTINGS_BACKUP_ROTATION_GLOB,
         kind: ArtifactKind::Glob,
         disposition: Disposition::Ignore,
@@ -982,6 +995,12 @@ pub(crate) const INSTANCE_ARTIFACTS: &[InstanceArtifact] = &[
         kind: ArtifactKind::File,
         disposition: Disposition::Ignore,
         comment: "# AgentsCommander: retired pre-migration settings write lock; the naming migration never deletes it, so the leftover stays ignored",
+    },
+    InstanceArtifact {
+        name: SETTINGS_OWNER_LOCK_FILE_NAME,
+        kind: ArtifactKind::File,
+        disposition: Disposition::Ignore,
+        comment: "# AgentsCommander: settings owner lifecycle lock; stable sidecar, never unlinked",
     },
     InstanceArtifact {
         name: TELEGRAM_BRIDGE_LOG_FILE_NAME,
@@ -1603,5 +1622,41 @@ mod tests {
             format!("{LOOP_STATE_TARGET_NAME}.*.tmp")
         );
         assert_eq!(LOOP_STATE_TARGET_NAME, "loop.state.no-git.json");
+    }
+
+    /// #2994 (P41) - the owner's lifecycle sidecar and endpoint metadata are Ignore
+    /// rows in sorted position, distinct from the transactional lock, and leave
+    /// every existing row in place.
+    #[test]
+    fn e2992_p41_owner_ignore() {
+        ignore_rows_are_unique_and_byte_sorted_by_name();
+        assert_eq!(SETTINGS_OWNER_LOCK_FILE_NAME, "settings.owner.no-git.lock");
+        assert_eq!(
+            SETTINGS_OWNER_ENDPOINT_FILE_NAME,
+            "settings-owner.endpoint.no-git.json"
+        );
+        assert_ne!(SETTINGS_OWNER_LOCK_FILE_NAME, SETTINGS_LOCK_FILE_NAME);
+        assert_ne!(SETTINGS_OWNER_LOCK_FILE_NAME, SETTINGS_RETIRED_LOCK_NAME);
+        for name in [
+            SETTINGS_OWNER_LOCK_FILE_NAME,
+            SETTINGS_OWNER_ENDPOINT_FILE_NAME,
+        ] {
+            let rows: Vec<&InstanceArtifact> = INSTANCE_ARTIFACTS
+                .iter()
+                .filter(|row| row.name == name)
+                .collect();
+            assert_eq!(rows.len(), 1, "{name} must have exactly one row");
+            assert_eq!(rows[0].kind, ArtifactKind::File);
+            assert_eq!(rows[0].disposition, Disposition::Ignore);
+        }
+        // Neighbouring rows survive unchanged: the transactional lock and the
+        // retired lock are still Ignore rows of their own.
+        for name in [
+            SETTINGS_LOCK_FILE_NAME,
+            SETTINGS_RETIRED_LOCK_NAME,
+            "sessions.json",
+        ] {
+            assert!(ignore_rows().iter().any(|row| row.name == name), "{name}");
+        }
     }
 }
