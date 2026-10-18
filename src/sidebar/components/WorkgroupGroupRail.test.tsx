@@ -94,6 +94,42 @@ describe("rail diagnostic positive controls with real gate and transport", () =>
     } finally { rendered.cleanup(); restore(); }
   });
 
+  it.each(["pointer", "mouse", "compatibility-mouse"] as const)(
+    "retires the retained rail gesture on a new outside %s press", async mode => {
+      const { fake, restore } = await prepare();
+      const stable = [project()];
+      const a = renderWithFakeTransport(() => <WorkgroupGroupRail projects={stable} />, fake);
+      const b = renderWithFakeTransport(() => <WorkgroupGroupRail projects={stable} />, fake);
+      const mouse = (node: Element, type: string) => node.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0 }));
+      try {
+        await waitFor(() => expect(scopedTarget(b.root, "workgroupGroups.button.ui")).toBeTruthy());
+        const node = scopedTarget<HTMLElement>(b.root, "workgroupGroups.button.ui");
+        fake.clearCalls();
+        if (mode === "mouse") mouse(node, "mousedown");
+        else pointer(node, "pointerdown");
+        const press = diagnostics(fake).find(record => record.event === (mode === "mouse" ? "mousedown" : "pointerdown"))!;
+        expect(press.originalNodeId).toBeTypeOf("number");
+        expect(press.entityId).toBeTypeOf("number");
+        // The original gesture may release outside without a click.
+        if (mode === "mouse") mouse(document.body, "mouseup");
+        else pointer(document.body, "pointerup");
+        const release = diagnostics(fake).filter(record => record.event === (mode === "mouse" ? "mouseup" : "pointerup"));
+        expect(release).toHaveLength(1);
+        expect(release[0]).toMatchObject({ originalNodeId: press.originalNodeId, entityId: press.entityId });
+        fake.clearCalls();
+        if (mode === "pointer") pointer(document.body, "pointerdown");
+        mouse(document.body, "mousedown");
+        pointer(document.body, "pointerup");
+        mouse(document.body, "mouseup");
+        mouse(document.body, "click");
+        document.body.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+        document.body.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+        expect(diagnostics(fake).some(record => record.originalNodeId === press.originalNodeId || record.entityId === press.entityId)).toBe(false);
+        expect(diagnostics(fake)).toHaveLength(0);
+      } finally { a.cleanup(); b.cleanup(); restore(); }
+    }
+  );
+
   it("caps retained gestures at eight, clears listeners on remount, and contains rejected IPC during selection", async () => {
     const { fake, restore } = await prepare();
     const stable = [project()];

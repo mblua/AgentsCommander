@@ -864,6 +864,11 @@ const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
       const inside = event.target instanceof Node && aside.contains(event.target);
       let gesture = gestures.get(key);
       if (!gesture && pointerId === undefined) { const values = [...gestures.values()]; gesture = values[values.length - 1]; }
+      if (!inside && (event.type === "pointerdown" || event.type === "mousedown")) {
+        // A new outside press ends attribution to the prior rail gesture.
+        for (const [id, candidate] of gestures) if (id === key || candidate === gesture) gestures.delete(id);
+        return;
+      }
       if (!inside && !gesture) return;
       const node = known(event.target);
       if (event.type === "pointerdown" || (event.type === "mousedown" && !gesture)) {
