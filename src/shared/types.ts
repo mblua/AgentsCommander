@@ -432,6 +432,8 @@ export interface AgentConfig {
   id: string;
   /** Backend-derived legacy base command/env identity; informational, not authority or an alternate lookup. */
   id_hash?: string;
+  /** Original configured hash leaves; informational only, with no frontend hash computation. */
+  id_hash_debug?: string[];
   label: string;
   command: string;
   color: string;
@@ -567,6 +569,8 @@ export interface ProfileSlotConfig {
 export interface ProfileCellConfig {
   /** Backend-derived identity of this pair's configured baseCommand + additionalArguments/env; not authority or a lookup. */
   id_hash?: string;
+  /** Original configured hash leaves; informational only, with no frontend hash computation. */
+  id_hash_debug?: string[];
   enabled: boolean;
   command: string;
   env: Record<string, string>;
