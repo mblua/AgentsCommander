@@ -1150,6 +1150,99 @@ mod tests {
         }
     }
 
+    fn issue_3083_record(seq: u64) -> serde_json::Value {
+        serde_json::json!({"version":1,"windowId":"fedcba98-7654-4321-8abc-012345678901",
+            "seq":seq,"atMs":0,"surface":"embedded","event":"pointerdown"})
+    }
+
+    #[test]
+    fn issue_3083_real_file_gate_format_append_and_private_rejection() {
+        for level in [log::Level::Info, log::Level::Debug, log::Level::Trace] {
+            let tmp = tempfile::tempdir().expect("temp log directory");
+            {
+                let mut builder = env_logger::Builder::new();
+                builder.parse_filters(GATE_INNER_FILTER);
+                install_format(&mut builder, Arc::new(Some(build_app_log(tmp.path(), 0))));
+                let gate = LevelGateLogger {
+                    inner: builder.build(),
+                    level: Arc::new(AtomicU8::new(level as u8)),
+                };
+                for seq in [1, 2] {
+                    assert_eq!(
+                        crate::commands::config::append_rail_diagnostic_to(
+                            Some(issue_3083_record(seq)),
+                            &gate
+                        ),
+                        Ok(())
+                    );
+                }
+                assert_eq!(
+                    crate::commands::config::append_rail_diagnostic_to(
+                        Some(serde_json::json!({"secret":"PRIVATE_3083"})),
+                        &gate
+                    ),
+                    Err("invalid rail diagnostic".into())
+                );
+            }
+            let bytes = std::fs::read_to_string(tmp.path().join("app.log")).expect("real bytes");
+            assert!(!bytes.contains("PRIVATE_3083"));
+            if level == log::Level::Info {
+                assert!(bytes.is_empty(), "Info admitted diagnostic: {bytes}");
+                continue;
+            }
+            assert_eq!(bytes.matches("[rail-diag]").count(), 2, "{bytes}");
+            assert_eq!(bytes.lines().count(), 2, "{bytes}");
+            for (line, seq) in bytes.lines().zip([1, 2]) {
+                assert!(line.contains("[DEBUG] agentscommander_lib::commands::config"));
+                let (_, json) = line.split_once("[rail-diag]").expect("diagnostic prefix");
+                let value: serde_json::Value = serde_json::from_str(json).expect("compact JSON");
+                assert_eq!(value["windowId"], "fedcba98-7654-4321-8abc-012345678901");
+                assert_eq!(value["seq"], seq);
+                assert_eq!(value["event"], "pointerdown");
+                assert_eq!(serde_json::to_string(&value).unwrap().len(), json.len());
+            }
+        }
+    }
+
+    #[test]
+    fn issue_3083_real_file_rotation_and_continuity() {
+        let tmp = tempfile::tempdir().expect("temp log directory");
+        {
+            let mut builder = env_logger::Builder::new();
+            builder.parse_filters(GATE_INNER_FILTER);
+            install_format(
+                &mut builder,
+                Arc::new(Some(build_app_log(tmp.path(), APP_LOG_MAX_BYTES - 1))),
+            );
+            let gate = LevelGateLogger {
+                inner: builder.build(),
+                level: Arc::new(AtomicU8::new(log::Level::Debug as u8)),
+            };
+            for seq in [3083, 3084] {
+                crate::commands::config::append_rail_diagnostic_to(
+                    Some(issue_3083_record(seq)),
+                    &gate,
+                )
+                .expect("dispatch");
+            }
+        }
+        let active = std::fs::read_to_string(tmp.path().join("app.log")).expect("active file");
+        let rotated = std::fs::read_to_string(tmp.path().join("app.log.1")).expect("rotated file");
+        assert!(rotated.contains("\"seq\":3083"), "{rotated}");
+        assert!(active.contains("\"seq\":3084"), "{active}");
+        let mut all = active;
+        for n in 1..=5 {
+            all.push_str(
+                &std::fs::read_to_string(tmp.path().join(format!("app.log.{n}")))
+                    .unwrap_or_default(),
+            );
+        }
+        for seq in [3083, 3084] {
+            assert_eq!(all.matches(&format!("\"seq\":{seq}")).count(), 1, "{all}");
+        }
+        assert_eq!(all.matches("[rail-diag]").count(), 2);
+    }
+
     #[test]
     fn muted_type_is_skipped_by_real_logger_but_still_written_and_redacted() {
         let _drain_guard = ERROR_SINK_TEST_DRAIN_LOCK.blocking_lock();
