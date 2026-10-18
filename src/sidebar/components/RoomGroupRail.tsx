@@ -922,6 +922,16 @@ const RoomGroupRail: Component<RoomGroupRailProps> = (props) => {
   const [contextMenuPos, setContextMenuPos] = createSignal({ x: 0, y: 0 });
   const [editingProjectPath, setEditingProjectPath] = createSignal<string | null>(null);
   let contextMenuEl: HTMLDivElement | undefined;
+  const contextMenuNodes = new WeakSet<HTMLDivElement>();
+  onMount(() => {
+    const containContextMenuClick = (event: MouseEvent) => {
+      if (event.composedPath().some(node => node instanceof HTMLDivElement && contextMenuNodes.has(node))) {
+        event.stopPropagation();
+      }
+    };
+    document.addEventListener("click", containContextMenuClick, false);
+    onCleanup(() => document.removeEventListener("click", containContextMenuClick, false));
+  });
   let dismissContextMenu: ((ev?: Event) => void) | null = null;
 
   createEffect(() => {
@@ -1079,10 +1089,12 @@ const RoomGroupRail: Component<RoomGroupRailProps> = (props) => {
       <Show when={contextTarget()}>
         <Portal>
           <div
-            ref={contextMenuEl}
+            ref={element => {
+              contextMenuEl = element;
+              contextMenuNodes.add(element);
+            }}
             class="session-context-menu"
             style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
-            onClick={(event) => event.stopPropagation()}
             data-ac-testid="workgroupGroups.contextMenu"
             data-ac-role="menu"
           >
