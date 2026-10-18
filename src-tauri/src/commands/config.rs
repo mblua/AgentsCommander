@@ -335,8 +335,13 @@ impl RailDiagnosticRecord {
 
 pub(crate) fn rail_diagnostic_line(record: Option<serde_json::Value>) -> Result<String, String> {
     let invalid = || RAIL_DIAGNOSTIC_ERROR.to_string();
-    let record: RailDiagnosticRecord =
-        serde_json::from_value(record.ok_or_else(invalid)?).map_err(|_| invalid())?;
+    let value = record.ok_or_else(invalid)?;
+    // Serde unit enums also accept externally tagged maps; IPC permits scalar fields only.
+    let object = value.as_object().ok_or_else(invalid)?;
+    if object.values().any(|v| v.is_object() || v.is_array()) {
+        return Err(invalid());
+    }
+    let record: RailDiagnosticRecord = serde_json::from_value(value).map_err(|_| invalid())?;
     if !record.validate() {
         return Err(invalid());
     }
@@ -14133,6 +14138,16 @@ mod issue_3083_tests {
         let mut extra = record();
         extra["unknown"] = json!({"nested":"secret"});
         reject(Some(extra));
+        for (field, value) in [
+            ("surface", json!({"embedded":null})),
+            ("event", json!({"pointerdown":null})),
+            ("kind", json!({"custom":null})),
+            ("windowId", json!([0, 1, 2, 3])),
+        ] {
+            let mut nested = record();
+            nested[field] = value;
+            reject(Some(nested));
+        }
         let mut huge = record();
         huge["windowId"] = json!("é".repeat(2049));
         assert!(serde_json::to_vec(&huge).unwrap().len() > 2048);
