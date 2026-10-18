@@ -19332,6 +19332,12 @@ mod tests {
                 .await
                 .expect("focused dormant fixture close");
             assert!(report.persistence_safe, "{:?}", report.retained);
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            assert!(
+                crate::config::sessions_persistence::retire_carrier_for_discard(&permit, member),
+                "finished focused fixture must release only its own retired carrier"
+            );
+            drop(permit);
         }
     }
 
@@ -19514,17 +19520,31 @@ mod tests {
             )
             .unwrap();
         tracker.mark_request_submitted(&context, true);
-        tracker
-            .register_request(
-                crate::pty::manager::ResponseDeliveryProof {
-                    context,
-                    member: member.clone(),
-                    coordinator: leader.clone(),
-                    published_carrier_version: carrier.version,
-                },
-                past,
-            )
-            .unwrap();
+        let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                crate::config::sessions_persistence::register_published_carrier(
+                    &permit,
+                    &carrier,
+                    current,
+                    |_| {
+                        tracker
+                            .register_request(
+                                crate::pty::manager::ResponseDeliveryProof {
+                                    context,
+                                    member: member.clone(),
+                                    coordinator: leader.clone(),
+                                    published_carrier_version: carrier.version,
+                                },
+                                past,
+                            )
+                            .ok()
+                    },
+                )
+            })
+            .await
+            .expect("real current published request registration");
+        drop(permit);
         let context = tracker
             .admit_return(
                 &member,
