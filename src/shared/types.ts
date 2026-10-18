@@ -1995,10 +1995,17 @@ export interface AcProjectRefreshRequestedPayload {
 }
 
 
+export interface TeamAgentSource {
+  agentRef: string;
+  sourceProjectPath: string;
+}
+
 export interface TeamWizardAgentEntry {
   name: string;
   path: string;
   projectName: string;
+  projectPath?: string;
+  isLocal?: boolean | null;
 }
 
 export interface TeamWizardRepoEntry {

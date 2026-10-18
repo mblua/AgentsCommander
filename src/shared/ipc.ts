@@ -83,6 +83,8 @@ import type {
   UnresolvedLoopTarget,
   LoopUpdateInput,
   TeamConfigResult,
+  TeamAgentSource,
+  TeamWizardAgentEntry,
   WindowGeometry,
   TaskUpdateResult,
   TaskSnapshot,
@@ -1503,10 +1505,10 @@ export const EntityAPI = {
   deleteAgentMatrix: (projectPath: string, agentPath: string) =>
     transport.invoke<void>("delete_agent_matrix", { projectPath, agentPath }),
 
-  listAllAgents: (projectPaths: string[]) =>
-    transport.invoke<{ name: string; description: string; path: string; projectName: string }[]>(
+  listAllAgents: (projectPaths: string[], destinationProjectPath?: string) =>
+    transport.invoke<(TeamWizardAgentEntry & { description: string })[]>(
       "list_all_agents",
-      { projectPaths }
+      { projectPaths, ...(destinationProjectPath !== undefined ? { destinationProjectPath } : {}) }
     ),
 
   createTeam: (
@@ -1516,6 +1518,7 @@ export const EntityAPI = {
     coordinator: string,
     repos: { url: string; agents: string[] }[],
     contextAlertPercentages: number[],
+    agentSources?: TeamAgentSource[],
   ) =>
     transport.invoke<void>("create_team", {
       projectPath,
@@ -1524,6 +1527,7 @@ export const EntityAPI = {
       coordinator,
       repos,
       contextAlertPercentages,
+      ...(agentSources !== undefined ? { agentSources } : {}),
     }),
 
   deleteTeam: (projectPath: string, teamName: string) =>
