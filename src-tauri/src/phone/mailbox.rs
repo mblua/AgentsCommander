@@ -18873,6 +18873,9 @@ mod tests {
                 seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
             let manager = managers.read().await.clone();
             manager.set_is_coordinator(sender, true).await;
+            manager
+                .set_agent_kind(member_id, Some(crate::session::profile::CodingAgentKind::Codex))
+                .await;
             let roots = {
                 let state = app.state::<SettingsState>();
                 let mut settings = state.write().await;
@@ -19096,6 +19099,9 @@ mod tests {
                 seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
             let manager = managers.read().await.clone();
             manager.set_is_coordinator(sender, true).await;
+            manager
+                .set_agent_kind(member_id, Some(crate::session::profile::CodingAgentKind::Codex))
+                .await;
             let roots = {
                 let state = app.state::<SettingsState>();
                 let mut settings = state.write().await;
