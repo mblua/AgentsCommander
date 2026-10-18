@@ -82,6 +82,12 @@
         "notification": "codex is waiting for you to answer a pending question in this terminal",
         "enabled": true,
         "capturedAgainst": "codex 0.154.0 / Windows"
+      },
+      {
+        "pattern": "^\\s*Trust this folder\\?",
+        "notification": "codex is waiting for you to answer the folder-trust menu in this terminal",
+        "enabled": true,
+        "capturedAgainst": "codex / Windows"
       }
     ],
     "opencode": [

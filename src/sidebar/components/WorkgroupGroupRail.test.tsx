@@ -24,8 +24,176 @@ import {
 } from "../stores/workgroup-groups";
 import { entityDirNumber, entityShortLabel } from "../../shared/entity-prefix";
 import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import { setLogLevel } from "../../shared/console-capture";
+import { __setTransportForTests, type RailDiagnosticRecord } from "../../shared/ipc";
+import { projectStore } from "../stores/project";
+import { railEntity } from "../rail-diagnostics";
 
 const projectPath = "C:\\Project";
+
+function diagnostics(fake: FakeTransport): RailDiagnosticRecord[] {
+  return fake.callsFor("append_rail_diagnostic").map(call => call.args.record as RailDiagnosticRecord);
+}
+
+describe("rail diagnostic positive controls with real gate and transport", () => {
+  afterEach(() => { setLogLevel("info"); resetUiStoresForTests(); document.body.replaceChildren(); vi.restoreAllMocks(); });
+
+  async function prepare() {
+    resetUiStoresForTests();
+    const fake = new FakeTransport();
+    fake.resolve("get_project_groups", groupsConfig({ groups: [{ id: "ui", name: "PRIVATE title", regex: ".*", favorite: true }], nonStop: { ...defaultNonStop(), show: true, favorite: true } }));
+    fake.resolve("open_project", { path: projectPath });
+    fake.resolve("discover_project", { ...project(), workgroups: [] });
+    fake.resolve("append_rail_diagnostic", null);
+    const restore = __setTransportForTests(fake);
+    setLogLevel("debug");
+    await projectStore.loadProject(projectPath);
+    return { fake, restore };
+  }
+
+  it("observes interrupted press -> project replacement -> release without dispatching click, and synthetic trusted=false handler/selection reversal", async () => {
+    const { fake, restore } = await prepare();
+    const [projects, setProjects] = createSignal([project()]);
+    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={projects()} surface="embedded" />, fake);
+    try {
+      await waitFor(() => expect(railButton("Project", "ui")).toBeTruthy());
+      const node = railButton("Project", "ui");
+      fake.onInvoke("append_rail_diagnostic", () => new Promise(() => {}));
+      fake.clearCalls();
+      pointer(node, "pointerdown");
+      const press = diagnostics(fake).find(record => record.event === "pointerdown")!;
+      expect(press.groupId).toBeTypeOf("number");
+      setProjects([project()]);
+      expect(node.isConnected).toBe(false);
+      pointer(document.body, "pointerup");
+      const release = diagnostics(fake).find(record => record.event === "pointerup")!;
+      expect(release.originalNodeId).toBe(press.nodeId);
+      expect(release.originalConnected).toBe(false);
+      expect(release.groupId).toBe(press.groupId);
+      expect(diagnostics(fake).some(record => record.event === "node-dispose")).toBe(true);
+      expect(diagnostics(fake).some(record => record.event === "node-mount" && record.nodeId !== press.nodeId)).toBe(true);
+      expect(diagnostics(fake).some(record => record.event === "project-buttons")).toBe(true);
+      expect(diagnostics(fake).some(record => record.event === "click")).toBe(false);
+      const current = railButton("Project", "ui");
+      click(current); // Synthetic handler control only; no native-click claim.
+      expect(diagnostics(fake).find(record => record.event === "handler-enter")?.trusted).toBe(false);
+      expect(workgroupGroupsStore.selection(projectPath)).toEqual({ kind: "group", id: "ui" });
+      workgroupGroupsStore.select(projectPath, { kind: "all" });
+      expect(diagnostics(fake).filter(record => record.event === "selection-change").map(record => record.selectionKind)).toContain("system");
+      const favorite = target<HTMLElement>("workgroupGroups.favoriteButton.Project.ui");
+      click(favorite);
+      expect(diagnostics(fake).filter(record => record.event === "handler-enter").pop()?.groupId).toBe(press.groupId);
+      click(target("workgroupGroups.favoriteNonStopButton.Project"));
+      expect(diagnostics(fake).filter(record => record.event === "handler-enter").pop()?.kind).toBe("nonstop");
+      expect(JSON.stringify(diagnostics(fake))).not.toMatch(/PRIVATE|"Project"|C:\\|:"ui"/);
+      const same = projects(); setProjects(same);
+      expect(railButton("Project", "ui")).toBe(current);
+      const count = diagnostics(fake).length;
+      setLogLevel("info"); click(current);
+      expect(diagnostics(fake)).toHaveLength(count);
+    } finally { rendered.cleanup(); restore(); }
+  });
+
+  it.each(["pointer", "mouse", "compatibility-mouse"] as const)(
+    "retires the retained rail gesture on a new outside %s press", async mode => {
+      const { fake, restore } = await prepare();
+      const stable = [project()];
+      const a = renderWithFakeTransport(() => <WorkgroupGroupRail projects={stable} />, fake);
+      const b = renderWithFakeTransport(() => <WorkgroupGroupRail projects={stable} />, fake);
+      const mouse = (node: Element, type: string) => node.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0 }));
+      try {
+        await waitFor(() => expect(scopedTarget(b.root, "workgroupGroups.button.ui")).toBeTruthy());
+        const node = scopedTarget<HTMLElement>(b.root, "workgroupGroups.button.ui");
+        fake.clearCalls();
+        if (mode === "mouse") mouse(node, "mousedown");
+        else pointer(node, "pointerdown");
+        const press = diagnostics(fake).find(record => record.event === (mode === "mouse" ? "mousedown" : "pointerdown"))!;
+        expect(press.originalNodeId).toBeTypeOf("number");
+        expect(press.entityId).toBeTypeOf("number");
+        // The original gesture may release outside without a click.
+        if (mode === "mouse") mouse(document.body, "mouseup");
+        else pointer(document.body, "pointerup");
+        const release = diagnostics(fake).filter(record => record.event === (mode === "mouse" ? "mouseup" : "pointerup"));
+        expect(release).toHaveLength(1);
+        expect(release[0]).toMatchObject({ originalNodeId: press.originalNodeId, entityId: press.entityId });
+        fake.clearCalls();
+        if (mode === "pointer") pointer(document.body, "pointerdown");
+        mouse(document.body, "mousedown");
+        pointer(document.body, "pointerup");
+        mouse(document.body, "mouseup");
+        mouse(document.body, "click");
+        document.body.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+        document.body.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+        expect(diagnostics(fake).some(record => record.originalNodeId === press.originalNodeId || record.entityId === press.entityId)).toBe(false);
+        expect(diagnostics(fake)).toHaveLength(0);
+      } finally { a.cleanup(); b.cleanup(); restore(); }
+    }
+  );
+
+  it("caps retained gestures at eight, clears listeners on remount, and contains rejected IPC during selection", async () => {
+    const { fake, restore } = await prepare();
+    const stable = [project()];
+    let rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={stable} />, fake);
+    try {
+      await waitFor(() => expect(railButton("Project", "ui")).toBeTruthy());
+      const node = railButton("Project", "ui");
+      fake.clearCalls();
+      for (let pointerId = 1; pointerId <= 9; pointerId++) pointer(node, "pointerdown", { pointerId });
+      expect(diagnostics(fake).filter(record => record.outcome === "overflow")).toHaveLength(1);
+      fake.clearCalls();
+      pointer(document.body, "pointerup", { pointerId: 1 });
+      expect(diagnostics(fake)).toHaveLength(0);
+      pointer(document.body, "pointerup", { pointerId: 2 });
+      expect(diagnostics(fake).filter(record => record.event === "pointerup")).toHaveLength(1);
+      const firstRail = diagnostics(fake)[0].railId;
+      rendered.cleanup();
+      fake.clearCalls();
+      pointer(document.body, "pointerup", { pointerId: 2 });
+      expect(diagnostics(fake)).toHaveLength(0);
+      rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={stable} />, fake);
+      await waitFor(() => expect(railButton("Project", "ui")).toBeTruthy());
+      fake.clearCalls();
+      pointer(railButton("Project", "ui"), "pointerdown");
+      expect(diagnostics(fake).filter(record => record.event === "pointerdown")).toHaveLength(1);
+      expect(diagnostics(fake)[0].railId).not.toBe(firstRail);
+      fake.reject("append_rail_diagnostic", "PRIVATE rejection");
+      click(railButton("Project", "ui"));
+      await Promise.resolve(); await Promise.resolve();
+      expect(workgroupGroupsStore.selection(projectPath)).toEqual({ kind: "group", id: "ui" });
+      expect(diagnostics(fake).some(record => record.event === "handler-end" && record.outcome === "applied")).toBe(true);
+    } finally { rendered.cleanup(); restore(); }
+  });
+
+  it("config-only deletion during a gesture retires identity; two rails and unmount preserve the other rail's gesture", async () => {
+    const { fake, restore } = await prepare();
+    const stable = [project()];
+    const a = renderWithFakeTransport(() => <WorkgroupGroupRail projects={stable} />, fake);
+    const b = renderWithFakeTransport(() => <WorkgroupGroupRail projects={stable} />, fake);
+    let aCleaned = false;
+    try {
+      await waitFor(() => expect(b.root.querySelector('[data-ac-testid="workgroupGroups.button.ui"]')).toBeTruthy());
+      const node = scopedTarget<HTMLElement>(b.root, "workgroupGroups.button.ui");
+      fake.clearCalls();
+      pointer(node, "pointerdown", { pointerId: 7 });
+      const press = diagnostics(fake).find(record => record.event === "pointerdown")!;
+      a.cleanup(); aCleaned = true;
+      pointer(document.body, "pointerup", { pointerId: 7 });
+      expect(diagnostics(fake).filter(record => record.event === "pointerup")).toHaveLength(1);
+      expect(diagnostics(fake).find(record => record.event === "pointerup")?.originalNodeId).toBe(press.nodeId);
+      const config = workgroupGroupsStore.config(projectPath);
+      workgroupGroupsStore.applyExternalUpdate(projectPath, { ...config, groups: [] });
+      expect(railEntity(projectPath, "custom", "ui").groupId).toBeUndefined();
+      pointer(document.body, "pointerup", { pointerId: 7 });
+      expect(railEntity(projectPath, "custom", "ui").groupId).toBeUndefined();
+      workgroupGroupsStore.applyExternalUpdate(projectPath, config);
+      expect(railEntity(projectPath, "custom", "ui").groupId).not.toBe(press.groupId);
+      b.cleanup();
+      const count = diagnostics(fake).length;
+      pointer(document.body, "pointerup", { pointerId: 7 });
+      expect(diagnostics(fake)).toHaveLength(count);
+    } finally { if (!aCleaned) a.cleanup(); b.cleanup(); restore(); }
+  });
+});
 
 function wg(name: string): AcWorkgroup {
   return {

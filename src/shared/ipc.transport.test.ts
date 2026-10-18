@@ -9,6 +9,19 @@ import type {
 } from "./types";
 
 describe("shared ipc transport seam", () => {
+  it("serializes the exact rail diagnostic envelope and propagates the transport result", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    fake.resolve("append_rail_diagnostic", null);
+    const restore = ipc.__setTransportForTests(fake);
+    const record: import("./ipc").RailDiagnosticRecord = { version: 1, windowId: "13eac932-6f64-4a9b-8141-464899d6bc31", seq: 1, atMs: 0, surface: "sidebar", event: "click", trusted: false };
+    try {
+      await expect(ipc.DebugAPI.appendRailDiagnostic(record)).resolves.toBeNull();
+      expect(fake.lastCall("append_rail_diagnostic")?.args).toEqual({ record });
+      fake.reject("append_rail_diagnostic", "invalid rail diagnostic");
+      await expect(ipc.DebugAPI.appendRailDiagnostic(record)).rejects.toBe("invalid rail diagnostic");
+    } finally { restore(); }
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -1440,14 +1453,20 @@ describe("tolerant configuration readers (#3019)", () => {
     });
 
     it.each(["legacy", "canonical"].flatMap((shape) =>
-      [undefined, "cid1:literal-pair-metadata"].map((idHash) => ({ shape, idHash })),
-    ))("projects complete $shape backend fixtures with pair hash $idHash through complete APIs", async ({ shape, idHash }) => {
+      [undefined, "cid1:literal-pair-metadata"].flatMap((idHash) =>
+        ["absent", "empty", "populated"].map((debug) => ({ shape, idHash, debug }))),
+    ))("projects complete $shape backend fixtures with pair hash $idHash and $debug debug leaves through complete APIs", async ({ shape, idHash, debug }) => {
       const ipc = await import("./ipc");
       const cell: ProfileCellConfig = {
         command: "--model x", enabled: true, env: { KEY: "value" }, notes: "keep",
         ...(idHash === undefined ? {} : { id_hash: idHash }),
+        ...(debug === "absent" ? {} : { id_hash_debug: debug === "empty" ? [] : [" Agent --base ", "KEY", " Value ", "KEY", "", " --model X ", "a", "", "Z", "Case"] }),
       };
-      const agent = { id: "a", label: "Agent", color: "blue", command: "agent --base", envs: [], isolatedHome: false };
+      const agent = {
+        id: "a", label: "Agent", color: "blue", command: "agent --base", envs: [], isolatedHome: false,
+        id_hash: "cid1:literal-base-metadata",
+        ...(debug === "absent" ? {} : { id_hash_debug: debug === "empty" ? [] : [" Agent --base ", "KEY", " Value ", "KEY", ""] }),
+      };
       const definition: CodingAgentDefinition = {
         key: "a", label: "Agent", description: "Description", color: "blue", command: "agent --base",
         envs: [], isolatedHome: false, removable: true, updateCommands: ["update"], autoUpdate: false,
@@ -1462,9 +1481,15 @@ describe("tolerant configuration readers (#3019)", () => {
       const { command: catalogBase, ...definitionRest } = definition;
       const { command: suffix, ...cellRest } = cell;
       const wireDefinition = shape === "legacy" ? definition : { ...definitionRest, baseCommand: catalogBase };
-      const wire = shape === "legacy" ? expected : {
-        ...expected, agents: [{ ...agentRest, baseCommand: base }], codingAgentProfiles: {
-          ...expected.codingAgentProfiles, profilesByAgent: { a: { A: { ...cellRest, additionalArguments: suffix } } },
+      // Wire arrays are literal inputs independent of the expected decoded arrays.
+      const wireAgentDebug = debug === "absent" ? {} : { id_hash_debug: debug === "empty" ? [] : [" Agent --base ", "KEY", " Value ", "KEY", ""] };
+      const wireCellDebug = debug === "absent" ? {} : { id_hash_debug: debug === "empty" ? [] : [" Agent --base ", "KEY", " Value ", "KEY", "", " --model X ", "a", "", "Z", "Case"] };
+      const wire = {
+        ...expected,
+        agents: [shape === "legacy" ? { ...agent, ...wireAgentDebug } : { ...agentRest, ...wireAgentDebug, baseCommand: base }],
+        codingAgentProfiles: {
+          ...expected.codingAgentProfiles, profilesByAgent: { a: { A: shape === "legacy"
+            ? { ...cell, ...wireCellDebug } : { ...cellRest, ...wireCellDebug, additionalArguments: suffix } } },
         },
       };
       const fake = new FakeTransport();
@@ -1486,6 +1511,20 @@ describe("tolerant configuration readers (#3019)", () => {
         await ipc.SettingsAPI.update(settings);
         await ipc.SettingsAPI.saveDraft(settings);
         await expect(ipc.SettingsAPI.updateCodingAgentProfiles(settings.codingAgentProfiles)).resolves.toBeUndefined();
+        for (const sent of [
+          fake.lastCall("update_settings")?.args?.newSettings,
+          fake.lastCall("save_settings_draft")?.args?.draft,
+        ]) {
+          expect(sent).toEqual({
+            ...expected, agents: [{ ...agentRest, baseCommand: base }],
+            codingAgentProfiles: {
+              ...expected.codingAgentProfiles,
+              profilesByAgent: { a: { A: { ...cellRest, additionalArguments: suffix } } },
+            },
+          });
+        }
+        expect(Object.prototype.hasOwnProperty.call(settings.agents[0], "id_hash_debug")).toBe(debug !== "absent");
+        expect(Object.prototype.hasOwnProperty.call(settings.codingAgentProfiles.profilesByAgent.a.A, "id_hash_debug")).toBe(debug !== "absent");
         const sentProfiles = [
           (fake.lastCall("update_settings")?.args?.newSettings as Record<string, unknown>).codingAgentProfiles,
           (fake.lastCall("save_settings_draft")?.args?.draft as Record<string, unknown>).codingAgentProfiles,
