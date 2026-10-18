@@ -224,6 +224,7 @@ fn root_help_lists_public_subcommands() {
         "open-project",
         "new-project",
         "telegram-send-image",
+        "telegram-send-message",
         // #1614: `room` is the canonical subcommand; `workgroup` remains an
         // accepted deprecated alias, and D9 hides an alias from help on purpose,
         // so root help must list `room` and must NOT list `workgroup`.
@@ -355,6 +356,10 @@ fn public_subcommand_help_contracts() {
         (&["open-project", "--help"], &["PATH"]),
         (&["new-project", "--help"], &["PATH"]),
         (&["telegram-send-image", "--help"], &["--path", "--caption"]),
+        (
+            &["telegram-send-message", "--help"],
+            &["--text", "--bot-id", "--bot-label"],
+        ),
         (&["room", "--help"], &["list", "activity", "add", "remove"]),
         (&["room", "list", "--help"], &["--project"]),
         (&["room", "activity", "--help"], &["--project"]),
@@ -842,6 +847,7 @@ fn missing_required_args_contracts() {
         ],
         &["harness"],
         &["telegram-send-image"],
+        &["telegram-send-message"],
     ];
 
     for args in cases {
@@ -1512,4 +1518,56 @@ fn task_inherited_startup_failure_precedes_handler_json() {
     assert!(serde_json::from_str::<Value>(&out.2).is_err());
     assert!(!out.2.is_empty());
     assert!(!out.2.contains("authorization_denied"));
+}
+
+#[test]
+fn telegram_send_message_local_rejections_and_missing_config() {
+    let tmp = Tmp::new("cli-telegram-message");
+    let bin = copy_binary_into(tmp.path());
+    let cases = [
+        (" \n\t".to_string(), "--text must not be empty"),
+        (
+            "a".repeat(4097),
+            "--text must not exceed 4096 UTF-16 code units",
+        ),
+        (
+            "😀".repeat(2049),
+            "--text must not exceed 4096 UTF-16 code units",
+        ),
+        (
+            "BODY_SENTINEL".to_string(),
+            "No Telegram bots are configured",
+        ),
+        ("-value".to_string(), "No Telegram bots are configured"),
+    ];
+    for (text, expected) in cases {
+        let text_arg = format!("--text={text}");
+        let mut command = command_for_binary(&bin);
+        let config = config_dir_for_bin(&bin);
+        command
+            .env("AGENTSCOMMANDER_CONFIG_DIR", &config)
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config)
+            .env_remove("AGENTSCOMMANDER_TOKEN")
+            .env_remove("AGENTSCOMMANDER_ROOT")
+            .env_remove("AGENTSCOMMANDER_LOCAL_DIR")
+            .args(["telegram-send-message", &text_arg])
+            .stdin(Stdio::null());
+        let out = {
+            let _guard = spawn_lock();
+            command.output().expect("run message rejection")
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1));
+        assert_no_stdout_on_error(&stdout);
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!stderr.contains("BODY_SENTINEL"));
+        assert!(!stderr.contains("Sent:"));
+        let log = config.join("app.log");
+        if log.exists() {
+            assert!(!std::fs::read_to_string(log)
+                .unwrap()
+                .contains("BODY_SENTINEL"));
+        }
+    }
 }
