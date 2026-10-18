@@ -1126,13 +1126,13 @@ const SidebarApp: Component<SidebarAppProps> = (props) => {
         <RootAgentBanner compact={sidebarCompact()} railSide={railSide()} />
         <div class="sidebar-body" data-rail-side={railSide()}>
           <Show when={railSide() === "left"}>
-            <RoomGroupRail projects={projectStore.projects} />
+            <RoomGroupRail projects={projectStore.projects} surface={props.embedded ? "embedded" : "sidebar"} />
           </Show>
           <div class="sidebar-scrollable" ref={sidebarScrollableEl}>
             <ProjectPanel />
           </div>
           <Show when={railSide() === "right"}>
-            <RoomGroupRail projects={projectStore.projects} />
+            <RoomGroupRail projects={projectStore.projects} surface={props.embedded ? "embedded" : "sidebar"} />
           </Show>
         </div>
       </div>

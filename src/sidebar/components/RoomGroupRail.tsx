@@ -1,4 +1,4 @@
-import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack, createComputed } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcAgentReplica, AcWorkgroup, NonStopGroupConfig, WorkgroupGroup } from "../../shared/types";
 import type { ProjectState } from "../stores/project";
@@ -30,8 +30,28 @@ import BlockedMenuIcon from "./BlockedMenuIcon";
 import ArchiveIcon from "./ArchiveIcon";
 import ArchivedProjectsModal from "./ArchivedProjectsModal";
 
+import { emitRailDiagnostic, railToken, railObjectId, railEntity, railTag, reconcileRailGroups, type RailFields } from "../rail-diagnostics";
+import { isDebugEnabled } from "../../shared/console-capture";
+
+type RailSurface = "embedded" | "sidebar";
+interface RailObservation {
+  emit: (event: Parameters<typeof emitRailDiagnostic>[1], fields?: RailFields) => void;
+  entity: (path: string, selection?: WorkgroupGroupSelection) => RailFields;
+  node: (node: HTMLElement, fields: () => RailFields, section?: boolean) => void;
+  selection: () => RailFields;
+}
+
+function selectionKind(selection: WorkgroupGroupSelection): NonNullable<RailFields["kind"]> {
+  return selection.kind === "group" ? "custom" : selection.kind === "all" ? "system" : selection.kind;
+}
+
+function sameSelection(a: RailFields, b: RailFields): boolean {
+  return a.selectionProjectId === b.selectionProjectId && a.selectionGroupId === b.selectionGroupId && a.selectionKind === b.selectionKind;
+}
+
 interface RoomGroupRailProps {
   projects: ProjectState[];
+  surface?: RailSurface;
 }
 
 interface GroupButton {
@@ -225,6 +245,8 @@ function selectFromRail(project: ProjectState, selection: WorkgroupGroupSelectio
 
 const RailButton: Component<{
   button: GroupButton;
+  observation: RailObservation;
+  projectPath: string;
   testIds: RailButtonTestIds;
   selected: boolean;
   reorderState?: ReorderState | null;
@@ -235,9 +257,11 @@ const RailButton: Component<{
   onPointerCancel?: (event: PointerEvent) => void;
   onContextMenu: (event: MouseEvent) => void;
   onClick: (event: MouseEvent) => void;
-}> = (props) => (
-  <button
-    ref={(el) => props.onRef?.(el)}
+}> = (props) => {
+  let node!: HTMLButtonElement;
+  onMount(() => props.observation.node(node, () => props.observation.entity(props.projectPath, props.button.selection)));
+  return (<button
+    ref={(el) => { node = el; props.onRef?.(el); }}
     class="workgroup-group-rail-button"
     classList={{
       selected: props.selected,
@@ -310,8 +334,8 @@ const RailButton: Component<{
       </Show>
       {props.button.counter}
     </span>
-  </button>
-);
+  </button>);
+};
 
 type FavoriteEntry =
   | { kind: "group"; project: ProjectState; group: WorkgroupGroup; button: GroupButton }
@@ -319,12 +343,14 @@ type FavoriteEntry =
 
 const FavoritesRailSection: Component<{
   projects: ProjectState[];
+  observation: RailObservation;
   onOpenContextMenu: (event: MouseEvent, target: RailContextTarget) => void;
 }> = (props) => {
   const collapsed = () => railCollapseStore.isFavoritesCollapsed();
 
-  const entries = createMemo<FavoriteEntry[]>(() =>
-    props.projects.flatMap((project) => {
+  let previousEntries: FavoriteEntry[] = [];
+  const entries = createMemo<FavoriteEntry[]>(() => {
+    const entries = props.projects.flatMap((project) => {
       const config = workgroupGroupsStore.config(project.path);
       const compiled = compileWorkgroupGroups(config.groups);
       const result: FavoriteEntry[] = [];
@@ -351,12 +377,16 @@ const FavoritesRailSection: Component<{
         }
       }
       return result;
-    })
-  );
+    });
+    untrack(() => props.observation.emit("favorites-entries", { objectId: railObjectId(entries), count: entries.length,
+      changedCount: entries.filter((entry, index) => entry !== previousEntries[index]).length }));
+    previousEntries = entries;
+    return entries;
+  });
 
   return (
     <Show when={entries().length > 0}>
-      <div class="workgroup-group-rail-favorites" data-ac-testid="workgroupGroups.favorites">
+      <div ref={(node) => { onMount(() => props.observation.node(node, () => ({ kind: "favorites" }), true)); }} class="workgroup-group-rail-favorites" data-ac-testid="workgroupGroups.favorites">
         <button
           type="button"
           class="workgroup-group-rail-project-label workgroup-group-rail-header"
@@ -371,6 +401,8 @@ const FavoritesRailSection: Component<{
             <For each={entries()}>
               {(entry) => (
                 <RailButton
+                  observation={props.observation}
+                  projectPath={entry.project.path}
                   button={entry.button}
                   testIds={
                     entry.kind === "nonstop"
@@ -390,7 +422,15 @@ const FavoritesRailSection: Component<{
                           }
                     )
                   }
-                  onClick={() => selectFromRail(entry.project, entry.button.selection)}
+                  onClick={(event) => {
+                    const before = props.observation.selection();
+                    const fields = props.observation.entity(entry.project.path, entry.button.selection);
+                    props.observation.emit("handler-enter", { ...fields, ...before, trusted: event.isTrusted, phase: "idle" });
+                    selectFromRail(entry.project, entry.button.selection);
+                    const after = props.observation.selection();
+                    props.observation.emit("handler-end", { ...fields, ...after, trusted: event.isTrusted, phase: "idle",
+                      outcome: sameSelection(before, after) ? "unchanged" : "applied" });
+                  }}
                 />
               )}
             </For>
@@ -403,6 +443,7 @@ const FavoritesRailSection: Component<{
 
 const ProjectRailSection: Component<{
   project: ProjectState;
+  observation: RailObservation;
   showProjectLabel: boolean;
   onOpenContextMenu: (event: MouseEvent, target: RailContextTarget) => void;
 }> = (props) => {
@@ -418,6 +459,7 @@ const ProjectRailSection: Component<{
       isUngroupedWorkgroup(compiledGroups(), config().nonStop, room)
     )
   );
+  let previousButtons: GroupButton[] = [];
   const buttons = createMemo<GroupButton[]>(() => {
     const result: GroupButton[] = [];
     if (config().showAll) {
@@ -454,6 +496,9 @@ const ProjectRailSection: Component<{
     for (const [groupIndex, group] of config().groups.entries()) {
       result.push(groupButtonFor(props.project, group, groupIndex, true, compiledGroups()));
     }
+    untrack(() => props.observation.emit("project-buttons", { ...props.observation.entity(props.project.path),
+      objectId: railObjectId(result), count: result.length, changedCount: result.filter((button, index) => button !== previousButtons[index]).length }));
+    previousButtons = result;
     return result;
   });
   const [reorderState, setReorderState] = createSignal<ReorderState | null>(null);
@@ -461,6 +506,7 @@ const ProjectRailSection: Component<{
   let suppressClickGroupId: string | null = null;
   let projectEl: HTMLDivElement | undefined;
   const groupButtonEls = new Map<string, HTMLButtonElement>();
+  onMount(() => { if (projectEl) props.observation.node(projectEl, () => props.observation.entity(props.project.path), true); });
 
   const clearHoldTimer = () => {
     if (holdTimer !== null) {
@@ -689,6 +735,8 @@ const ProjectRailSection: Component<{
         <For each={previewButtons()}>
           {(button) => (
             <RailButton
+              observation={props.observation}
+              projectPath={props.project.path}
               button={button}
               testIds={projectRailTestIds(button.key)}
               selected={isSelected(props.project.path, button)}
@@ -704,13 +752,19 @@ const ProjectRailSection: Component<{
                 openContextMenu(event, railContextTargetFor(props.project.path, button))
               }
               onClick={(event) => {
+                const before = props.observation.selection();
+                const fields = props.observation.entity(props.project.path, button.selection);
+                props.observation.emit("handler-enter", { ...fields, ...before, phase: reorderState()?.phase ?? "idle", trusted: event.isTrusted });
                 if (button.groupId && suppressClickGroupId === button.groupId) {
                   suppressClickGroupId = null;
                   event.preventDefault();
                   event.stopPropagation();
+                  props.observation.emit("handler-end", { ...fields, ...props.observation.selection(), phase: reorderState()?.phase ?? "idle", trusted: event.isTrusted, outcome: "suppressed" });
                   return;
                 }
                 selectFromRail(props.project, button.selection);
+                const after = props.observation.selection();
+                props.observation.emit("handler-end", { ...fields, ...after, phase: reorderState()?.phase ?? "idle", trusted: event.isTrusted, outcome: sameSelection(before, after) ? "unchanged" : "applied" });
               }}
             />
           )}
@@ -731,6 +785,138 @@ const ProjectRailSection: Component<{
 };
 
 const RoomGroupRail: Component<RoomGroupRailProps> = (props) => {
+  let aside!: HTMLElement;
+  let railId: number | undefined;
+  const metadata = new WeakMap<Element, () => RailFields>();
+  const reconcile = (project: ProjectState) => {
+    const config = workgroupGroupsStore.config(project.path);
+    reconcileRailGroups(project.path, config.groups.map(group => group.id), config.nonStop !== null);
+  };
+  const selection = (): RailFields => untrack(() => {
+    if (!isDebugEnabled()) return {};
+    const project = props.projects.find(project => workgroupGroupsStore.isActiveProject(project.path));
+    if (!project) return {};
+    const current = workgroupGroupsStore.selection(project.path);
+    const entity = railEntity(project.path, selectionKind(current), current.kind === "group" ? current.id : null);
+    return { selectionProjectId: entity.projectId, selectionGroupId: entity.groupId, selectionKind: entity.kind };
+  });
+  const observation: RailObservation = {
+    emit(event, fields = {}) { untrack(() => {
+      if (!isDebugEnabled()) return;
+      railId ??= railToken();
+      emitRailDiagnostic(props.surface ?? "sidebar", event, { railId, ...fields });
+    }); },
+    selection,
+    entity(path, current) { return untrack(() => {
+      const project = props.projects.find(project => project.path === path);
+      if (project) reconcile(project);
+      return railEntity(path, current ? selectionKind(current) : "project", current?.kind === "group" ? current.id : null);
+    }); },
+    node(node, fields, section = false) {
+      metadata.set(node, fields);
+      const snapshot = () => untrack(() => ({ ...fields(), nodeId: railObjectId(node), connected: node.isConnected }));
+      observation.emit(section ? "section-mount" : "node-mount", snapshot());
+      onCleanup(() => {
+        observation.emit(section ? "section-dispose" : "node-dispose", snapshot());
+        metadata.delete(node);
+      });
+    },
+  };
+  createComputed(() => {
+    for (const project of props.projects) {
+      const config = workgroupGroupsStore.config(project.path);
+      const groups = config.groups.map(group => group.id);
+      const nonstop = config.nonStop !== null;
+      void config.showAll;
+      untrack(() => reconcileRailGroups(project.path, groups, nonstop));
+    }
+  });
+  let lastProject: string | undefined;
+  let lastKind: string | undefined;
+  let lastGroup: string | undefined;
+  createEffect(() => {
+    const active = props.projects.find(project => workgroupGroupsStore.isActiveProject(project.path));
+    const current = active ? workgroupGroupsStore.selection(active.path) : undefined;
+    const group = current?.kind === "group" ? current.id : undefined;
+    if (active?.path !== lastProject || current?.kind !== lastKind || group !== lastGroup) observation.emit("selection-change", selection());
+    lastProject = active?.path;
+    lastKind = current?.kind;
+    lastGroup = group;
+  });
+  onMount(() => {
+    untrack(() => props.projects.forEach(reconcile));
+    observation.emit("rail-mount", { nodeId: railObjectId(aside), connected: aside.isConnected });
+    type Gesture = { node: Element; fields: RailFields; pointerId?: number };
+    const gestures = new Map<number, Gesture>();
+    const known = (target: EventTarget | null): Element | undefined => {
+      let node = target instanceof Element ? target : null;
+      while (node && node !== aside) {
+        if (metadata.has(node)) return node;
+        node = node.parentElement;
+      }
+      return undefined;
+    };
+    const observe = (event: Event) => untrack(() => {
+      if (!isDebugEnabled()) { gestures.clear(); return; }
+      const pointer = event as PointerEvent;
+      const pointerId = typeof pointer.pointerId === "number" ? pointer.pointerId : undefined;
+      const key = pointerId ?? -1;
+      const inside = event.target instanceof Node && aside.contains(event.target);
+      let gesture = gestures.get(key);
+      if (!gesture && pointerId === undefined) { const values = [...gestures.values()]; gesture = values[values.length - 1]; }
+      if (!inside && (event.type === "pointerdown" || event.type === "mousedown")) {
+        // A new outside press ends attribution to the prior rail gesture.
+        for (const [id, candidate] of gestures) if (id === key || candidate === gesture) gestures.delete(id);
+        return;
+      }
+      if (!inside && !gesture) return;
+      const node = known(event.target);
+      if (event.type === "pointerdown" || (event.type === "mousedown" && !gesture)) {
+        if (!inside) return;
+        if (node) {
+          const fields = { ...metadata.get(node)?.(), nodeId: railObjectId(node) };
+          if (gestures.size >= 8 && !gestures.has(key)) {
+            const oldest = gestures.keys().next().value!;
+            gestures.delete(oldest);
+            observation.emit("pointercancel", { outcome: "overflow" });
+          }
+          gesture = { node, fields, pointerId };
+          gestures.set(key, gesture);
+        }
+      }
+      let captured = false;
+      try { captured = gesture?.pointerId !== undefined && !!gesture.node.hasPointerCapture?.(gesture.pointerId); } catch {}
+      observation.emit(event.type as Parameters<typeof emitRailDiagnostic>[1], {
+        ...(gesture?.fields ?? (node ? metadata.get(node)?.() : {})), ...selection(),
+        pointerId, button: typeof pointer.button === "number" ? pointer.button : undefined,
+        primary: typeof pointer.isPrimary === "boolean" ? pointer.isPrimary : undefined,
+        trusted: event.isTrusted, targetTag: railTag(event.target), activeTag: railTag(document.activeElement),
+        nodeId: railObjectId(node, false), originalNodeId: gesture?.fields.nodeId,
+        connected: node?.isConnected, originalConnected: gesture?.node.isConnected, captured,
+        documentFocused: document.hasFocus(), outcome: event.type === "click" && !gesture ? "no-press" : undefined,
+      });
+      if (event.type === "click") {
+        for (const [id, candidate] of gestures) if (candidate === gesture) gestures.delete(id);
+      }
+    });
+    const types = "pointerdown pointerup pointercancel mousedown mouseup click gotpointercapture lostpointercapture focusin focusout".split(" ");
+    const options = { capture: true, passive: true };
+    for (const type of types) document.addEventListener(type, observe, options);
+    const windowFocus = (event: Event) => {
+      if (gestures.size) observation.emit(event.type === "focus" ? "window-focus" : "window-blur", {
+        ...selection(), documentFocused: document.hasFocus(), activeTag: railTag(document.activeElement),
+      });
+    };
+    window.addEventListener("focus", windowFocus, options);
+    window.addEventListener("blur", windowFocus, options);
+    onCleanup(() => {
+      for (const type of types) document.removeEventListener(type, observe, options);
+      window.removeEventListener("focus", windowFocus, options);
+      window.removeEventListener("blur", windowFocus, options);
+      gestures.clear();
+      observation.emit("rail-dispose", { nodeId: railObjectId(aside, false), connected: aside.isConnected });
+    });
+  });
   const [showArchived, setShowArchived] = createSignal(false);
   const [contextTarget, setContextTarget] = createSignal<RailContextTarget | null>(null);
   const [contextMenuPos, setContextMenuPos] = createSignal({ x: 0, y: 0 });
@@ -745,6 +931,14 @@ const RoomGroupRail: Component<RoomGroupRailProps> = (props) => {
   const editingProject = createMemo(() => {
     const path = editingProjectPath();
     return path ? (props.projects.find((project) => project.path === path) ?? null) : null;
+  });
+
+  let previousProjects: ProjectState[] = [];
+  createComputed(() => {
+    const projects = props.projects;
+    untrack(() => observation.emit("project-list", { objectId: railObjectId(projects), count: projects.length,
+      changedCount: projects.filter((project, index) => project !== previousProjects[index]).length }));
+    previousProjects = projects;
   });
 
   const cleanupContextMenu = () => {
@@ -850,13 +1044,14 @@ const RoomGroupRail: Component<RoomGroupRailProps> = (props) => {
   };
 
   return (
-    <aside class="workgroup-group-rail" data-ac-testid="workgroupGroups.rail">
-      <FavoritesRailSection projects={props.projects} onOpenContextMenu={openContextMenu} />
+    <aside ref={aside} class="workgroup-group-rail" data-ac-testid="workgroupGroups.rail">
+      <FavoritesRailSection observation={observation} projects={props.projects} onOpenContextMenu={openContextMenu} />
 
       <div class="workgroup-group-rail-scroll">
         <For each={props.projects}>
           {(project) => (
             <ProjectRailSection
+              observation={observation}
               project={project}
               showProjectLabel={true}
               onOpenContextMenu={openContextMenu}
