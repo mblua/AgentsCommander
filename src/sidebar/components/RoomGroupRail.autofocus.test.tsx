@@ -22,7 +22,7 @@ import {
   activeWorkgroupGroupSelectionKey,
   createSidebarSelectionScrollReset,
 } from "../App";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import RoomGroupRail from "./RoomGroupRail";
 import ProjectPanel from "./ProjectPanel";
 
 // #810 - Two backslash Windows paths (grinch F4). Forward-slash or simplified
@@ -73,6 +73,22 @@ function groupsConfig(): WorkgroupGroupsConfig {
       regex: exactGroupRegexForWorkgroup(groupedWorkgroup),
     },
   };
+}
+
+function createProjectFake(allowedPaths: readonly string[]): FakeTransport {
+  const fake = new FakeTransport();
+  fake.onInvoke("new_project", (args) => ({
+    path: args.path as string,
+    registered: true,
+    created: false,
+  }));
+  fake.onInvoke("discover_project", (args) => {
+    const path = args.path as string;
+    if (allowedPaths.includes(path)) return projectDiscovery(path);
+    throw new Error(`unexpected discover_project path: ${path}`);
+  });
+  fake.resolve("get_project_groups", groupsConfig());
+  return fake;
 }
 
 // Find the header by its raw title ATTRIBUTE value, not a CSS attribute
@@ -167,7 +183,7 @@ const SidebarHarness: Component = () => {
   createSidebarSelectionScrollReset(() => scrollableEl);
   return (
     <div class="sidebar-body">
-      <WorkgroupGroupRail projects={projectStore.projects} />
+      <RoomGroupRail projects={projectStore.projects} />
       <div class="sidebar-scrollable" ref={scrollableEl}>
         <ProjectPanel />
       </div>
@@ -175,7 +191,7 @@ const SidebarHarness: Component = () => {
   );
 };
 
-describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
+describe("RoomGroupRail selection focus (#810/#941)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {
@@ -227,18 +243,7 @@ describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
   });
 
   it("does not write scrollTop when an equal selection object is emitted", async () => {
-    const fake = new FakeTransport();
-    fake.onInvoke("new_project", (args) => ({
-      path: args.path as string,
-      registered: true,
-      created: false,
-    }));
-    fake.onInvoke("discover_project", (args) => {
-      const path = args.path as string;
-      if (path === projectPathA) return projectDiscovery(path);
-      throw new Error(`unexpected discover_project path: ${path}`);
-    });
-    fake.resolve("get_project_groups", groupsConfig());
+    const fake = createProjectFake([projectPathA]);
 
     const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
     try {
@@ -264,19 +269,7 @@ describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
   });
 
   it("resets every real selection kind and aligns a non-first project header", async () => {
-    const fake = new FakeTransport();
-    fake.onInvoke("new_project", (args) => ({
-      path: args.path as string,
-      registered: true,
-      created: false,
-    }));
-    fake.onInvoke("discover_project", (args) => {
-      const path = args.path as string;
-      if (path === projectPathA) return projectDiscovery(path);
-      if (path === projectPathB) return projectDiscovery(path);
-      throw new Error(`unexpected discover_project path: ${path}`);
-    });
-    fake.resolve("get_project_groups", groupsConfig());
+    const fake = createProjectFake([projectPathA, projectPathB]);
 
     const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
     try {
@@ -320,19 +313,7 @@ describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
   });
 
   it("keeps scroll fixed on a same-selection re-click while preserving collapse and expand", async () => {
-    const fake = new FakeTransport();
-    fake.onInvoke("new_project", (args) => ({
-      path: args.path as string,
-      registered: true,
-      created: false,
-    }));
-    fake.onInvoke("discover_project", (args) => {
-      const path = args.path as string;
-      if (path === projectPathA) return projectDiscovery(path);
-      if (path === projectPathB) return projectDiscovery(path);
-      throw new Error(`unexpected discover_project path: ${path}`);
-    });
-    fake.resolve("get_project_groups", groupsConfig());
+    const fake = createProjectFake([projectPathA, projectPathB]);
 
     const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
     try {
@@ -368,19 +349,7 @@ describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
   });
 
   it("preserves the other project's sub-section collapse when auto-focus collapses its project", async () => {
-    const fake = new FakeTransport();
-    fake.onInvoke("new_project", (args) => ({
-      path: args.path as string,
-      registered: true,
-      created: false,
-    }));
-    fake.onInvoke("discover_project", (args) => {
-      const path = args.path as string;
-      if (path === projectPathA) return projectDiscovery(path);
-      if (path === projectPathB) return projectDiscovery(path);
-      throw new Error(`unexpected discover_project path: ${path}`);
-    });
-    fake.resolve("get_project_groups", groupsConfig());
+    const fake = createProjectFake([projectPathA, projectPathB]);
 
     const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
     try {
@@ -422,18 +391,7 @@ describe("WorkgroupGroupRail selection focus (#810/#941)", () => {
   });
 
   it("resets an actual selection change in a single-project layout", async () => {
-    const fake = new FakeTransport();
-    fake.onInvoke("new_project", (args) => ({
-      path: args.path as string,
-      registered: true,
-      created: false,
-    }));
-    fake.onInvoke("discover_project", (args) => {
-      const path = args.path as string;
-      if (path === projectPathA) return projectDiscovery(path);
-      throw new Error(`unexpected discover_project path: ${path}`);
-    });
-    fake.resolve("get_project_groups", groupsConfig());
+    const fake = createProjectFake([projectPathA]);
 
     const rendered = renderWithFakeTransport(() => <SidebarHarness />, fake);
     try {

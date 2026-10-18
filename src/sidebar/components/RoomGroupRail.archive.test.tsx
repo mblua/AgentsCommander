@@ -10,11 +10,11 @@ import {
 } from "../../shared/testing/ui-harness";
 import type { ProjectState } from "../stores/project";
 import { defaultGroupsConfig } from "../stores/workgroup-groups";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import RoomGroupRail from "./RoomGroupRail";
 
 const projectPath = "C:\\Project";
 
-function wg(name: string): AcWorkgroup {
+function room(name: string): AcWorkgroup {
   return {
     name,
     path: `${projectPath}\\.ac\\${name}`,
@@ -28,7 +28,7 @@ function project(): ProjectState {
   return {
     path: projectPath,
     folderName: "Project",
-    workgroups: [wg("wg-1-dev-team")],
+    workgroups: [room("wg-1-dev-team")],
     agents: [],
     teams: [],
     loops: [],
@@ -42,7 +42,7 @@ function byTestId<T extends HTMLElement = HTMLElement>(testId: string): T {
   return element;
 }
 
-describe("WorkgroupGroupRail archive entry point (#881)", () => {
+describe("RoomGroupRail archive entry point (#881)", () => {
   beforeEach(() => {
     resetUiStoresForTests();
   });
@@ -56,7 +56,7 @@ describe("WorkgroupGroupRail archive entry point (#881)", () => {
     const fake = new FakeTransport();
     fake.resolve("list_archived_projects", []);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[]} />, fake);
     try {
       expect(document.querySelectorAll('[data-ac-testid="workgroupGroups.rail.archive"]')).toHaveLength(1);
       expect(document.querySelectorAll('[data-ac-testid^="workgroupGroups.button."]')).toHaveLength(0);
@@ -74,7 +74,7 @@ describe("WorkgroupGroupRail archive entry point (#881)", () => {
     fake.resolve("get_project_groups", defaultGroupsConfig());
     fake.resolve("list_archived_projects", []);
 
-    const rendered = renderWithFakeTransport(() => <WorkgroupGroupRail projects={[project()]} />, fake);
+    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
     try {
       await waitFor(() => expect(byTestId("workgroupGroups.rail.Project")).toBeTruthy());
 

@@ -10,8 +10,8 @@ import {
 import { remoteActivityStore } from "../stores/remote-activity";
 import { configuredReplicaRepoBadges } from "./replica-repo-badges";
 
-export function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
-  return `${wg.name}/${replica.name}`;
+export function replicaSessionName(room: AcWorkgroup, replica: AcAgentReplica): string {
+  return `${room.name}/${replica.name}`;
 }
 
 function normalizedReplicaSessionPath(path: string | null | undefined): string | null {
@@ -19,8 +19,8 @@ function normalizedReplicaSessionPath(path: string | null | undefined): string |
   return trimmed ? normalizeProjectPathForCompare(trimmed) : null;
 }
 
-export function findReplicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | undefined {
-  const expectedName = replicaSessionName(wg, replica);
+export function findReplicaSession(room: AcWorkgroup, replica: AcAgentReplica): Session | undefined {
+  const expectedName = replicaSessionName(room, replica);
   const expectedPath = normalizedReplicaSessionPath(replica.path);
   if (!expectedPath) return undefined;
 
@@ -31,28 +31,28 @@ export function findReplicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Se
   );
 }
 
-export function isReplicaWorking(wg: AcWorkgroup, replica: AcAgentReplica): boolean {
-  return isSessionWorking(findReplicaSession(wg, replica));
+export function isReplicaWorking(room: AcWorkgroup, replica: AcAgentReplica): boolean {
+  return isSessionWorking(findReplicaSession(room, replica));
 }
 
-export function workgroupIsWorking(wg: AcWorkgroup): boolean {
-  return wg.agents.some((replica) => isReplicaWorking(wg, replica));
+export function roomIsWorking(room: AcWorkgroup): boolean {
+  return room.agents.some((replica) => isReplicaWorking(room, replica));
 }
 
-export function splitWorkgroupsByWorking(
-  workgroups: readonly AcWorkgroup[]
+export function splitRoomsByWorking(
+  rooms: readonly AcWorkgroup[]
 ): { working: AcWorkgroup[]; notWorking: AcWorkgroup[] } {
   const working: AcWorkgroup[] = [];
   const notWorking: AcWorkgroup[] = [];
-  for (const wg of workgroups) {
-    (workgroupIsWorking(wg) ? working : notWorking).push(wg);
+  for (const room of rooms) {
+    (roomIsWorking(room) ? working : notWorking).push(room);
   }
   return { working, notWorking };
 }
 
 export function configuredReplicaRepoBadgesLive(
   replica: AcAgentReplica,
-  workgroup: Pick<AcWorkgroup, "repoPath">
+  room: Pick<AcWorkgroup, "repoPath">
 ): SessionRepo[] {
   return configuredReplicaRepoBadges(
     {
@@ -61,7 +61,7 @@ export function configuredReplicaRepoBadgesLive(
       repoBranchByPath: effectiveRepoBranchByPath(replica),
       repoDirtyByPath: effectiveRepoDirtyByPath(replica),
     },
-    workgroup
+    room
   );
 }
 
@@ -69,59 +69,59 @@ export function configuredReplicaRepoBadgesLive(
  *  `gitRepos` first, configured badges as fallback), reading the SAME
  *  `findReplicaSession` the row reads, so the rail counter and the row tint
  *  cannot disagree for one room in one frame. */
-export function replicaRepoBadgesLive(wg: AcWorkgroup, replica: AcAgentReplica): SessionRepo[] {
-  const session = findReplicaSession(wg, replica);
+export function replicaRepoBadgesLive(room: AcWorkgroup, replica: AcAgentReplica): SessionRepo[] {
+  const session = findReplicaSession(room, replica);
   return session && session.gitRepos.length > 0
     ? session.gitRepos
-    : configuredReplicaRepoBadgesLive(replica, wg);
+    : configuredReplicaRepoBadgesLive(replica, room);
 }
 
 /** #2202 - the coordinator gate matches the row's `isCoord()` term: a
  *  non-coordinator replica's CI counts on no surface. */
-export function replicaCiRunning(wg: AcWorkgroup, replica: AcAgentReplica): boolean {
+export function replicaCiRunning(room: AcWorkgroup, replica: AcAgentReplica): boolean {
   if (!replica.isCoordinator) return false;
-  return replicaRepoBadgesLive(wg, replica).some(
+  return replicaRepoBadgesLive(room, replica).some(
     (repo) => remoteActivityStore.forPath(repo.sourcePath)?.ci === "running"
   );
 }
 
-export function workgroupCiRunning(wg: AcWorkgroup): boolean {
-  return wg.agents.some((replica) => replicaCiRunning(wg, replica));
+export function roomCiRunning(room: AcWorkgroup): boolean {
+  return room.agents.some((replica) => replicaCiRunning(room, replica));
 }
 
 /** #2202 - "working" on every user-facing surface: a session is working OR the
- *  room's repo is running CI. `workgroupIsWorking` stays session-only. */
-export function workgroupIsActive(wg: AcWorkgroup): boolean {
-  return workgroupIsWorking(wg) || workgroupCiRunning(wg);
+ *  room's repo is running CI. `roomIsWorking` stays session-only. */
+export function roomIsActive(room: AcWorkgroup): boolean {
+  return roomIsWorking(room) || roomCiRunning(room);
 }
 
-export function splitWorkgroupsByActive(
-  workgroups: readonly AcWorkgroup[]
+export function splitRoomsByActive(
+  rooms: readonly AcWorkgroup[]
 ): { active: AcWorkgroup[]; notActive: AcWorkgroup[] } {
   const active: AcWorkgroup[] = [];
   const notActive: AcWorkgroup[] = [];
-  for (const wg of workgroups) {
-    (workgroupIsActive(wg) ? active : notActive).push(wg);
+  for (const room of rooms) {
+    (roomIsActive(room) ? active : notActive).push(room);
   }
   return { active, notActive };
 }
 
-export function replicaHasRaisedHand(wg: AcWorkgroup, replica: AcAgentReplica): boolean {
+export function replicaHasRaisedHand(room: AcWorkgroup, replica: AcAgentReplica): boolean {
   if (!replica.isCoordinator) return false;
-  if (!wg.taskTitle) return false;
-  const communication = findReplicaSession(wg, replica)?.communication;
+  if (!room.taskTitle) return false;
+  const communication = findReplicaSession(room, replica)?.communication;
   return communication?.kind === "raiseHand" && communication?.visible === true;
 }
 
-export function workgroupHasRaisedHand(wg: AcWorkgroup): boolean {
-  return wg.agents.some((replica) => replicaHasRaisedHand(wg, replica));
+export function roomHasRaisedHand(room: AcWorkgroup): boolean {
+  return room.agents.some((replica) => replicaHasRaisedHand(room, replica));
 }
 
-export function replicaHasBlockedMenu(wg: AcWorkgroup, replica: AcAgentReplica): boolean {
-  const communication = findReplicaSession(wg, replica)?.communication;
+export function replicaHasBlockedMenu(room: AcWorkgroup, replica: AcAgentReplica): boolean {
+  const communication = findReplicaSession(room, replica)?.communication;
   return communication?.kind === "blockedMenu" && communication?.visible === true;
 }
 
-export function workgroupHasBlockedMenu(wg: AcWorkgroup): boolean {
-  return wg.agents.some((replica) => replicaHasBlockedMenu(wg, replica));
+export function roomHasBlockedMenu(room: AcWorkgroup): boolean {
+  return room.agents.some((replica) => replicaHasBlockedMenu(room, replica));
 }
