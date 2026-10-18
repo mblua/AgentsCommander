@@ -202,7 +202,7 @@ describe("room activity observer actual Solid lifecycle", () => {
     sessionsStore.setSessions([live(other)]);
     expect(confirmedRoomIsActive(otherPath, other)).toBe(true);
     vi.advanceTimersByTime(15000);
-  
+
     expect(active()).toBe(false);
     expect(confirmedRoomIsActive(otherPath, other)).toBe(true);
   });
