@@ -2207,7 +2207,9 @@ mod tests {
             state
                 .observe_return_success(ReturnDeliveryProof { context }, baseline)
                 .unwrap();
-            assert!(state.select_ticket(id, Instant::now()).is_ok());
+            assert!(state
+                .select_ticket(id, Instant::now() + Duration::from_secs(60))
+                .is_ok());
             let app = tauri::test::mock_builder()
                 .manage(settings)
                 .manage(state.clone())
@@ -2240,7 +2242,7 @@ mod tests {
             .unwrap()
             .is_hold_active(id, Duration::from_secs(17)));
         assert!(matches!(
-            publisher.select_ticket(id, before_key + Duration::from_secs(1)),
+            publisher.select_ticket(id, before_key + Duration::from_secs(46)),
             Err(ResponseCloseError::Unknown)
         ));
         assert!(publisher
