@@ -7867,7 +7867,9 @@ async fn drain_after_shutdown<R: Runtime>(
                     log::debug!("[selection] queued route-loss caller dropped during shutdown");
                 }
             }
-            CoordinatorJob::ConditionalResponseClose { .. } => {}
+            CoordinatorJob::ConditionalResponseClose { .. } => {
+                hold.release();
+            }
             CoordinatorJob::Destroy { response, .. } => {
                 if hold
                     .respond(
@@ -8079,6 +8081,7 @@ async fn execute_envelope<R: Runtime>(
             {
                 log::warn!("[response-close] conditional operation failed: {}", error);
             }
+            hold.release();
         }
         CoordinatorJob::Destroy { request, response } => {
             let result =
