@@ -1,4 +1,5 @@
-import { batch, createSignal } from "solid-js";
+import { batch, createSignal, untrack } from "solid-js";
+import { emitRailDiagnostic, railToken, railEntity, reconcileRailProjects, type RailFields } from "../rail-diagnostics";
 import type {
   TaskSnapshot,
   AcWorkgroup,
@@ -31,7 +32,26 @@ import type { ProjectState } from "./project-merge";
 export type { ProjectState };
 import { replicaVolatileStore } from "./replica-volatile";
 
-const [projects, setProjects] = createSignal<ProjectState[]>([]);
+const [projects, setProjectsSignal] = createSignal<ProjectState[]>([]);
+function setProjects(value: ProjectState[] | ((previous: ProjectState[]) => ProjectState[])): ProjectState[] {
+  return setProjectsSignal(previous => {
+    const result = typeof value === "function" ? value(previous) : value;
+    untrack(() => reconcileRailProjects(result.map(project => project.path)));
+    return result;
+  });
+}
+
+type Operation = { id?: number; start: number; fields: RailFields };
+function startOperation(event: "reload-start" | "discover-start" | "snapshot-start" | "snapshots-start" | "task-start" | "loop-start", path?: string, count?: number): Operation {
+  const canonical = path ? findLoadedProjectPathForRefresh(projects(), path) : undefined;
+  const operation = { id: railToken(), start: performance.now(), fields: canonical ? railEntity(canonical) : {} };
+  emitRailDiagnostic("store", event, { ...operation.fields, operationId: operation.id, count });
+  return operation;
+}
+function endOperation(operation: Operation, event: "reload-end" | "discover-end" | "snapshot-end" | "snapshots-end" | "task-end" | "loop-end", outcome: RailFields["outcome"], changedCount?: number, count?: number): void {
+  emitRailDiagnostic("store", event, { ...operation.fields, operationId: operation.id, outcome, changedCount, count,
+    durationMs: Math.max(0, performance.now() - operation.start) });
+}
 const [archivedPaths, setArchivedPaths] = createSignal<string[]>([]);
 const [loading, setLoading] = createSignal(false);
 const [lastLoadError, setLastLoadError] = createSignal<string | null>(null);
@@ -69,13 +89,18 @@ function pruneTaskSnapshots(): void {
   setTaskSnapshots(prev => new Map([...prev].filter(([key]) => rooms.has(key))));
 }
 
-async function refreshTaskSnapshot(path: string): Promise<void> {
+type SnapshotAggregate = { changedCount: number; outcome: NonNullable<RailFields["outcome"]> };
+function refreshTaskSnapshot(path: string): Promise<void> { return refreshTaskSnapshotAttempt(path); }
+async function refreshTaskSnapshotAttempt(path: string, aggregate?: SnapshotAggregate): Promise<void> {
+  const operation = aggregate ? undefined : startOperation("snapshot-start");
+  let outcome: NonNullable<RailFields["outcome"]> = "unchanged";
+  try {
   const key = normalizePath(path);
   const root = loadedTaskRooms().get(key);
-  if (!root) return;
+  if (!root) { outcome = "unloaded"; return; }
   const generation = taskGeneration;
   const connection = getTransportConnectionState();
-  if (connection.state !== "connected") return;
+  if (connection.state !== "connected") { outcome = "disconnected"; return; }
   const request = ++nextTaskRequest;
   taskRequests.set(key, request);
   setTaskSnapshots(prev => { const next = new Map(prev); next.delete(key); return next; });
@@ -87,20 +112,35 @@ async function refreshTaskSnapshot(path: string): Promise<void> {
   };
   try {
     const snapshot = await TaskAPI.getSnapshotAt(root);
-    if (!current()) return;
+    if (!current()) { outcome = "stale"; return; }
     if (normalizePath(snapshot.workgroupRoot) !== key) throw new Error("Task snapshot room mismatch");
     taskErrors.delete(key);
     setTaskSnapshots(prev => new Map(prev).set(key, snapshot));
+    outcome = "applied";
   } catch (error) {
-    if (!current() || taskErrors.has(key)) return;
+    if (!current()) { outcome = "stale"; return; }
+    outcome = "error";
+    if (taskErrors.has(key)) return;
     taskErrors.add(key);
     toastStore.error(`Could not read room task: ${String(error)}`);
+  }
+  } finally {
+    if (operation) endOperation(operation, "snapshot-end", outcome, outcome === "applied" ? 1 : 0);
+    if (aggregate) {
+      if (outcome === "applied") aggregate.changedCount++;
+      const rank = (value: string) => value === "error" ? 3 : value === "stale" ? 2 : value === "applied" ? 1 : 0;
+      if (rank(outcome) > rank(aggregate.outcome)) aggregate.outcome = outcome;
+    }
   }
 }
 
 function refreshTaskSnapshots(): void {
   pruneTaskSnapshots();
-  for (const path of loadedTaskRooms().values()) void refreshTaskSnapshot(path);
+  const paths = [...loadedTaskRooms().values()];
+  const operation = startOperation("snapshots-start", undefined, paths.length);
+  const aggregate: SnapshotAggregate = { changedCount: 0, outcome: "unchanged" };
+  const pending = paths.map(path => refreshTaskSnapshotAttempt(path, aggregate));
+  void Promise.allSettled(pending).then(() => endOperation(operation, "snapshots-end", aggregate.outcome, aggregate.changedCount, paths.length));
 }
 
 function invalidateTaskSnapshots(): void {
@@ -142,9 +182,15 @@ async function runSerializedArchiveChange(
 }
 
 async function discoverAndAppendIfCurrent(path: string, key: string): Promise<void> {
+  const operation = startOperation("discover-start", path);
+  let outcome: RailFields["outcome"] = "error";
+  try {
   const result = await ProjectAPI.discover(path);
-  if (hasArchivedPath(key)) return;
+  if (hasArchivedPath(key)) { outcome = "discarded"; return; }
+  const previous = projects();
   appendDiscoveredProject(path, result);
+  outcome = projects() === previous ? "unchanged" : "applied";
+  } finally { endOperation(operation, "discover-end", outcome); }
 }
 
 function appendDiscoveredProject(regPath: string, result: AcDiscoveryResult) {
@@ -578,6 +624,8 @@ export const projectStore = {
     task: string | null,
     taskTitle: string | null | undefined
   ) {
+    const operation = startOperation("task-start");
+    const previous = projects();
     const normalized = normalizePath(workgroupPath);
     const normalizedTitle = taskTitle ?? undefined;
     setProjects((prev) => {
@@ -596,9 +644,12 @@ export const projectStore = {
       });
       return anyChanged ? next : prev;
     });
+    endOperation(operation, "task-end", projects() === previous ? "unchanged" : "applied", projects() === previous ? 0 : 1);
   },
 
   upsertLoop(projectPath: string, loop: AcLoopSummary) {
+    const operation = startOperation("loop-start", projectPath);
+    const previous = projects();
     const normalized = normalizePath(projectPath);
     setProjects((prev) => {
       let anyChanged = false;
@@ -615,9 +666,12 @@ export const projectStore = {
       });
       return anyChanged ? next : prev;
     });
+    endOperation(operation, "loop-end", projects() === previous ? "unchanged" : "applied", projects() === previous ? 0 : 1);
   },
 
   removeLoop(projectPath: string, loopId: string) {
+    const operation = startOperation("loop-start", projectPath);
+    const previous = projects();
     const normalized = normalizePath(projectPath);
     setProjects((prev) => {
       let anyChanged = false;
@@ -629,13 +683,17 @@ export const projectStore = {
       });
       return anyChanged ? next : prev;
     });
+    endOperation(operation, "loop-end", projects() === previous ? "unchanged" : "applied", projects() === previous ? 0 : 1);
   },
 
   async reloadProject(path: string) {
+    const operation = startOperation("reload-start", path);
+    let reloadOutcome: RailFields["outcome"] = "unchanged";
     const normalized = normalizePath(path);
     const existing = inFlightReloads.get(normalized);
     if (existing) {
       queuedReloads.add(normalized);
+      endOperation(operation, "reload-end", "queued");
       return existing;
     }
 
@@ -643,12 +701,16 @@ export const projectStore = {
       try {
         do {
           queuedReloads.delete(normalized);
+          const discovery = startOperation("discover-start", path);
+          let outcome: RailFields["outcome"] = "error";
           try {
             const result = await ProjectAPI.discover(path);
             if (queuedReloads.has(normalized)) {
+              outcome = "discarded";
               continue;
             }
             const loaded = projects().some((p) => normalizePath(p.path) === normalized);
+            const previous = projects();
             batch(() => {
               setProjects((prev) => {
                 let anyChanged = false;
@@ -665,13 +727,19 @@ export const projectStore = {
                 refreshTaskSnapshots();
               }
             });
+            outcome = !loaded ? "unloaded" : previous === projects() ? "unchanged" : "applied";
+            reloadOutcome = outcome;
           } catch (e) {
+            reloadOutcome = "error";
             console.error("Failed to reload project:", e);
+          } finally {
+            endOperation(discovery, "discover-end", outcome);
           }
         } while (queuedReloads.has(normalized));
       } finally {
         inFlightReloads.delete(normalized);
         queuedReloads.delete(normalized);
+        endOperation(operation, "reload-end", reloadOutcome);
       }
     })();
     inFlightReloads.set(normalized, promise);

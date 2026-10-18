@@ -25,6 +25,10 @@ const SEVERITY: Record<LogLevel, number> = {
 
 let currentLevel = SEVERITY.info; // default Info
 
+export function isDebugEnabled(): boolean {
+  return currentLevel >= SEVERITY.debug;
+}
+
 /** #612 Set the active console verbosity. Called by `initLogLevelForWindow`
  *  from the persisted setting and the live `log_level_changed` event. An
  *  unknown value falls back to Info. */
@@ -84,15 +88,17 @@ console.trace = (...args: unknown[]) => capture("trace", SEVERITY.trace, origTra
 
 // Also capture unhandled errors and promise rejections. These are ERROR-level
 // signals and bypass the #612 severity gate entirely (always captured).
-window.addEventListener("error", (e) => {
-  const msg = `${e.message} at ${e.filename}:${e.lineno}:${e.colno}`;
-  captured.push({ ts: timestamp(), level: "error", args: msg });
-});
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (e) => {
+    const msg = `${e.message} at ${e.filename}:${e.lineno}:${e.colno}`;
+    captured.push({ ts: timestamp(), level: "error", args: msg });
+  });
 
-window.addEventListener("unhandledrejection", (e) => {
-  const msg = `Unhandled rejection: ${e.reason}`;
-  captured.push({ ts: timestamp(), level: "error", args: msg });
-});
+  window.addEventListener("unhandledrejection", (e) => {
+    const msg = `Unhandled rejection: ${e.reason}`;
+    captured.push({ ts: timestamp(), level: "error", args: msg });
+  });
+}
 
 export function getConsoleLogs(): LogEntry[] {
   return [...captured];
