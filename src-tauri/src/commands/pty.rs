@@ -380,18 +380,24 @@ fn record_typing_hold_keystroke<R: tauri::Runtime>(
     let window = app
         .try_state::<crate::config::settings::SettingsState>()
         .and_then(|settings| {
-            settings.try_read().ok().map(|settings| {
-                Duration::from_secs(u64::from(settings.typing_hold_seconds.clamp(
-                    crate::config::settings::TYPING_HOLD_SECONDS_MIN,
-                    crate::config::settings::TYPING_HOLD_SECONDS_MAX,
-                )))
-            })
+            settings
+                .try_current_read()
+                .inspect_err(|error| {
+                    log::debug!("[typing-hold] skipping key publication: {error}");
+                })
+                .ok()
+                .map(|settings| {
+                    Duration::from_secs(u64::from(settings.typing_hold_seconds.clamp(
+                        crate::config::settings::TYPING_HOLD_SECONDS_MIN,
+                        crate::config::settings::TYPING_HOLD_SECONDS_MAX,
+                    )))
+                })
         });
     if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
         let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
         hold.note_qualifying_key(session_id);
-        if let Some(publisher) = response_close_hold_publisher(app) {
-            publisher.publish_typing_key(session_id, window, std::time::Instant::now());
+        if let (Some(publisher), Some(window)) = (response_close_hold_publisher(app), window) {
+            publisher.publish_typing_key(session_id, Some(window), std::time::Instant::now());
         }
     }
 }
@@ -399,16 +405,20 @@ fn record_typing_hold_keystroke<R: tauri::Runtime>(
 /// #2336 - the live natural-hold window. Read from settings on every evaluation
 /// so an edit takes effect without a restart; clamped because the Settings API
 /// rejects out-of-range values but a hand-edited settings.json still loads.
-async fn typing_hold_window<R: tauri::Runtime>(app: &AppHandle<R>) -> Duration {
-    let seconds = match app.try_state::<crate::config::settings::SettingsState>() {
-        Some(settings) => settings.read().await.typing_hold_seconds,
-        None => crate::config::settings::DEFAULT_TYPING_HOLD_SECONDS,
-    }
-    .clamp(
-        crate::config::settings::TYPING_HOLD_SECONDS_MIN,
-        crate::config::settings::TYPING_HOLD_SECONDS_MAX,
-    );
-    Duration::from_secs(u64::from(seconds))
+async fn typing_hold_window<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Duration, String> {
+    let settings = app
+        .try_state::<crate::config::settings::SettingsState>()
+        .ok_or_else(|| "settings owner unavailable (missing state)".to_string())?;
+    let seconds = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?
+        .typing_hold_seconds
+        .clamp(
+            crate::config::settings::TYPING_HOLD_SECONDS_MIN,
+            crate::config::settings::TYPING_HOLD_SECONDS_MAX,
+        );
+    Ok(Duration::from_secs(u64::from(seconds)))
 }
 
 /// #2336 - pure in-memory padlock snapshot for one session. An absent state or
@@ -445,7 +455,13 @@ pub(crate) async fn typing_hold_defers_injection<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Uuid,
 ) -> bool {
-    let window = typing_hold_window(app).await;
+    let window = match typing_hold_window(app).await {
+        Ok(window) => window,
+        Err(error) => {
+            log::debug!("[typing-hold] deferring injection: {error}");
+            return true;
+        }
+    };
     typing_hold_snapshot(app, session_id, window).closed
 }
 
@@ -513,7 +529,7 @@ pub async fn get_typing_hold(
 ) -> Result<crate::pty::input_activity::TypingHoldSnapshot, String> {
     let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
     ensure_session_exists(&app, session_id).await?;
-    let window = typing_hold_window(&app).await;
+    let window = typing_hold_window(&app).await?;
     Ok(typing_hold_snapshot(&app, session_id, window))
 }
 
@@ -529,7 +545,7 @@ pub async fn toggle_typing_hold(
 ) -> Result<crate::pty::input_activity::TypingHoldSnapshot, String> {
     let session_id = Uuid::parse_str(&session_id).map_err(|error| error.to_string())?;
     ensure_session_exists(&app, session_id).await?;
-    let window = typing_hold_window(&app).await;
+    let window = typing_hold_window(&app).await?;
     match app.try_state::<crate::pty::input_activity::TypingHoldState>() {
         Some(state) => {
             let publisher = response_close_hold_publisher(&app);
@@ -2094,6 +2110,57 @@ mod tests {
     use crate::config::coordinator_clocks::{CoordinatorClocks, CoordinatorClocksState};
     use crate::session::manager::SessionManager;
     use crate::session::session::SessionRepo;
+
+    #[tokio::test]
+    async fn e2992_p42_invalid_defers_hold() {
+        use crate::config::settings::{
+            SettingsAvailability, SettingsOwner, SettingsPublisher, SettingsState,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, br#"{"typingHoldSeconds":17}"#).unwrap();
+        let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
+        let app = tauri::test::mock_builder()
+            .manage::<SettingsState>(Arc::clone(&owner))
+            .manage(crate::pty::input_activity::new_typing_hold_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let id = Uuid::new_v4();
+        assert_eq!(
+            typing_hold_window(app.handle()).await.unwrap(),
+            Duration::from_secs(17)
+        );
+        assert!(!typing_hold_defers_injection(app.handle(), id).await);
+        record_typing_hold_keystroke(app.handle(), id, b"ready");
+        let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
+        assert!(hold
+            .lock()
+            .unwrap()
+            .is_hold_active(id, Duration::from_secs(17)));
+
+        let report = owner
+            .with_operation("p42-invalid", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |path| {
+                    std::fs::write(path, b"{").map_err(|error| error.to_string())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        assert!(owner.current_snapshot().await.is_err());
+        assert!(typing_hold_window(app.handle()).await.is_err());
+        let invalid_id = Uuid::new_v4();
+        assert!(typing_hold_defers_injection(app.handle(), invalid_id).await);
+        record_typing_hold_keystroke(app.handle(), invalid_id, b"invalid");
+        assert!(
+            hold.lock()
+                .unwrap()
+                .is_hold_active(invalid_id, Duration::from_secs(17)),
+            "independent key evidence survives settings failure"
+        );
+        owner.drain_blocking(Duration::ZERO);
+    }
 
     struct FreshIntentFixture {
         app: tauri::App<tauri::test::MockRuntime>,

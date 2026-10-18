@@ -200,7 +200,10 @@ pub async fn spec_board_new(
     settings: State<'_, SettingsState>,
     repo_root: Option<String>,
 ) -> Result<SpecBoardDocument, String> {
-    let settings_snapshot = settings.read().await.clone();
+    let settings_snapshot = settings
+        .current_snapshot()
+        .await
+        .map_err(|error| error.to_string())?;
     let repo = resolve_repo_root(repo_root.as_deref(), &settings_snapshot).await?;
     let doc_id = uuid::Uuid::new_v4().to_string();
     let (snapshot_dir, draft_dir) = internal_dirs(&repo, &doc_id).await?;
@@ -249,7 +252,10 @@ pub async fn spec_board_pick_open(
     app: AppHandle,
     repo_root: Option<String>,
 ) -> Result<Option<SpecBoardDocument>, String> {
-    let settings_snapshot = settings.read().await.clone();
+    let settings_snapshot = settings
+        .current_snapshot()
+        .await
+        .map_err(|error| error.to_string())?;
     let default_root = resolve_repo_root(repo_root.as_deref(), &settings_snapshot).await?;
     let picked = rfd::AsyncFileDialog::new()
         .add_filter("Spec diagrams", &["mmd", "mermaid", "md"])
@@ -278,7 +284,10 @@ pub async fn spec_board_open(
     app: AppHandle,
     path: String,
 ) -> Result<SpecBoardDocument, String> {
-    let settings_snapshot = settings.read().await.clone();
+    let settings_snapshot = settings
+        .current_snapshot()
+        .await
+        .map_err(|error| error.to_string())?;
     spec_board_open_inner(
         state.inner().clone(),
         settings_snapshot,
@@ -302,7 +311,10 @@ pub async fn spec_board_save(
             .path
             .ok_or_else(|| "Spec board document has no save path".to_string())?
     };
-    let settings_snapshot = settings.read().await.clone();
+    let settings_snapshot = settings
+        .current_snapshot()
+        .await
+        .map_err(|error| error.to_string())?;
     save_to_path(
         state.inner().clone(),
         settings_snapshot,
@@ -323,7 +335,10 @@ pub async fn spec_board_pick_save(
     content: String,
     repo_root: Option<String>,
 ) -> Result<Option<SpecBoardDocument>, String> {
-    let settings_snapshot = settings.read().await.clone();
+    let settings_snapshot = settings
+        .current_snapshot()
+        .await
+        .map_err(|error| error.to_string())?;
     let repo = resolve_repo_root(repo_root.as_deref(), &settings_snapshot).await?;
     let default_dir = repo.join("specs").join("mermaids");
     tokio::fs::create_dir_all(&default_dir)

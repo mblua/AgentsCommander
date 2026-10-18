@@ -936,7 +936,10 @@ fn copy_dir_into(src: &Path, dst: &Path, failures: &mut Vec<String>) {
 pub async fn list_role_templates(
     settings: tauri::State<'_, crate::config::settings::SettingsState>,
 ) -> Result<Vec<RoleTemplateMeta>, String> {
-    let snapshot = settings.read().await.clone();
+    let snapshot = settings
+        .current_snapshot()
+        .await
+        .map_err(|error| error.to_string())?;
     match crate::config::config_dir() {
         Some(config_dir) => Ok(collect_role_templates(&snapshot, &config_dir)),
         None => {

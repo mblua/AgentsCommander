@@ -163,7 +163,10 @@ async fn co_managed_inputs_for_session<R: Runtime>(
 
     let (api_key, globally_enabled) = {
         let settings = app.state::<SettingsState>();
-        let guard = settings.read().await;
+        let guard = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
         (guard.jev_api_key.clone(), guard.co_managed_enabled)
     };
 
@@ -2179,7 +2182,10 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 )
             } else {
                 let settings_state = app.state::<SettingsState>();
-                let cfg = settings_state.read().await;
+                let cfg = settings_state
+                    .current_read()
+                    .await
+                    .map_err(|error| error.to_string())?;
                 resolve_actual_agent(
                     &shell,
                     &shell_args,
@@ -2243,7 +2249,10 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             None => match agent_id.as_ref() {
                 Some(original_agent_id) => {
                     let settings_state = app.state::<SettingsState>();
-                    let cfg = settings_state.read().await;
+                    let cfg = settings_state
+                        .current_read()
+                        .await
+                        .map_err(|error| error.to_string())?;
                     let id = Uuid::new_v4().to_string();
                     let seed = match crate::config::settings::bootstrap_binding_revision(
                         &cfg,
@@ -2273,7 +2282,11 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         };
         let resource_monitor = app.state::<Arc<ResourceMonitorState>>().inner().clone();
         let mut resource_permit = if is_agent_owned_launch {
-            let cfg = app.state::<SettingsState>().read().await.clone();
+            let cfg = app
+                .state::<SettingsState>()
+                .current_snapshot()
+                .await
+                .map_err(|error| error.to_string())?;
             resource_monitor.try_reserve_agent_slot(ResourceLimits::from(&cfg))?
         } else {
             None
@@ -2566,11 +2579,20 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             .unwrap_or_else(|| cwd.clone());
         let container_credential = if session.backend_kind == SessionBackendKind::ContainerTransport
         {
-            let copy_enabled = app
-                .state::<SettingsState>()
-                .read()
-                .await
-                .container_credentials_from_host;
+            let settings_state = app.state::<SettingsState>();
+            let copy_enabled = {
+                let cfg = match settings_state.current_read().await {
+                    Ok(cfg) => cfg,
+                    Err(error) => {
+                        let error = error.to_string();
+                        release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                        drop(mgr);
+                        rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
+                        return Err(error);
+                    }
+                };
+                cfg.container_credentials_from_host
+            };
             if copy_enabled {
                 agent_kind
                     .and_then(|k| k.profile().container_credential)
@@ -2786,7 +2808,16 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
             bool,
         ) = {
             let settings_state = app.state::<SettingsState>();
-            let cfg = settings_state.read().await;
+            let cfg = match settings_state.current_read().await {
+                Ok(cfg) => cfg,
+                Err(error) => {
+                    let error = error.to_string();
+                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                    drop(mgr);
+                    rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
+                    return Err(error);
+                }
+            };
             let managed = crate::config::agent_command::managed_instructions_filenames(&cfg);
             let target = crate::config::agent_command::resolve_target_filename(
                 agent_id.as_deref(),
@@ -3062,7 +3093,16 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
         // no lock is held across that I/O.
         let launch_idle_tuning = {
             let settings_state = app.state::<SettingsState>();
-            let snapshot = settings_state.read().await.clone();
+            let snapshot = match settings_state.current_snapshot().await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    let error = error.to_string();
+                    release_resource_launch_permit(&resource_monitor, &mut resource_permit);
+                    drop(mgr);
+                    rollback_pre_created_session(app, session_mgr, pty_mgr, id, &error).await;
+                    return Err(error);
+                }
+            };
             let requested_agent_id = agent_id.clone();
             match tokio::task::spawn_blocking(move || {
                 let catalog =
@@ -3301,11 +3341,23 @@ async fn create_session_inner_impl<R: tauri::Runtime>(
                 // #2433 - computed under the settings read lock, written after it drops.
                 let write = {
                     let settings = app.state::<SettingsState>();
-                    let cfg = settings.read().await;
-                    prepare_last_coding_agent_write(aid, agent_label.as_deref(), &cfg)
+                    let write = match settings.current_read().await {
+                        Ok(cfg) => Some(prepare_last_coding_agent_write(
+                            aid,
+                            agent_label.as_deref(),
+                            &cfg,
+                        )),
+                        Err(error) => {
+                            log::debug!("[session] skipping lastCodingAgent publication: {error}");
+                            None
+                        }
+                    };
+                    write
                 };
-                if let Err(e) = save_last_coding_agent(&cwd, &id.to_string(), &write) {
-                    log::warn!("Failed to save lastCodingAgent: {}", e);
+                if let Some(write) = write {
+                    if let Err(e) = save_last_coding_agent(&cwd, &id.to_string(), &write) {
+                        log::warn!("Failed to save lastCodingAgent: {}", e);
+                    }
                 }
                 // #592 - persist the loaded profile content-hash so drift survives an
                 // AC restart. Best-effort; never aborts the spawn. No-op off-replica.
@@ -3615,7 +3667,10 @@ pub async fn create_session(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SessionInfo, String> {
-    let cfg = settings.read().await;
+    let cfg = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?;
 
     let cwd = resolve_create_session_cwd(cwd);
 
@@ -3707,7 +3762,13 @@ pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
 
     let settings = app.state::<SettingsState>();
     let exists = {
-        let cfg = settings.read().await;
+        let cfg = match settings.current_read().await {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                log::debug!("[telegram] skipping association: {error}");
+                return;
+            }
+        };
         cfg.telegram_bots.iter().any(|b| b.id == bot_id)
     };
 
@@ -3757,6 +3818,11 @@ pub(crate) async fn attach_persisted_telegram_if_configured<R: tauri::Runtime>(
             session_id,
             e
         );
+        // Availability failure during attach must not erase the persisted intent.
+        if let Err(error) = settings.current_read().await {
+            log::debug!("[telegram] preserving association intent: {error}");
+            return;
+        }
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         mgr.set_telegram_bot_id(session_id, None).await;
@@ -3776,7 +3842,13 @@ pub(crate) async fn preserve_deferred_telegram_intent_if_valid(
     };
 
     let exists = {
-        let cfg = settings.read().await;
+        let cfg = match settings.current_read().await {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                log::debug!("[telegram] skipping association: {error}");
+                return;
+            }
+        };
         cfg.telegram_bots.iter().any(|b| b.id == bot_id)
     };
 
@@ -3814,7 +3886,13 @@ pub(crate) async fn attach_local_config_telegram_if_any<R: tauri::Runtime>(
 
     let settings = app.state::<SettingsState>();
     let bot_id = {
-        let cfg = settings.read().await;
+        let cfg = match settings.current_read().await {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                log::debug!("[telegram] skipping association: {error}");
+                return;
+            }
+        };
         cfg.telegram_bots
             .iter()
             .find(|b| b.label == bot_label)
@@ -4325,7 +4403,11 @@ pub async fn close_coordinator(
     // guard-bound-then-used-next-line form does NOT compile (the temporary State is
     // dropped at the `;`, so the read guard dangles). `bool` is Copy.
     let settings = app.state::<SettingsState>();
-    let cascade = settings.read().await.coordinator_cascade_close_enabled;
+    let cascade = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?
+        .coordinator_cascade_close_enabled;
     let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
     // LIVE-PTY members of THIS team, excluding the coordinator (decision 1; mirrors
@@ -5022,7 +5104,10 @@ pub(crate) async fn execute_restart_transaction<R: tauri::Runtime>(
     // this block. The #1271 host-shell snapshot is copied from the SAME guard so
     // program and args can never pair across a configuration change.
     let (selected_agent_id, resolved_spawn, resolved_agent_host_shell) = {
-        let cfg = settings.read().await;
+        let cfg = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
         let selection = matched_selection(
             &cfg,
             &cwd,
@@ -5380,7 +5465,10 @@ pub async fn list_sessions(
     let mut infos = { session_mgr.read().await.list_sessions().await };
     // #592 - recompute drift per session against current settings (settings-aware,
     // unlike the `From<&Session>` path which always emits `profile_outdated=false`).
-    let cfg = settings.read().await;
+    let cfg = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?;
     for info in infos.iter_mut() {
         info.profile_outdated = compute_profile_outdated(&cfg, info);
     }
@@ -5886,7 +5974,10 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
 
     let last_coding_agent = crate::config::root_agent::read_last_coding_agent(&root_agent_path);
     let (shell, shell_args, agent_id, agent_label) = {
-        let settings = settings.read().await;
+        let settings = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
         resolve_root_agent_command(
             &settings,
             request.requested_agent_id.as_deref(),
@@ -5898,7 +5989,10 @@ pub(crate) async fn execute_root_transaction<R: tauri::Runtime>(
         // from the SAME single guard, before any await, so the pair can never
         // mix across a configuration change (Phase 1 items 1-2; mirrors the
         // restart pattern).
-        let settings = settings.read().await;
+        let settings = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
         let spawn = build_configured_agent_spawn_for_cwd(
             &settings,
             agent_id,
@@ -8363,6 +8457,55 @@ mod tests {
             intent,
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn e2992_p42_invalid_prevents_spawn() {
+        use crate::config::settings::{SettingsAvailability, SettingsState};
+
+        let cwd = tempfile::tempdir().unwrap();
+        let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let backend = Arc::new(ScriptedSpawnBackend::default());
+        let pty_mgr = Arc::new(Mutex::new(crate::pty::manager::PtyManager::new_for_test(
+            backend.clone(),
+        )));
+        let app = session_test_app(test_settings(), session_mgr.clone(), pty_mgr.clone());
+        let cwd = cwd.path().to_string_lossy().to_string();
+        let ready = create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd).await;
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+
+        // Closed exercises the same Unavailable admission error as Invalid while
+        // the earlier archive/creation gates still use StagedCompatibility reads.
+        // Those gates are outside P42; no active-owner forwarding is used here.
+        let settings = app.state::<SettingsState>();
+        settings.drain_blocking(std::time::Duration::ZERO);
+        assert_eq!(settings.availability(), SettingsAvailability::Closed);
+        let error = super::create_session_inner(
+            app.handle(),
+            &session_mgr,
+            &pty_mgr,
+            "test-shell".to_string(),
+            Vec::new(),
+            cwd,
+            Some("unavailable".to_string()),
+            Some("claude".to_string()),
+            None,
+            true,
+            Vec::new(),
+            true,
+            None,
+            None,
+            None,
+            CreateSelectionIntent::User,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "settings owner unavailable (Closed)");
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
+        let rows = session_mgr.read().await.list_sessions().await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, ready.id);
+        close_test_coordinator(&app).await;
     }
 
     pub(crate) async fn create_scripted_session(

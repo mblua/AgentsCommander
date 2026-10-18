@@ -332,7 +332,14 @@ pub async fn task_clean_at(
 ) -> Result<TaskUpdateResult, String> {
     // Clone the small Vec and drop the read guard immediately; perform() does
     // blocking IO and must not be held across the settings lock.
-    let project_paths = { settings.read().await.project_paths.clone() };
+    let project_paths = {
+        settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?
+            .project_paths
+            .clone()
+    };
     let wg_root = validate_wg_root(&workgroup_root, &project_paths)?;
 
     let outcome = task_ops::perform(&wg_root, TaskOp::Clean).map_err(|e| e.to_string())?;
@@ -357,7 +364,14 @@ pub async fn task_set_title_at(
     validate_user_title(&title)?;
     // Clone the small Vec and drop the read guard immediately; perform() does
     // blocking IO and must not be held across the settings lock.
-    let project_paths = { settings.read().await.project_paths.clone() };
+    let project_paths = {
+        settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?
+            .project_paths
+            .clone()
+    };
     let wg_root = validate_wg_root(&workgroup_root, &project_paths)?;
 
     let outcome =
