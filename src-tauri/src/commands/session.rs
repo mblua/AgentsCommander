@@ -8470,7 +8470,11 @@ mod tests {
             backend.clone(),
         )));
         let app = session_test_app(test_settings(), session_mgr.clone(), pty_mgr.clone());
-        let cwd = cwd.path().to_string_lossy().to_string();
+        let cwd = crate::path_utils::normalize_windows_verbatim_path_buf(
+            &std::fs::canonicalize(cwd.path()).expect("canonicalize P42 session cwd"),
+        )
+        .to_string_lossy()
+        .to_string();
         let ready = create_scripted_session(&app, &session_mgr, &pty_mgr, &cwd).await;
         assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 1);
 
