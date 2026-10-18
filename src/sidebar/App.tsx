@@ -1,3 +1,4 @@
+import { acquireRoomActivityObserver } from "./stores/room-activity";
 import { Component, createSignal, createEffect, createMemo, on, onMount, onCleanup, untrack, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
@@ -201,6 +202,8 @@ function resolveSidebarStyle(style: string): string {
 }
 
 const SidebarApp: Component<SidebarAppProps> = (props) => {
+  const releaseRoomActivityObserver = acquireRoomActivityObserver();
+  onCleanup(releaseRoomActivityObserver);
   const [showOnboarding, setShowOnboarding] = createSignal(false);
   const [loopToast, setLoopToast] = createSignal<LoopToast | null>(null);
   const [settingsRailSide, setSettingsRailSide] = createSignal<MainSidebarSide>("right");
