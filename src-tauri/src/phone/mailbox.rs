@@ -15264,6 +15264,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.into(),
             id_hash: None,
+            id_hash_debug: None,
             label: label.into(),
             command: command.into(),
             color: "#10b981".into(),
@@ -27475,6 +27476,7 @@ mod tests {
                                 (*letter).to_string(),
                                 crate::config::settings::ProfileCellConfig {
                                     id_hash: None,
+                                    id_hash_debug: None,
                                     preflight: None,
                                     preflight_timeout_seconds: None,
                                     enabled: *enabled,
