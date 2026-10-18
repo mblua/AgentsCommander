@@ -1467,9 +1467,14 @@ describe("tolerant configuration readers (#3019)", () => {
       } finally { restore(); }
     });
 
-    it.each(["legacy", "canonical"])("projects complete %s backend fixtures through complete APIs", async (shape) => {
+    it.each(["legacy", "canonical"].flatMap((shape) =>
+      [undefined, "cid1:literal-pair-metadata"].map((idHash) => ({ shape, idHash })),
+    ))("projects complete $shape backend fixtures with pair hash $idHash through complete APIs", async ({ shape, idHash }) => {
       const ipc = await import("./ipc");
-      const cell: ProfileCellConfig = { command: "--model x", enabled: true, env: { KEY: "value" }, notes: "keep" };
+      const cell: ProfileCellConfig = {
+        command: "--model x", enabled: true, env: { KEY: "value" }, notes: "keep",
+        ...(idHash === undefined ? {} : { id_hash: idHash }),
+      };
       const agent = { id: "a", label: "Agent", color: "blue", command: "agent --base", envs: [], isolatedHome: false };
       const definition: CodingAgentDefinition = {
         key: "a", label: "Agent", description: "Description", color: "blue", command: "agent --base",
@@ -1494,6 +1499,9 @@ describe("tolerant configuration readers (#3019)", () => {
       fake.resolve("get_settings", response(wire));
       fake.resolve("get_coding_agent_catalog", response([wireDefinition]));
       fake.resolve("get_coding_agent_catalog_report", response({ ...report, catalog: [wireDefinition] }));
+      fake.resolve("update_settings", undefined);
+      fake.resolve("save_settings_draft", undefined);
+      fake.resolve("update_coding_agent_profiles", undefined);
       const restore = ipc.__setTransportForTests(fake);
       try {
         const settings: SettingsSnapshot = await ipc.SettingsAPI.get();
@@ -1502,6 +1510,23 @@ describe("tolerant configuration readers (#3019)", () => {
         expect(settings).toEqual(expected);
         expect(catalog).toEqual([definition]);
         expect(decodedReport).toEqual(report);
+        expect(settings.codingAgentProfiles.profilesByAgent.a.A.id_hash).toBe(idHash);
+        await ipc.SettingsAPI.update(settings);
+        await ipc.SettingsAPI.saveDraft(settings);
+        await expect(ipc.SettingsAPI.updateCodingAgentProfiles(settings.codingAgentProfiles)).resolves.toBeUndefined();
+        const sentProfiles = [
+          (fake.lastCall("update_settings")?.args?.newSettings as Record<string, unknown>).codingAgentProfiles,
+          (fake.lastCall("save_settings_draft")?.args?.draft as Record<string, unknown>).codingAgentProfiles,
+          fake.lastCall("update_coding_agent_profiles")?.args?.profiles,
+        ];
+        const { command, ...rest } = cell;
+        for (const profiles of sentProfiles) {
+          expect(profiles).toEqual({
+            ...expected.codingAgentProfiles,
+            profilesByAgent: { a: { A: { ...rest, additionalArguments: command } } },
+          });
+        }
+        expect(settings.codingAgentProfiles.profilesByAgent.a.A).toEqual(cell);
       } finally { restore(); }
     });
 
