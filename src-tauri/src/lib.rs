@@ -8597,6 +8597,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "codex".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "Codex".to_string(),
                 command: "codex".to_string(),
                 color: "#10b981".to_string(),
