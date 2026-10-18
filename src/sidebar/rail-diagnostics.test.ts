@@ -125,11 +125,17 @@ describe("rail diagnostics immediate private client", () => {
 
 
 describe("real browser console capture compatibility", () => {
-  it("preserves both browser listeners and their Error-level callback formats", async () => {
+  it("preserves browser callbacks and isolates fresh diagnostic context identity", async () => {
+    const originalFake = new FakeTransport(); originalFake.resolve("append_rail_diagnostic", null);
+    const restoreOriginal = __setTransportForTests(originalFake);
+    setLogLevel("debug"); emitRailDiagnostic("store", "reload-start");
+    const originalId = (originalFake.calls[0].args.record as { windowId: string }).windowId;
+    restoreOriginal(); setLogLevel("info");
     const methods = { log: console.log, info: console.info, warn: console.warn, error: console.error, debug: console.debug, trace: console.trace };
     vi.resetModules();
     const registrations = vi.spyOn(window, "addEventListener");
     let capture: typeof import("../shared/console-capture") | undefined;
+    let restoreFresh: (() => void) | undefined;
     try {
       capture = await import("../shared/console-capture");
       capture.setLogLevel("error");
@@ -149,7 +155,20 @@ describe("real browser console capture compatibility", () => {
         { level: "error", args: "browser control at control.ts:7:9" },
         { level: "error", args: "Unhandled rejection: rejection control" },
       ]);
+      const freshIpc = await import("../shared/ipc");
+      const freshHelper = await import("./rail-diagnostics");
+      const fake = new FakeTransport(); fake.resolve("append_rail_diagnostic", null);
+      restoreFresh = freshIpc.__setTransportForTests(fake);
+      capture.setLogLevel("debug");
+      freshHelper.emitRailDiagnostic("store", "reload-start");
+      freshHelper.emitRailDiagnostic("sidebar", "click");
+      const records = fake.calls.map(call => call.args.record as { windowId: string; seq: number });
+      expect(records).toHaveLength(2);
+      expect(records[0].windowId).not.toBe(originalId);
+      expect(records[1].windowId).toBe(records[0].windowId);
+      expect(records.map(record => record.seq)).toEqual([1, 2]);
     } finally {
+      restoreFresh?.();
       for (const [type, callback, options] of registrations.mock.calls) {
         if (type === "error" || type === "unhandledrejection") window.removeEventListener(type, callback, options);
       }

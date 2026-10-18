@@ -829,6 +829,33 @@ describe("project diagnostic operation controls with real gate/FakeTransport", (
     projectStore.updateWorkgroupTask(room.path, "PRIVATE task", "PRIVATE title");
     expect(records().map(record => record.event)).toEqual(["task-start", "task-end"]);
     expect(records()[1].outcome).toBe("applied");
+    const loop: AcLoopSummary = {
+      id: "standup",
+      name: "Standup",
+      enabled: false,
+      expr: "0 9 * * 1-5",
+      timezone: "local",
+      targetKind: "workgroupCoordinator",
+      workgroup: "wg-1-team",
+      promptPreview: "preview",
+      busyCoordinator: "skip",
+      sessionStart: "fresh",
+      path: `${PROJECT_PATH}\\.ac\\_loop_standup`,
+      configPath: `${PROJECT_PATH}\\.ac\\_loop_standup\\config.toml`,
+      lastCheckedAt: null,
+      lastDueAt: null,
+      lastDeliveredAt: null,
+      lastResult: null,
+      pendingDueAt: null,
+      lastMissedClosedAt: null,
+      nextDueAt: null,
+    };
+    fake.clearCalls();
+    projectStore.upsertLoop(PROJECT_PATH, loop);
+    projectStore.upsertLoop(PROJECT_PATH, { ...loop });
+    projectStore.removeLoop(PROJECT_PATH, loop.id);
+    expect(records().filter(record => record.event === "loop-end").map(record => record.outcome)).toEqual(["applied", "unchanged", "applied"]);
+    expect(records()).toHaveLength(6);
     fake.clearCalls();
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     m.discover.mockRejectedValueOnce(Error("PRIVATE failure"));
