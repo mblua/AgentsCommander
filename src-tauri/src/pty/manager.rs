@@ -2917,6 +2917,11 @@ impl PtySnapshotRouteProof {
         &self.saved_cwd
     }
 
+    pub(crate) fn saved_cwd_matches_path(&self, path: &std::path::Path) -> bool {
+        crate::path_identity::verify_directory(path)
+            .is_ok_and(|actual| crate::path_identity::same_object(&actual, &self.saved_cwd))
+    }
+
     pub(crate) fn saved_replica(&self) -> Option<&crate::path_identity::VerifiedPathIdentity> {
         self.saved_replica.as_ref()
     }

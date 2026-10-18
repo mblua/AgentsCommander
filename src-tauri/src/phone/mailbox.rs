@@ -3615,10 +3615,16 @@ fn with_verified_response_pair<T>(
     )?;
     if member_route.backend_kind() != SessionBackendKind::LocalProcess
         || coordinator_route.backend_kind() != coordinator.backend
-        || Path::new(&member_row.working_directory)
-            != member_route.saved_cwd().canonical_path.as_path()
-        || Path::new(&coordinator_row.working_directory)
-            != coordinator_route.saved_cwd().canonical_path.as_path()
+        || !crate::path_identity::verify_directory(std::path::Path::new(
+            &member_row.working_directory,
+        ))
+        .is_ok_and(|actual| crate::path_identity::same_object(&actual, member_route.saved_cwd()))
+        || !crate::path_identity::verify_directory(std::path::Path::new(
+            &coordinator_row.working_directory,
+        ))
+        .is_ok_and(|actual| {
+            crate::path_identity::same_object(&actual, coordinator_route.saved_cwd())
+        })
     {
         response_diag!("verified_pair", "backend_or_cwd_mismatch", None::<Uuid>);
         return None;
@@ -3840,7 +3846,10 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     };
     if member_route.backend_kind() != SessionBackendKind::LocalProcess
-        || Path::new(&member.working_directory) != member_route.saved_cwd().canonical_path.as_path()
+        || !crate::path_identity::verify_directory(std::path::Path::new(&member.working_directory))
+            .is_ok_and(|actual| {
+                crate::path_identity::same_object(&actual, member_route.saved_cwd())
+            })
         || !member_route.matches_requester_route(
             member.backend_kind,
             member_route.saved_cwd(),
@@ -3883,8 +3892,12 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     };
     if coordinator_route.backend_kind() != coordinator.backend_kind
-        || Path::new(&coordinator.working_directory)
-            != coordinator_route.saved_cwd().canonical_path.as_path()
+        || !crate::path_identity::verify_directory(std::path::Path::new(
+            &coordinator.working_directory,
+        ))
+        .is_ok_and(|actual| {
+            crate::path_identity::same_object(&actual, coordinator_route.saved_cwd())
+        })
         || work.state.generation(member.id) != Some(prepared.member.generation)
         || work.state.generation(coordinator.id) != Some(prepared.coordinator.generation)
     {
@@ -18820,6 +18833,500 @@ mod tests {
             })
             .unwrap();
         injection_id
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn response_request_physical_cwd_boundary() {
+        use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
+        let configured = PathBuf::from(
+            std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
+        );
+        assert!(configured.is_absolute());
+        if let Some(public) = std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR") {
+            assert_eq!(
+                PathBuf::from(public),
+                configured,
+                "public override must match before config access"
+            );
+        }
+        assert_eq!(crate::config::config_dir().unwrap(), configured);
+        for name in ["TEMP", "TMP", "TMPDIR"] {
+            assert!(
+                PathBuf::from(std::env::var_os(name).expect("isolated absolute temp"))
+                    .is_absolute()
+            );
+        }
+        for (canonical_member, canonical_coordinator) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            assert_eq!(crate::config::config_dir().unwrap(), configured);
+            let fixture = make_mailbox_fixture();
+            let app = fixture.app.handle();
+            let tracker = crate::pty::manager::ResponseCloseState::default();
+            let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            *managers.write().await = SessionManager::with_response_close(tracker.clone());
+            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            pty.lock().unwrap().bind_response_close(tracker.clone());
+            app.manage(tracker.clone());
+            let (route, sender, member_id) =
+                seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+            let manager = managers.read().await.clone();
+            manager.set_is_coordinator(sender, true).await;
+            let roots = {
+                let state = app.state::<SettingsState>();
+                let mut settings = state.write().await;
+                settings.response_close_enabled = true;
+                settings.response_close_idle_seconds = 30;
+                settings.project_paths.clone()
+            };
+            let member_physical =
+                crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
+            let coordinator_physical =
+                crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
+            let ordinary_member = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &member_physical.canonical_path,
+            );
+            let ordinary_coordinator = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &coordinator_physical.canonical_path,
+            );
+            assert_ne!(ordinary_member, member_physical.canonical_path);
+            assert_ne!(ordinary_coordinator, coordinator_physical.canonical_path);
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_member)
+                    .unwrap()
+                    .object_id,
+                member_physical.object_id
+            );
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_coordinator)
+                    .unwrap()
+                    .object_id,
+                coordinator_physical.object_id
+            );
+            let other = fixture._temp.path().join("different-directory");
+            std::fs::create_dir(&other).unwrap();
+            let file = fixture._temp.path().join("regular-file");
+            std::fs::write(&file, b"not a directory").unwrap();
+            let invalid_paths = [
+                other.clone(),
+                other.join("missing"),
+                file,
+                other.join("..").join("different-directory"),
+            ];
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            for publisher in [
+                P::Manager,
+                P::Pty,
+                P::RawOutput,
+                P::Detector,
+                P::Menu,
+                P::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            let key = "physical-cwd-request".to_string();
+            let digest = "physical-cwd-body".to_string();
+            let mut admission = tracker
+                .reserve_work(&route.target.canonical_fqn, &key)
+                .unwrap();
+            admission.accept_durable(&digest).unwrap();
+            drop(admission);
+            let work = ResponseWakeWork {
+                diagnostic_message_id: None,
+                state: tracker.clone(),
+                target: route.target.canonical_fqn.clone(),
+                key,
+                digest,
+                attempt: Arc::new(Mutex::new(None)),
+                return_context: None,
+                return_routes: None,
+                delivery_context: None,
+            };
+            manager
+                .with_current_carrier_snapshot(&permit, |current| {
+                    let member_row = current.rows.iter().find(|row| row.id == member_id).unwrap();
+                    let coordinator_row = current.rows.iter().find(|row| row.id == sender).unwrap();
+                    let member = ResponseRouteIdentity {
+                        target: route.target.canonical_fqn.clone(),
+                        session_id: member_id,
+                        token: member_row.token,
+                        generation: tracker.generation(member_id).unwrap(),
+                        carrier_version: current.versions[&member_id],
+                        backend: member_row.backend_kind,
+                    };
+                    let coordinator = ResponseRouteIdentity {
+                        target: route.sender.canonical_fqn.clone(),
+                        session_id: sender,
+                        token: coordinator_row.token,
+                        generation: tracker.generation(sender).unwrap(),
+                        carrier_version: current.versions[&sender],
+                        backend: coordinator_row.backend_kind,
+                    };
+                    let mut positive = current.clone();
+                    positive
+                        .rows
+                        .iter_mut()
+                        .find(|row| row.id == member_id)
+                        .unwrap()
+                        .working_directory = if canonical_member {
+                        &member_physical.canonical_path
+                    } else {
+                        &ordinary_member
+                    }
+                    .to_string_lossy()
+                    .into_owned();
+                    positive
+                        .rows
+                        .iter_mut()
+                        .find(|row| row.id == sender)
+                        .unwrap()
+                        .working_directory = if canonical_coordinator {
+                        &coordinator_physical.canonical_path
+                    } else {
+                        &ordinary_coordinator
+                    }
+                    .to_string_lossy()
+                    .into_owned();
+                    for role in [member_id, sender] {
+                        // The first case reaches the real write boundary; each later case changes one fact.
+                        for failure in 0..7 {
+                            let mut snapshot = positive.clone();
+                            let mut prepared = PreparedResponseRequest {
+                                member: member.clone(),
+                                coordinator: coordinator.clone(),
+                                roots: roots.clone(),
+                            };
+                            if (1..=4).contains(&failure) {
+                                snapshot
+                                    .rows
+                                    .iter_mut()
+                                    .find(|row| row.id == role)
+                                    .unwrap()
+                                    .working_directory =
+                                    invalid_paths[failure - 1].to_string_lossy().into_owned();
+                            }
+                            if failure == 5 {
+                                if role == member_id {
+                                    prepared.member.generation += 1;
+                                } else {
+                                    prepared.coordinator.generation += 1;
+                                }
+                            }
+                            if failure == 6 {
+                                snapshot
+                                    .rows
+                                    .iter_mut()
+                                    .find(|row| row.id == role)
+                                    .unwrap()
+                                    .backend_kind = SessionBackendKind::ContainerTransport;
+                                if role == member_id {
+                                    prepared.member.backend =
+                                        SessionBackendKind::ContainerTransport;
+                                } else {
+                                    prepared.coordinator.backend =
+                                        SessionBackendKind::ContainerTransport;
+                                }
+                            }
+                            let disposal = work.candidate_disposal();
+                            let session = snapshot
+                                .rows
+                                .iter()
+                                .find(|row| row.id == member_id)
+                                .unwrap();
+                            reserve_response_request_at_write(
+                                app,
+                                &snapshot,
+                                session,
+                                &prepared,
+                                &work,
+                                &disposal.0,
+                            );
+                            assert_eq!(
+                                disposal.0.candidate.lock().unwrap().is_some(),
+                                failure == 0,
+                                "role={role} case={failure}"
+                            );
+                            drop(disposal);
+                        }
+                    }
+                })
+                .await;
+            drop(permit);
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn response_pair_physical_cwd_boundary() {
+        use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
+        let configured = PathBuf::from(
+            std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
+        );
+        assert!(configured.is_absolute());
+        if let Some(public) = std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR") {
+            assert_eq!(
+                PathBuf::from(public),
+                configured,
+                "public override must match before config access"
+            );
+        }
+        assert_eq!(crate::config::config_dir().unwrap(), configured);
+        for name in ["TEMP", "TMP", "TMPDIR"] {
+            assert!(
+                PathBuf::from(std::env::var_os(name).expect("isolated absolute temp"))
+                    .is_absolute()
+            );
+        }
+        for (canonical_member, canonical_coordinator) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            assert_eq!(crate::config::config_dir().unwrap(), configured);
+            let fixture = make_mailbox_fixture();
+            let app = fixture.app.handle();
+            let tracker = crate::pty::manager::ResponseCloseState::default();
+            let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            *managers.write().await = SessionManager::with_response_close(tracker.clone());
+            let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
+            pty.lock().unwrap().bind_response_close(tracker.clone());
+            app.manage(tracker.clone());
+            let (route, sender, member_id) =
+                seed_shared_pty_engine_sessions(&fixture, SessionStatus::Idle).await;
+            let manager = managers.read().await.clone();
+            manager.set_is_coordinator(sender, true).await;
+            let roots = {
+                let state = app.state::<SettingsState>();
+                let mut settings = state.write().await;
+                settings.response_close_enabled = true;
+                settings.response_close_idle_seconds = 30;
+                settings.project_paths.clone()
+            };
+            let member_physical =
+                crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
+            let coordinator_physical =
+                crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
+            let ordinary_member = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &member_physical.canonical_path,
+            );
+            let ordinary_coordinator = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &coordinator_physical.canonical_path,
+            );
+            assert_ne!(ordinary_member, member_physical.canonical_path);
+            assert_ne!(ordinary_coordinator, coordinator_physical.canonical_path);
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_member)
+                    .unwrap()
+                    .object_id,
+                member_physical.object_id
+            );
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_coordinator)
+                    .unwrap()
+                    .object_id,
+                coordinator_physical.object_id
+            );
+            let other = fixture._temp.path().join("different-directory");
+            std::fs::create_dir(&other).unwrap();
+            let file = fixture._temp.path().join("regular-file");
+            std::fs::write(&file, b"not a directory").unwrap();
+            let invalid_paths = [
+                other.clone(),
+                other.join("missing"),
+                file,
+                other.join("..").join("different-directory"),
+            ];
+            assert_eq!(
+                roots,
+                app.state::<SettingsState>().read().await.project_paths
+            );
+            for publisher in [
+                P::Manager,
+                P::Pty,
+                P::RawOutput,
+                P::Detector,
+                P::Menu,
+                P::Hold,
+            ] {
+                tracker.bind_publisher(publisher);
+            }
+            tracker.mark_work_bootstrapped();
+            tracker.try_enable_readiness().unwrap();
+            let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
+            manager
+                .with_current_carrier_snapshot(&permit, |current| {
+                    let member_row = current.rows.iter().find(|row| row.id == member_id).unwrap();
+                    let coordinator_row = current.rows.iter().find(|row| row.id == sender).unwrap();
+                    let member = ResponseRouteIdentity {
+                        target: route.target.canonical_fqn.clone(),
+                        session_id: member_id,
+                        token: member_row.token,
+                        generation: tracker.generation(member_id).unwrap(),
+                        carrier_version: current.versions[&member_id],
+                        backend: member_row.backend_kind,
+                    };
+                    let coordinator = ResponseRouteIdentity {
+                        target: route.sender.canonical_fqn.clone(),
+                        session_id: sender,
+                        token: coordinator_row.token,
+                        generation: tracker.generation(sender).unwrap(),
+                        carrier_version: current.versions[&sender],
+                        backend: coordinator_row.backend_kind,
+                    };
+                    let mut positive = current.clone();
+                    positive
+                        .rows
+                        .iter_mut()
+                        .find(|row| row.id == member_id)
+                        .unwrap()
+                        .working_directory = if canonical_member {
+                        &member_physical.canonical_path
+                    } else {
+                        &ordinary_member
+                    }
+                    .to_string_lossy()
+                    .into_owned();
+                    positive
+                        .rows
+                        .iter_mut()
+                        .find(|row| row.id == sender)
+                        .unwrap()
+                        .working_directory = if canonical_coordinator {
+                        &coordinator_physical.canonical_path
+                    } else {
+                        &ordinary_coordinator
+                    }
+                    .to_string_lossy()
+                    .into_owned();
+                    for role in [member_id, sender] {
+                        for failure in 0..7 {
+                            let mut snapshot = positive.clone();
+                            let mut captured_member = member.clone();
+                            let mut captured_coordinator = coordinator.clone();
+                            if (1..=4).contains(&failure) {
+                                snapshot
+                                    .rows
+                                    .iter_mut()
+                                    .find(|row| row.id == role)
+                                    .unwrap()
+                                    .working_directory =
+                                    invalid_paths[failure - 1].to_string_lossy().into_owned();
+                            }
+                            if failure == 5 {
+                                if role == member_id {
+                                    captured_member.generation += 1;
+                                } else {
+                                    captured_coordinator.generation += 1;
+                                }
+                            }
+                            if failure == 6 {
+                                snapshot
+                                    .rows
+                                    .iter_mut()
+                                    .find(|row| row.id == role)
+                                    .unwrap()
+                                    .backend_kind = SessionBackendKind::ContainerTransport;
+                                if role == member_id {
+                                    captured_member.backend =
+                                        SessionBackendKind::ContainerTransport;
+                                } else {
+                                    captured_coordinator.backend =
+                                        SessionBackendKind::ContainerTransport;
+                                }
+                            }
+                            let mut calls = 0;
+                            let result = with_verified_response_pair(
+                                &snapshot,
+                                &pty,
+                                &tracker,
+                                &captured_member,
+                                &captured_coordinator,
+                                |_, _| {
+                                    calls += 1;
+                                },
+                            );
+                            assert_eq!(
+                                calls,
+                                usize::from(failure == 0),
+                                "role={role} case={failure}"
+                            );
+                            assert_eq!(result.is_some(), failure == 0);
+                        }
+                    }
+                })
+                .await;
+            drop(permit);
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn response_close_physical_cwd_reaches_dormant() {
+        let configured = PathBuf::from(
+            std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
+        );
+        assert!(configured.is_absolute());
+        if let Some(public) = std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR") {
+            assert_eq!(
+                PathBuf::from(public),
+                configured,
+                "public override must match before config access"
+            );
+        }
+        assert_eq!(crate::config::config_dir().unwrap(), configured);
+        for name in ["TEMP", "TMP", "TMPDIR"] {
+            assert!(
+                PathBuf::from(std::env::var_os(name).expect("isolated absolute temp"))
+                    .is_absolute()
+            );
+        }
+        for (canonical_member, canonical_coordinator) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            assert_eq!(crate::config::config_dir().unwrap(), configured);
+            let mut fixture = make_mailbox_fixture();
+            let member_physical =
+                crate::path_identity::verify_directory(&fixture.target_cwd).unwrap();
+            let coordinator_physical =
+                crate::path_identity::verify_directory(&fixture.sender_cwd).unwrap();
+            let ordinary_member = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &member_physical.canonical_path,
+            );
+            let ordinary_coordinator = crate::path_utils::normalize_windows_verbatim_path_buf(
+                &coordinator_physical.canonical_path,
+            );
+            assert_ne!(ordinary_member, member_physical.canonical_path);
+            assert_ne!(ordinary_coordinator, coordinator_physical.canonical_path);
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_member)
+                    .unwrap()
+                    .object_id,
+                member_physical.object_id
+            );
+            assert_eq!(
+                crate::path_identity::verify_directory(&ordinary_coordinator)
+                    .unwrap()
+                    .object_id,
+                coordinator_physical.object_id
+            );
+            fixture.target_cwd = if canonical_member {
+                member_physical.canonical_path
+            } else {
+                ordinary_member
+            };
+            fixture.sender_cwd = if canonical_coordinator {
+                coordinator_physical.canonical_path
+            } else {
+                ordinary_coordinator
+            };
+            let (coordinator, _, _, member) = prepare_retained_exited_respawn(&fixture).await;
+            assert!(crate::session::selection::response_close_registration(member).is_none());
+            let report = tokio::time::timeout(Duration::from_secs(5), coordinator.close_and_join())
+                .await
+                .expect("focused dormant fixture close");
+            assert!(report.persistence_safe, "{:?}", report.retained);
+        }
     }
 
     /// P05 preparation uses the existing mailbox fixture and the real

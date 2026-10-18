@@ -6312,8 +6312,10 @@ async fn commit_response_close<R: tauri::Runtime>(
     let permit = acquire_carrier_mutation_permit().await;
     manager.with_current_carrier_snapshot(&permit, |current| {
         let Some((member_row, coordinator_row)) = response_close_current_rows(current, &owner.registration) else { return false; };
-        if Path::new(&member_row.working_directory) != member_route.saved_cwd().canonical_path
-            || Path::new(&coordinator_row.working_directory) != coordinator_route.saved_cwd().canonical_path { return false; }
+        if !crate::path_identity::verify_directory(std::path::Path::new(&member_row.working_directory))
+            .is_ok_and(|actual| crate::path_identity::same_object(&actual, member_route.saved_cwd()))
+            || !crate::path_identity::verify_directory(std::path::Path::new(&coordinator_row.working_directory))
+            .is_ok_and(|actual| crate::path_identity::same_object(&actual, coordinator_route.saved_cwd())) { return false; }
         let now = std::time::Instant::now();
         tracker.apply_settings(settings.response_close_enabled, settings.response_close_idle_seconds, now);
         tracker.publish_manager_facts(member.clone(), true, crate::session::session::is_working(member_row), now);
@@ -6584,7 +6586,8 @@ async fn settle_response_close<R: tauri::Runtime>(
     let settled = manager.with_current_carrier_snapshot(&permit, |current| {
         let row = current.rows.iter().find(|row| row.id == binding.member.session_id && row.token == binding.member.token
             && row.backend_kind == SessionBackendKind::LocalProcess && !current.pending_ids.contains(&row.id))?;
-        if Path::new(&row.working_directory) != route.saved_cwd().canonical_path { return None; }
+        if !crate::path_identity::verify_directory(std::path::Path::new(&row.working_directory))
+            .is_ok_and(|actual| crate::path_identity::same_object(&actual, route.saved_cwd())) { return None; }
         let _lifecycle = authority.lock_verified(SessionBackendKind::LocalProcess, route.saved_cwd(), route.saved_replica()).ok()?;
         if tracker.generation(row.id) != Some(binding.member.generation) { return None; }
         let absent = !owner.backend.has_session(row.id);
