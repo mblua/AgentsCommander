@@ -1524,6 +1524,12 @@ fn task_inherited_startup_failure_precedes_handler_json() {
 fn telegram_send_message_local_rejections_and_missing_config() {
     let tmp = Tmp::new("cli-telegram-message");
     let bin = copy_binary_into(tmp.path());
+    // The existing runner pins the public config override for this unsuffixed
+    // copy; it takes precedence over inherited debug config and selects no real
+    // settings or credentials. ROOT/TOKEN/LOCAL_DIR do not select Telegram bots.
+    assert!(!bin.file_stem().unwrap().to_string_lossy().contains('_'));
+    let config = config_dir_for_bin(&bin);
+    assert!(!config.exists());
     let cases = [
         (" \n\t".to_string(), "--text must not be empty"),
         (
@@ -1542,23 +1548,8 @@ fn telegram_send_message_local_rejections_and_missing_config() {
     ];
     for (text, expected) in cases {
         let text_arg = format!("--text={text}");
-        let mut command = command_for_binary(&bin);
-        let config = config_dir_for_bin(&bin);
-        command
-            .env("AGENTSCOMMANDER_CONFIG_DIR", &config)
-            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &config)
-            .env_remove("AGENTSCOMMANDER_TOKEN")
-            .env_remove("AGENTSCOMMANDER_ROOT")
-            .env_remove("AGENTSCOMMANDER_LOCAL_DIR")
-            .args(["telegram-send-message", &text_arg])
-            .stdin(Stdio::null());
-        let out = {
-            let _guard = spawn_lock();
-            command.output().expect("run message rejection")
-        };
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(1));
+        let (code, stdout, stderr) = run(&bin, &["telegram-send-message", &text_arg]);
+        assert_eq!(code, Some(1));
         assert_no_stdout_on_error(&stdout);
         assert!(stderr.contains(expected), "{stderr}");
         assert!(!stderr.contains("BODY_SENTINEL"));
