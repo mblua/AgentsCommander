@@ -265,6 +265,7 @@ fn known_agent_field(key: &str) -> bool {
     matches!(
         key,
         "id" | "id_hash"
+            | "id_hash_debug"
             | "label"
             | "command"
             | "baseCommand"
@@ -288,6 +289,7 @@ fn comparable_agent(agent: &AgentConfig) -> Result<Value, String> {
     if let Some(object) = value.as_object_mut() {
         object.remove("order");
         object.remove("id_hash");
+        object.remove("id_hash_debug");
     }
     Ok(value)
 }
@@ -445,7 +447,11 @@ pub struct AgentConfig {
     )]
     // Base-command legacy metadata; profile-cell id_hash identifies a command/profile pair.
     pub id_hash: Option<String>,
-    #[serde(skip)]
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub id_hash_debug: Option<Vec<String>>,
     pub label: String,
     #[serde(rename = "baseCommand")]
@@ -522,6 +528,12 @@ struct AgentConfigWire {
         deserialize_with = "deserialize_agent_id_hash"
     )]
     pub id_hash: Option<String>,
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        deserialize_with = "deserialize_agent_id_hash_debug"
+    )]
+    pub id_hash_debug: Option<Vec<String>>,
     pub label: String,
     #[serde(
         default,
@@ -576,7 +588,7 @@ impl<'de> Deserialize<'de> for AgentConfig {
         Ok(Self {
             id: wire.id,
             id_hash: wire.id_hash,
-            id_hash_debug: None,
+            id_hash_debug: wire.id_hash_debug,
             label: wire.label,
             command,
             preflight: wire.preflight,
@@ -619,6 +631,24 @@ where
     let value = Option::<Value>::deserialize(deserializer)?;
     Ok(value.and_then(|value| match value {
         Value::String(hash) => Some(hash),
+        _ => None,
+    }))
+}
+
+/// Optional debug leaves are accepted only as a complete array of strings.
+fn deserialize_agent_id_hash_debug<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        Value::Array(values) => values
+            .into_iter()
+            .map(|value| match value {
+                Value::String(value) => Some(value),
+                _ => None,
+            })
+            .collect(),
         _ => None,
     }))
 }
@@ -783,7 +813,11 @@ pub struct ProfileSlotConfig {
 pub struct ProfileCellConfig {
     #[serde(default, rename = "id_hash", skip_serializing_if = "Option::is_none")]
     pub id_hash: Option<String>,
-    #[serde(skip)]
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub id_hash_debug: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -809,6 +843,12 @@ struct ProfileCellConfigWire {
         deserialize_with = "deserialize_agent_id_hash"
     )]
     pub id_hash: Option<String>,
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        deserialize_with = "deserialize_agent_id_hash_debug"
+    )]
+    pub id_hash_debug: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(
@@ -846,7 +886,7 @@ impl<'de> Deserialize<'de> for ProfileCellConfig {
         .to_owned();
         Ok(Self {
             id_hash: wire.id_hash,
-            id_hash_debug: None,
+            id_hash_debug: wire.id_hash_debug,
             enabled: wire.enabled,
             command,
             preflight: wire.preflight,
@@ -4994,10 +5034,36 @@ pub fn configuration_identity(command: &str, envs: &[CodingAgentEnv]) -> String 
     identity_digest("cid1:", &configuration_identity_preimage(command, envs))
 }
 
+fn configuration_identity_debug(command: &str, envs: &[CodingAgentEnv]) -> Vec<String> {
+    std::iter::once(command.to_owned())
+        .chain(
+            envs.iter()
+                .flat_map(|row| [row.key.clone(), row.value.clone()]),
+        )
+        .collect()
+}
+
+fn pair_identity_debug(
+    command: &str,
+    envs: &[CodingAgentEnv],
+    profile: &ProfileCellConfig,
+) -> Vec<String> {
+    let mut leaves = configuration_identity_debug(command, envs);
+    leaves.push(profile.command.clone());
+    leaves.extend(
+        profile
+            .env
+            .iter()
+            .flat_map(|(key, value)| [key.clone(), value.clone()]),
+    );
+    leaves
+}
+
 /// Refresh informational metadata only; stable IDs and row order stay untouched.
 pub fn refresh_agent_id_hashes(agents: &mut [AgentConfig]) {
     for agent in agents {
         agent.id_hash = Some(configuration_identity(&agent.command, &agent.envs));
+        agent.id_hash_debug = Some(configuration_identity_debug(&agent.command, &agent.envs));
     }
 }
 
@@ -5018,6 +5084,8 @@ fn refresh_pair_id_hashes(agents: &[AgentConfig], profiles: &mut CodingAgentProf
         let agent = agents.iter().find(|agent| agent.id == *id);
         for cell in cells.values_mut() {
             cell.id_hash = agent.map(|agent| pair_identity(&agent.command, &agent.envs, cell));
+            cell.id_hash_debug =
+                agent.map(|agent| pair_identity_debug(&agent.command, &agent.envs, cell));
         }
     }
 }
@@ -5054,18 +5122,23 @@ fn refresh_physical_pair_id_hashes(agents: Option<&Value>, profiles: &mut Value)
             .into_iter()
             .flat_map(|cells| cells.values_mut())
         {
-            let hash = base.as_ref().and_then(|(command, envs)| {
+            let metadata = base.as_ref().and_then(|(command, envs)| {
                 // Decode the cell's existing aliases/env contract without rewriting it.
                 let cell: ProfileCellConfig = serde_json::from_value(raw.clone()).ok()?;
-                Some(pair_identity(command, envs, &cell))
+                Some((
+                    pair_identity(command, envs, &cell),
+                    pair_identity_debug(command, envs, &cell),
+                ))
             });
             if let Some(object) = raw.as_object_mut() {
-                match hash {
-                    Some(hash) => {
+                match metadata {
+                    Some((hash, debug)) => {
                         object.insert("id_hash".into(), Value::String(hash));
+                        object.insert("id_hash_debug".into(), serde_json::json!(debug));
                     }
                     None => {
                         object.remove("id_hash");
+                        object.remove("id_hash_debug");
                     }
                 }
             }
@@ -5408,6 +5481,20 @@ mod source_identity_tests {
         assert_eq!(
             configuration_identity("Ba--", &[env(" Z\t", "İß É\u{00a0}OO", false)]),
             "cid1:7eccb85b0439780c9cb0fcd45fdfdf0e6ee28906a805ea0a1a1bfcd34d875199"
+        );
+        let mut agent: AgentConfig = serde_json::from_value(serde_json::json!({
+            "id":"unicode", "label":"ignored", "color":"red", "baseCommand":"Ba--",
+            "envs":[{"key":" Z\t","value":"İß É\u{00a0}OO","enabled":false}]
+        }))
+        .unwrap();
+        refresh_agent_id_hashes(std::slice::from_mut(&mut agent));
+        assert_eq!(
+            agent.id_hash.as_deref(),
+            Some("cid1:7eccb85b0439780c9cb0fcd45fdfdf0e6ee28906a805ea0a1a1bfcd34d875199")
+        );
+        assert_eq!(
+            agent.id_hash_debug,
+            Some(vec!["Ba--".into(), " Z\t".into(), "İß É\u{00a0}OO".into()])
         );
     }
 
@@ -8469,6 +8556,13 @@ fn save_agents_instance_file(
                         "id_hash".to_string(),
                         Value::String(configuration_identity(&agent.command, &agent.envs)),
                     );
+                    object.insert(
+                        "id_hash_debug".into(),
+                        serde_json::json!(configuration_identity_debug(
+                            &agent.command,
+                            &agent.envs
+                        )),
+                    );
                 }
             }
         }
@@ -9261,6 +9355,7 @@ fn is_profile_gap(profiles: &CodingAgentProfilesConfig, id: &str) -> bool {
                     && cells.get("A").is_some_and(|cell| {
                         let mut content = cell.clone();
                         content.id_hash = None;
+                        content.id_hash_debug = None;
                         content == empty_profile_cell()
                     }))
         }
@@ -9462,7 +9557,7 @@ pub(crate) fn coding_agent_identity_projection_hash(
         if !ids.insert(id.to_string()) {
             return Err("coding_agent_identity_duplicate".to_string());
         }
-        for key in ["order", "name", "label", "color"] {
+        for key in ["order", "name", "label", "color", "id_hash_debug"] {
             object.remove(key);
         }
     }
@@ -9479,6 +9574,17 @@ pub(crate) fn coding_agent_identity_projection_hash(
         for slot in slots.values_mut() {
             if let Some(slot) = slot.as_object_mut() {
                 slot.remove("label");
+            }
+        }
+    }
+    if let Some(profiles) = projection
+        .get_mut("codingAgentProfiles")
+        .and_then(|profiles| profiles.get_mut("profilesByAgent"))
+        .and_then(Value::as_object_mut)
+    {
+        for cells in profiles.values_mut().filter_map(Value::as_object_mut) {
+            for cell in cells.values_mut().filter_map(Value::as_object_mut) {
+                cell.remove("id_hash_debug");
             }
         }
     }
@@ -16826,6 +16932,121 @@ mod tests {
         assert!(truncated);
         assert!(escaped.len() <= super::SETTINGS_LOCK_DEBUG_PATH_BYTES);
         assert!(serde_json::from_str::<String>(&escaped).is_ok());
+    }
+
+    #[test]
+    fn id_hash_debug_exclusions_preserve_real_content_and_clear_orphans() {
+        let agent: super::AgentConfig = serde_json::from_value(serde_json::json!({
+            "id":"alpha", "label":"Alpha", "baseCommand":"tool", "color":"red"
+        }))
+        .unwrap();
+        let mut supplied = agent.clone();
+        supplied.id_hash_debug = Some(vec!["forged".into()]);
+        assert!(super::known_agent_field("id_hash_debug"));
+        assert!(!super::known_agent_field("idHashDebug"));
+        assert_eq!(
+            super::comparable_agent(&agent),
+            super::comparable_agent(&supplied)
+        );
+        supplied.command.push_str(" --real");
+        assert_ne!(
+            super::comparable_agent(&agent),
+            super::comparable_agent(&supplied)
+        );
+
+        let mut profiles = super::CodingAgentProfilesConfig::default();
+        let mut cell = super::empty_profile_cell();
+        cell.id_hash = Some("stale".into());
+        cell.id_hash_debug = Some(vec!["stale".into()]);
+        profiles
+            .profiles_by_agent
+            .insert("orphan".into(), BTreeMap::from([("A".into(), cell)]));
+        assert!(super::is_profile_gap(&profiles, "orphan"));
+        profiles
+            .profiles_by_agent
+            .get_mut("orphan")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .notes = "real".into();
+        assert!(!super::is_profile_gap(&profiles, "orphan"));
+        super::refresh_pair_id_hashes(&[agent], &mut profiles);
+        let orphan = &profiles.profiles_by_agent["orphan"]["A"];
+        assert_eq!(orphan.id_hash, None);
+        assert_eq!(orphan.id_hash_debug, None);
+        assert_eq!(orphan.notes, "real");
+    }
+
+    #[test]
+    fn id_hash_debug_schema_tolerates_metadata_and_preserves_real_errors() {
+        let agent = serde_json::json!({
+            "id": "custom-tool", "label": "Custom", "baseCommand": "tool", "color": "red"
+        });
+        let cell = serde_json::json!({"additionalArguments": "--flag"});
+        for (is_agent, baseline) in [(true, agent), (false, cell)] {
+            let decode = |raw: serde_json::Value| {
+                if is_agent {
+                    serde_json::from_value::<super::AgentConfig>(raw).map(|value| {
+                        (
+                            value.id_hash_debug.clone(),
+                            serde_json::to_value(value).unwrap(),
+                        )
+                    })
+                } else {
+                    serde_json::from_value::<super::ProfileCellConfig>(raw).map(|value| {
+                        (
+                            value.id_hash_debug.clone(),
+                            serde_json::to_value(value).unwrap(),
+                        )
+                    })
+                }
+            };
+            let (debug, expected) = decode(baseline.clone()).unwrap();
+            assert_eq!(debug, None);
+            assert!(expected.get("id_hash_debug").is_none());
+            for raw in [
+                serde_json::json!(null),
+                serde_json::json!(42),
+                serde_json::json!(true),
+                serde_json::json!("wrong"),
+                serde_json::json!({}),
+                serde_json::json!(["valid", 42]),
+                serde_json::json!([null]),
+                serde_json::json!([[]]),
+            ] {
+                let mut supplied = baseline.clone();
+                supplied["id_hash_debug"] = raw;
+                assert_eq!(decode(supplied).unwrap(), (None, expected.clone()));
+            }
+            let mut camel = baseline.clone();
+            camel["idHashDebug"] = serde_json::json!(["ignored"]);
+            assert_eq!(decode(camel).unwrap(), (None, expected.clone()));
+            for leaves in [vec![], vec![""], vec![" Tool Ω ", "--Flag", "", "Tool"]] {
+                let mut supplied = baseline.clone();
+                supplied["id_hash_debug"] = serde_json::json!(leaves);
+                let expected_leaves: Vec<String> =
+                    leaves.iter().map(|value| (*value).into()).collect();
+                let mut expected_record = expected.clone();
+                expected_record["id_hash_debug"] = serde_json::json!(leaves);
+                let (debug, encoded) = decode(supplied).unwrap();
+                assert_eq!(debug, Some(expected_leaves));
+                assert_eq!(encoded, expected_record);
+                assert!(encoded.get("idHashDebug").is_none());
+                assert_eq!(decode(encoded.clone()).unwrap().1, encoded);
+            }
+            let command_key = if is_agent {
+                "baseCommand"
+            } else {
+                "additionalArguments"
+            };
+            let env_key = if is_agent { "envs" } else { "env" };
+            for key in [command_key, env_key] {
+                let mut invalid = baseline.clone();
+                invalid[key] = serde_json::json!(42);
+                invalid["id_hash_debug"] = serde_json::json!(["ok", false]);
+                assert!(decode(invalid).is_err(), "real field {key}");
+            }
+        }
     }
 
     #[test]
@@ -25169,6 +25390,7 @@ mod tests {
             assert_eq!(profiles["profilesByAgent"]["agent_2_bbbbbb"]["A"], {
                 let mut expected = cell_value("--special");
                 expected["id_hash"] = json!(configuration_identity("claude--special", &[]));
+                expected["id_hash_debug"] = json!(["claude", "--special"]);
                 expected
             });
             assert_eq!(
@@ -25211,6 +25433,7 @@ mod tests {
             assert_eq!(cells["B"].command, "--b");
             let mut expected_a = empty_profile_cell();
             expected_a.id_hash = Some(configuration_identity("claude", &[]));
+            expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
             assert_eq!(cells.get("A"), Some(&expected_a));
             assert_eq!(
                 cells["B"].id_hash,
@@ -25471,6 +25694,7 @@ mod tests {
             assert_eq!(profiles["profilesByAgent"]["n"]["A"], {
                 let mut expected = cell_value("--special");
                 expected["id_hash"] = json!(configuration_identity("claude--special", &[]));
+                expected["id_hash_debug"] = json!(["claude", "--special"]);
                 expected
             });
             assert_eq!(
@@ -25510,8 +25734,10 @@ mod tests {
             assert_eq!(cells["n"]["B"].command, "--b");
             let mut expected_a = empty_profile_cell();
             expected_a.id_hash = Some(configuration_identity("claude", &[]));
+            expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
             assert_eq!(cells["n"]["A"], expected_a);
             expected_a.id_hash = Some(configuration_identity("codex", &[]));
+            expected_a.id_hash_debug = Some(vec!["codex".into(), "".into()]);
             assert_eq!(cells["k"]["A"], expected_a);
             assert_eq!(
                 cells["n"]["B"].id_hash,
@@ -26014,6 +26240,11 @@ mod tests {
                     "id_hash".to_string(),
                     Value::String(configuration_identity(&agent.command, &agent.envs)),
                 );
+                let mut leaves = vec![agent.command.clone()];
+                for env in &agent.envs {
+                    leaves.extend([env.key.clone(), env.value.clone()]);
+                }
+                raw["id_hash_debug"] = json!(leaves);
                 // The physical legacy agent text survives the canonical write.
                 raw["baseCommand"] = raw["command"].clone();
             }
@@ -26040,6 +26271,7 @@ mod tests {
                     cell["additionalArguments"] = command;
                     assert!(cell.get("id_hash").is_none());
                     cell["id_hash"] = json!(pair_hashes[id.as_str()]);
+                    cell["id_hash_debug"] = json!([id, ""]);
                 }
             }
             let sorted: BTreeMap<String, Value> =
@@ -30032,8 +30264,8 @@ mod tests {
     #[test]
     fn issue_3047_pair_table_and_independent_preimages() {
         use sha2::{Digest, Sha256};
-        // Independent oracle: concatenate the actual fields, then normalize once.
-        let expected = |parts: &[&str]| {
+        // Independently reproduce both normalization stages of a pair.
+        let normalize = |parts: &[&str]| {
             let mut chars: Vec<char> = parts
                 .concat()
                 .chars()
@@ -30041,10 +30273,12 @@ mod tests {
                 .filter(|c| !c.is_whitespace())
                 .collect();
             chars.sort_unstable();
-            format!(
-                "cid1:{:x}",
-                Sha256::digest(chars.iter().collect::<String>())
-            )
+            chars.iter().collect::<String>()
+        };
+        let expected = |base_parts: &[&str], profile_parts: &[&str]| {
+            let base = normalize(base_parts);
+            let profile = normalize(profile_parts);
+            format!("cid1:{:x}", Sha256::digest(normalize(&[&base, &profile])))
         };
         let mut agents: Vec<super::AgentConfig> = serde_json::from_value(serde_json::json!([
             {"id":"a","label":"Alpha","color":"red","baseCommand":"Codex",
@@ -30064,21 +30298,32 @@ mod tests {
         let base = agents[0].id_hash.clone();
         super::refresh_pair_id_hashes(&agents, &mut profiles);
         let original = profiles.clone();
+        for (id, letter, leaves) in [
+            ("a", "A", vec!["Codex", "K", "V", "--model x", "P", "Q"]),
+            ("a", "B", vec!["Codex", "K", "V", "--model y"]),
+            ("b", "A", vec!["Claude", "--effort low"]),
+            ("b", "B", vec!["Claude", "--effort high"]),
+        ] {
+            assert_eq!(
+                profiles.profiles_by_agent[id][letter].id_hash_debug,
+                Some(leaves.into_iter().map(String::from).collect())
+            );
+        }
         assert_eq!(
             profiles.profiles_by_agent["a"]["A"].id_hash,
-            Some(expected(&["Codex", "K", "V", "--model x", "P", "Q"]))
+            Some(expected(&["Codex", "K", "V"], &["--model x", "P", "Q"]))
         );
         assert_eq!(
             profiles.profiles_by_agent["a"]["B"].id_hash,
-            Some(expected(&["Codex", "K", "V", "--model y"]))
+            Some(expected(&["Codex", "K", "V"], &["--model y"]))
         );
         assert_eq!(
             profiles.profiles_by_agent["b"]["A"].id_hash,
-            Some(expected(&["Claude", "--effort low"]))
+            Some(expected(&["Claude"], &["--effort low"]))
         );
         assert_eq!(
             profiles.profiles_by_agent["b"]["B"].id_hash,
-            Some(expected(&["Claude", "--effort high"]))
+            Some(expected(&["Claude"], &["--effort high"]))
         );
         assert_ne!(
             profiles.profiles_by_agent["b"]["A"].id_hash,
@@ -30094,7 +30339,7 @@ mod tests {
         super::refresh_pair_id_hashes(&agents, &mut profiles);
         assert_eq!(
             profiles.profiles_by_agent["a"]["A"].id_hash,
-            Some(expected(&["Codex", "K", "V", "--model z", "P", "Q"]))
+            Some(expected(&["Codex", "K", "V"], &["--model z", "P", "Q"]))
         );
         assert_eq!(
             profiles.profiles_by_agent["a"]["B"],
@@ -30110,11 +30355,11 @@ mod tests {
         super::refresh_pair_id_hashes(&agents, &mut profiles);
         assert_eq!(
             profiles.profiles_by_agent["a"]["A"].id_hash,
-            Some(expected(&["Other", "K", "W", "--model z", "P", "Q"]))
+            Some(expected(&["Other", "K", "W"], &["--model z", "P", "Q"]))
         );
         assert_eq!(
             profiles.profiles_by_agent["a"]["B"].id_hash,
-            Some(expected(&["Other", "K", "W", "--model y"]))
+            Some(expected(&["Other", "K", "W"], &["--model y"]))
         );
         assert_eq!(
             profiles.profiles_by_agent["b"],
@@ -30131,12 +30376,56 @@ mod tests {
         super::refresh_pair_id_hashes(&agents, &mut profiles);
         assert_eq!(
             profiles.profiles_by_agent["a"]["A"].id_hash,
-            Some(expected(&["Other", "K", "W", "--model z", "P", "R"]))
+            Some(expected(&["Other", "K", "W"], &["--model z", "P", "R"]))
         );
         assert_eq!(
             agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
             ["a", "b"]
         );
+        // Original leaves retain vector order, disabled/duplicate/empty rows,
+        // whitespace and Unicode. Expected hashes use two separate stages.
+        agents[0].command = "İΣΣ\u{2003} oo --".into();
+        agents[0].envs = serde_json::from_value(serde_json::json!([
+            {"key":" K ","value":"İ","enabled":false},
+            {"key":"","value":""},
+            {"key":" K ","value":"İ","enabled":true}
+        ]))
+        .unwrap();
+        let cell = profiles
+            .profiles_by_agent
+            .get_mut("a")
+            .unwrap()
+            .get_mut("A")
+            .unwrap();
+        cell.command = "Σ İ\u{a0}oo".into();
+        cell.env = BTreeMap::from([("Z".into(), "Last".into()), ("A".into(), "".into())]);
+        cell.id_hash_debug = Some(vec!["forged-pair".into()]);
+        super::refresh_agent_id_hashes(&mut agents);
+        let leaves = vec!["İΣΣ\u{2003} oo --", " K ", "İ", "", "", " K ", "İ"];
+        assert_eq!(
+            agents[0].id_hash_debug,
+            Some(leaves.iter().map(|s| (*s).into()).collect())
+        );
+        let base_hash = agents[0].id_hash.clone();
+        agents[0].id_hash_debug = Some(vec!["forged-base".into()]);
+        super::refresh_pair_id_hashes(&agents, &mut profiles);
+        let mut pair = leaves.clone();
+        pair.extend(["Σ İ\u{a0}oo", "A", "", "Z", "Last"]);
+        let base_preimage = normalize(&leaves);
+        let profile_preimage = normalize(&pair[leaves.len()..]);
+        let expected_hash = format!(
+            "cid1:{:x}",
+            Sha256::digest(normalize(&[&base_preimage, &profile_preimage]))
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash,
+            Some(expected_hash)
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash_debug,
+            Some(pair.into_iter().map(String::from).collect())
+        );
+        assert_eq!(agents[0].id_hash, base_hash);
     }
 
     #[test]
@@ -30149,7 +30438,7 @@ mod tests {
         let mut profiles: super::CodingAgentProfilesConfig =
             serde_json::from_value(serde_json::json!({"profilesByAgent": {
                 "a":{"A":{"command":" XY"},"B":{}},
-                "orphan":{"A":{"id_hash":"forged"}}
+                "orphan":{"A":{"id_hash":"forged","id_hash_debug":["forged"]}}
             }}))
             .unwrap();
         super::refresh_pair_id_hashes(&agents, &mut profiles);
@@ -30164,6 +30453,18 @@ mod tests {
         );
         assert!(!profiles.profiles_by_agent["a"].contains_key("C"));
         assert_eq!(profiles.profiles_by_agent["orphan"]["A"].id_hash, None);
+        assert_eq!(
+            profiles.profiles_by_agent["orphan"]["A"].id_hash_debug,
+            None
+        );
+        assert_eq!(
+            original.id_hash_debug,
+            Some(vec!["İ A\u{2003}b".into(), " XY".into()])
+        );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["B"].id_hash_debug,
+            Some(vec!["İ A\u{2003}b".into(), "".into()])
+        );
         agents[0].label = "Renamed".into();
         agents[0].command = "b aİ".into();
         profiles
@@ -30188,6 +30489,14 @@ mod tests {
             profiles.profiles_by_agent["a"]["A"].id_hash,
             original.id_hash
         );
+        assert_eq!(
+            profiles.profiles_by_agent["a"]["A"].id_hash_debug,
+            Some(vec!["b aİ".into(), "y\u{a0}x".into()])
+        );
+        assert_ne!(
+            profiles.profiles_by_agent["a"]["A"].id_hash_debug,
+            original.id_hash_debug
+        );
         let cell = &profiles.profiles_by_agent["a"]["A"];
         let pid = super::profile_identity(cell);
         let mut forged = cell.clone();
@@ -30207,10 +30516,12 @@ mod tests {
         let cells = &settings.coding_agent_profiles.profiles_by_agent["alpha"];
         let mut expected_a = super::empty_profile_cell();
         expected_a.id_hash = Some(super::configuration_identity("claude", &[]));
+        expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
         if orphan == "A" {
             expected_a.command = "--special".into();
             expected_a.notes = "payload".into();
             expected_a.id_hash = Some(super::configuration_identity("claude--special", &[]));
+            expected_a.id_hash_debug = Some(vec!["claude".into(), "--special".into()]);
         }
         assert_eq!(cells["A"], expected_a, "{sidecar}/{orphan}");
         if orphan == "B" {
@@ -30317,6 +30628,8 @@ mod tests {
                 serde_json::json!({}),
                 serde_json::json!(""),
                 serde_json::json!("forged"),
+                serde_json::json!(["forged", ""]),
+                serde_json::json!(["mixed", 42]),
             ] {
                 let (temp, path) = hash_activation_seed(sidecar);
                 let physical = if sidecar {
@@ -30326,13 +30639,17 @@ mod tests {
                 };
                 let mut raw = serde_json::Value::Object(b3_object(&physical));
                 raw["codingAgentProfiles"]["profilesByAgent"] = serde_json::json!({
-                    "alpha":{"A":{"additionalArguments":"--model x","id_hash":supplied,
+                    "alpha":{"A":{"additionalArguments":"--model x","id_hash":supplied,"id_hash_debug":supplied,
                         "sentinel":{"keep":true}}}
                 });
                 b3_write(&physical, &raw);
                 let before = hash_activation_files(temp.path());
                 for (loader, loaded) in b3_all_loaders(&path) {
                     let cell = &loaded.coding_agent_profiles.profiles_by_agent["alpha"]["A"];
+                    assert_eq!(
+                        cell.id_hash_debug,
+                        Some(vec!["claude".into(), "--model x".into()])
+                    );
                     assert_eq!(
                         cell.id_hash,
                         Some(super::configuration_identity("claude--modelx", &[])),
@@ -30344,6 +30661,10 @@ mod tests {
                 let written =
                     super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
                 let groups = b3_object(&b3_sidecar_path(temp.path()));
+                assert_eq!(
+                    groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"],
+                    serde_json::json!(["claude", "--model x"])
+                );
                 assert_eq!(
                     groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
                     written.coding_agent_profiles.profiles_by_agent["alpha"]["A"]
@@ -30364,6 +30685,14 @@ mod tests {
                     .get_mut("A")
                     .unwrap()
                     .id_hash = Some("stale".into());
+                stale
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .get_mut("alpha")
+                    .unwrap()
+                    .get_mut("A")
+                    .unwrap()
+                    .id_hash_debug = Some(vec!["stale".into()]);
                 let cas = super::compare_and_set_terminal_snapshots_enabled_at_path(
                     &stale,
                     &path,
@@ -30494,9 +30823,12 @@ mod tests {
             let agents = serde_json::json!([first, {"id":"a","baseCommand":"valid"}]);
             let before = agents.clone();
             let mut profiles = serde_json::json!({"profilesByAgent":{
-                "a":{"A":{"command":"--model x","id_hash":"stale","unknown":1}}
+                "a":{"A":{"command":"--model x","id_hash":"stale","id_hash_debug":["stale"],"unknown":1}}
             }});
             super::refresh_physical_pair_id_hashes(Some(&agents), &mut profiles);
+            assert!(profiles["profilesByAgent"]["a"]["A"]
+                .get("id_hash_debug")
+                .is_none());
             assert!(profiles["profilesByAgent"]["a"]["A"]
                 .get("id_hash")
                 .is_none());
@@ -30521,15 +30853,19 @@ mod tests {
         }
         for agents in [None, Some(serde_json::json!([]))] {
             let mut profiles = serde_json::json!({"profilesByAgent":{
-                "a":{"A":{"id_hash":"stale"}}
+                "a":{"A":{"id_hash":"stale","id_hash_debug":["stale"]}}
             }});
             super::refresh_physical_pair_id_hashes(agents.as_ref(), &mut profiles);
+            assert!(profiles["profilesByAgent"]["a"]["A"]
+                .get("id_hash_debug")
+                .is_none());
             assert!(profiles["profilesByAgent"]["a"]["A"]
                 .get("id_hash")
                 .is_none());
         }
         let agents = serde_json::json!([{"id":"a","command":"codex","label":17,
-            "envs":[{"key":"K","value":"V","enabled":false}]}]);
+            "envs":[{"key":"K","value":"V","enabled":false}]},
+            {"id":"a","baseCommand":"wrong"}]);
         let mut profiles = serde_json::json!({"profilesByAgent":{
             "a":{"A":{"command":"--model x","env":{"P":"Q"},"unknown":1}}
         }});
@@ -30539,11 +30875,27 @@ mod tests {
             profiles["profilesByAgent"]["a"]["A"]["id_hash"],
             super::configuration_identity("codexKV--modelxPQ", &[])
         );
-        profiles["profilesByAgent"]["a"]["A"]
-            .as_object_mut()
-            .unwrap()
-            .remove("id_hash");
-        assert_eq!(profiles, before);
+        let mut expected = before;
+        expected["profilesByAgent"]["a"]["A"]["id_hash"] = serde_json::json!(
+            "cid1:87849ab8d8f223bc755ecbc34b1e772ca61469dd5651dcf52063949e23001036"
+        );
+        expected["profilesByAgent"]["a"]["A"]["id_hash_debug"] =
+            serde_json::json!(["codex", "K", "V", "--model x", "P", "Q"]);
+        assert_eq!(profiles, expected);
+        let mut profiles = serde_json::json!({"profilesByAgent":{
+            "a":{"A":{},"B":{"additionalArguments":17,"id_hash":"stale",
+                "id_hash_debug":["stale"],"unknown":7},"C":false}
+        }});
+        super::refresh_physical_pair_id_hashes(Some(&agents), &mut profiles);
+        assert_eq!(
+            profiles["profilesByAgent"]["a"]["A"]["id_hash_debug"],
+            serde_json::json!(["codex", "K", "V", ""])
+        );
+        assert_eq!(
+            profiles["profilesByAgent"]["a"]["B"],
+            serde_json::json!({"additionalArguments":17,"unknown":7})
+        );
+        assert_eq!(profiles["profilesByAgent"]["a"]["C"], false);
     }
 
     fn check_issue_3047_pair_ownership_case(sidecar: bool, protected: &str) {
@@ -30558,7 +30910,7 @@ mod tests {
         raw["codingAgentProfiles"] = serde_json::json!({
             "schemaVersion": 2,
             "sentinel": {"sibling": 23},
-            "profilesByAgent": {"alpha":{"A":{"command":"--model x","id_hash":"physical", "sentinel":17}}}
+            "profilesByAgent": {"alpha":{"A":{"command":"--model x","id_hash":"physical", "id_hash_debug":["forged-physical"], "sentinel":17}}}
         });
         b3_write(&physical, &raw);
         if protected != "neither" {
@@ -30606,6 +30958,10 @@ mod tests {
             "--model x"
         };
         assert_eq!(
+            cell.id_hash_debug,
+            Some(vec![effective_base.into(), effective_args.into()])
+        );
+        assert_eq!(
             cell.id_hash,
             Some(super::configuration_identity(
                 &format!("{effective_base}{effective_args}"),
@@ -30636,6 +30992,10 @@ mod tests {
             } else {
                 "--model x"
             };
+            assert_eq!(
+                groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"],
+                serde_json::json!([expected_base, expected_args])
+            );
             assert_eq!(
                 groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
                 super::configuration_identity(&format!("{expected_base}{expected_args}"), &[])
@@ -30803,6 +31163,33 @@ mod tests {
 
     fn hash_activation_assert(settings: &super::AppSettings) {
         for agent in &settings.agents {
+            let mut leaves = vec![agent.command.clone()];
+            for env in &agent.envs {
+                leaves.extend([env.key.clone(), env.value.clone()]);
+            }
+            assert_eq!(agent.id_hash_debug, Some(leaves.clone()));
+            if let Some(cells) = settings
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get(&agent.id)
+            {
+                let first = settings
+                    .agents
+                    .iter()
+                    .find(|row| row.id == agent.id)
+                    .unwrap();
+                for cell in cells.values() {
+                    let mut pair = vec![first.command.clone()];
+                    for env in &first.envs {
+                        pair.extend([env.key.clone(), env.value.clone()]);
+                    }
+                    pair.push(cell.command.clone());
+                    for (key, value) in &cell.env {
+                        pair.extend([key.clone(), value.clone()]);
+                    }
+                    assert_eq!(cell.id_hash_debug, Some(pair));
+                }
+            }
             assert_eq!(
                 agent.id_hash.as_ref(),
                 Some(&super::configuration_identity(&agent.command, &agent.envs))
@@ -30814,10 +31201,30 @@ mod tests {
     fn id_hash_activation_three_loaders_derive_without_writes_or_backups() {
         for sidecar in [false, true] {
             let (temp, path) = hash_activation_seed(sidecar);
+            let physical = if sidecar {
+                b3_sidecar_path(temp.path())
+            } else {
+                path.clone()
+            };
+            let mut raw = serde_json::Value::Object(b3_object(&physical));
+            raw["agents"][0]["id_hash_debug"] = serde_json::json!(["old-base"]);
+            raw["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"] =
+                serde_json::json!(["old-pair"]);
+            b3_write(&physical, &raw);
             let before = hash_activation_files(temp.path());
             for (loader, settings) in b3_all_loaders(&path) {
                 assert_eq!(settings.agents[0].id, "alpha", "{loader}");
                 hash_activation_assert(&settings);
+                assert_eq!(
+                    settings.agents[0].id_hash_debug,
+                    Some(vec!["claude".into()]),
+                    "{loader}"
+                );
+                assert_eq!(
+                    settings.coding_agent_profiles.profiles_by_agent["alpha"]["A"].id_hash_debug,
+                    Some(vec!["claude".into(), "".into()]),
+                    "{loader}"
+                );
                 assert_eq!(hash_activation_files(temp.path()), before, "{loader}");
             }
         }
@@ -30861,7 +31268,8 @@ mod tests {
             let (temp, path) = hash_activation_seed(true);
             let sidecar = b3_sidecar_path(temp.path());
             let mut raw = serde_json::Value::Object(b3_object(&sidecar));
-            raw["agents"][0]["id_hash"] = supplied;
+            raw["agents"][0]["id_hash"] = supplied.clone();
+            raw["agents"][0]["id_hash_debug"] = supplied;
             b3_write(&sidecar, &raw);
             let loaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
             hash_activation_assert(&loaded);
@@ -30870,6 +31278,10 @@ mod tests {
             assert_eq!(
                 b3_object(&sidecar)["agents"][0]["id_hash"],
                 written.agents[0].id_hash.clone().unwrap()
+            );
+            assert_eq!(
+                b3_object(&sidecar)["agents"][0]["id_hash_debug"],
+                serde_json::json!(["claude"])
             );
         }
     }
@@ -30927,6 +31339,7 @@ mod tests {
                 "retained-physical-metadata".into()
             };
             physical["agents"][0]["id_hash"] = serde_json::json!(physical_hash);
+            physical["agents"][0]["id_hash_debug"] = serde_json::json!(["retained-forged"]);
             physical["agents"][0]["unknownRowField"] = serde_json::json!({"keep":9});
             b3_write(&physical_path, &physical);
             let raw_before = physical["agents"].clone();
@@ -31765,6 +32178,22 @@ mod tests {
                 (serde_json::Value::Array(seeded_rows), serde_json::Value::Array(held_rows)) => {
                     assert_eq!(seeded_rows.len(), held_rows.len(), "{key} length");
                     for (seeded_row, held_row) in seeded_rows.iter().zip(held_rows) {
+                        let command = seeded_row
+                            .get("baseCommand")
+                            .or_else(|| seeded_row.get("command"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let mut leaves = vec![command.to_string()];
+                        for env in seeded_row
+                            .get("envs")
+                            .and_then(serde_json::Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
+                            leaves.push(env["key"].as_str().unwrap().to_string());
+                            leaves.push(env["value"].as_str().unwrap().to_string());
+                        }
+                        assert_eq!(held_row["id_hash_debug"], serde_json::json!(leaves));
                         if seeded_row.get("blockingMenus").is_none() {
                             b3_assert_blocking_menus_legs(
                                 None,
@@ -31846,6 +32275,21 @@ mod tests {
                                     let object = cell.as_object_mut().unwrap();
                                     object.remove("id_hash");
                                     object.extend(hash.map(|hash| ("id_hash".to_string(), hash)));
+                                    object.remove("id_hash_debug");
+                                    if let Some(base) = &base {
+                                        let mut leaves = vec![base.command.clone()];
+                                        for env in &base.envs {
+                                            leaves.extend([env.key.clone(), env.value.clone()]);
+                                        }
+                                        leaves.push(profile.command.clone());
+                                        for (key, value) in &profile.env {
+                                            leaves.extend([key.clone(), value.clone()]);
+                                        }
+                                        object.insert(
+                                            "id_hash_debug".into(),
+                                            serde_json::json!(leaves),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -33766,6 +34210,84 @@ mod derived_agent_binding_projection_tests {
             );
         }
         assert_eq!(bootstrap_identity_revision(&second).unwrap(), revision);
+    }
+
+    #[test]
+    fn derived_agent_id_binding_projection_ignores_only_exact_debug_locations() {
+        let mut settings = AppSettings::default();
+        let raw = serde_json::json!({
+            "agents": [{"id":"alpha", "baseCommand":"tool", "id_hash":"base-hash",
+                "unknownIdentity":{"id_hash_debug":["nested-agent"]}}],
+            "codingAgentProfiles":{"profilesByAgent":{"alpha":{"A":{
+                "additionalArguments":"--flag", "id_hash":"pair-hash",
+                "unknownIdentity":{"id_hash_debug":["nested-cell"]}
+            }}}}
+        });
+        settings.coding_agent_identity_physical = Some(Arc::new(raw.clone()));
+        let baseline = bootstrap_identity_revision(&settings).unwrap();
+        let binding = bootstrap_binding_revision(&settings, "alpha").unwrap();
+        // Mutate the same captured raw image directly, without a loader or disk rewrite.
+        for location in ["agent", "cell", "both"] {
+            for debug in [
+                serde_json::json!(["forged"]),
+                serde_json::json!([]),
+                serde_json::json!(["replacement", ""]),
+                serde_json::json!(false),
+                serde_json::json!(["mixed", 9]),
+                serde_json::json!(null),
+            ] {
+                let mut image = raw.clone();
+                if location != "cell" {
+                    image["agents"][0]["id_hash_debug"] = debug.clone();
+                }
+                if location != "agent" {
+                    image["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]
+                        ["id_hash_debug"] = debug;
+                }
+                let mut changed = settings.clone();
+                changed.coding_agent_identity_physical = Some(Arc::new(image));
+                assert_eq!(bootstrap_identity_revision(&changed).unwrap(), baseline);
+                assert_eq!(
+                    bootstrap_binding_revision(&changed, "alpha").unwrap(),
+                    binding
+                );
+            }
+        }
+        for location in ["agent", "cell"] {
+            let command_key = if location == "agent" {
+                "baseCommand"
+            } else {
+                "additionalArguments"
+            };
+            for key in ["id_hash", command_key, "unknownIdentity"] {
+                let mut image = raw.clone();
+                let record = if location == "agent" {
+                    &mut image["agents"][0]
+                } else {
+                    &mut image["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]
+                };
+                record[key] = if key == "unknownIdentity" {
+                    serde_json::json!({"id_hash_debug":["nested-changed"]})
+                } else {
+                    serde_json::json!("changed")
+                };
+                let mut changed = settings.clone();
+                changed.coding_agent_identity_physical = Some(Arc::new(image));
+                assert_ne!(
+                    bootstrap_identity_revision(&changed).unwrap(),
+                    baseline,
+                    "{location}/{key}"
+                );
+            }
+        }
+        assert_eq!(
+            settings
+                .coding_agent_identity_physical
+                .as_ref()
+                .unwrap()
+                .as_ref(),
+            &raw
+        );
     }
 
     #[test]

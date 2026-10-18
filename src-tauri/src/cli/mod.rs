@@ -183,6 +183,8 @@ pub enum Commands {
     NewProject(new_project::NewProjectArgs),
     /// Send a local image/file to a configured Telegram bot (no GUI required)
     TelegramSendImage(telegram_send_image::TelegramSendImageArgs),
+    /// Send plain text to a configured Telegram bot (no GUI required)
+    TelegramSendMessage(telegram_send_image::TelegramSendMessageArgs),
     /// Manage rooms in an AC project
     #[command(name = "room", alias = "workgroup")]
     Workgroup(workgroup::WorkgroupArgs),
@@ -453,6 +455,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::OpenProject(args) => open_project::execute(args),
         Commands::NewProject(args) => new_project::execute(args),
         Commands::TelegramSendImage(args) => telegram_send_image::execute(args),
+        Commands::TelegramSendMessage(args) => telegram_send_image::execute_message(args),
         Commands::Workgroup(args) => workgroup::execute(args),
         Commands::Team(args) => team::execute(args),
         Commands::Loop(args) => loop_cmd::execute(args),

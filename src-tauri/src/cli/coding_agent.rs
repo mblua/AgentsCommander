@@ -796,6 +796,9 @@ mod tests {
             )
             .unwrap();
             assert_eq!(disk["agents"][0]["id_hash"], payload["agent"]["id_hash"]);
+            let expected_debug = serde_json::json!(["published-command", "MODE", "final-value"]);
+            assert_eq!(payload["agent"]["id_hash_debug"], expected_debug);
+            assert_eq!(disk["agents"][0]["id_hash_debug"], expected_debug);
             let removed_id = row.id.clone();
             let removed = apply_and_save_direct(
                 reload,

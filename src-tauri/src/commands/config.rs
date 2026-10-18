@@ -1302,6 +1302,7 @@ fn settings_draft_update_events(
         for cells in profiles.profiles_by_agent.values_mut() {
             for cell in cells.values_mut() {
                 cell.id_hash = None;
+                cell.id_hash_debug = None;
             }
         }
     }
@@ -5193,6 +5194,12 @@ mod tests {
             ))
         );
         assert_eq!(physical_agent.envs, expected_envs);
+        let mut expected_debug = vec![row.command.clone()];
+        for env in expected_envs {
+            expected_debug.extend([env.key.clone(), env.value.clone()]);
+        }
+        assert_eq!(row.id_hash_debug, Some(expected_debug.clone()));
+        assert_eq!(physical_agent.id_hash_debug, Some(expected_debug));
         assert_eq!(row.id, "agent-0");
         assert_eq!(row.order, Some(0));
         assert_eq!(
@@ -5249,6 +5256,15 @@ mod tests {
         assert_ne!(written.agents[0].id_hash, original.agents[0].id_hash);
         let mut expected_profiles = original.coding_agent_profiles.profiles_by_agent.clone();
         for (letter, cell) in expected_profiles.get_mut("agent-0").unwrap() {
+            let mut debug = vec![written.agents[0].command.clone()];
+            for env in &original.agents[0].envs {
+                debug.extend([env.key.clone(), env.value.clone()]);
+            }
+            debug.push(cell.command.clone());
+            for (key, value) in &cell.env {
+                debug.extend([key.clone(), value.clone()]);
+            }
+            cell.id_hash_debug = Some(debug);
             // Independent preimage from the final command, restored live env and
             // the original payload. Disabled env rows still participate.
             let mut preimage = written.agents[0].command.clone();
@@ -7271,7 +7287,27 @@ mod tests {
     fn id_hash_activation_events_ignore_only_cell_metadata() {
         let mut before = settings_with_single_agent();
         crate::config::settings::validate_and_repair_settings(&mut before).unwrap();
+        before
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash_debug = Some(vec!["old".into()]);
         let mut metadata = before.clone();
+        metadata.agents[0].id_hash_debug = Some(vec!["forged-base".into()]);
+        metadata
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash_debug = Some(vec!["forged-pair".into()]);
+        let debug_events = super::settings_draft_update_events(&before, &metadata);
+        assert!(!debug_events.profiles_changed);
+        assert!(debug_events.env_agent_ids.is_empty());
         metadata
             .coding_agent_profiles
             .profiles_by_agent
@@ -7397,6 +7433,14 @@ mod tests {
             .get_mut("A")
             .unwrap()
             .id_hash = Some("derived-after-env-edit".into());
+        after
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("agent-0")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .id_hash_debug = Some(vec!["forged-env-debug".into()]);
         let events = super::settings_draft_update_events(&before, &after);
         assert_eq!(events.env_agent_ids, vec!["agent-0".to_string()]);
         assert!(
