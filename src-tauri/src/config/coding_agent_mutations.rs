@@ -1716,6 +1716,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: label.to_string(),
             command: command.to_string(),
             color: "#6366f1".to_string(),

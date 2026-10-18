@@ -7728,6 +7728,7 @@ mod tests {
     fn profile_cell(command: &str) -> crate::config::settings::ProfileCellConfig {
         crate::config::settings::ProfileCellConfig {
             id_hash: None,
+            id_hash_debug: None,
             preflight: None,
             preflight_timeout_seconds: None,
             enabled: true,
