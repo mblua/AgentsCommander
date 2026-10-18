@@ -121,6 +121,263 @@ pub(crate) struct SettingsDraftUpdateEvents {
     pub env_agent_ids: Vec<String>,
 }
 
+// #3083: closed diagnostic vocabulary; no client-selected target or text.
+const RAIL_DIAGNOSTIC_ERROR: &str = "invalid rail diagnostic";
+const RAIL_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailSurface {
+    Embedded,
+    Sidebar,
+    Store,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailKind {
+    Custom,
+    System,
+    Nonstop,
+    Ungrouped,
+    Project,
+    Favorites,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailPhase {
+    Arming,
+    Dragging,
+    Saving,
+    Idle,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailOutcome {
+    Applied,
+    Unchanged,
+    Stale,
+    Error,
+    Disconnected,
+    Unloaded,
+    Queued,
+    Discarded,
+    Suppressed,
+    Overflow,
+    NoPress,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailTag {
+    Button,
+    Span,
+    Svg,
+    Path,
+    Aside,
+    Body,
+    Input,
+    Textarea,
+    Other,
+    None,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RailEvent {
+    Pointerdown,
+    Pointerup,
+    Pointercancel,
+    Mousedown,
+    Mouseup,
+    Click,
+    Gotpointercapture,
+    Lostpointercapture,
+    Focusin,
+    Focusout,
+    WindowFocus,
+    WindowBlur,
+    HandlerEnter,
+    HandlerEnd,
+    SelectionChange,
+    RailMount,
+    RailDispose,
+    SectionMount,
+    SectionDispose,
+    NodeMount,
+    NodeDispose,
+    ProjectList,
+    ProjectButtons,
+    FavoritesEntries,
+    ReloadStart,
+    ReloadEnd,
+    DiscoverStart,
+    DiscoverEnd,
+    SnapshotStart,
+    SnapshotEnd,
+    SnapshotsStart,
+    SnapshotsEnd,
+    TaskStart,
+    TaskEnd,
+    LoopStart,
+    LoopEnd,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RailDiagnosticRecord {
+    version: u8,
+    window_id: Uuid,
+    seq: u64,
+    at_ms: f64,
+    surface: RailSurface,
+    event: RailEvent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rail_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entity_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_node_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    object_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_project_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_group_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<RailKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_kind: Option<RailKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<RailPhase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<RailOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pointer_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    button: Option<i8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_tag: Option<RailTag>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_tag: Option<RailTag>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    primary: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trusted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_connected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    captured: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    document_focused: Option<bool>,
+}
+
+impl RailDiagnosticRecord {
+    fn validate(&self) -> bool {
+        self.version == 1
+            && (1..=RAIL_SAFE_INTEGER).contains(&self.seq)
+            && self.at_ms.is_finite()
+            && self.at_ms >= 0.0
+            && self.duration_ms.is_none_or(|n| n.is_finite() && n >= 0.0)
+            && self.button.is_none_or(|n| (-1..=5).contains(&n))
+            && self
+                .rail_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .operation_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .project_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .group_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .entity_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .node_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .original_node_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .object_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .selection_project_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self
+                .selection_group_id
+                .is_none_or(|n| (1..=RAIL_SAFE_INTEGER).contains(&n))
+            && self.count.is_none_or(|n| n <= RAIL_SAFE_INTEGER)
+            && self.changed_count.is_none_or(|n| n <= RAIL_SAFE_INTEGER)
+    }
+}
+
+pub(crate) fn rail_diagnostic_line(record: Option<serde_json::Value>) -> Result<String, String> {
+    let invalid = || RAIL_DIAGNOSTIC_ERROR.to_string();
+    let value = record.ok_or_else(invalid)?;
+    // Serde unit enums also accept externally tagged maps; IPC permits scalar fields only.
+    let object = value.as_object().ok_or_else(invalid)?;
+    if object.values().any(|v| v.is_object() || v.is_array()) {
+        return Err(invalid());
+    }
+    let record: RailDiagnosticRecord = serde_json::from_value(value).map_err(|_| invalid())?;
+    if !record.validate() {
+        return Err(invalid());
+    }
+    let json = serde_json::to_string(&record).map_err(|_| invalid())?;
+    if json.len() > 2048 {
+        return Err(invalid());
+    }
+    Ok(format!("[rail-diag]{json}"))
+}
+
+pub(crate) fn append_rail_diagnostic_to(
+    record: Option<serde_json::Value>,
+    logger: &dyn log::Log,
+) -> Result<(), String> {
+    let line = rail_diagnostic_line(record)?;
+    let metadata = log::Metadata::builder()
+        .level(log::Level::Debug)
+        .target("agentscommander_lib::commands::config")
+        .build();
+    if logger.enabled(&metadata) {
+        logger.log(
+            &log::Record::builder()
+                .metadata(metadata)
+                .args(format_args!("{line}"))
+                .build(),
+        );
+    }
+    Ok(())
+}
+
+/// ACK covers validation and dispatch, not file write/fsync. RUST_LOG must allow Debug.
+#[tauri::command]
+pub fn append_rail_diagnostic(record: Option<serde_json::Value>) -> Result<(), String> {
+    append_rail_diagnostic_to(record, log::logger())
+}
+
 #[tauri::command]
 pub async fn save_debug_logs(content: String) -> Result<(), String> {
     let path = crate::config::config_dir()
@@ -13807,5 +14064,233 @@ mod p02_wire_schema_tests {
         let cell = &wire["codingAgentProfiles"]["profilesByAgent"]["one"]["A"];
         assert_eq!(cell["additionalArguments"], "--new");
         assert!(cell.get("command").is_none());
+    }
+}
+
+#[cfg(test)]
+mod issue_3083_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn record() -> Value {
+        json!({"version":1,"windowId":"fedcba98-7654-4321-8abc-012345678901",
+            "seq":1,"atMs":0.0,"surface":"embedded","event":"pointerdown"})
+    }
+
+    #[derive(Default)]
+    struct Counter {
+        enabled: AtomicUsize,
+        emitted: AtomicUsize,
+    }
+    impl log::Log for Counter {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            assert_eq!(metadata.level(), log::Level::Debug);
+            assert_eq!(metadata.target(), "agentscommander_lib::commands::config");
+            self.enabled.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            assert_eq!(record.level(), log::Level::Debug);
+            assert_eq!(record.target(), "agentscommander_lib::commands::config");
+            let line = record.args().to_string();
+            let json = line.strip_prefix("[rail-diag]").unwrap();
+            let parsed: Value = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed["seq"], 1);
+            assert_eq!(serde_json::to_string(&parsed).unwrap().len(), json.len());
+            assert!(!line.contains('\n'));
+            self.emitted.fetch_add(1, Ordering::Relaxed);
+        }
+        fn flush(&self) {}
+    }
+
+    fn reject(value: Option<Value>) {
+        let logger = Counter::default();
+        assert_eq!(
+            append_rail_diagnostic_to(value.clone(), &logger),
+            Err(RAIL_DIAGNOSTIC_ERROR.into())
+        );
+        assert_eq!(
+            append_rail_diagnostic(value),
+            Err(RAIL_DIAGNOSTIC_ERROR.into())
+        );
+        assert_eq!(logger.enabled.load(Ordering::Relaxed), 0);
+        assert_eq!(logger.emitted.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn issue_3083_private_boundary_and_single_debug_emission() {
+        let logger = Counter::default();
+        assert_eq!(append_rail_diagnostic_to(Some(record()), &logger), Ok(()));
+        assert_eq!(logger.enabled.load(Ordering::Relaxed), 1);
+        assert_eq!(logger.emitted.load(Ordering::Relaxed), 1);
+        reject(None);
+        for value in [
+            Value::Null,
+            json!(true),
+            json!("private/path"),
+            json!(3),
+            json!([]),
+            json!({}),
+        ] {
+            reject(Some(value));
+        }
+        let mut extra = record();
+        extra["unknown"] = json!({"nested":"secret"});
+        reject(Some(extra));
+        for (field, value) in [
+            ("surface", json!({"embedded":null})),
+            ("event", json!({"pointerdown":null})),
+            ("kind", json!({"custom":null})),
+            ("windowId", json!([0, 1, 2, 3])),
+        ] {
+            let mut nested = record();
+            nested[field] = value;
+            reject(Some(nested));
+        }
+        let mut huge = record();
+        huge["windowId"] = json!("é".repeat(2049));
+        assert!(serde_json::to_vec(&huge).unwrap().len() > 2048);
+        reject(Some(huge));
+    }
+
+    #[test]
+    fn issue_3083_numeric_type_and_range_validation() {
+        for field in [
+            "seq",
+            "railId",
+            "operationId",
+            "projectId",
+            "groupId",
+            "entityId",
+            "nodeId",
+            "originalNodeId",
+            "objectId",
+            "selectionProjectId",
+            "selectionGroupId",
+        ] {
+            for bad in [
+                json!(0),
+                json!(-1),
+                json!(1.5),
+                json!(9_007_199_254_740_992u64),
+                json!("1"),
+                json!({"unknown":1}),
+            ] {
+                let mut value = record();
+                value[field] = bad;
+                reject(Some(value));
+            }
+            let mut value = record();
+            value[field] = json!(RAIL_SAFE_INTEGER);
+            assert!(rail_diagnostic_line(Some(value)).is_ok());
+        }
+        for field in ["count", "changedCount"] {
+            for bad in [json!(-1), json!(0.5), json!(9_007_199_254_740_992u64)] {
+                let mut value = record();
+                value[field] = bad;
+                reject(Some(value));
+            }
+            let mut value = record();
+            value[field] = json!(0);
+            assert!(rail_diagnostic_line(Some(value)).is_ok());
+        }
+        for (field, bad) in [
+            ("version", json!(2)),
+            ("version", json!("1")),
+            ("windowId", json!("not-a-uuid")),
+            ("atMs", json!(-0.1)),
+            ("atMs", json!("0")),
+            ("durationMs", json!(-1)),
+            ("pointerId", json!(2147483648u64)),
+            ("pointerId", json!(-2147483649i64)),
+            ("button", json!(-2)),
+            ("button", json!(6)),
+        ] {
+            let mut value = record();
+            value[field] = bad;
+            reject(Some(value));
+        }
+        for field in [
+            "primary",
+            "trusted",
+            "connected",
+            "originalConnected",
+            "captured",
+            "documentFocused",
+        ] {
+            let mut value = record();
+            value[field] = json!(1);
+            reject(Some(value));
+        }
+        let mut dto: RailDiagnosticRecord = serde_json::from_value(record()).unwrap();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            dto.at_ms = bad;
+            assert!(!dto.validate());
+            dto.at_ms = 0.0;
+            dto.duration_ms = Some(bad);
+            assert!(!dto.validate());
+            dto.duration_ms = None;
+        }
+    }
+
+    #[test]
+    fn issue_3083_closed_enums_and_full_record() {
+        for (field, values) in [
+            ("surface", "embedded sidebar store"),
+            ("kind", "custom system nonstop ungrouped project favorites"),
+            ("selectionKind", "custom system nonstop ungrouped project favorites"),
+            ("phase", "arming dragging saving idle"),
+            ("outcome", "applied unchanged stale error disconnected unloaded queued discarded suppressed overflow no-press"),
+            ("targetTag", "button span svg path aside body input textarea other none"),
+            ("activeTag", "button span svg path aside body input textarea other none"),
+            ("event", "pointerdown pointerup pointercancel mousedown mouseup click gotpointercapture lostpointercapture focusin focusout window-focus window-blur handler-enter handler-end selection-change rail-mount rail-dispose section-mount section-dispose node-mount node-dispose project-list project-buttons favorites-entries reload-start reload-end discover-start discover-end snapshot-start snapshot-end snapshots-start snapshots-end task-start task-end loop-start loop-end"),
+        ] {
+            for good in values.split_whitespace() {
+                let mut value = record(); value[field] = json!(good);
+                assert!(rail_diagnostic_line(Some(value)).is_ok(), "{field}: {good}");
+            }
+            for bad in [json!("private text"), json!(1), json!({"unknown":"nested"})] {
+                let mut value = record(); value[field] = bad; reject(Some(value));
+            }
+        }
+        let mut full = record();
+        for field in [
+            "railId",
+            "operationId",
+            "projectId",
+            "groupId",
+            "entityId",
+            "nodeId",
+            "originalNodeId",
+            "objectId",
+            "selectionProjectId",
+            "selectionGroupId",
+            "count",
+            "changedCount",
+        ] {
+            full[field] = json!(RAIL_SAFE_INTEGER);
+        }
+        for field in [
+            "primary",
+            "trusted",
+            "connected",
+            "originalConnected",
+            "captured",
+            "documentFocused",
+        ] {
+            full[field] = json!(true);
+        }
+        full["kind"] = json!("custom");
+        full["selectionKind"] = json!("ungrouped");
+        full["phase"] = json!("dragging");
+        full["outcome"] = json!("no-press");
+        full["pointerId"] = json!(i32::MIN);
+        full["button"] = json!(-1);
+        full["targetTag"] = json!("textarea");
+        full["activeTag"] = json!("none");
+        full["durationMs"] = json!(f64::MAX);
+        let line = rail_diagnostic_line(Some(full)).unwrap();
+        assert!(line.len() <= 2048 + "[rail-diag]".len());
     }
 }
