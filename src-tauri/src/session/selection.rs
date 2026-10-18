@@ -29,6 +29,20 @@ pub(crate) struct ResponseCloseRegistration {
     pub member: crate::pty::manager::ResponseRouteIdentity,
     pub coordinator: crate::pty::manager::ResponseRouteIdentity,
     pub carrier: crate::config::sessions_persistence::PublishedCarrier,
+    pub diagnostic_last_poll_outcome: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl ResponseCloseRegistration {
+    fn diagnostic_poll_outcome(&self, code: u64, outcome: &'static str) {
+        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
+            && self
+                .diagnostic_last_poll_outcome
+                .swap(code, Ordering::Relaxed)
+                != code
+        {
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown stage=poll_terminal outcome={} member={} coordinator={} site={}", outcome, self.member.session_id, self.coordinator.session_id, line!());
+        }
+    }
 }
 
 fn response_close_registrations() -> &'static Mutex<BTreeMap<Uuid, ResponseCloseRegistration>> {
@@ -91,10 +105,15 @@ fn response_registration_route(
 
 pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
     let Some(tracker) = app.try_state::<crate::pty::manager::ResponseCloseState>() else {
+        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=poll_health outcome=tracker_missing health=unknown", line!());
         return;
     };
+    let diagnostic_status = tracker.diagnostic_poll_health();
     crate::commands::session::reconcile_response_closes(app).await;
     let Some(coordinator) = app.try_state::<SelectionCoordinator>() else {
+        if diagnostic_status {
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=poll_status outcome=coordinator_missing registrations=unknown", line!());
+        }
         return;
     };
     let registrations = response_close_registrations()
@@ -102,13 +121,21 @@ pub(crate) async fn poll_response_close<R: Runtime>(app: &AppHandle<R>) {
         .ok()
         .map(|registrations| registrations.values().cloned().collect::<Vec<_>>());
     let Some(registrations) = registrations else {
+        if diagnostic_status {
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} stage=poll_status outcome=registration_lock_error registrations=unknown", line!());
+        }
         return;
     };
+    if diagnostic_status {
+        log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag id=unknown site={} outcome=observed stage=poll_status registration_count={}", line!(), registrations.len());
+    }
     for registration in registrations {
         if !registration.tracker.same_state(&tracker) {
+            registration.diagnostic_poll_outcome(1, "same_tracker_mismatch");
             continue;
         }
         if registration.member.backend != crate::pty::backend::SessionBackendKind::LocalProcess {
+            registration.diagnostic_poll_outcome(2, "nonlocal_registration");
             continue;
         }
         let _ = coordinator.try_response_close(app, &registration).await;
@@ -5188,17 +5215,20 @@ impl SelectionCoordinator {
             kind: CriticalAdmissionKind::ResponseClose,
         };
         let critical = {
-            let mut keys = self
-                .inner
-                .critical_keys
-                .lock()
-                .map_err(|_| SelectionCoordinatorError::Unavailable)?;
+            let mut keys = self.inner.critical_keys.lock().map_err(|_| {
+                registration.diagnostic_poll_outcome(3, "critical_key_lock_error");
+                SelectionCoordinatorError::Unavailable
+            })?;
             if !keys.insert(key) {
+                registration.diagnostic_poll_outcome(4, "duplicate_critical_key");
                 return Ok(());
             }
             CriticalAdmissionGuard::new(&self.inner, key)
         };
-        let (admission, slot) = self.try_reserve_envelope()?;
+        let (admission, slot) = self.try_reserve_envelope().map_err(|error| {
+            registration.diagnostic_poll_outcome(5, "reserve_envelope_error");
+            error
+        })?;
         let tracker = app
             .state::<crate::pty::manager::ResponseCloseState>()
             .inner()
@@ -5209,12 +5239,14 @@ impl SelectionCoordinator {
         let settings = settings.read().await;
         let carrier_permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         if self.restore_is_active() {
+            registration.diagnostic_poll_outcome(6, "restore_active");
             return Ok(());
         }
+        let mut diagnostic_reason = (7, "ticket_absent");
         let ticket = manager
             .with_current_carrier_snapshot(&carrier_permit, |current| {
-                let member = response_registration_row(current, &registration.member)?;
-                let coordinator = response_registration_row(current, &registration.coordinator)?;
+                let member = response_registration_row(current, &registration.member).or_else(|| { if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_reason = (8, "current_member_rejected"); } None })?;
+                let coordinator = response_registration_row(current, &registration.coordinator).or_else(|| { if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_reason = (9, "current_coordinator_rejected"); } None })?;
                 if member.backend_kind != crate::pty::backend::SessionBackendKind::LocalProcess
                     || member.is_root_agent
                     || member.is_coordinator
@@ -5222,11 +5254,13 @@ impl SelectionCoordinator {
                     || !coordinator.is_coordinator
                     || coordinator.is_root_agent
                 {
+                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_reason = (10, "role_or_backend_rejected"); }
                     return None;
                 }
                 if !response_registration_route(&pty, &registration.member, member)
                     || !response_registration_route(&pty, &registration.coordinator, coordinator)
                 {
+                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_reason = (11, "member_or_coordinator_route_rejected"); }
                     return None;
                 }
                 let now = Instant::now();
@@ -5247,14 +5281,29 @@ impl SelectionCoordinator {
                     crate::session::session::is_working(coordinator),
                     now,
                 );
-                tracker.select_ticket(member.id, now).ok()
+                match tracker.select_ticket(member.id, now) {
+                    Ok(ticket) => Some(ticket),
+                    Err(error) => {
+                        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+                            diagnostic_reason = match error {
+                                crate::pty::manager::ResponseCloseError::Unavailable => (12, "select_ticket_unavailable"),
+                                crate::pty::manager::ResponseCloseError::Unknown => (13, "select_ticket_unknown"),
+                                crate::pty::manager::ResponseCloseError::Conflict => (14, "select_ticket_conflict"),
+                                crate::pty::manager::ResponseCloseError::ClosingDeferred => (15, "select_ticket_closing_deferred"),
+                            };
+                        }
+                        None
+                    }
+                }
             })
             .await;
         drop(carrier_permit);
         let Some(ticket) = ticket else {
+            registration.diagnostic_poll_outcome(diagnostic_reason.0, diagnostic_reason.1);
             return Ok(());
         };
         if ticket.committed_binding().member != registration.member {
+            registration.diagnostic_poll_outcome(16, "committed_binding_mismatch");
             return Ok(());
         }
         drop(slot.send(CoordinatorEnvelope {
@@ -5265,6 +5314,7 @@ impl SelectionCoordinator {
             _create_ticket: None,
             _critical_admission: Some(critical),
         }));
+        registration.diagnostic_poll_outcome(17, "envelope_submitted");
         Ok(())
     }
 
