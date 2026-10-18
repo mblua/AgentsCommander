@@ -9,6 +9,19 @@ import type {
 } from "./types";
 
 describe("shared ipc transport seam", () => {
+  it("serializes the exact rail diagnostic envelope and propagates the transport result", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    fake.resolve("append_rail_diagnostic", null);
+    const restore = ipc.__setTransportForTests(fake);
+    const record: import("./ipc").RailDiagnosticRecord = { version: 1, windowId: "13eac932-6f64-4a9b-8141-464899d6bc31", seq: 1, atMs: 0, surface: "sidebar", event: "click", trusted: false };
+    try {
+      await expect(ipc.DebugAPI.appendRailDiagnostic(record)).resolves.toBeNull();
+      expect(fake.lastCall("append_rail_diagnostic")?.args).toEqual({ record });
+      fake.reject("append_rail_diagnostic", "invalid rail diagnostic");
+      await expect(ipc.DebugAPI.appendRailDiagnostic(record)).rejects.toBe("invalid rail diagnostic");
+    } finally { restore(); }
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
