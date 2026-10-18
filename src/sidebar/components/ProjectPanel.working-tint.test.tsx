@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createRoot, onCleanup } from "solid-js";
+import { acquireRoomActivityObserver } from "../stores/room-activity";
 import ProjectPanel from "./ProjectPanel";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
@@ -31,6 +33,10 @@ import type { CiState } from "../../shared/types";
 // returned the blue wash and PASSED on the round-2 defect that shipped a
 // half-rendered light-theme card-sections room. The cascade is pinned from the
 // bytes instead, in working-tint-css.test.ts assertion 7.
+
+function ownActivity(): () => void {
+  return createRoot((dispose) => { onCleanup(acquireRoomActivityObserver()); return dispose; });
+}
 
 const projectPath = "C:\\Project";
 const wgName = "wg-9-tint-team";
@@ -103,6 +109,7 @@ function ciDiscovery() {
  *  the rail needs the one extra fake invoke, exactly as
  *  ProjectPanel.collapse-state.test.tsx mounts the pair. */
 async function mountCiPanel(options: { withRail?: boolean } = {}) {
+  const disposeActivity = ownActivity();
   const fake = new FakeTransport();
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
   fake.resolve("get_settings", baseSettings());
@@ -131,7 +138,7 @@ async function mountCiPanel(options: { withRail?: boolean } = {}) {
       rendered.root.querySelector(`[data-ac-testid="${rowTestId("workgroups", ORCHESTRATOR, wgName)}"]`)
     ).not.toBeNull()
   );
-  return rendered;
+  return { ...rendered, cleanup: () => { rendered.cleanup(); disposeActivity(); } };
 }
 
 /** One repo's published answer, exactly as the event carries it (same shape as
@@ -219,6 +226,7 @@ function replicaSession(
 }
 
 async function mount() {
+  const disposeActivity = ownActivity();
   const fake = new FakeTransport();
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
   fake.resolve("get_settings", baseSettings());
@@ -227,7 +235,7 @@ async function mount() {
   await settingsStore.load();
   await projectStore.createAndLoad(projectPath);
   await waitFor(() => expect(rendered.root.textContent).toContain(WORKER));
-  return rendered;
+  return { ...rendered, cleanup: () => { rendered.cleanup(); disposeActivity(); } };
 }
 
 function twoRoomDiscovery() {
@@ -269,6 +277,7 @@ function twoRoomDiscovery() {
 }
 
 async function mountTwoRooms() {
+  const disposeActivity = ownActivity();
   const fake = new FakeTransport();
   fake.resolve("new_project", { path: projectPath, registered: true, created: false });
   fake.resolve("get_settings", baseSettings());
@@ -277,7 +286,7 @@ async function mountTwoRooms() {
   await settingsStore.load();
   await projectStore.createAndLoad(projectPath);
   await waitFor(() => expect(rendered.root.textContent).toContain(IDLE_MEMBER));
-  return rendered;
+  return { ...rendered, cleanup: () => { rendered.cleanup(); disposeActivity(); } };
 }
 
 const row = (root: HTMLElement, context: string, replica: string, wg = wgName): Element => {
@@ -302,6 +311,7 @@ describe("ProjectPanel working tint (#1755)", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
@@ -433,15 +443,17 @@ describe("ProjectPanel working tint (#1755)", () => {
         expect(anySubgroupWorking(rendered.root)).toBe(true);
       });
 
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
       sessionsStore.setSessions([
         replicaSession(WORKER, "idle"),
         replicaSession(BYSTANDER, "idle"),
         replicaSession(ORCHESTRATOR, "idle"),
       ]);
-      await waitFor(() => {
-        expect(row(rendered.root, "workgroups", WORKER).classList.contains("working")).toBe(false);
-        expect(anySubgroupWorking(rendered.root)).toBe(false);
-      });
+      expect(row(rendered.root, "workgroups", WORKER).classList.contains("working")).toBe(false);
+      vi.advanceTimersByTime(14999);
+      expect(anySubgroupWorking(rendered.root)).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(anySubgroupWorking(rendered.root)).toBe(false);
     } finally {
       rendered.cleanup();
     }
@@ -625,6 +637,7 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanupDom?.();
     cleanupDom = null;
     resetUiStoresForTests();
@@ -795,16 +808,21 @@ describe("ProjectPanel orchestrator CI working tint (#2131)", () => {
       expect(split.notWorking.map((group) => group.name)).toEqual([wgName, IDLE_ROOM]);
       // ...but the CI room IS active, and that is what every user-facing surface
       // reads: the room wash, the rail dot and the rail counter.
-      const active = splitRoomsByActive(projectStore.projects[0].workgroups);
+      const active = splitRoomsByActive(projectPath, projectStore.projects[0].workgroups);
       expect(active.active.map((group) => group.name)).toEqual([wgName]);
       expect(active.notActive.map((group) => group.name)).toEqual([IDLE_ROOM]);
       await waitFor(() => expect(anySubgroupWorking(rendered.root)).toBe(true));
       expect(railDots(rendered.root).length).toBeGreaterThan(0);
       expect(railButton(rendered.root, "all").textContent).toContain("1/2");
 
-      // Losing CI takes the wash and the count back off, in the same run.
+      // Raw chips clear immediately; aggregate wash and rail share the deadline.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
       publishCi("idle");
-      await waitFor(() => expect(anySubgroupWorking(rendered.root)).toBe(false));
+      vi.advanceTimersByTime(14999);
+      expect(anySubgroupWorking(rendered.root)).toBe(true);
+      expect(railButton(rendered.root, "all").textContent).toContain("1/2");
+      vi.advanceTimersByTime(1);
+      expect(anySubgroupWorking(rendered.root)).toBe(false);
       expect(railDots(rendered.root)).toEqual([]);
       expect(railButton(rendered.root, "all").textContent).toContain("0/2");
 

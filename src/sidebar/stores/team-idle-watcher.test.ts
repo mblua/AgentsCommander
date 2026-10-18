@@ -1,16 +1,6 @@
 // @vitest-environment jsdom
 //
-// Pure-helper tests for the focused-WG suppression + grace period
-// behavior introduced in #254, plus the #2109 decision helpers. We
-// exercise the helpers directly — no SolidJS root, no store mocks, no
-// fake timers. The wiring inside `startTeamIdleWatcher`'s createEffect
-// is covered by the integration case at the bottom of this file, which
-// drives the real stores through a FakeTransport.
-//
-// jsdom is required because importing this module evaluates the
-// file-scope `createSignal` and pulls in the sibling stores, which
-// transitively touch `window.location` in `transport-ws.ts`.
-
+// Pure focus helpers and real shared-observer completion lifecycle.
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
 vi.hoisted(() => {
@@ -44,7 +34,6 @@ vi.hoisted(() => {
 
 import {
   allSessionsIdle,
-  beepIdleTransitions,
   GRACE_MS,
   hasBusyToIdleTransition,
   isBusy,
@@ -60,8 +49,12 @@ import {
   baseSettings,
   discovery,
   session,
-  waitFor,
+  resetUiStoresForTests,
 } from "../../shared/testing/ui-harness";
+import { batch, createRoot, onCleanup } from "solid-js";
+import type { AcWorkgroup, Session, SessionStatus } from "../../shared/types";
+import * as activity from "./room-activity";
+import { remoteActivityStore } from "./remote-activity";
 import { sessionsStore } from "./sessions";
 import { projectStore } from "./project";
 import { settingsStore } from "../../shared/stores/settings";
@@ -71,10 +64,17 @@ vi.mock("../../shared/sound", () => ({
   setSoundsEnabled: vi.fn(),
 }));
 
+const focus = vi.hoisted(() => ({
+  focused: true, late: false,
+  resolve: null as null | ((fn: () => void) => void), unlisten: vi.fn(),
+}));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => {
-    throw new Error("tauri unavailable in tests");
-  },
+  getCurrentWindow: () => ({
+    isFocused: async () => focus.focused,
+    onFocusChanged: () => focus.late
+      ? new Promise<() => void>((resolve) => { focus.resolve = resolve; })
+      : Promise.resolve(focus.unlisten),
+  }),
 }));
 
 describe("isBusy (#2453)", () => {
@@ -254,69 +254,6 @@ describe("allSessionsIdle (#2109)", () => {
   });
 });
 
-describe("beepIdleTransitions (#2109)", () => {
-  const beepSpy = vi.mocked(playTeamIdleBeep);
-
-  beforeEach(() => beepSpy.mockClear());
-
-  const perSession = (entries: [string, boolean][]) => new Map(entries);
-
-  it("beeps once on a busy→idle transition when every session is idle", () => {
-    beepIdleTransitions(
-      new Map([["wg", perSession([["s1", false]])]]),
-      new Map([["wg", perSession([["s1", true]])]]),
-      null,
-      new Map(),
-      0,
-    );
-    expect(beepSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips the focused workgroup", () => {
-    beepIdleTransitions(
-      new Map([["wg", perSession([["s1", false]])]]),
-      new Map([["wg", perSession([["s1", true]])]]),
-      "wg",
-      new Map(),
-      0,
-    );
-    expect(beepSpy).not.toHaveBeenCalled();
-  });
-
-  it("skips inside an active grace window", () => {
-    beepIdleTransitions(
-      new Map([["wg", perSession([["s1", false]])]]),
-      new Map([["wg", perSession([["s1", true]])]]),
-      null,
-      new Map([["wg", 5000]]),
-      1000,
-    );
-    expect(beepSpy).not.toHaveBeenCalled();
-  });
-
-  it("skips while another session in the room is still busy", () => {
-    beepIdleTransitions(
-      new Map([["wg", perSession([["s1", false], ["s2", true]])]]),
-      new Map([["wg", perSession([["s1", true], ["s2", true]])]]),
-      null,
-      new Map(),
-      0,
-    );
-    expect(beepSpy).not.toHaveBeenCalled();
-  });
-
-  it("skips a workgroup with no previous snapshot", () => {
-    beepIdleTransitions(
-      new Map([["wg", perSession([["s1", false]])]]),
-      new Map(),
-      null,
-      new Map(),
-      0,
-    );
-    expect(beepSpy).not.toHaveBeenCalled();
-  });
-});
-
 describe("pruneExpiredGrace (#2109)", () => {
   it("deletes only entries whose grace has expired", () => {
     const grace = new Map([
@@ -329,127 +266,166 @@ describe("pruneExpiredGrace (#2109)", () => {
   });
 });
 
-describe("startTeamIdleWatcher wiring (#2109)", () => {
-  const beepSpy = vi.mocked(playTeamIdleBeep);
-  const projectPath = "C:\\Project";
-  const workgroupPath = `${projectPath}\\.ac\\wg-1-dev-team`;
-  const hop = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
-
-  beforeEach(() => beepSpy.mockClear());
-  afterEach(() => {
-    sessionsStore.setSessions([]);
-    projectStore.clear();
+describe("confirmed room completion lifecycle", () => {
+  const project = "C:/Project";
+  const roomPath = project + "/.ac/room-1";
+  const makeRoom = (path = roomPath): AcWorkgroup => ({
+    name: "room-1", path, task: null,
+    agents: ["coord", "member"].map((name, index) => ({
+      name, path: path + "/__agent_" + name,
+      repoPaths: [path + "/repo-main"], isCoordinator: index === 0,
+    })),
   });
-
-  function arrangeRoom(): FakeTransport {
-    const fake = new FakeTransport();
-    fake.resolve("new_project", {
-      path: projectPath,
-      registered: true,
-      created: false,
-    });
-    fake.resolve(
-      "discover_project",
-      discovery({
-        teams: [{ name: "dev-team", agents: ["architect"], coordinator: "architect" }],
-        workgroups: [
-          {
-            name: "wg-1-dev-team",
-            path: workgroupPath,
-            task: null,
-            taskTitle: null,
-            teamName: "dev-team",
-            agents: [
-              {
-                name: "architect",
-                path: `${workgroupPath}\\__agent_architect`,
-                repoPaths: [],
-                isCoordinator: true,
-              },
-            ],
-          },
-        ],
-      }),
-    );
+  const live = (status: SessionStatus = "running", overrides: Partial<Session> = {}) => session({
+    id: "s1", name: "room-1/coord", workingDirectory: roomPath + "/__agent_coord",
+    status, ...overrides,
+  });
+  const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  const beep = vi.mocked(playTeamIdleBeep);
+  let fake: FakeTransport;
+  let restore: () => void;
+  const disposals: (() => void)[] = [];
+  beforeEach(async () => {
+    resetUiStoresForTests();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance", "Date"] });
+    beep.mockClear(); focus.focused = true; focus.late = false;
+    focus.resolve = null; focus.unlisten.mockClear();
+    fake = new FakeTransport();
+    fake.resolve("new_project", { path: project, registered: true, created: false });
+    fake.resolve("discover_project", discovery({ workgroups: [makeRoom()] }));
     fake.resolve("get_settings", baseSettings({ teamIdleBeepEnabled: true }));
-    return fake;
-  }
-
-  it("does not beep for a room whose only idle session is armed for Co-managed (#2453 test 8)", async () => {
-    const restoreTransport = __setTransportForTests(arrangeRoom());
-    let dispose: (() => void) | null = null;
-    try {
-      await projectStore.createAndLoad(projectPath);
-      await settingsStore.load();
-      sessionsStore.setSessions([session()]);
-      sessionsStore.setVisibleActiveIdForTests(null);
-
-      dispose = startTeamIdleWatcher();
-      await hop();
-
-      // The armed idle edge records both the flag and waiting (App.tsx).
-      sessionsStore.setSessionComanaged("session-1", true);
-      sessionsStore.setSessionWaiting("session-1", true);
-      await hop();
-      expect(beepSpy).not.toHaveBeenCalled();
-
-      // Positive control: clearing the flag reveals the idle room and beeps.
-      sessionsStore.setSessionComanaged("session-1", false);
-      await waitFor(() => expect(beepSpy).toHaveBeenCalledTimes(1));
-    } finally {
-      dispose?.();
-      sessionsStore.resetComanagedForTests();
-      restoreTransport();
-    }
+    restore = __setTransportForTests(fake);
+    await projectStore.createAndLoad(project);
+    await settingsStore.load();
+    sessionsStore.setVisibleActiveIdForTests(null);
   });
-
-  it("beeps once on the first busy→idle transition and honours the enabled and focus gates", async () => {
-    const fake = arrangeRoom();
-    const restoreTransport = __setTransportForTests(fake);
-    let dispose: (() => void) | null = null;
-    try {
-      await projectStore.createAndLoad(projectPath);
-      await settingsStore.load();
-      sessionsStore.setSessions([session()]);
-
-      // A focused WG on the seed tick: with the init early return dropped,
-      // clearing activeId arms a grace window that then swallows (b)'s beep.
-      sessionsStore.setVisibleActiveIdForTests("session-1");
-
-      dispose = startTeamIdleWatcher();
-
-      // (a) the first tick only seeds the snapshot and never beeps.
-      await hop();
-      expect(beepSpy).not.toHaveBeenCalled();
-
-      // Clearing focus must not arm grace: `previousFocusedWg` is still null
-      // because the seed tick returned before `updateGraceOnFocusChange`.
-      sessionsStore.setVisibleActiveIdForTests(null);
-      await hop();
-
-      // (b) a busy→idle transition beeps once.
-      sessionsStore.setSessionWaiting("session-1", true);
-      await waitFor(() => expect(beepSpy).toHaveBeenCalledTimes(1));
-
-      // (c) the enabled=false gate suppresses the same transition.
-      fake.resolve("get_settings", baseSettings({ teamIdleBeepEnabled: false }));
-      await settingsStore.load();
-      sessionsStore.setSessionWaiting("session-1", false);
-      sessionsStore.setSessionWaiting("session-1", true);
-      await hop();
-      expect(beepSpy).toHaveBeenCalledTimes(1);
-
-      // (d) a focused workgroup is suppressed even while enabled.
-      fake.resolve("get_settings", baseSettings({ teamIdleBeepEnabled: true }));
-      await settingsStore.load();
-      sessionsStore.setVisibleActiveIdForTests("session-1");
-      sessionsStore.setSessionWaiting("session-1", false);
-      sessionsStore.setSessionWaiting("session-1", true);
-      await hop();
-      expect(beepSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      dispose?.();
-      restoreTransport();
-    }
+  afterEach(() => {
+    for (const dispose of disposals.splice(0).reverse()) dispose();
+    restore(); resetUiStoresForTests(); vi.restoreAllMocks(); vi.useRealTimers();
+  });
+  async function start(initial = [live()]) {
+    sessionsStore.setSessions(initial);
+    createRoot((dispose) => {
+      disposals.push(dispose); onCleanup(activity.acquireRoomActivityObserver());
+    });
+    const dispose = startTeamIdleWatcher(); disposals.push(dispose);
+    await vi.dynamicImportSettled();
+    await flush(); return dispose;
+  }
+  function ci(running: boolean) {
+    remoteActivityStore.applyRemoteActivityUpdate({
+      repoPaths: [roomPath + "/repo-main"], ciStates: [running ? "running" : "idle"],
+      stalenessStates: ["current"], behindBy: [null],
+    });
+  }
+  function idle() { sessionsStore.setSessions([live("idle")]); }
+  function expire() { vi.advanceTimersByTime(15000); }
+  async function enabled(value: boolean) {
+    fake.resolve("get_settings", baseSettings({ teamIdleBeepEnabled: value }));
+    await settingsStore.load();
+  }
+  it("beeps once at 15000 without another store event; repeated idle cannot replay", async () => {
+    await start(); idle(); vi.advanceTimersByTime(14999); expect(beep).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1); expect(beep).toHaveBeenCalledTimes(1);
+    idle(); expire(); expect(beep).toHaveBeenCalledTimes(1);
+  });
+  it.each(["empty", "idle", "exited", "replacement", "unmatched"])("%s alone cannot complete", async (kind) => {
+    await start(kind === "empty" ? [] : kind === "idle" ? [live("idle")] : [live()]);
+    if (kind === "exited") sessionsStore.setSessions([live({ exited: 0 })]);
+    if (kind === "replacement") sessionsStore.setSessions([live("idle", { id: "new" })]);
+    if (kind === "unmatched") sessionsStore.setSessions([live("idle", { workingDirectory: "C:/elsewhere" })]);
+    expire(); expect(beep).not.toHaveBeenCalled();
+  });
+  it("CI-only falls stay silent", async () => {
+    await start([live("idle")]); ci(true); ci(false); expire(); expect(beep).not.toHaveBeenCalled();
+  });
+  it.each([{ pendingReview: true }, { waitingForInput: true }])("common raw idle flags %j can complete", async (flags) => {
+    await start(); sessionsStore.setSessions([live("running", flags)]);
+    vi.advanceTimersByTime(14999); expect(beep).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1); expect(beep).toHaveBeenCalledTimes(1);
+  });
+  it("Co-managed prevents completion until disarmed", async () => {
+    await start(); sessionsStore.setSessionComanaged("s1", true); idle(); expire();
+    expect(beep).not.toHaveBeenCalled(); sessionsStore.setSessionComanaged("s1", false);
+    vi.advanceTimersByTime(14999); expect(beep).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1); expect(beep).toHaveBeenCalledTimes(1);
+  });
+  it("existing CI delays until CI fall plus 15s", async () => {
+    await start(); ci(true); idle(); expire(); expect(beep).not.toHaveBeenCalled();
+    ci(false); vi.advanceTimersByTime(14999); expect(beep).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1); expect(beep).toHaveBeenCalledTimes(1);
+  });
+  it.each([false, true])("new CI after capture cancels, including after original CI ends (%s)", async (existing) => {
+    await start(); if (existing) ci(true); idle(); if (existing) ci(false);
+    ci(true); ci(false); expire(); expect(beep).not.toHaveBeenCalled();
+  });
+  it("resumed work cancels at 14s and a later completion starts fresh", async () => {
+    await start(); idle(); vi.advanceTimersByTime(14000); sessionsStore.setSessions([live()]);
+    vi.advanceTimersByTime(1000); expect(beep).not.toHaveBeenCalled(); idle();
+    vi.advanceTimersByTime(14999); expect(beep).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1); expect(beep).toHaveBeenCalledTimes(1);
+  });
+  it.each(["gone", "replaced", "exited", "unmatched"])("contributing ID %s cancels the entire multi-ID latch", async (kind) => {
+    const member = (status: SessionStatus) => live(status, {
+      id: "s2", name: "room-1/member", workingDirectory: roomPath + "/__agent_member",
+    });
+    await start([live(), member("running")]);
+    batch(() => sessionsStore.setSessions([live("idle"), member("idle")]));
+    vi.advanceTimersByTime(5000);
+    const invalid = kind === "gone" ? [] : [live(kind === "exited" ? { exited: 0 } : "idle", {
+      id: kind === "replaced" ? "replacement" : "s1",
+      workingDirectory: kind === "unmatched" ? "C:/wrong" : roomPath + "/__agent_coord",
+    })];
+    sessionsStore.setSessions([...invalid, member("idle")]);
+    expire(); sessionsStore.setSessions([live("idle"), member("idle")]); expire();
+    expect(beep).not.toHaveBeenCalled();
+  });
+  it("same names across projects never share identity, completion or focus", async () => {
+    const other = "C:/Other", otherRoom = makeRoom(other + "/.ac/room-1");
+    fake.resolve("new_project", { path: other, registered: true, created: false });
+    fake.resolve("discover_project", discovery({ workgroups: [otherRoom] }));
+    await projectStore.createAndLoad(other);
+    const otherLive = live("idle", { id: "other", workingDirectory: otherRoom.agents[0].path });
+    await start([live(), otherLive]); sessionsStore.setVisibleActiveIdForTests("other");
+    sessionsStore.setSessions([live("idle"), otherLive]);
+    sessionsStore.setVisibleActiveIdForTests("other");
+    expect(sessionsStore.activeId).toBe("other"); expire();
+    expect(beep).toHaveBeenCalledTimes(1);
+  });
+  it.each([false, true])("focus or recent 4s leave consumes completion without replay (leave=%s)", async (leave) => {
+    await start(); sessionsStore.setVisibleActiveIdForTests("s1"); sessionsStore.setSessionWaiting("s1", true);
+    vi.advanceTimersByTime(13000);
+    if (leave) sessionsStore.setVisibleActiveIdForTests(null);
+    vi.advanceTimersByTime(2000); expect(beep).not.toHaveBeenCalled();
+    sessionsStore.setVisibleActiveIdForTests(null); expire(); expect(beep).not.toHaveBeenCalled();
+  });
+  it("focus grace expires independently before the 15s room deadline", async () => {
+    await start(); sessionsStore.setVisibleActiveIdForTests("s1"); sessionsStore.setSessionWaiting("s1", true);
+    sessionsStore.setVisibleActiveIdForTests(null); expire(); expect(beep).toHaveBeenCalledTimes(1);
+  });
+  it("disabled clears pending and reseeds; reenable and focus changes cannot replay", async () => {
+    await start(); idle(); await enabled(false); expire(); await enabled(true);
+    sessionsStore.setVisibleActiveIdForTests("s1"); sessionsStore.setVisibleActiveIdForTests(null);
+    expire(); expect(beep).not.toHaveBeenCalled();
+    sessionsStore.setSessions([live()]); idle(); expire(); expect(beep).toHaveBeenCalledTimes(1);
+  });
+  it("catalogue removal cancels pending and idle reappearance cannot replay", async () => {
+    await start(); idle(); fake.resolve("discover_project", discovery());
+    await projectStore.reloadProject(project); expire();
+    fake.resolve("discover_project", discovery({ workgroups: [makeRoom()] }));
+    await projectStore.reloadProject(project); expire(); expect(beep).not.toHaveBeenCalled();
+  });
+  it("dispose clears pending and late listener resolution is unlistened exactly once", async () => {
+    focus.late = true; const dispose = await start(); idle(); dispose();
+    expect(focus.resolve).not.toBeNull();
+    focus.resolve?.(focus.unlisten); await flush(); expire();
+    expect(focus.unlisten).toHaveBeenCalledTimes(1); expect(beep).not.toHaveBeenCalled();
+  });
+  it("latch creation also evaluates already-confirmed-inactive eligibility", async () => {
+    await start();
+    // Controlled API seam for the unusual publication ordering required by P03.
+    const getter = vi.spyOn(activity, "confirmedRoomIsActive").mockReturnValue(false);
+    idle(); expect(beep).toHaveBeenCalledTimes(1); getter.mockRestore();
+    expire(); expect(beep).toHaveBeenCalledTimes(1);
   });
 });
