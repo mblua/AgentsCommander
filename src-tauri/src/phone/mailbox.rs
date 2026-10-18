@@ -19450,6 +19450,7 @@ mod tests {
             "never write a user configuration"
         );
         let settings = app.state::<SettingsState>().read().await.clone();
+        crate::config::settings::save_settings_with_project_paths(&settings).unwrap();
         let written = crate::config::settings::save_settings(&settings).unwrap();
         *app.state::<SettingsState>().write().await = written;
         let carrier = crate::config::sessions_persistence::persist_initial_carrier(
