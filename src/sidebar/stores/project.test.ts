@@ -1,4 +1,9 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeTransport } from "../../shared/testing/fake-transport";
+import { setLogLevel } from "../../shared/console-capture";
+import { __setTransportForTests, type RailDiagnosticRecord } from "../../shared/ipc";
+import { railEntity } from "../rail-diagnostics";
 import type {
   TaskSnapshot,
   AcAgentReplica,
@@ -21,7 +26,8 @@ const m = vi.hoisted(() => ({
   updateSettings: vi.fn(),
 }));
 
-vi.mock("../../shared/ipc", () => ({
+vi.mock("../../shared/ipc", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../shared/ipc")>(),
   getTransportConnectionState: m.getConnection,
   TaskAPI: { getSnapshotAt: m.getSnapshot },
   ProjectAPI: {
@@ -742,5 +748,126 @@ describe("projectStore", () => {
       expect(m.removeProject).toHaveBeenCalledWith("C:\\not\\loaded");
       expect(m.updateSettings).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("project diagnostic operation controls with real gate/FakeTransport", () => {
+  let fake: FakeTransport;
+  let restore: () => void;
+  const records = () => fake.callsFor("append_rail_diagnostic").map(call => call.args.record as RailDiagnosticRecord);
+  beforeEach(() => {
+    projectStore.clear(); vi.clearAllMocks();
+    m.connection = { state: "connected", generation: 0 };
+    m.getConnection.mockImplementation(() => m.connection);
+    m.open.mockResolvedValue({ path: PROJECT_PATH });
+    m.discover.mockResolvedValue({ workgroups: [], agents: [], teams: [], loops: [] });
+    fake = new FakeTransport(); fake.resolve("append_rail_diagnostic", null);
+    restore = __setTransportForTests(fake); setLogLevel("debug");
+  });
+  afterEach(() => { setLogLevel("info"); projectStore.clear(); restore(); vi.restoreAllMocks(); });
+
+  it("bounds a batch to two lines independent of room count and direct snapshot early outcomes to pairs", async () => {
+    const rooms = Array.from({ length: 5 }, (_, index) => makeWorkgroup(`room-${index}`, []));
+    m.getSnapshot.mockImplementation((path: string) => Promise.resolve(taskSnapshot(path)));
+    await loadProjectWith(rooms); await Promise.resolve(); await Promise.resolve();
+    fake.clearCalls();
+    projectStore.refreshTaskSnapshots();
+    expect(records()).toHaveLength(1);
+    await vi.waitFor(() => expect(records()).toHaveLength(2));
+    expect(records().map(record => record.event)).toEqual(["snapshots-start", "snapshots-end"]);
+    expect(records()[1]).toMatchObject({ count: 5, changedCount: 5, outcome: "applied", operationId: records()[0].operationId });
+    fake.clearCalls();
+    await projectStore.refreshTaskSnapshot("UNLOADED PRIVATE ROOM");
+    expect(records().map(record => record.event)).toEqual(["snapshot-start", "snapshot-end"]);
+    expect(records()[1].outcome).toBe("unloaded");
+    fake.clearCalls(); m.connection.state = "disconnected";
+    await projectStore.refreshTaskSnapshot(rooms[0].path);
+    expect(records()[1].outcome).toBe("disconnected");
+    expect(JSON.stringify(records())).not.toMatch(/Maria|PRIVATE|room-/);
+  });
+
+  it("correlates coalesced reload/discover attempts, discarded result, applied/no-op, task/loop and purges only removed projects", async () => {
+    await loadProjectWith([]); await Promise.resolve(); await Promise.resolve();
+    const original = railEntity(PROJECT_PATH).projectId;
+    fake.clearCalls();
+    const pending = deferred<{ workgroups: AcWorkgroup[]; agents: never[]; teams: never[]; loops: never[] }>();
+    m.discover.mockReturnValueOnce(pending.promise);
+    const first = projectStore.reloadProject(PROJECT_PATH);
+    const queued = projectStore.reloadProject(PROJECT_PATH);
+    expect(records().filter(record => record.event === "reload-start")).toHaveLength(2);
+    expect(records().find(record => record.event === "reload-end")?.outcome).toBe("queued");
+    pending.resolve({ workgroups: [], agents: [], teams: [], loops: [] });
+    await first; await queued; await Promise.resolve();
+    const attempts = records().filter(record => record.event === "discover-end");
+    expect(attempts.map(record => record.outcome)).toEqual(["discarded", "unchanged"]);
+    const starts = records().filter(record => record.event.endsWith("-start"));
+    expect(new Set(starts.map(record => record.operationId)).size).toBe(starts.length);
+    expect(railEntity(PROJECT_PATH).projectId).toBe(original);
+    fake.clearCalls();
+    projectStore.updateWorkgroupTask("missing-secret", "PRIVATE TASK", "PRIVATE TITLE");
+    projectStore.removeLoop(PROJECT_PATH, "PRIVATE LOOP");
+    expect(records().map(record => record.event)).toEqual(["task-start", "task-end", "loop-start", "loop-end"]);
+    expect(records().filter(record => record.event.endsWith("-end")).every(record => record.outcome === "unchanged")).toBe(true);
+    expect(JSON.stringify(records())).not.toMatch(/PRIVATE|Maria|missing-secret/);
+    await projectStore.removeProject(PROJECT_PATH);
+    expect(railEntity(PROJECT_PATH).projectId).toBeUndefined();
+  });
+
+  it("pairs applied/error/unloaded reloads and preserves survivor identity across archive/remove/clear", async () => {
+    const room = makeWorkgroup("room-1", []);
+    m.getSnapshot.mockImplementation((path: string) => Promise.resolve(taskSnapshot(path)));
+    await loadProjectWith([]); await Promise.resolve(); await Promise.resolve();
+    const projectId = railEntity(PROJECT_PATH).projectId;
+    fake.clearCalls();
+    m.discover.mockResolvedValueOnce({ workgroups: [room], agents: [], teams: [], loops: [] });
+    await projectStore.reloadProject(PROJECT_PATH.replaceAll("\\", "/"));
+    expect(records().find(record => record.event === "discover-end")?.outcome).toBe("applied");
+    expect(records().find(record => record.event === "reload-start")?.projectId).toBe(projectId);
+    expect(railEntity(PROJECT_PATH).projectId).toBe(projectId);
+    await vi.waitFor(() => expect(records().some(record => record.event === "snapshots-end")).toBe(true));
+    fake.clearCalls();
+    projectStore.updateWorkgroupTask(room.path, "PRIVATE task", "PRIVATE title");
+    expect(records().map(record => record.event)).toEqual(["task-start", "task-end"]);
+    expect(records()[1].outcome).toBe("applied");
+    fake.clearCalls();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    m.discover.mockRejectedValueOnce(Error("PRIVATE failure"));
+    await projectStore.reloadProject(PROJECT_PATH);
+    expect(records().map(record => record.event)).toEqual(["reload-start", "discover-start", "discover-end", "reload-end"]);
+    expect(records().filter(record => record.event.endsWith("-end")).every(record => record.outcome === "error")).toBe(true);
+    log.mockRestore();
+    fake.clearCalls();
+    await projectStore.reloadProject("PRIVATE unloaded");
+    expect(records().filter(record => record.event.endsWith("-end")).map(record => record.outcome)).toEqual(["unloaded", "unloaded"]);
+    const survivor = "C:/PRIVATE/survivor";
+    m.open.mockResolvedValueOnce({ path: survivor });
+    await projectStore.loadProject(survivor); await Promise.resolve(); await Promise.resolve();
+    const survivorId = railEntity(survivor).projectId;
+    expect(survivorId).toBeTypeOf("number");
+    await projectStore.archiveProject(PROJECT_PATH);
+    expect(railEntity(PROJECT_PATH).projectId).toBeUndefined();
+    expect(railEntity(survivor).projectId).toBe(survivorId);
+    await projectStore.removeProject(PROJECT_PATH);
+    expect(railEntity(survivor).projectId).toBe(survivorId);
+    expect(JSON.stringify(records())).not.toMatch(/PRIVATE|Maria|room-/);
+    projectStore.clear();
+    expect(railEntity(survivor).projectId).toBeUndefined();
+  });
+
+  it("reports stale and error snapshot settlement without changing recovery; Info emits nothing", async () => {
+    const room = makeWorkgroup("room-1", []);
+    m.getSnapshot.mockResolvedValue(taskSnapshot(room.path));
+    await loadProjectWith([room]); await Promise.resolve(); await Promise.resolve();
+    fake.clearCalls();
+    const pending = deferred<TaskSnapshot>(); m.getSnapshot.mockReturnValueOnce(pending.promise);
+    const request = projectStore.refreshTaskSnapshot(room.path);
+    projectStore.invalidateTaskSnapshots(); pending.resolve(taskSnapshot(room.path)); await request;
+    expect(records()[1].outcome).toBe("stale");
+    fake.clearCalls(); m.getSnapshot.mockRejectedValueOnce(Error("PRIVATE failure"));
+    await projectStore.refreshTaskSnapshot(room.path);
+    expect(records()[1].outcome).toBe("error");
+    setLogLevel("info"); fake.clearCalls();
+    projectStore.refreshTaskSnapshots(); await Promise.resolve(); await Promise.resolve();
+    expect(records()).toHaveLength(0);
   });
 });

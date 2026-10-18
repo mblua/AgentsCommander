@@ -878,7 +878,52 @@ export const VoiceAPI = {
     transport.invoke<boolean>("voice_had_typing", { sessionId }),
 };
 
+export interface RailDiagnosticRecord {
+  version: 1;
+  windowId: string;
+  seq: number;
+  atMs: number;
+  surface: "embedded" | "sidebar" | "store";
+  event: "pointerdown" | "pointerup" | "pointercancel" | "mousedown" | "mouseup" | "click" |
+    "gotpointercapture" | "lostpointercapture" | "focusin" | "focusout" | "window-focus" | "window-blur" |
+    "handler-enter" | "handler-end" | "selection-change" | "rail-mount" | "rail-dispose" |
+    "section-mount" | "section-dispose" | "node-mount" | "node-dispose" | "project-list" |
+    "project-buttons" | "favorites-entries" | "reload-start" | "reload-end" | "discover-start" |
+    "discover-end" | "snapshot-start" | "snapshot-end" | "snapshots-start" | "snapshots-end" |
+    "task-start" | "task-end" | "loop-start" | "loop-end";
+  railId?: number;
+  operationId?: number;
+  projectId?: number;
+  groupId?: number;
+  entityId?: number;
+  nodeId?: number;
+  originalNodeId?: number;
+  objectId?: number;
+  selectionProjectId?: number;
+  selectionGroupId?: number;
+  kind?: "custom" | "system" | "nonstop" | "ungrouped" | "project" | "favorites";
+  selectionKind?: RailDiagnosticRecord["kind"];
+  phase?: "arming" | "dragging" | "saving" | "idle";
+  outcome?: "applied" | "unchanged" | "stale" | "error" | "disconnected" | "unloaded" |
+    "queued" | "discarded" | "suppressed" | "overflow" | "no-press";
+  pointerId?: number;
+  button?: number;
+  primary?: boolean;
+  trusted?: boolean;
+  connected?: boolean;
+  originalConnected?: boolean;
+  captured?: boolean;
+  documentFocused?: boolean;
+  targetTag?: "button" | "span" | "svg" | "path" | "aside" | "body" | "input" | "textarea" | "other" | "none";
+  activeTag?: RailDiagnosticRecord["targetTag"];
+  count?: number;
+  changedCount?: number;
+  durationMs?: number;
+}
+
 export const DebugAPI = {
+  appendRailDiagnostic: (record: RailDiagnosticRecord) =>
+    transport.invoke<void>("append_rail_diagnostic", { record }),
   saveLogs: (content: string) =>
     transport.invoke<void>("save_debug_logs", { content }),
   drainErrorLogs: () =>
