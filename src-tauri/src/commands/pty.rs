@@ -383,7 +383,7 @@ fn record_typing_hold_keystroke<R: tauri::Runtime>(
             settings
                 .try_current_read()
                 .inspect_err(|error| {
-                    log::debug!("[typing-hold] skipping key publication: {error}");
+                    log::debug!("[typing-hold] typing window unavailable: {error}");
                 })
                 .ok()
                 .map(|settings| {
@@ -396,8 +396,8 @@ fn record_typing_hold_keystroke<R: tauri::Runtime>(
     if let Some(state) = app.try_state::<crate::pty::input_activity::TypingHoldState>() {
         let mut hold = state.lock().unwrap_or_else(|error| error.into_inner());
         hold.note_qualifying_key(session_id);
-        if let (Some(publisher), Some(window)) = (response_close_hold_publisher(app), window) {
-            publisher.publish_typing_key(session_id, Some(window), std::time::Instant::now());
+        if let Some(publisher) = response_close_hold_publisher(app) {
+            publisher.publish_typing_key(session_id, window, std::time::Instant::now());
         }
     }
 }
@@ -2114,30 +2114,134 @@ mod tests {
     #[tokio::test]
     async fn e2992_p42_invalid_defers_hold() {
         use crate::config::settings::{
-            SettingsAvailability, SettingsOwner, SettingsPublisher, SettingsState,
+            SettingsAvailability, SettingsOwner, SettingsOwnerError, SettingsPublisher,
+            SettingsState,
+        };
+        use crate::pty::manager::{
+            ResponseCloseError, ResponseClosePublisher, ResponseCloseState, ResponseDeliveryProof,
+            ResponseRouteIdentity, ReturnDeliveryProof,
+        };
+        use std::time::Instant;
+
+        // Local fixture establishes real close eligibility through existing APIs.
+        let eligible_app = |settings: SettingsState| {
+            let state = ResponseCloseState::default();
+            let baseline = Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap();
+            for publisher in [
+                ResponseClosePublisher::Manager,
+                ResponseClosePublisher::Pty,
+                ResponseClosePublisher::RawOutput,
+                ResponseClosePublisher::Detector,
+                ResponseClosePublisher::Menu,
+                ResponseClosePublisher::Hold,
+            ] {
+                state.bind_publisher(publisher);
+            }
+            state.mark_work_bootstrapped();
+            state.try_enable_readiness().unwrap();
+            state.apply_settings(true, 30, baseline);
+            let member = ResponseRouteIdentity {
+                target: "p42:room/member".into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 1,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            let coordinator = ResponseRouteIdentity {
+                target: "p42:room/coordinator".into(),
+                session_id: Uuid::new_v4(),
+                token: Uuid::new_v4(),
+                generation: 2,
+                carrier_version: 1,
+                backend: crate::pty::backend::SessionBackendKind::LocalProcess,
+            };
+            for (identity, eligible) in [(&member, true), (&coordinator, false)] {
+                state.register_route(identity.session_id, identity.generation, baseline);
+                state.publish_manager_row(
+                    identity.session_id,
+                    identity.token,
+                    identity.generation,
+                    identity.carrier_version,
+                    eligible,
+                    false,
+                    baseline,
+                );
+                state.publish_manager_facts(identity.clone(), eligible, false, baseline);
+            }
+            let id = member.session_id;
+            state.observe_detector(id, false, baseline);
+            state.publish_menu(id, Some(false), baseline);
+            state.publish_hold(id, None, true, baseline);
+            let mut work = state.reserve_work(&member.target, "request").unwrap();
+            work.accept_durable("request").unwrap();
+            drop(work);
+            let writer = state.reserve_writer(id, member.generation).unwrap();
+            let context = state
+                .reserve_policy_candidate(
+                    member.clone(),
+                    coordinator.clone(),
+                    "request".into(),
+                    "request".into(),
+                    baseline,
+                )
+                .unwrap();
+            drop(writer);
+            state.mark_request_submitted(&context, true);
+            state
+                .register_request(
+                    ResponseDeliveryProof {
+                        context,
+                        member: member.clone(),
+                        coordinator: coordinator.clone(),
+                        published_carrier_version: member.carrier_version,
+                    },
+                    baseline,
+                )
+                .unwrap();
+            let context = state
+                .admit_return(&member, &coordinator, "ack".into(), "ack".into(), baseline)
+                .unwrap();
+            state
+                .observe_return_success(ReturnDeliveryProof { context }, baseline)
+                .unwrap();
+            assert!(state.select_ticket(id, Instant::now()).is_ok());
+            let app = tauri::test::mock_builder()
+                .manage(settings)
+                .manage(state.clone())
+                .manage(crate::pty::input_activity::new_typing_hold_state())
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+            (app, state, id)
         };
 
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, br#"{"typingHoldSeconds":17}"#).unwrap();
         let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
-        let app = tauri::test::mock_builder()
-            .manage::<SettingsState>(Arc::clone(&owner))
-            .manage(crate::pty::input_activity::new_typing_hold_state())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-        let id = Uuid::new_v4();
+        let (app, publisher, id) = eligible_app(Arc::clone(&owner));
         assert_eq!(
             typing_hold_window(app.handle()).await.unwrap(),
             Duration::from_secs(17)
         );
         assert!(!typing_hold_defers_injection(app.handle(), id).await);
+        let before_key = Instant::now();
         record_typing_hold_keystroke(app.handle(), id, b"ready");
+        let after_key = Instant::now();
         let hold = app.state::<crate::pty::input_activity::TypingHoldState>();
         assert!(hold
             .lock()
             .unwrap()
             .is_hold_active(id, Duration::from_secs(17)));
+        assert!(matches!(
+            publisher.select_ticket(id, before_key + Duration::from_secs(1)),
+            Err(ResponseCloseError::Unknown)
+        ));
+        assert!(publisher
+            .select_ticket(id, after_key + Duration::from_secs(60))
+            .is_ok());
 
         let report = owner
             .with_operation("p42-invalid", |_, guard| {
@@ -2150,16 +2254,68 @@ mod tests {
         assert_eq!(report.availability, SettingsAvailability::Invalid);
         assert!(owner.current_snapshot().await.is_err());
         assert!(typing_hold_window(app.handle()).await.is_err());
-        let invalid_id = Uuid::new_v4();
-        assert!(typing_hold_defers_injection(app.handle(), invalid_id).await);
-        record_typing_hold_keystroke(app.handle(), invalid_id, b"invalid");
+        assert!(typing_hold_defers_injection(app.handle(), id).await);
+        // The old hold is expired at this query; only the key's unknown signal
+        // should revoke eligibility. No failed settings snapshot refreshes it.
+        assert!(publisher
+            .select_ticket(id, Instant::now() + Duration::from_secs(120))
+            .is_ok());
+        hold.lock().unwrap().reset(id);
+        record_typing_hold_keystroke(app.handle(), id, b"invalid");
         assert!(
             hold.lock()
                 .unwrap()
-                .is_hold_active(invalid_id, Duration::from_secs(17)),
+                .is_hold_active(id, Duration::from_secs(17)),
             "independent key evidence survives settings failure"
         );
+        assert!(
+            matches!(
+                publisher.select_ticket(id, Instant::now() + Duration::from_secs(120)),
+                Err(ResponseCloseError::Unknown)
+            ),
+            "Invalid key must revoke close eligibility"
+        );
+        let refreshed = Instant::now();
+        publisher.refresh_hold_snapshot(id, Duration::from_secs(17), false, refreshed);
+        assert!(
+            publisher
+                .select_ticket(id, refreshed + Duration::from_secs(31))
+                .is_ok(),
+            "an observed open refresh recovers the retained policy"
+        );
         owner.drain_blocking(Duration::ZERO);
+
+        // Legacy write forwarding is valid only on this separate Staged owner.
+        let settings =
+            crate::config::settings::new_settings_state(crate::config::settings::AppSettings {
+                typing_hold_seconds: 17,
+                ..Default::default()
+            });
+        let (busy_app, busy_publisher, busy_id) = eligible_app(Arc::clone(&settings));
+        let write = settings.write().await;
+        assert_eq!(
+            settings.try_current_read().err(),
+            Some(SettingsOwnerError::Busy)
+        );
+        record_typing_hold_keystroke(busy_app.handle(), busy_id, b"busy");
+        assert!(busy_app
+            .state::<crate::pty::input_activity::TypingHoldState>()
+            .lock()
+            .unwrap()
+            .is_hold_active(busy_id, Duration::from_secs(17)));
+        assert!(
+            matches!(
+                busy_publisher.select_ticket(busy_id, Instant::now() + Duration::from_secs(120)),
+                Err(ResponseCloseError::Unknown)
+            ),
+            "Busy key must revoke close eligibility"
+        );
+        drop(write);
+        let refreshed = Instant::now();
+        busy_publisher.refresh_hold_snapshot(busy_id, Duration::from_secs(17), false, refreshed);
+        assert!(busy_publisher
+            .select_ticket(busy_id, refreshed + Duration::from_secs(31))
+            .is_ok());
     }
 
     struct FreshIntentFixture {
