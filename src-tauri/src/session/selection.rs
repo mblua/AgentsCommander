@@ -9388,6 +9388,8 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            manager.rename_session(member.id, "member".to_string()).await.unwrap();
+            manager.rename_session(coordinator.id, "coordinator".to_string()).await.unwrap();
             let backend = Arc::new(LifecycleTestBackend::default());
             let injected: Arc<dyn crate::pty::backend::PtyBackend> = backend.clone();
             let pty = Arc::new(Mutex::new(PtyManager::new_for_test(injected)));
