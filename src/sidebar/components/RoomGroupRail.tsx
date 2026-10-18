@@ -19,11 +19,11 @@ import {
 } from "../stores/workgroup-groups";
 import {
   isReplicaWorking,
-  splitWorkgroupsByActive,
-  workgroupCiRunning,
-  workgroupHasBlockedMenu,
-  workgroupHasRaisedHand,
-} from "./workgroup-session";
+  splitRoomsByActive,
+  roomCiRunning,
+  roomHasBlockedMenu,
+  roomHasRaisedHand,
+} from "./room-session";
 import WorkgroupGroupsModal from "./WorkgroupGroupsModal";
 import RaiseHandIcon from "./RaiseHandIcon";
 import BlockedMenuIcon from "./BlockedMenuIcon";
@@ -49,7 +49,7 @@ function sameSelection(a: RailFields, b: RailFields): boolean {
   return a.selectionProjectId === b.selectionProjectId && a.selectionGroupId === b.selectionGroupId && a.selectionKind === b.selectionKind;
 }
 
-interface WorkgroupGroupRailProps {
+interface RoomGroupRailProps {
   projects: ProjectState[];
   surface?: RailSurface;
 }
@@ -62,7 +62,7 @@ interface GroupButton {
   raiseHand: boolean;
   blockedMenu: boolean;
   selection: WorkgroupGroupSelection;
-  workgroups: AcWorkgroup[];
+  rooms: AcWorkgroup[];
   title: string;
   reorderable: boolean;
   groupId: string | null;
@@ -90,52 +90,52 @@ interface ReorderState {
   startY: number;
 }
 
-function wgNumber(name: string): number {
+function roomNumber(name: string): number {
   return entityDirNumber(name) ?? Number.MAX_SAFE_INTEGER;
 }
 
-function wgTooltipLabel(wgName: string): string {
-  return entityShortLabel(wgName) ?? wgName;
+function roomTooltipLabel(roomName: string): string {
+  return entityShortLabel(roomName) ?? roomName;
 }
 
-function tooltipFor(folderName: string, workgroups: AcWorkgroup[]): string {
+function tooltipFor(folderName: string, rooms: AcWorkgroup[]): string {
   // #2202 - ONE list and ONE sort over both row kinds: a working replica entry
   // (`replica` set) and a room's CI entry (`replica` null). Room number is the
   // primary key for both, so a CI-only wg1 sorts above a working wg2; an
   // "append CI after the replicas" rule would invert that.
-  const entries: { wg: AcWorkgroup; replica: AcAgentReplica | null }[] = [];
-  for (const wg of workgroups) {
-    for (const replica of wg.agents) {
-      if (isReplicaWorking(wg, replica)) entries.push({ wg, replica });
+  const entries: { room: AcWorkgroup; replica: AcAgentReplica | null }[] = [];
+  for (const room of rooms) {
+    for (const replica of room.agents) {
+      if (isReplicaWorking(room, replica)) entries.push({ room, replica });
     }
-    if (workgroupCiRunning(wg)) entries.push({ wg, replica: null });
+    if (roomCiRunning(room)) entries.push({ room, replica: null });
   }
   const rows = entries
     .sort((a, b) => {
-      const wgDelta = wgNumber(a.wg.name) - wgNumber(b.wg.name);
-      if (wgDelta !== 0) return wgDelta;
+      const roomDelta = roomNumber(a.room.name) - roomNumber(b.room.name);
+      if (roomDelta !== 0) return roomDelta;
       if (!a.replica || !b.replica) return (a.replica ? 0 : 1) - (b.replica ? 0 : 1);
       return a.replica.name.localeCompare(b.replica.name, "en", { sensitivity: "base", numeric: true });
     })
-    .map(({ wg, replica }) => `${wgTooltipLabel(wg.name)}:(${replica ? replica.name : "CI"})`);
+    .map(({ room, replica }) => `${roomTooltipLabel(room.name)}:(${replica ? replica.name : "CI"})`);
   const body = rows.length > 0 ? rows.join("\n") : "No running agents";
   return `${folderName}\n${body}`;
 }
 
 function buttonContent(
   name: string,
-  workgroups: AcWorkgroup[]
+  rooms: AcWorkgroup[]
 ): Pick<GroupButton, "name" | "counter" | "working" | "raiseHand" | "blockedMenu"> {
   // #2202 - the counter and the dot read the active meaning (session working OR
   // room CI running). The `working` field name is kept: renaming it would touch
   // RailButton and the dot testids for no behavior gain.
-  const active = splitWorkgroupsByActive(workgroups).active.length;
+  const active = splitRoomsByActive(rooms).active.length;
   return {
     name,
-    counter: `${active}/${workgroups.length}`,
+    counter: `${active}/${rooms.length}`,
     working: active > 0,
-    raiseHand: workgroups.some(workgroupHasRaisedHand),
-    blockedMenu: workgroups.some(workgroupHasBlockedMenu),
+    raiseHand: rooms.some(roomHasRaisedHand),
+    blockedMenu: rooms.some(roomHasBlockedMenu),
   };
 }
 
@@ -186,13 +186,13 @@ function groupButtonFor(
   reorderable: boolean,
   compiled: readonly CompiledWorkgroupGroup[]
 ): GroupButton {
-  const workgroups = project.workgroups.filter((wg) => groupMatchesWorkgroup(compiled, group.id, wg));
+  const rooms = project.workgroups.filter((room) => groupMatchesWorkgroup(compiled, group.id, room));
   return {
     key: group.id,
-    ...buttonContent(group.name, workgroups),
+    ...buttonContent(group.name, rooms),
     selection: { kind: "group", id: group.id },
-    workgroups,
-    title: tooltipFor(project.folderName, workgroups),
+    rooms,
+    title: tooltipFor(project.folderName, rooms),
     reorderable,
     groupId: group.id,
     groupIndex,
@@ -203,13 +203,13 @@ function groupButtonFor(
 // section renders the SAME entry. Two copies would drift on display name,
 // counter, running dot, raise-hand or tooltip.
 function nonStopButtonFor(project: ProjectState, nonStop: NonStopGroupConfig): GroupButton {
-  const workgroups = project.workgroups.filter((wg) => nonStopMatchesWorkgroup(nonStop, wg));
+  const rooms = project.workgroups.filter((room) => nonStopMatchesWorkgroup(nonStop, room));
   return {
     key: "nonstop",
-    ...buttonContent(nonStopDisplayName(nonStop.name), workgroups),
+    ...buttonContent(nonStopDisplayName(nonStop.name), rooms),
     selection: { kind: "nonstop" },
-    workgroups,
-    title: tooltipFor(project.folderName, workgroups),
+    rooms,
+    title: tooltipFor(project.folderName, rooms),
     reorderable: false,
     groupId: null,
     groupIndex: null,
@@ -455,8 +455,8 @@ const ProjectRailSection: Component<{
   const collapsed = () => railCollapseStore.isProjectCollapsed(props.project.path);
   const compiledGroups = createMemo(() => compileWorkgroupGroups(config().groups));
   const ungroupedWorkgroups = createMemo(() =>
-    props.project.workgroups.filter((wg) =>
-      isUngroupedWorkgroup(compiledGroups(), config().nonStop, wg)
+    props.project.workgroups.filter((room) =>
+      isUngroupedWorkgroup(compiledGroups(), config().nonStop, room)
     )
   );
   let previousButtons: GroupButton[] = [];
@@ -469,7 +469,7 @@ const ProjectRailSection: Component<{
         raiseHand: false,
         blockedMenu: false,
         selection: { kind: "all" },
-        workgroups: props.project.workgroups,
+        rooms: props.project.workgroups,
         title: tooltipFor(props.project.folderName, props.project.workgroups),
         reorderable: false,
         groupId: null,
@@ -477,13 +477,13 @@ const ProjectRailSection: Component<{
       });
     }
     if (config().showUngrouped) {
-      const workgroups = ungroupedWorkgroups();
+      const rooms = ungroupedWorkgroups();
       result.push({
         key: "ungrouped",
-        ...buttonContent("Ungrouped", workgroups),
+        ...buttonContent("Ungrouped", rooms),
         selection: { kind: "ungrouped" },
-        workgroups,
-        title: tooltipFor(props.project.folderName, workgroups),
+        rooms,
+        title: tooltipFor(props.project.folderName, rooms),
         reorderable: false,
         groupId: null,
         groupIndex: null,
@@ -784,7 +784,7 @@ const ProjectRailSection: Component<{
   );
 };
 
-const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
+const RoomGroupRail: Component<RoomGroupRailProps> = (props) => {
   let aside!: HTMLElement;
   let railId: number | undefined;
   const metadata = new WeakMap<Element, () => RailFields>();
@@ -922,6 +922,16 @@ const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
   const [contextMenuPos, setContextMenuPos] = createSignal({ x: 0, y: 0 });
   const [editingProjectPath, setEditingProjectPath] = createSignal<string | null>(null);
   let contextMenuEl: HTMLDivElement | undefined;
+  const contextMenuNodes = new WeakSet<HTMLDivElement>();
+  onMount(() => {
+    const containContextMenuClick = (event: MouseEvent) => {
+      if (event.composedPath().some(node => node instanceof HTMLDivElement && contextMenuNodes.has(node))) {
+        event.stopPropagation();
+      }
+    };
+    document.addEventListener("click", containContextMenuClick, false);
+    onCleanup(() => document.removeEventListener("click", containContextMenuClick, false));
+  });
   let dismissContextMenu: ((ev?: Event) => void) | null = null;
 
   createEffect(() => {
@@ -1079,10 +1089,12 @@ const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
       <Show when={contextTarget()}>
         <Portal>
           <div
-            ref={contextMenuEl}
+            ref={element => {
+              contextMenuEl = element;
+              contextMenuNodes.add(element);
+            }}
             class="session-context-menu"
             style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
-            onClick={(event) => event.stopPropagation()}
             data-ac-testid="workgroupGroups.contextMenu"
             data-ac-role="menu"
           >
@@ -1125,4 +1137,4 @@ const WorkgroupGroupRail: Component<WorkgroupGroupRailProps> = (props) => {
   );
 };
 
-export default WorkgroupGroupRail;
+export default RoomGroupRail;

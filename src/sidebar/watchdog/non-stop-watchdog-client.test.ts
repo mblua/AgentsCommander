@@ -2,7 +2,7 @@
 //
 // #777 Non-stop watchdog client. Tests the pure detection (buildSnapshot) against
 // seeded stores: the disparity signal is computed with the exact rail code
-// (workgroupIsWorking + projectStore.projects), so this proves counter parity and
+// (roomIsWorking + projectStore.projects), so this proves counter parity and
 // the onset/clear flip. The #2180 alarm listener wiring in
 // startNonStopWatchdogClient is driven below inside a Solid root with the
 // FakeTransport seam; the createEffect + 10s keepalive path stays audited by

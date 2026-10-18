@@ -4,7 +4,7 @@ import { playNonStopAlarm, stopNonStopAlarm, stopAllNonStopAlarms } from "../../
 import type { UnlistenFn } from "../../shared/transport";
 import type { NonStopReport } from "../../shared/types";
 import { workgroupGroupsStore, nonStopDisplayName, nonStopMatchesWorkgroup } from "../stores/workgroup-groups";
-import { splitWorkgroupsByActive } from "../components/workgroup-session";
+import { splitRoomsByActive } from "../components/room-session";
 import { projectStore } from "../stores/project";
 
 
@@ -24,7 +24,7 @@ export function buildSnapshot(): NonStopReport[] {
     // #2202 - a room whose repo is running CI is working: alerting about it would
     // be a false alarm. `NonStopReport`'s field names and the Rust consumer are
     // unchanged.
-    const { active, notActive } = splitWorkgroupsByActive(members);
+    const { active, notActive } = splitRoomsByActive(members);
     const working = active.length;
     reports.push({
       projectPath: project.path,
