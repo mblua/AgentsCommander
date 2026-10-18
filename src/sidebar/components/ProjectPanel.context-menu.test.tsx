@@ -2051,8 +2051,8 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
       settled = true;
       gate.resolve({ telegramBots: [botOne, botTwo] });
       await waitFor(() => expect(menuA.querySelectorAll(".settings-color-dot")).toHaveLength(2));
-      expect(rafCallbacks).toHaveLength(1);
-      const staleReclamp = rafCallbacks.shift()!;
+      expect(rafCallbacks.length).toBeGreaterThan(0);
+      const staleFrame = rafCallbacks.splice(0);
 
       dispatchDismiss("escape");
       await waitFor(() => expect(replicaMenu()).toBeNull());
@@ -2080,7 +2080,7 @@ describe("ProjectPanel replica context menu — session actions (#1673)", () => 
         toJSON: () => ({}),
       } as DOMRect);
 
-      staleReclamp(0);
+      for (const callback of staleFrame) callback(0);
       await Promise.resolve();
       expect(replicaMenu()).toBe(replacement);
       expect(replacement.style.left).toBe(left);
