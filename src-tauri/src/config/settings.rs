@@ -446,7 +446,11 @@ pub struct AgentConfig {
     )]
     // Base-command legacy metadata; profile-cell id_hash identifies a command/profile pair.
     pub id_hash: Option<String>,
-    #[serde(default, rename = "id_hash_debug", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub id_hash_debug: Option<Vec<String>>,
     pub label: String,
     #[serde(rename = "baseCommand")]
@@ -808,7 +812,11 @@ pub struct ProfileSlotConfig {
 pub struct ProfileCellConfig {
     #[serde(default, rename = "id_hash", skip_serializing_if = "Option::is_none")]
     pub id_hash: Option<String>,
-    #[serde(default, rename = "id_hash_debug", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub id_hash_debug: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -32759,13 +32767,16 @@ mod derived_agent_binding_projection_tests {
                     image["agents"][0]["id_hash_debug"] = debug.clone();
                 }
                 if location != "agent" {
-                    image["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"] =
-                        debug;
+                    image["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]
+                        ["id_hash_debug"] = debug;
                 }
                 let mut changed = settings.clone();
                 changed.coding_agent_identity_physical = Some(Arc::new(image));
                 assert_eq!(bootstrap_identity_revision(&changed).unwrap(), baseline);
-                assert_eq!(bootstrap_binding_revision(&changed, "alpha").unwrap(), binding);
+                assert_eq!(
+                    bootstrap_binding_revision(&changed, "alpha").unwrap(),
+                    binding
+                );
             }
         }
         for location in ["agent", "cell"] {
@@ -32796,7 +32807,11 @@ mod derived_agent_binding_projection_tests {
             }
         }
         assert_eq!(
-            settings.coding_agent_identity_physical.as_ref().unwrap().as_ref(),
+            settings
+                .coding_agent_identity_physical
+                .as_ref()
+                .unwrap()
+                .as_ref(),
             &raw
         );
     }
