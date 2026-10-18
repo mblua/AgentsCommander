@@ -1,3 +1,4 @@
+//! `telegram-send-message` sends original plain text without an attachment.
 //! `telegram-send-image` CLI verb — sends a local image (or generic file) to
 //! a configured Telegram bot from an external terminal, bypassing the Tauri
 //! frontend. Issue #282.
@@ -45,6 +46,67 @@ pub struct TelegramSendImageArgs {
     /// Bot label (exact match against telegramBots[*].label). Mutually exclusive with --bot-id
     #[arg(long)]
     pub bot_label: Option<String>,
+}
+
+/// Send plain text through a bot configured in this executable's instance.
+#[derive(Args)]
+#[command(
+    after_help = "Text is sent unchanged. Empty text and more than 4096 UTF-16 code units are rejected locally. Select a bot by exact id or unique label; omit selectors only with one configured bot. No room, session, bridge or GUI is required. Use --text=-value for leading hyphens."
+)]
+pub struct TelegramSendMessageArgs {
+    /// Original plain text to send (required)
+    #[arg(long)]
+    pub text: String,
+    /// Configured bot id; mutually exclusive with --bot-label
+    #[arg(long, conflicts_with = "bot_label")]
+    pub bot_id: Option<String>,
+    /// Configured bot label (exact, unique match)
+    #[arg(long)]
+    pub bot_label: Option<String>,
+}
+
+// The loader and sender are one-shot closures so tests never need real settings or network.
+fn send_message_with(
+    args: TelegramSendMessageArgs,
+    load_bots: impl FnOnce() -> Vec<TelegramBotConfig>,
+    send: impl FnOnce(&TelegramBotConfig, &str) -> Result<(), &'static str>,
+) -> Result<String, String> {
+    if args.text.trim().is_empty() {
+        return Err("--text must not be empty".into());
+    }
+    if args.text.encode_utf16().count() > 4096 {
+        return Err("--text must not exceed 4096 UTF-16 code units".into());
+    }
+    let bots = load_bots();
+    let bot = resolve_bot(&bots, args.bot_id.as_deref(), args.bot_label.as_deref())?;
+    send(bot, &args.text).map_err(str::to_owned)?;
+    Ok(format!("Sent: bot={}", bot.id))
+}
+
+fn send_message(bot: &TelegramBotConfig, text: &str) -> Result<(), &'static str> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "could not initialize Telegram runtime")?;
+    let network = crate::network::OutboundNetwork::new()
+        .map_err(|_| "could not initialize Telegram network")?;
+    rt.block_on(crate::commands::telegram::perform_send_message(
+        &network, bot, text,
+    ))
+}
+
+pub fn execute_message(args: TelegramSendMessageArgs) -> i32 {
+    let result = send_message_with(args, || load_settings_for_cli().telegram_bots, send_message);
+    match result {
+        Ok(receipt) => {
+            crate::cli_println!("{}", receipt);
+            0
+        }
+        Err(error) => {
+            eprintln!("Error: {}", error);
+            1
+        }
+    }
 }
 
 /// Pick a bot from `bots` using the CLI selector flags.
@@ -283,5 +345,127 @@ mod tests {
             "help missing verb: {}",
             help
         );
+    }
+    fn message_args(text: &str) -> TelegramSendMessageArgs {
+        TelegramSendMessageArgs {
+            text: text.into(),
+            bot_id: None,
+            bot_label: None,
+        }
+    }
+
+    #[test]
+    fn message_rejects_before_loading_or_sending() {
+        for text in [
+            String::new(),
+            " \n\t".into(),
+            "a".repeat(4097),
+            "😀".repeat(2049),
+        ] {
+            let result = send_message_with(
+                message_args(&text),
+                || panic!("loader called"),
+                |_, _| panic!("sender called"),
+            );
+            assert!(result.unwrap_err().starts_with("--text must not"));
+        }
+    }
+
+    #[test]
+    fn message_preserves_original_and_accepts_boundaries() {
+        for text in [
+            "  hello\nworld  ".into(),
+            "a".repeat(4096),
+            "😀".repeat(2048),
+            "-value".into(),
+        ] {
+            let mut sent = false;
+            let result = send_message_with(
+                message_args(&text),
+                || vec![bot("one", "Only")],
+                |selected, original| {
+                    assert_eq!(selected.id, "one");
+                    assert_eq!(original, text);
+                    sent = true;
+                    Ok(())
+                },
+            );
+            assert!(sent);
+            assert_eq!(result.unwrap(), "Sent: bot=one");
+        }
+    }
+
+    #[test]
+    fn message_failures_have_no_receipt_or_private_values() {
+        for failure in [
+            "could not initialize Telegram runtime",
+            "could not initialize Telegram network",
+            "Telegram send failed; delivery may be uncertain",
+        ] {
+            let result = send_message_with(
+                message_args("BODY_SENTINEL"),
+                || vec![bot("one", "Only")],
+                |_, _| Err(failure),
+            );
+            let error = result.unwrap_err();
+            assert_eq!(error, failure);
+            for private in ["Sent:", "BODY_SENTINEL", "test-token"] {
+                assert!(!error.contains(private));
+            }
+        }
+    }
+
+    #[test]
+    fn message_selector_errors_do_not_send_or_leak_token() {
+        let mut args = message_args("BODY_SENTINEL");
+        args.bot_id = Some("unknown".into());
+        let error = send_message_with(
+            args,
+            || vec![bot("one", "Only")],
+            |_, _| panic!("sender called"),
+        )
+        .unwrap_err();
+        assert!(error.contains("id=one"));
+        assert!(!error.contains("test-token"));
+        assert!(!error.contains("BODY_SENTINEL"));
+        let bots = vec![bot("same", "First"), bot("same", "Second")];
+        assert_eq!(
+            resolve_bot(&bots, Some("same"), None).unwrap().label,
+            "First"
+        );
+    }
+
+    #[test]
+    fn message_parses_selectors_and_leading_hyphen() {
+        use clap::Parser;
+        for selector in ["--bot-id", "--bot-label"] {
+            let parsed = crate::cli::Cli::try_parse_from([
+                "ac",
+                "telegram-send-message",
+                "--text=-value",
+                selector,
+                "one",
+            ])
+            .unwrap();
+            let Some(crate::cli::Commands::TelegramSendMessage(args)) = parsed.command else {
+                panic!("wrong command")
+            };
+            assert_eq!(args.text, "-value");
+            assert_eq!(
+                args.bot_id.as_deref().or(args.bot_label.as_deref()),
+                Some("one")
+            );
+        }
+        assert!(crate::cli::Cli::try_parse_from([
+            "ac",
+            "telegram-send-message",
+            "--text",
+            "hello",
+            "--bot-id",
+            "one",
+            "--bot-label",
+            "Only"
+        ])
+        .is_err());
     }
 }

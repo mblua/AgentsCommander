@@ -1716,6 +1716,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: label.to_string(),
             command: command.to_string(),
             color: "#6366f1".to_string(),
@@ -1864,6 +1865,7 @@ mod tests {
             serde_json::to_value(&settings.agents[0]).unwrap()
         );
         assert!(added.backend.image.is_none());
+        assert_eq!(added.id_hash_debug, Some(vec!["codex".into()]));
         let original_hash = added.id_hash.clone();
         let metadata = AgentPatch {
             label: Some("Renamed".into()),
@@ -1882,6 +1884,7 @@ mod tests {
         .agent
         .unwrap();
         assert_eq!(changed.id_hash, original_hash);
+        assert_eq!(changed.id_hash_debug, Some(vec!["codex".into()]));
         let disabled = CodingAgentEnv {
             key: "MODE".into(),
             value: "one".into(),
@@ -1911,6 +1914,10 @@ mod tests {
             ))
         );
         assert_ne!(updated.id_hash, original_hash);
+        assert_eq!(
+            updated.id_hash_debug,
+            Some(vec!["codex x".into(), "MODE".into(), "one".into()])
+        );
         let disabled_hash = updated.id_hash;
         settings.agents[0].envs[0].value = "two".into();
         let updated = apply_coding_agent_op(
@@ -1924,6 +1931,10 @@ mod tests {
         .agent
         .unwrap();
         assert_ne!(updated.id_hash, disabled_hash);
+        assert_eq!(
+            updated.id_hash_debug,
+            Some(vec!["codex x".into(), "MODE".into(), "two".into()])
+        );
         let cleared = apply_coding_agent_op(
             &mut settings,
             &CodingAgentOp::Update {
@@ -1938,6 +1949,7 @@ mod tests {
         .agent
         .unwrap();
         assert!(cleared.envs.is_empty());
+        assert_eq!(cleared.id_hash_debug, Some(vec!["codex x".into()]));
         assert_eq!(
             cleared.id_hash,
             Some(crate::config::settings::configuration_identity(
@@ -2020,6 +2032,10 @@ mod tests {
                     serde_json::to_value(written.agents.first()).unwrap()
                 );
                 assert_eq!(result.agent.unwrap().command, "final-saver-command");
+                assert_eq!(
+                    written.agents[0].id_hash_debug,
+                    Some(vec!["final-saver-command".into()])
+                );
                 let disk: serde_json::Value = serde_json::from_slice(
                     &std::fs::read(
                         dir.path()
@@ -2031,6 +2047,10 @@ mod tests {
                 assert_eq!(
                     disk["agents"][0]["id_hash"],
                     written.agents[0].id_hash.clone().unwrap()
+                );
+                assert_eq!(
+                    disk["agents"][0]["id_hash_debug"],
+                    serde_json::json!(["final-saver-command"])
                 );
             }
             assert!(!request.exists() && !processing_path_for(&request).exists());
