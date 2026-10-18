@@ -19416,6 +19416,9 @@ mod tests {
             .await
             .clone();
         manager.set_is_coordinator(sender, true).await;
+        manager
+            .set_agent_kind(previous, Some(crate::session::profile::CodingAgentKind::Codex))
+            .await;
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         let (member, leader) = manager
             .with_current_carrier_snapshot(&permit, |current| {
