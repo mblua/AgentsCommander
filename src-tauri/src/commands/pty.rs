@@ -2219,7 +2219,11 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
-        std::fs::write(&path, br#"{"typingHoldSeconds":17}"#).unwrap();
+        let settings = crate::config::settings::AppSettings {
+            typing_hold_seconds: 17,
+            ..Default::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
         let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
         let (app, publisher, id) = eligible_app(Arc::clone(&owner));
         assert_eq!(
