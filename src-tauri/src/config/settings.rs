@@ -444,6 +444,8 @@ pub struct AgentConfig {
     )]
     // Base-command legacy metadata; profile-cell id_hash identifies a command/profile pair.
     pub id_hash: Option<String>,
+    #[serde(skip)]
+    pub id_hash_debug: Option<Vec<String>>,
     pub label: String,
     #[serde(rename = "baseCommand")]
     pub command: String,
@@ -573,6 +575,7 @@ impl<'de> Deserialize<'de> for AgentConfig {
         Ok(Self {
             id: wire.id,
             id_hash: wire.id_hash,
+            id_hash_debug: None,
             label: wire.label,
             command,
             preflight: wire.preflight,
@@ -779,6 +782,8 @@ pub struct ProfileSlotConfig {
 pub struct ProfileCellConfig {
     #[serde(default, rename = "id_hash", skip_serializing_if = "Option::is_none")]
     pub id_hash: Option<String>,
+    #[serde(skip)]
+    pub id_hash_debug: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -840,6 +845,7 @@ impl<'de> Deserialize<'de> for ProfileCellConfig {
         .to_owned();
         Ok(Self {
             id_hash: wire.id_hash,
+            id_hash_debug: None,
             enabled: wire.enabled,
             command,
             preflight: wire.preflight,
@@ -9072,6 +9078,7 @@ fn capture_project_settings_with_startup(
 pub fn empty_profile_cell() -> ProfileCellConfig {
     ProfileCellConfig {
         id_hash: None,
+        id_hash_debug: None,
         preflight: None,
         preflight_timeout_seconds: None,
         enabled: true,
@@ -19806,6 +19813,7 @@ mod tests {
                     preflight_timeout_seconds: None,
                     id: format!("agent-{idx}"),
                     id_hash: None,
+                    id_hash_debug: None,
                     label: (*label).to_string(),
                     command: (*command).to_string(),
                     color: "#000000".to_string(),
@@ -19911,6 +19919,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: "claude".to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: "Claude".to_string(),
             command: "claude".to_string(),
             color: "#fff".to_string(),
@@ -20708,6 +20717,7 @@ mod tests {
                 "B".to_string(),
                 ProfileCellConfig {
                     id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -20768,6 +20778,7 @@ mod tests {
                 "A".to_string(),
                 ProfileCellConfig {
                     id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -20798,6 +20809,7 @@ mod tests {
                 "A".to_string(),
                 ProfileCellConfig {
                     id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -20864,6 +20876,7 @@ mod tests {
                         "A".to_string(),
                         ProfileCellConfig {
                             id_hash: None,
+                            id_hash_debug: None,
                             preflight: None,
                             preflight_timeout_seconds: None,
                             enabled: true,
@@ -20909,6 +20922,7 @@ mod tests {
                 "A".to_string(),
                 ProfileCellConfig {
                     id_hash: None,
+                    id_hash_debug: None,
                     preflight: None,
                     preflight_timeout_seconds: None,
                     enabled: true,
@@ -23454,6 +23468,7 @@ mod tests {
             preflight_timeout_seconds: None,
             id: id.to_string(),
             id_hash: None,
+            id_hash_debug: None,
             label: id.to_string(),
             command: command.to_string(),
             color: "#000000".to_string(),
@@ -23740,6 +23755,7 @@ mod tests {
         fn cell(command: &str) -> ProfileCellConfig {
             ProfileCellConfig {
                 id_hash: None,
+                id_hash_debug: None,
                 preflight: None,
                 preflight_timeout_seconds: None,
                 command: command.to_string(),
@@ -27103,6 +27119,7 @@ mod tests {
                 preflight_timeout_seconds: None,
                 id: "grok-1".to_string(),
                 id_hash: None,
+                id_hash_debug: None,
                 label: "grok-1".to_string(),
                 command: "grok".to_string(),
                 color: "#000000".to_string(),
