@@ -95,7 +95,7 @@ async function mountRail() {
   return rendered;
 }
 
-describe("WorkgroupGroupRail compact autoexpansion (#2236)", () => {
+describe("RoomGroupRail compact autoexpansion (#2236)", () => {
   let cleanupDom: (() => void) | null = null;
 
   beforeEach(() => {

@@ -87,9 +87,9 @@ import {
   replicaCiRunning,
   replicaHasBlockedMenu,
   replicaSessionName,
-  workgroupHasBlockedMenu,
-  workgroupIsActive,
-} from "./workgroup-session";
+  roomHasBlockedMenu,
+  roomIsActive,
+} from "./room-session";
 import {
   DEFAULT_NON_STOP_NAME,
   compileGroupRegex,
@@ -2925,7 +2925,7 @@ const ProjectPanel: Component = () => {
           // renders, so the chip and the row cannot disagree.
           // Non-orchestrator rows are excluded here, not at the chip.
           // #2202 - CI now DOES reach the group-rail counter, dot and tooltip and
-          // the `.ac-wg-subgroup.working` class, all through `workgroupIsActive`.
+          // the `.ac-wg-subgroup.working` class, all through `roomIsActive`.
           // The body below delegates to `replicaCiRunning`, the one shared CI
           // definition those surfaces read, so no surface can hold its own.
           // Room ordering still reads no working predicate at all: it sorts on
@@ -2942,7 +2942,7 @@ const ProjectPanel: Component = () => {
           // strip in the same frame.
           const rowIsWorking = () =>
             rowContext === "quick"
-              ? workgroupIsActive(wg)
+              ? roomIsActive(wg)
               : isReplicaWorking(wg, replica) || orchestratorCiRunning();
           const idleBadge = createMemo(() =>
             isCoord()
@@ -3266,7 +3266,7 @@ const ProjectPanel: Component = () => {
           );
           const wgCollapsed = () => isPanelCollapsed(wgCollapsedKey);
           return (
-            <div class="ac-wg-subgroup" classList={{ working: workgroupIsActive(wg) }}>
+            <div class="ac-wg-subgroup" classList={{ working: roomIsActive(wg) }}>
               <div
                 class="ac-wg-header ac-wg-header--collapsible"
                 title={wg.path}
@@ -3284,7 +3284,7 @@ const ProjectPanel: Component = () => {
                       count, and it does not check wgCollapsed(): redundant while
                       expanded is deliberate, and it is what makes the regex
                       filter safe for free. */}
-                  <Show when={workgroupHasBlockedMenu(wg)}>
+                  <Show when={roomHasBlockedMenu(wg)}>
                     <span
                       class="ac-wg-header-blocked-menu"
                       data-ac-testid={`workgroup.header.blockedMenu.${automationIdPart(wg.name)}`}
@@ -3339,7 +3339,7 @@ const ProjectPanel: Component = () => {
                   would join the collapse toggle's hit area and its accessible
                   name, and a screen reader would read the badge as part of
                   "toggle this project". Out here it stays a status indicator. */}
-              <Show when={proj.workgroups.some(workgroupHasBlockedMenu)}>
+              <Show when={proj.workgroups.some(roomHasBlockedMenu)}>
                 <span
                   class="ac-wg-header-blocked-menu"
                   data-ac-testid="project.header.blockedMenu"
