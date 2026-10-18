@@ -5194,6 +5194,12 @@ mod tests {
             ))
         );
         assert_eq!(physical_agent.envs, expected_envs);
+        let mut expected_debug = vec![row.command.clone()];
+        for env in expected_envs {
+            expected_debug.extend([env.key.clone(), env.value.clone()]);
+        }
+        assert_eq!(row.id_hash_debug, Some(expected_debug.clone()));
+        assert_eq!(physical_agent.id_hash_debug, Some(expected_debug));
         assert_eq!(row.id, "agent-0");
         assert_eq!(row.order, Some(0));
         assert_eq!(
@@ -5250,6 +5256,15 @@ mod tests {
         assert_ne!(written.agents[0].id_hash, original.agents[0].id_hash);
         let mut expected_profiles = original.coding_agent_profiles.profiles_by_agent.clone();
         for (letter, cell) in expected_profiles.get_mut("agent-0").unwrap() {
+            let mut debug = vec![written.agents[0].command.clone()];
+            for env in &original.agents[0].envs {
+                debug.extend([env.key.clone(), env.value.clone()]);
+            }
+            debug.push(cell.command.clone());
+            for (key, value) in &cell.env {
+                debug.extend([key.clone(), value.clone()]);
+            }
+            cell.id_hash_debug = Some(debug);
             // Independent preimage from the final command, restored live env and
             // the original payload. Disabled env rows still participate.
             let mut preimage = written.agents[0].command.clone();
