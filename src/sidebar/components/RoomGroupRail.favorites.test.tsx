@@ -203,6 +203,35 @@ async function seedProjectStore(fake: FakeTransport, paths: string[]): Promise<v
   for (const path of paths) await projectStore.createAndLoad(path);
 }
 
+async function mountFavoritedUiRail() {
+  const fake = railFake(
+    groupsConfig({
+      groups: [
+        { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team"), favorite: true },
+        { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
+      ],
+    })
+  );
+  const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+  try {
+    await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.ui"]));
+    return { fake, rendered };
+  } catch (error) {
+    rendered.cleanup();
+    throw error;
+  }
+}
+
+async function prepareReorderTargets() {
+  await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
+  const rail = target<HTMLElement>("workgroupGroups.rail.Project");
+  const ui = target<HTMLElement>("workgroupGroups.button.ui");
+  const rust = target<HTMLElement>("workgroupGroups.button.rust");
+  const docs = target<HTMLElement>("workgroupGroups.button.docs");
+  mockRect(rail, 0, 200);
+  return { rail, ui, rust, docs };
+}
+
 describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
   beforeEach(() => {
     resetUiStoresForTests();
@@ -304,17 +333,8 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
     });
 
     it("folds the Favorites section on its header click and persists the bit", async () => {
-      const fake = railFake(
-        groupsConfig({
-          groups: [
-            { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team"), favorite: true },
-            { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
-          ],
-        })
-      );
-      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+      const { fake, rendered } = await mountFavoritedUiRail();
       try {
-        await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.ui"]));
         const header = target<HTMLElement>("workgroupGroups.favorites.header");
         expect(header.getAttribute("aria-expanded")).toBe("true");
 
@@ -360,17 +380,8 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
     });
 
     it("offers Unfavorite on a favorited group and removes it from Favorites", async () => {
-      const fake = railFake(
-        groupsConfig({
-          groups: [
-            { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team"), favorite: true },
-            { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
-          ],
-        })
-      );
-      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+      const { fake, rendered } = await mountFavoritedUiRail();
       try {
-        await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.ui"]));
 
         await openMenuOn(target("workgroupGroups.button.ui"));
         expect(target("workgroupGroups.contextMenu.favorite").textContent).toContain("Unfavorite");
@@ -766,12 +777,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
       const fake = railFake();
       const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
-        await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
-        const rail = target<HTMLElement>("workgroupGroups.rail.Project");
-        const ui = target<HTMLElement>("workgroupGroups.button.ui");
-        const rust = target<HTMLElement>("workgroupGroups.button.rust");
-        const docs = target<HTMLElement>("workgroupGroups.button.docs");
-        mockRect(rail, 0, 200);
+        const { rail, ui, rust, docs } = await prepareReorderTargets();
         mockRect(ui, 80);
         mockRect(rust, 114);
         mockRect(docs, 148);
@@ -815,12 +821,7 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
       const fake = railFake();
       const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
       try {
-        await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
-        const rail = target<HTMLElement>("workgroupGroups.rail.Project");
-        const ui = target<HTMLElement>("workgroupGroups.button.ui");
-        const rust = target<HTMLElement>("workgroupGroups.button.rust");
-        const docs = target<HTMLElement>("workgroupGroups.button.docs");
-        mockRect(rail, 0, 200);
+        const { rail, ui, rust, docs } = await prepareReorderTargets();
         mockRect(ui, 80, 0); // zero-height == detached, filtered out of the candidates
         mockRect(rust, 114, 0);
         mockRect(docs, 148);
@@ -883,17 +884,8 @@ describe("RoomGroupRail favorites + collapsible rail (#965)", () => {
     });
 
     it("never arms a drag on a Favorites entry", async () => {
-      const fake = railFake(
-        groupsConfig({
-          groups: [
-            { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team"), favorite: true },
-            { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
-          ],
-        })
-      );
-      const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+      const { fake, rendered } = await mountFavoritedUiRail();
       try {
-        await waitFor(() => expect(favoriteButtonKeys()).toEqual(["Project.ui"]));
         const favorite = target<HTMLElement>("workgroupGroups.favoriteButton.Project.ui");
         expect(favorite.classList.contains("reorderable")).toBe(false);
 

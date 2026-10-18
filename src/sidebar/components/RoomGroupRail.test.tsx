@@ -222,6 +222,58 @@ function ciProject(names: string[], coordinator = true): ProjectState {
   };
 }
 
+function createTwoProjectRailFake(): FakeTransport {
+  const fake = new FakeTransport();
+  fake.onInvoke("get_project_groups", (args) =>
+    args.path === projectPath
+      ? groupsConfig()
+      : groupsConfig({ groups: [{ id: "other", name: "Other", regex: exactGroupRegexForWorkgroup("wg-9-other-team") }] })
+  );
+  return fake;
+}
+
+function mountTwoProjectRail(fake: FakeTransport) {
+  return renderWithFakeTransport(
+    () => <RoomGroupRail projects={[project(), otherProject()]} />,
+    fake
+  );
+}
+
+function createThreeGroupReorderConfig(): WorkgroupGroupsConfig {
+  return groupsConfig({
+    groups: [
+      { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
+      { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
+      { id: "docs", name: "Docs", regex: exactGroupRegexForWorkgroup("wg-3-docs-team") },
+    ],
+  });
+}
+
+function mountReorderRail(config = groupsConfig(), fake = new FakeTransport()) {
+  fake.resolve("get_project_groups", config);
+  return { fake, rendered: renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake) };
+}
+
+async function measureReorderTargets(includeDocs: true): Promise<{ projectRail: HTMLElement; ui: HTMLElement; rust: HTMLElement; docs: HTMLElement }>;
+async function measureReorderTargets(includeDocs?: false): Promise<{ projectRail: HTMLElement; ui: HTMLElement; rust: HTMLElement }>;
+async function measureReorderTargets(includeDocs = false) {
+  await waitFor(() => expect(railButtonOrder()).toEqual(
+    includeDocs ? ["all", "ungrouped", "ui", "rust", "docs"] : ["all", "ungrouped", "ui", "rust"]
+  ));
+  const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
+  const ui = target<HTMLElement>("workgroupGroups.button.ui");
+  const rust = target<HTMLElement>("workgroupGroups.button.rust");
+  mockRect(projectRail, 0, includeDocs ? 200 : 160);
+  mockRect(ui, 80);
+  mockRect(rust, 114);
+  if (includeDocs) {
+    const docs = target<HTMLElement>("workgroupGroups.button.docs");
+    mockRect(docs, 148);
+    return { projectRail, ui, rust, docs };
+  }
+  return { projectRail, ui, rust };
+}
+
 describe("RoomGroupRail", () => {
   beforeEach(() => {
     resetUiStoresForTests();
@@ -261,18 +313,10 @@ describe("RoomGroupRail", () => {
   });
 
   it("keeps group context-menu edits isolated to the right-clicked project", async () => {
-    const fake = new FakeTransport();
-    fake.onInvoke("get_project_groups", (args) =>
-      args.path === projectPath
-        ? groupsConfig()
-        : groupsConfig({ groups: [{ id: "other", name: "Other", regex: exactGroupRegexForWorkgroup("wg-9-other-team") }] })
-    );
+    const fake = createTwoProjectRailFake();
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(
-      () => <RoomGroupRail projects={[project(), otherProject()]} />,
-      fake
-    );
+    const rendered = mountTwoProjectRail(fake);
     try {
       await waitFor(() => expect(target("workgroupGroups.rail.OtherProject")).not.toBeNull());
       const sourceRail = target<HTMLElement>("workgroupGroups.rail.Project");
@@ -294,17 +338,9 @@ describe("RoomGroupRail", () => {
   });
 
   it("highlights only the active project's selected group across project rails", async () => {
-    const fake = new FakeTransport();
-    fake.onInvoke("get_project_groups", (args) =>
-      args.path === projectPath
-        ? groupsConfig()
-        : groupsConfig({ groups: [{ id: "other", name: "Other", regex: exactGroupRegexForWorkgroup("wg-9-other-team") }] })
-    );
+    const fake = createTwoProjectRailFake();
 
-    const rendered = renderWithFakeTransport(
-      () => <RoomGroupRail projects={[project(), otherProject()]} />,
-      fake
-    );
+    const rendered = mountTwoProjectRail(fake);
     try {
       await waitFor(() => {
         expect(railButton("Project", "ui")).not.toBeNull();
@@ -335,17 +371,9 @@ describe("RoomGroupRail", () => {
   });
 
   it("remembers each project's selected group and shows it when the project becomes active again", async () => {
-    const fake = new FakeTransport();
-    fake.onInvoke("get_project_groups", (args) =>
-      args.path === projectPath
-        ? groupsConfig()
-        : groupsConfig({ groups: [{ id: "other", name: "Other", regex: exactGroupRegexForWorkgroup("wg-9-other-team") }] })
-    );
+    const fake = createTwoProjectRailFake();
 
-    const rendered = renderWithFakeTransport(
-      () => <RoomGroupRail projects={[project(), otherProject()]} />,
-      fake
-    );
+    const rendered = mountTwoProjectRail(fake);
     try {
       await waitFor(() => {
         expect(railButton("Project", "ui")).not.toBeNull();
@@ -661,10 +689,9 @@ describe("RoomGroupRail", () => {
 
   it("keeps quick click selection behavior and does not persist reorder before the hold threshold", async () => {
     const fake = new FakeTransport();
-    fake.resolve("get_project_groups", groupsConfig());
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+    const { rendered } = mountReorderRail(groupsConfig(), fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       const ui = target<HTMLElement>("workgroupGroups.button.ui");
@@ -686,18 +713,11 @@ describe("RoomGroupRail", () => {
 
   it("long-press drags a user group to a new user-group position and persists the order", async () => {
     const fake = new FakeTransport();
-    fake.resolve("get_project_groups", groupsConfig());
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+    const { rendered } = mountReorderRail(groupsConfig(), fake);
     try {
-      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
-      const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
-      const ui = target<HTMLElement>("workgroupGroups.button.ui");
-      const rust = target<HTMLElement>("workgroupGroups.button.rust");
-      mockRect(projectRail, 0, 160);
-      mockRect(ui, 80);
-      mockRect(rust, 114);
+      const { projectRail, ui, rust } = await measureReorderTargets();
 
       vi.useFakeTimers();
       pointer(ui, "pointerdown", { clientY: 90 });
@@ -727,29 +747,12 @@ describe("RoomGroupRail", () => {
 
   it("long-press drags a middle user group to the top of the user-group segment", async () => {
     const fake = new FakeTransport();
-    fake.resolve(
-      "get_project_groups",
-      groupsConfig({
-        groups: [
-          { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
-          { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
-          { id: "docs", name: "Docs", regex: exactGroupRegexForWorkgroup("wg-3-docs-team") },
-        ],
-      })
-    );
+    const config = createThreeGroupReorderConfig();
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+    const { rendered } = mountReorderRail(config, fake);
     try {
-      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
-      const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
-      const ui = target<HTMLElement>("workgroupGroups.button.ui");
-      const rust = target<HTMLElement>("workgroupGroups.button.rust");
-      const docs = target<HTMLElement>("workgroupGroups.button.docs");
-      mockRect(projectRail, 0, 200);
-      mockRect(ui, 80);
-      mockRect(rust, 114);
-      mockRect(docs, 148);
+      const { projectRail, ui, rust, docs } = await measureReorderTargets(true);
 
       vi.useFakeTimers();
       pointer(rust, "pointerdown", { clientY: 124 });
@@ -766,29 +769,12 @@ describe("RoomGroupRail", () => {
 
   it("continues a long-press drag through window movement after pointer capture is lost", async () => {
     const fake = new FakeTransport();
-    fake.resolve(
-      "get_project_groups",
-      groupsConfig({
-        groups: [
-          { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
-          { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
-          { id: "docs", name: "Docs", regex: exactGroupRegexForWorkgroup("wg-3-docs-team") },
-        ],
-      })
-    );
+    const config = createThreeGroupReorderConfig();
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+    const { rendered } = mountReorderRail(config, fake);
     try {
-      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
-      const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
-      const ui = target<HTMLElement>("workgroupGroups.button.ui");
-      const rust = target<HTMLElement>("workgroupGroups.button.rust");
-      const docs = target<HTMLElement>("workgroupGroups.button.docs");
-      mockRect(projectRail, 0, 200);
-      mockRect(ui, 80);
-      mockRect(rust, 114);
-      mockRect(docs, 148);
+      const { projectRail, ui, rust, docs } = await measureReorderTargets(true);
 
       vi.useFakeTimers();
       pointer(docs, "pointerdown", { clientY: 158 });
@@ -808,29 +794,12 @@ describe("RoomGroupRail", () => {
 
   it("persists an already-previewed reorder when pointer capture is lost before release", async () => {
     const fake = new FakeTransport();
-    fake.resolve(
-      "get_project_groups",
-      groupsConfig({
-        groups: [
-          { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
-          { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
-          { id: "docs", name: "Docs", regex: exactGroupRegexForWorkgroup("wg-3-docs-team") },
-        ],
-      })
-    );
+    const config = createThreeGroupReorderConfig();
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+    const { rendered } = mountReorderRail(config, fake);
     try {
-      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust", "docs"]));
-      const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
-      const ui = target<HTMLElement>("workgroupGroups.button.ui");
-      const rust = target<HTMLElement>("workgroupGroups.button.rust");
-      const docs = target<HTMLElement>("workgroupGroups.button.docs");
-      mockRect(projectRail, 0, 200);
-      mockRect(ui, 80);
-      mockRect(rust, 114);
-      mockRect(docs, 148);
+      const { projectRail, ui, rust, docs } = await measureReorderTargets(true);
 
       vi.useFakeTimers();
       pointer(docs, "pointerdown", { clientY: 158 });
@@ -854,21 +823,15 @@ describe("RoomGroupRail", () => {
       unhandled.push(event.reason);
       event.preventDefault();
     };
-    window.addEventListener("unhandledrejection", onUnhandled);
 
     const fake = new FakeTransport();
-    fake.resolve("get_project_groups", groupsConfig());
     fake.reject("update_project_groups", "disk denied");
 
-    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+    let rendered: ReturnType<typeof renderWithFakeTransport> | undefined;
     try {
-      await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
-      const projectRail = target<HTMLElement>("workgroupGroups.rail.Project");
-      const ui = target<HTMLElement>("workgroupGroups.button.ui");
-      const rust = target<HTMLElement>("workgroupGroups.button.rust");
-      mockRect(projectRail, 0, 160);
-      mockRect(ui, 80);
-      mockRect(rust, 114);
+      window.addEventListener("unhandledrejection", onUnhandled);
+      ({ rendered } = mountReorderRail(groupsConfig(), fake));
+      const { projectRail, ui, rust } = await measureReorderTargets();
 
       vi.useFakeTimers();
       pointer(ui, "pointerdown", { clientY: 90 });
@@ -888,16 +851,15 @@ describe("RoomGroupRail", () => {
       expect(unhandled).toEqual([]);
     } finally {
       window.removeEventListener("unhandledrejection", onUnhandled);
-      rendered.cleanup();
+      rendered?.cleanup();
     }
   });
 
   it("cancels a long-press drag on Escape without persisting", async () => {
     const fake = new FakeTransport();
-    fake.resolve("get_project_groups", groupsConfig());
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(() => <RoomGroupRail projects={[project()]} />, fake);
+    const { rendered } = mountReorderRail(groupsConfig(), fake);
     try {
       await waitFor(() => expect(railButtonOrder()).toEqual(["all", "ungrouped", "ui", "rust"]));
       const ui = target<HTMLElement>("workgroupGroups.button.ui");
@@ -927,18 +889,10 @@ describe("RoomGroupRail", () => {
   });
 
   it("does not persist a reorder when the drop leaves the source project section", async () => {
-    const fake = new FakeTransport();
-    fake.onInvoke("get_project_groups", (args) =>
-      args.path === projectPath
-        ? groupsConfig()
-        : groupsConfig({ groups: [{ id: "other", name: "Other", regex: exactGroupRegexForWorkgroup("wg-9-other-team") }] })
-    );
+    const fake = createTwoProjectRailFake();
     fake.onInvoke("update_project_groups", (args) => args.config);
 
-    const rendered = renderWithFakeTransport(
-      () => <RoomGroupRail projects={[project(), otherProject()]} />,
-      fake
-    );
+    const rendered = mountTwoProjectRail(fake);
     try {
       await waitFor(() => expect(target("workgroupGroups.rail.OtherProject")).not.toBeNull());
       const sourceRail = target<HTMLElement>("workgroupGroups.rail.Project");

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AcWorkgroup, Session, WorkgroupGroupsConfig } from "../../shared/types";
+import type { AcWorkgroup, Session } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   renderWithFakeTransport,
@@ -8,10 +8,9 @@ import {
   session,
   waitFor,
 } from "../../shared/testing/ui-harness";
-import type { ProjectState } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
-import { defaultGroupsConfig, exactGroupRegexForWorkgroup } from "../stores/workgroup-groups";
 import RoomGroupRail from "./RoomGroupRail";
+import { createRailProject as project, createIndicatorGroupsConfig as groupsConfig, defaultIndicatorRooms } from "./room-group-rail-fixtures";
 
 // #1859 — the rail is the outermost level that can hide a blocked menu: a
 // collapsed project rail tab shows no rows at all. This file mirrors
@@ -40,32 +39,7 @@ function room(name: string, opts: { coordinator?: boolean } = {}): AcWorkgroup {
   };
 }
 
-function project(rooms: AcWorkgroup[]): ProjectState {
-  return {
-    path: projectPath,
-    folderName: "Project",
-    workgroups: rooms,
-    agents: [],
-    teams: [],
-    loops: [],
-    contextTemplateUpdates: [],
-  };
-}
-
-/** ui -> wg-1-dev-team, rust -> wg-2-rust-team; wg-3-docs-team stays ungrouped. */
-function groupsConfig(overrides: Partial<WorkgroupGroupsConfig> = {}): WorkgroupGroupsConfig {
-  return {
-    ...defaultGroupsConfig(),
-    ...overrides,
-    groups:
-      overrides.groups ?? [
-        { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
-        { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
-      ],
-  };
-}
-
-const defaultWorkgroups = () => [room("wg-1-dev-team"), room("wg-2-rust-team"), room("wg-3-docs-team")];
+const defaultWorkgroups = () => defaultIndicatorRooms(room);
 
 function sessionFor(roomName: string, overrides: Partial<Session> = {}): Session {
   return session({

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AcWorkgroup, Session, WorkgroupGroupsConfig } from "../../shared/types";
+import type { AcWorkgroup, Session } from "../../shared/types";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   renderWithFakeTransport,
@@ -8,14 +8,13 @@ import {
   session,
   waitFor,
 } from "../../shared/testing/ui-harness";
-import type { ProjectState } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import {
-  defaultGroupsConfig,
   defaultNonStop,
   exactGroupRegexForWorkgroup,
 } from "../stores/workgroup-groups";
 import RoomGroupRail from "./RoomGroupRail";
+import { createRailProject as project, createIndicatorGroupsConfig as groupsConfig, defaultIndicatorRooms } from "./room-group-rail-fixtures";
 import { roomHasRaisedHand } from "./room-session";
 
 const projectPath = "C:\\Project";
@@ -43,36 +42,7 @@ function room(
   };
 }
 
-function project(rooms: AcWorkgroup[]): ProjectState {
-  return {
-    path: projectPath,
-    folderName: "Project",
-    workgroups: rooms,
-    agents: [],
-    teams: [],
-    loops: [],
-    contextTemplateUpdates: [],
-  };
-}
-
-/** ui -> wg-1-dev-team, rust -> wg-2-rust-team; wg-3-docs-team stays ungrouped. */
-function groupsConfig(overrides: Partial<WorkgroupGroupsConfig> = {}): WorkgroupGroupsConfig {
-  return {
-    ...defaultGroupsConfig(),
-    ...overrides,
-    groups:
-      overrides.groups ?? [
-        { id: "ui", name: "UI", regex: exactGroupRegexForWorkgroup("wg-1-dev-team") },
-        { id: "rust", name: "Rust", regex: exactGroupRegexForWorkgroup("wg-2-rust-team") },
-      ],
-  };
-}
-
-const defaultWorkgroups = () => [
-  room("wg-1-dev-team"),
-  room("wg-2-rust-team"),
-  room("wg-3-docs-team"),
-];
+const defaultWorkgroups = () => defaultIndicatorRooms(room);
 
 /** A session for the workgroup's coordinator with a raised hand up. */
 function raisedSession(roomName: string, overrides: Partial<Session> = {}): Session {
