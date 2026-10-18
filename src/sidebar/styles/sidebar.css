@@ -10309,7 +10309,7 @@ html.light-theme .onboarding-card-row:hover {
 }
 
 /* #1755 - passive "someone is working here" wash. `working` is set by
-   ProjectPanel from isReplicaWorking / workgroupIsWorking; both predicates
+   ProjectPanel from isReplicaWorking / roomIsWorking; both predicates
    predate this issue.
 
    The colour is --status-running #3a7bff spelled as a literal rgba, because

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import SessionItem from "./SessionItem";
 import RootAgentBanner from "./RootAgentBanner";
 import ProjectPanel from "./ProjectPanel";
-import WorkgroupGroupRail from "./WorkgroupGroupRail";
+import RoomGroupRail from "./RoomGroupRail";
 import { FakeTransport } from "../../shared/testing/fake-transport";
 import {
   baseSettings,
@@ -469,7 +469,7 @@ describe("Co-managed dot across the three render sites (#2271)", () => {
     const railFake = new FakeTransport();
     railFake.resolve("get_project_groups", defaultGroupsConfig());
     const rail = renderWithFakeTransport(
-      () => <WorkgroupGroupRail projects={[railProject()]} />,
+      () => <RoomGroupRail projects={[railProject()]} />,
       railFake,
     );
     try {
