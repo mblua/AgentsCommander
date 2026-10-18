@@ -264,6 +264,7 @@ fn known_agent_field(key: &str) -> bool {
     matches!(
         key,
         "id" | "id_hash"
+            | "id_hash_debug"
             | "label"
             | "command"
             | "baseCommand"
@@ -287,6 +288,7 @@ fn comparable_agent(agent: &AgentConfig) -> Result<Value, String> {
     if let Some(object) = value.as_object_mut() {
         object.remove("order");
         object.remove("id_hash");
+        object.remove("id_hash_debug");
     }
     Ok(value)
 }
@@ -444,7 +446,7 @@ pub struct AgentConfig {
     )]
     // Base-command legacy metadata; profile-cell id_hash identifies a command/profile pair.
     pub id_hash: Option<String>,
-    #[serde(skip)]
+    #[serde(default, rename = "id_hash_debug", skip_serializing_if = "Option::is_none")]
     pub id_hash_debug: Option<Vec<String>>,
     pub label: String,
     #[serde(rename = "baseCommand")]
@@ -521,6 +523,12 @@ struct AgentConfigWire {
         deserialize_with = "deserialize_agent_id_hash"
     )]
     pub id_hash: Option<String>,
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        deserialize_with = "deserialize_agent_id_hash_debug"
+    )]
+    pub id_hash_debug: Option<Vec<String>>,
     pub label: String,
     #[serde(
         default,
@@ -575,7 +583,7 @@ impl<'de> Deserialize<'de> for AgentConfig {
         Ok(Self {
             id: wire.id,
             id_hash: wire.id_hash,
-            id_hash_debug: None,
+            id_hash_debug: wire.id_hash_debug,
             label: wire.label,
             command,
             preflight: wire.preflight,
@@ -618,6 +626,24 @@ where
     let value = Option::<Value>::deserialize(deserializer)?;
     Ok(value.and_then(|value| match value {
         Value::String(hash) => Some(hash),
+        _ => None,
+    }))
+}
+
+/// Optional debug leaves are accepted only as a complete array of strings.
+fn deserialize_agent_id_hash_debug<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        Value::Array(values) => values
+            .into_iter()
+            .map(|value| match value {
+                Value::String(value) => Some(value),
+                _ => None,
+            })
+            .collect(),
         _ => None,
     }))
 }
@@ -782,7 +808,7 @@ pub struct ProfileSlotConfig {
 pub struct ProfileCellConfig {
     #[serde(default, rename = "id_hash", skip_serializing_if = "Option::is_none")]
     pub id_hash: Option<String>,
-    #[serde(skip)]
+    #[serde(default, rename = "id_hash_debug", skip_serializing_if = "Option::is_none")]
     pub id_hash_debug: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -808,6 +834,12 @@ struct ProfileCellConfigWire {
         deserialize_with = "deserialize_agent_id_hash"
     )]
     pub id_hash: Option<String>,
+    #[serde(
+        default,
+        rename = "id_hash_debug",
+        deserialize_with = "deserialize_agent_id_hash_debug"
+    )]
+    pub id_hash_debug: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(
@@ -845,7 +877,7 @@ impl<'de> Deserialize<'de> for ProfileCellConfig {
         .to_owned();
         Ok(Self {
             id_hash: wire.id_hash,
-            id_hash_debug: None,
+            id_hash_debug: wire.id_hash_debug,
             enabled: wire.enabled,
             command,
             preflight: wire.preflight,
@@ -4997,6 +5029,7 @@ pub fn configuration_identity(command: &str, envs: &[CodingAgentEnv]) -> String 
 pub fn refresh_agent_id_hashes(agents: &mut [AgentConfig]) {
     for agent in agents {
         agent.id_hash = Some(configuration_identity(&agent.command, &agent.envs));
+        agent.id_hash_debug = None;
     }
 }
 
@@ -5017,6 +5050,7 @@ fn refresh_pair_id_hashes(agents: &[AgentConfig], profiles: &mut CodingAgentProf
         let agent = agents.iter().find(|agent| agent.id == *id);
         for cell in cells.values_mut() {
             cell.id_hash = agent.map(|agent| pair_identity(&agent.command, &agent.envs, cell));
+            cell.id_hash_debug = None;
         }
     }
 }
@@ -9192,6 +9226,7 @@ fn is_profile_gap(profiles: &CodingAgentProfilesConfig, id: &str) -> bool {
                     && cells.get("A").is_some_and(|cell| {
                         let mut content = cell.clone();
                         content.id_hash = None;
+                        content.id_hash_debug = None;
                         content == empty_profile_cell()
                     }))
         }
@@ -9393,7 +9428,7 @@ pub(crate) fn coding_agent_identity_projection_hash(
         if !ids.insert(id.to_string()) {
             return Err("coding_agent_identity_duplicate".to_string());
         }
-        for key in ["order", "name", "label", "color"] {
+        for key in ["order", "name", "label", "color", "id_hash_debug"] {
             object.remove(key);
         }
     }
@@ -9410,6 +9445,17 @@ pub(crate) fn coding_agent_identity_projection_hash(
         for slot in slots.values_mut() {
             if let Some(slot) = slot.as_object_mut() {
                 slot.remove("label");
+            }
+        }
+    }
+    if let Some(profiles) = projection
+        .get_mut("codingAgentProfiles")
+        .and_then(|profiles| profiles.get_mut("profilesByAgent"))
+        .and_then(Value::as_object_mut)
+    {
+        for cells in profiles.values_mut().filter_map(Value::as_object_mut) {
+            for cell in cells.values_mut().filter_map(Value::as_object_mut) {
+                cell.remove("id_hash_debug");
             }
         }
     }
@@ -15611,6 +15657,121 @@ mod tests {
         assert!(truncated);
         assert!(escaped.len() <= super::SETTINGS_LOCK_DEBUG_PATH_BYTES);
         assert!(serde_json::from_str::<String>(&escaped).is_ok());
+    }
+
+    #[test]
+    fn id_hash_debug_exclusions_preserve_real_content_and_clear_orphans() {
+        let agent: super::AgentConfig = serde_json::from_value(serde_json::json!({
+            "id":"alpha", "label":"Alpha", "baseCommand":"tool", "color":"red"
+        }))
+        .unwrap();
+        let mut supplied = agent.clone();
+        supplied.id_hash_debug = Some(vec!["forged".into()]);
+        assert!(super::known_agent_field("id_hash_debug"));
+        assert!(!super::known_agent_field("idHashDebug"));
+        assert_eq!(
+            super::comparable_agent(&agent),
+            super::comparable_agent(&supplied)
+        );
+        supplied.command.push_str(" --real");
+        assert_ne!(
+            super::comparable_agent(&agent),
+            super::comparable_agent(&supplied)
+        );
+
+        let mut profiles = super::CodingAgentProfilesConfig::default();
+        let mut cell = super::empty_profile_cell();
+        cell.id_hash = Some("stale".into());
+        cell.id_hash_debug = Some(vec!["stale".into()]);
+        profiles
+            .profiles_by_agent
+            .insert("orphan".into(), BTreeMap::from([("A".into(), cell)]));
+        assert!(super::is_profile_gap(&profiles, "orphan"));
+        profiles
+            .profiles_by_agent
+            .get_mut("orphan")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .notes = "real".into();
+        assert!(!super::is_profile_gap(&profiles, "orphan"));
+        super::refresh_pair_id_hashes(&[agent], &mut profiles);
+        let orphan = &profiles.profiles_by_agent["orphan"]["A"];
+        assert_eq!(orphan.id_hash, None);
+        assert_eq!(orphan.id_hash_debug, None);
+        assert_eq!(orphan.notes, "real");
+    }
+
+    #[test]
+    fn id_hash_debug_schema_tolerates_metadata_and_preserves_real_errors() {
+        let agent = serde_json::json!({
+            "id": "custom-tool", "label": "Custom", "baseCommand": "tool", "color": "red"
+        });
+        let cell = serde_json::json!({"additionalArguments": "--flag"});
+        for (is_agent, baseline) in [(true, agent), (false, cell)] {
+            let decode = |raw: serde_json::Value| {
+                if is_agent {
+                    serde_json::from_value::<super::AgentConfig>(raw).map(|value| {
+                        (
+                            value.id_hash_debug.clone(),
+                            serde_json::to_value(value).unwrap(),
+                        )
+                    })
+                } else {
+                    serde_json::from_value::<super::ProfileCellConfig>(raw).map(|value| {
+                        (
+                            value.id_hash_debug.clone(),
+                            serde_json::to_value(value).unwrap(),
+                        )
+                    })
+                }
+            };
+            let (debug, expected) = decode(baseline.clone()).unwrap();
+            assert_eq!(debug, None);
+            assert!(expected.get("id_hash_debug").is_none());
+            for raw in [
+                serde_json::json!(null),
+                serde_json::json!(42),
+                serde_json::json!(true),
+                serde_json::json!("wrong"),
+                serde_json::json!({}),
+                serde_json::json!(["valid", 42]),
+                serde_json::json!([null]),
+                serde_json::json!([[]]),
+            ] {
+                let mut supplied = baseline.clone();
+                supplied["id_hash_debug"] = raw;
+                assert_eq!(decode(supplied).unwrap(), (None, expected.clone()));
+            }
+            let mut camel = baseline.clone();
+            camel["idHashDebug"] = serde_json::json!(["ignored"]);
+            assert_eq!(decode(camel).unwrap(), (None, expected.clone()));
+            for leaves in [vec![], vec![""], vec![" Tool Ω ", "--Flag", "", "Tool"]] {
+                let mut supplied = baseline.clone();
+                supplied["id_hash_debug"] = serde_json::json!(leaves);
+                let expected_leaves: Vec<String> =
+                    leaves.iter().map(|value| (*value).into()).collect();
+                let mut expected_record = expected.clone();
+                expected_record["id_hash_debug"] = serde_json::json!(leaves);
+                let (debug, encoded) = decode(supplied).unwrap();
+                assert_eq!(debug, Some(expected_leaves));
+                assert_eq!(encoded, expected_record);
+                assert!(encoded.get("idHashDebug").is_none());
+                assert_eq!(decode(encoded.clone()).unwrap().1, encoded);
+            }
+            let command_key = if is_agent {
+                "baseCommand"
+            } else {
+                "additionalArguments"
+            };
+            let env_key = if is_agent { "envs" } else { "env" };
+            for key in [command_key, env_key] {
+                let mut invalid = baseline.clone();
+                invalid[key] = serde_json::json!(42);
+                invalid["id_hash_debug"] = serde_json::json!(["ok", false]);
+                assert!(decode(invalid).is_err(), "real field {key}");
+            }
+        }
     }
 
     #[test]
@@ -29599,10 +29760,26 @@ mod tests {
     fn id_hash_activation_three_loaders_derive_without_writes_or_backups() {
         for sidecar in [false, true] {
             let (temp, path) = hash_activation_seed(sidecar);
+            let physical = if sidecar {
+                b3_sidecar_path(temp.path())
+            } else {
+                path.clone()
+            };
+            let mut raw = serde_json::Value::Object(b3_object(&physical));
+            raw["agents"][0]["id_hash_debug"] = serde_json::json!(["old-base"]);
+            raw["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"] =
+                serde_json::json!(["old-pair"]);
+            b3_write(&physical, &raw);
             let before = hash_activation_files(temp.path());
             for (loader, settings) in b3_all_loaders(&path) {
                 assert_eq!(settings.agents[0].id, "alpha", "{loader}");
                 hash_activation_assert(&settings);
+                assert_eq!(settings.agents[0].id_hash_debug, None, "{loader}");
+                assert_eq!(
+                    settings.coding_agent_profiles.profiles_by_agent["alpha"]["A"].id_hash_debug,
+                    None,
+                    "{loader}"
+                );
                 assert_eq!(hash_activation_files(temp.path()), before, "{loader}");
             }
         }
@@ -32551,6 +32728,77 @@ mod derived_agent_binding_projection_tests {
             );
         }
         assert_eq!(bootstrap_identity_revision(&second).unwrap(), revision);
+    }
+
+    #[test]
+    fn derived_agent_id_binding_projection_ignores_only_exact_debug_locations() {
+        let mut settings = AppSettings::default();
+        let raw = serde_json::json!({
+            "agents": [{"id":"alpha", "baseCommand":"tool", "id_hash":"base-hash",
+                "unknownIdentity":{"id_hash_debug":["nested-agent"]}}],
+            "codingAgentProfiles":{"profilesByAgent":{"alpha":{"A":{
+                "additionalArguments":"--flag", "id_hash":"pair-hash",
+                "unknownIdentity":{"id_hash_debug":["nested-cell"]}
+            }}}}
+        });
+        settings.coding_agent_identity_physical = Some(Arc::new(raw.clone()));
+        let baseline = bootstrap_identity_revision(&settings).unwrap();
+        let binding = bootstrap_binding_revision(&settings, "alpha").unwrap();
+        // Mutate the same captured raw image directly, without a loader or disk rewrite.
+        for location in ["agent", "cell", "both"] {
+            for debug in [
+                serde_json::json!(["forged"]),
+                serde_json::json!([]),
+                serde_json::json!(["replacement", ""]),
+                serde_json::json!(false),
+                serde_json::json!(["mixed", 9]),
+                serde_json::json!(null),
+            ] {
+                let mut image = raw.clone();
+                if location != "cell" {
+                    image["agents"][0]["id_hash_debug"] = debug.clone();
+                }
+                if location != "agent" {
+                    image["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"] =
+                        debug;
+                }
+                let mut changed = settings.clone();
+                changed.coding_agent_identity_physical = Some(Arc::new(image));
+                assert_eq!(bootstrap_identity_revision(&changed).unwrap(), baseline);
+                assert_eq!(bootstrap_binding_revision(&changed, "alpha").unwrap(), binding);
+            }
+        }
+        for location in ["agent", "cell"] {
+            let command_key = if location == "agent" {
+                "baseCommand"
+            } else {
+                "additionalArguments"
+            };
+            for key in ["id_hash", command_key, "unknownIdentity"] {
+                let mut image = raw.clone();
+                let record = if location == "agent" {
+                    &mut image["agents"][0]
+                } else {
+                    &mut image["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]
+                };
+                record[key] = if key == "unknownIdentity" {
+                    serde_json::json!({"id_hash_debug":["nested-changed"]})
+                } else {
+                    serde_json::json!("changed")
+                };
+                let mut changed = settings.clone();
+                changed.coding_agent_identity_physical = Some(Arc::new(image));
+                assert_ne!(
+                    bootstrap_identity_revision(&changed).unwrap(),
+                    baseline,
+                    "{location}/{key}"
+                );
+            }
+        }
+        assert_eq!(
+            settings.coding_agent_identity_physical.as_ref().unwrap().as_ref(),
+            &raw
+        );
     }
 
     #[test]
