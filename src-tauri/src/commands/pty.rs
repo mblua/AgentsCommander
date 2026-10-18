@@ -2964,6 +2964,9 @@ mod tests {
             .expect("create second session")
         };
         let app = crate::test_support::test_builder()
+            .manage(crate::config::settings::new_settings_state(
+                crate::config::settings::AppSettings::default(),
+            ))
             .manage(session_mgr)
             .manage(crate::pty::input_activity::new_typing_hold_state())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

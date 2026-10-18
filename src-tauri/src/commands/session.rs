@@ -8145,17 +8145,17 @@ mod tests {
                 ),
             ));
         let store_dir = tempfile::TempDir::new().expect("create target-gate store");
+        let store_root = crate::path_utils::normalize_windows_verbatim_path_buf(
+            &std::fs::canonicalize(store_dir.path()).expect("canonicalize target-gate store"),
+        );
         let message_store = Arc::new(
             crate::api::message_store::MessageStore::open(
-                store_dir
-                    .path()
-                    .join(crate::api::message_store::DB_FILENAME),
+                store_root.join(crate::api::message_store::DB_FILENAME),
             )
             .expect("open target-gate store"),
         );
-        let target_gate_state = crate::api::message_store::PtyInputTargetGateState::for_root(
-            store_dir.path().to_path_buf(),
-        );
+        let target_gate_state =
+            crate::api::message_store::PtyInputTargetGateState::for_root(store_root);
         let mut builder = tauri::test::mock_builder()
             .manage(crate::config::settings::new_settings_state(settings))
             .manage(Arc::new(
