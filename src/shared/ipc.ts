@@ -1790,6 +1790,12 @@ export function onCodingAgentProfilesUpdated(
   return transport.listen<unknown>("coding_agent_profiles_updated", () => callback());
 }
 
+export function onRoomIdleConfirmationUpdated(
+  callback: () => void
+): Promise<UnlistenFn> {
+  return transport.listen<Record<string, never>>("room_idle_confirmation_updated", () => callback());
+}
+
 export function onCodingAgentSettingsUpdated(
   callback: (payload: { op: string; agentId: string | null }) => void
 ): Promise<UnlistenFn> {

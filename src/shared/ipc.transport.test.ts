@@ -9,6 +9,41 @@ import type {
 } from "./types";
 
 describe("shared ipc transport seam", () => {
+  it("preserves room idle confirmation through actual get/saveDraft/update envelopes", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const snapshot = settingsSnapshot({ roomIdleConfirmationSeconds: 37 });
+    fake.resolve("get_settings", snapshot);
+    fake.resolve("save_settings_draft", undefined);
+    fake.resolve("update_settings", undefined);
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      const result = await ipc.SettingsAPI.get();
+      expect(result.roomIdleConfirmationSeconds).toBe(37);
+      expect(fake.lastCall("get_settings")?.args).toEqual({});
+      await ipc.SettingsAPI.saveDraft(result);
+      await ipc.SettingsAPI.update(result);
+      expect(fake.lastCall("save_settings_draft")?.args).toMatchObject({ draft: { roomIdleConfirmationSeconds: 37 } });
+      expect(fake.lastCall("update_settings")?.args).toMatchObject({ newSettings: { roomIdleConfirmationSeconds: 37 } });
+    } finally { restore(); }
+  });
+
+  it("subscribes to the empty room invalidation and unlistens", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const restore = ipc.__setTransportForTests(fake);
+    const callback = vi.fn();
+    try {
+      const off = await ipc.onRoomIdleConfirmationUpdated(callback);
+      expect(fake.listensFor("room_idle_confirmation_updated")).toHaveLength(1);
+      fake.emitFromBackend("room_idle_confirmation_updated", {});
+      expect(callback).toHaveBeenCalledExactlyOnceWith();
+      off();
+      fake.emitFromBackend("room_idle_confirmation_updated", {});
+      expect(callback).toHaveBeenCalledTimes(1);
+    } finally { restore(); }
+  });
+
   it("serializes the exact rail diagnostic envelope and propagates the transport result", async () => {
     const ipc = await import("./ipc");
     const fake = new FakeTransport();
