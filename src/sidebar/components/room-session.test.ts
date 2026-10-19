@@ -211,13 +211,13 @@ describe("room-session working predicates", () => {
       [ciRepoPath("wg-3-docs-team"), "running"],
     ]);
 
-    expect(roomIsActive(workingRoom)).toBe(true);
-    expect(roomIsActive(ciRoom)).toBe(true);
-    expect(roomIsActive(bothRoom)).toBe(true);
-    expect(roomIsActive(idleRoom)).toBe(false);
+    expect(roomIsActive(projectPath, workingRoom)).toBe(true);
+    expect(roomIsActive(projectPath, ciRoom)).toBe(true);
+    expect(roomIsActive(projectPath, bothRoom)).toBe(true);
+    expect(roomIsActive(projectPath, idleRoom)).toBe(false);
 
     const rooms = [workingRoom, ciRoom, bothRoom, idleRoom];
-    const split = splitRoomsByActive(rooms);
+    const split = splitRoomsByActive(projectPath, rooms);
     expect(split.active.length + split.notActive.length).toBe(rooms.length);
     expect(split.active.map((group) => group.name)).toEqual([
       "wg-1-dev-team",

@@ -24,7 +24,7 @@ export function buildSnapshot(): NonStopReport[] {
     // #2202 - a room whose repo is running CI is working: alerting about it would
     // be a false alarm. `NonStopReport`'s field names and the Rust consumer are
     // unchanged.
-    const { active, notActive } = splitRoomsByActive(members);
+    const { active, notActive } = splitRoomsByActive(project.path, members);
     const working = active.length;
     reports.push({
       projectPath: project.path,
