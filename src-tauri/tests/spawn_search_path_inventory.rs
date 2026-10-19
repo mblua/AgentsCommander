@@ -160,9 +160,9 @@ const INVENTORY: &[Row] = &[
     ),
     (
         "src-tauri/src/commands/config.rs",
-        2,
+        3,
         0,
-        &[(DesktopOpener, 1), (TestOnly, 1)],
+        &[(DesktopOpener, 1), (TestOnly, 2)],
     ),
     (
         "src-tauri/src/commands/entity_creation.rs",
@@ -308,6 +308,7 @@ const INVENTORY: &[Row] = &[
         0,
         &[(TestOnly, 2)],
     ),
+    ("src-tauri/src/web/commands.rs", 1, 0, &[(TestOnly, 1)]),
 ];
 
 const NEEDLES: &[&str] = &[
