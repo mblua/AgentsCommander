@@ -9300,6 +9300,207 @@ fn restore_codex_home_carrier(out: &mut Map<String, Value>, base_profiles: Optio
     }
 }
 
+fn validate_registered_overlay_profile_edits(
+    settings: &AppSettings,
+    profile_before: &Value,
+    physical_sidecar: &Option<Map<String, Value>>,
+    initial_disk: &Option<Map<String, Value>>,
+) -> Result<(), String> {
+    // Overlay edits must use their physical owner, never the base publisher.
+    if let Some(raw) = &settings.coding_agent_identity_physical {
+        if let Ok(mut previous) = project_physical_profiles(profile_before, true) {
+            if let Some(rows) = physical_sidecar
+                .as_ref()
+                .and_then(|map| map.get("agents"))
+                .or_else(|| initial_disk.as_ref().and_then(|map| map.get("agents")))
+            {
+                previous["agents"] = rows.clone();
+            }
+            if let (Some(effective), Some(base)) = (raw.as_object(), previous.as_object_mut()) {
+                settings.local_overlay_state.reapply_from(effective, base);
+            }
+            let mut previous_agents: Vec<AgentConfig> = previous
+                .get("agents")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            finalize_agent_order(&mut previous_agents);
+            refresh_agent_id_hashes(&mut previous_agents);
+            let mut previous_profiles: CodingAgentProfilesConfig = previous
+                .get("codingAgentProfiles")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            refresh_pair_id_hashes(&previous_agents, &mut previous_profiles);
+            for key in AGENTS_INSTANCE_KEYS {
+                if settings.local_overlay_state.owns_top_level(key) {
+                    let changed = if key == "agents" {
+                        let previous = previous_agents
+                            .iter()
+                            .map(comparable_agent)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let incoming = settings
+                            .agents
+                            .iter()
+                            .map(comparable_agent)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        previous != incoming
+                    } else {
+                        let strip_metadata = |mut profiles: CodingAgentProfilesConfig| {
+                            for cell in profiles
+                                .profiles_by_agent
+                                .values_mut()
+                                .flat_map(|cells| cells.values_mut())
+                            {
+                                cell.id_hash = None;
+                                cell.id_hash_debug = None;
+                            }
+                            profiles.identity_by_agent.clear();
+                            profiles
+                        };
+                        strip_metadata(previous_profiles.clone())
+                            != strip_metadata(settings.coding_agent_profiles.clone())
+                    };
+                    if changed {
+                        return Err(format!("overlayOwnedProfileGroup: {key}"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn retain_unknown_registered_agent_fields(
+    profile_before: &Value,
+    profile_incoming: &mut Value,
+) -> Result<(), String> {
+    // The raw physical row retains fields unknown to AgentConfig.
+    let prior_rows = raw_entries(profile_before, "id");
+    if let Some(rows) = profile_incoming
+        .get_mut("agents")
+        .and_then(Value::as_array_mut)
+    {
+        for row in rows {
+            let Some(id) = row.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(prior) = prior_rows.get(id).and_then(Value::as_object) else {
+                continue;
+            };
+            let typed: AgentConfig =
+                serde_json::from_value(Value::Object(prior.clone())).map_err(|e| e.to_string())?;
+            let known = serde_json::to_value(typed).map_err(|e| e.to_string())?;
+            if let Some(object) = row.as_object_mut() {
+                for (key, value) in prior {
+                    if !known.as_object().unwrap().contains_key(key) && key != "command" {
+                        object.entry(key.clone()).or_insert_with(|| value.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn prepare_registered_profile_owner(
+    settings: &AppSettings,
+    path: &Path,
+    profile_before: &Value,
+    profile_incoming: &Value,
+    profiles_in_sidecar: bool,
+    startup: Option<&StartupAgentRows>,
+) -> Result<Option<Value>, String> {
+    let prepared_profiles = if settings
+        .local_overlay_state
+        .owns_top_level("codingAgentProfiles")
+    {
+        None
+    } else {
+        let owner_path = if profiles_in_sidecar {
+            agents_instance_path(path)
+        } else {
+            path.to_path_buf()
+        };
+        let prepared = if physical_profile_rows(profile_before, true).is_err() {
+            // Preserve the pre-existing lenient row view without converting an
+            // ambiguous ID map. Profile edits still need an unambiguous BASE.
+            let normalize = |mut profiles: CodingAgentProfilesConfig| {
+                repair_coding_agent_profiles_config(&mut profiles, &settings.agents);
+                profiles.identity_by_agent.clear();
+                for cell in profiles
+                    .profiles_by_agent
+                    .values_mut()
+                    .flat_map(|cells| cells.values_mut())
+                {
+                    cell.id_hash = None;
+                    cell.id_hash_debug = None;
+                }
+                profiles
+            };
+            let previous: CodingAgentProfilesConfig = profile_before
+                .get("codingAgentProfiles")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            if normalize(previous) != normalize(settings.coding_agent_profiles.clone()) {
+                return Err("ambiguousProfileConversion".into());
+            }
+            let mut retained = profile_incoming.clone();
+            retain_configuration_commands_with_startup(
+                &mut retained,
+                profile_before,
+                "id",
+                false,
+                true,
+                false,
+                startup,
+            )?;
+            match profile_before.get("codingAgentProfiles") {
+                Some(profiles) => retained["codingAgentProfiles"] = profiles.clone(),
+                None => {
+                    retained
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("codingAgentProfiles");
+                }
+            }
+            retained
+        } else {
+            canonical_profile_source(profile_before, profile_incoming, true)
+                .map_err(|reason| format!("{}: {reason}", owner_path.display()))?
+        };
+        Some(prepared)
+    };
+    Ok(prepared_profiles)
+}
+
+fn refresh_registered_agent_row_metadata(target: &mut Map<String, Value>) -> Result<(), String> {
+    if let Some(rows) = target.get_mut("agents") {
+        let agents: Vec<AgentConfig> =
+            serde_json::from_value(rows.clone()).map_err(|error| error.to_string())?;
+        for (raw, agent) in rows.as_array_mut().into_iter().flatten().zip(agents) {
+            if let Some(object) = raw.as_object_mut() {
+                object.insert(
+                    "id_hash".to_string(),
+                    Value::String(configuration_identity(&agent.command, &agent.envs)),
+                );
+                object.insert(
+                    "id_hash_debug".into(),
+                    serde_json::json!(configuration_identity_debug(&agent.command, &agent.envs)),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// #2716 (B3) - the agents-file half of a save, run under the settings lock before
 /// the settings file is written. Returns the groups the agents file now holds, which
 /// are exactly the keys the caller may strip from `out`. `Reconcile` never writes the
@@ -9433,25 +9634,7 @@ fn save_agents_instance_file(
     // Decode the final physical rows, but update only their raw metadata property.
     // Retained overlay-owned groups have no new backfill or validation authority.
     if editable_agents {
-        if let Some(rows) = target.get_mut("agents") {
-            let agents: Vec<AgentConfig> = serde_json::from_value(rows.clone())
-                .map_err(|error| rejected(error.to_string()))?;
-            for (raw, agent) in rows.as_array_mut().into_iter().flatten().zip(agents) {
-                if let Some(object) = raw.as_object_mut() {
-                    object.insert(
-                        "id_hash".to_string(),
-                        Value::String(configuration_identity(&agent.command, &agent.envs)),
-                    );
-                    object.insert(
-                        "id_hash_debug".into(),
-                        serde_json::json!(configuration_identity_debug(
-                            &agent.command,
-                            &agent.envs
-                        )),
-                    );
-                }
-            }
-        }
+        refresh_registered_agent_row_metadata(&mut target).map_err(&rejected)?;
     }
     if editable_profiles {
         // A present empty physical agents array is authoritative. Never substitute
@@ -14807,74 +14990,13 @@ fn save_settings_value_locked_with_startup(
     });
     let mut profile_incoming =
         serde_json::to_value(settings).map_err(|e| reject_profiles(e.to_string()))?;
-    // Overlay edits must use their physical owner, never the base publisher.
-    if let Some(raw) = &settings.coding_agent_identity_physical {
-        if let Ok(mut previous) = project_physical_profiles(&profile_before, true) {
-            if let Some(rows) = physical_sidecar
-                .as_ref()
-                .and_then(|map| map.get("agents"))
-                .or_else(|| initial_disk.as_ref().and_then(|map| map.get("agents")))
-            {
-                previous["agents"] = rows.clone();
-            }
-            if let (Some(effective), Some(base)) = (raw.as_object(), previous.as_object_mut()) {
-                settings.local_overlay_state.reapply_from(effective, base);
-            }
-            let mut previous_agents: Vec<AgentConfig> = previous
-                .get("agents")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|e| reject_profiles(e.to_string()))?
-                .unwrap_or_default();
-            finalize_agent_order(&mut previous_agents);
-            refresh_agent_id_hashes(&mut previous_agents);
-            let mut previous_profiles: CodingAgentProfilesConfig = previous
-                .get("codingAgentProfiles")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|e| reject_profiles(e.to_string()))?
-                .unwrap_or_default();
-            refresh_pair_id_hashes(&previous_agents, &mut previous_profiles);
-            for key in AGENTS_INSTANCE_KEYS {
-                if settings.local_overlay_state.owns_top_level(key) {
-                    let changed = if key == "agents" {
-                        let previous = previous_agents
-                            .iter()
-                            .map(comparable_agent)
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(&reject_profiles)?;
-                        let incoming = settings
-                            .agents
-                            .iter()
-                            .map(comparable_agent)
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(&reject_profiles)?;
-                        previous != incoming
-                    } else {
-                        let strip_metadata = |mut profiles: CodingAgentProfilesConfig| {
-                            for cell in profiles
-                                .profiles_by_agent
-                                .values_mut()
-                                .flat_map(|cells| cells.values_mut())
-                            {
-                                cell.id_hash = None;
-                                cell.id_hash_debug = None;
-                            }
-                            profiles.identity_by_agent.clear();
-                            profiles
-                        };
-                        strip_metadata(previous_profiles.clone())
-                            != strip_metadata(settings.coding_agent_profiles.clone())
-                    };
-                    if changed {
-                        return Err(reject_profiles(format!("overlayOwnedProfileGroup: {key}")));
-                    }
-                }
-            }
-        }
-    }
+    validate_registered_overlay_profile_edits(
+        settings,
+        &profile_before,
+        &physical_sidecar,
+        &initial_disk,
+    )
+    .map_err(&reject_profiles)?;
     settings
         .local_overlay_state
         .restore_base(profile_incoming.as_object_mut().unwrap());
@@ -14897,95 +15019,17 @@ fn save_settings_value_locked_with_startup(
             }
         }
     }
-    // The raw physical row retains fields unknown to AgentConfig.
-    let prior_rows = raw_entries(&profile_before, "id");
-    if let Some(rows) = profile_incoming
-        .get_mut("agents")
-        .and_then(Value::as_array_mut)
-    {
-        for row in rows {
-            let Some(id) = row.get("id").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(prior) = prior_rows.get(id).and_then(Value::as_object) else {
-                continue;
-            };
-            let typed: AgentConfig = serde_json::from_value(Value::Object(prior.clone()))
-                .map_err(|e| reject_profiles(e.to_string()))?;
-            let known = serde_json::to_value(typed).map_err(|e| reject_profiles(e.to_string()))?;
-            if let Some(object) = row.as_object_mut() {
-                for (key, value) in prior {
-                    if !known.as_object().unwrap().contains_key(key) && key != "command" {
-                        object.entry(key.clone()).or_insert_with(|| value.clone());
-                    }
-                }
-            }
-        }
-    }
-    let prepared_profiles = if settings
-        .local_overlay_state
-        .owns_top_level("codingAgentProfiles")
-    {
-        None
-    } else {
-        let owner_path = if profiles_in_sidecar {
-            agents_instance_path(path)
-        } else {
-            path.to_path_buf()
-        };
-        let prepared = if physical_profile_rows(&profile_before, true).is_err() {
-            // Preserve the pre-existing lenient row view without converting an
-            // ambiguous ID map. Profile edits still need an unambiguous BASE.
-            let normalize = |mut profiles: CodingAgentProfilesConfig| {
-                repair_coding_agent_profiles_config(&mut profiles, &settings.agents);
-                profiles.identity_by_agent.clear();
-                for cell in profiles
-                    .profiles_by_agent
-                    .values_mut()
-                    .flat_map(|cells| cells.values_mut())
-                {
-                    cell.id_hash = None;
-                    cell.id_hash_debug = None;
-                }
-                profiles
-            };
-            let previous: CodingAgentProfilesConfig = profile_before
-                .get("codingAgentProfiles")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|e| reject_profiles(e.to_string()))?
-                .unwrap_or_default();
-            if normalize(previous) != normalize(settings.coding_agent_profiles.clone()) {
-                return Err(reject_profiles("ambiguousProfileConversion".into()));
-            }
-            let mut retained = profile_incoming.clone();
-            retain_configuration_commands_with_startup(
-                &mut retained,
-                &profile_before,
-                "id",
-                false,
-                true,
-                false,
-                startup,
-            )
-            .map_err(&reject_profiles)?;
-            match profile_before.get("codingAgentProfiles") {
-                Some(profiles) => retained["codingAgentProfiles"] = profiles.clone(),
-                None => {
-                    retained
-                        .as_object_mut()
-                        .unwrap()
-                        .remove("codingAgentProfiles");
-                }
-            }
-            retained
-        } else {
-            canonical_profile_source(&profile_before, &profile_incoming, true)
-                .map_err(|reason| reject_profiles(format!("{}: {reason}", owner_path.display())))?
-        };
-        Some(prepared)
-    };
+    retain_unknown_registered_agent_fields(&profile_before, &mut profile_incoming)
+        .map_err(&reject_profiles)?;
+    let prepared_profiles = prepare_registered_profile_owner(
+        settings,
+        path,
+        &profile_before,
+        &profile_incoming,
+        profiles_in_sidecar,
+        startup,
+    )
+    .map_err(&reject_profiles)?;
     if let Some(prepared) = &prepared_profiles {
         validate_physical_identity_delta(
             profile_before.as_object().unwrap(),
