@@ -14971,7 +14971,10 @@ fn save_settings_value_locked_with_startup(
             match profile_before.get("codingAgentProfiles") {
                 Some(profiles) => retained["codingAgentProfiles"] = profiles.clone(),
                 None => {
-                    retained.as_object_mut().unwrap().remove("codingAgentProfiles");
+                    retained
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("codingAgentProfiles");
                 }
             }
             retained
@@ -32758,10 +32761,29 @@ mod tests {
         let written =
             super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
         assert_eq!(written.agents[0].id_hash, written.agents[1].id_hash);
-        assert_eq!(
-            written.coding_agent_profiles.profiles_by_agent["alpha"],
-            written.coding_agent_profiles.profiles_by_agent["beta"]
-        );
+        // Sharing compares payloads, while debug metadata keeps each physical
+        // row's original command/env strings. Pair hashes still compare equal.
+        let payload = |id: &str| {
+            let agent = written.agents.iter().find(|agent| agent.id == id).unwrap();
+            let mut cells = written.coding_agent_profiles.profiles_by_agent[id].clone();
+            for cell in cells.values_mut() {
+                assert_eq!(
+                    cell.id_hash,
+                    Some(super::pair_identity(&agent.command, &agent.envs, cell))
+                );
+                assert_eq!(
+                    cell.id_hash_debug,
+                    Some(super::pair_identity_debug(
+                        &agent.command,
+                        &agent.envs,
+                        cell
+                    ))
+                );
+                cell.id_hash_debug = None;
+            }
+            cells
+        };
+        assert_eq!(payload("alpha"), payload("beta"));
         let (other_temp, other_path) = hash_activation_seed(true);
         let other_before = hash_activation_files(other_temp.path());
         let other = super::load_settings_for_cli_strict_from_path(Some(&other_path)).unwrap();
@@ -37294,10 +37316,25 @@ mod e2432_profile_storage_tests {
         assert!(saved["codingAgentProfiles"]
             .get("profilesByAgent")
             .is_none());
-        assert_eq!(
-            written.coding_agent_profiles.profiles_by_agent["one"],
-            written.coding_agent_profiles.profiles_by_agent["two"]
-        );
+        // Equal BASE shares every payload field; each alias still reports the
+        // exact original row strings in its recomputed diagnostic metadata.
+        let payload = |id: &str| {
+            let agent = written.agents.iter().find(|agent| agent.id == id).unwrap();
+            let mut cells = written.coding_agent_profiles.profiles_by_agent[id].clone();
+            for cell in cells.values_mut() {
+                assert_eq!(
+                    cell.id_hash,
+                    Some(pair_identity(&agent.command, &agent.envs, cell))
+                );
+                assert_eq!(
+                    cell.id_hash_debug,
+                    Some(pair_identity_debug(&agent.command, &agent.envs, cell))
+                );
+                cell.id_hash_debug = None;
+            }
+            cells
+        };
+        assert_eq!(payload("one"), payload("two"));
     }
 
     #[test]
@@ -37353,8 +37390,18 @@ mod e2432_profile_storage_tests {
                 raw["agents"][0]["baseCommand"] = if kind == "empty-command" {
                     json!("")
                 } else {
-                    json!("tool\ninvalid")
+                    json!("claude --continue")
                 };
+            }
+            if kind == "invalid-command" {
+                let command = raw["agents"][0]["baseCommand"].as_str().unwrap();
+                assert!(validate_agent_command_text("fixture negative control", command).is_err());
+                // Newlines are token separators in the existing command parser,
+                // so they cannot stand in for a rejected command.
+                assert!(
+                    validate_agent_command_text("fixture positive control", "tool\ninvalid")
+                        .is_ok()
+                );
             }
             write_source(&path, &raw);
             let mut main: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -37371,7 +37418,11 @@ mod e2432_profile_storage_tests {
             let context = SourceReadContext::from_settings(&loaded, &path).unwrap();
             let selected = context.source(SourceKind::RegisteredInstance);
             let snapshot = read_source_snapshot(&context, &selected).unwrap();
-            assert_eq!(snapshot.snapshot.availability, SourceAvailability::Invalid);
+            assert_eq!(
+                snapshot.snapshot.availability,
+                SourceAvailability::Invalid,
+                "{kind}"
+            );
             assert!(!snapshot.snapshot.capabilities.editable_save);
             assert!(!snapshot.snapshot.capabilities.available_read);
             assert!(snapshot.snapshot.agents.is_empty());
@@ -37407,9 +37458,13 @@ mod e2432_profile_storage_tests {
             let token = startup.root_token.as_ref().unwrap();
             let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(persisted["rootToken"], token.as_str());
-            assert_eq!(load_settings_from_path(&path).root_token, startup.root_token);
+            assert_eq!(
+                load_settings_from_path(&path).root_token,
+                startup.root_token
+            );
             let saved: Value =
-                serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+                serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap())
+                    .unwrap();
             assert_eq!(saved["codingAgentProfiles"], raw["codingAgentProfiles"]);
             assert!(saved["codingAgentProfiles"]
                 .get("profileBindingVersion")

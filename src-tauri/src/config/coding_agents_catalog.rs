@@ -13642,7 +13642,8 @@ mod e2432_catalog_profile_tests {
         )?;
         prepared.revalidate_before_write(&context)?;
         let path = local_catalog_path(&Path::new(&settings.project_paths[0]).join(".ac"));
-        crate::config::local_config_io::write_file_atomic(&path, &prepared.serialized_after).unwrap();
+        crate::config::local_config_io::write_file_atomic(&path, &prepared.serialized_after)
+            .unwrap();
         Ok(serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap())
     }
 
@@ -13712,15 +13713,17 @@ mod e2432_catalog_profile_tests {
             stale["profileLabels"] = json!({"own":{"B":"stale"}});
             std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
             let stale_view = storage::project_physical_profiles(&stale, false).unwrap();
-            assert_eq!(stale_view["codingAgentProfiles"]["own"]["B"]["notes"], "notes");
+            assert_eq!(
+                stale_view["codingAgentProfiles"]["own"]["B"]["notes"],
+                "notes"
+            );
             let cleaned = save_catalog(&settings, &settings_path, &stale_view).unwrap();
             assert_eq!(cleaned, saved);
             if schema == 1 {
                 let layer =
                     parse_local_layer(&std::fs::read(&path).unwrap(), LayerDescription::Local)
                         .unwrap();
-                let ordinary =
-                    compose_local_layer(&[], &layer, LayerDescription::Local).unwrap();
+                let ordinary = compose_local_layer(&[], &layer, LayerDescription::Local).unwrap();
                 assert_eq!(ordinary[0].command, "tool");
             } else {
                 let decoded = parse_catalog_schema2(&serde_json::to_vec(&saved).unwrap()).unwrap();
@@ -13787,7 +13790,10 @@ mod e2432_catalog_profile_tests {
             row["baseCommand"] = json!("recreated-tool");
             recreated["agents"].as_array_mut().unwrap().push(row);
             let recreated = save_catalog(&settings, &settings_path, &recreated).unwrap();
-            assert_eq!(recreated["legacyProfileOrphans"], saved["legacyProfileOrphans"]);
+            assert_eq!(
+                recreated["legacyProfileOrphans"],
+                saved["legacyProfileOrphans"]
+            );
             let reloaded = storage::project_physical_profiles(&recreated, false).unwrap();
             assert!(reloaded["codingAgentProfiles"]["lost"].get("B").is_none());
             assert!(reloaded["profileLabels"]["lost"]
@@ -13820,8 +13826,7 @@ mod e2432_catalog_profile_tests {
             ] {
                 let raw = format!(r#"{{"schemaVersion":{schema},"agents":[],{duplicate}}}"#);
                 std::fs::write(&path, raw.as_bytes()).unwrap();
-                let error =
-                    parse_local_layer(raw.as_bytes(), LayerDescription::Local).unwrap_err();
+                let error = parse_local_layer(raw.as_bytes(), LayerDescription::Local).unwrap_err();
                 assert!(error.contains("duplicate JSON object member"));
                 if schema == 2 {
                     assert!(parse_catalog_schema2(raw.as_bytes())
@@ -13831,9 +13836,10 @@ mod e2432_catalog_profile_tests {
                 }
                 let report = load_catalog_report(&ac);
                 assert_eq!(report.catalog.len(), 1);
-                assert!(report.warnings.iter().any(|warning| warning
-                    .reason
-                    .contains("duplicate JSON object member")));
+                assert!(report
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.reason.contains("duplicate JSON object member")));
                 let context =
                     storage::SourceReadContext::from_settings(&settings, &settings_path).unwrap();
                 let selected = storage::list_active_sources(&context)
@@ -13872,9 +13878,11 @@ mod e2432_catalog_profile_tests {
             serde_json::from_value(source(1)["agents"][0].clone()).unwrap(),
             serde_json::from_value(donor).unwrap(),
         ];
-        let complete = |key: &str, command: &str| json!({
-            "key":key,"label":key,"description":"own","color":"#123456","baseCommand":command
-        });
+        let complete = |key: &str, command: &str| {
+            json!({
+                "key":key,"label":key,"description":"own","color":"#123456","baseCommand":command
+            })
+        };
         let project = json!({"schemaVersion":2,"agents":[
             complete("project", "project-tool"), complete("replace", "project-replacement")
         ]});
