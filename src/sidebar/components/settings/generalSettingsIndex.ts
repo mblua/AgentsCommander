@@ -41,6 +41,7 @@ export const GENERAL_SETTINGS_INDEX: GeneralSettingEntry[] = [
   { key: "responseCloseIdleSeconds", category: "terminal", section: "Response close", label: "Idle seconds after response", keywords: "coordinator delay inactivity" },
   { key: "terminalSnapshotsEnabled", category: "terminal", section: "Terminal snapshots", label: "Allow authorized terminal snapshots", keywords: "capture screen json png" },
   // Agents
+  { key: "roomIdleConfirmationSeconds", category: "agents", section: "Room activity", label: "Idle confirmation delay (seconds)", keywords: "room indicators Non-stop completion alerts inactivity" },
   { key: "restoreCoordinatorWakeState", category: "agents", section: "On app restart", label: "On start, wake orchestrators that were awake when the app closed", keywords: "resume restore startup" },
   { key: "restartResumeWakeWorkingAgents", category: "agents", section: "On app restart", label: "On start, wake agent replicas that were working when the app closed", keywords: "resume restore startup" },
   { key: "restartResumeOrchestratorPrompt", category: "agents", section: "On app restart", label: "Type into orchestrators that were working", keywords: "resume prompt text startup" },

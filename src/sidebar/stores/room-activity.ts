@@ -1,10 +1,11 @@
 import { createEffect, createRoot, createSignal, untrack } from "solid-js";
+import { settingsStore } from "../../shared/stores/settings";
 import type { AcWorkgroup } from "../../shared/types";
 import { projectStore } from "./project";
 import { normalizeProjectPathForCompare } from "./project-refresh";
 import { roomIsRawActive } from "../components/room-session-source";
 
-export const ROOM_IDLE_CONFIRMATION_MS = 15000;
+const ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT = 15;
 
 export function roomActivityKey(projectPath: string, roomPath: string): string | null {
   if (!projectPath.trim() || !roomPath.trim()) return null;
@@ -105,7 +106,8 @@ function sample(): void {
         entry.lastRaw = true;
       } else if (entry.lastRaw) {
         entry.lastRaw = false;
-        entry.deadline = performance.now() + ROOM_IDLE_CONFIRMATION_MS;
+        const seconds = settingsStore.current?.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT;
+        entry.deadline = performance.now() + seconds * 1000;
         entry.generation++;
         schedule(key, entry);
       }
