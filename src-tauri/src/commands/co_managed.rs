@@ -56,7 +56,10 @@ async fn canonical_room_root<R: tauri::Runtime>(
 
     let project_paths = {
         let settings = app.state::<SettingsState>();
-        let guard = settings.read().await;
+        let guard = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
         guard.project_paths.clone()
     };
     let candidates =

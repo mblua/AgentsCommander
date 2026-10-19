@@ -21,7 +21,10 @@ pub async fn get_resource_snapshot(
     monitor: State<'_, Arc<ResourceMonitorState>>,
     settings: State<'_, SettingsState>,
 ) -> Result<ResourceSnapshot, String> {
-    let cfg = settings.read().await.clone();
+    let cfg = settings
+        .current_snapshot()
+        .await
+        .map_err(|error| error.to_string())?;
     let limits = ResourceLimits::from(&cfg);
     let monitor = Arc::clone(&monitor);
     tokio::task::spawn_blocking(move || monitor.snapshot(limits))
