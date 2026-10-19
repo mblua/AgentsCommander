@@ -1560,8 +1560,7 @@ mod tests {
     #[test]
     fn single_editor_inactive_gate() {
         use crate::config::settings::{
-            source_transition_effect_counts, SourceReadContext,
-            SourceRevision,
+            source_transition_effect_counts, SourceReadContext, SourceRevision,
         };
         let root = crate::config::settings::source_transition_test_root();
         let project = root.path().join("project");

@@ -9993,13 +9993,20 @@ mod tests {
                 } else {
                     let physical = disk(&physical_path);
                     let codex: crate::config::settings::AgentConfig = serde_json::from_value(
-                        physical["agents"].as_array().unwrap().iter()
-                            .find(|row| row["id"] == "codex").unwrap().clone(),
-                    ).unwrap();
+                        physical["agents"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|row| row["id"] == "codex")
+                            .unwrap()
+                            .clone(),
+                    )
+                    .unwrap();
                     assert_eq!(codex.command, "codex");
                     assert!(codex.envs.is_empty());
                     let hash = crate::config::settings::configuration_identity(
-                        &codex.command, &codex.envs,
+                        &codex.command,
+                        &codex.envs,
                     );
                     let cell = &profiles["profilesByBaseHash"][&hash]["A"];
                     assert_eq!(cell["additionalArguments"], json!("codex --edited"));
@@ -10015,8 +10022,10 @@ mod tests {
                         profiles["profilesByAgent"].get("scratch-agent"),
                         expected_raw["profilesByAgent"].get("scratch-agent")
                     );
-                    assert!(saved.coding_agent_profiles.profiles_by_agent["scratch-agent"]
-                        .contains_key("A"));
+                    assert!(
+                        saved.coding_agent_profiles.profiles_by_agent["scratch-agent"]
+                            .contains_key("A")
+                    );
                 } else {
                     let scratch_hash =
                         crate::config::settings::configuration_identity("scratch-agent", &[]);
@@ -10029,8 +10038,12 @@ mod tests {
                     }
                 }
                 assert_eq!(
-                    profiles.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent")),
-                    expected_raw.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent"))
+                    profiles
+                        .get("legacyProfileOrphans")
+                        .and_then(|rows| rows.get("scratch-agent")),
+                    expected_raw
+                        .get("legacyProfileOrphans")
+                        .and_then(|rows| rows.get("scratch-agent"))
                 );
                 assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay_before);
                 let expected_command = if protected { "codex" } else { "codex --edited" };
@@ -10133,13 +10146,20 @@ mod tests {
                 } else {
                     let physical = disk(&physical_path);
                     let codex: crate::config::settings::AgentConfig = serde_json::from_value(
-                        physical["agents"].as_array().unwrap().iter()
-                            .find(|row| row["id"] == "codex").unwrap().clone(),
-                    ).unwrap();
+                        physical["agents"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|row| row["id"] == "codex")
+                            .unwrap()
+                            .clone(),
+                    )
+                    .unwrap();
                     assert_eq!(codex.command, "codex");
                     assert!(codex.envs.is_empty());
                     let hash = crate::config::settings::configuration_identity(
-                        &codex.command, &codex.envs,
+                        &codex.command,
+                        &codex.envs,
                     );
                     let cell = &profiles["profilesByBaseHash"][&hash]["A"];
                     assert_eq!(cell["additionalArguments"], json!("codex --edited"));
@@ -10155,8 +10175,10 @@ mod tests {
                         profiles["profilesByAgent"].get("scratch-agent"),
                         expected_raw["profilesByAgent"].get("scratch-agent")
                     );
-                    assert!(saved.coding_agent_profiles.profiles_by_agent["scratch-agent"]
-                        .contains_key("A"));
+                    assert!(
+                        saved.coding_agent_profiles.profiles_by_agent["scratch-agent"]
+                            .contains_key("A")
+                    );
                 } else {
                     let scratch_hash =
                         crate::config::settings::configuration_identity("scratch-agent", &[]);
@@ -10169,8 +10191,12 @@ mod tests {
                     }
                 }
                 assert_eq!(
-                    profiles.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent")),
-                    expected_raw.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent"))
+                    profiles
+                        .get("legacyProfileOrphans")
+                        .and_then(|rows| rows.get("scratch-agent")),
+                    expected_raw
+                        .get("legacyProfileOrphans")
+                        .and_then(|rows| rows.get("scratch-agent"))
                 );
                 assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay_before);
                 let expected_command = if protected { "codex" } else { "codex --edited" };
@@ -10268,8 +10294,10 @@ mod tests {
                         profiles["profilesByAgent"].get("scratch-agent"),
                         expected_raw["profilesByAgent"].get("scratch-agent")
                     );
-                    assert!(saved.coding_agent_profiles.profiles_by_agent["scratch-agent"]
-                        .contains_key("A"));
+                    assert!(
+                        saved.coding_agent_profiles.profiles_by_agent["scratch-agent"]
+                            .contains_key("A")
+                    );
                 } else {
                     let scratch_hash =
                         crate::config::settings::configuration_identity("scratch-agent", &[]);
@@ -10282,8 +10310,12 @@ mod tests {
                     }
                 }
                 assert_eq!(
-                    profiles.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent")),
-                    expected_raw.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent"))
+                    profiles
+                        .get("legacyProfileOrphans")
+                        .and_then(|rows| rows.get("scratch-agent")),
+                    expected_raw
+                        .get("legacyProfileOrphans")
+                        .and_then(|rows| rows.get("scratch-agent"))
                 );
                 assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay_before);
                 assert_eq!(
