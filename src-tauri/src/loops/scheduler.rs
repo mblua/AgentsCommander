@@ -79,6 +79,8 @@ enum SchedulerContext {
     #[cfg(test)]
     Headless {
         owner: SettingsState,
+        // P43 preserves the six event arguments inline in this test-only recorder.
+        #[allow(clippy::type_complexity)]
         transitions: Arc<
             std::sync::Mutex<
                 Vec<(
