@@ -9466,6 +9466,10 @@ html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access-group {
   font-size: var(--font-size-sm);
 }
 
+.wizard-agent-project {
+  color: var(--sidebar-fg-dim);
+}
+
 .wizard-coord-label {
   display: flex;
   align-items: center;
