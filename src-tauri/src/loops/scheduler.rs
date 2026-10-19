@@ -79,14 +79,18 @@ enum SchedulerContext {
     #[cfg(test)]
     Headless {
         owner: SettingsState,
-        transitions: Arc<std::sync::Mutex<Vec<(
-            PathBuf,
-            PathBuf,
-            String,
-            String,
-            Option<crate::config::loops::AcLoopSummary>,
-            Option<String>,
-        )>>>,
+        transitions: Arc<
+            std::sync::Mutex<
+                Vec<(
+                    PathBuf,
+                    PathBuf,
+                    String,
+                    String,
+                    Option<crate::config::loops::AcLoopSummary>,
+                    Option<String>,
+                )>,
+            >,
+        >,
     },
 }
 
@@ -1528,7 +1532,9 @@ mod tests {
             .expect("scan_once body");
         assert!(scan.contains("active_project_candidates_for_owner(&owner).await"));
         let wrapper = production
-            .split("async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {")
+            .split(
+                "async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {",
+            )
             .nth(1)
             .expect("active_project_candidates definition")
             .split("async fn active_project_candidates_for_owner(")
