@@ -3551,6 +3551,75 @@ macro_rules! response_diag_result {
     }};
 }
 
+fn response_diag_emit_lazy(
+    stage: &'static str,
+    outcome: impl FnOnce() -> &'static str,
+    id: impl FnOnce() -> Option<Uuid>,
+    site: u32,
+) {
+    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+        if let Some(id) = id() {
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id={}", stage, outcome(), site, id);
+        } else {
+            log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage={} outcome={} site={} id=unknown", stage, outcome(), site);
+        }
+    }
+}
+fn response_diag_option_lazy<T>(
+    value: Option<T>,
+    stage: &'static str,
+    outcome: &'static str,
+    id: impl FnOnce() -> Option<Uuid>,
+    site: u32,
+) -> Option<T> {
+    match value {
+        Some(value) => Some(value),
+        None => {
+            response_diag_emit_lazy(stage, || outcome, id, site);
+            None
+        }
+    }
+}
+fn response_diag_result_ref<T>(
+    value: &Result<T, crate::pty::manager::ResponseCloseError>,
+    stage: &'static str,
+    id: impl FnOnce() -> Option<Uuid>,
+    site: u32,
+) {
+    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+        let outcome = match value {
+            Ok(_) => "ok",
+            Err(crate::pty::manager::ResponseCloseError::Unavailable) => "unavailable",
+            Err(crate::pty::manager::ResponseCloseError::Unknown) => "unknown",
+            Err(crate::pty::manager::ResponseCloseError::Conflict) => "conflict",
+            Err(crate::pty::manager::ResponseCloseError::ClosingDeferred) => "closing_deferred",
+        };
+        response_diag_emit_lazy(stage, || outcome, id, site);
+    }
+}
+fn response_diag_debug_only(action: impl FnOnce()) {
+    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+        action();
+    }
+}
+macro_rules! response_diag_local {
+    ($stage:literal, $outcome:expr, $id:expr) => {
+        response_diag_emit_lazy($stage, || $outcome, || $id, line!())
+    };
+}
+macro_rules! response_diag_option_local {
+    ($value:expr, $stage:literal, $outcome:literal, $id:expr) => {
+        response_diag_option_lazy($value, $stage, $outcome, || $id, line!())
+    };
+}
+macro_rules! response_diag_result_local {
+    ($value:expr, $stage:literal, $id:expr) => {{
+        let result = $value;
+        response_diag_result_ref(&result, $stage, || $id, line!());
+        result
+    }};
+}
+
 fn current_response_row<'a>(
     current: &'a crate::session::manager::CarrierSnapshot,
     identity: &crate::pty::manager::ResponseRouteIdentity,
@@ -3576,16 +3645,16 @@ fn with_verified_response_pair<T>(
     coordinator: &crate::pty::manager::ResponseRouteIdentity,
     publish: impl FnOnce(&Session, &Session) -> T,
 ) -> Option<T> {
-    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+    response_diag_debug_only(|| {
         log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag site={} outcome=observed stage=verified_pair scope=stage_current id=unknown member={} coordinator={} current_member_version={:?} current_coordinator_version={:?} captured_member_version={} captured_coordinator_version={} token_backend_role_physical_checks=not_evaluated", line!(), member.session_id, coordinator.session_id, current.versions.get(&member.session_id), current.versions.get(&coordinator.session_id), member.carrier_version, coordinator.carrier_version);
-    }
-    let member_row = response_diag_option!(
+    });
+    let member_row = response_diag_option_local!(
         current_response_row(current, member),
         "verified_pair",
         "current_member_rejected",
         None::<Uuid>
     )?;
-    let coordinator_row = response_diag_option!(
+    let coordinator_row = response_diag_option_local!(
         current_response_row(current, coordinator),
         "verified_pair",
         "current_coordinator_rejected",
@@ -3598,16 +3667,16 @@ fn with_verified_response_pair<T>(
         || !coordinator_row.is_coordinator
         || coordinator_row.is_root_agent
     {
-        response_diag!("verified_pair", "role_or_backend", None::<Uuid>);
+        response_diag_local!("verified_pair", "role_or_backend", None::<Uuid>);
         return None;
     }
-    let member_route = response_diag_option!(
+    let member_route = response_diag_option_local!(
         PtyManager::snapshot_route_proof(pty, member.session_id).ok(),
         "verified_pair",
         "member_route_proof_missing",
         None::<Uuid>
     )?;
-    let coordinator_route = response_diag_option!(
+    let coordinator_route = response_diag_option_local!(
         PtyManager::snapshot_route_proof(pty, coordinator.session_id).ok(),
         "verified_pair",
         "coordinator_route_proof_missing",
@@ -3626,22 +3695,22 @@ fn with_verified_response_pair<T>(
             crate::path_identity::same_object(&actual, coordinator_route.saved_cwd())
         })
     {
-        response_diag!("verified_pair", "backend_or_cwd_mismatch", None::<Uuid>);
+        response_diag_local!("verified_pair", "backend_or_cwd_mismatch", None::<Uuid>);
         return None;
     }
-    let member_authority = response_diag_option!(
+    let member_authority = response_diag_option_local!(
         PtyManager::authority_route_proof(pty, member.session_id).ok(),
         "verified_pair",
         "member_authority_proof_missing",
         None::<Uuid>
     )?;
-    let coordinator_authority = response_diag_option!(
+    let coordinator_authority = response_diag_option_local!(
         PtyManager::authority_route_proof(pty, coordinator.session_id).ok(),
         "verified_pair",
         "coordinator_authority_proof_missing",
         None::<Uuid>
     )?;
-    let _member_guard = response_diag_option!(
+    let _member_guard = response_diag_option_local!(
         member_authority
             .lock_verified(
                 member.backend,
@@ -3653,7 +3722,7 @@ fn with_verified_response_pair<T>(
         "member_authority_lock_rejected",
         None::<Uuid>
     )?;
-    let _coordinator_guard = response_diag_option!(
+    let _coordinator_guard = response_diag_option_local!(
         coordinator_authority
             .lock_verified(
                 coordinator.backend,
@@ -3668,13 +3737,13 @@ fn with_verified_response_pair<T>(
     if state.generation(member.session_id) != Some(member.generation)
         || state.generation(coordinator.session_id) != Some(coordinator.generation)
     {
-        response_diag!("verified_pair", "generation_mismatch", None::<Uuid>);
+        response_diag_local!("verified_pair", "generation_mismatch", None::<Uuid>);
         return None;
     }
-    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) {
+    response_diag_debug_only(|| {
         log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag site={} outcome=observed stage=verified_pair scope=stage_current member={} coordinator={} captured_member_version={} captured_coordinator_version={} current_member_version={:?} current_coordinator_version={:?} token_backend_role_physical_generation_checks=true", line!(), member.session_id, coordinator.session_id, member.carrier_version, coordinator.carrier_version, current.versions.get(&member.session_id), current.versions.get(&coordinator.session_id));
-    }
-    response_diag!("verified_pair", "callback_reached", None::<Uuid>);
+    });
+    response_diag_local!("verified_pair", "callback_reached", None::<Uuid>);
     Some(publish(member_row, coordinator_row))
 }
 
@@ -3698,30 +3767,29 @@ impl Drop for ResponseCandidateDisposal {
     fn drop(&mut self) {
         match self.0.candidate.lock() {
             Ok(candidate) => {
-                response_diag!("candidate_disposal", "invoked", None::<Uuid>);
+                response_diag_local!("candidate_disposal", "invoked", None::<Uuid>);
                 if self
                     .0
                     .armed
                     .swap(false, std::sync::atomic::Ordering::AcqRel)
                 {
                     if let Some(candidate) = candidate.as_ref() {
-                        response_diag!("mark_request_submitted", "false_invocation", None::<Uuid>);
-                        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-                        {
+                        response_diag_local!("mark_request_submitted", "false_invocation", None::<Uuid>);
+                        response_diag_debug_only(|| {
                             log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage=candidate_disposal outcome=false_submission_invoked site={} id=unknown member={} coordinator={}", line!(), candidate.member.session_id, candidate.coordinator.session_id);
-                        }
+                        });
                         self.0
                             .state
                             .mark_request_submitted(&candidate.context, false);
                     } else {
-                        response_diag!("candidate_disposal", "candidate_absent", None::<Uuid>);
+                        response_diag_local!("candidate_disposal", "candidate_absent", None::<Uuid>);
                     }
                 } else {
-                    response_diag!("candidate_disposal", "attempt_disarmed", None::<Uuid>);
+                    response_diag_local!("candidate_disposal", "attempt_disarmed", None::<Uuid>);
                 }
             }
             Err(_) => {
-                response_diag!("candidate_disposal", "candidate_lock_failure", None::<Uuid>);
+                response_diag_local!("candidate_disposal", "candidate_lock_failure", None::<Uuid>);
                 self.0.state.fail_closed()
             }
         }
@@ -3758,7 +3826,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
     attempt: &Arc<ResponseCandidateAttempt>,
 ) {
     if !attempt.armed.load(std::sync::atomic::Ordering::Acquire) {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "attempt_disarmed",
             work.diagnostic_message_id
@@ -3769,7 +3837,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         .try_state::<crate::session::selection::SelectionCoordinator>()
         .is_some_and(|coordinator| coordinator.restore_is_active())
     {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "restore_active",
             work.diagnostic_message_id
@@ -3778,7 +3846,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
     }
     let settings = app.state::<SettingsState>().inner().clone();
     let Ok(settings) = settings.try_read_owned() else {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "settings_busy",
             work.diagnostic_message_id
@@ -3786,7 +3854,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     };
     if settings.project_paths != prepared.roots {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "roots_changed",
             work.diagnostic_message_id
@@ -3794,7 +3862,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     }
     let Some(member) = current_response_row(current, &prepared.member) else {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "current_member_missing",
             work.diagnostic_message_id
@@ -3802,7 +3870,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     };
     let Some(coordinator) = current_response_row(current, &prepared.coordinator) else {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "current_coordinator_missing",
             work.diagnostic_message_id
@@ -3821,7 +3889,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         || !coordinator.is_coordinator
         || coordinator.is_root_agent
     {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "role_or_backend_or_communication",
             work.diagnostic_message_id
@@ -3830,7 +3898,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
     }
     let pty = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
     let Ok(member_route) = PtyManager::snapshot_route_proof(&pty, member.id) else {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "member_route_missing",
             work.diagnostic_message_id
@@ -3838,7 +3906,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     };
     let Some(replica) = member_route.saved_replica() else {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "member_replica_missing",
             work.diagnostic_message_id
@@ -3856,7 +3924,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
             Some(replica),
         )
     {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "member_route_mismatch",
             work.diagnostic_message_id
@@ -3864,7 +3932,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     }
     let Ok(coordinator_route) = PtyManager::snapshot_route_proof(&pty, coordinator.id) else {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "coordinator_route_missing",
             work.diagnostic_message_id
@@ -3872,7 +3940,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     };
     let Ok(authority) = PtyManager::authority_route_proof(&pty, coordinator.id) else {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "coordinator_authority_missing",
             work.diagnostic_message_id
@@ -3884,7 +3952,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         coordinator_route.saved_cwd(),
         coordinator_route.saved_replica(),
     ) else {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "authority_lock_rejected",
             work.diagnostic_message_id
@@ -3901,7 +3969,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         || work.state.generation(member.id) != Some(prepared.member.generation)
         || work.state.generation(coordinator.id) != Some(prepared.coordinator.generation)
     {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "coordinator_route_or_generation_mismatch",
             work.diagnostic_message_id
@@ -3928,7 +3996,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
     );
     let Ok(mut candidate) = attempt.candidate.lock() else {
         work.state.fail_closed();
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "candidate_lock_poisoned",
             work.diagnostic_message_id
@@ -3936,14 +4004,14 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         return;
     };
     if !attempt.armed.load(std::sync::atomic::Ordering::Acquire) {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "attempt_disarmed_after_lock",
             work.diagnostic_message_id
         );
         return;
     }
-    let Ok(context) = response_diag_result!(
+    let Ok(context) = response_diag_result_local!(
         work.state.reserve_policy_candidate(
             prepared.member.clone(),
             prepared.coordinator.clone(),
@@ -3954,7 +4022,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
         "reserve_policy",
         work.diagnostic_message_id
     ) else {
-        response_diag!(
+        response_diag_local!(
             "prewrite_reserve",
             "reserve_policy_error",
             work.diagnostic_message_id
@@ -3974,7 +4042,7 @@ fn reserve_response_request_at_write<R: tauri::Runtime>(
             replica.canonical_path.clone(),
         ),
     });
-    response_diag!(
+    response_diag_local!(
         "prewrite_reserve",
         "candidate_created",
         work.diagnostic_message_id
@@ -4303,8 +4371,8 @@ impl MailboxPoller {
         comanaged: bool,
         response: Option<&ResponseWakeWork>,
     ) -> Option<PreparedResponseRequest> {
-        response_diag!("prepare", "entry", Uuid::parse_str(&msg.id).ok());
-        let work = response_diag_option!(
+        response_diag_local!("prepare", "entry", Uuid::parse_str(&msg.id).ok());
+        let work = response_diag_option_local!(
             response,
             "prepare",
             "response_work_missing",
@@ -4318,15 +4386,15 @@ impl MailboxPoller {
             || msg.from.rsplit_once('/').map(|(room, _)| room)
                 != msg.to.rsplit_once('/').map(|(room, _)| room)
         {
-            response_diag!(
+            response_diag_local!(
                 "prepare",
                 "excluded_message_class_or_room",
                 Uuid::parse_str(&msg.id).ok()
             );
             return None;
         }
-        let token = response_diag_option!(
-            Uuid::parse_str(response_diag_option!(
+        let token = response_diag_option_local!(
+            Uuid::parse_str(response_diag_option_local!(
                 msg.token.as_deref(),
                 "prepare",
                 "token_missing",
@@ -4343,7 +4411,7 @@ impl MailboxPoller {
             .await
             .project_paths
             .clone();
-        response_diag_option!(
+        response_diag_option_local!(
             teams::verified_wg_coordinator_target(&msg.from, &roots),
             "prepare",
             "configured_coordinator_rejected",
@@ -4355,7 +4423,7 @@ impl MailboxPoller {
             .await
             .clone();
         let snapshot = manager.aggregate_snapshot().await;
-        let member = response_diag_option!(
+        let member = response_diag_option_local!(
             snapshot.sessions.iter().find(|row| row.id == session_id),
             "prepare",
             "member_absent",
@@ -4366,7 +4434,7 @@ impl MailboxPoller {
             member.is_root_agent,
         ) != msg.to
         {
-            response_diag!(
+            response_diag_local!(
                 "prepare",
                 "member_target_mismatch",
                 Uuid::parse_str(&msg.id).ok()
@@ -4377,7 +4445,7 @@ impl MailboxPoller {
             .sessions
             .iter()
             .filter(|row| row.token == token && !matches!(row.status, SessionStatus::Exited(_)));
-        let coordinator = response_diag_option!(
+        let coordinator = response_diag_option_local!(
             senders.next(),
             "prepare",
             "sender_missing",
@@ -4389,7 +4457,7 @@ impl MailboxPoller {
                 coordinator.is_root_agent,
             ) != msg.from
         {
-            response_diag!(
+            response_diag_local!(
                 "prepare",
                 "sender_ambiguous_or_target_mismatch",
                 Uuid::parse_str(&msg.id).ok()
@@ -4399,7 +4467,7 @@ impl MailboxPoller {
         let coordinator_id = coordinator.id;
         manager
             .with_response_close_facts(|current| {
-                let member = response_diag_option!(
+                let member = response_diag_option_local!(
                     current.rows.iter().find(|row| {
                         row.id == session_id
                             && row.token == member.token
@@ -4409,7 +4477,7 @@ impl MailboxPoller {
                     "current_member_absent_or_pending",
                     Uuid::parse_str(&msg.id).ok()
                 )?;
-                let coordinator = response_diag_option!(
+                let coordinator = response_diag_option_local!(
                     current.rows.iter().find(|row| {
                         row.id == coordinator_id
                             && row.token == token
@@ -4424,13 +4492,13 @@ impl MailboxPoller {
                         target: target.to_owned(),
                         session_id: row.id,
                         token: row.token,
-                        generation: response_diag_option!(
+                        generation: response_diag_option_local!(
                             work.state.generation(row.id),
                             "prepare",
                             "route_generation_absent",
                             Uuid::parse_str(&msg.id).ok()
                         )?,
-                        carrier_version: *response_diag_option!(
+                        carrier_version: *response_diag_option_local!(
                             current.versions.get(&row.id),
                             "prepare",
                             "carrier_version_absent",
@@ -4444,7 +4512,7 @@ impl MailboxPoller {
                     coordinator: route(coordinator, &msg.from)?,
                     roots,
                 };
-                response_diag!("prepare", "prepared", Uuid::parse_str(&msg.id).ok());
+                response_diag_local!("prepare", "prepared", Uuid::parse_str(&msg.id).ok());
                 Some(prepared)
             })
             .await
@@ -4458,7 +4526,7 @@ impl MailboxPoller {
             match work.attempt.lock() {
                 Ok(attempt) => attempt.clone(),
                 Err(_) => {
-                    response_diag!(
+                    response_diag_local!(
                         "complete_request",
                         "attempt_lock_error",
                         work.diagnostic_message_id
@@ -4468,7 +4536,7 @@ impl MailboxPoller {
             }
         };
         let Some(attempt) = attempt else {
-            response_diag!(
+            response_diag_local!(
                 "complete_request",
                 "attempt_missing",
                 work.diagnostic_message_id
@@ -4479,7 +4547,7 @@ impl MailboxPoller {
             match attempt.candidate.lock() {
                 Ok(candidate) => candidate.clone(),
                 Err(_) => {
-                    response_diag!(
+                    response_diag_local!(
                         "complete_request",
                         "candidate_lock_error",
                         work.diagnostic_message_id
@@ -4489,7 +4557,7 @@ impl MailboxPoller {
             }
         };
         let Some(candidate) = candidate else {
-            response_diag!(
+            response_diag_local!(
                 "complete_request",
                 "candidate_missing",
                 work.diagnostic_message_id
@@ -4497,7 +4565,7 @@ impl MailboxPoller {
             return;
         };
         let Some(dir) = crate::config::config_dir() else {
-            response_diag!(
+            response_diag_local!(
                 "complete_request",
                 "config_dir_unavailable",
                 work.diagnostic_message_id
@@ -4510,7 +4578,7 @@ impl MailboxPoller {
             crate::config::sessions_persistence::session_retention_project_paths(&settings).ok()
         };
         let Some(roots) = roots else {
-            response_diag!(
+            response_diag_local!(
                 "complete_request",
                 "roots_unavailable",
                 work.diagnostic_message_id
@@ -4526,7 +4594,7 @@ impl MailboxPoller {
             app.try_state::<crate::session::selection::SelectionCoordinator>()
         {
             let Some(exclusion) = coordinator.restore_mint_exclusion() else {
-                response_diag!(
+                response_diag_local!(
                     "complete_request",
                     "restore_exclusion_missing",
                     work.diagnostic_message_id
@@ -4541,17 +4609,16 @@ impl MailboxPoller {
             &manager, dir, roots, initial,
         )
         .await;
-        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-        {
+        response_diag_debug_only(|| {
             let outcome = match &published {
                 Err(_) => "persist_initial_carrier_error",
                 Ok(None) => "persist_initial_carrier_none",
                 Ok(Some(_)) => "persist_initial_carrier_confirmed",
             };
-            response_diag!("complete_request", outcome, work.diagnostic_message_id);
-        }
+            response_diag_local!("complete_request", outcome, work.diagnostic_message_id);
+        });
         let Ok(Some(published)) = published else {
-            response_diag!(
+            response_diag_local!(
                 "complete_request",
                 "published_not_confirmed",
                 work.diagnostic_message_id
@@ -4565,7 +4632,7 @@ impl MailboxPoller {
             .try_state::<crate::session::selection::SelectionCoordinator>()
             .is_some_and(|coordinator| coordinator.restore_is_active())
         {
-            response_diag!(
+            response_diag_local!(
                 "complete_request",
                 "restore_active",
                 work.diagnostic_message_id
@@ -4584,7 +4651,7 @@ impl MailboxPoller {
                     |member, coordinator| {
                         let Ok(_candidate_guard) = attempt.candidate.lock() else {
                             work.state.fail_closed();
-                            response_diag!(
+                            response_diag_local!(
                                 "complete_request",
                                 "candidate_lock_poisoned",
                                 work.diagnostic_message_id
@@ -4592,7 +4659,7 @@ impl MailboxPoller {
                             return;
                         };
                         if !attempt.armed.load(std::sync::atomic::Ordering::Acquire) {
-                            response_diag!(
+                            response_diag_local!(
                                 "complete_request",
                                 "attempt_disarmed",
                                 work.diagnostic_message_id
@@ -4624,13 +4691,13 @@ impl MailboxPoller {
                                 &published,
                                 current,
                                 |_| {
-                                    if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_callback_reached = true; }
-                                    response_diag!(
+                                    response_diag_debug_only(|| { diagnostic_callback_reached = true; });
+                                    response_diag_local!(
                                         "complete_request",
                                         "register_published_carrier_callback_reached",
                                         work.diagnostic_message_id
                                     );
-                                    response_diag_result!(
+                                    response_diag_result_local!(
                                         work.state.register_request(
                                             crate::pty::manager::ResponseDeliveryProof {
                                                 context: candidate.context.clone(),
@@ -4646,8 +4713,8 @@ impl MailboxPoller {
                                     .ok()
                                 },
                             );
-                        response_diag!("complete_request", if registered.is_some() { "published_registration_some" } else { "published_registration_none" }, work.diagnostic_message_id);
-                        response_diag!("complete_request", if diagnostic_callback_reached { "register_published_callback_reached" } else { "register_published_callback_not_reached" }, work.diagnostic_message_id);
+                        response_diag_local!("complete_request", if registered.is_some() { "published_registration_some" } else { "published_registration_none" }, work.diagnostic_message_id);
+                        response_diag_local!("complete_request", if diagnostic_callback_reached { "register_published_callback_reached" } else { "register_published_callback_not_reached" }, work.diagnostic_message_id);
                         if registered.is_some() {
                             let remembered =
                                 crate::session::selection::remember_response_close_registration(
@@ -4661,7 +4728,7 @@ impl MailboxPoller {
                                         carrier: published.clone(),
                                     },
                                 );
-                            response_diag!(
+                            response_diag_local!(
                                 "complete_request",
                                 if remembered {
                                     "remember_true"
@@ -4673,7 +4740,7 @@ impl MailboxPoller {
                             if !remembered {
                                 work.state.fail_closed();
                             }
-                            response_diag!(
+                            response_diag_local!(
                                 "complete_request",
                                 "disarm",
                                 work.diagnostic_message_id
@@ -4684,7 +4751,7 @@ impl MailboxPoller {
                         }
                     },
                 );
-                response_diag!(
+                response_diag_local!(
                     "complete_request",
                     if diagnostic_pair.is_some() {
                         "verified_pair_callback_reached"
@@ -4814,7 +4881,7 @@ impl MailboxPoller {
         authenticated: bool,
         content: &str,
     ) -> Option<ResponseWakeWork> {
-        response_diag!(
+        response_diag_local!(
             "admit_source",
             if authenticated {
                 "entry_authenticated_input_true"
@@ -4823,7 +4890,7 @@ impl MailboxPoller {
             },
             Uuid::parse_str(&msg.id).ok()
         );
-        let state = response_diag_option!(
+        let state = response_diag_option_local!(
             app.try_state::<crate::pty::manager::ResponseCloseState>(),
             "admit_source",
             "tracker_missing",
@@ -4841,14 +4908,14 @@ impl MailboxPoller {
         {
             if previous.digest != digest || previous.target != msg.to {
                 state.fail_closed();
-                response_diag!(
+                response_diag_local!(
                     "admit_source",
                     "replay_identity_conflict",
                     Uuid::parse_str(&msg.id).ok()
                 );
                 return None;
             }
-            response_diag!(
+            response_diag_local!(
                 "admit_source",
                 "replay_reused",
                 Uuid::parse_str(&msg.id).ok()
@@ -4856,7 +4923,7 @@ impl MailboxPoller {
             return Some(previous);
         }
         let key = format!("fs:{}:{}", path.to_string_lossy(), msg.id);
-        let mut admission = match response_diag_result!(
+        let mut admission = match response_diag_result_local!(
             state.reserve_work(&msg.to, &key),
             "reserve_work",
             Uuid::parse_str(&msg.id).ok()
@@ -4864,7 +4931,7 @@ impl MailboxPoller {
             Ok(admission) => admission,
             Err(_) => {
                 state.fail_closed();
-                response_diag!(
+                response_diag_local!(
                     "admit_source",
                     "reserve_work_error",
                     Uuid::parse_str(&msg.id).ok()
@@ -4872,7 +4939,7 @@ impl MailboxPoller {
                 return None;
             }
         };
-        if response_diag_result!(
+        if response_diag_result_local!(
             admission.accept_durable(&digest),
             "accept_durable",
             Uuid::parse_str(&msg.id).ok()
@@ -4880,7 +4947,7 @@ impl MailboxPoller {
         .is_err()
         {
             state.fail_closed();
-            response_diag!(
+            response_diag_local!(
                 "admit_source",
                 "accept_durable_error",
                 Uuid::parse_str(&msg.id).ok()
@@ -4888,7 +4955,7 @@ impl MailboxPoller {
             return None;
         }
         drop(admission);
-        response_diag!(
+        response_diag_local!(
             "admit_source",
             "response_work_created",
             Uuid::parse_str(&msg.id).ok()
@@ -4909,7 +4976,7 @@ impl MailboxPoller {
             return_routes: None,
             delivery_context: None,
         };
-        response_diag!(
+        response_diag_local!(
             "admit_source",
             if authenticated {
                 "authenticated_input_true"
@@ -4931,19 +4998,18 @@ impl MailboxPoller {
             drop(settings);
             let same_room = msg.from.rsplit_once('/').map(|(room, _)| room)
                 == msg.to.rsplit_once('/').map(|(room, _)| room);
-            if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-            {
+            response_diag_debug_only(|| {
                 if coordinator.is_none() {
-                    response_diag!(
+                    response_diag_local!(
                         "admit_source",
                         "configured_coordinator_absent",
                         Uuid::parse_str(&msg.id).ok()
                     );
                 }
                 if !same_room {
-                    response_diag!("admit_source", "cross_room", Uuid::parse_str(&msg.id).ok());
+                    response_diag_local!("admit_source", "cross_room", Uuid::parse_str(&msg.id).ok());
                 }
-            }
+            });
             if coordinator.is_some() && same_room {
                 let managers = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let manager = managers.read().await.clone();
@@ -4962,14 +5028,14 @@ impl MailboxPoller {
                                     ) == target
                                     && !matches!(row.status, SessionStatus::Exited(_))
                             });
-                            let row = response_diag_option!(
+                            let row = response_diag_option_local!(
                                 matches.next(),
                                 "admit_source",
                                 "route_missing",
                                 Uuid::parse_str(&msg.id).ok()
                             )?;
                             if matches.next().is_some() {
-                                response_diag!(
+                                response_diag_local!(
                                     "admit_source",
                                     "route_ambiguous",
                                     Uuid::parse_str(&msg.id).ok()
@@ -4981,13 +5047,13 @@ impl MailboxPoller {
                                     target: target.to_string(),
                                     session_id: row.id,
                                     token: row.token,
-                                    generation: response_diag_option!(
+                                    generation: response_diag_option_local!(
                                         state.generation(row.id),
                                         "admit_source",
                                         "generation_unavailable",
                                         Uuid::parse_str(&msg.id).ok()
                                     )?,
-                                    carrier_version: *response_diag_option!(
+                                    carrier_version: *response_diag_option_local!(
                                         snapshot.versions.get(&row.id),
                                         "admit_source",
                                         "version_unavailable",
@@ -5008,7 +5074,7 @@ impl MailboxPoller {
                             || !coordinator_row.is_coordinator
                             || coordinator_row.is_root_agent
                         {
-                            response_diag!(
+                            response_diag_local!(
                                 "admit_source",
                                 "role_or_token_or_backend",
                                 Uuid::parse_str(&msg.id).ok()
@@ -5036,7 +5102,7 @@ impl MailboxPoller {
                                     crate::session::session::is_working(coordinator_row),
                                     now,
                                 );
-                                response_diag_result!(
+                                response_diag_result_local!(
                                     state.admit_return(
                                         &member,
                                         &coordinator,
@@ -5050,7 +5116,7 @@ impl MailboxPoller {
                                 .ok()
                             },
                         );
-                        response_diag!(
+                        response_diag_local!(
                             "admit_source",
                             if diagnostic_pair.is_some() {
                                 "verified_pair_callback_reached"
@@ -5070,7 +5136,7 @@ impl MailboxPoller {
                 }
             }
         }
-        response_diag!(
+        response_diag_local!(
             "admit_source",
             if work.return_context.is_some() {
                 "return_context_present"
@@ -12684,7 +12750,7 @@ impl MailboxPoller {
             if let Some(attempt) = response.and_then(|work| match work.attempt.lock() {
                 Ok(attempt) => attempt.clone(),
                 Err(_) => {
-                    response_diag!(
+                    response_diag_local!(
                         "mark_request_submitted",
                         "attempt_lock_failure",
                         work.diagnostic_message_id
@@ -12694,7 +12760,7 @@ impl MailboxPoller {
             }) {
                 if let Ok(candidate) = attempt.candidate.lock() {
                     if let Some(candidate) = candidate.as_ref() {
-                        response_diag!(
+                        response_diag_local!(
                             "mark_request_submitted",
                             "true_invocation",
                             Uuid::parse_str(&msg.id).ok()
@@ -12703,17 +12769,17 @@ impl MailboxPoller {
                             .state
                             .mark_request_submitted(&candidate.context, true);
                     } else {
-                        response_diag!("mark_request_submitted", "candidate_absent", None::<Uuid>);
+                        response_diag_local!("mark_request_submitted", "candidate_absent", None::<Uuid>);
                     }
                 } else {
-                    response_diag!(
+                    response_diag_local!(
                         "mark_request_submitted",
                         "candidate_lock_failure",
                         None::<Uuid>
                     );
                 }
             } else {
-                response_diag!(
+                response_diag_local!(
                     "mark_request_submitted",
                     "work_or_attempt_absent",
                     None::<Uuid>
@@ -13493,14 +13559,13 @@ impl MailboxPoller {
         let attempt = response.and_then(|work| match work.attempt.lock() {
             Ok(attempt) => attempt.clone(),
             Err(_) => {
-                response_diag!("inject", "attempt_lock_failure", work.diagnostic_message_id);
+                response_diag_local!("inject", "attempt_lock_failure", work.diagnostic_message_id);
                 None
             }
         });
-        if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug)
-        {
+        response_diag_debug_only(|| {
             log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag site={} outcome=observed stage=inject_presence id=unknown member={} prepared={} attempt={} work={}", line!(), session_id, prepared.is_some(), attempt.is_some(), response.is_some());
-        }
+        });
         let mut diagnostic_prewrite_reached = false;
         crate::pty::inject::inject_peer_wake_with_current_facts(
             app,
@@ -13509,20 +13574,20 @@ impl MailboxPoller {
             &msg.id,
             settle,
             |session, current| {
-                if log::log_enabled!(target: "agentscommander_lib::response_close_diag", log::Level::Debug) { diagnostic_prewrite_reached = true; }
-                response_diag!("prewrite", "callback_reached", Uuid::parse_str(&msg.id).ok());
+                response_diag_debug_only(|| { diagnostic_prewrite_reached = true; });
+                response_diag_local!("prewrite", "callback_reached", Uuid::parse_str(&msg.id).ok());
                 if owned_replacement.is_none()
                     && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
                         &msg.to, session.id,
                     )
                 {
-                    response_diag!("prewrite", "owned_replacement_wait", Uuid::parse_str(&msg.id).ok());
+                    response_diag_local!("prewrite", "owned_replacement_wait", Uuid::parse_str(&msg.id).ok());
                     return Err(crate::pty::inject::OWNED_WORK_SCOPE_WAIT.into());
                 }
                 if owned_replacement.is_some_and(|continuation| {
                     !continuation.pre_write_work_matches(current, pty_mgr.inner())
                 }) {
-                    response_diag!("prewrite", "owned_replacement_mismatch", Uuid::parse_str(&msg.id).ok());
+                    response_diag_local!("prewrite", "owned_replacement_mismatch", Uuid::parse_str(&msg.id).ok());
                     return Err("replacement work binding requires recapture".into());
                 }
                 if let (Some(prepared), Some(attempt), Some(work)) =
@@ -13537,7 +13602,7 @@ impl MailboxPoller {
         )
         .await
         .map_err(|e| {
-            response_diag!("inject", if diagnostic_prewrite_reached { "failure_after_prewrite" } else { "failure_before_prewrite" }, Uuid::parse_str(&msg.id).ok());
+            response_diag_local!("inject", if diagnostic_prewrite_reached { "failure_after_prewrite" } else { "failure_before_prewrite" }, Uuid::parse_str(&msg.id).ok());
             if e == crate::pty::inject::OWNED_WORK_SCOPE_WAIT {
                 return e;
             }
@@ -13558,7 +13623,7 @@ impl MailboxPoller {
             e
         })?;
 
-        response_diag!(
+        response_diag_local!(
             "inject",
             if diagnostic_prewrite_reached {
                 "success_prewrite_reached"
