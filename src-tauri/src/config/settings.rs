@@ -21441,7 +21441,10 @@ mod tests {
                 let before = disk_bytes(temp.path());
                 let settings = load_settings_from_path(&path);
                 assert_eq!(
-                    (settings.room_idle_confirmation_seconds, settings.typing_hold_seconds),
+                    (
+                        settings.room_idle_confirmation_seconds,
+                        settings.typing_hold_seconds
+                    ),
                     (15, 7),
                     "case {raw}"
                 );
