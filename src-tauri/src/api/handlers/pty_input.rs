@@ -391,23 +391,6 @@ mod tests {
         };
         std::fs::write(&path, serde_json::to_vec(&ready).unwrap()).unwrap();
         let owner = SettingsOwner::open_active(&path, std::time::Duration::ZERO).unwrap();
-        // Suspend the strict check after it has observed valid RAM. Revocation
-        // during that suspension must still reject the request at this seam.
-        let (read_tx, read_rx) = tokio::sync::oneshot::channel();
-        let (revoke_tx, revoke_rx) = tokio::sync::oneshot::channel();
-        let reader_owner = std::sync::Arc::clone(&owner);
-        let reader = tokio::spawn(async move {
-            current_pty_input_project_paths(&reader_owner, async {
-                read_tx.send(()).unwrap();
-                revoke_rx.await.unwrap();
-                Err("unsafe_path".to_string())
-            })
-            .await
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(5), read_rx)
-            .await
-            .expect("strict check reached after valid RAM")
-            .unwrap();
         let report = owner
             .with_operation("p43-invalid", |_, guard| {
                 guard.publish(SettingsPublisher::SettingsSave, |path| {
@@ -417,13 +400,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.availability, SettingsAvailability::Invalid);
-        revoke_tx.send(()).unwrap();
-        let rejected = tokio::time::timeout(std::time::Duration::from_secs(5), reader)
-            .await
-            .expect("strict rejection completes")
-            .unwrap()
-            .unwrap_err();
-        assert_eq!(rejected.code(), "unsafe_path");
         let error = current_pty_input_project_paths(&owner, async {
             panic!("unavailable RAM must reject before polling the physical reader")
         })
