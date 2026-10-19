@@ -15024,6 +15024,88 @@ fn prepare_registered_main_agent_groups(
     Ok(out)
 }
 
+fn apply_registered_main_disk_fields(
+    out: &mut Map<String, Value>,
+    disk: Option<&Map<String, Value>>,
+    path: &Path,
+    disk_gate_stage: SettingsSaveStage,
+    terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
+    main_window_placement_mode: MainWindowPlacementWriteMode,
+) -> Result<(), SettingsSaveError> {
+    if let Some(raw) = disk {
+        // Use Serde's existing field table without requiring the physical main
+        // object to contain groups legitimately owned by the sidecar.
+        let known = source_general_field_names();
+        for (key, value) in raw {
+            if !known.contains(&key.as_str()) {
+                out.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+    replace_project_projection(out, &Map::new());
+
+    // #1173: a whole-settings writer cannot opt in or re-enable an explicit
+    // value, and a present malformed gate is an error. An absent file or a
+    // valid object with an absent legacy key materializes true: the default-on
+    // phase deliberately reverses the shipped absent-key rule. Only the
+    // dedicated CAS uses Explicit.
+    let terminal_snapshots_enabled = match terminal_snapshot_gate_mode {
+        TerminalSnapshotGateWriteMode::Explicit(enabled) => enabled,
+        TerminalSnapshotGateWriteMode::Preserve => match disk {
+            Some(disk) => match disk.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED) {
+                Some(Value::Bool(enabled)) => *enabled,
+                None => true,
+                Some(_) => {
+                    return Err(SettingsSaveError::semantic(
+                        disk_gate_stage,
+                        path,
+                        None,
+                        SettingsSaveReason::TerminalSnapshotSettingInvalid,
+                        SettingsSaveLegacyOutward::TerminalSnapshotSettingInvalid(
+                            "terminal_snapshot_setting_invalid".to_string(),
+                        ),
+                    ));
+                }
+            },
+            None => true,
+        },
+    };
+    out.insert(
+        FIELD_TERMINAL_SNAPSHOTS_ENABLED.to_string(),
+        Value::Bool(terminal_snapshots_enabled),
+    );
+
+    // #2348: main-window placement is owned by the narrow placement command.
+    // `Preserve` never regresses it: for each key independently, a PRESENT disk
+    // value is authoritative, and an absent disk key leaves the caller value
+    // alone. An absent legacy `mainGeometry`
+    // must not erase the value the load-time migration synthesized in memory.
+    // `Explicit` writes the pair exactly as the placement command received it.
+    // Runs before `restore_base`, which stays the last writer over the base file.
+    match main_window_placement_mode {
+        MainWindowPlacementWriteMode::Preserve => {
+            if let Some(disk) = disk {
+                preserve_main_window_placement_keys(out, disk);
+            }
+        }
+        MainWindowPlacementWriteMode::Explicit {
+            geometry,
+            display_state,
+        } => {
+            out.insert(
+                FIELD_MAIN_GEOMETRY.to_string(),
+                serialize_settings_component(&geometry, path)?,
+            );
+            out.insert(
+                FIELD_MAIN_DISPLAY_STATE.to_string(),
+                serialize_settings_component(&display_state, path)?,
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn save_settings_value_locked_with_startup(
     settings: &AppSettings,
     path: &Path,
@@ -15194,76 +15276,14 @@ fn save_settings_value_locked_with_startup(
         },
     };
 
-    if let Some(raw) = &disk {
-        // Use Serde's existing field table without requiring the physical main
-        // object to contain groups legitimately owned by the sidecar.
-        let known = source_general_field_names();
-        for (key, value) in raw {
-            if !known.contains(&key.as_str()) {
-                out.entry(key.clone()).or_insert_with(|| value.clone());
-            }
-        }
-    }
-    replace_project_projection(&mut out, &Map::new());
-
-    // #1173: a whole-settings writer cannot opt in or re-enable an explicit
-    // value, and a present malformed gate is an error. An absent file or a
-    // valid object with an absent legacy key materializes true: the default-on
-    // phase deliberately reverses the shipped absent-key rule. Only the
-    // dedicated CAS uses Explicit.
-    let terminal_snapshots_enabled = match terminal_snapshot_gate_mode {
-        TerminalSnapshotGateWriteMode::Explicit(enabled) => enabled,
-        TerminalSnapshotGateWriteMode::Preserve => match &disk {
-            Some(disk) => match disk.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED) {
-                Some(Value::Bool(enabled)) => *enabled,
-                None => true,
-                Some(_) => {
-                    return Err(SettingsSaveError::semantic(
-                        disk_gate_stage,
-                        path,
-                        None,
-                        SettingsSaveReason::TerminalSnapshotSettingInvalid,
-                        SettingsSaveLegacyOutward::TerminalSnapshotSettingInvalid(
-                            "terminal_snapshot_setting_invalid".to_string(),
-                        ),
-                    ));
-                }
-            },
-            None => true,
-        },
-    };
-    out.insert(
-        FIELD_TERMINAL_SNAPSHOTS_ENABLED.to_string(),
-        Value::Bool(terminal_snapshots_enabled),
-    );
-
-    // #2348: main-window placement is owned by the narrow placement command.
-    // `Preserve` never regresses it: for each key independently, a PRESENT disk
-    // value is authoritative, and an absent disk key leaves the caller value
-    // alone. An absent legacy `mainGeometry`
-    // must not erase the value the load-time migration synthesized in memory.
-    // `Explicit` writes the pair exactly as the placement command received it.
-    // Runs before `restore_base`, which stays the last writer over the base file.
-    match main_window_placement_mode {
-        MainWindowPlacementWriteMode::Preserve => {
-            if let Some(disk) = &disk {
-                preserve_main_window_placement_keys(&mut out, disk);
-            }
-        }
-        MainWindowPlacementWriteMode::Explicit {
-            geometry,
-            display_state,
-        } => {
-            out.insert(
-                FIELD_MAIN_GEOMETRY.to_string(),
-                serialize_settings_component(&geometry, path)?,
-            );
-            out.insert(
-                FIELD_MAIN_DISPLAY_STATE.to_string(),
-                serialize_settings_component(&display_state, path)?,
-            );
-        }
-    }
+    apply_registered_main_disk_fields(
+        &mut out,
+        disk.as_ref(),
+        path,
+        disk_gate_stage,
+        terminal_snapshot_gate_mode,
+        main_window_placement_mode,
+    )?;
 
     // #1737: the effective view the caller must adopt for overlay-owned paths. `out`
     // is not a usable source: in Reconcile mode it was seeded from the disk object,
