@@ -2261,7 +2261,7 @@ html.light-theme .settings-api-client-warning {
 
 .settings-env-row {
   display: grid;
-  grid-template-columns: minmax(92px, 1fr) minmax(120px, 1.4fr) 24px 96px 24px;
+  grid-template-columns: minmax(92px, 1fr) minmax(120px, 1.4fr) 24px 24px;
   gap: var(--spacing-xs);
   align-items: center;
 }
@@ -2276,22 +2276,9 @@ html.light-theme .settings-api-client-warning {
   justify-content: center;
 }
 
-.settings-env-source {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border-radius: 3px;
-  padding: 2px 5px;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--sidebar-fg-dim);
-  font-size: 9px;
-  font-weight: 600;
-  text-align: center;
-}
-
-.settings-env-source.generated {
-  background: rgba(0, 212, 255, 0.12);
-  color: var(--sidebar-accent);
+.settings-env-managed {
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px var(--status-exited);
 }
 
 .settings-env-delete {
