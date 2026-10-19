@@ -3787,7 +3787,8 @@ impl SessionManager {
         backend_kind: SessionBackendKind,
     ) -> Result<Session, AppError> {
         let id = Uuid::new_v4();
-        let mut state = self.state.write().await;
+        let permit = acquire_carrier_mutation_permit().await;
+        let mut state = self.carrier_state_write(&permit).await;
         let name = format!("Session {}", state.next_number);
         state.next_number = state.next_number.saturating_add(1);
         let mut session = Session {
@@ -7018,6 +7019,16 @@ mod response_close_carrier_tests {
     {
         let manager = SessionManager::new();
         let session = row(&manager, "row", false).await;
+        assert_eq!(manager.state.read().await.carrier_versions.get(&session.id).copied(), Some(1));
+        assert_eq!(manager.get_active().await, Some(session.id));
+        let second = row(&manager, "second", false).await;
+        assert_eq!(manager.state.read().await.carrier_versions.get(&second.id).copied(), Some(1));
+        assert_eq!(manager.state.read().await.carrier_versions.get(&session.id).copied(), Some(1));
+        assert_eq!(manager.get_active().await, Some(session.id));
+        manager.mark_idle(session.id).await;
+        manager.mark_idle(second.id).await;
+        assert_eq!(manager.state.read().await.carrier_versions.get(&session.id).copied(), Some(1));
+        assert_eq!(manager.state.read().await.carrier_versions.get(&second.id).copied(), Some(1));
         manager
             .set_git_repos(
                 session.id,
