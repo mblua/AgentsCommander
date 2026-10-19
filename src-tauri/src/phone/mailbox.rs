@@ -3523,17 +3523,6 @@ macro_rules! response_diag {
         }
     };
 }
-macro_rules! response_diag_option {
-    ($value:expr, $stage:literal, $outcome:literal, $id:expr) => {
-        match $value {
-            Some(value) => Some(value),
-            None => {
-                response_diag!($stage, $outcome, $id);
-                None
-            }
-        }
-    };
-}
 macro_rules! response_diag_result {
     ($value:expr, $stage:literal, $id:expr) => {{
         let result = $value;
