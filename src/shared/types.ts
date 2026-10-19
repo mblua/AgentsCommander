@@ -774,6 +774,7 @@ export interface AppSettings {
   raiseTerminalOnClick: boolean;
   soundsEnabled: boolean;
   teamIdleBeepEnabled: boolean;
+  roomIdleConfirmationSeconds?: number;
   voiceToTextEnabled: boolean;
   geminiApiKey: string;
   geminiModel: string;
