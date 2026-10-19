@@ -26287,8 +26287,7 @@ mod tests {
             .join("delivered")
             .join(format!("{}.json", msg_id));
         let poller = MailboxPoller::new_with_test_hooks(hooks);
-        poller
-            .process_message(app, message_path, OutboxOrigin::Replica)
+        Box::pin(poller.process_message(app, message_path, OutboxOrigin::Replica))
             .await
             .expect("process mailbox message");
         assert!(!message_path.exists());
