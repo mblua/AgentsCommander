@@ -3763,7 +3763,11 @@ impl Drop for ResponseCandidateDisposal {
                     .swap(false, std::sync::atomic::Ordering::AcqRel)
                 {
                     if let Some(candidate) = candidate.as_ref() {
-                        response_diag_local!("mark_request_submitted", "false_invocation", None::<Uuid>);
+                        response_diag_local!(
+                            "mark_request_submitted",
+                            "false_invocation",
+                            None::<Uuid>
+                        );
                         response_diag_debug_only(|| {
                             log::debug!(target: "agentscommander_lib::response_close_diag", "response_close_diag stage=candidate_disposal outcome=false_submission_invoked site={} id=unknown member={} coordinator={}", line!(), candidate.member.session_id, candidate.coordinator.session_id);
                         });
@@ -3771,7 +3775,11 @@ impl Drop for ResponseCandidateDisposal {
                             .state
                             .mark_request_submitted(&candidate.context, false);
                     } else {
-                        response_diag_local!("candidate_disposal", "candidate_absent", None::<Uuid>);
+                        response_diag_local!(
+                            "candidate_disposal",
+                            "candidate_absent",
+                            None::<Uuid>
+                        );
                     }
                 } else {
                     response_diag_local!("candidate_disposal", "attempt_disarmed", None::<Uuid>);
@@ -4680,7 +4688,9 @@ impl MailboxPoller {
                                 &published,
                                 current,
                                 |_| {
-                                    response_diag_debug_only(|| { diagnostic_callback_reached = true; });
+                                    response_diag_debug_only(|| {
+                                        diagnostic_callback_reached = true;
+                                    });
                                     response_diag_local!(
                                         "complete_request",
                                         "register_published_carrier_callback_reached",
@@ -4702,8 +4712,24 @@ impl MailboxPoller {
                                     .ok()
                                 },
                             );
-                        response_diag_local!("complete_request", if registered.is_some() { "published_registration_some" } else { "published_registration_none" }, work.diagnostic_message_id);
-                        response_diag_local!("complete_request", if diagnostic_callback_reached { "register_published_callback_reached" } else { "register_published_callback_not_reached" }, work.diagnostic_message_id);
+                        response_diag_local!(
+                            "complete_request",
+                            if registered.is_some() {
+                                "published_registration_some"
+                            } else {
+                                "published_registration_none"
+                            },
+                            work.diagnostic_message_id
+                        );
+                        response_diag_local!(
+                            "complete_request",
+                            if diagnostic_callback_reached {
+                                "register_published_callback_reached"
+                            } else {
+                                "register_published_callback_not_reached"
+                            },
+                            work.diagnostic_message_id
+                        );
                         if registered.is_some() {
                             let remembered =
                                 crate::session::selection::remember_response_close_registration(
@@ -4996,7 +5022,11 @@ impl MailboxPoller {
                     );
                 }
                 if !same_room {
-                    response_diag_local!("admit_source", "cross_room", Uuid::parse_str(&msg.id).ok());
+                    response_diag_local!(
+                        "admit_source",
+                        "cross_room",
+                        Uuid::parse_str(&msg.id).ok()
+                    );
                 }
             });
             if coordinator.is_some() && same_room {
@@ -12758,7 +12788,11 @@ impl MailboxPoller {
                             .state
                             .mark_request_submitted(&candidate.context, true);
                     } else {
-                        response_diag_local!("mark_request_submitted", "candidate_absent", None::<Uuid>);
+                        response_diag_local!(
+                            "mark_request_submitted",
+                            "candidate_absent",
+                            None::<Uuid>
+                        );
                     }
                 } else {
                     response_diag_local!(
@@ -13563,20 +13597,34 @@ impl MailboxPoller {
             &msg.id,
             settle,
             |session, current| {
-                response_diag_debug_only(|| { diagnostic_prewrite_reached = true; });
-                response_diag_local!("prewrite", "callback_reached", Uuid::parse_str(&msg.id).ok());
+                response_diag_debug_only(|| {
+                    diagnostic_prewrite_reached = true;
+                });
+                response_diag_local!(
+                    "prewrite",
+                    "callback_reached",
+                    Uuid::parse_str(&msg.id).ok()
+                );
                 if owned_replacement.is_none()
                     && crate::config::sessions_persistence::unconfirmed_replacement_work_waits(
                         &msg.to, session.id,
                     )
                 {
-                    response_diag_local!("prewrite", "owned_replacement_wait", Uuid::parse_str(&msg.id).ok());
+                    response_diag_local!(
+                        "prewrite",
+                        "owned_replacement_wait",
+                        Uuid::parse_str(&msg.id).ok()
+                    );
                     return Err(crate::pty::inject::OWNED_WORK_SCOPE_WAIT.into());
                 }
                 if owned_replacement.is_some_and(|continuation| {
                     !continuation.pre_write_work_matches(current, pty_mgr.inner())
                 }) {
-                    response_diag_local!("prewrite", "owned_replacement_mismatch", Uuid::parse_str(&msg.id).ok());
+                    response_diag_local!(
+                        "prewrite",
+                        "owned_replacement_mismatch",
+                        Uuid::parse_str(&msg.id).ok()
+                    );
                     return Err("replacement work binding requires recapture".into());
                 }
                 if let (Some(prepared), Some(attempt), Some(work)) =
@@ -13591,7 +13639,15 @@ impl MailboxPoller {
         )
         .await
         .map_err(|e| {
-            response_diag_local!("inject", if diagnostic_prewrite_reached { "failure_after_prewrite" } else { "failure_before_prewrite" }, Uuid::parse_str(&msg.id).ok());
+            response_diag_local!(
+                "inject",
+                if diagnostic_prewrite_reached {
+                    "failure_after_prewrite"
+                } else {
+                    "failure_before_prewrite"
+                },
+                Uuid::parse_str(&msg.id).ok()
+            );
             if e == crate::pty::inject::OWNED_WORK_SCOPE_WAIT {
                 return e;
             }
@@ -18929,7 +18985,10 @@ mod tests {
             let manager = managers.read().await.clone();
             manager.set_is_coordinator(sender, true).await;
             manager
-                .set_agent_kind(member_id, Some(crate::session::profile::CodingAgentKind::Codex))
+                .set_agent_kind(
+                    member_id,
+                    Some(crate::session::profile::CodingAgentKind::Codex),
+                )
                 .await;
             let roots = {
                 let state = app.state::<SettingsState>();
@@ -19155,7 +19214,10 @@ mod tests {
             let manager = managers.read().await.clone();
             manager.set_is_coordinator(sender, true).await;
             manager
-                .set_agent_kind(member_id, Some(crate::session::profile::CodingAgentKind::Codex))
+                .set_agent_kind(
+                    member_id,
+                    Some(crate::session::profile::CodingAgentKind::Codex),
+                )
                 .await;
             let roots = {
                 let state = app.state::<SettingsState>();
@@ -19478,7 +19540,10 @@ mod tests {
             .clone();
         manager.set_is_coordinator(sender, true).await;
         manager
-            .set_agent_kind(previous, Some(crate::session::profile::CodingAgentKind::Codex))
+            .set_agent_kind(
+                previous,
+                Some(crate::session::profile::CodingAgentKind::Codex),
+            )
             .await;
         let permit = crate::session::manager::acquire_carrier_mutation_permit().await;
         let (member, leader) = manager
