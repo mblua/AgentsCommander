@@ -21337,13 +21337,15 @@ mod tests {
                 let mut invalid = original.clone();
                 invalid.response_close_enabled = false;
                 invalid.room_idle_confirmation_seconds = seconds;
-                for error in [
+                // The whole writer now returns its effective-change receipt on success.
+                let protected: Result<(AppSettings, bool), String> =
                     crate::commands::config::persist_protected_settings_update(
                         &state,
                         invalid.clone(),
                     )
-                    .await
-                    .unwrap_err(),
+                    .await;
+                for error in [
+                    protected.unwrap_err(),
                     crate::commands::config::persist_settings_draft_update(&state, invalid)
                         .await
                         .unwrap_err(),

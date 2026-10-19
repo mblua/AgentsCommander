@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use sha2::{Digest, Sha256};
@@ -117,6 +117,7 @@ pub struct MintApiClientResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SettingsDraftUpdateEvents {
+    pub room_idle_confirmation_changed: bool,
     pub profiles_changed: bool,
     pub env_agent_ids: Vec<String>,
 }
@@ -1031,14 +1032,28 @@ pub async fn update_settings(
     settings: State<'_, SettingsState>,
     new_settings: AppSettings,
 ) -> Result<(), String> {
-    let saved = persist_protected_settings_update(settings.inner(), new_settings).await?;
+    update_settings_with_hotkey_registration(
+        app,
+        settings.inner(),
+        new_settings,
+        crate::screenshot::register_configured_hotkey,
+    )
+    .await
+}
+
+async fn update_settings_with_hotkey_registration(
+    app: AppHandle,
+    settings: &SettingsState,
+    new_settings: AppSettings,
+    register_hotkey: fn(&AppHandle, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let (saved, changed) = persist_protected_settings_update(settings, new_settings).await?;
+    emit_room_idle_confirmation_updated(&app, changed);
     purge_sessions_after_settings_update(&saved).await;
     // #714 re-register the (possibly changed) hotkey. Syntax was already validated
     // before persistence; an OS-level registration conflict must NOT turn this
     // successfully-persisted save into an Err. Surface it as a visible event.
-    if let Err(e) =
-        crate::screenshot::register_configured_hotkey(&app, &saved.screenshot_capture_hotkey)
-    {
+    if let Err(e) = register_hotkey(&app, &saved.screenshot_capture_hotkey) {
         let _ = app.emit(
             "screenshot_capture_failed",
             serde_json::json!({
@@ -1055,13 +1070,27 @@ pub async fn save_settings_draft(
     settings: State<'_, SettingsState>,
     draft: AppSettings,
 ) -> Result<(), String> {
-    let (saved, events) = persist_settings_draft_update(settings.inner(), draft).await?;
+    save_settings_draft_with_hotkey_registration(
+        app,
+        settings.inner(),
+        draft,
+        crate::screenshot::register_configured_hotkey,
+    )
+    .await
+}
+
+async fn save_settings_draft_with_hotkey_registration(
+    app: AppHandle,
+    settings: &SettingsState,
+    draft: AppSettings,
+    register_hotkey: fn(&AppHandle, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let (saved, events) = persist_settings_draft_update(settings, draft).await?;
+    emit_room_idle_confirmation_updated(&app, events.room_idle_confirmation_changed);
     purge_sessions_after_settings_update(&saved).await;
     // #714 same non-failing hotkey re-registration as update_settings: persisted
     // save stays successful even if the OS refuses the hotkey.
-    if let Err(e) =
-        crate::screenshot::register_configured_hotkey(&app, &saved.screenshot_capture_hotkey)
-    {
+    if let Err(e) = register_hotkey(&app, &saved.screenshot_capture_hotkey) {
         let _ = app.emit(
             "screenshot_capture_failed",
             serde_json::json!({
@@ -1108,7 +1137,7 @@ pub(crate) async fn set_terminal_snapshots_enabled_inner(
 pub(crate) async fn persist_protected_settings_update(
     settings: &SettingsState,
     new_settings: AppSettings,
-) -> Result<AppSettings, String> {
+) -> Result<(AppSettings, bool), String> {
     persist_protected_settings_update_with_saver(settings, new_settings, save_settings).await
 }
 
@@ -1116,13 +1145,14 @@ async fn persist_protected_settings_update_with_saver(
     settings: &SettingsState,
     new_settings: AppSettings,
     save: impl FnOnce(&AppSettings) -> Result<AppSettings, String>,
-) -> Result<AppSettings, String> {
+) -> Result<(AppSettings, bool), String> {
     let mut s = settings.write().await;
     let current = s.clone();
     let candidate = build_protected_settings_candidate(&current, new_settings)?;
     let written = save(&candidate)?;
+    let changed = current.room_idle_confirmation_seconds != written.room_idle_confirmation_seconds;
     *s = written.clone();
-    Ok(written)
+    Ok((written, changed))
 }
 
 /// #2306 P2 - make the live effective order authoritative over a whole-settings
@@ -1245,8 +1275,10 @@ async fn persist_settings_draft_update_with_saver(
     draft.terminal_snapshots_enabled = current.terminal_snapshots_enabled;
     merge_live_agent_order(&current, &mut draft);
     validate_and_repair_settings(&mut draft)?;
-    let events = settings_draft_update_events(&current, &draft);
+    let mut events = settings_draft_update_events(&current, &draft);
     let written = save(&draft)?;
+    events.room_idle_confirmation_changed =
+        current.room_idle_confirmation_seconds != written.room_idle_confirmation_seconds;
     *s = written.clone();
     Ok((written, events))
 }
@@ -1308,6 +1340,7 @@ fn settings_draft_update_events(
     }
 
     SettingsDraftUpdateEvents {
+        room_idle_confirmation_changed: false,
         // #592/#597 - the drift content-hash fingerprints the EFFECTIVE command
         // (agent base command + cell command, via compose_effective_command), so a
         // bare agent-base-command edit (e.g. `claude` -> `claude-amp -c ...`) is real
@@ -1341,6 +1374,19 @@ fn agent_commands_by_id(settings: &AppSettings) -> BTreeMap<String, String> {
         .iter()
         .map(|agent| (agent.id.clone(), agent.command.clone()))
         .collect()
+}
+
+fn emit_room_idle_confirmation_updated(app: &AppHandle, changed: bool) {
+    if !changed {
+        return;
+    }
+    let payload = serde_json::json!({});
+    if let Err(error) = app.emit("room_idle_confirmation_updated", payload.clone()) {
+        log::warn!("Failed to emit room idle confirmation update: {}", error);
+    }
+    if let Some(broadcaster) = app.try_state::<WsBroadcaster>() {
+        broadcaster.broadcast_event("room_idle_confirmation_updated", &payload);
+    }
 }
 
 fn emit_settings_draft_update_events(app: &AppHandle, events: &SettingsDraftUpdateEvents) {
@@ -4858,6 +4904,328 @@ pub async fn fetch_home_markdown(network: State<'_, OutboundNetwork>) -> Result<
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn room_idle_confirmation_writer_receipts_follow_written_effective() {
+        for writer in ["whole", "draft"] {
+            for (candidate_seconds, written_seconds, changed) in [
+                (30, 30, true), (15, 15, false), (15, 60, true), (30, 15, false),
+            ] {
+                let current = AppSettings { room_idle_confirmation_seconds: 15, ..AppSettings::default() };
+                let state = crate::config::settings::new_settings_state(current.clone());
+                let payload = AppSettings { room_idle_confirmation_seconds: candidate_seconds, ..current };
+                let saver = |candidate: &AppSettings| {
+                    assert!(state.try_write().is_err(), "saver must run under writer lock");
+                    assert_eq!(candidate.room_idle_confirmation_seconds, candidate_seconds);
+                    let mut written = candidate.clone();
+                    written.room_idle_confirmation_seconds = written_seconds;
+                    Ok(written)
+                };
+                let (saved, receipt) = match writer {
+                    "whole" => persist_protected_settings_update_with_saver(&state, payload, saver).await.unwrap(),
+                    "draft" => {
+                        let (saved, events) = persist_settings_draft_update_with_saver(&state, payload, saver).await.unwrap();
+                        assert!(!events.profiles_changed);
+                        assert!(events.env_agent_ids.is_empty());
+                        (saved, events.room_idle_confirmation_changed)
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(receipt, changed, "{writer}/{candidate_seconds}/{written_seconds}");
+                assert_eq!(saved.room_idle_confirmation_seconds, written_seconds);
+                assert_eq!(state.read().await.room_idle_confirmation_seconds, written_seconds);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn room_idle_confirmation_writer_failure_never_adopts() {
+        for writer in ["whole", "draft"] {
+            let state = crate::config::settings::new_settings_state(AppSettings::default());
+            let before = serde_json::to_value(&*state.read().await).unwrap();
+            let mut payload = state.read().await.clone();
+            payload.room_idle_confirmation_seconds = 30;
+            let saver = |_: &AppSettings| -> Result<AppSettings, String> {
+                assert!(state.try_write().is_err());
+                Err("injected I/O failure".into())
+            };
+            let error = match writer {
+                "whole" => persist_protected_settings_update_with_saver(&state, payload, saver).await.unwrap_err(),
+                "draft" => persist_settings_draft_update_with_saver(&state, payload, saver).await.unwrap_err(),
+                _ => unreachable!(),
+            };
+            assert_eq!(error, "injected I/O failure");
+            assert_eq!(serde_json::to_value(&*state.read().await).unwrap(), before);
+        }
+    }
+
+
+    #[cfg(windows)]
+    static ROOM_IDLE_CONFIRMATION_HOTKEY: Mutex<(Vec<String>, bool)> = Mutex::new((Vec::new(), false));
+
+    #[cfg(windows)]
+    fn room_idle_confirmation_register_hotkey(_: &tauri::AppHandle, hotkey: &str) -> Result<(), String> {
+        let mut state = ROOM_IDLE_CONFIRMATION_HOTKEY.lock().unwrap();
+        state.0.push(hotkey.to_string());
+        if state.1 { Err("fixture refusal".into()) } else { Ok(()) }
+    }
+
+    // Real persistence and both in-memory transports, isolated before config_dir's OnceLock.
+    #[cfg(windows)]
+    fn room_idle_confirmation_receipts() -> Vec<Value> {
+        let mut rows = Vec::new();
+        for writer in ["update_settings", "save_settings_draft"] {
+            for (case, success, seconds, count) in [
+                ("changed", true, 30, 1),
+                ("unchanged", true, 30, 0),
+                ("invalid-range", false, 30, 0),
+                ("malformed-present", false, 30, 0),
+                ("renewed-positive", true, 60, 1),
+                ("hotkey-error", true, 90, 1),
+            ] {
+                for transport in ["tauri", "browser"] {
+                    rows.push(json!({"module": "commands::config", "writer": writer, "case": case,
+                        "transport": transport, "eventCount": count, "success": success,
+                        "diskSeconds": seconds, "stateSeconds": seconds}));
+                }
+            }
+        }
+        rows
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn room_idle_confirmation_routes_parent() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        let root = match std::env::var_os("AC_ROOM_IDLE_TEST_EVIDENCE_DIR") {
+            Some(value) if !value.is_empty() => {
+                let path = std::path::PathBuf::from(value);
+                assert!(path.is_absolute(), "evidence override must be absolute: {}", path.display());
+                path
+            }
+            _ => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/room-idle-confirmation"),
+        };
+        std::fs::create_dir_all(&root)
+            .unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
+        let run = tempfile::Builder::new().prefix("native-").tempdir_in(&root)
+            .expect("create retained run directory").keep();
+        eprintln!("room idle confirmation evidence: {}", run.display());
+        let fixture = run.join("fixture");
+        std::fs::create_dir(&fixture).unwrap();
+        let fixture = fixture.canonicalize().unwrap();
+        let receipt = fixture.parent().unwrap().join("receipts.json");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "commands::config::tests::room_idle_confirmation_routes_child", "--nocapture", "--test-threads=1"])
+            .env("AC_ROOM_IDLE_TEST_CHILD", &fixture)
+            .env("AGENTSCOMMANDER_CONFIG_DIR", &fixture)
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &fixture)
+            .env("AC_ROOM_IDLE_TEST_RECEIPT", &receipt)
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(run.join("stdout.log")).unwrap())
+            .stderr(std::fs::File::create(run.join("stderr.log")).unwrap())
+            .spawn().unwrap_or_else(|error| panic!("spawn child in {}: {error}", run.display()));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll child") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let killed = child.kill();
+                let waited = child.wait();
+                panic!("child timeout; evidence {}; kill={killed:?}; wait={waited:?}", run.display());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success(), "child {status}; evidence {}", run.display());
+        let bytes = std::fs::read(&receipt)
+            .unwrap_or_else(|error| panic!("missing {}: {error}", receipt.display()));
+        let rows: Vec<Value> = serde_json::from_slice(&bytes).expect("complete parsed receipts");
+        assert_eq!(rows.len(), 24);
+        // Exact ordered keys and rows reject missing, extra or duplicate case/transport evidence.
+        assert_eq!(rows, room_idle_confirmation_receipts());
+    }
+
+    #[cfg(windows)]
+    fn room_idle_confirmation_fixture() -> Option<std::path::PathBuf> {
+        let marker = std::env::var_os("AC_ROOM_IDLE_TEST_CHILD")?;
+        let fixture = std::path::PathBuf::from(marker);
+        assert!(fixture.is_absolute());
+        assert_eq!(fixture.canonicalize().unwrap(), fixture);
+        for key in ["AGENTSCOMMANDER_CONFIG_DIR", "AGENTSCOMMANDER_TEST_CONFIG_DIR"] {
+            let override_path = std::path::PathBuf::from(std::env::var_os(key).expect(key));
+            assert_eq!(override_path, fixture);
+            assert_eq!(override_path.canonicalize().unwrap(), fixture);
+        }
+        assert_eq!(crate::config::config_dir().unwrap().canonicalize().unwrap(), fixture);
+        assert_eq!(std::path::PathBuf::from(std::env::var_os("AC_ROOM_IDLE_TEST_RECEIPT").unwrap()),
+            fixture.parent().unwrap().join("receipts.json"));
+        Some(fixture)
+    }
+
+    #[cfg(windows)]
+    fn room_idle_confirmation_fixture_bytes(
+        fixture: &std::path::Path,
+    ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+        let mut bytes = std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(fixture).unwrap() {
+            let path = entry.unwrap().path();
+            assert!(!path.is_symlink());
+            if path.is_dir() {
+                bytes.extend(room_idle_confirmation_fixture_bytes(&path));
+            } else {
+                bytes.insert(path.clone(), std::fs::read(path).unwrap());
+            }
+        }
+        bytes
+    }
+
+    #[cfg(windows)]
+    fn room_idle_confirmation_browser_events(
+        receiver: &mut tokio::sync::mpsc::Receiver<crate::web::broadcast::WsOutMsg>,
+    ) -> Vec<Value> {
+        let mut events = Vec::new();
+        while let Ok(message) = receiver.try_recv() {
+            let crate::web::broadcast::WsOutMsg::Text(text) = message else {
+                panic!("unexpected binary frame");
+            };
+            let value: Value = serde_json::from_str(&text).unwrap();
+            if value["event"] == "room_idle_confirmation_updated" {
+                assert_eq!(value, json!({"event":"room_idle_confirmation_updated", "payload":{}}));
+                events.push(value);
+            }
+        }
+        events
+    }
+
+    #[cfg(windows)]
+    async fn room_idle_confirmation_case(
+        app: &tauri::AppHandle,
+        settings: &SettingsState,
+        writer: &str,
+        case: &str,
+        fixture: &std::path::Path,
+        receiver: &mut tokio::sync::mpsc::Receiver<crate::web::broadcast::WsOutMsg>,
+    ) -> Vec<Value> {
+        use tauri::Listener;
+
+        let (target, expected, success, count) = match case {
+            "changed" => (30, 30, true, 1),
+            "unchanged" => (30, 30, true, 0),
+            "invalid-range" => (0, 30, false, 0),
+            "malformed-present" => (60, 30, false, 0),
+            "renewed-positive" => (60, 60, true, 1),
+            "hotkey-error" => (90, 90, true, 1),
+            _ => panic!("unknown case"),
+        };
+        let path = fixture.join("settings.json");
+        let valid = std::fs::read(&path).unwrap();
+        if case == "malformed-present" {
+            std::fs::write(&path, b"{ malformed-present").unwrap();
+        }
+        let before = room_idle_confirmation_fixture_bytes(fixture);
+        let live_before = serde_json::to_value(&*settings.read().await).unwrap();
+        let mut payload = settings.read().await.clone();
+        payload.room_idle_confirmation_seconds = target;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let observed_settings = settings.clone();
+        let sessions_path = fixture.join("sessions.json");
+        let listener = app.listen_any("room_idle_confirmation_updated", move |event| {
+            let adopted = observed_settings.try_read()
+                .map(|guard| guard.room_idle_confirmation_seconds).ok();
+            tx.send((event.payload().to_string(), adopted, std::fs::read(&sessions_path).unwrap()))
+                .unwrap();
+        });
+        *ROOM_IDLE_CONFIRMATION_HOTKEY.lock().unwrap() = (Vec::new(), case == "hotkey-error");
+        let (hotkey_tx, hotkey_rx) = std::sync::mpsc::channel();
+        let hotkey_listener = app.listen_any("screenshot_capture_failed", move |event| {
+            hotkey_tx.send(event.payload().to_string()).unwrap();
+        });
+        let result = match writer {
+            "update_settings" => super::update_settings_with_hotkey_registration(
+                app.clone(), settings, payload.clone(), room_idle_confirmation_register_hotkey).await,
+            "save_settings_draft" => super::save_settings_draft_with_hotkey_registration(
+                app.clone(), settings, payload.clone(), room_idle_confirmation_register_hotkey).await,
+            _ => panic!("unknown writer"),
+        };
+        let succeeded = result.is_ok();
+        app.unlisten(listener);
+        app.unlisten(hotkey_listener);
+        let calls = ROOM_IDLE_CONFIRMATION_HOTKEY.lock().unwrap().0.clone();
+        let expected_calls = if success { vec![payload.screenshot_capture_hotkey.clone()] } else { Vec::new() };
+        assert_eq!(calls, expected_calls, "{writer}/{case}: hotkey calls");
+        let hotkey_errors: Vec<_> = hotkey_rx.try_iter().collect();
+        assert_eq!(hotkey_errors.len(), usize::from(case == "hotkey-error"));
+        for error in hotkey_errors {
+            assert_eq!(serde_json::from_str::<Value>(&error).unwrap(), json!({
+                "message":"Screenshot hotkey was saved but could not be registered: fixture refusal"
+            }));
+        }
+        assert_eq!(succeeded, success, "{writer}/{case}");
+        let native: Vec<_> = rx.try_iter().collect();
+        assert_eq!(native.len(), count, "{writer}/{case}: tauri");
+        for (payload, adopted, sessions) in native {
+            assert_eq!(serde_json::from_str::<Value>(&payload).unwrap(), json!({}));
+            assert_eq!(adopted, Some(expected), "event must follow adoption and lock release");
+            assert_eq!(sessions, b"[]");
+        }
+        assert_eq!(room_idle_confirmation_browser_events(receiver).len(), count,
+            "{writer}/{case}: browser");
+        assert_eq!(settings.read().await.room_idle_confirmation_seconds, expected);
+        if !success {
+            assert_eq!(room_idle_confirmation_fixture_bytes(fixture), before);
+            assert_eq!(serde_json::to_value(&*settings.read().await).unwrap(), live_before);
+        }
+        if case == "malformed-present" {
+            assert_eq!(std::fs::read(&path).unwrap(), b"{ malformed-present");
+            std::fs::write(&path, valid).unwrap();
+        }
+        let loaded = crate::config::settings::load_settings_from_path(&path);
+        assert_eq!(loaded.room_idle_confirmation_seconds, expected);
+        assert!(loaded.agents.is_empty());
+        assert!(loaded.project_paths.is_empty());
+        assert_eq!(std::fs::read(fixture.join("sessions.json")).unwrap(), b"[]");
+        ["tauri", "browser"].into_iter().map(|transport| json!({
+            "module":"commands::config", "writer":writer, "case":case, "transport":transport,
+            "eventCount":count, "success":success, "diskSeconds":expected, "stateSeconds":expected
+        })).collect()
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn room_idle_confirmation_routes_child() {
+        let Some(fixture) = room_idle_confirmation_fixture() else { return; };
+        let settings = crate::config::settings::new_settings_state(AppSettings {
+                agents: Vec::new(), project_paths: Vec::new(), project_path: None,
+                archived_project_paths: Vec::new(), ..AppSettings::default()
+            });
+        let broadcaster = crate::web::broadcast::WsBroadcaster::new();
+        let mut receiver = broadcaster.subscribe();
+        let app = crate::test_support::test_builder()
+            .manage(settings.clone()).manage(broadcaster)
+            .build(tauri::test::mock_context(tauri::test::noop_assets())).expect("build isolated app");
+        let mut receipts = Vec::new();
+        for writer in ["update_settings", "save_settings_draft"] {
+            let seed = AppSettings {
+                agents: Vec::new(), project_paths: Vec::new(), project_path: None,
+                archived_project_paths: Vec::new(), room_idle_confirmation_seconds: 15,
+                ..AppSettings::default()
+            };
+            let saved = crate::config::settings::save_settings(&seed).expect("seed isolated settings");
+            assert!(saved.agents.is_empty());
+            assert!(saved.project_paths.is_empty());
+            *settings.write().await = saved;
+            std::fs::write(fixture.join("sessions.json"), b"[]").unwrap();
+            for case in ["changed", "unchanged", "invalid-range", "malformed-present", "renewed-positive", "hotkey-error"] {
+                receipts.extend(room_idle_confirmation_case(app.handle(), &settings, writer, case, &fixture, &mut receiver).await);
+            }
+        }
+        assert_eq!(receipts, room_idle_confirmation_receipts());
+        std::fs::write(fixture.parent().unwrap().join("receipts.json"),
+            serde_json::to_vec_pretty(&receipts).unwrap()).unwrap();
+    }
+
     use super::{
         api_server_probe_addr, api_server_status, build_web_server_owned_status,
         classify_virtual_interface, ensure_web_remote_open_allowed, is_tcp_socket_listening,
@@ -5240,7 +5608,7 @@ mod tests {
             .coding_agent_profiles
             .codex_home_key_by_agent
             .clear();
-        let written = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+        let (written, _) = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
             crate::config::settings::save_settings_to_path_preserving_project_paths(
                 candidate, &path,
             )
@@ -7811,7 +8179,7 @@ mod tests {
         };
         incoming.agents[2].label = "b-edited".to_string();
 
-        let written = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+        let (written, _) = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
             crate::config::settings::save_settings_to_path_preserving_project_paths(
                 candidate, &path,
             )
@@ -7914,7 +8282,7 @@ mod tests {
         // duplicate configuration under the case-folded physical delta gate.
         incoming.agents[1].command = "uppercase-id-tool".to_string();
 
-        let written = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+        let (written, _) = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
             crate::config::settings::save_settings_to_path_preserving_project_paths(
                 candidate, &path,
             )
@@ -8303,7 +8671,7 @@ mod tests {
         stale.project_path = None;
         stale.root_token = Some("frontend-root-token".to_string());
 
-        let saved =
+        let (saved, _) =
             persist_protected_settings_update_with_saver(&protected_state, stale, |candidate| {
                 crate::config::settings::save_settings_to_path_preserving_project_paths(
                     candidate,
@@ -8387,7 +8755,7 @@ mod tests {
             current.archived_project_paths = vec![archived_project.clone()];
             let state = state_for(current.clone());
             let payload = settings_payload_without_keys(&current, &["archivedProjectPaths"]);
-            let saved =
+            let (saved, _) =
                 persist_protected_settings_update_with_saver(&state, payload, |candidate| {
                     crate::config::settings::save_settings_to_path_preserving_project_paths(
                         candidate,
@@ -8574,7 +8942,7 @@ mod tests {
             current.project_path = Some(live_project.clone());
             let state = state_for(current.clone());
             let payload = settings_payload_without_keys(&current, &["projectPaths", "projectPath"]);
-            let saved =
+            let (saved, _) =
                 persist_protected_settings_update_with_saver(&state, payload, |candidate| {
                     crate::config::settings::save_settings_to_path_preserving_project_paths(
                         candidate,
@@ -8741,7 +9109,7 @@ mod tests {
         let mut payload = settings_payload_without_keys(&current, &[]);
         payload.archived_project_paths = vec![payload_archived.to_string()];
 
-        let saved = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+        let (saved, _) = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
             crate::config::settings::save_settings_to_path_preserving_project_paths(
                 candidate,
                 &settings_path,
@@ -8931,7 +9299,7 @@ mod tests {
         let state = state_for(current.clone());
         let stale = current;
 
-        let saved = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
+        let (saved, _) = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
             crate::config::settings::save_settings_to_path_preserving_project_paths(
                 candidate,
                 &settings_path,
@@ -8995,7 +9363,7 @@ mod tests {
         .unwrap();
         let mut incoming = current.clone();
         incoming.sidebar_style = "deep-space".to_string();
-        let saved = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+        let (saved, _) = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
             crate::config::settings::save_settings_to_path_preserving_project_paths(
                 candidate,
                 &settings_path,
@@ -9114,7 +9482,7 @@ mod tests {
         stale.rail_collapsed_projects = Vec::new();
         stale.rail_favorites_collapsed = false;
 
-        let saved = persist_protected_settings_update_with_saver(&state, stale, |c| Ok(c.clone()))
+        let (saved, _) = persist_protected_settings_update_with_saver(&state, stale, |c| Ok(c.clone()))
             .await
             .expect("persist");
 
@@ -9184,7 +9552,7 @@ mod tests {
         stale.agents[0].isolated_home = false;
         stale.coding_agent_profiles.profiles_by_agent.clear();
 
-        let saved = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
+        let (saved, _) = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
             Ok(candidate.clone())
         })
         .await
@@ -9321,7 +9689,7 @@ mod tests {
             let state = state_for(loaded.clone());
             let payload = renderer_round_trip(&loaded);
 
-            let saved = {
+            let (saved, _) = {
                 let path = path.clone();
                 persist_protected_settings_update_with_saver(&state, payload, move |candidate| {
                     save_settings_to_path_preserving_project_paths(candidate, &path)
@@ -12085,7 +12453,7 @@ mod tests {
             stale.main_geometry = Some(placement_geometry(999.0, 999.0));
             stale.main_window_display_state = stale_state;
 
-            let saved = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
+            let (saved, _) = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
                 crate::config::settings::save_settings_to_path_preserving_project_paths(
                     candidate,
                     &settings_path,
