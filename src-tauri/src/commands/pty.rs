@@ -68,6 +68,22 @@ pub async fn pty_write(
     }
     PtyManager::write_with_permit(&permit, &data).map_err(|error| error.to_string())?;
     record_typing_hold_keystroke(&app, uuid, &data);
+    if log::log_enabled!(log::Level::Debug) {
+        let kind = match data.as_slice() {
+            b"\x1b[I" => "focus-in",
+            b"\x1b[O" => "focus-out",
+            [] => "empty",
+            [0x1b, ..] => "escape-prefixed",
+            [0x00..=0x1f | 0x7f, ..] => "control-prefixed",
+            _ => "other",
+        };
+        log::debug!(
+            "[pty-input] session={} source=desktop bytes={} kind={} busy_path=mark_successful_pty_write_busy",
+            uuid,
+            data.len(),
+            kind
+        );
+    }
     mark_successful_pty_write_busy(&app, uuid, data.len()).await;
     drop(permit);
 
