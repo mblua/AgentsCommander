@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
+import { onCleanup } from "solid-js";
+import { acquireRoomActivityObserver } from "../stores/room-activity";
+import { remoteActivityStore } from "../stores/remote-activity";
 import { render } from "solid-js/web";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcWorkgroup, NonStopGroupConfig, Session } from "../../shared/types";
 import { __setTransportForTests } from "../../shared/ipc";
 import { FakeTransport } from "../../shared/testing/fake-transport";
@@ -36,7 +39,7 @@ function wgDiscovery() {
       path: wgPath(name),
       task: null,
       taskTitle: null,
-      agents: [{ name: "dev-webpage-ui", path: agentPath(name), repoPaths: [], isCoordinator: true }],
+      agents: [{ name: "dev-webpage-ui", path: agentPath(name), repoPaths: [wgPath(name) + "\repo-main"], isCoordinator: true }],
     })),
   });
 }
@@ -74,7 +77,10 @@ async function seed(): Promise<() => void> {
 function renderRail(): () => void {
   const root = document.createElement("div");
   document.body.appendChild(root);
-  const dispose = render(() => <RoomGroupRail projects={projectStore.projects} />, root);
+  const dispose = render(() => {
+    onCleanup(acquireRoomActivityObserver());
+    return <RoomGroupRail projects={projectStore.projects} />;
+  }, root);
   return () => {
     dispose();
     root.remove();
@@ -99,6 +105,7 @@ describe("#882 rail/watchdog working parity", () => {
   afterEach(() => {
     cleanupRender?.();
     cleanupRender = null;
+    vi.useRealTimers();
     restoreTransport?.();
     restoreTransport = null;
     resetUiStoresForTests();
@@ -163,5 +170,42 @@ describe("#882 rail/watchdog working parity", () => {
     expect(snap[0].working).toBe(row.expectWorking);
     expect(snap[0].disparity).toBe(row.expectDisparity);
     expect(snap[0].notWorkingWorkgroups).toEqual(row.expectNotWorking);
+  });
+
+  function assertParity(working: number) {
+    expect(nonStopButton().textContent).toContain(working + "/3");
+    expect(nonStopButton().querySelector(".workgroup-group-rail-dot") !== null).toBe(working > 0);
+    expect(buildSnapshot()[0]).toMatchObject({ working, disparity: working < 3 });
+  }
+  it("rail count/dot and snapshot expire at 15000 with no store event", async () => {
+    restoreTransport = await seed();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    sessionsStore.setSessions([replicaSession(wgNames[0])]); cleanupRender = renderRail();
+    assertParity(1); sessionsStore.setSessions([]);
+    vi.advanceTimersByTime(14999); assertParity(1);
+    expect(nonStopButton().title).toContain("No running agents");
+    vi.advanceTimersByTime(1); assertParity(0);
+  });
+  it("resume at 14s cancels expiry; a later fall gets a full interval", async () => {
+    restoreTransport = await seed();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    sessionsStore.setSessions([replicaSession(wgNames[0])]); cleanupRender = renderRail();
+    sessionsStore.setSessions([]); vi.advanceTimersByTime(14000);
+    sessionsStore.setSessions([replicaSession(wgNames[0])]); vi.advanceTimersByTime(1000); assertParity(1);
+    sessionsStore.setSessions([]); vi.advanceTimersByTime(14999); assertParity(1);
+    vi.advanceTimersByTime(1); assertParity(0);
+  });
+  it("startup idle is immediate; Co-managed and coordinator CI use the common policy", async () => {
+    restoreTransport = await seed();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    sessionsStore.setSessions([replicaSession(wgNames[0], { waitingForInput: true })]);
+    cleanupRender = renderRail(); assertParity(0);
+    sessionsStore.setSessionComanaged("s-" + wgNames[0], true); assertParity(1);
+    sessionsStore.setSessionComanaged("s-" + wgNames[0], false);
+    remoteActivityStore.applyRemoteActivityUpdate({
+      repoPaths: [wgPath(wgNames[1]) + "\repo-main"], ciStates: ["running"],
+      stalenessStates: ["current"], behindBy: [null],
+    });
+    assertParity(2); vi.advanceTimersByTime(15000); assertParity(1);
   });
 });

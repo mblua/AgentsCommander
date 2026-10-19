@@ -123,13 +123,14 @@ function tooltipFor(folderName: string, rooms: AcWorkgroup[]): string {
 }
 
 function buttonContent(
+  projectPath: string,
   name: string,
   rooms: AcWorkgroup[]
 ): Pick<GroupButton, "name" | "counter" | "working" | "raiseHand" | "blockedMenu"> {
   // #2202 - the counter and the dot read the active meaning (session working OR
   // room CI running). The `working` field name is kept: renaming it would touch
   // RailButton and the dot testids for no behavior gain.
-  const active = splitRoomsByActive(rooms).active.length;
+  const active = splitRoomsByActive(projectPath, rooms).active.length;
   return {
     name,
     counter: `${active}/${rooms.length}`,
@@ -189,7 +190,7 @@ function groupButtonFor(
   const rooms = project.workgroups.filter((room) => groupMatchesWorkgroup(compiled, group.id, room));
   return {
     key: group.id,
-    ...buttonContent(group.name, rooms),
+    ...buttonContent(project.path, group.name, rooms),
     selection: { kind: "group", id: group.id },
     rooms,
     title: tooltipFor(project.folderName, rooms),
@@ -206,7 +207,7 @@ function nonStopButtonFor(project: ProjectState, nonStop: NonStopGroupConfig): G
   const rooms = project.workgroups.filter((room) => nonStopMatchesWorkgroup(nonStop, room));
   return {
     key: "nonstop",
-    ...buttonContent(nonStopDisplayName(nonStop.name), rooms),
+    ...buttonContent(project.path, nonStopDisplayName(nonStop.name), rooms),
     selection: { kind: "nonstop" },
     rooms,
     title: tooltipFor(project.folderName, rooms),
@@ -465,7 +466,7 @@ const ProjectRailSection: Component<{
     if (config().showAll) {
       result.push({
         key: "all",
-        ...buttonContent("All", props.project.workgroups),
+        ...buttonContent(props.project.path, "All", props.project.workgroups),
         raiseHand: false,
         blockedMenu: false,
         selection: { kind: "all" },
@@ -480,7 +481,7 @@ const ProjectRailSection: Component<{
       const rooms = ungroupedWorkgroups();
       result.push({
         key: "ungrouped",
-        ...buttonContent("Ungrouped", rooms),
+        ...buttonContent(props.project.path, "Ungrouped", rooms),
         selection: { kind: "ungrouped" },
         rooms,
         title: tooltipFor(props.project.folderName, rooms),

@@ -2942,7 +2942,7 @@ const ProjectPanel: Component = () => {
           // strip in the same frame.
           const rowIsWorking = () =>
             rowContext === "quick"
-              ? roomIsActive(wg)
+              ? roomIsActive(proj.path, wg)
               : isReplicaWorking(wg, replica) || orchestratorCiRunning();
           const idleBadge = createMemo(() =>
             isCoord()
@@ -3266,7 +3266,7 @@ const ProjectPanel: Component = () => {
           );
           const wgCollapsed = () => isPanelCollapsed(wgCollapsedKey);
           return (
-            <div class="ac-wg-subgroup" classList={{ working: roomIsActive(wg) }}>
+            <div class="ac-wg-subgroup" classList={{ working: roomIsActive(proj.path, wg) }}>
               <div
                 class="ac-wg-header ac-wg-header--collapsible"
                 title={wg.path}

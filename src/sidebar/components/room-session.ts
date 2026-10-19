@@ -1,5 +1,5 @@
 import type { AcWorkgroup } from "../../shared/types";
-import { roomIsWorking, roomCiRunning } from "./room-session-source";
+import { confirmedRoomIsActive } from "../stores/room-activity";
 export {
   replicaSessionName,
   findReplicaSession,
@@ -16,19 +16,19 @@ export {
   roomHasBlockedMenu,
 } from "./room-session-source";
 
-/** #2202 - "working" on every user-facing surface: a session is working OR the
- *  room's repo is running CI. `roomIsWorking` stays session-only. */
-export function roomIsActive(room: AcWorkgroup): boolean {
-  return roomIsWorking(room) || roomCiRunning(room);
+/** Aggregate consumers share confirmed room activity; individual helpers stay raw. */
+export function roomIsActive(projectPath: string, room: AcWorkgroup): boolean {
+  return confirmedRoomIsActive(projectPath, room);
 }
 
 export function splitRoomsByActive(
+  projectPath: string,
   rooms: readonly AcWorkgroup[]
 ): { active: AcWorkgroup[]; notActive: AcWorkgroup[] } {
   const active: AcWorkgroup[] = [];
   const notActive: AcWorkgroup[] = [];
   for (const room of rooms) {
-    (roomIsActive(room) ? active : notActive).push(room);
+    (roomIsActive(projectPath, room) ? active : notActive).push(room);
   }
   return { active, notActive };
 }
