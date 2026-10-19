@@ -21440,8 +21440,11 @@ mod tests {
                 std::fs::write(&path, bytes).unwrap();
                 let before = disk_bytes(temp.path());
                 let settings = load_settings_from_path(&path);
-                assert_eq!(settings.room_idle_confirmation_seconds, 15);
-                assert_eq!(settings.typing_hold_seconds, 7);
+                assert_eq!(
+                    (settings.room_idle_confirmation_seconds, settings.typing_hold_seconds),
+                    (15, 7),
+                    "case {raw}"
+                );
                 assert!(settings.response_close_enabled, "case {raw}");
                 assert_eq!(settings.root_token.is_some(), object_case, "case {raw}");
                 assert_ne!(settings.root_token.as_deref(), Some("base-token"));
