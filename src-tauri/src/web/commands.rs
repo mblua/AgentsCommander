@@ -1530,13 +1530,15 @@ mod tests {
         let native: Vec<_> = rx.try_iter().collect();
         assert_eq!(native.len(), count, "{writer}/{case}: tauri");
         for (payload, adopted, sessions) in native {
-            assert_eq!(serde_json::from_str::<Value>(&payload).unwrap(), json!({}));
             assert_eq!(
-                adopted,
-                Some(expected),
-                "event must follow adoption and lock release"
+                (
+                    serde_json::from_str::<Value>(&payload).unwrap(),
+                    adopted,
+                    sessions,
+                ),
+                (json!({}), Some(expected), b"[]".to_vec()),
+                "{writer}/{case}: payload, adopted state after lock release, sessions"
             );
-            assert_eq!(sessions, b"[]");
         }
         assert_eq!(
             room_idle_confirmation_browser_events(receiver).len(),
@@ -1559,9 +1561,15 @@ mod tests {
             std::fs::write(&path, valid).unwrap();
         }
         let loaded = crate::config::settings::load_settings_from_path(&path);
-        assert_eq!(loaded.room_idle_confirmation_seconds, expected);
-        assert!(loaded.agents.is_empty());
-        assert!(loaded.project_paths.is_empty());
+        assert_eq!(
+            (
+                loaded.room_idle_confirmation_seconds,
+                loaded.agents.is_empty(),
+                loaded.project_paths.is_empty(),
+            ),
+            (expected, true, true),
+            "{writer}/{case}: isolated persisted settings"
+        );
         assert_eq!(std::fs::read(fixture.join("sessions.json")).unwrap(), b"[]");
         ["tauri", "browser"].into_iter().map(|transport| json!({
             "module":"web::commands", "writer":writer, "case":case, "transport":transport,
