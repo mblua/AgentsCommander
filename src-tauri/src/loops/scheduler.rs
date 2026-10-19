@@ -96,6 +96,8 @@ pub struct LoopScheduler {
     delivery_gate: std::sync::Mutex<Option<LoopDeliveryGate>>,
     #[cfg(test)]
     replay_gate: std::sync::Mutex<Option<LoopReplayGate>>,
+    #[cfg(test)]
+    completed_scans: std::sync::atomic::AtomicUsize,
 }
 
 impl LoopScheduler {
@@ -110,6 +112,8 @@ impl LoopScheduler {
             delivery_gate: std::sync::Mutex::new(None),
             #[cfg(test)]
             replay_gate: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            completed_scans: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -234,6 +238,9 @@ impl LoopScheduler {
                 );
             }
         }
+        #[cfg(test)]
+        self.completed_scans
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// `scan_once` for one known project, minus project enumeration (which
@@ -946,7 +953,13 @@ impl Default for LoopScheduler {
 async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {
     let (project_paths, archived) = {
         let settings = app.state::<SettingsState>();
-        let s = settings.read().await;
+        let s = match settings.current_read().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::debug!("[loops] candidate eligibility unavailable: {error}");
+                return Vec::new();
+            }
+        };
         (s.project_paths.clone(), s.archived_project_paths.clone())
     };
     let projects = enumerate_registered_project_candidates(&project_paths);
@@ -1143,6 +1156,121 @@ mod tests {
                 ..LoopPolicy::default()
             },
         }
+    }
+
+    #[tokio::test]
+    async fn e2992_p43_invalid_no_candidate_action() {
+        use crate::config::settings::{
+            AppSettings, SettingsAvailability, SettingsOwner, SettingsPublisher,
+        };
+
+        let (project, dir) = pending_loop_fixture();
+        let instance = tempfile::tempdir().unwrap();
+        let path = instance.path().join("settings.json");
+        let settings = AppSettings {
+            project_paths: vec![project.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
+        let app = crate::test_support::test_builder()
+            .manage(Arc::clone(&owner))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let scheduler = Arc::new(LoopScheduler::new());
+        assert!(!active_project_candidates(app.handle()).await.is_empty());
+        let pending = std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap();
+        install_report_gate(&scheduler, delivered_report());
+        scheduler
+            .scan_once(app.handle().clone(), false, false)
+            .await;
+        assert!(
+            !gate_is_untaken(&scheduler),
+            "Ready delivers the eligible pending run"
+        );
+        // Keep the same eligible work pending for the Invalid negative control.
+        std::fs::write(dir.join(LOOP_STATE_FILE), &pending).unwrap();
+
+        let report = owner
+            .with_operation("p43-invalid", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |path| {
+                    std::fs::write(path, b"{").map_err(|error| error.to_string())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        let before = std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap();
+        install_report_gate(&scheduler, delivered_report());
+        for _ in 0..2 {
+            scheduler
+                .scan_once(app.handle().clone(), false, false)
+                .await;
+            assert!(
+                gate_is_untaken(&scheduler),
+                "Invalid never reaches delivery"
+            );
+        }
+        assert!(active_project_candidates(app.handle()).await.is_empty());
+        assert_eq!(std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap(), before);
+        let shutdown = ShutdownSignal::new();
+        let completed = scheduler
+            .completed_scans
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let started = tokio::time::Instant::now();
+        Arc::clone(&scheduler).start(app.handle().clone(), shutdown.clone());
+        // Observe the actual task's startup scan and first interval tick.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while scheduler
+                .completed_scans
+                .load(std::sync::atomic::Ordering::SeqCst)
+                < completed + 2
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("Invalid preserves startup and interval scans");
+        scheduler.request_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while scheduler
+                .completed_scans
+                .load(std::sync::atomic::Ordering::SeqCst)
+                < completed + 3
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("Invalid preserves requested scans");
+        tokio::time::timeout(Duration::from_secs(35), async {
+            while scheduler
+                .completed_scans
+                .load(std::sync::atomic::Ordering::SeqCst)
+                < completed + 4
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Invalid preserves the next 30-second interval tick");
+        assert!(started.elapsed() >= Duration::from_secs(30));
+        shutdown.trigger();
+        // The task owns the only other scheduler Arc. Its release proves exit,
+        // unlike waiting on the token we just cancelled ourselves.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while Arc::strong_count(&scheduler) != 1 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("scheduler task exits after cancellation");
+        assert_eq!(std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap(), before);
+        assert!(gate_is_untaken(&scheduler));
+        assert!(
+            scheduler.scan_lock.try_lock().is_ok(),
+            "scans release their lock"
+        );
     }
 
     #[test]

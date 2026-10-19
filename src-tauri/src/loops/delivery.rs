@@ -720,7 +720,10 @@ async fn resolve_loop_agent_command(
     let replica_dir = replica_dir.as_path();
     let settings = {
         let settings_state = app.state::<SettingsState>();
-        let settings = settings_state.read().await.clone();
+        let settings = settings_state
+            .current_snapshot()
+            .await
+            .map_err(|error| error.to_string())?;
         settings
     };
 
