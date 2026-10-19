@@ -5188,7 +5188,7 @@ mod tests {
         .into_iter()
         .find(|(id, ..)| *id == case)
         .expect("unknown case");
-        let path = fixture.join("settings.json");
+        let path = crate::config::settings::settings_path().expect("isolated settings path");
         let valid = std::fs::read(&path).unwrap();
         if case == "malformed-present" {
             std::fs::write(&path, b"{ malformed-present").unwrap();
