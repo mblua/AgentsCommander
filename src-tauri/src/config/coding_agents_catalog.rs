@@ -473,8 +473,26 @@ pub fn parse_catalog_schema2(
             ));
         }
     }
-    let catalog: CodingAgentCatalogSchema2 = serde_json::from_value(value)
+    let projected = if value.get("profileBindingVersion").is_some() {
+        crate::config::settings::project_physical_profiles(&value, false).map_err(IdentityCatalogError::InvalidFormat)?
+    } else {
+        crate::config::settings::physical_profile_sets(&value, false).map_err(IdentityCatalogError::InvalidFormat)?;
+        let mut legacy = value;
+        let keys: HashSet<String> = legacy.get("agents").and_then(serde_json::Value::as_array).into_iter().flatten()
+            .filter_map(|row| row.get("key").and_then(serde_json::Value::as_str).map(str::to_owned)).collect();
+        for field in ["codingAgentProfiles", "profileLabels"] {
+            if let Some(map) = legacy.get_mut(field).and_then(serde_json::Value::as_object_mut) { map.retain(|key, _| keys.contains(key)); }
+        }
+        legacy
+    };
+    let mut catalog: CodingAgentCatalogSchema2 = serde_json::from_value(projected)
         .map_err(|error| IdentityCatalogError::InvalidFormat(error.to_string()))?;
+    for agent in &catalog.agents {
+        for cell in catalog.coding_agent_profiles.get_mut(&agent.key).into_iter().flat_map(|cells| cells.values_mut()) {
+            cell.id_hash = Some(crate::config::settings::pair_identity(&agent.command, &agent.envs, cell));
+            cell.id_hash_debug = Some(crate::config::settings::pair_identity_debug(&agent.command, &agent.envs, cell));
+        }
+    }
     let mut keys = HashSet::new();
     for agent in &catalog.agents {
         if agent.command.trim().is_empty() {
@@ -680,8 +698,6 @@ mod identity_schema2_tests {
         for value in [
             json!({"schemaVersion":2,"agents":[definition("own","one"),definition("own","two")]}),
             json!({"schemaVersion":2,"agents":[definition("INVALID_KEY","one")]}),
-            json!({"schemaVersion":2,"agents":[definition("own","one")],"codingAgentProfiles":{"foreign":{"A":{}}}}),
-            json!({"schemaVersion":2,"agents":[definition("own","one")],"profileLabels":{"foreign":{"A":"label"}}}),
         ] {
             assert!(matches!(
                 parse(&value),
@@ -784,7 +800,7 @@ pub(crate) fn embedded_default_catalog() -> CodingAgentCatalog {
 /// `validate_config_seed_dest` on purpose: the key is used verbatim as a testid,
 /// a JSON object key, and a CSS token on the frontend (and, in the Full phase, a
 /// directory name), so it is restricted to an unambiguous ASCII allowlist.
-fn validate_catalog_key(key: &str) -> Result<(), String> {
+pub(crate) fn validate_catalog_key(key: &str) -> Result<(), String> {
     if key.is_empty() {
         return Err("coding-agent key must not be empty".to_string());
     }
@@ -1046,7 +1062,7 @@ const KNOWN_DEFINITION_FIELDS: &[&str] = &[
 const KNOWN_CONFIG_SEED_FIELDS: &[&str] = &["enabled", "dest"];
 const KNOWN_INSTALL_COMMANDS_FIELDS: &[&str] = &["default", "windows", "macos", "linux"];
 const KNOWN_ENV_FIELDS: &[&str] = &["key", "value", "source", "enabled"];
-const KNOWN_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents", "managed"];
+const KNOWN_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents", "managed", "profileBindingVersion", "profilesByBaseHash", "profileLabelsByBaseHash", "profileSlots", "legacyProfileOrphans", "codingAgentProfiles", "profileLabels"];
 
 /// One visible report warning or unavailability record: a stable code plus the
 /// affected path and an actionable reason. Reasons never echo command text or
@@ -1596,7 +1612,7 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
 /// Parse JSON while rejecting duplicate object members at every depth. A raw
 /// `Value` parse cannot detect those, and a duplicate member makes the document
 /// ambiguous, which is exactly the case a destructive migration must refuse.
-fn parse_strict_json(bytes: &[u8]) -> Result<serde_json::Value, String> {
+pub(crate) fn parse_strict_json(bytes: &[u8]) -> Result<serde_json::Value, String> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let value = StrictValue::deserialize(&mut deserializer).map_err(|error| error.to_string())?;
     deserializer
@@ -1691,7 +1707,7 @@ struct LocalLayer {
     order: Option<Vec<String>>,
 }
 
-const LOCAL_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents", "order"];
+const LOCAL_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents", "order", "profileBindingVersion", "profilesByBaseHash", "profileLabelsByBaseHash", "profileSlots", "legacyProfileOrphans", "codingAgentProfiles", "profileLabels"];
 const LOCAL_ROW_FIELDS: &[&str] = &[
     "key",
     "label",
@@ -2005,6 +2021,16 @@ fn parse_local_layer(bytes: &[u8], description: LayerDescription) -> Result<Loca
     let value = parse_strict_json(bytes)
         .map_err(|reason| format!("the {layer} catalog is not valid JSON ({reason})"))?;
     let root = expect_json_object(&value, &format!("the {layer} catalog root"))?;
+    if root.get("schemaVersion").and_then(serde_json::Value::as_u64) == Some(2) {
+        let catalog = parse_catalog_schema2(bytes).map_err(|e| e.to_string())?;
+        let rows = catalog.agents.iter().map(|agent| {
+            let raw = serde_json::to_value(agent).map_err(|e| e.to_string())?;
+            let fields = parse_local_fields(raw.as_object().expect("definition"), "schema2 definition")?;
+            Ok(LocalRow { key: agent.key.clone(), remove: false, fields })
+        }).collect::<Result<Vec<_>, String>>()?;
+        return Ok(LocalLayer { rows, order: Some(catalog.agents.iter().map(|agent| agent.key.clone()).collect()) });
+    }
+    crate::config::settings::physical_profile_sets(&value, false)?;
     reject_unknown_json_fields(
         root,
         LOCAL_ROOT_FIELDS,
@@ -2472,6 +2498,11 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
             "the catalog root must be a JSON object",
         ));
     };
+    if root.get("schemaVersion").and_then(serde_json::Value::as_u64) == Some(2) {
+        let catalog = parse_catalog_schema2(bytes).map_err(|e| catalog_diagnostic(REPORT_CODE_BASE_INVALID, base_path, e.to_string()))?;
+        return Ok(BaseAnalysis { kind: CatalogBaseKind::ForeignManaged, marker: None,
+            entries: catalog.agents, edited: false, refresh_blocked: true, warnings: Vec::new() });
+    }
     if let Some(version) = root.get("schemaVersion") {
         if version.as_u64() != Some(CATALOG_SCHEMA_VERSION as u64) {
             return Err(catalog_diagnostic(
@@ -2497,7 +2528,7 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
     };
 
     let mut warnings = Vec::new();
-    let mut refresh_blocked = false;
+    let mut refresh_blocked = root.contains_key("profileBindingVersion") || root.contains_key("legacyProfileOrphans");
     if let Some(names) = unknown_field_names(root.keys(), KNOWN_ROOT_FIELDS) {
         warnings.push(catalog_diagnostic(
             REPORT_CODE_MIGRATION_PENDING,
@@ -2924,6 +2955,8 @@ fn resolve_catalog_snapshot(
                 )))
             {
                 let result = match observation {
+                    Ok(Some(bytes)) if parse_strict_json(bytes).ok().and_then(|v| v.get("schemaVersion").and_then(serde_json::Value::as_u64)) == Some(2) =>
+                        parse_catalog_schema2(bytes).map(|catalog| catalog.agents).map_err(|e| e.to_string()),
                     Ok(Some(bytes)) => parse_local_layer(bytes, description)
                         .and_then(|layer| compose_local_layer(&effective, &layer, description)),
                     Ok(None) => continue,
@@ -13489,5 +13522,98 @@ mod p02_catalog_schema_tests {
             extract_legacy_local_mode(source, &[], true).unwrap(),
             historical
         );
+    }
+}
+
+#[cfg(test)]
+mod e2432_catalog_profile_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn source(schema: u32) -> serde_json::Value {
+        json!({
+            "schemaVersion":schema,
+            "agents":[{"key":"own","label":"Own","description":"Own","color":"#123456","baseCommand":"tool","catalogOnly":{"keep":true}}],
+            "codingAgentProfiles":{"own":{"B":{"notes":"notes","extension":[null]}},"lost":null},
+            "profileLabels":{"own":{"B":"label"},"labels-only":{"raw":null}},
+            "identityByAgent":{"unrelated":"preserve"},
+            "unrelated":[null,1]
+        })
+    }
+
+    #[test]
+    fn e2432_canonical_serializer_catalog1_catalog2() {
+        for schema in [1, 2] {
+            let raw = source(schema);
+            let view = crate::config::settings::project_physical_profiles(&raw, false).unwrap();
+            let saved = crate::config::settings::canonical_profile_source(&raw, &view, false).unwrap();
+            assert_eq!(saved["schemaVersion"], schema);
+            assert!(saved.get("codingAgentProfiles").is_none());
+            assert!(saved.get("profileLabels").is_none());
+            assert_eq!(saved["profileBindingVersion"], 1);
+            assert_eq!(saved["profileSlots"], json!({}));
+            assert_eq!(saved["identityByAgent"], raw["identityByAgent"]);
+            assert_eq!(saved["agents"][0]["key"], raw["agents"][0]["key"]);
+            assert_eq!(saved["agents"][0]["catalogOnly"], raw["agents"][0]["catalogOnly"]);
+            assert_eq!(saved["agents"][0]["baseCommand"], raw["agents"][0]["baseCommand"]);
+            assert_eq!(saved["unrelated"], raw["unrelated"]);
+            assert_eq!(saved["legacyProfileOrphans"]["lost"], json!([{"cells":null}]));
+            let loaded = crate::config::settings::project_physical_profiles(&saved, false).unwrap();
+            assert_eq!(loaded["codingAgentProfiles"]["own"]["B"]["notes"], "notes");
+            let twice = crate::config::settings::canonical_profile_source(&saved, &loaded, false).unwrap();
+            assert_eq!(twice, saved);
+            if schema == 2 {
+                let decoded = parse_catalog_schema2(&serde_json::to_vec(&saved).unwrap()).unwrap();
+                assert_eq!(decoded.agents[0].command, "tool");
+                assert_eq!(decoded.coding_agent_profiles["own"]["B"].notes, "notes");
+            }
+        }
+    }
+
+    #[test]
+    fn e2432_orphan_wire_catalog() {
+        for schema in [1, 2] {
+            let mut raw = source(schema);
+            raw["legacyProfileOrphans"] = json!({"lost":[{"labels":null,"unknown":{"keep":[]}}]});
+            if schema == 1 {
+                raw["agents"].as_array_mut().unwrap().extend([
+                    json!({"key":"partial","label":"No own command"}),
+                    json!({"key":"removed","remove":true})
+                ]);
+                raw["codingAgentProfiles"]["partial"] = json!({"opaque":false});
+                raw["codingAgentProfiles"]["removed"] = json!([]);
+            }
+            let view = crate::config::settings::project_physical_profiles(&raw, false).unwrap();
+            assert!(view["codingAgentProfiles"].get("partial").is_none());
+            assert!(view["codingAgentProfiles"].get("removed").is_none());
+            let saved = crate::config::settings::canonical_profile_source(&raw, &view, false).unwrap();
+            assert_eq!(saved["legacyProfileOrphans"]["lost"], json!([
+                {"labels":null,"unknown":{"keep":[]}},{"cells":null}
+            ]));
+            assert_eq!(saved["legacyProfileOrphans"]["labels-only"], json!([{"labels":{"raw":null}}]));
+            if schema == 1 {
+                assert_eq!(saved["legacyProfileOrphans"]["partial"], json!([{"cells":{"opaque":false}}]));
+                assert_eq!(saved["legacyProfileOrphans"]["removed"], json!([{"cells":[]}]));
+            }
+        }
+    }
+
+    #[test]
+    fn e2432_duplicate_catalog() {
+        for schema in [1, 2] {
+            for duplicate in [
+                r#""x":1,"x":1"#,
+                r#""x":1,"\u0078":2"#,
+                r#""legacyProfileOrphans":{"X":[{"cells":{"nested":1,"nested":2}}]}"#,
+                r#""codingAgentProfiles":{},"codingAgentProfiles":{}"#,
+            ] {
+                let raw = format!(r#"{{"schemaVersion":{schema},"agents":[],{duplicate}}}"#);
+                assert!(parse_strict_json(raw.as_bytes()).unwrap_err().contains("duplicate JSON object member"));
+            }
+            let raw = json!({"schemaVersion":schema,"agents":[],"legacyProfileOrphans":{"X":[{"cells":null},{"cells":null}]}});
+            let view = crate::config::settings::project_physical_profiles(&raw, false).unwrap();
+            let saved = crate::config::settings::canonical_profile_source(&raw, &view, false).unwrap();
+            assert_eq!(saved["legacyProfileOrphans"], raw["legacyProfileOrphans"]);
+        }
     }
 }
