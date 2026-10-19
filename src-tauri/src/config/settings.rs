@@ -21121,7 +21121,8 @@ mod tests {
         }
 
         #[test]
-        fn room_idle_confirmation_f2_gui_malformed_base_repairs_overlay_without_authorization_then_recovers() {
+        fn room_idle_confirmation_f2_gui_malformed_base_repairs_overlay_without_authorization_then_recovers(
+        ) {
             let assert_repaired = |settings: &AppSettings| {
                 assert!(!settings.response_close_enabled);
                 assert_eq!(settings.room_idle_confirmation_seconds, 15);
@@ -21170,7 +21171,8 @@ mod tests {
         }
 
         #[test]
-        fn room_idle_confirmation_f3_malformed_base_cli_fallback_and_strict_refusal_preserve_bytes() {
+        fn room_idle_confirmation_f3_malformed_base_cli_fallback_and_strict_refusal_preserve_bytes()
+        {
             let assert_repaired = |settings: &AppSettings| {
                 assert!(!settings.response_close_enabled);
                 assert_eq!(settings.room_idle_confirmation_seconds, 15);
@@ -21206,7 +21208,8 @@ mod tests {
         }
 
         #[test]
-        fn room_idle_confirmation_valid_base_disk_repair_and_cas_no_write_preserve_false_and_bytes() {
+        fn room_idle_confirmation_valid_base_disk_repair_and_cas_no_write_preserve_false_and_bytes()
+        {
             let assert_repaired = |settings: &AppSettings| {
                 assert!(!settings.response_close_enabled);
                 assert_eq!(settings.room_idle_confirmation_seconds, 15);
@@ -21322,7 +21325,8 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn room_idle_confirmation_invalid_explicit_updates_reject_before_either_writer_and_keep_live_and_disk() {
+        async fn room_idle_confirmation_invalid_explicit_updates_reject_before_either_writer_and_keep_live_and_disk(
+        ) {
             let temp = tempfile::tempdir().unwrap();
             let path = seed(temp.path(), Some(&base_fixture()), None);
             let original = load_settings_from_path(&path);
@@ -21383,7 +21387,8 @@ mod tests {
                     let path = seed(temp.path(), Some(&base), with_overlay.then_some(&local));
                     let before = disk_bytes(temp.path());
                     let owner =
-                        SettingsOwner::open_active(&path, std::time::Duration::from_secs(1)).unwrap();
+                        SettingsOwner::open_active(&path, std::time::Duration::from_secs(1))
+                            .unwrap();
                     let settings = owner.blocking_current_snapshot().unwrap();
                     let expected = if (1..=3600).contains(&seconds) {
                         seconds
