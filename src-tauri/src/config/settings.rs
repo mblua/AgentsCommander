@@ -14948,6 +14948,82 @@ fn restore_protected_agents_instance_groups(
     }
 }
 
+fn prepare_registered_main_agent_groups(
+    mut out: Map<String, Value>,
+    settings: &AppSettings,
+    disk: Option<&Map<String, Value>>,
+    agents_groups: &Map<String, Value>,
+    profiles_in_sidecar: bool,
+    prepared_profiles: Option<&Value>,
+    prepared_duplicate_agents: Option<&Value>,
+) -> Result<Map<String, Value>, String> {
+    strip_agents_instance_keys(&mut out, agents_groups);
+    // A shadowed legacy group remains raw in its own file. No canonical data or
+    // unknown cell from it becomes authority in the registered sidecar.
+    for key in AGENTS_INSTANCE_KEYS {
+        if agents_groups.contains_key(key) {
+            if let Some(raw) = disk.and_then(|map| map.get(key)) {
+                out.insert(key.into(), raw.clone());
+            }
+        }
+    }
+    if !profiles_in_sidecar {
+        if let Some(prepared) = prepared_profiles {
+            if let Some(profiles) = prepared.get("codingAgentProfiles") {
+                out.insert("codingAgentProfiles".into(), profiles.clone());
+            }
+            if !agents_groups.contains_key("agents") {
+                if let Some(rows) = prepared.get("agents") {
+                    out.insert("agents".into(), rows.clone());
+                }
+            }
+        }
+    }
+
+    // Partial profile ownership can keep these groups in settings.json instead
+    // of the sidecar. Retain its locked legacy leaves after raw overlay restore;
+    // complete overlay-owned groups stay outside this writer's authority.
+    if let Some(disk) = disk {
+        let profiles_owned = settings
+            .local_overlay_state
+            .owned_paths()
+            .iter()
+            .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
+        let mut retained = Value::Object(out);
+        if retained.get("agents").is_some() {
+            if let Some(prepared) = prepared_duplicate_agents {
+                retained["agents"] = prepared.clone();
+            }
+        }
+        retain_configuration_commands(
+            &mut retained,
+            &Value::Object(disk.clone()),
+            "id",
+            false,
+            !settings.local_overlay_state.owns_top_level("agents")
+                && prepared_duplicate_agents.is_none(),
+            !profiles_owned,
+        )?;
+        out = retained
+            .as_object()
+            .expect("retained settings object")
+            .clone();
+    }
+
+    // A synthesized legacy state (direct-constructed AppSettings) has no dirty
+    // repair, so the eligible branches above never fire for it; its groups are
+    // written verbatim from the live settings/disk, matching pre-#1077 behavior.
+    // Restore complete protected groups after every retention/repair stage.
+    // Sidecar key presence, including empty values, takes precedence over main.
+    restore_protected_agents_instance_groups(
+        &mut out,
+        disk,
+        &settings.local_overlay_state,
+        agents_groups,
+    );
+    Ok(out)
+}
+
 fn save_settings_value_locked_with_startup(
     settings: &AppSettings,
     path: &Path,
@@ -15220,79 +15296,24 @@ fn save_settings_value_locked_with_startup(
             prepared_profiles.as_ref().filter(|_| profiles_in_sidecar),
         ),
     )?;
-    strip_agents_instance_keys(&mut out, &agents_groups);
-    // A shadowed legacy group remains raw in its own file. No canonical data or
-    // unknown cell from it becomes authority in the registered sidecar.
-    for key in AGENTS_INSTANCE_KEYS {
-        if agents_groups.contains_key(key) {
-            if let Some(raw) = disk.as_ref().and_then(|map| map.get(key)) {
-                out.insert(key.into(), raw.clone());
-            }
-        }
-    }
-    if !profiles_in_sidecar {
-        if let Some(prepared) = &prepared_profiles {
-            if let Some(profiles) = prepared.get("codingAgentProfiles") {
-                out.insert("codingAgentProfiles".into(), profiles.clone());
-            }
-            if !agents_groups.contains_key("agents") {
-                if let Some(rows) = prepared.get("agents") {
-                    out.insert("agents".into(), rows.clone());
-                }
-            }
-        }
-    }
-
-    // Partial profile ownership can keep these groups in settings.json instead
-    // of the sidecar. Retain its locked legacy leaves after raw overlay restore;
-    // complete overlay-owned groups stay outside this writer's authority.
-    if let Some(disk) = &disk {
-        let profiles_owned = settings
-            .local_overlay_state
-            .owned_paths()
-            .iter()
-            .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
-        let mut retained = Value::Object(out);
-        if retained.get("agents").is_some() {
-            if let Some(prepared) = &prepared_duplicate_agents {
-                retained["agents"] = prepared.clone();
-            }
-        }
-        retain_configuration_commands(
-            &mut retained,
-            &Value::Object(disk.clone()),
-            "id",
-            false,
-            !settings.local_overlay_state.owns_top_level("agents")
-                && prepared_duplicate_agents.is_none(),
-            !profiles_owned,
-        )
-        .map_err(|reason| {
-            SettingsSaveError::semantic(
-                disk_gate_stage,
-                path,
-                None,
-                SettingsSaveReason::DiskSettingsValidationRejected,
-                SettingsSaveLegacyOutward::DiskValidation(reason),
-            )
-        })?;
-        out = retained
-            .as_object()
-            .expect("retained settings object")
-            .clone();
-    }
-
-    // A synthesized legacy state (direct-constructed AppSettings) has no dirty
-    // repair, so the eligible branches above never fire for it; its groups are
-    // written verbatim from the live settings/disk, matching pre-#1077 behavior.
-    // Restore complete protected groups after every retention/repair stage.
-    // Sidecar key presence, including empty values, takes precedence over main.
-    restore_protected_agents_instance_groups(
-        &mut out,
+    out = prepare_registered_main_agent_groups(
+        out,
+        settings,
         disk.as_ref(),
-        &settings.local_overlay_state,
         &agents_groups,
-    );
+        profiles_in_sidecar,
+        prepared_profiles.as_ref(),
+        prepared_duplicate_agents.as_ref(),
+    )
+    .map_err(|reason| {
+        SettingsSaveError::semantic(
+            disk_gate_stage,
+            path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    })?;
     let value = Value::Object(out);
     let written_bytes = write_value_atomic(&value, path)?;
     if let Some(previous) = previous_contents {
