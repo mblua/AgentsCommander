@@ -75,6 +75,9 @@ export function mergeSettingsForSavePreservingProjects(
     responseCloseIdleSeconds: modalSeed && (draft.responseCloseIdleSeconds ?? 30) === (modalSeed.responseCloseIdleSeconds ?? 30)
       ? (fresh.responseCloseIdleSeconds ?? 30)
       : (draft.responseCloseIdleSeconds ?? 30),
+    roomIdleConfirmationSeconds: modalSeed && (draft.roomIdleConfirmationSeconds ?? 15) === (modalSeed.roomIdleConfirmationSeconds ?? 15)
+      ? (fresh.roomIdleConfirmationSeconds ?? 15)
+      : (draft.roomIdleConfirmationSeconds ?? 15),
     agents: draft.agents
       .map(normalizeAgentInstructionsFilename)
       .map(normalizeAgentConfigSeed)

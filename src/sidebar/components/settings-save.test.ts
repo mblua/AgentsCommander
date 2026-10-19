@@ -471,3 +471,22 @@ describe("manual container visibility save ownership", () => {
     expect(merged.agents[0]?.backend).toBe(backend);
   });
 });
+
+ describe("room idle confirmation merge", () => {
+  it.each([
+    [15, 15, 60, 60], [15, 30, 60, 30],
+    [undefined, undefined, 60, 60], [undefined, 15, undefined, 15],
+    [15, undefined, undefined, 15],
+  ])("merges seed=%s draft=%s fresh=%s to %s", (seed, draft, fresh, expected) => {
+    expect(mergeSettingsForSavePreservingProjects(
+      settings({ roomIdleConfirmationSeconds: draft }),
+      settings({ roomIdleConfirmationSeconds: fresh }),
+      settings({ roomIdleConfirmationSeconds: seed }),
+    ).roomIdleConfirmationSeconds).toBe(expected);
+  });
+  it.each([undefined, 30])("retains a null-seed draft %s", (draft) => {
+    expect(mergeSettingsForSavePreservingProjects(
+      settings({ roomIdleConfirmationSeconds: draft }), settings({ roomIdleConfirmationSeconds: 60 }), null,
+    ).roomIdleConfirmationSeconds).toBe(draft ?? 15);
+  });
+});

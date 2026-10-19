@@ -11,6 +11,9 @@ import { remoteActivityStore } from "./remote-activity";
 import { isRoomSessionBusy, roomIsRawActive } from "../components/room-session-source";
 import { acquireRoomActivityObserver, confirmedRoomIsActive, roomActivityKey } from "./room-activity";
 
+const preference = vi.hoisted(() => ({ current: null as { roomIdleConfirmationSeconds?: number } | null }));
+vi.mock("../../shared/stores/settings", () => ({ settingsStore: { get current() { return preference.current; } } }));
+
 const project = "C:/Project";
 function room(path = `${project}/.ac/room-1`): AcWorkgroup {
   return { name: "room-1", path, task: null, agents: [
@@ -29,6 +32,7 @@ describe("room activity observer actual Solid lifecycle", () => {
   let restore: () => void;
   let group: AcWorkgroup;
   beforeEach(async () => {
+    preference.current = null;
     resetUiStoresForTests();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     group = room();
@@ -66,6 +70,42 @@ describe("room activity observer actual Solid lifecycle", () => {
   }
   const active = () => confirmedRoomIsActive(project, group);
   const set = (status: SessionStatus) => sessionsStore.setSessions([live(group, status)]);
+
+  it.each([1, 30, 3600])("captures %s seconds on a falling edge", (seconds) => {
+    preference.current = { roomIdleConfirmationSeconds: seconds };
+    set("running"); owner(); const values = observe();
+    set("idle");
+    vi.advanceTimersByTime(seconds * 1000 - 1);
+    expect(values[values.length - 1]).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(values[values.length - 1]).toBe(false);
+  });
+
+  it.each([null, {}])("uses 15 seconds for absent preference %j", (current) => {
+    preference.current = current;
+    set("running"); owner();
+    set("idle");
+    vi.advanceTimersByTime(14999); expect(active()).toBe(true);
+    vi.advanceTimersByTime(1); expect(active()).toBe(false);
+  });
+
+  it.each([[30, 1], [1, 30]])("keeps captured %s seconds after preference becomes %s", (initial, next) => {
+    preference.current = { roomIdleConfirmationSeconds: initial };
+    set("running"); owner(); const values = observe();
+    set("idle");
+    vi.advanceTimersByTime(500);
+    const before = [...values];
+    preference.current = { roomIdleConfirmationSeconds: next };
+    expect(values).toEqual(before);
+    vi.advanceTimersByTime(initial * 1000 - 501); expect(active()).toBe(true);
+    vi.advanceTimersByTime(1); expect(active()).toBe(false);
+    const completed = [...values];
+    preference.current = { roomIdleConfirmationSeconds: next };
+    expect(values).toEqual(completed);
+    set("running"); set("idle");
+    vi.advanceTimersByTime(next * 1000 - 1); expect(active()).toBe(true);
+    vi.advanceTimersByTime(1); expect(active()).toBe(false);
+  });
 
   it("seeds idle and empty without grace, and wakes a real effect at exactly 15000", async () => {
     owner();
