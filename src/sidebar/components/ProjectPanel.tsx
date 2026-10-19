@@ -1,7 +1,7 @@
 import { Accessor, Component, For, Show, createEffect, createMemo, createSignal, on, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, AcLoopSummary, Session, SessionRepo, TelegramBotConfig, BlockerReport, AppSettings, UnresolvedLoopTarget, CoManagedState, OffReason } from "../../shared/types";
-import { SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, CoManagedAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
+import { ProjectAPI, SessionAPI, WindowAPI, EntityAPI, LoopAPI, TelegramAPI, SettingsAPI, TaskAPI, ReposAPI, CoManagedAPI, onDiscoveryBranchUpdated, onCoordinatorClockUpdated, onCoordinatorAutoCloseChanged, onCoordinatorManualCloseChanged, onRemoteActivityUpdated } from "../../shared/ipc";
 import type { SessionRepoInput } from "../../shared/ipc";
 import {
   pendingCoordinatorClose,
@@ -842,6 +842,36 @@ const ProjectPanel: Component = () => {
     </Show>
     <For each={projectStore.projects}>
       {(proj) => {
+        const [fileDifference, setFileDifference] = createSignal<number | null>(null);
+        const projectPath = proj.path;
+        let fileDifferenceBusy = false;
+        let fileDifferenceDisposed = false;
+        let fileDifferenceTimer: ReturnType<typeof setTimeout> | undefined;
+        const readFileDifference = async () => {
+          if (fileDifferenceBusy || fileDifferenceDisposed) return;
+          fileDifferenceBusy = true;
+          try {
+            const result = await ProjectAPI.fileDifference(projectPath);
+            const count = result?.count;
+            if (!fileDifferenceDisposed) {
+              setFileDifference(typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : null);
+            }
+          } catch {
+            if (!fileDifferenceDisposed) setFileDifference(null);
+          } finally {
+            fileDifferenceBusy = false;
+            if (!fileDifferenceDisposed) fileDifferenceTimer = setTimeout(readFileDifference, 15000);
+          }
+        };
+        onCleanup(() => {
+          fileDifferenceDisposed = true;
+          clearTimeout(fileDifferenceTimer);
+        });
+        void readFileDifference();
+        const fileDifferenceLabel = () => fileDifference() === null
+          ? "File difference from origin/main unavailable"
+          : String(fileDifference()) + " files differ from origin/main, including untracked files";
+
         const [showCtxMenu, setShowCtxMenu] = createSignal(false);
         const [ctxMenuPos, setCtxMenuPos] = createSignal({ x: 0, y: 0 });
         const [teamCtxMenu, setTeamCtxMenu] = createSignal<{ team: AcTeam; x: number; y: number } | null>(null);
@@ -3316,7 +3346,7 @@ const ProjectPanel: Component = () => {
             <div
               class="project-header"
               data-ac-testid={`project.header.${projectAutomationId()}`}
-              classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError() }}
+              classList={{ open: filterOpen(), active: filterActive(), invalid: !!filterError(), "project-header--has-indicator": fileDifference() !== 0 || proj.workgroups.some(roomHasBlockedMenu) }}
               title={proj.path}
               onContextMenu={handleProjectContextMenu}
             >
@@ -3342,11 +3372,22 @@ const ProjectPanel: Component = () => {
               <Show when={proj.workgroups.some(roomHasBlockedMenu)}>
                 <span
                   class="ac-wg-header-blocked-menu"
+                  classList={{ "project-header-indicator--last": fileDifference() === 0 }}
                   data-ac-testid="project.header.blockedMenu"
                   title="A session is waiting on an interactive menu"
                   aria-label="A session is waiting on an interactive menu"
                 >
                   <BlockedMenuIcon class="ac-wg-header-blocked-menu-icon" />
+                </span>
+              </Show>
+              <Show when={fileDifference() !== 0}>
+                <span
+                  class="project-file-difference project-header-indicator--last"
+                  data-ac-testid={`project.fileDifference.${projectAutomationId()}`}
+                  title={fileDifferenceLabel()}
+                  aria-label={fileDifferenceLabel()}
+                >
+                  {fileDifference() === null ? "—" : String(fileDifference())}
                 </span>
               </Show>
               <div
