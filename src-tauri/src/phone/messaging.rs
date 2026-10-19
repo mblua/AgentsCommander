@@ -318,7 +318,7 @@ pub fn validate_filename_shape(name: &str) -> Result<(), MessagingError> {
     Ok(())
 }
 
-/// Publish a snapshot without modifying the validated source or an existing copy.
+/// Publish a snapshot under its filename date without modifying the source or an existing copy.
 pub(crate) fn archive_message_snapshot(
     ac_root: &Path,
     canonical_source: &Path,
@@ -335,17 +335,13 @@ fn archive_message_snapshot_with(
     snapshot: &[u8],
     mut before: impl FnMut(&str, &Path) -> std::io::Result<()>,
 ) -> Result<PathBuf, String> {
-    use sha2::{Digest, Sha256};
     use std::io::Write;
 
     validate_filename_only(basename).map_err(|e| e.to_string())?;
     let root = std::fs::canonicalize(ac_root).map_err(|e| e.to_string())?;
-    let key = format!(
-        "{:x}",
-        Sha256::digest(canonical_source.as_os_str().as_encoded_bytes())
-    );
+    let day = &basename[..8];
     let mut dir = root.clone();
-    for component in ["message-archive", &key] {
+    for component in ["message-archive", day] {
         dir.push(component);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
@@ -362,7 +358,7 @@ fn archive_message_snapshot_with(
             return Err("existing archive is not a regular file".into());
         }
         if std::fs::read(path).map_err(|e| e.to_string())? != snapshot {
-            return Err("archive conflict: source path already has different bytes".into());
+            return Err("archive conflict: archive filename already has different bytes".into());
         }
         Ok(())
     }
@@ -571,6 +567,13 @@ mod tests {
         std::fs::write(&source, bytes).unwrap();
         let source = std::fs::canonicalize(source).unwrap();
         let archived = super::archive_message_snapshot(&ac, &source, ARCHIVE_NAME, bytes).unwrap();
+        assert_eq!(
+            archived,
+            std::fs::canonicalize(&ac)
+                .unwrap()
+                .join("message-archive/20261017")
+                .join(ARCHIVE_NAME)
+        );
         assert_eq!(std::fs::read(&archived).unwrap(), bytes);
         assert_eq!(
             super::archive_message_snapshot(&ac, &source, ARCHIVE_NAME, bytes).unwrap(),
@@ -584,13 +587,87 @@ mod tests {
         );
         let other = room.join("other").join(ARCHIVE_NAME);
         std::fs::create_dir_all(other.parent().unwrap()).unwrap();
-        std::fs::write(&other, b"other").unwrap();
+        std::fs::write(&other, bytes).unwrap();
         let other = std::fs::canonicalize(other).unwrap();
-        let second = super::archive_message_snapshot(&ac, &other, ARCHIVE_NAME, b"other").unwrap();
-        assert_ne!(archived, second);
+        assert_eq!(
+            super::archive_message_snapshot(&ac, &other, ARCHIVE_NAME, bytes).unwrap(),
+            archived
+        );
+        std::fs::write(&other, b"other").unwrap();
+        assert!(
+            super::archive_message_snapshot(&ac, &other, ARCHIVE_NAME, b"other")
+                .unwrap_err()
+                .contains("conflict")
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), b"edited");
+        assert_eq!(std::fs::read(&other).unwrap(), b"other");
         std::fs::remove_dir_all(&room).unwrap();
         assert_eq!(std::fs::read(archived).unwrap(), bytes);
-        assert_eq!(std::fs::read(second).unwrap(), b"other");
+    }
+
+    #[test]
+    fn issue_3120_daily_layout_preserves_names_and_legacy_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let archive = root.join("message-archive");
+        let legacy = archive.join("a".repeat(64));
+        let day = archive.join("20261017");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(legacy.join(ARCHIVE_NAME), b"legacy").unwrap();
+        let sibling = "20261017-000000-room1-a-to-room1-b-existing.md";
+        std::fs::write(day.join(sibling), b"existing").unwrap();
+        let names = [
+            ARCHIVE_NAME,
+            "20261017-000000-room1-a-to-room1-b-snapshot.1.md",
+            "20261018-000000-room1-a-to-room1-b-snapshot.md",
+        ];
+        for name in names {
+            let source = root.join(name);
+            std::fs::write(&source, name.as_bytes()).unwrap();
+            let result =
+                super::archive_message_snapshot(&root, &source, name, name.as_bytes()).unwrap();
+            assert_eq!(result, archive.join(&name[..8]).join(name));
+            assert_eq!(std::fs::read(&result).unwrap(), name.as_bytes());
+            assert_eq!(std::fs::read(&source).unwrap(), name.as_bytes());
+        }
+        let entries = |dir: &std::path::Path| {
+            let mut names: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        };
+        let mut expected = vec![
+            ARCHIVE_NAME.to_string(),
+            names[1].to_string(),
+            sibling.to_string(),
+        ];
+        expected.sort();
+        assert_eq!(entries(&day), expected);
+        assert_eq!(entries(&archive.join("20261018")), vec![names[2]]);
+        assert_eq!(entries(&legacy), vec![ARCHIVE_NAME]);
+        assert_eq!(std::fs::read(legacy.join(ARCHIVE_NAME)).unwrap(), b"legacy");
+        assert_eq!(std::fs::read(day.join(sibling)).unwrap(), b"existing");
+        assert_eq!(
+            entries(&archive),
+            vec![
+                "20261017".to_string(),
+                "20261018".to_string(),
+                "a".repeat(64)
+            ]
+        );
+        let invalid_root = root.join("invalid");
+        std::fs::create_dir(&invalid_root).unwrap();
+        assert!(super::archive_message_snapshot(
+            &invalid_root,
+            &root.join(ARCHIVE_NAME),
+            "invalid.md",
+            b"invalid"
+        )
+        .is_err());
+        assert!(entries(&invalid_root).is_empty());
     }
 
     #[test]
@@ -643,14 +720,18 @@ mod tests {
             let source = temp.path().join(ARCHIVE_NAME);
             std::fs::write(&source, b"source").unwrap();
             let source = std::fs::canonicalize(source).unwrap();
+            let other = temp.path().join("other").join(ARCHIVE_NAME);
+            std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+            std::fs::write(&other, b"other source").unwrap();
+            let sources = [source, std::fs::canonicalize(other).unwrap()];
             let barrier = std::sync::Barrier::new(2);
             let snapshots = [vec![b'a'; 8192], vec![if same { b'a' } else { b'b' }; 8192]];
             let results = std::thread::scope(|scope| {
                 let handles: Vec<_> = snapshots
                     .iter()
-                    .map(|bytes| {
+                    .zip(&sources)
+                    .map(|(bytes, source)| {
                         let barrier = &barrier;
-                        let source = &source;
                         let root = temp.path();
                         scope.spawn(move || {
                             super::archive_message_snapshot_with(
@@ -681,6 +762,15 @@ mod tests {
                 results.iter().filter(|r| r.is_ok()).count(),
                 if same { 2 } else { 1 }
             );
+            if !same {
+                assert!(results
+                    .iter()
+                    .find_map(|r| r.as_ref().err())
+                    .unwrap()
+                    .contains("conflict"));
+            }
+            assert_eq!(std::fs::read(&sources[0]).unwrap(), b"source");
+            assert_eq!(std::fs::read(&sources[1]).unwrap(), b"other source");
             let path = results.iter().find_map(|r| r.as_ref().ok()).unwrap();
             let bytes = std::fs::read(path).unwrap();
             assert!(snapshots.contains(&bytes));

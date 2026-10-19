@@ -184,14 +184,11 @@ mod tests {
             "{:?}",
             content.archive_warning
         );
-        let archive = room.parent().unwrap().join("message-archive");
-        let dir = std::fs::read_dir(&archive)
+        let archived = room
+            .parent()
             .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let archived = dir.join(name);
+            .join("message-archive/20261017")
+            .join(name);
         assert_eq!(std::fs::read(&archived).unwrap(), bytes);
         std::fs::remove_dir_all(&room).unwrap();
         assert_eq!(std::fs::read(archived).unwrap(), bytes);

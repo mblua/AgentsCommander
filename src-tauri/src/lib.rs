@@ -11306,13 +11306,13 @@ mod tests {
                 "\u{feff}body\r\n".as_bytes()
             );
             if !blocked {
-                let archive = fixture.room_root.parent().unwrap().join("message-archive");
-                let dir = std::fs::read_dir(archive)
+                let name = source.file_name().unwrap().to_str().unwrap();
+                let dir = fixture
+                    .room_root
+                    .parent()
                     .unwrap()
-                    .next()
-                    .unwrap()
-                    .unwrap()
-                    .path();
+                    .join("message-archive")
+                    .join(&name[..8]);
                 assert_eq!(
                     std::fs::read(dir.join(source.file_name().unwrap())).unwrap(),
                     std::fs::read(source).unwrap()

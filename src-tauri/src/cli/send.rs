@@ -2074,14 +2074,11 @@ mod tests {
         // Positive control through execute: removing its archive call must fail.
         let (code, temp, _outbox) = enqueue_send_fixture(&[]);
         assert_eq!(code, 0);
-        let archive = temp.path().join("proj-a/.ac/message-archive");
-        let copies: Vec<_> = std::fs::read_dir(archive)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        assert_eq!(copies.len(), 1);
+        let archived = temp
+            .path()
+            .join("proj-a/.ac/message-archive/20260704/20260704-000000-wg1-a-to-wg1-b-x.md");
         assert_eq!(
-            std::fs::read(copies[0].join("20260704-000000-wg1-a-to-wg1-b-x.md")).unwrap(),
+            std::fs::read(archived).unwrap(),
             b"# Hello from fixture\n\nBody."
         );
 
@@ -2144,7 +2141,8 @@ mod tests {
         assert_eq!(first, to_root);
         let global = temp.path().join("global-root");
         std::fs::create_dir_all(&global).unwrap();
-        let root_source = global.join(name);
+        let root_name = "20261017-000000-wg1-a-to-wg1-b-root-snapshot.md";
+        let root_source = global.join(root_name);
         std::fs::write(&root_source, b"Root source").unwrap();
         let root_source = std::fs::canonicalize(root_source).unwrap();
         let from_root = archive_send_file(
@@ -2153,13 +2151,15 @@ mod tests {
             "proj-a:wg-1-dev-team/tech-lead",
             &paths,
             &root_source,
-            name,
+            root_name,
         )
         .unwrap();
-        assert_eq!(
-            first.parent().unwrap().parent(),
-            from_root.parent().unwrap().parent()
-        );
+        assert_eq!(first.parent(), from_root.parent());
+        let day = std::fs::canonicalize(room.parent().unwrap())
+            .unwrap()
+            .join("message-archive/20261017");
+        assert_eq!(first, day.join(name));
+        assert_eq!(from_root, day.join(root_name));
         assert_eq!(std::fs::read(from_root).unwrap(), b"Root source");
         assert!(first.starts_with(
             std::fs::canonicalize(room.parent().unwrap())
