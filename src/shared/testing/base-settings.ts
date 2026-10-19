@@ -45,6 +45,7 @@ export function baseSettings(overrides: Partial<AppSettings> = {}): AppSettings 
     raiseTerminalOnClick: true,
     soundsEnabled: false,
     teamIdleBeepEnabled: false,
+    roomIdleConfirmationSeconds: 15,
     voiceToTextEnabled: false,
     geminiApiKey: "",
     geminiModel: "gemini-2.5-flash",
