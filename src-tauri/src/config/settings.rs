@@ -21422,10 +21422,16 @@ mod tests {
             ] {
                 let temp = tempfile::tempdir().unwrap();
                 let local = serde_json::json!({"typingHoldSeconds": 7});
-                let path = seed(temp.path(), None, Some(&local));
-                let bytes = match serde_json::from_str::<Value>(raw) {
+                // Establish the existing split-file layout before corrupting the base.
+                let path = seed(temp.path(), Some(&base_fixture()), Some(&local));
+                let initial = load_settings_for_cli_from_path(&path);
+                save_settings_to_path_preserving_project_paths(&initial, &path).unwrap();
+                let raw_value = serde_json::from_str::<Value>(raw);
+                let object_case = matches!(&raw_value, Ok(Value::Object(_)));
+                let bytes = match raw_value {
                     Ok(Value::Object(fields)) => {
                         let mut base = base_fixture();
+                        base["responseCloseEnabled"] = Value::Bool(false);
                         base.as_object_mut().unwrap().extend(fields);
                         serde_json::to_vec(&base).unwrap()
                     }
@@ -21436,16 +21442,43 @@ mod tests {
                 let settings = load_settings_from_path(&path);
                 assert_eq!(settings.room_idle_confirmation_seconds, 15);
                 assert_eq!(settings.typing_hold_seconds, 7);
-                assert!(settings.root_token.is_none());
-                assert!(settings.project_paths_persistence_error.is_some());
-                assert!(load_settings_for_cli_strict_from_path(Some(&path)).is_err());
+                assert!(settings.response_close_enabled, "case {raw}");
+                assert_eq!(settings.root_token.is_some(), object_case, "case {raw}");
+                assert_ne!(settings.root_token.as_deref(), Some("base-token"));
+                assert_eq!(
+                    settings.project_paths_persistence_error.is_none(),
+                    object_case,
+                    "case {raw}"
+                );
+                let strict = load_settings_for_cli_strict_from_path(Some(&path));
+                if object_case {
+                    // Selection succeeded; typed base failure uses defaults plus overlay.
+                    let strict = strict.unwrap();
+                    assert_eq!(strict.room_idle_confirmation_seconds, 15);
+                    assert_eq!(strict.typing_hold_seconds, 7);
+                    assert!(strict.root_token.is_none());
+                    assert!(strict.project_paths_persistence_error.is_none());
+                } else {
+                    assert!(strict.is_err(), "case {raw}");
+                }
                 let cli = load_settings_for_cli_from_path(&path);
                 assert_eq!(cli.room_idle_confirmation_seconds, 15);
                 assert_eq!(cli.typing_hold_seconds, 7);
-                assert!(
-                    save_settings_to_path_preserving_project_paths_typed(&settings, &path).is_err()
+                assert!(cli.root_token.is_none(), "case {raw}");
+                assert_eq!(
+                    cli.project_paths_persistence_error.is_none(),
+                    object_case,
+                    "case {raw}"
                 );
-                assert_eq!(disk_bytes(temp.path()), before);
+                assert!(cli.response_close_enabled, "case {raw}");
+                assert!(settings.project_paths.is_empty());
+                assert!(cli.project_paths.is_empty());
+                assert_eq!(disk_bytes(temp.path()), before, "case {raw}");
+                let error =
+                    save_settings_to_path_preserving_project_paths_typed(&settings, &path)
+                        .unwrap_err();
+                assert_eq!(error.stage, SettingsSaveStage::PreserveDiskGate, "case {raw}");
+                assert_eq!(disk_bytes(temp.path()), before, "case {raw}");
             }
         }
     }
