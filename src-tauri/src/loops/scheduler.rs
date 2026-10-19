@@ -1266,8 +1266,10 @@ mod tests {
             let config = read_loop_config(&dir).unwrap();
             assert!(recorded.iter().any(
                 |(project_dir, loop_dir, loop_id, kind, summary, message)| {
-                    project_dir == project.path()
-                        && loop_dir == &dir
+                    std::fs::canonicalize(project_dir).expect("recorded project exists")
+                        == std::fs::canonicalize(project.path()).expect("fixture project exists")
+                        && std::fs::canonicalize(loop_dir).expect("recorded loop exists")
+                            == std::fs::canonicalize(&dir).expect("fixture loop exists")
                         && loop_id == &config.loop_def.id
                         && kind == "delivered"
                         && summary.is_some()
