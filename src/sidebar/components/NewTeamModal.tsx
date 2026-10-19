@@ -1,5 +1,6 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { Component } from "solid-js";
+import type { TeamAgentSource } from "../../shared/types";
 import { EntityAPI } from "../../shared/ipc";
 import { projectStore } from "../stores/project";
 import { TeamContextAlertsEditor } from "./TeamContextAlertsEditor";
@@ -10,6 +11,8 @@ interface AgentEntry {
   name: string;
   path: string;
   projectName: string;
+  projectPath: string;
+  isLocal: boolean;
 }
 
 interface RepoEntry {
@@ -87,6 +90,10 @@ const NewTeamModal: Component<{
     return last.startsWith("_agent_") ? last : `_agent_${last}`;
   };
 
+  const agentLabel = (agent: AgentEntry) => (
+    <>{agent.name}<Show when={!agent.isLocal}><span class="wizard-agent-project">@{agent.projectName}</span></Show></>
+  );
+
   const canNext1 = createMemo(() => {
     const name = teamName().trim();
     return name.length > 0 && !name.includes("/") && !name.includes("\\") && !name.includes(" ");
@@ -102,16 +109,18 @@ const NewTeamModal: Component<{
     setLoadingAgents(true);
     try {
       const paths = projectStore.projects.map((project) => project.path);
-      const result = await EntityAPI.listAllAgents(paths);
+      const result = await EntityAPI.listAllAgents(paths, props.projectPath);
       setAllAgents(
-        result.map((agent) => ({
-          name: agent.name,
-          path: agent.path,
-          projectName: agent.projectName,
-        })),
+        result.map((agent) => {
+          if (!agent.projectPath?.trim() || typeof agent.isLocal !== "boolean") {
+            throw new Error("Agent project identity is missing. Reload and try again.");
+          }
+          return { ...agent, projectPath: agent.projectPath, isLocal: agent.isLocal };
+        }),
       );
     } catch (error: unknown) {
       console.error("list_all_agents failed:", error);
+      setCreateError(normalizeCaughtError(error, "Failed to load agents"));
     } finally {
       setLoadingAgents(false);
     }
@@ -195,6 +204,15 @@ const NewTeamModal: Component<{
       return;
     }
 
+    const agentSources: TeamAgentSource[] = selectedAgentList().map((agent) => ({
+      agentRef: portableAgentRef(agent.path),
+      sourceProjectPath: agent.projectPath,
+    }));
+    if (new Set(agentSources.map((source) => source.agentRef)).size !== agentSources.length) {
+      setCreateError("Selected agents have the same portable reference. Select only one agent per reference.");
+      return;
+    }
+
     const request = {
       projectPath: props.projectPath,
       name: teamName().trim(),
@@ -205,6 +223,7 @@ const NewTeamModal: Component<{
         agents: Array.from(repo.agents).map(portableAgentRef),
       })),
       contextAlertPercentages: [...validation.canonicalPercentages],
+      agentSources,
     };
 
     setCreating(true);
@@ -217,6 +236,7 @@ const NewTeamModal: Component<{
         request.coordinator,
         request.repos,
         request.contextAlertPercentages,
+        request.agentSources,
       );
       await projectStore.reloadProject(request.projectPath);
       props.onClose();
@@ -281,6 +301,9 @@ const NewTeamModal: Component<{
 
         <Show when={step() === 2}>
           <div class="wizard-body">
+            <Show when={createError()}>
+              <div class="new-agent-error" role="alert" aria-label="Agent selection error">{createError()}</div>
+            </Show>
             <Show when={loadingAgents()}>
               <div class="wizard-loading">Loading agents...</div>
             </Show>
@@ -316,7 +339,7 @@ const NewTeamModal: Component<{
                                 checked={isSelected()}
                                 onChange={() => toggleAgent(agent.path)}
                               />
-                              <span class="wizard-agent-name">{agent.name}</span>
+                              <span class="wizard-agent-name">{agentLabel(agent)}</span>
                             </label>
                             <Show when={isSelected()}>
                               <label class="wizard-coord-label" title="Set as orchestrator">
@@ -438,7 +461,7 @@ const NewTeamModal: Component<{
                                     disabled={creating()}
                                     onChange={() => toggleRepoAgent(repo.url, agent.path)}
                                   />
-                                  <span>{agent.name}</span>
+                                  <span>{agentLabel(agent)}</span>
                                 </label>
                               )}
                             </For>

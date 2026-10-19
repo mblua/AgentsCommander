@@ -34,7 +34,7 @@ function deferred<T>(): Deferred<T> {
 
 function setupTransport(fake: FakeTransport): void {
   fake.resolve("list_all_agents", [
-    { name: "dev-webpage-ui", path: agentPath, projectName: "Project" },
+    { name: "dev-webpage-ui", path: agentPath, projectName: "Project", projectPath, isLocal: true },
   ]);
   fake.resolve("create_team", undefined);
   fake.resolve("discover_project", discovery());
@@ -148,6 +148,7 @@ describe("NewTeamModal context alerts", () => {
             coordinator: "_agent_dev-webpage-ui",
             repos: method === "No repos" ? [] : [{ url: repoUrl, agents: ["_agent_dev-webpage-ui"] }],
             contextAlertPercentages: [],
+            agentSources: [{ agentRef: "_agent_dev-webpage-ui", sourceProjectPath: projectPath }],
           },
         },
       ]);

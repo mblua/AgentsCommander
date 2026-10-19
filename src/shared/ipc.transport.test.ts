@@ -395,6 +395,34 @@ describe("shared ipc transport seam", () => {
     ]);
   });
 
+  it("preserves optional cross-project identity in camelCase envelopes", async () => {
+    const ipc = await import("./ipc");
+    const fake = new FakeTransport();
+    const agents = [{ name: "Role name", description: "", path: "D:/Source/.ac/_agent_one",
+      projectName: "Source", projectPath: "D:/Source", isLocal: false }];
+    fake.resolve("list_all_agents", agents);
+    fake.resolve("create_team", undefined);
+    const restore = ipc.__setTransportForTests(fake);
+    try {
+      expect(await ipc.EntityAPI.listAllAgents(["D:/Source"], "C:/Destination")).toEqual(agents);
+      expect(fake.lastCall("list_all_agents")?.args).toEqual({
+        projectPaths: ["D:/Source"], destinationProjectPath: "C:/Destination",
+      });
+      await ipc.EntityAPI.listAllAgents(["D:/Source"]);
+      expect(fake.lastCall("list_all_agents")?.args).toEqual({ projectPaths: ["D:/Source"] });
+      const sources = [{ agentRef: "_agent_one", sourceProjectPath: "D:/Source" }];
+      await ipc.EntityAPI.createTeam("C:/Destination", "imported", ["_agent_one"], "_agent_one", [], [], sources);
+      expect(fake.lastCall("create_team")?.args).toEqual({
+        projectPath: "C:/Destination", name: "imported", agents: ["_agent_one"],
+        coordinator: "_agent_one", repos: [], contextAlertPercentages: [], agentSources: sources,
+      });
+      await ipc.EntityAPI.createTeam("C:/Destination", "empty", [], "", [], [], []);
+      expect(fake.lastCall("create_team")?.args.agentSources).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
   it("adapts only missing or undefined alert fields to fresh empty arrays", async () => {
     const ipc = await import("./ipc");
     const fake = new FakeTransport();
