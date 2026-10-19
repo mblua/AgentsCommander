@@ -8,9 +8,10 @@
 // FakeTransport seam; the createEffect + 10s keepalive path stays audited by
 // review (team-idle-watcher convention).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createRoot } from "solid-js";
+import { createRoot, onCleanup } from "solid-js";
 import { FakeTransport } from "../../shared/testing/fake-transport";
-import { __setTransportForTests } from "../../shared/ipc";
+import { acquireRoomActivityObserver } from "../stores/room-activity";
+import { NonStopAPI, __setTransportForTests } from "../../shared/ipc";
 import { baseSettings, discovery, resetUiStoresForTests, session } from "../../shared/testing/ui-harness";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
@@ -78,6 +79,7 @@ async function seed(nonStop: NonStopGroupConfig | null, names?: string[]) {
   fake.resolve("get_settings", baseSettings());
   fake.resolve("discover_project", wgDiscovery(names));
   fake.resolve("get_project_groups", { ...defaultGroupsConfig(), nonStop });
+  fake.resolve("non_stop_report", undefined);
   const restore = __setTransportForTests(fake);
   await settingsStore.load();
   await projectStore.createAndLoad(projectPath);
@@ -310,5 +312,40 @@ describe("#2180 nonStopWatchdogClient alarm listener", () => {
     expect(vi.mocked(playNonStopAlarm)).not.toHaveBeenCalled();
 
     dispose();
+  });
+});
+
+describe("confirmed activity report effect", () => {
+  let restore: () => void;
+  let dispose: () => void;
+  beforeEach(() => { resetUiStoresForTests(); workgroupGroupsStore.resetForTests(); });
+  afterEach(() => {
+    dispose?.(); restore?.(); resetUiStoresForTests(); workgroupGroupsStore.resetForTests();
+    vi.restoreAllMocks(); vi.useRealTimers();
+  });
+  it("reports at expiry, keepalive cannot reset it, removal omits the group and cleanup stops reports", async () => {
+    restore = await seed(activeNonStop(), ["wg-1-dev-team"]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
+    sessionsStore.setSessions([workingSession("wg-1-dev-team")]);
+    const report = vi.spyOn(NonStopAPI, "report");
+    dispose = createRoot((d) => {
+      onCleanup(acquireRoomActivityObserver()); startNonStopWatchdogClient(); return d;
+    });
+    const last = () => report.mock.calls[report.mock.calls.length - 1][0];
+    expect(last()[0]).toMatchObject({ working: 1, disparity: false });
+    const initial = report.mock.calls.length;
+    sessionsStore.setSessions([]);
+    vi.advanceTimersByTime(10000);
+    expect(report).toHaveBeenCalledTimes(initial + 1);
+    expect(last()[0]).toMatchObject({ working: 1, disparity: false });
+    vi.advanceTimersByTime(4999);
+    expect(last()[0].working).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(report).toHaveBeenCalledTimes(initial + 2);
+    expect(last()[0]).toMatchObject({ working: 0, disparity: true, notWorkingWorkgroups: ["wg-1-dev-team"] });
+    projectStore.clear(); expect(last()).toEqual([]);
+    vi.advanceTimersByTime(10000); expect(last()).toEqual([]);
+    dispose(); const count = report.mock.calls.length;
+    vi.advanceTimersByTime(30000); expect(report).toHaveBeenCalledTimes(count);
   });
 });

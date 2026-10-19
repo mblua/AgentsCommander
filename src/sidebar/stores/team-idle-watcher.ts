@@ -1,38 +1,40 @@
 
 import { createEffect, createRoot, createSignal } from "solid-js";
-import type { Session } from "../../shared/types";
+import type { AcWorkgroup, Session } from "../../shared/types";
 import { playTeamIdleBeep } from "../../shared/sound";
 import { settingsStore } from "../../shared/stores/settings";
 import { sessionsStore } from "./sessions";
 import { projectStore } from "./project";
 import type { ProjectState } from "./project";
+import { findReplicaSession, isRoomSessionBusy, roomCiRunning, roomIsRawActive } from "../components/room-session-source";
+import { confirmedRoomIsActive, roomActivityKey } from "./room-activity";
 
 export const GRACE_MS = 4000;
 
 const [osFocused, setOsFocused] = createSignal(true);
 
 export function shouldSuppressBeep(
-  wgPath: string,
-  focusedWg: string | null,
+  roomKey: string,
+  focusedRoomKey: string | null,
   graceUntil: ReadonlyMap<string, number>,
   now: number,
 ): boolean {
-  if (wgPath === focusedWg) return true;
-  const until = graceUntil.get(wgPath);
+  if (roomKey === focusedRoomKey) return true;
+  const until = graceUntil.get(roomKey);
   return until !== undefined && now < until;
 }
 
 export function updateGraceOnFocusChange(
-  previousFocusedWg: string | null,
-  focusedWg: string | null,
+  previousFocusedRoomKey: string | null,
+  focusedRoomKey: string | null,
   graceUntil: Map<string, number>,
   now: number,
   graceMs: number,
 ): string | null {
-  if (previousFocusedWg !== focusedWg && previousFocusedWg !== null) {
-    graceUntil.set(previousFocusedWg, now + graceMs);
+  if (previousFocusedRoomKey !== focusedRoomKey && previousFocusedRoomKey !== null) {
+    graceUntil.set(previousFocusedRoomKey, now + graceMs);
   }
-  return focusedWg;
+  return focusedRoomKey;
 }
 
 async function startOsFocusListener(): Promise<() => void> {
@@ -58,49 +60,47 @@ function isExited(status: Session["status"]): boolean {
 }
 
 export function isBusy(session: Session, comanaged: boolean): boolean {
-  if (isExited(session.status)) return false;
-  // #2442 - an armed Co-managed session records waiting but is mid-cycle.
-  if (comanaged) return true;
-  return !session.waitingForInput;
+  return isRoomSessionBusy(session, comanaged);
 }
 
-function registerSessionsForProjects(
+type RoomSample = {
+  projectPath: string;
+  room: AcWorkgroup;
+  busy: Map<string, boolean>;
+  ci: boolean;
+  confirmed: boolean;
+};
+type CompletionLatch = {
+  contributingIds: Set<string>;
+  ciAlreadyRunning: boolean;
+  generation: number;
+};
+
+function registerRoomSessions(
   projects: readonly ProjectState[],
-  sessionToWg: Map<string, string>,
-  findSessionByName: (name: string) => Session | undefined,
-): void {
+  sessionToRoom: Map<string, string>,
+): Map<string, RoomSample> {
+  sessionToRoom.clear();
+  const currentByRoom = new Map<string, RoomSample>();
   for (const project of projects) {
-    for (const wg of project.workgroups) {
-      for (const replica of wg.agents) {
-        const session = findSessionByName(`${wg.name}/${replica.name}`);
-        if (session && !sessionToWg.has(session.id)) {
-          sessionToWg.set(session.id, wg.path);
-        }
+    for (const room of project.workgroups) {
+      const key = roomActivityKey(project.path, room.path);
+      if (key === null) continue;
+      const busy = new Map<string, boolean>();
+      for (const replica of room.agents) {
+        const session = findReplicaSession(room, replica);
+        if (!session || isExited(session.status)) continue;
+        sessionToRoom.set(session.id, key);
+        busy.set(session.id, isBusy(session, !!sessionsStore.comanagedBySessionId[session.id]));
       }
+      currentByRoom.set(key, {
+        projectPath: project.path, room, busy,
+        ci: roomCiRunning(room),
+        confirmed: confirmedRoomIsActive(project.path, room),
+      });
     }
   }
-}
-
-function collectBusyByWg(
-  sessionToWg: ReadonlyMap<string, string>,
-  sessionsById: ReadonlyMap<string, Session>,
-): Map<string, Map<string, boolean>> {
-  const currentByWg = new Map<string, Map<string, boolean>>();
-  for (const [sessionId, wgPath] of sessionToWg) {
-    const session = sessionsById.get(sessionId);
-    if (!session) continue;
-    if (isExited(session.status)) continue;
-    let inner = currentByWg.get(wgPath);
-    if (!inner) {
-      inner = new Map<string, boolean>();
-      currentByWg.set(wgPath, inner);
-    }
-    inner.set(
-      sessionId,
-      isBusy(session, sessionsStore.comanagedBySessionId[session.id] ?? false),
-    );
-  }
-  return currentByWg;
+  return currentByRoom;
 }
 
 export function hasBusyToIdleTransition(
@@ -122,113 +122,103 @@ export function allSessionsIdle(currentBusy: ReadonlyMap<string, boolean>): bool
   return true;
 }
 
-export function beepIdleTransitions(
-  currentByWg: ReadonlyMap<string, ReadonlyMap<string, boolean>>,
-  previousByWg: ReadonlyMap<string, ReadonlyMap<string, boolean>>,
-  focusedWg: string | null,
-  graceUntil: ReadonlyMap<string, number>,
-  now: number,
-): void {
-  for (const [wgPath, currentBusy] of currentByWg) {
-    const previousBusy = previousByWg.get(wgPath);
-    if (!previousBusy) continue;
-    if (!hasBusyToIdleTransition(previousBusy, currentBusy)) continue;
-    if (!allSessionsIdle(currentBusy)) continue;
-    if (shouldSuppressBeep(wgPath, focusedWg, graceUntil, now)) continue;
-    void playTeamIdleBeep();
+function latchInvalid(latch: CompletionLatch, sample: RoomSample): boolean {
+  if (!allSessionsIdle(sample.busy)) return true;
+  for (const id of latch.contributingIds) {
+    if (!sample.busy.has(id)) return true;
   }
+  return sample.ci && !latch.ciAlreadyRunning;
+}
+
+function captureCompletion(
+  previous: ReadonlyMap<string, boolean> | undefined,
+  sample: RoomSample,
+  generation: number,
+): CompletionLatch | undefined {
+  if (!previous || !allSessionsIdle(sample.busy) || !hasBusyToIdleTransition(previous, sample.busy)) return;
+  const contributingIds = new Set<string>();
+  for (const [id, busy] of previous) {
+    if (busy && sample.busy.get(id) === false) contributingIds.add(id);
+  }
+  return { contributingIds, ciAlreadyRunning: sample.ci, generation };
 }
 
 export function pruneExpiredGrace(graceUntil: Map<string, number>, now: number): void {
-  for (const [wgPath, until] of graceUntil) {
-    if (now >= until) graceUntil.delete(wgPath);
-  }
-}
-
-function replacePreviousByWg(
-  previousByWg: Map<string, Map<string, boolean>>,
-  currentByWg: ReadonlyMap<string, ReadonlyMap<string, boolean>>,
-): void {
-  previousByWg.clear();
-  for (const [wgPath, perSession] of currentByWg) {
-    previousByWg.set(wgPath, new Map(perSession));
+  for (const [roomKey, until] of graceUntil) {
+    if (now >= until) graceUntil.delete(roomKey);
   }
 }
 
 export function startTeamIdleWatcher(): () => void {
   return createRoot((dispose) => {
-    const sessionToWg = new Map<string, string>();
-
-    const previousByWg = new Map<string, Map<string, boolean>>();
-
+    const sessionToRoom = new Map<string, string>();
+    const previousByRoom = new Map<string, Map<string, boolean>>();
+    const latches = new Map<string, CompletionLatch>();
     const graceUntil = new Map<string, number>();
-
-    let previousFocusedWg: string | null = null;
-
+    let previousFocusedRoomKey: string | null = null;
     let initialized = false;
-
+    let generation = 0;
     let disposed = false;
     let unlistenOsFocus: (() => void) | null = null;
     void startOsFocusListener().then((unlisten) => {
       if (disposed) {
-        try {
-          unlisten();
-        } catch {
-        }
+        try { unlisten(); } catch {}
         return;
       }
       unlistenOsFocus = unlisten;
     });
 
     createEffect(() => {
-      const sessions = sessionsStore.sessions;
-      const projects = projectStore.projects;
       const enabled = settingsStore.current?.teamIdleBeepEnabled ?? true;
+      const currentByRoom = registerRoomSessions(projectStore.projects, sessionToRoom);
       const activeId = sessionsStore.activeId;
-      const hasOsFocus = osFocused();
-
-      registerSessionsForProjects(projects, sessionToWg, (name) =>
-        sessionsStore.findSessionByName(name),
-      );
-
-      const sessionsById = new Map<string, Session>();
-      for (const s of sessions) sessionsById.set(s.id, s);
-
-      const currentByWg = collectBusyByWg(sessionToWg, sessionsById);
-
-      const focusedWg =
-        hasOsFocus && activeId ? sessionToWg.get(activeId) ?? null : null;
-
-      if (!initialized) {
-        initialized = true;
-        replacePreviousByWg(previousByWg, currentByWg);
-        return;
+      const focusedRoomKey = osFocused() && activeId ? sessionToRoom.get(activeId) ?? null : null;
+      const now = Date.now();
+      if (initialized) {
+        previousFocusedRoomKey = updateGraceOnFocusChange(
+          previousFocusedRoomKey, focusedRoomKey, graceUntil, now, GRACE_MS,
+        );
       }
-
-      previousFocusedWg = updateGraceOnFocusChange(
-        previousFocusedWg,
-        focusedWg,
-        graceUntil,
-        Date.now(),
-        GRACE_MS,
-      );
-
-      if (enabled) {
-        const now = Date.now();
-        beepIdleTransitions(currentByWg, previousByWg, focusedWg, graceUntil, now);
-        pruneExpiredGrace(graceUntil, now);
+      for (const key of latches.keys()) {
+        if (!currentByRoom.has(key) || !enabled) latches.delete(key);
       }
-
-      replacePreviousByWg(previousByWg, currentByWg);
+      for (const [key, sample] of currentByRoom) {
+        let latch = latches.get(key);
+        const invalid = latch !== undefined && latchInvalid(latch, sample);
+        if (invalid) {
+          latches.delete(key);
+          latch = undefined;
+        }
+        // Capture before history replacement; an invalidated contributing ID
+        // discards the entire episode, even if a surviving ID just went idle.
+        if (enabled && !invalid && !latch) {
+          latch = captureCompletion(previousByRoom.get(key), sample, ++generation);
+          if (latch) latches.set(key, latch);
+        }
+        if (!latch) continue;
+        if (!sample.ci) latch.ciAlreadyRunning = false;
+        // This same effect runs on latch creation AND confirmation publication.
+        // Sampling rebuilt exact live identities; no remembered second edge.
+        if (sample.confirmed || roomIsRawActive(sample.room)) continue;
+        latches.delete(key);
+        if (!shouldSuppressBeep(key, focusedRoomKey, graceUntil, now)) void playTeamIdleBeep();
+      }
+      previousByRoom.clear();
+      for (const [key, sample] of currentByRoom) previousByRoom.set(key, sample.busy);
+      initialized = true;
+      pruneExpiredGrace(graceUntil, now);
     });
 
     return () => {
+      if (disposed) return;
       disposed = true;
+      generation++;
+      latches.clear();
+      previousByRoom.clear();
+      sessionToRoom.clear();
+      graceUntil.clear();
       if (unlistenOsFocus) {
-        try {
-          unlistenOsFocus();
-        } catch {
-        }
+        try { unlistenOsFocus(); } catch {}
         unlistenOsFocus = null;
       }
       dispose();
