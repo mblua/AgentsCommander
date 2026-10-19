@@ -9,28 +9,30 @@ AgentsCommander keeps its on-disk data in two distinct trees:
 | Tree | Location | Scope |
 |---|---|---|
 | Project `.ac/` | `<project>/.ac/` | Shared team and tool configuration. Version it in its own [Agents config repo](../glossary.md#agents-config-repo) (recommended), track it inside a work repo, or leave it untracked |
-| Application config dir | Selected by the exact binary version; see below | Machine-local application state, never shared |
+| Application config dir | Selected by the config-dir rule below | Machine-local application state, never shared |
 
-In the deployment documented below, the adjacent candidate is selected: the binary is `agentscommander_ac2.exe` beside the project root, so the two trees are `D:\0_repos\AgentsCommander_iac\.ac\` and `D:\0_repos\AgentsCommander_iac\.agentscommander_ac2\`. This example describes that deployment, not every package layout.
+In the deployment documented below, the adjacent candidate is selected: the binary is `agentscommander_ac2.exe` beside the project root, so the two trees are `D:\0_repos\AgentsCommander_iac\.ac` and `D:\0_repos\AgentsCommander_iac\.agentscommander_ac2`. This example describes that deployment, not every package layout.
 
 ## The config-dir selection rule
 
-Production resolves the application config directory once per process (`src-tauri/src/config/mod.rs`, `resolve_instance_location`), but the resolver changed after the latest published release:
+AC resolves the application config directory once per process (`src-tauri/src/config/mod.rs`, `resolve_instance_location`):
 
-- **Published `v0.30.3`:** when `current_exe()` has a parent and stem, AC immediately selects `<native-executable-folder>/.<native-executable-stem>`. It uses `$HOME/.agentscommander-new` only when those path parts cannot be derived. The release build has no public `AGENTSCOMMANDER_CONFIG_DIR`, `portable.txt`, writability probe, or read-only-candidate fallback.
-- **`v0.33.0` and `main`:** a nonblank public override wins. Otherwise an executable without an underscore suffix, such as `agentscommander.exe`, uses `$HOME/.agentscommander` and never checks an adjacent directory. An executable with an underscore suffix, `agentscommander_<suffix>.exe`, probes the writability of its adjacent `.agentscommander_<suffix>` directory and uses only that directory, never `$HOME`. A conclusively unwritable directory stops startup, and the message tells you to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`. An indeterminate write result also stops startup, and that message tells you to set `AGENTSCOMMANDER_CONFIG_DIR`. Neither a `v0.33.0` nor a `main` build moves, copies or merges configuration from an older folder; each reads a folder only when this rule selects it. See [Settings left by published releases](../features/portable-instances.md#settings-left-by-published-releases).
-- **Any other release:** inspect its exact tag and apply only the behavior found there. Do not infer a cutoff between the two snapshots above.
+- A nonblank `AGENTSCOMMANDER_CONFIG_DIR` override wins; AC uses its value verbatim. An override skips adjacent-directory selection and its write probe.
+- Without an override, an executable without an underscore suffix, such as `agentscommander.exe`, uses `$HOME/.agentscommander` and never checks an adjacent directory.
+- An executable with an underscore suffix, `agentscommander_<suffix>.exe`, probes the writability of its adjacent `.agentscommander_<suffix>` directory and uses only that directory, never `$HOME`. A conclusively unwritable directory stops startup, and the message tells you to move the executable to a writable folder or set `AGENTSCOMMANDER_CONFIG_DIR`. An indeterminate write result also stops startup, and that message tells you to set `AGENTSCOMMANDER_CONFIG_DIR`.
 
-Debug `v0.30.3` builds may use the internal `AGENTSCOMMANDER_TEST_CONFIG_DIR`; that is not a public release override. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the full operational rule, including AppImage behavior.
+AC does not automatically discover, move, copy or merge configuration from older folders; it reads a folder only when this rule selects it. See [Settings left by published releases](../features/portable-instances.md#settings-left-by-published-releases) for historical and recovery context.
 
-These examples apply only after the adjacent candidate is selected:
+Debug builds also accept the internal `AGENTSCOMMANDER_TEST_CONFIG_DIR` when no nonblank public override is set; release builds ignore it. See [Portable instances](../features/portable-instances.md#config-directory-rule) for the full operational rule, including AppImage behavior.
+
+These examples assume no config-directory override and a successful write probe for the suffixed executable:
 
 ```text
-C:\tools\agentscommander.exe        ->  C:\tools\.agentscommander\
+C:\tools\agentscommander.exe        ->  $HOME/.agentscommander/
 C:\tools\agentscommander_ac2.exe    ->  C:\tools\.agentscommander_ac2\
 ```
 
-- The adjacent candidate's stem comes from the running executable only. Renaming changes that candidate. Only a resolver verified to include the public environment variable can override it, and only a resolver verified to include write probes tests candidate writability before selection.
+- The adjacent candidate's stem comes from the running executable only. Renaming changes that candidate; the override takes precedence over it. Only suffixed executables without an effective override reach the adjacent write probe.
 - Replica agent directories inside rooms always follow the executable-stem naming, `.<stem>` (example: `__agent_dev-rust/.agentscommander_ac2/`); that local name is independent of the application's selected config location.
 
 The rule has two consequences:
@@ -82,8 +84,8 @@ This deployment's selected machine-local application state. Never commit or shar
 | `settings.30.instance.no-git.json` | Per-instance settings | `config/settings.rs` |
 | `settings.30.instance.no-git.json.lock` | Write lock for settings writers | `config/local_config_io.rs` |
 | `settings.30.instance.no-git.backup.1.json` .. `settings.30.instance.no-git.backup.5.json` | Bounded history of previous `settings.30.instance.no-git.json` versions; slot 1 is the version the most recent save replaced, slot 5 the oldest kept. Written only when a save actually changed the file. | `config/settings.rs` |
-| `settings.30.instance.no-git.pre-384-v1.json` | Pre-v384 settings backup taken during the settings migration | `config/settings.rs` |
-| `agents.30.instance.no-git.json` | Coding agents (`agents`) and their profiles (`codingAgentProfiles`), moved out of the settings file on the first start of the file-naming release | `config/settings.rs` |
+| `settings.30.instance.no-git.pre-384-v1.json` | Settings backup taken before the settings migration | `config/settings.rs` |
+| `agents.30.instance.no-git.json` | Coding agents (`agents`) and their profiles (`codingAgentProfiles`), moved out of the settings file during the file-naming migration | `config/settings.rs` |
 | `naming-migration.state.no-git.json` | Journal of the one-shot file-naming migration: what it renamed and set aside. Also marks the migration done | `config/naming_migration.rs` |
 | `blocking-menus.10.default.no-git.json` | Blocking-menu patterns AC ships; rewritten at start when the content differs from the binary's | `config/settings.rs` |
 | `blocking-menus.50.personal.no-git.json` | User-owned blocking-menu patterns; read at start, written by AC only when the #1905 migration succeeds (once on a normal upgrade, or when a later retry succeeds after an earlier failure; never overwriting an existing entry) | `config/settings.rs` |
@@ -126,7 +128,7 @@ This deployment's selected machine-local application state. Never commit or shar
 
 The seed manifest at `.ac/seed-manifest.toml` records the project-scoped files AC last seeded into `.ac`, one row per project-relative logical destination: the project context templates (`.ac/Context.AgentsCommander.md`, `.ac/Context.coordinator.md`) and the managed catalog publication (`.ac/coding-agents/agents.10.default.json`, scope `catalog:coding-agents`). Replica config folders are **not recorded**: since [#1480](https://github.com/mblua/AgentsCommander/issues/1480) a config-seed publication creates no rows, and a manifest written by an older build may still carry legacy `replica_config_file` rows. The catalog's user-written `agents.40.project.json`, `agents.50.personal.no-git.json` and migration sidecars are never rowed. `.seed-manifest.lock` serializes the writes. See [Seed manifest](../features/seed-manifest.md) for the schema and [Config seed](../features/config-seed.md) for what gets copied.
 
-The manifest never tracks the selected application config dir. Under the `v0.33.0` and `main` resolver, a public override can place that directory anywhere, including under a project tree, but it remains machine-local state outside seed-manifest ownership. Published `v0.30.3` has no public override.
+The manifest never tracks the selected application config dir. A public override can place that directory anywhere, including under a project tree, but it remains machine-local state outside seed-manifest ownership.
 
 ## Shared vs per-instance in one rule
 
