@@ -95,6 +95,7 @@ describe("SettingsModal General categories + search (#2704)", () => {
     if ("containerOptionsEnabled" in overrides && overrides.containerOptionsEnabled === undefined) {
       delete snapshot.containerOptionsEnabled;
     }
+    snapshot.settingsFilePath = "C:/instance/settings.30.instance.no-git.json";
     fake.resolve("get_settings", snapshot);
     fake.resolve("get_web_server_status", false);
     fake.resolve("get_coding_agent_catalog", []);
@@ -106,6 +107,7 @@ describe("SettingsModal General categories + search (#2704)", () => {
       fake,
     );
     await waitFor(() => expect(rendered.root.querySelector(LAYOUT)).toBeTruthy());
+    await waitFor(() => expect(rendered.root.textContent).toContain(snapshot.settingsFilePath));
     const $ = <T extends Element = HTMLElement>(sel: string) => rendered.root.querySelector<T>(sel)!;
     return { fake, rendered, onClose, $ };
   }
@@ -119,6 +121,100 @@ describe("SettingsModal General categories + search (#2704)", () => {
     el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
   }
 
+
+  it.each([false, true])("room preference is enabled independently of sounds=%s, indexed and described", async (sounds) => {
+    const { rendered, $ } = await renderModal({ roomIdleConfirmationSeconds: undefined, soundsEnabled: sounds, teamIdleBeepEnabled: sounds });
+    try {
+      $<HTMLButtonElement>(cat("agents")).click();
+      const input = $<HTMLInputElement>(tid("settings.general.roomIdleConfirmationSeconds"));
+      expect(input.value).toBe("15");
+      expect(input.disabled).toBe(false);
+      expect([input.type, input.min, input.max, input.step]).toEqual(["number", "1", "3600", "1"]);
+      expect(input.closest("label")?.textContent).toContain("Idle confirmation delay (seconds)");
+      const section = input.closest(".settings-section")!;
+      expect(section.textContent).toContain("pending delays keep their captured value");
+      expect(section.textContent).toContain("Non-stop tolerance is separate");
+      expect(section.textContent).toContain("personal overrides take precedence");
+      type($<HTMLInputElement>(SEARCH), "room activity");
+      $<HTMLButtonElement>(tid("settings.general.result.roomIdleConfirmationSeconds")).click();
+      await waitFor(() => expect(document.activeElement).toBe(input));
+      expect($(pane("agents")).hidden).toBe(false);
+    } finally { rendered.cleanup(); }
+  });
+
+  it("shows the resolved file path and cancels without saving, then reseeds on reopen", async () => {
+    const m = await renderModal({ roomIdleConfirmationSeconds: 60 });
+    try {
+      const input = m.$<HTMLInputElement>(tid("settings.general.roomIdleConfirmationSeconds"));
+      expect(input.value).toBe("60");
+      expect(input.closest(".settings-section")?.textContent).toContain("C:/instance/settings.30.instance.no-git.json");
+      type(input, "");
+      m.$<HTMLButtonElement>(tid("settings.cancel")).click();
+      expect(m.onClose).toHaveBeenCalledTimes(1);
+      expect(m.fake.lastCall("save_settings_draft")).toBeUndefined();
+    } finally { m.rendered.cleanup(); }
+    const reopened = await renderModal({ roomIdleConfirmationSeconds: 60 });
+    try { expect(reopened.$<HTMLInputElement>(tid("settings.general.roomIdleConfirmationSeconds")).value).toBe("60"); }
+    finally { reopened.rendered.cleanup(); }
+  });
+
+  it("keeps room draft and error after a failed Save", async () => {
+    const m = await renderModal({ roomIdleConfirmationSeconds: 60 });
+    try {
+      m.fake.reject("save_settings_draft", "room preference write failed");
+      const input = m.$<HTMLInputElement>(tid("settings.general.roomIdleConfirmationSeconds"));
+      type(input, "30"); m.$<HTMLButtonElement>(SAVE).click();
+      await waitFor(() => expect(m.rendered.root.querySelector(".modal-save-error")?.textContent).toContain("room preference write failed"));
+      expect(input.value).toBe("30"); expect(m.onClose).not.toHaveBeenCalled();
+    } finally { m.rendered.cleanup(); }
+  });
+
+  it("reseeds an untouched room preference from fresh authority after a later Save conflict", async () => {
+    const m = await renderModal({ roomIdleConfirmationSeconds: 60 });
+    try {
+      m.fake.resolve("get_settings", settingsSnapshot({ roomIdleConfirmationSeconds: 240 }));
+      m.fake.reject("set_terminal_snapshots_enabled", "snapshot write failed");
+      m.$<HTMLInputElement>(tid("settings.general.terminalSnapshotsEnabled")).click();
+      m.$<HTMLButtonElement>(SAVE).click();
+      await waitFor(() => expect(m.rendered.root.querySelector(".modal-save-error")?.textContent).toContain("snapshot write failed"));
+      expect((m.fake.lastCall("save_settings_draft")!.args as { draft: AppSettings }).draft.roomIdleConfirmationSeconds).toBe(240);
+      expect(m.$<HTMLInputElement>(tid("settings.general.roomIdleConfirmationSeconds")).value).toBe("240");
+      expect(m.onClose).not.toHaveBeenCalled();
+    } finally { m.rendered.cleanup(); }
+  });
+
+  it.each([1, 3600])("saves room delay %s through the actual handler", async (seconds) => {
+    const { fake, rendered, onClose, $ } = await renderModal();
+    try {
+      type($<HTMLInputElement>(tid("settings.general.roomIdleConfirmationSeconds")), String(seconds));
+      $<HTMLButtonElement>(SAVE).click();
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      const draft = (fake.lastCall("save_settings_draft")!.args as { draft: AppSettings }).draft;
+      expect(draft.roomIdleConfirmationSeconds).toBe(seconds);
+    } finally { rendered.cleanup(); }
+    const reopened = await renderModal({ roomIdleConfirmationSeconds: seconds });
+    try { expect(reopened.$<HTMLInputElement>(tid("settings.general.roomIdleConfirmationSeconds")).value).toBe(String(seconds)); }
+    finally { reopened.rendered.cleanup(); }
+  });
+
+  it.each(["", "0", "-1", "12.5", "3601", "Infinity", "text"])("blocks invalid room delay %j and accepts correction", async (raw) => {
+    const { fake, rendered, $ } = await renderModal();
+    try {
+      const input = $<HTMLInputElement>(tid("settings.general.roomIdleConfirmationSeconds"));
+      type(input, raw);
+      expect(input.value).toBe(["Infinity", "text"].includes(raw) ? "" : raw);
+      expect($(cat("agents")).getAttribute("data-ac-state")).toBe("invalid");
+      expect($(tid("settings.general.roomIdleConfirmationSeconds.error"))).toBeTruthy();
+      expect($<HTMLButtonElement>(SAVE).disabled).toBe(true);
+      $<HTMLButtonElement>(SAVE).click();
+      expect(fake.lastCall("save_settings_draft")).toBeUndefined();
+      type(input, "30");
+      expect($<HTMLButtonElement>(SAVE).disabled).toBe(false);
+      $<HTMLButtonElement>(SAVE).click();
+      await waitFor(() => expect(fake.lastCall("save_settings_draft")).toBeTruthy());
+      expect((fake.lastCall("save_settings_draft")!.args as { draft: AppSettings }).draft.roomIdleConfirmationSeconds).toBe(30);
+    } finally { rendered.cleanup(); }
+  });
 
   it.each([undefined, false, true])("filters container controls and search with flag %s", async (flag) => {
     const { rendered, $ } = await renderModal({ containerOptionsEnabled: flag });
