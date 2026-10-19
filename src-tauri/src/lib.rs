@@ -1472,7 +1472,13 @@ struct ScraperPatterns {
 impl ContextPatternSource for ScraperPatterns {
     fn patterns(&self) -> futures::future::BoxFuture<'_, HashMap<String, String>> {
         Box::pin(async move {
-            let settings = self.settings.read().await;
+            let settings = match self.settings.current_read().await {
+                Ok(settings) => settings,
+                Err(error) => {
+                    log::debug!("[context] settings unavailable; tick skipped: {error}");
+                    return HashMap::new();
+                }
+            };
             settings
                 .agents
                 .iter()
@@ -1652,7 +1658,13 @@ impl QuotaSources {
 impl QuotaSourceProvider for QuotaSources {
     fn sources(&self) -> futures::future::BoxFuture<'_, HashMap<String, AgentQuotaSource>> {
         Box::pin(async move {
-            let settings = self.settings.read().await;
+            let settings = match self.settings.current_read().await {
+                Ok(settings) => settings,
+                Err(error) => {
+                    log::debug!("[quota] settings unavailable; tick skipped: {error}");
+                    return HashMap::new();
+                }
+            };
             Self::sources_map(&settings)
         })
     }
@@ -2079,7 +2091,13 @@ impl WatcherPatternSource for WatcherPatterns {
     ) -> futures::future::BoxFuture<'_, HashMap<String, crate::pty::watchers::AgentResolution>>
     {
         Box::pin(async move {
-            let settings = self.settings.read().await;
+            let settings = match self.settings.current_read().await {
+                Ok(settings) => settings,
+                Err(error) => {
+                    log::debug!("[watchers] settings unavailable; tick skipped: {error}");
+                    return HashMap::new();
+                }
+            };
 
             // The agent list is cloned only when at least one watcher could possibly use it.
             // Otherwise this ran five times a second, forever, in every installation that
@@ -2388,6 +2406,11 @@ pub(crate) fn spawn_restore_startup(
         // skipping the startup continuation. Mirrors the FinishGuard "never
         // wedge" rule from #1327.
         let body = std::panic::AssertUnwindSafe(async move {
+            // An unavailable owner must not restore from a previously captured value.
+            if let Err(error) = settings_state_clone.current_read().await {
+                log::debug!("[restore] settings unavailable; restore skipped: {error}");
+                return;
+            }
             let mut persisted = match persisted {
                 Ok(persisted) => persisted,
                 Err(error) => {
@@ -2447,7 +2470,13 @@ pub(crate) fn spawn_restore_startup(
                             let last_coding_agent =
                                 crate::config::root_agent::read_last_coding_agent(&root_path);
                             let should_auto_create = {
-                                let cfg = settings_state_clone.read().await;
+                                let cfg = match settings_state_clone.current_read().await {
+                                    Ok(settings) => settings,
+                                    Err(error) => {
+                                        log::debug!("[restore] settings unavailable; restore skipped: {error}");
+                                        return;
+                                    }
+                                };
                                 should_auto_create_root_agent_on_first_restore(
                                     &cfg,
                                     last_coding_agent.as_deref(),
@@ -4612,12 +4641,17 @@ pub fn run(
             {
                 let app_for_hotkey = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let configured = app_for_hotkey
-                        .state::<SettingsState>()
-                        .read()
-                        .await
-                        .screenshot_capture_hotkey
-                        .clone();
+                    let configured = {
+                        let settings = app_for_hotkey.state::<SettingsState>();
+                        let guard = match settings.current_read().await {
+                            Ok(settings) => settings,
+                            Err(error) => {
+                                log::debug!("[screenshot] hotkey registration skipped: {error}");
+                                return;
+                            }
+                        };
+                        guard.screenshot_capture_hotkey.clone()
+                    };
                     match crate::screenshot::register_configured_hotkey(&app_for_hotkey, &configured)
                     {
                         Ok(()) => log::info!(
@@ -6460,17 +6494,17 @@ async fn surface_co_managed_user_message<R: tauri::Runtime>(
 /// Read the six `AppSettings` Jev fields into the leaf's plain value type.
 async fn co_managed_jev_settings<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-) -> capture::jev::JevSettings {
+) -> Result<capture::jev::JevSettings, config::settings::SettingsOwnerError> {
     let settings = app.state::<SettingsState>();
-    let guard = settings.read().await;
-    capture::jev::JevSettings {
+    let guard = settings.current_read().await?;
+    Ok(capture::jev::JevSettings {
         api_key: guard.jev_api_key.clone(),
         model: guard.jev_model.clone(),
         endpoint: guard.jev_endpoint.clone(),
         timeout_secs: guard.jev_timeout_secs,
         threshold: guard.jev_threshold,
         margin: guard.jev_margin,
-    }
+    })
 }
 
 /// Load and validate the room's catalog through the leaf loader. A missing
@@ -6959,6 +6993,13 @@ async fn co_managed_cycle<R: tauri::Runtime>(
     expected_seq: u64,
     candidate: &Arc<capture::record::CapturedRecord>,
 ) -> CoManagedOutcome {
+    let settings = match co_managed_jev_settings(app).await {
+        Ok(settings) => settings,
+        Err(error) => {
+            log::debug!("[co-managed] cycle skipped: {error}");
+            return CoManagedOutcome::Done(error.to_string());
+        }
+    };
     let session = {
         let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let guard = manager.read().await;
@@ -7007,7 +7048,6 @@ async fn co_managed_cycle<R: tauri::Runtime>(
 
     // (2) Classify through the phase-6 leaf call.
     let catalog = co_managed_catalog(room_root);
-    let settings = co_managed_jev_settings(app).await;
     let outcome = {
         let network = app.state::<crate::network::OutboundNetwork>();
         capture::jev::classify(
@@ -7023,7 +7063,13 @@ async fn co_managed_cycle<R: tauri::Runtime>(
     // (3) Decide before committing, so an unreachable peer never spends budget.
     let project_paths = {
         let settings = app.state::<SettingsState>();
-        let guard = settings.read().await;
+        let guard = match settings.current_read().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::debug!("[co-managed] routing skipped: {error}");
+                return CoManagedOutcome::Done(error.to_string());
+            }
+        };
         co_managed_project_paths(&guard.project_paths, room_root)
     };
     let route = resolve_co_managed_route(outcome, &catalog, &from_fqn, &project_paths, &text);
@@ -7421,7 +7467,13 @@ async fn release_room_reader_demands_when_globally_off<R: tauri::Runtime>(
     let Some(settings) = app.try_state::<SettingsState>() else {
         return false;
     };
-    let enabled = settings.read().await.co_managed_enabled;
+    let enabled = match settings.current_read().await {
+        Ok(settings) => settings.co_managed_enabled,
+        Err(error) => {
+            log::debug!("[co-managed] global-off sweep skipped: {error}");
+            return false;
+        }
+    };
     if crate::config::co_managed::globally_capturable(enabled) {
         return false;
     }
@@ -9962,6 +10014,140 @@ mod tests {
             }
         });
         (format!("http://127.0.0.1:{port}/v1/systemone"), hits)
+    }
+
+    #[tokio::test]
+    async fn e2992_p43_invalid_no_co_managed_budget() {
+        use crate::config::settings::{SettingsAvailability, SettingsOwner, SettingsPublisher};
+        use tauri::Manager;
+
+        let fixture = make_co_managed_fixture();
+        let (endpoint, hits) = spawn_jev_listener(vec![("to-peer", 0.9), ("to-user", 0.1)]).await;
+        let (seed_app, _, _) = co_managed_app(&fixture, endpoint, true);
+        let settings = seed_app
+            .state::<SettingsState>()
+            .current_snapshot()
+            .await
+            .unwrap();
+        let instance = tempfile::tempdir().unwrap();
+        let path = instance.path().join("settings.json");
+        std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&owner))
+            .manage(Arc::clone(&manager))
+            .manage(crate::network::OutboundNetwork::new().unwrap())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let ready = super::co_managed_jev_settings(app.handle()).await.unwrap();
+        assert_eq!(
+            ready.api_key, settings.jev_api_key,
+            "Ready retains the actual configuration"
+        );
+        let registry = Arc::new(CaptureRegistry::new());
+        let session_id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let (slot, candidate) = install_candidate(&registry, session_id, "candidate text");
+        let seq = slot.seq();
+        let state_path =
+            crate::config::co_managed::co_managed_dir(&fixture.room_root).join("state.json");
+        let budget = br#"{"spends_since_recharge":1,"recharge_stamp":1}"#;
+        std::fs::write(&state_path, budget).unwrap();
+        let report = owner
+            .with_operation("p43-invalid", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |path| {
+                    std::fs::write(path, b"{").map_err(|error| error.to_string())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        assert!(super::co_managed_jev_settings(app.handle()).await.is_err());
+        let hooks = Arc::new(CoManagedTestHooks::default());
+        let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+        let result = super::co_managed_cycle(
+            app.handle(),
+            &handle,
+            session_id,
+            &fixture.room_root,
+            &slot,
+            seq,
+            &candidate,
+        )
+        .await;
+        assert!(matches!(result, super::CoManagedOutcome::Done(_)));
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert_eq!(hooks.commit_calls(), 0);
+        assert!(hooks.steps().is_empty());
+        assert_eq!(slot.seq(), seq, "the candidate remains pending");
+        assert_eq!(std::fs::read(&state_path).unwrap(), budget);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{");
+        assert!(messaging_files(&fixture.room_root).is_empty());
+        assert!(queue_files(&fixture.room_root).is_empty());
+        assert!(!super::release_room_reader_demands_when_globally_off(app.handle()).await);
+    }
+
+    #[tokio::test]
+    async fn e2992_p43_invalid_restore_completes_signals() {
+        use crate::config::settings::{SettingsAvailability, SettingsOwner, SettingsPublisher};
+
+        let instance = tempfile::tempdir().unwrap();
+        let path = instance.path().join("settings.json");
+        std::fs::write(&path, serde_json::to_vec(&AppSettings::default()).unwrap()).unwrap();
+        let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
+        let report = owner
+            .with_operation("p43-invalid", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |path| {
+                    std::fs::write(path, b"{").map_err(|error| error.to_string())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let shutdown = CancellationToken::new();
+        let coordinator = crate::session::selection::SelectionCoordinator::new(
+            Arc::clone(&manager),
+            shutdown.clone(),
+        );
+        coordinator.start(app.handle().clone()).unwrap();
+        let barrier = coordinator.submit_restore_first().await.unwrap();
+        let observer = Arc::new(RestoreObserverStartBarrier::default());
+        observer.mark_restore_admitted().unwrap();
+        let mut completion = super::RestoreCompletionGuard::new(barrier, Arc::clone(&observer));
+        assert!(owner.current_read().await.is_err());
+        completion.complete();
+        assert!(completion.completed);
+        assert!(completion.barrier.is_none());
+        assert!(observer.start("after-unavailable", || {}).is_ok());
+        assert!(manager.read().await.list_sessions().await.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{");
+        shutdown.cancel();
+
+        // Pin the task's early-return placement separately from the completion
+        // component: neither the return nor an unwind bypasses completion.
+        let source = include_str!("lib.rs");
+        let task = source
+            .split("pub(crate) fn spawn_restore_startup(")
+            .nth(1)
+            .unwrap();
+        let gate = task
+            .find("if let Err(error) = settings_state_clone.current_read().await")
+            .unwrap();
+        let create = task
+            .find("crate::config::root_agent::ensure_root_agent_dir()")
+            .unwrap();
+        let finish = task.find("completion.complete();").unwrap();
+        assert!(gate < create && create < finish);
     }
 
     /// Test 1: idle edge with the room disabled makes zero Jev calls, writes

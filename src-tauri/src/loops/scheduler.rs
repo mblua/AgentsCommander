@@ -946,7 +946,13 @@ impl Default for LoopScheduler {
 async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {
     let (project_paths, archived) = {
         let settings = app.state::<SettingsState>();
-        let s = settings.read().await;
+        let s = match settings.current_read().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::debug!("[loops] candidate eligibility unavailable: {error}");
+                return Vec::new();
+            }
+        };
         (s.project_paths.clone(), s.archived_project_paths.clone())
     };
     let projects = enumerate_registered_project_candidates(&project_paths);
@@ -1143,6 +1149,73 @@ mod tests {
                 ..LoopPolicy::default()
             },
         }
+    }
+
+    #[tokio::test]
+    async fn e2992_p43_invalid_no_candidate_action() {
+        use crate::config::settings::{
+            AppSettings, SettingsAvailability, SettingsOwner, SettingsPublisher,
+        };
+
+        let (project, dir) = pending_loop_fixture();
+        let instance = tempfile::tempdir().unwrap();
+        let path = instance.path().join("settings.json");
+        let settings = AppSettings {
+            project_paths: vec![project.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
+        let app = crate::test_support::test_builder()
+            .manage(Arc::clone(&owner))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let scheduler = Arc::new(LoopScheduler::new());
+        assert!(!active_project_candidates(app.handle()).await.is_empty());
+        install_report_gate(&scheduler, delivered_report());
+        scheduler
+            .scan_once(app.handle().clone(), false, false)
+            .await;
+        assert!(
+            !gate_is_untaken(&scheduler),
+            "Ready delivers the eligible pending run"
+        );
+
+        let report = owner
+            .with_operation("p43-invalid", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |path| {
+                    std::fs::write(path, b"{").map_err(|error| error.to_string())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        let before = std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap();
+        install_report_gate(&scheduler, delivered_report());
+        for _ in 0..2 {
+            scheduler
+                .scan_once(app.handle().clone(), false, false)
+                .await;
+            assert!(
+                gate_is_untaken(&scheduler),
+                "Invalid never reaches delivery"
+            );
+        }
+        assert!(active_project_candidates(app.handle()).await.is_empty());
+        assert_eq!(std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap(), before);
+        let shutdown = ShutdownSignal::new();
+        Arc::clone(&scheduler).start(app.handle().clone(), shutdown.clone());
+        scheduler.request_scan();
+        tokio::task::yield_now().await;
+        shutdown.trigger();
+        tokio::time::timeout(Duration::from_secs(1), shutdown.token().cancelled())
+            .await
+            .unwrap();
+        assert!(gate_is_untaken(&scheduler));
+        assert!(
+            scheduler.scan_lock.try_lock().is_ok(),
+            "scans release their lock"
+        );
     }
 
     #[test]

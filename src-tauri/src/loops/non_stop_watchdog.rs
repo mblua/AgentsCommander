@@ -273,7 +273,13 @@ async fn send_telegram<R: tauri::Runtime>(app: &AppHandle<R>, r: &NonStopReport)
     // Bind the State to a local before .read().await (E0716).
     let resolved = {
         let settings = app.state::<crate::config::settings::SettingsState>();
-        let guard = settings.read().await;
+        let guard = match settings.current_read().await {
+            Ok(guard) => guard,
+            Err(error) => {
+                log::debug!("[non-stop] telegram skipped: {error}");
+                return;
+            }
+        };
         match resolve_bot(&guard.telegram_bots, r.telegram_bot_id.as_deref()) {
             Some(b) => (b.token.clone(), b.chat_id, b.label.clone()),
             None => {

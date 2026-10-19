@@ -128,7 +128,10 @@ pub async fn resolve_api_send_target<R: tauri::Runtime>(
     // Project paths: the same source `process_message` reads (SettingsState).
     let paths = {
         let state = app.state::<SettingsState>();
-        let settings = state.read().await;
+        let settings = state
+            .current_read()
+            .await
+            .map_err(|error| ApiError::ServiceUnavailable(error.to_string()))?;
         settings.project_paths.clone()
     };
 
