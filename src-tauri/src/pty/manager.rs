@@ -477,8 +477,14 @@ impl ResponseCloseState {
         // One bit per safe predicate, including its three early-return requirements.
         let predicates = [
             Some(policy.is_some()),
-            Some(registered.is_some()).filter(|_| policy.is_some()),
-            Some(success.is_some()).filter(|_| policy.is_some()),
+            {
+                let registered_present = registered.is_some();
+                policy.is_some().then_some(registered_present)
+            },
+            {
+                let success_present = success.is_some();
+                policy.is_some().then_some(success_present)
+            },
             Some(inner.unknown_spawns == 0),
             Some(inner.ready),
             Some(inner.work_bootstrapped),
@@ -498,7 +504,10 @@ impl ResponseCloseState {
             route.detector_working.map(|working| !working),
             route.menu_blocked.map(|blocked| !blocked),
             Some(route.hold_known),
-            Some(route.hold_until.is_none_or(|end| now > end)).filter(|_| route.hold_known),
+            {
+                let hold_elapsed = route.hold_until.is_none_or(|end| now > end);
+                route.hold_known.then_some(hold_elapsed)
+            },
             Some(route.held.is_empty()),
             Some(route.writers == 0),
             work.map(|w| {

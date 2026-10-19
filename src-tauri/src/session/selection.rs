@@ -5224,9 +5224,8 @@ impl SelectionCoordinator {
             }
             CriticalAdmissionGuard::new(&self.inner, key)
         };
-        let (admission, slot) = self.try_reserve_envelope().map_err(|error| {
+        let (admission, slot) = self.try_reserve_envelope().inspect_err(|_| {
             registration.diagnostic_poll_outcome(5, "reserve_envelope_error");
-            error
         })?;
         let tracker = app
             .state::<crate::pty::manager::ResponseCloseState>()
