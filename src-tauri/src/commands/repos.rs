@@ -94,7 +94,10 @@ pub async fn search_repos(
     settings: State<'_, SettingsState>,
     query: String,
 ) -> Result<Vec<RepoMatch>, String> {
-    let cfg = settings.read().await;
+    let cfg = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?;
     let query_lower = query.to_lowercase();
     let mut results: Vec<RepoMatch> = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();

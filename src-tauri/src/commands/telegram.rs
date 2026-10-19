@@ -478,7 +478,10 @@ pub(crate) async fn attach_telegram_bot_by_id<R: tauri::Runtime>(
     };
 
     let bot = {
-        let cfg = settings.read().await;
+        let cfg = settings
+            .current_read()
+            .await
+            .map_err(|error| error.to_string())?;
         cfg.telegram_bots
             .iter()
             .find(|b| b.id == bot_id)
@@ -940,7 +943,10 @@ pub async fn telegram_send_image(
     path: String,
     caption: Option<String>,
 ) -> Result<(), String> {
-    let cfg = settings.read().await;
+    let cfg = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?;
     let bot = cfg
         .telegram_bots
         .iter()

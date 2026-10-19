@@ -6806,6 +6806,26 @@ html.light-theme .settings-hint-error {
   cursor: pointer;
 }
 
+.project-header--has-indicator .project-header-main {
+  padding-right: 0;
+}
+
+.project-header .project-header-indicator--last {
+  margin-right: 32px;
+}
+
+.project-file-difference {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--sidebar-fg-muted, rgba(255, 255, 255, 0.5));
+  border: 1px solid var(--sidebar-border);
+  border-radius: 999px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
 .project-filter-row {
   display: flex;
   align-items: center;
