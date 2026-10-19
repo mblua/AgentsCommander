@@ -26706,6 +26706,9 @@ mod tests {
             assert!(!object.contains_key("responseCloseIdleSeconds"));
             object.insert("responseCloseEnabled".to_string(), Value::Bool(true));
             object.insert("responseCloseIdleSeconds".to_string(), Value::from(30));
+            assert!(!object.contains_key("roomIdleConfirmationSeconds"));
+            // #3123 adds a default-15 field; preserve the historical captured control.
+            object.insert("roomIdleConfirmationSeconds".to_string(), Value::from(15));
             // H02 adds backend-derived metadata; never rewrite the frozen control.
             for raw in object.get_mut("agents").unwrap().as_array_mut().unwrap() {
                 assert!(raw.get("id_hash").is_none());
