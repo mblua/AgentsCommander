@@ -1350,6 +1350,8 @@ export const AcDiscoveryAPI = {
 };
 
 export const ProjectAPI = {
+  fileDifference: (path: string) =>
+    transport.invoke<{ count: number | null }>("get_project_file_difference", { path }),
   checkPath: (path: string) =>
     transport.invoke<boolean>("check_project_path", { path }),
   createAcProject: (path: string) =>
