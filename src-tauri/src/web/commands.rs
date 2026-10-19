@@ -1478,15 +1478,16 @@ mod tests {
         use tauri::Listener;
         let app = &state.app_handle;
         let settings = &state.settings;
-        let (target, expected, success, count) = match case {
-            "changed" => (30, 30, true, 1),
-            "unchanged" => (30, 30, true, 0),
-            "invalid-range" => (0, 30, false, 0),
-            "malformed-present" => (60, 30, false, 0),
-            "renewed-positive" => (60, 60, true, 1),
-
-            _ => panic!("unknown case"),
-        };
+        let (_, target, expected, success, count) = [
+            ("changed", 30, 30, true, 1),
+            ("unchanged", 30, 30, true, 0),
+            ("invalid-range", 0, 30, false, 0),
+            ("malformed-present", 60, 30, false, 0),
+            ("renewed-positive", 60, 60, true, 1),
+        ]
+        .into_iter()
+        .find(|(id, ..)| *id == case)
+        .expect("unknown case");
         let path = fixture.join("settings.json");
         let valid = std::fs::read(&path).unwrap();
         if case == "malformed-present" {
