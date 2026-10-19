@@ -21451,15 +21451,13 @@ mod tests {
                     "case {raw}"
                 );
                 let strict = load_settings_for_cli_strict_from_path(Some(&path));
-                if object_case {
+                assert_eq!(strict.is_ok(), object_case, "case {raw}");
+                if let Ok(strict) = strict {
                     // Selection succeeded; typed base failure uses defaults plus overlay.
-                    let strict = strict.unwrap();
                     assert_eq!(strict.room_idle_confirmation_seconds, 15);
                     assert_eq!(strict.typing_hold_seconds, 7);
                     assert!(strict.root_token.is_none());
                     assert!(strict.project_paths_persistence_error.is_none());
-                } else {
-                    assert!(strict.is_err(), "case {raw}");
                 }
                 let cli = load_settings_for_cli_from_path(&path);
                 assert_eq!(cli.room_idle_confirmation_seconds, 15);
