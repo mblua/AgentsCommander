@@ -1503,7 +1503,9 @@ fn duplicate_profile_document(bytes: &[u8], path: &Path) -> Option<String> {
     crate::config::coding_agents_catalog::parse_strict_json(bytes).err().map(|reason| format!("duplicateJsonMember: {}: {reason}; no files changed; correct the ambiguous file externally", path.display()))
 }
 
-fn capture_registered_profile_gate(path: &Path) -> Result<Vec<(PathBuf, Option<Vec<u8>>)>, String> {
+type RegisteredProfileDocument = (PathBuf, Option<Vec<u8>>);
+
+fn capture_registered_profile_gate(path: &Path) -> Result<Vec<RegisteredProfileDocument>, String> {
     let mut captured = Vec::new();
     for participant in [
         path.to_path_buf(),
@@ -1552,7 +1554,7 @@ fn capture_registered_profile_gate(path: &Path) -> Result<Vec<(PathBuf, Option<V
     Ok(captured)
 }
 
-fn recheck_registered_profile_gate(captured: &[(PathBuf, Option<Vec<u8>>)]) -> Result<(), String> {
+fn recheck_registered_profile_gate(captured: &[RegisteredProfileDocument]) -> Result<(), String> {
     for (path, before) in captured {
         let current = match std::fs::read(path) {
             Ok(bytes) => Some(bytes),
@@ -9309,9 +9311,9 @@ fn save_agents_instance_file(
     #[cfg(test)] disk: Option<&Map<String, Value>>,
     out: &Map<String, Value>,
     disk_gate_stage: SettingsSaveStage,
-    prepared_duplicate_agents: Option<&Value>,
-    prepared_profiles: Option<&Value>,
+    prepared_groups: (Option<&Value>, Option<&Value>),
 ) -> Result<Map<String, Value>, SettingsSaveError> {
+    let (prepared_duplicate_agents, prepared_profiles) = prepared_groups;
     let sidecar_path = agents_instance_path(path);
     let existing = read_agents_instance_file(&sidecar_path).map_err(|e| {
         SettingsSaveError::io(
@@ -15169,8 +15171,10 @@ fn save_settings_value_locked_with_startup(
         disk.as_ref(),
         &out,
         disk_gate_stage,
-        prepared_duplicate_agents.as_ref(),
-        prepared_profiles.as_ref().filter(|_| profiles_in_sidecar),
+        (
+            prepared_duplicate_agents.as_ref(),
+            prepared_profiles.as_ref().filter(|_| profiles_in_sidecar),
+        ),
     )?;
     strip_agents_instance_keys(&mut out, &agents_groups);
     // A shadowed legacy group remains raw in its own file. No canonical data or
@@ -32047,8 +32051,7 @@ mod tests {
                     None,
                     out.as_object().unwrap(),
                     super::SettingsSaveStage::PreserveDiskGate,
-                    None,
-                    None,
+                    (None, None),
                 );
                 if invalid {
                     let error = result.unwrap_err();
@@ -32112,8 +32115,7 @@ mod tests {
                 None,
                 &serde_json::Map::new(),
                 super::SettingsSaveStage::PreserveDiskGate,
-                None,
-                None,
+                (None, None),
             )
             .is_err());
             assert_eq!(std::fs::read(b3_sidecar_path(temp.path())).unwrap(), bytes);
@@ -37351,9 +37353,7 @@ mod e2432_profile_storage_tests {
         main["codingAgentProfiles"] = json!({"profilesByAgent":{"one":{"B":{"notes":"neighbor"}}}});
         std::fs::write(&path, serde_json::to_vec(&main).unwrap()).unwrap();
         let loaded = load_settings_for_cli_from_path(&path);
-        assert!(loaded.coding_agent_profiles.profiles_by_agent["one"]
-            .get("B")
-            .is_none());
+        assert!(!loaded.coding_agent_profiles.profiles_by_agent["one"].contains_key("B"));
         save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
         let saved_main: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let saved_sidecar: Value =
