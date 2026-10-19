@@ -14807,7 +14807,7 @@ mod tests {
             .next()
             .expect("production session source");
         let normalized = production.split_whitespace().collect::<String>();
-        let gate_call = "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,&create_manager,lifecycle_domain,inline_transaction,).await";
+        let gate_call = "enforce_owned_unarchived_for_spawn(app,&cwd,&session_label,&create_owner,&create_manager,lifecycle_domain,inline_transaction,)";
         let count = normalized.matches(gate_call).count();
 
         assert_eq!(
