@@ -21474,10 +21474,13 @@ mod tests {
                 assert!(settings.project_paths.is_empty());
                 assert!(cli.project_paths.is_empty());
                 assert_eq!(disk_bytes(temp.path()), before, "case {raw}");
-                let error =
-                    save_settings_to_path_preserving_project_paths_typed(&settings, &path)
-                        .unwrap_err();
-                assert_eq!(error.stage, SettingsSaveStage::PreserveDiskGate, "case {raw}");
+                let error = save_settings_to_path_preserving_project_paths_typed(&settings, &path)
+                    .unwrap_err();
+                assert_eq!(
+                    error.stage,
+                    SettingsSaveStage::PreserveDiskGate,
+                    "case {raw}"
+                );
                 assert_eq!(disk_bytes(temp.path()), before, "case {raw}");
             }
         }
