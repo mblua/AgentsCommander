@@ -1317,12 +1317,13 @@ mod tests {
                 ("invalid-range", false, 30, 0),
                 ("malformed-present", false, 30, 0),
                 ("renewed-positive", true, 60, 1),
-
             ] {
                 for transport in ["tauri", "browser"] {
-                    rows.push(json!({"module": "web::commands", "writer": writer, "case": case,
+                    rows.push(
+                        json!({"module": "web::commands", "writer": writer, "case": case,
                         "transport": transport, "eventCount": count, "success": success,
-                        "diskSeconds": seconds, "stateSeconds": seconds}));
+                        "diskSeconds": seconds, "stateSeconds": seconds}),
+                    );
                 }
             }
         }
@@ -1337,7 +1338,11 @@ mod tests {
         let root = match std::env::var_os("AC_ROOM_IDLE_TEST_EVIDENCE_DIR") {
             Some(value) if !value.is_empty() => {
                 let path = std::path::PathBuf::from(value);
-                assert!(path.is_absolute(), "evidence override must be absolute: {}", path.display());
+                assert!(
+                    path.is_absolute(),
+                    "evidence override must be absolute: {}",
+                    path.display()
+                );
                 path
             }
             _ => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1345,15 +1350,23 @@ mod tests {
         };
         std::fs::create_dir_all(&root)
             .unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
-        let run = tempfile::Builder::new().prefix("web-").tempdir_in(&root)
-            .expect("create retained run directory").keep();
+        let run = tempfile::Builder::new()
+            .prefix("web-")
+            .tempdir_in(&root)
+            .expect("create retained run directory")
+            .keep();
         eprintln!("room idle confirmation evidence: {}", run.display());
         let fixture = run.join("fixture");
         std::fs::create_dir(&fixture).unwrap();
         let fixture = fixture.canonicalize().unwrap();
         let receipt = fixture.parent().unwrap().join("receipts.json");
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "web::commands::tests::room_idle_confirmation_routes_child", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                "web::commands::tests::room_idle_confirmation_routes_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env("AC_ROOM_IDLE_TEST_CHILD", &fixture)
             .env("AGENTSCOMMANDER_CONFIG_DIR", &fixture)
             .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &fixture)
@@ -1361,7 +1374,8 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(std::fs::File::create(run.join("stdout.log")).unwrap())
             .stderr(std::fs::File::create(run.join("stderr.log")).unwrap())
-            .spawn().unwrap_or_else(|error| panic!("spawn child in {}: {error}", run.display()));
+            .spawn()
+            .unwrap_or_else(|error| panic!("spawn child in {}: {error}", run.display()));
         let deadline = Instant::now() + Duration::from_secs(60);
         let status = loop {
             if let Some(status) = child.try_wait().expect("poll child") {
@@ -1370,11 +1384,18 @@ mod tests {
             if Instant::now() >= deadline {
                 let killed = child.kill();
                 let waited = child.wait();
-                panic!("child timeout; evidence {}; kill={killed:?}; wait={waited:?}", run.display());
+                panic!(
+                    "child timeout; evidence {}; kill={killed:?}; wait={waited:?}",
+                    run.display()
+                );
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert!(status.success(), "child {status}; evidence {}", run.display());
+        assert!(
+            status.success(),
+            "child {status}; evidence {}",
+            run.display()
+        );
         let bytes = std::fs::read(&receipt)
             .unwrap_or_else(|error| panic!("missing {}: {error}", receipt.display()));
         let rows: Vec<Value> = serde_json::from_slice(&bytes).expect("complete parsed receipts");
@@ -1389,14 +1410,22 @@ mod tests {
         let fixture = std::path::PathBuf::from(marker);
         assert!(fixture.is_absolute());
         assert_eq!(fixture.canonicalize().unwrap(), fixture);
-        for key in ["AGENTSCOMMANDER_CONFIG_DIR", "AGENTSCOMMANDER_TEST_CONFIG_DIR"] {
+        for key in [
+            "AGENTSCOMMANDER_CONFIG_DIR",
+            "AGENTSCOMMANDER_TEST_CONFIG_DIR",
+        ] {
             let override_path = std::path::PathBuf::from(std::env::var_os(key).expect(key));
             assert_eq!(override_path, fixture);
             assert_eq!(override_path.canonicalize().unwrap(), fixture);
         }
-        assert_eq!(crate::config::config_dir().unwrap().canonicalize().unwrap(), fixture);
-        assert_eq!(std::path::PathBuf::from(std::env::var_os("AC_ROOM_IDLE_TEST_RECEIPT").unwrap()),
-            fixture.parent().unwrap().join("receipts.json"));
+        assert_eq!(
+            crate::config::config_dir().unwrap().canonicalize().unwrap(),
+            fixture
+        );
+        assert_eq!(
+            std::path::PathBuf::from(std::env::var_os("AC_ROOM_IDLE_TEST_RECEIPT").unwrap()),
+            fixture.parent().unwrap().join("receipts.json")
+        );
         Some(fixture)
     }
 
@@ -1428,7 +1457,10 @@ mod tests {
             };
             let value: Value = serde_json::from_str(&text).unwrap();
             if value["event"] == "room_idle_confirmation_updated" {
-                assert_eq!(value, json!({"event":"room_idle_confirmation_updated", "payload":{}}));
+                assert_eq!(
+                    value,
+                    json!({"event":"room_idle_confirmation_updated", "payload":{}})
+                );
                 events.push(value);
             }
         }
@@ -1468,10 +1500,16 @@ mod tests {
         let observed_settings = settings.clone();
         let sessions_path = fixture.join("sessions.json");
         let listener = app.listen_any("room_idle_confirmation_updated", move |event| {
-            let adopted = observed_settings.try_read()
-                .map(|guard| guard.room_idle_confirmation_seconds).ok();
-            tx.send((event.payload().to_string(), adopted, std::fs::read(&sessions_path).unwrap()))
-                .unwrap();
+            let adopted = observed_settings
+                .try_read()
+                .map(|guard| guard.room_idle_confirmation_seconds)
+                .ok();
+            tx.send((
+                event.payload().to_string(),
+                adopted,
+                std::fs::read(&sessions_path).unwrap(),
+            ))
+            .unwrap();
         });
 
         let args = match writer {
@@ -1482,7 +1520,9 @@ mod tests {
         let response = dispatch(state, 3124, writer, &args).await;
         assert_eq!(response["id"], json!(3124));
         let succeeded = response.get("error").is_none();
-        if success { assert_eq!(response, json!({"id":3124,"result":null})); }
+        if success {
+            assert_eq!(response, json!({"id":3124,"result":null}));
+        }
         app.unlisten(listener);
 
         assert_eq!(succeeded, success, "{writer}/{case}");
@@ -1490,15 +1530,28 @@ mod tests {
         assert_eq!(native.len(), count, "{writer}/{case}: tauri");
         for (payload, adopted, sessions) in native {
             assert_eq!(serde_json::from_str::<Value>(&payload).unwrap(), json!({}));
-            assert_eq!(adopted, Some(expected), "event must follow adoption and lock release");
+            assert_eq!(
+                adopted,
+                Some(expected),
+                "event must follow adoption and lock release"
+            );
             assert_eq!(sessions, b"[]");
         }
-        assert_eq!(room_idle_confirmation_browser_events(receiver).len(), count,
-            "{writer}/{case}: browser");
-        assert_eq!(settings.read().await.room_idle_confirmation_seconds, expected);
+        assert_eq!(
+            room_idle_confirmation_browser_events(receiver).len(),
+            count,
+            "{writer}/{case}: browser"
+        );
+        assert_eq!(
+            settings.read().await.room_idle_confirmation_seconds,
+            expected
+        );
         if !success {
             assert_eq!(room_idle_confirmation_fixture_bytes(fixture), before);
-            assert_eq!(serde_json::to_value(&*settings.read().await).unwrap(), live_before);
+            assert_eq!(
+                serde_json::to_value(&*settings.read().await).unwrap(),
+                live_before
+            );
         }
         if case == "malformed-present" {
             assert_eq!(std::fs::read(&path).unwrap(), b"{ malformed-present");
@@ -1518,9 +1571,12 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn room_idle_confirmation_routes_child() {
-        let Some(fixture) = room_idle_confirmation_fixture() else { return; };
+        let Some(fixture) = room_idle_confirmation_fixture() else {
+            return;
+        };
         let app = crate::test_support::test_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets())).expect("build isolated app");
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build isolated app");
         let app_handle = app.handle().clone();
         let broadcaster = WsBroadcaster::new();
         let mut receiver = broadcaster.subscribe();
@@ -1528,34 +1584,60 @@ mod tests {
         let idle_detector = IdleDetector::new(|_| {}, |_| {});
         let git_watcher = GitWatcher::new(Arc::clone(&session_mgr), app_handle.clone());
         let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
-            Arc::new(Mutex::new(HashMap::new())), idle_detector, git_watcher,
-            Some(broadcaster.clone()), None,
+            Arc::new(Mutex::new(HashMap::new())),
+            idle_detector,
+            git_watcher,
+            Some(broadcaster.clone()),
+            None,
         )));
-        let state = WsState { session_mgr, pty_mgr,
+        let state = WsState {
+            session_mgr,
+            pty_mgr,
             settings: crate::config::settings::new_settings_state(AppSettings {
-                agents: Vec::new(), project_paths: Vec::new(), project_path: None,
-                archived_project_paths: Vec::new(), ..AppSettings::default()
+                agents: Vec::new(),
+                project_paths: Vec::new(),
+                project_path: None,
+                archived_project_paths: Vec::new(),
+                ..AppSettings::default()
             }),
-            broadcaster, app_handle };
+            broadcaster,
+            app_handle,
+        };
         let mut receipts = Vec::new();
         for writer in ["update_settings", "save_settings_draft"] {
             let seed = AppSettings {
-                agents: Vec::new(), project_paths: Vec::new(), project_path: None,
-                archived_project_paths: Vec::new(), room_idle_confirmation_seconds: 15,
+                agents: Vec::new(),
+                project_paths: Vec::new(),
+                project_path: None,
+                archived_project_paths: Vec::new(),
+                room_idle_confirmation_seconds: 15,
                 ..AppSettings::default()
             };
-            let saved = crate::config::settings::save_settings(&seed).expect("seed isolated settings");
+            let saved =
+                crate::config::settings::save_settings(&seed).expect("seed isolated settings");
             assert!(saved.agents.is_empty());
             assert!(saved.project_paths.is_empty());
             *state.settings.write().await = saved;
             std::fs::write(fixture.join("sessions.json"), b"[]").unwrap();
-            for case in ["changed", "unchanged", "invalid-range", "malformed-present", "renewed-positive" ] {
-                receipts.extend(room_idle_confirmation_case(&state, writer, case, &fixture, &mut receiver).await);
+            for case in [
+                "changed",
+                "unchanged",
+                "invalid-range",
+                "malformed-present",
+                "renewed-positive",
+            ] {
+                receipts.extend(
+                    room_idle_confirmation_case(&state, writer, case, &fixture, &mut receiver)
+                        .await,
+                );
             }
         }
         assert_eq!(receipts, room_idle_confirmation_receipts());
-        std::fs::write(fixture.parent().unwrap().join("receipts.json"),
-            serde_json::to_vec_pretty(&receipts).unwrap()).unwrap();
+        std::fs::write(
+            fixture.parent().unwrap().join("receipts.json"),
+            serde_json::to_vec_pretty(&receipts).unwrap(),
+        )
+        .unwrap();
     }
 
     #[tokio::test]

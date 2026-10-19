@@ -4909,31 +4909,54 @@ mod tests {
     async fn room_idle_confirmation_writer_receipts_follow_written_effective() {
         for writer in ["whole", "draft"] {
             for (candidate_seconds, written_seconds, changed) in [
-                (30, 30, true), (15, 15, false), (15, 60, true), (30, 15, false),
+                (30, 30, true),
+                (15, 15, false),
+                (15, 60, true),
+                (30, 15, false),
             ] {
-                let current = AppSettings { room_idle_confirmation_seconds: 15, ..AppSettings::default() };
+                let current = AppSettings {
+                    room_idle_confirmation_seconds: 15,
+                    ..AppSettings::default()
+                };
                 let state = crate::config::settings::new_settings_state(current.clone());
-                let payload = AppSettings { room_idle_confirmation_seconds: candidate_seconds, ..current };
+                let payload = AppSettings {
+                    room_idle_confirmation_seconds: candidate_seconds,
+                    ..current
+                };
                 let saver = |candidate: &AppSettings| {
-                    assert!(state.try_write().is_err(), "saver must run under writer lock");
+                    assert!(
+                        state.try_write().is_err(),
+                        "saver must run under writer lock"
+                    );
                     assert_eq!(candidate.room_idle_confirmation_seconds, candidate_seconds);
                     let mut written = candidate.clone();
                     written.room_idle_confirmation_seconds = written_seconds;
                     Ok(written)
                 };
                 let (saved, receipt) = match writer {
-                    "whole" => persist_protected_settings_update_with_saver(&state, payload, saver).await.unwrap(),
+                    "whole" => persist_protected_settings_update_with_saver(&state, payload, saver)
+                        .await
+                        .unwrap(),
                     "draft" => {
-                        let (saved, events) = persist_settings_draft_update_with_saver(&state, payload, saver).await.unwrap();
+                        let (saved, events) =
+                            persist_settings_draft_update_with_saver(&state, payload, saver)
+                                .await
+                                .unwrap();
                         assert!(!events.profiles_changed);
                         assert!(events.env_agent_ids.is_empty());
                         (saved, events.room_idle_confirmation_changed)
                     }
                     _ => unreachable!(),
                 };
-                assert_eq!(receipt, changed, "{writer}/{candidate_seconds}/{written_seconds}");
+                assert_eq!(
+                    receipt, changed,
+                    "{writer}/{candidate_seconds}/{written_seconds}"
+                );
                 assert_eq!(saved.room_idle_confirmation_seconds, written_seconds);
-                assert_eq!(state.read().await.room_idle_confirmation_seconds, written_seconds);
+                assert_eq!(
+                    state.read().await.room_idle_confirmation_seconds,
+                    written_seconds
+                );
             }
         }
     }
@@ -4950,8 +4973,12 @@ mod tests {
                 Err("injected I/O failure".into())
             };
             let error = match writer {
-                "whole" => persist_protected_settings_update_with_saver(&state, payload, saver).await.unwrap_err(),
-                "draft" => persist_settings_draft_update_with_saver(&state, payload, saver).await.unwrap_err(),
+                "whole" => persist_protected_settings_update_with_saver(&state, payload, saver)
+                    .await
+                    .unwrap_err(),
+                "draft" => persist_settings_draft_update_with_saver(&state, payload, saver)
+                    .await
+                    .unwrap_err(),
                 _ => unreachable!(),
             };
             assert_eq!(error, "injected I/O failure");
@@ -4959,15 +4986,22 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    static ROOM_IDLE_CONFIRMATION_HOTKEY: Mutex<(Vec<String>, bool)> =
+        Mutex::new((Vec::new(), false));
 
     #[cfg(windows)]
-    static ROOM_IDLE_CONFIRMATION_HOTKEY: Mutex<(Vec<String>, bool)> = Mutex::new((Vec::new(), false));
-
-    #[cfg(windows)]
-    fn room_idle_confirmation_register_hotkey(_: &tauri::AppHandle, hotkey: &str) -> Result<(), String> {
+    fn room_idle_confirmation_register_hotkey(
+        _: &tauri::AppHandle,
+        hotkey: &str,
+    ) -> Result<(), String> {
         let mut state = ROOM_IDLE_CONFIRMATION_HOTKEY.lock().unwrap();
         state.0.push(hotkey.to_string());
-        if state.1 { Err("fixture refusal".into()) } else { Ok(()) }
+        if state.1 {
+            Err("fixture refusal".into())
+        } else {
+            Ok(())
+        }
     }
 
     // Real persistence and both in-memory transports, isolated before config_dir's OnceLock.
@@ -4984,9 +5018,11 @@ mod tests {
                 ("hotkey-error", true, 90, 1),
             ] {
                 for transport in ["tauri", "browser"] {
-                    rows.push(json!({"module": "commands::config", "writer": writer, "case": case,
+                    rows.push(
+                        json!({"module": "commands::config", "writer": writer, "case": case,
                         "transport": transport, "eventCount": count, "success": success,
-                        "diskSeconds": seconds, "stateSeconds": seconds}));
+                        "diskSeconds": seconds, "stateSeconds": seconds}),
+                    );
                 }
             }
         }
@@ -5001,7 +5037,11 @@ mod tests {
         let root = match std::env::var_os("AC_ROOM_IDLE_TEST_EVIDENCE_DIR") {
             Some(value) if !value.is_empty() => {
                 let path = std::path::PathBuf::from(value);
-                assert!(path.is_absolute(), "evidence override must be absolute: {}", path.display());
+                assert!(
+                    path.is_absolute(),
+                    "evidence override must be absolute: {}",
+                    path.display()
+                );
                 path
             }
             _ => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -5009,15 +5049,23 @@ mod tests {
         };
         std::fs::create_dir_all(&root)
             .unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
-        let run = tempfile::Builder::new().prefix("native-").tempdir_in(&root)
-            .expect("create retained run directory").keep();
+        let run = tempfile::Builder::new()
+            .prefix("native-")
+            .tempdir_in(&root)
+            .expect("create retained run directory")
+            .keep();
         eprintln!("room idle confirmation evidence: {}", run.display());
         let fixture = run.join("fixture");
         std::fs::create_dir(&fixture).unwrap();
         let fixture = fixture.canonicalize().unwrap();
         let receipt = fixture.parent().unwrap().join("receipts.json");
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "commands::config::tests::room_idle_confirmation_routes_child", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                "commands::config::tests::room_idle_confirmation_routes_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env("AC_ROOM_IDLE_TEST_CHILD", &fixture)
             .env("AGENTSCOMMANDER_CONFIG_DIR", &fixture)
             .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &fixture)
@@ -5025,7 +5073,8 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(std::fs::File::create(run.join("stdout.log")).unwrap())
             .stderr(std::fs::File::create(run.join("stderr.log")).unwrap())
-            .spawn().unwrap_or_else(|error| panic!("spawn child in {}: {error}", run.display()));
+            .spawn()
+            .unwrap_or_else(|error| panic!("spawn child in {}: {error}", run.display()));
         let deadline = Instant::now() + Duration::from_secs(60);
         let status = loop {
             if let Some(status) = child.try_wait().expect("poll child") {
@@ -5034,11 +5083,18 @@ mod tests {
             if Instant::now() >= deadline {
                 let killed = child.kill();
                 let waited = child.wait();
-                panic!("child timeout; evidence {}; kill={killed:?}; wait={waited:?}", run.display());
+                panic!(
+                    "child timeout; evidence {}; kill={killed:?}; wait={waited:?}",
+                    run.display()
+                );
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert!(status.success(), "child {status}; evidence {}", run.display());
+        assert!(
+            status.success(),
+            "child {status}; evidence {}",
+            run.display()
+        );
         let bytes = std::fs::read(&receipt)
             .unwrap_or_else(|error| panic!("missing {}: {error}", receipt.display()));
         let rows: Vec<Value> = serde_json::from_slice(&bytes).expect("complete parsed receipts");
@@ -5053,14 +5109,22 @@ mod tests {
         let fixture = std::path::PathBuf::from(marker);
         assert!(fixture.is_absolute());
         assert_eq!(fixture.canonicalize().unwrap(), fixture);
-        for key in ["AGENTSCOMMANDER_CONFIG_DIR", "AGENTSCOMMANDER_TEST_CONFIG_DIR"] {
+        for key in [
+            "AGENTSCOMMANDER_CONFIG_DIR",
+            "AGENTSCOMMANDER_TEST_CONFIG_DIR",
+        ] {
             let override_path = std::path::PathBuf::from(std::env::var_os(key).expect(key));
             assert_eq!(override_path, fixture);
             assert_eq!(override_path.canonicalize().unwrap(), fixture);
         }
-        assert_eq!(crate::config::config_dir().unwrap().canonicalize().unwrap(), fixture);
-        assert_eq!(std::path::PathBuf::from(std::env::var_os("AC_ROOM_IDLE_TEST_RECEIPT").unwrap()),
-            fixture.parent().unwrap().join("receipts.json"));
+        assert_eq!(
+            crate::config::config_dir().unwrap().canonicalize().unwrap(),
+            fixture
+        );
+        assert_eq!(
+            std::path::PathBuf::from(std::env::var_os("AC_ROOM_IDLE_TEST_RECEIPT").unwrap()),
+            fixture.parent().unwrap().join("receipts.json")
+        );
         Some(fixture)
     }
 
@@ -5092,7 +5156,10 @@ mod tests {
             };
             let value: Value = serde_json::from_str(&text).unwrap();
             if value["event"] == "room_idle_confirmation_updated" {
-                assert_eq!(value, json!({"event":"room_idle_confirmation_updated", "payload":{}}));
+                assert_eq!(
+                    value,
+                    json!({"event":"room_idle_confirmation_updated", "payload":{}})
+                );
                 events.push(value);
             }
         }
@@ -5132,10 +5199,16 @@ mod tests {
         let observed_settings = settings.clone();
         let sessions_path = fixture.join("sessions.json");
         let listener = app.listen_any("room_idle_confirmation_updated", move |event| {
-            let adopted = observed_settings.try_read()
-                .map(|guard| guard.room_idle_confirmation_seconds).ok();
-            tx.send((event.payload().to_string(), adopted, std::fs::read(&sessions_path).unwrap()))
-                .unwrap();
+            let adopted = observed_settings
+                .try_read()
+                .map(|guard| guard.room_idle_confirmation_seconds)
+                .ok();
+            tx.send((
+                event.payload().to_string(),
+                adopted,
+                std::fs::read(&sessions_path).unwrap(),
+            ))
+            .unwrap();
         });
         *ROOM_IDLE_CONFIRMATION_HOTKEY.lock().unwrap() = (Vec::new(), case == "hotkey-error");
         let (hotkey_tx, hotkey_rx) = std::sync::mpsc::channel();
@@ -5143,39 +5216,73 @@ mod tests {
             hotkey_tx.send(event.payload().to_string()).unwrap();
         });
         let result = match writer {
-            "update_settings" => super::update_settings_with_hotkey_registration(
-                app.clone(), settings, payload.clone(), room_idle_confirmation_register_hotkey).await,
-            "save_settings_draft" => super::save_settings_draft_with_hotkey_registration(
-                app.clone(), settings, payload.clone(), room_idle_confirmation_register_hotkey).await,
+            "update_settings" => {
+                super::update_settings_with_hotkey_registration(
+                    app.clone(),
+                    settings,
+                    payload.clone(),
+                    room_idle_confirmation_register_hotkey,
+                )
+                .await
+            }
+            "save_settings_draft" => {
+                super::save_settings_draft_with_hotkey_registration(
+                    app.clone(),
+                    settings,
+                    payload.clone(),
+                    room_idle_confirmation_register_hotkey,
+                )
+                .await
+            }
             _ => panic!("unknown writer"),
         };
         let succeeded = result.is_ok();
         app.unlisten(listener);
         app.unlisten(hotkey_listener);
         let calls = ROOM_IDLE_CONFIRMATION_HOTKEY.lock().unwrap().0.clone();
-        let expected_calls = if success { vec![payload.screenshot_capture_hotkey.clone()] } else { Vec::new() };
+        let expected_calls = if success {
+            vec![payload.screenshot_capture_hotkey.clone()]
+        } else {
+            Vec::new()
+        };
         assert_eq!(calls, expected_calls, "{writer}/{case}: hotkey calls");
         let hotkey_errors: Vec<_> = hotkey_rx.try_iter().collect();
         assert_eq!(hotkey_errors.len(), usize::from(case == "hotkey-error"));
         for error in hotkey_errors {
-            assert_eq!(serde_json::from_str::<Value>(&error).unwrap(), json!({
-                "message":"Screenshot hotkey was saved but could not be registered: fixture refusal"
-            }));
+            assert_eq!(
+                serde_json::from_str::<Value>(&error).unwrap(),
+                json!({
+                    "message":"Screenshot hotkey was saved but could not be registered: fixture refusal"
+                })
+            );
         }
         assert_eq!(succeeded, success, "{writer}/{case}");
         let native: Vec<_> = rx.try_iter().collect();
         assert_eq!(native.len(), count, "{writer}/{case}: tauri");
         for (payload, adopted, sessions) in native {
             assert_eq!(serde_json::from_str::<Value>(&payload).unwrap(), json!({}));
-            assert_eq!(adopted, Some(expected), "event must follow adoption and lock release");
+            assert_eq!(
+                adopted,
+                Some(expected),
+                "event must follow adoption and lock release"
+            );
             assert_eq!(sessions, b"[]");
         }
-        assert_eq!(room_idle_confirmation_browser_events(receiver).len(), count,
-            "{writer}/{case}: browser");
-        assert_eq!(settings.read().await.room_idle_confirmation_seconds, expected);
+        assert_eq!(
+            room_idle_confirmation_browser_events(receiver).len(),
+            count,
+            "{writer}/{case}: browser"
+        );
+        assert_eq!(
+            settings.read().await.room_idle_confirmation_seconds,
+            expected
+        );
         if !success {
             assert_eq!(room_idle_confirmation_fixture_bytes(fixture), before);
-            assert_eq!(serde_json::to_value(&*settings.read().await).unwrap(), live_before);
+            assert_eq!(
+                serde_json::to_value(&*settings.read().await).unwrap(),
+                live_before
+            );
         }
         if case == "malformed-present" {
             assert_eq!(std::fs::read(&path).unwrap(), b"{ malformed-present");
@@ -5195,35 +5302,66 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn room_idle_confirmation_routes_child() {
-        let Some(fixture) = room_idle_confirmation_fixture() else { return; };
+        let Some(fixture) = room_idle_confirmation_fixture() else {
+            return;
+        };
         let settings = crate::config::settings::new_settings_state(AppSettings {
-                agents: Vec::new(), project_paths: Vec::new(), project_path: None,
-                archived_project_paths: Vec::new(), ..AppSettings::default()
-            });
+            agents: Vec::new(),
+            project_paths: Vec::new(),
+            project_path: None,
+            archived_project_paths: Vec::new(),
+            ..AppSettings::default()
+        });
         let broadcaster = crate::web::broadcast::WsBroadcaster::new();
         let mut receiver = broadcaster.subscribe();
         let app = crate::test_support::test_builder()
-            .manage(settings.clone()).manage(broadcaster)
-            .build(tauri::test::mock_context(tauri::test::noop_assets())).expect("build isolated app");
+            .manage(settings.clone())
+            .manage(broadcaster)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build isolated app");
         let mut receipts = Vec::new();
         for writer in ["update_settings", "save_settings_draft"] {
             let seed = AppSettings {
-                agents: Vec::new(), project_paths: Vec::new(), project_path: None,
-                archived_project_paths: Vec::new(), room_idle_confirmation_seconds: 15,
+                agents: Vec::new(),
+                project_paths: Vec::new(),
+                project_path: None,
+                archived_project_paths: Vec::new(),
+                room_idle_confirmation_seconds: 15,
                 ..AppSettings::default()
             };
-            let saved = crate::config::settings::save_settings(&seed).expect("seed isolated settings");
+            let saved =
+                crate::config::settings::save_settings(&seed).expect("seed isolated settings");
             assert!(saved.agents.is_empty());
             assert!(saved.project_paths.is_empty());
             *settings.write().await = saved;
             std::fs::write(fixture.join("sessions.json"), b"[]").unwrap();
-            for case in ["changed", "unchanged", "invalid-range", "malformed-present", "renewed-positive", "hotkey-error"] {
-                receipts.extend(room_idle_confirmation_case(app.handle(), &settings, writer, case, &fixture, &mut receiver).await);
+            for case in [
+                "changed",
+                "unchanged",
+                "invalid-range",
+                "malformed-present",
+                "renewed-positive",
+                "hotkey-error",
+            ] {
+                receipts.extend(
+                    room_idle_confirmation_case(
+                        app.handle(),
+                        &settings,
+                        writer,
+                        case,
+                        &fixture,
+                        &mut receiver,
+                    )
+                    .await,
+                );
             }
         }
         assert_eq!(receipts, room_idle_confirmation_receipts());
-        std::fs::write(fixture.parent().unwrap().join("receipts.json"),
-            serde_json::to_vec_pretty(&receipts).unwrap()).unwrap();
+        std::fs::write(
+            fixture.parent().unwrap().join("receipts.json"),
+            serde_json::to_vec_pretty(&receipts).unwrap(),
+        )
+        .unwrap();
     }
 
     use super::{
@@ -5608,13 +5746,14 @@ mod tests {
             .coding_agent_profiles
             .codex_home_key_by_agent
             .clear();
-        let (written, _) = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
-            crate::config::settings::save_settings_to_path_preserving_project_paths(
-                candidate, &path,
-            )
-        })
-        .await
-        .unwrap();
+        let (written, _) =
+            persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate, &path,
+                )
+            })
+            .await
+            .unwrap();
         let reload = crate::config::settings::load_settings_from_path(&path);
         hash_activation_assert_written(&written, &reload, &original.agents[0].envs, &path);
         assert_eq!(
@@ -8179,13 +8318,14 @@ mod tests {
         };
         incoming.agents[2].label = "b-edited".to_string();
 
-        let (written, _) = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
-            crate::config::settings::save_settings_to_path_preserving_project_paths(
-                candidate, &path,
-            )
-        })
-        .await
-        .unwrap();
+        let (written, _) =
+            persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate, &path,
+                )
+            })
+            .await
+            .unwrap();
 
         assert_eq!(order_ids(&written.agents), ["a", "b", "c"]);
         assert_eq!(
@@ -8282,13 +8422,14 @@ mod tests {
         // duplicate configuration under the case-folded physical delta gate.
         incoming.agents[1].command = "uppercase-id-tool".to_string();
 
-        let (written, _) = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
-            crate::config::settings::save_settings_to_path_preserving_project_paths(
-                candidate, &path,
-            )
-        })
-        .await
-        .unwrap();
+        let (written, _) =
+            persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate, &path,
+                )
+            })
+            .await
+            .unwrap();
 
         assert_eq!(order_ids(&written.agents), ["a", "A"]);
         assert_ne!(written.agents[0].id_hash, written.agents[1].id_hash);
@@ -9109,14 +9250,15 @@ mod tests {
         let mut payload = settings_payload_without_keys(&current, &[]);
         payload.archived_project_paths = vec![payload_archived.to_string()];
 
-        let (saved, _) = persist_protected_settings_update_with_saver(&state, payload, |candidate| {
-            crate::config::settings::save_settings_to_path_preserving_project_paths(
-                candidate,
-                &settings_path,
-            )
-        })
-        .await
-        .unwrap();
+        let (saved, _) =
+            persist_protected_settings_update_with_saver(&state, payload, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
+            })
+            .await
+            .unwrap();
 
         assert_eq!(
             saved.archived_project_paths,
@@ -9363,14 +9505,15 @@ mod tests {
         .unwrap();
         let mut incoming = current.clone();
         incoming.sidebar_style = "deep-space".to_string();
-        let (saved, _) = persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
-            crate::config::settings::save_settings_to_path_preserving_project_paths(
-                candidate,
-                &settings_path,
-            )
-        })
-        .await
-        .unwrap();
+        let (saved, _) =
+            persist_protected_settings_update_with_saver(&state, incoming, |candidate| {
+                crate::config::settings::save_settings_to_path_preserving_project_paths(
+                    candidate,
+                    &settings_path,
+                )
+            })
+            .await
+            .unwrap();
 
         assert_single_project(&saved, &project_path);
         {
@@ -9482,9 +9625,10 @@ mod tests {
         stale.rail_collapsed_projects = Vec::new();
         stale.rail_favorites_collapsed = false;
 
-        let (saved, _) = persist_protected_settings_update_with_saver(&state, stale, |c| Ok(c.clone()))
-            .await
-            .expect("persist");
+        let (saved, _) =
+            persist_protected_settings_update_with_saver(&state, stale, |c| Ok(c.clone()))
+                .await
+                .expect("persist");
 
         assert_eq!(saved.rail_collapsed_projects, vec!["c:/foo".to_string()]);
         assert!(saved.rail_favorites_collapsed);
@@ -12453,14 +12597,15 @@ mod tests {
             stale.main_geometry = Some(placement_geometry(999.0, 999.0));
             stale.main_window_display_state = stale_state;
 
-            let (saved, _) = persist_protected_settings_update_with_saver(&state, stale, |candidate| {
-                crate::config::settings::save_settings_to_path_preserving_project_paths(
-                    candidate,
-                    &settings_path,
-                )
-            })
-            .await
-            .unwrap();
+            let (saved, _) =
+                persist_protected_settings_update_with_saver(&state, stale, |candidate| {
+                    crate::config::settings::save_settings_to_path_preserving_project_paths(
+                        candidate,
+                        &settings_path,
+                    )
+                })
+                .await
+                .unwrap();
 
             assert_eq!(saved.main_window_display_state, disk_state, "{label}");
             assert_eq!(
