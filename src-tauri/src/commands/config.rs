@@ -9403,6 +9403,8 @@ mod tests {
                     json!({})
                 };
                 let path = seed(temp.path(), &overlay);
+                let overlay_path = temp.path().join("settings.50.personal.no-git.json");
+                let overlay_before = std::fs::read(&overlay_path).unwrap();
                 let mut expected_raw = disk(&path)["codingAgentProfiles"].clone();
                 // Independent #2450 preimages for these two fixed seed rows.
                 expected_raw["identityByAgent"] = json!({
@@ -9465,18 +9467,48 @@ mod tests {
                         "whole protected group, only existing identity output excepted"
                     );
                 } else {
-                    assert_eq!(
-                        profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
-                        json!("codex --edited")
+                    let physical = disk(&physical_path);
+                    let codex: crate::config::settings::AgentConfig = serde_json::from_value(
+                        physical["agents"].as_array().unwrap().iter()
+                            .find(|row| row["id"] == "codex").unwrap().clone(),
+                    ).unwrap();
+                    assert_eq!(codex.command, "codex");
+                    assert!(codex.envs.is_empty());
+                    let hash = crate::config::settings::configuration_identity(
+                        &codex.command, &codex.envs,
                     );
-                    assert_eq!(
-                        profiles["profilesByAgent"]["codex"]["A"]["command"],
-                        json!("codex")
-                    );
+                    let cell = &profiles["profilesByBaseHash"][&hash]["A"];
+                    assert_eq!(cell["additionalArguments"], json!("codex --edited"));
+                    assert_eq!(cell["command"], json!("codex"));
+                    for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                        assert!(profiles.get(key).is_none());
+                    }
                     assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
                     assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
                 }
-                assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                if protected {
+                    assert_eq!(
+                        profiles["profilesByAgent"].get("scratch-agent"),
+                        expected_raw["profilesByAgent"].get("scratch-agent")
+                    );
+                    assert!(saved.coding_agent_profiles.profiles_by_agent["scratch-agent"]
+                        .contains_key("A"));
+                } else {
+                    let scratch_hash =
+                        crate::config::settings::configuration_identity("scratch-agent", &[]);
+                    for key in ["profilesByBaseHash", "profileLabelsByBaseHash"] {
+                        assert!(profiles[key].is_object());
+                        assert!(profiles[key].get(&scratch_hash).is_none());
+                    }
+                    for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                        assert!(profiles.get(key).is_none());
+                    }
+                }
+                assert_eq!(
+                    profiles.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent")),
+                    expected_raw.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent"))
+                );
+                assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay_before);
                 let expected_command = if protected { "codex" } else { "codex --edited" };
                 let expected_hash = if protected {
                     "cid1:439b584f39ee418c1c6e59bb9b06e7f04b83c2b338d48580f1fb8b7a1750703d"
@@ -9513,6 +9545,8 @@ mod tests {
                     json!({})
                 };
                 let path = seed(temp.path(), &overlay);
+                let overlay_path = temp.path().join("settings.50.personal.no-git.json");
+                let overlay_before = std::fs::read(&overlay_path).unwrap();
                 let mut expected_raw = disk(&path)["codingAgentProfiles"].clone();
                 // Independent #2450 preimages for these two fixed seed rows.
                 expected_raw["identityByAgent"] = json!({
@@ -9573,18 +9607,48 @@ mod tests {
                         "whole protected group, only existing identity output excepted"
                     );
                 } else {
-                    assert_eq!(
-                        profiles["profilesByAgent"]["codex"]["A"]["additionalArguments"],
-                        json!("codex --edited")
+                    let physical = disk(&physical_path);
+                    let codex: crate::config::settings::AgentConfig = serde_json::from_value(
+                        physical["agents"].as_array().unwrap().iter()
+                            .find(|row| row["id"] == "codex").unwrap().clone(),
+                    ).unwrap();
+                    assert_eq!(codex.command, "codex");
+                    assert!(codex.envs.is_empty());
+                    let hash = crate::config::settings::configuration_identity(
+                        &codex.command, &codex.envs,
                     );
-                    assert_eq!(
-                        profiles["profilesByAgent"]["codex"]["A"]["command"],
-                        json!("codex")
-                    );
+                    let cell = &profiles["profilesByBaseHash"][&hash]["A"];
+                    assert_eq!(cell["additionalArguments"], json!("codex --edited"));
+                    assert_eq!(cell["command"], json!("codex"));
+                    for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                        assert!(profiles.get(key).is_none());
+                    }
                     assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
                     assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
                 }
-                assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                if protected {
+                    assert_eq!(
+                        profiles["profilesByAgent"].get("scratch-agent"),
+                        expected_raw["profilesByAgent"].get("scratch-agent")
+                    );
+                    assert!(saved.coding_agent_profiles.profiles_by_agent["scratch-agent"]
+                        .contains_key("A"));
+                } else {
+                    let scratch_hash =
+                        crate::config::settings::configuration_identity("scratch-agent", &[]);
+                    for key in ["profilesByBaseHash", "profileLabelsByBaseHash"] {
+                        assert!(profiles[key].is_object());
+                        assert!(profiles[key].get(&scratch_hash).is_none());
+                    }
+                    for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                        assert!(profiles.get(key).is_none());
+                    }
+                }
+                assert_eq!(
+                    profiles.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent")),
+                    expected_raw.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent"))
+                );
+                assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay_before);
                 let expected_command = if protected { "codex" } else { "codex --edited" };
                 let expected_hash = if protected {
                     "cid1:439b584f39ee418c1c6e59bb9b06e7f04b83c2b338d48580f1fb8b7a1750703d"
@@ -9617,6 +9681,8 @@ mod tests {
                     json!({})
                 };
                 let path = seed(temp.path(), &overlay);
+                let overlay_path = temp.path().join("settings.50.personal.no-git.json");
+                let overlay_before = std::fs::read(&overlay_path).unwrap();
                 // Seed the physical default before protection. The negative
                 // must prove an existing A survives, not that absent stays absent.
                 let mut raw = disk(&path);
@@ -9673,7 +9739,29 @@ mod tests {
                         .default_profile_by_agent
                         .contains_key("claude"));
                 }
-                assert!(profiles["profilesByAgent"].get("scratch-agent").is_none());
+                if protected {
+                    assert_eq!(
+                        profiles["profilesByAgent"].get("scratch-agent"),
+                        expected_raw["profilesByAgent"].get("scratch-agent")
+                    );
+                    assert!(saved.coding_agent_profiles.profiles_by_agent["scratch-agent"]
+                        .contains_key("A"));
+                } else {
+                    let scratch_hash =
+                        crate::config::settings::configuration_identity("scratch-agent", &[]);
+                    for key in ["profilesByBaseHash", "profileLabelsByBaseHash"] {
+                        assert!(profiles[key].is_object());
+                        assert!(profiles[key].get(&scratch_hash).is_none());
+                    }
+                    for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                        assert!(profiles.get(key).is_none());
+                    }
+                }
+                assert_eq!(
+                    profiles.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent")),
+                    expected_raw.get("legacyProfileOrphans").and_then(|rows| rows.get("scratch-agent"))
+                );
+                assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay_before);
                 assert_eq!(
                     saved.coding_agent_profiles,
                     load_settings_from_path(&path).coding_agent_profiles

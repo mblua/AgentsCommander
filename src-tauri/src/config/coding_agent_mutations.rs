@@ -1560,7 +1560,7 @@ mod tests {
     #[test]
     fn single_editor_inactive_gate() {
         use crate::config::settings::{
-            list_active_sources, source_transition_effect_counts, SourceKind, SourceReadContext,
+            source_transition_effect_counts, SourceReadContext,
             SourceRevision,
         };
         let root = crate::config::settings::source_transition_test_root();
@@ -1574,10 +1574,16 @@ mod tests {
         };
         let context =
             SourceReadContext::from_settings(&settings, &config.join("settings.json")).unwrap();
-        let source = list_active_sources(&context)
-            .into_iter()
-            .find(|source| source.kind == SourceKind::CatalogPersonal)
-            .unwrap();
+        let source = crate::config::settings::SourceRef {
+            family: crate::config::settings::SourceFamily::Agents,
+            role: crate::config::settings::SourceRole::Catalog,
+            scope: crate::config::settings::SourceScope::Project,
+            kind: crate::config::settings::SourceKind::CatalogPersonal,
+            context_root: std::fs::canonicalize(&project)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        };
         let before = source_transition_effect_counts();
         let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
         let reloads = std::cell::Cell::new(0);
@@ -1662,16 +1668,22 @@ mod tests {
 
     #[test]
     fn single_editor_status_unknown_inactive_zero_write_without_sidecars() {
-        use crate::config::settings::{SourceKind, SourceReadContext};
+        use crate::config::settings::SourceReadContext;
         let root = crate::config::settings::source_transition_test_root();
         let settings = AppSettings::default();
         let context =
             SourceReadContext::from_settings(&settings, &root.path().join("settings.json"))
                 .unwrap();
-        let source = crate::config::settings::list_active_sources(&context)
-            .into_iter()
-            .find(|source| source.kind == SourceKind::RegisteredInstance)
-            .unwrap();
+        let source = crate::config::settings::SourceRef {
+            family: crate::config::settings::SourceFamily::Agents,
+            role: crate::config::settings::SourceRole::Registered,
+            scope: crate::config::settings::SourceScope::Instance,
+            kind: crate::config::settings::SourceKind::RegisteredInstance,
+            context_root: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        };
         for _ in 0..3 {
             let read = get_identity_transition(&context, &source, "unknown-operation").unwrap();
             assert_eq!(read.state, IdentityTransitionReadState::NotFound);
@@ -1688,16 +1700,22 @@ mod tests {
 
     #[test]
     fn single_editor_status_invalid_present_journal_preserved_not_empty() {
-        use crate::config::settings::{SourceCoordinationError, SourceKind, SourceReadContext};
+        use crate::config::settings::{SourceCoordinationError, SourceReadContext};
         let root = crate::config::settings::source_transition_test_root();
         let settings = AppSettings::default();
         let context =
             SourceReadContext::from_settings(&settings, &root.path().join("settings.json"))
                 .unwrap();
-        let source = crate::config::settings::list_active_sources(&context)
-            .into_iter()
-            .find(|source| source.kind == SourceKind::RegisteredInstance)
-            .unwrap();
+        let source = crate::config::settings::SourceRef {
+            family: crate::config::settings::SourceFamily::Agents,
+            role: crate::config::settings::SourceRole::Registered,
+            scope: crate::config::settings::SourceScope::Instance,
+            kind: crate::config::settings::SourceKind::RegisteredInstance,
+            context_root: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        };
         let journal = root
             .path()
             .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
@@ -3690,10 +3708,16 @@ mod tests_source_transition_driver {
             };
             let context =
                 SourceReadContext::from_settings(&settings, &config.join("settings.json")).unwrap();
-            let source = list_active_sources(&context)
-                .into_iter()
-                .find(|source| source.kind == SourceKind::CatalogPersonal)
-                .unwrap();
+            let source = crate::config::settings::SourceRef {
+                family: crate::config::settings::SourceFamily::Agents,
+                role: crate::config::settings::SourceRole::Catalog,
+                scope: crate::config::settings::SourceScope::Project,
+                kind: crate::config::settings::SourceKind::CatalogPersonal,
+                context_root: std::fs::canonicalize(&project)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            };
             Self {
                 _root: root,
                 settings,
@@ -4008,10 +4032,16 @@ mod tests_source_transition_driver {
             )
             .unwrap();
             let mut foreign = selection;
-            foreign.source = list_active_sources(&fixture.context)
-                .into_iter()
-                .find(|source| source.kind == SourceKind::CatalogBase)
-                .unwrap();
+            foreign.source = crate::config::settings::SourceRef {
+                family: crate::config::settings::SourceFamily::Agents,
+                role: crate::config::settings::SourceRole::Catalog,
+                scope: crate::config::settings::SourceScope::Project,
+                kind: crate::config::settings::SourceKind::CatalogBase,
+                context_root: std::fs::canonicalize(&fixture.project)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            };
             std::fs::write(
                 disjoint.join("config.json"),
                 serde_json::to_vec(&serde_json::json!({"unknown":true,
@@ -5634,10 +5664,16 @@ mod tests_source_transition_driver {
         let absent = get_identity_transition(&fixture.context, &fixture.source, "unknown").unwrap();
         assert_eq!(absent.state, IdentityTransitionReadState::NotFound);
         assert_eq!(absent.status.journal_revision, SourceRevision::Absent {});
-        let other_source = list_active_sources(&fixture.context)
-            .into_iter()
-            .find(|s| s.kind == SourceKind::CatalogProject)
-            .unwrap();
+        let other_source = crate::config::settings::SourceRef {
+            family: crate::config::settings::SourceFamily::Agents,
+            role: crate::config::settings::SourceRole::Catalog,
+            scope: crate::config::settings::SourceScope::Project,
+            kind: crate::config::settings::SourceKind::CatalogProject,
+            context_root: std::fs::canonicalize(&fixture.project)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        };
         let unrelated_path =
             source_transition_test_locator(&fixture.context, &other_source).unwrap();
         // If both kinds share a parent, the source-specific legacy leaf still isolates diagnosis.
