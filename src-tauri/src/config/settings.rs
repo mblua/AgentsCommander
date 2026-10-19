@@ -7319,6 +7319,9 @@ pub struct AppSettings {
     /// Continuous safe idle required after an eligible response, in seconds.
     #[serde(default = "default_response_close_idle_seconds")]
     pub response_close_idle_seconds: u32,
+    /// Continuous room inactivity required before confirmation, in seconds.
+    #[serde(default = "default_room_idle_confirmation_seconds")]
+    pub room_idle_confirmation_seconds: u32,
 }
 
 /// #1171 - one entry of the root `watchers` map, or whatever the user wrote there.
@@ -7712,6 +7715,27 @@ fn repair_loaded_response_close_settings(settings: &mut AppSettings, source: &st
     }
 }
 
+const DEFAULT_ROOM_IDLE_CONFIRMATION_SECONDS: u32 = 15;
+const ROOM_IDLE_CONFIRMATION_SECONDS_MIN: u32 = 1;
+const ROOM_IDLE_CONFIRMATION_SECONDS_MAX: u32 = 3600;
+
+fn default_room_idle_confirmation_seconds() -> u32 {
+    DEFAULT_ROOM_IDLE_CONFIRMATION_SECONDS
+}
+
+/// Disk repair changes only the effective value, without requesting a write.
+fn repair_loaded_room_idle_confirmation_settings(settings: &mut AppSettings, source: &str) {
+    if !(ROOM_IDLE_CONFIRMATION_SECONDS_MIN..=ROOM_IDLE_CONFIRMATION_SECONDS_MAX)
+        .contains(&settings.room_idle_confirmation_seconds)
+    {
+        log::warn!(
+            "Invalid roomIdleConfirmationSeconds={} from {source}: expected 1..=3600; using 15 in memory",
+            settings.room_idle_confirmation_seconds
+        );
+        settings.room_idle_confirmation_seconds = DEFAULT_ROOM_IDLE_CONFIRMATION_SECONDS;
+    }
+}
+
 fn default_resource_keep_last_snapshot() -> bool {
     true
 }
@@ -7840,6 +7864,7 @@ impl Default for AppSettings {
             typing_hold_seconds: default_typing_hold_seconds(),
             response_close_enabled: true,
             response_close_idle_seconds: default_response_close_idle_seconds(),
+            room_idle_confirmation_seconds: default_room_idle_confirmation_seconds(),
         }
     }
 }
@@ -10122,6 +10147,7 @@ fn parse_settings_with_startup(
         set_agents_layer_state(&mut settings, p, state);
     }
     repair_loaded_response_close_settings(&mut settings, source);
+    repair_loaded_room_idle_confirmation_settings(&mut settings, source);
     Ok((settings, legacy_profiles))
 }
 
@@ -10455,6 +10481,7 @@ fn default_settings_with_overlay_captured(
             refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
             settings.local_overlay_state = Arc::new(overlay);
             repair_loaded_response_close_settings(&mut settings, source);
+            repair_loaded_room_idle_confirmation_settings(&mut settings, source);
             settings
         }
         Err(e) => {
@@ -11450,6 +11477,11 @@ pub fn validate_and_repair_settings(settings: &mut AppSettings) -> Result<(), St
         .contains(&settings.response_close_idle_seconds)
     {
         return Err("responseCloseIdleSeconds must be between 1 and 3600 seconds".to_string());
+    }
+    if !(ROOM_IDLE_CONFIRMATION_SECONDS_MIN..=ROOM_IDLE_CONFIRMATION_SECONDS_MAX)
+        .contains(&settings.room_idle_confirmation_seconds)
+    {
+        return Err("roomIdleConfirmationSeconds must be between 1 and 3600 seconds".to_string());
     }
     validate_preflight_timeouts(settings)?;
     adopt_orphaned_profiles(settings);
@@ -15824,6 +15856,7 @@ fn save_settings_value_locked_with_startup(
     written.coding_agent_identity_physical = Some(Arc::new(identity_physical));
     written.local_overlay_state = settings.local_overlay_state.clone();
     repair_loaded_response_close_settings(&mut written, &path.display().to_string());
+    repair_loaded_room_idle_confirmation_settings(&mut written, &path.display().to_string());
     Ok(written)
 }
 
@@ -16222,6 +16255,10 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     refresh_agent_id_hashes(&mut settings.agents);
     refresh_pair_id_hashes(&settings.agents, &mut settings.coding_agent_profiles);
     repair_loaded_response_close_settings(&mut settings, &settings_path.display().to_string());
+    repair_loaded_room_idle_confirmation_settings(
+        &mut settings,
+        &settings_path.display().to_string(),
+    );
     Ok(settings)
 }
 
@@ -17410,6 +17447,7 @@ fn compose_captured_sources(
         settings.agents_layer = state;
     }
     repair_loaded_response_close_settings(&mut settings, &source);
+    repair_loaded_room_idle_confirmation_settings(&mut settings, &source);
     Ok(settings)
 }
 
@@ -23450,6 +23488,446 @@ mod tests {
             assert!(serde_json::from_value::<AppSettings>(payload).is_err());
             assert_eq!(disk_bytes(temp.path()), before);
         }
+
+        #[test]
+        fn room_idle_confirmation_legacy_defaults_and_boundary_preferences_persist_and_reload() {
+            let defaults = AppSettings::default();
+            assert!(defaults.response_close_enabled);
+            assert_eq!(defaults.room_idle_confirmation_seconds, 15);
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), Some(&base_fixture()), None);
+            let before = disk_bytes(temp.path());
+            let legacy = load_settings_for_cli_from_path(&path);
+            assert!(legacy.response_close_enabled);
+            assert_eq!(legacy.room_idle_confirmation_seconds, 15);
+            assert_eq!(disk_bytes(temp.path()), before);
+            for enabled in [true, false] {
+                for seconds in [1, 15, 3600] {
+                    let mut candidate = legacy.clone();
+                    candidate.response_close_enabled = enabled;
+                    candidate.room_idle_confirmation_seconds = seconds;
+                    validate_and_repair_settings(&mut candidate).unwrap();
+                    let written =
+                        save_settings_to_path_preserving_project_paths(&candidate, &path).unwrap();
+                    let raw: Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    assert_eq!(raw["responseCloseEnabled"], enabled);
+                    assert_eq!(raw["roomIdleConfirmationSeconds"], seconds);
+                    assert!(raw.get("room_idle_confirmation_seconds").is_none());
+                    let reloaded = load_settings_from_path(&path);
+                    for settings in [written, reloaded] {
+                        assert_eq!(settings.response_close_enabled, enabled);
+                        assert_eq!(settings.room_idle_confirmation_seconds, seconds);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn room_idle_confirmation_f1_absent_base_cli_overlay_repairs_without_any_write() {
+            let assert_repaired = |settings: &AppSettings| {
+                assert!(!settings.response_close_enabled);
+                assert_eq!(settings.room_idle_confirmation_seconds, 15);
+                assert_eq!(settings.typing_hold_seconds, 7);
+            };
+            let overlay = |seconds: u32| {
+                serde_json::json!({
+                    "responseCloseEnabled": false,
+                    "roomIdleConfirmationSeconds": seconds,
+                    "typingHoldSeconds": 7
+                })
+            };
+            for seconds in [0, 3601, u32::MAX] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = seed(temp.path(), None, Some(&overlay(seconds)));
+                let before = disk_bytes(temp.path());
+                for settings in [
+                    load_settings_for_cli_from_path(&path),
+                    load_settings_for_cli_strict_from_path(Some(&path)).unwrap(),
+                ] {
+                    assert_repaired(&settings);
+                    assert!(settings.root_token.is_none());
+                    for key in [
+                        "responseCloseEnabled",
+                        "roomIdleConfirmationSeconds",
+                        "typingHoldSeconds",
+                    ] {
+                        assert!(settings.local_overlay_state.owns_top_level(key));
+                    }
+                }
+                assert!(!path.exists());
+                assert_eq!(disk_bytes(temp.path()), before);
+            }
+        }
+
+        #[test]
+        fn room_idle_confirmation_f2_gui_malformed_base_repairs_overlay_without_authorization_then_recovers(
+        ) {
+            let assert_repaired = |settings: &AppSettings| {
+                assert!(!settings.response_close_enabled);
+                assert_eq!(settings.room_idle_confirmation_seconds, 15);
+                assert_eq!(settings.typing_hold_seconds, 7);
+            };
+            let overlay = |seconds: u32| {
+                serde_json::json!({
+                    "responseCloseEnabled": false,
+                    "roomIdleConfirmationSeconds": seconds,
+                    "typingHoldSeconds": 7
+                })
+            };
+            for seconds in [0, 3601, u32::MAX] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = seed(temp.path(), None, Some(&overlay(seconds)));
+                std::fs::write(&path, b"{malformed-base").unwrap();
+                let before = disk_bytes(temp.path());
+                let (records, _capture) = super::capture_settings_save_diagnostics();
+                let mut settings = load_settings_from_path(&path);
+                assert_repaired(&settings);
+                assert!(settings.root_token.is_none());
+                assert!(settings.project_paths_persistence_error.is_some());
+                assert!(settings.project_paths.is_empty());
+                assert!(settings.project_path.is_none());
+                assert!(settings
+                    .local_overlay_state
+                    .owns_top_level("roomIdleConfirmationSeconds"));
+                let records = records.borrow();
+                assert_eq!(records.len(), 1);
+                let fields = super::parse_settings_save_diagnostic(&records[0]);
+                assert_eq!(fields["stage"], "project_paths_refresh_disk_gate");
+                drop(records);
+                assert_eq!(disk_bytes(temp.path()), before);
+                settings.sidebar_zoom = 1.25;
+                validate_and_repair_settings(&mut settings).unwrap();
+                let error = save_settings_to_path_preserving_project_paths_typed(&settings, &path)
+                    .unwrap_err();
+                assert_eq!(error.stage, SettingsSaveStage::PreserveDiskGate);
+                assert_eq!(disk_bytes(temp.path()), before);
+                std::fs::write(&path, serde_json::to_vec(&base_fixture()).unwrap()).unwrap();
+                let recovered = load_settings_from_path(&path);
+                assert_repaired(&recovered);
+                assert!(recovered.project_paths_persistence_error.is_none());
+                assert!(recovered.root_token.is_some());
+            }
+        }
+
+        #[test]
+        fn room_idle_confirmation_f3_malformed_base_cli_fallback_and_strict_refusal_preserve_bytes()
+        {
+            let assert_repaired = |settings: &AppSettings| {
+                assert!(!settings.response_close_enabled);
+                assert_eq!(settings.room_idle_confirmation_seconds, 15);
+                assert_eq!(settings.typing_hold_seconds, 7);
+            };
+            let overlay = |seconds: u32| {
+                serde_json::json!({
+                    "responseCloseEnabled": false,
+                    "roomIdleConfirmationSeconds": seconds,
+                    "typingHoldSeconds": 7
+                })
+            };
+            for seconds in [0, 3601, u32::MAX] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = seed(temp.path(), None, Some(&overlay(seconds)));
+                std::fs::write(&path, b"{malformed-base").unwrap();
+                let before = disk_bytes(temp.path());
+                let settings = load_settings_for_cli_from_path(&path);
+                assert_repaired(&settings);
+                assert!(settings.root_token.is_none());
+                let error = load_settings_for_cli_strict_from_path(Some(&path)).unwrap_err();
+                assert!(error.contains("settings.json exists but could not be parsed"));
+                assert!(settings.project_paths_persistence_error.is_some());
+                assert!(settings.project_paths.is_empty());
+                assert_eq!(disk_bytes(temp.path()), before);
+            }
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            std::fs::create_dir(&path).unwrap();
+            assert!(load_settings_for_cli_strict_from_path(Some(&path)).is_err());
+            assert!(path.is_dir());
+            assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+        }
+
+        #[test]
+        fn room_idle_confirmation_valid_base_disk_repair_and_cas_no_write_preserve_false_and_bytes()
+        {
+            let assert_repaired = |settings: &AppSettings| {
+                assert!(!settings.response_close_enabled);
+                assert_eq!(settings.room_idle_confirmation_seconds, 15);
+                assert_eq!(settings.typing_hold_seconds, 7);
+            };
+            let overlay = |seconds: u32| {
+                serde_json::json!({
+                    "responseCloseEnabled": false,
+                    "roomIdleConfirmationSeconds": seconds,
+                    "typingHoldSeconds": 7
+                })
+            };
+            for seconds in [0, 3601, u32::MAX] {
+                for with_overlay in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut base = base_fixture();
+                    base["responseCloseEnabled"] = Value::Bool(false);
+                    base["roomIdleConfirmationSeconds"] = Value::from(seconds);
+                    base["typingHoldSeconds"] = Value::from(7);
+                    let local = overlay(seconds);
+                    let path = seed(temp.path(), Some(&base), with_overlay.then_some(&local));
+                    // Establish the current split-file schema before simulating
+                    // an external seconds edit, so Reconcile has nothing to migrate.
+                    let initial = load_settings_for_cli_from_path(&path);
+                    save_settings_to_path_preserving_project_paths(&initial, &path).unwrap();
+                    let mut raw: Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    raw["roomIdleConfirmationSeconds"] = Value::from(seconds);
+                    std::fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+                    let before = disk_bytes(temp.path());
+                    let settings = load_settings_from_path(&path);
+                    assert_repaired(&settings);
+                    assert_repaired(&load_settings_for_cli_from_path(&path));
+                    assert_repaired(&load_settings_for_cli_strict_from_path(Some(&path)).unwrap());
+                    let cas = compare_and_set_terminal_snapshots_enabled_at_path(
+                        &settings, &path, true, true,
+                    )
+                    .unwrap();
+                    assert_repaired(&cas);
+                    assert_eq!(disk_bytes(temp.path()), before);
+
+                    // Reconcile keeps unrelated disk fields, then re-decodes them.
+                    let reconciled = save_settings_value(
+                        &settings,
+                        &path,
+                        ProjectWriteMode::Reconcile {
+                            active: true,
+                            archived: true,
+                        },
+                    )
+                    .unwrap();
+                    assert_repaired(&reconciled);
+                    let raw: Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    assert_eq!(raw["roomIdleConfirmationSeconds"], seconds);
+                    assert_eq!(disk_bytes(temp.path()), before);
+                    if with_overlay {
+                        assert_eq!(
+                            std::fs::read(temp.path().join("settings.50.personal.no-git.json"))
+                                .unwrap(),
+                            before["settings.50.personal.no-git.json"]
+                        );
+                    }
+                    let mut unrelated = reconciled;
+                    unrelated.sidebar_zoom = 1.25;
+                    let agent = serde_json::from_value(serde_json::json!({
+                        "id": "response-test", "label": "Response test",
+                        "command": "codex", "color": "#000000"
+                    }))
+                    .unwrap();
+                    crate::config::coding_agent_mutations::apply_coding_agent_op(
+                        &mut unrelated,
+                        &crate::config::coding_agent_mutations::CodingAgentOp::Add { agent },
+                    )
+                    .unwrap();
+                    let written =
+                        save_settings_to_path_preserving_project_paths(&unrelated, &path).unwrap();
+                    assert_repaired(&written);
+                    assert_eq!(written.sidebar_zoom, 1.25);
+                    assert_eq!(written.agents[0].id, "response-test");
+                    assert_repaired(&load_settings_from_path(&path));
+                }
+            }
+        }
+
+        #[test]
+        fn room_idle_confirmation_malformed_overlay_falls_back_without_changing_disk() {
+            for local in [
+                "{broken",
+                r#"{"roomIdleConfirmationSeconds":"15"}"#,
+                r#"{"roomIdleConfirmationSeconds":null}"#,
+                r#"{"roomIdleConfirmationSeconds":1.5}"#,
+                r#"{"roomIdleConfirmationSeconds":-1}"#,
+                r#"{"roomIdleConfirmationSeconds":4294967296}"#,
+                "[]",
+                "null",
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut base = base_fixture();
+                base["responseCloseEnabled"] = Value::Bool(false);
+                base["roomIdleConfirmationSeconds"] = Value::from(3600);
+                let path = seed(temp.path(), Some(&base), None);
+                let current = load_settings_for_cli_from_path(&path);
+                save_settings_to_path_preserving_project_paths(&current, &path).unwrap();
+                std::fs::write(temp.path().join("settings.50.personal.no-git.json"), local)
+                    .unwrap();
+                let before = disk_bytes(temp.path());
+                let settings = load_settings_from_path(&path);
+                assert!(!settings.response_close_enabled);
+                assert_eq!(settings.room_idle_confirmation_seconds, 3600);
+                assert_eq!(disk_bytes(temp.path()), before);
+            }
+        }
+
+        #[tokio::test]
+        async fn room_idle_confirmation_invalid_explicit_updates_reject_before_either_writer_and_keep_live_and_disk(
+        ) {
+            let temp = tempfile::tempdir().unwrap();
+            let path = seed(temp.path(), Some(&base_fixture()), None);
+            let original = load_settings_from_path(&path);
+            let state: SettingsState =
+                crate::config::settings::new_settings_state(original.clone());
+            let before = disk_bytes(temp.path());
+            for seconds in [0, 3601, u32::MAX] {
+                let mut invalid = original.clone();
+                invalid.response_close_enabled = false;
+                invalid.room_idle_confirmation_seconds = seconds;
+                for error in [
+                    crate::commands::config::persist_protected_settings_update(
+                        &state,
+                        invalid.clone(),
+                    )
+                    .await
+                    .unwrap_err(),
+                    crate::commands::config::persist_settings_draft_update(&state, invalid)
+                        .await
+                        .unwrap_err(),
+                ] {
+                    assert!(error.contains("roomIdleConfirmationSeconds"));
+                }
+                assert_eq!(
+                    serde_json::to_value(&*state.read().await).unwrap(),
+                    serde_json::to_value(&original).unwrap()
+                );
+                assert_eq!(disk_bytes(temp.path()), before);
+            }
+            for value in [
+                Value::from("30"),
+                Value::from(-1),
+                serde_json::json!(1.5),
+                Value::Null,
+                Value::Bool(true),
+                Value::from(u64::MAX),
+            ] {
+                let mut payload = serde_json::to_value(&original).unwrap();
+                payload["roomIdleConfirmationSeconds"] = value;
+                assert!(serde_json::from_value::<AppSettings>(payload).is_err());
+            }
+            let mut payload = serde_json::to_value(&original).unwrap();
+            payload["responseCloseEnabled"] = Value::from("false");
+            assert!(serde_json::from_value::<AppSettings>(payload).is_err());
+            assert_eq!(disk_bytes(temp.path()), before);
+        }
+
+        #[test]
+        fn room_idle_confirmation_owner_composes_repaired_and_overlay_values_without_writes() {
+            for seconds in [0, 1, 15, 3600, 3601, u32::MAX] {
+                for with_overlay in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut base = base_fixture();
+                    base["roomIdleConfirmationSeconds"] =
+                        Value::from(if with_overlay { 123 } else { seconds });
+                    base["typingHoldSeconds"] = Value::from(7);
+                    let local = serde_json::json!({"roomIdleConfirmationSeconds": seconds});
+                    let path = seed(temp.path(), Some(&base), with_overlay.then_some(&local));
+                    let before = disk_bytes(temp.path());
+                    let owner =
+                        SettingsOwner::open_active(&path, std::time::Duration::from_secs(1))
+                            .unwrap();
+                    let settings = owner.blocking_current_snapshot().unwrap();
+                    let expected = if (1..=3600).contains(&seconds) {
+                        seconds
+                    } else {
+                        15
+                    };
+                    assert_eq!(settings.room_idle_confirmation_seconds, expected);
+                    assert_eq!(settings.typing_hold_seconds, 7);
+                    assert_eq!(
+                        settings
+                            .local_overlay_state
+                            .owns_top_level("roomIdleConfirmationSeconds"),
+                        with_overlay
+                    );
+                    assert_eq!(disk_bytes(temp.path()), before);
+                }
+            }
+        }
+
+        #[test]
+        fn room_idle_confirmation_malformed_base_keeps_bytes_and_refuses_save() {
+            for raw in [
+                r#"{"roomIdleConfirmationSeconds":"15"}"#,
+                r#"{"roomIdleConfirmationSeconds":null}"#,
+                r#"{"roomIdleConfirmationSeconds":1.5}"#,
+                r#"{"roomIdleConfirmationSeconds":-1}"#,
+                r#"{"roomIdleConfirmationSeconds":4294967296}"#,
+                "[]",
+                "null",
+                "{broken",
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let local = serde_json::json!({"typingHoldSeconds": 7});
+                // Establish the existing split-file layout before corrupting the base.
+                let path = seed(temp.path(), Some(&base_fixture()), Some(&local));
+                let initial = load_settings_for_cli_from_path(&path);
+                save_settings_to_path_preserving_project_paths(&initial, &path).unwrap();
+                let raw_value = serde_json::from_str::<Value>(raw);
+                let object_case = matches!(&raw_value, Ok(Value::Object(_)));
+                let bytes = match raw_value {
+                    Ok(Value::Object(fields)) => {
+                        let mut base = base_fixture();
+                        base["responseCloseEnabled"] = Value::Bool(false);
+                        base.as_object_mut().unwrap().extend(fields);
+                        serde_json::to_vec(&base).unwrap()
+                    }
+                    _ => raw.as_bytes().to_vec(),
+                };
+                std::fs::write(&path, bytes).unwrap();
+                let before = disk_bytes(temp.path());
+                let settings = load_settings_from_path(&path);
+                assert_eq!(
+                    (
+                        settings.room_idle_confirmation_seconds,
+                        settings.typing_hold_seconds
+                    ),
+                    (15, 7),
+                    "case {raw}"
+                );
+                assert!(settings.response_close_enabled, "case {raw}");
+                assert_eq!(settings.root_token.is_some(), object_case, "case {raw}");
+                assert_ne!(settings.root_token.as_deref(), Some("base-token"));
+                assert_eq!(
+                    settings.project_paths_persistence_error.is_none(),
+                    object_case,
+                    "case {raw}"
+                );
+                let strict = load_settings_for_cli_strict_from_path(Some(&path));
+                assert_eq!(strict.is_ok(), object_case, "case {raw}");
+                if let Ok(strict) = strict {
+                    // Selection succeeded; typed base failure uses defaults plus overlay.
+                    assert_eq!(strict.room_idle_confirmation_seconds, 15);
+                    assert_eq!(strict.typing_hold_seconds, 7);
+                    assert!(strict.root_token.is_none());
+                    assert!(strict.project_paths_persistence_error.is_none());
+                }
+                let cli = load_settings_for_cli_from_path(&path);
+                assert_eq!(cli.room_idle_confirmation_seconds, 15);
+                assert_eq!(cli.typing_hold_seconds, 7);
+                assert!(cli.root_token.is_none(), "case {raw}");
+                assert_eq!(
+                    cli.project_paths_persistence_error.is_none(),
+                    object_case,
+                    "case {raw}"
+                );
+                assert!(cli.response_close_enabled, "case {raw}");
+                assert!(settings.project_paths.is_empty());
+                assert!(cli.project_paths.is_empty());
+                assert_eq!(disk_bytes(temp.path()), before, "case {raw}");
+                let error = save_settings_to_path_preserving_project_paths_typed(&settings, &path)
+                    .unwrap_err();
+                assert_eq!(
+                    error.stage,
+                    SettingsSaveStage::PreserveDiskGate,
+                    "case {raw}"
+                );
+                assert_eq!(disk_bytes(temp.path()), before, "case {raw}");
+            }
+        }
     }
 
     #[test]
@@ -28672,6 +29150,9 @@ mod tests {
             assert!(!object.contains_key("responseCloseIdleSeconds"));
             object.insert("responseCloseEnabled".to_string(), Value::Bool(true));
             object.insert("responseCloseIdleSeconds".to_string(), Value::from(30));
+            assert!(!object.contains_key("roomIdleConfirmationSeconds"));
+            // #3123 adds a default-15 field; preserve the historical captured control.
+            object.insert("roomIdleConfirmationSeconds".to_string(), Value::from(15));
             // H02 adds backend-derived metadata; never rewrite the frozen control.
             for raw in object.get_mut("agents").unwrap().as_array_mut().unwrap() {
                 assert!(raw.get("id_hash").is_none());
