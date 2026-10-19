@@ -10698,10 +10698,7 @@ impl MailboxPoller {
                 origin,
                 comanaged,
                 response,
-            } => {
-                Box::pin(self.deliver_peer_wake(app, message, origin, comanaged, response))
-                    .await
-            }
+            } => Box::pin(self.deliver_peer_wake(app, message, origin, comanaged, response)).await,
             WakeDelivery::InternalSystem {
                 target,
                 notice,
