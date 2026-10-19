@@ -303,6 +303,9 @@ const appSettingsOnly = (snapshot: AppSettings | null): AppSettings | null => {
 // #2337 - the typing-hold bounds the backend enforces in
 // `validate_typing_hold_settings` (settings.rs). The draft is checked against the
 // same numbers so the modal refuses an invalid window before the save round-trip.
+const ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT = 15;
+const ROOM_IDLE_CONFIRMATION_SECONDS_MIN = 1;
+const ROOM_IDLE_CONFIRMATION_SECONDS_MAX = 3600;
 const RESPONSE_CLOSE_IDLE_SECONDS_DEFAULT = 30;
 const RESPONSE_CLOSE_IDLE_SECONDS_MIN = 1;
 const RESPONSE_CLOSE_IDLE_SECONDS_MAX = 3600;
@@ -347,6 +350,15 @@ function parseResponseCloseIdleSeconds(raw: string): number | null {
   if (!/^[0-9]+$/.test(text)) return null;
   const value = Number(text);
   return Number.isSafeInteger(value) && value >= RESPONSE_CLOSE_IDLE_SECONDS_MIN && value <= RESPONSE_CLOSE_IDLE_SECONDS_MAX
+    ? value
+    : null;
+}
+
+function parseRoomIdleConfirmationSeconds(raw: string): number | null {
+  const text = raw.trim();
+  if (!/^[0-9]+$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) && value >= ROOM_IDLE_CONFIRMATION_SECONDS_MIN && value <= ROOM_IDLE_CONFIRMATION_SECONDS_MAX
     ? value
     : null;
 }
@@ -825,6 +837,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
   const [responseCloseIdleSecondsText, setResponseCloseIdleSecondsText] = createSignal(
     String(seededSettings?.responseCloseIdleSeconds ?? RESPONSE_CLOSE_IDLE_SECONDS_DEFAULT),
   );
+  const [roomIdleConfirmationSecondsText, setRoomIdleConfirmationSecondsText] = createSignal(
+    String(seededSettings?.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT),
+  );
   const [draftDirty, setDraftDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testingBot, setTestingBot] = createSignal<string | null>(null);
@@ -936,6 +951,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     setSettings("data", nextDraft);
     setResponseCloseIdleSecondsText(
       String(nextSettings.responseCloseIdleSeconds ?? RESPONSE_CLOSE_IDLE_SECONDS_DEFAULT),
+    );
+    setRoomIdleConfirmationSecondsText(
+      String(nextSettings.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT),
     );
     setModalSeed(nextModalSeed);
     adoptBackendAgentOrder(nextSettings.agents);
@@ -1580,6 +1598,9 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       );
       setResponseCloseIdleSecondsText(
         String(nextSettings?.responseCloseIdleSeconds ?? RESPONSE_CLOSE_IDLE_SECONDS_DEFAULT),
+      );
+      setRoomIdleConfirmationSecondsText(
+        String(nextSettings?.roomIdleConfirmationSeconds ?? ROOM_IDLE_CONFIRMATION_SECONDS_DEFAULT),
       );
       if (leftRailId() === null && loaded.agents[0]) setLeftRailId(loaded.agents[0].id);
     }
@@ -2499,11 +2520,18 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
       : null;
   };
 
+  const validateRoomIdleConfirmationSeconds = (): string | null => {
+    if (!settings.data) return null;
+    return parseRoomIdleConfirmationSeconds(roomIdleConfirmationSecondsText()) === null
+      ? "Idle confirmation delay: seconds must be a whole number from 1 to 3600"
+      : null;
+  };
+
   // #2704 - which General category holds a blocking validation error (red dot cue).
   const generalInvalid = createMemo((): Record<GeneralCategoryId, boolean> => ({
     appearance: !!(validateScreenshotHotkey() || validateSidebarCompactHotkey() || validateRoomNumberMask()),
     terminal: !!(validateTypingHoldSeconds() || validateResponseCloseIdleSeconds()),
-    agents: !!validateCoordinatorIdle(),
+    agents: !!(validateCoordinatorIdle() || validateRoomIdleConfirmationSeconds()),
     network: !!validateApiServerSettings(),
     system: false,
   }));
@@ -2514,6 +2542,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
     validateCoordinatorIdle() ??
     validateTypingHoldSeconds() ??
     validateResponseCloseIdleSeconds() ??
+    validateRoomIdleConfirmationSeconds() ??
     validateApiServerSettings() ??
     validateScreenshotHotkey() ??
     validateSidebarCompactHotkey() ??
@@ -3134,6 +3163,40 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
             </div>
           </>)}
           {generalPane("agents", <>
+            <div class="settings-section">
+              <div class="settings-section-title">Room activity</div>
+              <label data-ac-setting="roomIdleConfirmationSeconds" class="settings-field">
+                <span class="settings-label">Idle confirmation delay (seconds)</span>
+                <input
+                  class="settings-input settings-input-sm"
+                  type="number"
+                  min={ROOM_IDLE_CONFIRMATION_SECONDS_MIN}
+                  max={ROOM_IDLE_CONFIRMATION_SECONDS_MAX}
+                  step="1"
+                  value={roomIdleConfirmationSecondsText()}
+                  onInput={(e) => {
+                    const raw = e.currentTarget.value;
+                    setDraftDirty(true);
+                    setRoomIdleConfirmationSecondsText(raw);
+                    const value = parseRoomIdleConfirmationSeconds(raw);
+                    if (value !== null) updateField("roomIdleConfirmationSeconds", value);
+                  }}
+                  data-ac-testid="settings.general.roomIdleConfirmationSeconds"
+                  data-ac-role="spinbutton"
+                />
+              </label>
+              <div class="settings-hint">
+                Used by room indicators, Non-stop and completion alerts. Applies to future active-to-idle transitions; pending delays keep their captured value. Non-stop tolerance is separate. To edit the settings file manually, stop the app/backend, edit, then restart; personal overrides take precedence.
+              </div>
+              <Show when={settingsFilePath()}>
+                <div class="settings-hint">Settings file: {settingsFilePath()}</div>
+              </Show>
+              <Show when={validateRoomIdleConfirmationSeconds()}>
+                <div class="settings-hint settings-hint-error" data-ac-testid="settings.general.roomIdleConfirmationSeconds.error">
+                  {validateRoomIdleConfirmationSeconds()}
+                </div>
+              </Show>
+            </div>
             <div class="settings-section">
               <div class="settings-section-title">On app restart</div>
               <div class="settings-hint">
