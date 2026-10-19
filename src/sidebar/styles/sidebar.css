@@ -6818,7 +6818,7 @@ html.light-theme .settings-hint-error {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
-  color: var(--sidebar-fg-muted);
+  color: var(--sidebar-fg-muted, rgba(255, 255, 255, 0.5));
   border: 1px solid var(--sidebar-border);
   border-radius: 999px;
   padding: 0 4px;
