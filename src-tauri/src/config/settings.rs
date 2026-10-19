@@ -15628,18 +15628,20 @@ fn retain_untransferred_registered_main_groups(
     }
 }
 
+type RegisteredMainPreparedGroups<'a> = (
+    Option<&'a Value>,
+    Option<&'a Value>,
+    Option<&'a Map<String, Value>>,
+    &'a Path,
+);
+
 fn prepare_registered_main_agent_groups(
     mut out: Map<String, Value>,
     settings: &AppSettings,
     disk: Option<&Map<String, Value>>,
     agents_groups: &Map<String, Value>,
     profiles_in_sidecar: bool,
-    prepared_groups: (
-        Option<&Value>,
-        Option<&Value>,
-        Option<&Map<String, Value>>,
-        &Path,
-    ),
+    prepared_groups: RegisteredMainPreparedGroups<'_>,
     mode: &ProjectWriteMode,
 ) -> Result<Map<String, Value>, String> {
     let (prepared_profiles, prepared_duplicate_agents, sidecar_before, path) = prepared_groups;
