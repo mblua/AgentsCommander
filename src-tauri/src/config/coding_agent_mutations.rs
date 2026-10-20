@@ -1560,8 +1560,7 @@ mod tests {
     #[test]
     fn single_editor_inactive_gate() {
         use crate::config::settings::{
-            list_active_sources, source_transition_effect_counts, SourceKind, SourceReadContext,
-            SourceRevision,
+            source_transition_effect_counts, SourceReadContext, SourceRevision,
         };
         let root = crate::config::settings::source_transition_test_root();
         let project = root.path().join("project");
@@ -1574,10 +1573,16 @@ mod tests {
         };
         let context =
             SourceReadContext::from_settings(&settings, &config.join("settings.json")).unwrap();
-        let source = list_active_sources(&context)
-            .into_iter()
-            .find(|source| source.kind == SourceKind::CatalogPersonal)
-            .unwrap();
+        let source = crate::config::settings::SourceRef {
+            family: crate::config::settings::SourceFamily::Agents,
+            role: crate::config::settings::SourceRole::Catalog,
+            scope: crate::config::settings::SourceScope::Project,
+            kind: crate::config::settings::SourceKind::CatalogPersonal,
+            context_root: std::fs::canonicalize(&project)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        };
         let before = source_transition_effect_counts();
         let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
         let reloads = std::cell::Cell::new(0);
@@ -1662,16 +1667,22 @@ mod tests {
 
     #[test]
     fn single_editor_status_unknown_inactive_zero_write_without_sidecars() {
-        use crate::config::settings::{SourceKind, SourceReadContext};
+        use crate::config::settings::SourceReadContext;
         let root = crate::config::settings::source_transition_test_root();
         let settings = AppSettings::default();
         let context =
             SourceReadContext::from_settings(&settings, &root.path().join("settings.json"))
                 .unwrap();
-        let source = crate::config::settings::list_active_sources(&context)
-            .into_iter()
-            .find(|source| source.kind == SourceKind::RegisteredInstance)
-            .unwrap();
+        let source = crate::config::settings::SourceRef {
+            family: crate::config::settings::SourceFamily::Agents,
+            role: crate::config::settings::SourceRole::Registered,
+            scope: crate::config::settings::SourceScope::Instance,
+            kind: crate::config::settings::SourceKind::RegisteredInstance,
+            context_root: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        };
         for _ in 0..3 {
             let read = get_identity_transition(&context, &source, "unknown-operation").unwrap();
             assert_eq!(read.state, IdentityTransitionReadState::NotFound);
@@ -1688,16 +1699,22 @@ mod tests {
 
     #[test]
     fn single_editor_status_invalid_present_journal_preserved_not_empty() {
-        use crate::config::settings::{SourceCoordinationError, SourceKind, SourceReadContext};
+        use crate::config::settings::{SourceCoordinationError, SourceReadContext};
         let root = crate::config::settings::source_transition_test_root();
         let settings = AppSettings::default();
         let context =
             SourceReadContext::from_settings(&settings, &root.path().join("settings.json"))
                 .unwrap();
-        let source = crate::config::settings::list_active_sources(&context)
-            .into_iter()
-            .find(|source| source.kind == SourceKind::RegisteredInstance)
-            .unwrap();
+        let source = crate::config::settings::SourceRef {
+            family: crate::config::settings::SourceFamily::Agents,
+            role: crate::config::settings::SourceRole::Registered,
+            scope: crate::config::settings::SourceScope::Instance,
+            kind: crate::config::settings::SourceKind::RegisteredInstance,
+            context_root: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        };
         let journal = root
             .path()
             .join(crate::config::instance_artifacts::IDENTITY_TRANSITION_STATE_NAME);
@@ -3103,29 +3120,159 @@ mod tests_source_transition_driver {
 
     fn r3_ready_fixture() -> (DriverFixture, String) {
         let fixture = DriverFixture::new();
-        configure_source_durable_cut(Some(("prepared", 1)));
-        let result = commit_source_candidate_internal(
+        let target = source_transition_test_locator(&fixture.context, &fixture.source).unwrap();
+        std::fs::remove_file(&target).unwrap();
+        let snapshot = read_source_snapshot(&fixture.context, &fixture.source).unwrap();
+        assert_eq!(snapshot.snapshot.revision, SourceRevision::Absent {});
+        assert!(!snapshot.snapshot.capabilities.editable_save);
+        assert!(!snapshot.snapshot.capabilities.editable_create);
+        // Current admission stays read-only. Historical recovery below does not
+        // grant absent creation to the coordinator or any application caller.
+        let publications = source_transition_publication_counts();
+        let effects = source_transition_effect_counts().1;
+        let native = crate::config::local_config_io::source_checkpoint_native_calls();
+        let uuids = SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get);
+        let journal_before = read_own_source_journal(&fixture.context).unwrap();
+        let reloads = std::cell::Cell::new(0);
+        assert!(matches!(
+            commit_source_candidate_internal(
+                &fixture.settings,
+                &fixture.context,
+                &fixture.source,
+                "absent-admission",
+                &snapshot.snapshot.revision,
+                &DriverFixture::candidate(),
+                &|| {
+                    reloads.set(reloads.get() + 1);
+                    Ok(())
+                }
+            ),
+            Err(SourceTransitionError::Preparation(
+                SourcePreparationError::ReadOnly
+            ))
+        ));
+        assert_eq!(
+            read_own_source_journal(&fixture.context).unwrap(),
+            journal_before
+        );
+        assert!(journal_before.1.intents.is_empty());
+        assert_eq!(source_transition_publication_counts(), publications);
+        assert_eq!(source_transition_effect_counts().1, effects);
+        assert_eq!(
+            crate::config::local_config_io::source_checkpoint_native_calls(),
+            native
+        );
+        assert_eq!(SOURCE_TRANSITION_UUIDS.with(std::cell::Cell::get), uuids);
+        assert_eq!(reloads.get(), 0);
+        assert!(!target.exists());
+
+        // A historical absent-before candidate, not current admission. No
+        // publication proof, stage or existing operation is supplied/rewritten.
+        let candidate = DriverFixture::candidate();
+        let prepared: PreparedSourceCandidate = serde_json::from_value(serde_json::json!({
+            "source": fixture.source,
+            "expectedRevision": snapshot.snapshot.revision,
+            "contextRevision": snapshot.snapshot.context_revision,
+            "beforeBytes": null,
+            "serializedAfter": serde_json::to_vec(&candidate).unwrap(),
+            "persistedNames": [],
+            "originBinding": null
+        }))
+        .unwrap();
+        let identity =
+            IdentityWriteLease::acquire(&fixture.context, std::time::Duration::ZERO).unwrap();
+        let lease =
+            SourceWriteContext::acquire(&fixture.context, &fixture.source, &identity).unwrap();
+        let origin_inputs = OriginInputs::capture(&fixture.context).unwrap();
+        let origin = LegacyCompatibilityOrigin::classify(&origin_inputs);
+        let mut capture = capture_source_inventory(
             &fixture.settings,
+            &snapshot,
+            &origin,
+            lease.physical_source_key(),
+        )
+        .unwrap();
+        assert!(capture.original_targets().is_empty());
+        capture.classify(Vec::new()).unwrap();
+        let operation = new_source_transition_id();
+        let authority = SourceInventoryProof::for_candidate(
+            SourceInventoryInputs {
+                settings: &fixture.settings,
+                context: &fixture.context,
+                identity: &identity,
+                lease: &lease,
+            },
+            &snapshot,
+            &prepared,
+            &origin_inputs,
+            capture,
+            &operation,
+        )
+        .unwrap();
+        let rediscover = || -> Result<(), SourceTransitionError> {
+            let (witness, targets) = source_discovery_evidence(&fixture.settings)?;
+            authority.verify_complete_discovery(&witness, &targets)?;
+            Ok(())
+        };
+        rediscover().unwrap();
+        authority
+            .verify_original_classification(&|_| Ok(false))
+            .unwrap();
+        let payload =
+            source_transition_digest(&(&fixture.source, &snapshot.snapshot.revision, &candidate))
+                .unwrap();
+        let intent = authority
+            .stored_intent(&prepared, &operation, "r3-original", &payload)
+            .unwrap();
+        let revision = read_own_source_journal(&fixture.context).unwrap().0;
+        update_own_source_journal_with_validation(
+            &identity,
+            &lease,
             &fixture.context,
-            &fixture.source,
-            "r3-original",
-            &SourceRevision::Absent {},
-            &DriverFixture::candidate(),
+            &revision,
+            |journal| {
+                journal.intents.insert(operation.clone(), intent);
+                journal
+                    .inventories
+                    .insert(operation.clone(), authority.inventory().clone());
+                journal
+                    .progress
+                    .insert(operation.clone(), SourceLocalProgress::default());
+                Ok(())
+            },
+            &|| authority.validate(&identity, &lease, &fixture.context),
+        )
+        .unwrap();
+        configure_source_durable_cut(Some(("prepared", 1)));
+        let result = drive_identity_transition(
+            &identity,
+            &lease,
+            &fixture.context,
+            &operation,
+            &authority,
+            &rediscover,
             &|| Ok(()),
         );
         assert!(
-            matches!(result, Err(SourceTransitionError::Interrupted { .. })),
+            matches!(&result, Err(SourceTransitionError::Coordination(
+                SourceCoordinationError::Io(reason)
+            )) if reason == "durable cut: prepared"),
             "r3 readiness result: {result:?}"
         );
         SOURCE_DURABLE_CUT.with(|cut| assert!(cut.borrow().0.is_none()));
         configure_source_durable_cut(None);
-        let operation = fixture.operation();
+        let journal = read_own_source_journal(&fixture.context).unwrap().1;
+        assert!(journal.intents[&operation].before_bytes.is_none());
+        assert!(journal.progress[&operation].source_publication.is_none());
         assert_eq!(
             get_identity_transition(&fixture.context, &fixture.source, &operation)
                 .unwrap()
                 .state,
             IdentityTransitionReadState::Prepared
         );
+        drop(lease);
+        drop(identity);
+        r3_assert_pending(&fixture, &operation);
         (fixture, operation)
     }
 
@@ -3675,6 +3822,7 @@ mod tests_source_transition_driver {
         context: SourceReadContext,
         source: SourceRef,
         project: std::path::PathBuf,
+        initial_revision: SourceRevision,
     }
 
     impl DriverFixture {
@@ -3690,16 +3838,36 @@ mod tests_source_transition_driver {
             };
             let context =
                 SourceReadContext::from_settings(&settings, &config.join("settings.json")).unwrap();
-            let source = list_active_sources(&context)
-                .into_iter()
-                .find(|source| source.kind == SourceKind::CatalogPersonal)
-                .unwrap();
+            let source = crate::config::settings::SourceRef {
+                family: crate::config::settings::SourceFamily::Agents,
+                role: crate::config::settings::SourceRole::Catalog,
+                scope: crate::config::settings::SourceScope::Project,
+                kind: crate::config::settings::SourceKind::CatalogPersonal,
+                context_root: std::fs::canonicalize(&project)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            };
+            let seed = serde_json::json!({"schemaVersion":2,"agents":[{
+                "key":"fixture-seed","label":"Fixture seed","description":"Owned","color":"#123456",
+                "command":"fixture-before-command","envs":[]}]});
+            assert_ne!(seed, Self::candidate());
+            let target = source_transition_test_locator(&context, &source).unwrap();
+            std::fs::write(&target, serde_json::to_vec(&seed).unwrap()).unwrap();
+            let snapshot = read_source_snapshot(&context, &source).unwrap();
+            assert_eq!(
+                snapshot.snapshot.availability,
+                SourceAvailability::Available
+            );
+            assert!(snapshot.snapshot.capabilities.editable_save);
+            let initial_revision = snapshot.snapshot.revision;
             Self {
                 _root: root,
                 settings,
                 context,
                 source,
                 project,
+                initial_revision,
             }
         }
         fn candidate() -> serde_json::Value {
@@ -3752,7 +3920,7 @@ mod tests_source_transition_driver {
             &fixture.context,
             &fixture.source,
             "request-empty",
-            &SourceRevision::Absent {},
+            &fixture.initial_revision,
             &DriverFixture::candidate(),
             &|| {
                 reloads.set(reloads.get() + 1);
@@ -3794,7 +3962,7 @@ mod tests_source_transition_driver {
             &fixture.context,
             &fixture.source,
             "request-1",
-            &SourceRevision::Absent {},
+            &fixture.initial_revision,
             &DriverFixture::candidate(),
             &|| Ok(()),
         )
@@ -3806,7 +3974,7 @@ mod tests_source_transition_driver {
                 &fixture.context,
                 &fixture.source,
                 "request-1",
-                &SourceRevision::Absent {},
+                &fixture.initial_revision,
                 &serde_json::Value::Null,
                 &|| Ok(())
             ),
@@ -3866,7 +4034,7 @@ mod tests_source_transition_driver {
                 &fixture.context,
                 &fixture.source,
                 "request-cut",
-                &SourceRevision::Absent {},
+                &fixture.initial_revision,
                 &DriverFixture::candidate(),
                 &|| Ok(()),
             );
@@ -3923,7 +4091,7 @@ mod tests_source_transition_driver {
                         .unwrap()
                         .snapshot
                         .revision,
-                    SourceRevision::Absent {}
+                    fixture.initial_revision
                 );
                 assert!(original.inventories.is_empty() && original.progress.is_empty());
             }
@@ -4008,10 +4176,16 @@ mod tests_source_transition_driver {
             )
             .unwrap();
             let mut foreign = selection;
-            foreign.source = list_active_sources(&fixture.context)
-                .into_iter()
-                .find(|source| source.kind == SourceKind::CatalogBase)
-                .unwrap();
+            foreign.source = crate::config::settings::SourceRef {
+                family: crate::config::settings::SourceFamily::Agents,
+                role: crate::config::settings::SourceRole::Catalog,
+                scope: crate::config::settings::SourceScope::Project,
+                kind: crate::config::settings::SourceKind::CatalogBase,
+                context_root: std::fs::canonicalize(&fixture.project)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            };
             std::fs::write(
                 disjoint.join("config.json"),
                 serde_json::to_vec(&serde_json::json!({"unknown":true,
@@ -4858,7 +5032,7 @@ mod tests_source_transition_driver {
                 &fixture.context,
                 &fixture.source,
                 "prefence-CAS",
-                &SourceRevision::Absent {},
+                &fixture.initial_revision,
                 &DriverFixture::candidate(),
                 &|| Ok(())
             )
@@ -4873,7 +5047,7 @@ mod tests_source_transition_driver {
                     &fixture.context,
                     &fixture.source,
                     "different-prefence-request",
-                    &SourceRevision::Absent {},
+                    &fixture.initial_revision,
                     &DriverFixture::candidate(),
                     &|| Ok(())
                 ),
@@ -5127,7 +5301,7 @@ mod tests_source_transition_driver {
                 &fixture.context,
                 &fixture.source,
                 "worker-local",
-                &SourceRevision::Absent {},
+                &fixture.initial_revision,
                 &DriverFixture::candidate(),
                 &|| {
                     assert_eq!(std::thread::current().id(), owning_thread);
@@ -5355,7 +5529,7 @@ mod tests_source_transition_driver {
             &fixture.context,
             &fixture.source,
             "primary-context",
-            &SourceRevision::Absent {},
+            &fixture.initial_revision,
             &DriverFixture::candidate(),
             &|| Ok(())
         )
@@ -5634,10 +5808,16 @@ mod tests_source_transition_driver {
         let absent = get_identity_transition(&fixture.context, &fixture.source, "unknown").unwrap();
         assert_eq!(absent.state, IdentityTransitionReadState::NotFound);
         assert_eq!(absent.status.journal_revision, SourceRevision::Absent {});
-        let other_source = list_active_sources(&fixture.context)
-            .into_iter()
-            .find(|s| s.kind == SourceKind::CatalogProject)
-            .unwrap();
+        let other_source = crate::config::settings::SourceRef {
+            family: crate::config::settings::SourceFamily::Agents,
+            role: crate::config::settings::SourceRole::Catalog,
+            scope: crate::config::settings::SourceScope::Project,
+            kind: crate::config::settings::SourceKind::CatalogProject,
+            context_root: std::fs::canonicalize(&fixture.project)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        };
         let unrelated_path =
             source_transition_test_locator(&fixture.context, &other_source).unwrap();
         // If both kinds share a parent, the source-specific legacy leaf still isolates diagnosis.
@@ -5886,7 +6066,7 @@ mod tests_source_transition_driver {
             &fixture.context,
             &fixture.source,
             "personal-prefence",
-            &SourceRevision::Absent {},
+            &fixture.initial_revision,
             &DriverFixture::candidate(),
             &|| Ok(())
         )

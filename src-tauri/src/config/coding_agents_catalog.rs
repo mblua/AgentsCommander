@@ -473,8 +473,55 @@ pub fn parse_catalog_schema2(
             ));
         }
     }
-    let catalog: CodingAgentCatalogSchema2 = serde_json::from_value(value)
+    let projected = if value.get("profileBindingVersion").is_some() {
+        crate::config::settings::project_physical_profiles(&value, false)
+            .map_err(IdentityCatalogError::InvalidFormat)?
+    } else {
+        crate::config::settings::physical_profile_sets(&value, false)
+            .map_err(IdentityCatalogError::InvalidFormat)?;
+        let mut legacy = value;
+        let keys: HashSet<String> = legacy
+            .get("agents")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|row| {
+                row.get("key")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
+        for field in ["codingAgentProfiles", "profileLabels"] {
+            if let Some(map) = legacy
+                .get_mut(field)
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                map.retain(|key, _| keys.contains(key));
+            }
+        }
+        legacy
+    };
+    let mut catalog: CodingAgentCatalogSchema2 = serde_json::from_value(projected)
         .map_err(|error| IdentityCatalogError::InvalidFormat(error.to_string()))?;
+    for agent in &catalog.agents {
+        for cell in catalog
+            .coding_agent_profiles
+            .get_mut(&agent.key)
+            .into_iter()
+            .flat_map(|cells| cells.values_mut())
+        {
+            cell.id_hash = Some(crate::config::settings::pair_identity(
+                &agent.command,
+                &agent.envs,
+                cell,
+            ));
+            cell.id_hash_debug = Some(crate::config::settings::pair_identity_debug(
+                &agent.command,
+                &agent.envs,
+                cell,
+            ));
+        }
+    }
     let mut keys = HashSet::new();
     for agent in &catalog.agents {
         if agent.command.trim().is_empty() {
@@ -680,8 +727,6 @@ mod identity_schema2_tests {
         for value in [
             json!({"schemaVersion":2,"agents":[definition("own","one"),definition("own","two")]}),
             json!({"schemaVersion":2,"agents":[definition("INVALID_KEY","one")]}),
-            json!({"schemaVersion":2,"agents":[definition("own","one")],"codingAgentProfiles":{"foreign":{"A":{}}}}),
-            json!({"schemaVersion":2,"agents":[definition("own","one")],"profileLabels":{"foreign":{"A":"label"}}}),
         ] {
             assert!(matches!(
                 parse(&value),
@@ -784,7 +829,7 @@ pub(crate) fn embedded_default_catalog() -> CodingAgentCatalog {
 /// `validate_config_seed_dest` on purpose: the key is used verbatim as a testid,
 /// a JSON object key, and a CSS token on the frontend (and, in the Full phase, a
 /// directory name), so it is restricted to an unambiguous ASCII allowlist.
-fn validate_catalog_key(key: &str) -> Result<(), String> {
+pub(crate) fn validate_catalog_key(key: &str) -> Result<(), String> {
     if key.is_empty() {
         return Err("coding-agent key must not be empty".to_string());
     }
@@ -1046,7 +1091,18 @@ const KNOWN_DEFINITION_FIELDS: &[&str] = &[
 const KNOWN_CONFIG_SEED_FIELDS: &[&str] = &["enabled", "dest"];
 const KNOWN_INSTALL_COMMANDS_FIELDS: &[&str] = &["default", "windows", "macos", "linux"];
 const KNOWN_ENV_FIELDS: &[&str] = &["key", "value", "source", "enabled"];
-const KNOWN_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents", "managed"];
+const KNOWN_ROOT_FIELDS: &[&str] = &[
+    "schemaVersion",
+    "agents",
+    "managed",
+    "profileBindingVersion",
+    "profilesByBaseHash",
+    "profileLabelsByBaseHash",
+    "profileSlots",
+    "legacyProfileOrphans",
+    "codingAgentProfiles",
+    "profileLabels",
+];
 
 /// One visible report warning or unavailability record: a stable code plus the
 /// affected path and an actionable reason. Reasons never echo command text or
@@ -1596,7 +1652,7 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
 /// Parse JSON while rejecting duplicate object members at every depth. A raw
 /// `Value` parse cannot detect those, and a duplicate member makes the document
 /// ambiguous, which is exactly the case a destructive migration must refuse.
-fn parse_strict_json(bytes: &[u8]) -> Result<serde_json::Value, String> {
+pub(crate) fn parse_strict_json(bytes: &[u8]) -> Result<serde_json::Value, String> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let value = StrictValue::deserialize(&mut deserializer).map_err(|error| error.to_string())?;
     deserializer
@@ -1689,9 +1745,21 @@ struct LocalRow {
 struct LocalLayer {
     rows: Vec<LocalRow>,
     order: Option<Vec<String>>,
+    complete_definitions: bool,
 }
 
-const LOCAL_ROOT_FIELDS: &[&str] = &["schemaVersion", "agents", "order"];
+const LOCAL_ROOT_FIELDS: &[&str] = &[
+    "schemaVersion",
+    "agents",
+    "order",
+    "profileBindingVersion",
+    "profilesByBaseHash",
+    "profileLabelsByBaseHash",
+    "profileSlots",
+    "legacyProfileOrphans",
+    "codingAgentProfiles",
+    "profileLabels",
+];
 const LOCAL_ROW_FIELDS: &[&str] = &[
     "key",
     "label",
@@ -2005,6 +2073,33 @@ fn parse_local_layer(bytes: &[u8], description: LayerDescription) -> Result<Loca
     let value = parse_strict_json(bytes)
         .map_err(|reason| format!("the {layer} catalog is not valid JSON ({reason})"))?;
     let root = expect_json_object(&value, &format!("the {layer} catalog root"))?;
+    if root
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        == Some(2)
+    {
+        let catalog = parse_catalog_schema2(bytes).map_err(|e| e.to_string())?;
+        let rows = catalog
+            .agents
+            .iter()
+            .map(|agent| {
+                let raw = serde_json::to_value(agent).map_err(|e| e.to_string())?;
+                let fields =
+                    parse_local_fields(raw.as_object().expect("definition"), "schema2 definition")?;
+                Ok(LocalRow {
+                    key: agent.key.clone(),
+                    remove: false,
+                    fields,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        return Ok(LocalLayer {
+            rows,
+            order: None,
+            complete_definitions: true,
+        });
+    }
+    crate::config::settings::physical_profile_sets(&value, false)?;
     reject_unknown_json_fields(
         root,
         LOCAL_ROOT_FIELDS,
@@ -2101,7 +2196,11 @@ fn parse_local_layer(bytes: &[u8], description: LayerDescription) -> Result<Loca
             });
         }
     }
-    Ok(LocalLayer { rows, order })
+    Ok(LocalLayer {
+        rows,
+        order,
+        complete_definitions: false,
+    })
 }
 
 fn merge_config_seed(
@@ -2329,7 +2428,11 @@ fn compose_local_layer(
                     }
                     removed[position] = true;
                 } else {
-                    working[position] = apply_local_fields(working[position].clone(), &row.fields);
+                    working[position] = if local.complete_definitions {
+                        build_new_definition(&row.key, &row.fields, description)?
+                    } else {
+                        apply_local_fields(working[position].clone(), &row.fields)
+                    };
                 }
             }
             None => {
@@ -2472,6 +2575,22 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
             "the catalog root must be a JSON object",
         ));
     };
+    if root
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        == Some(2)
+    {
+        let catalog = parse_catalog_schema2(bytes)
+            .map_err(|e| catalog_diagnostic(REPORT_CODE_BASE_INVALID, base_path, e.to_string()))?;
+        return Ok(BaseAnalysis {
+            kind: CatalogBaseKind::ForeignManaged,
+            marker: None,
+            entries: catalog.agents,
+            edited: false,
+            refresh_blocked: true,
+            warnings: Vec::new(),
+        });
+    }
     if let Some(version) = root.get("schemaVersion") {
         if version.as_u64() != Some(CATALOG_SCHEMA_VERSION as u64) {
             return Err(catalog_diagnostic(
@@ -2497,7 +2616,8 @@ fn analyze_base_bytes(base_path: &Path, bytes: &[u8]) -> Result<BaseAnalysis, Ca
     };
 
     let mut warnings = Vec::new();
-    let mut refresh_blocked = false;
+    let mut refresh_blocked =
+        root.contains_key("profileBindingVersion") || root.contains_key("legacyProfileOrphans");
     if let Some(names) = unknown_field_names(root.keys(), KNOWN_ROOT_FIELDS) {
         warnings.push(catalog_diagnostic(
             REPORT_CODE_MIGRATION_PENDING,
@@ -5771,7 +5891,7 @@ mod tests {
         let cases = [
             "<<<<<<< conflict",
             "{",
-            r#"{"schemaVersion":2,"agents":[]}"#,
+            r#"{"schemaVersion":999,"agents":[]}"#,
             r#"{"schemaVersion":1,"agents":[],"unexpected":true}"#,
             r#"{"schemaVersion":1,"schemaVersion":1,"agents":[]}"#,
             r#"{"schemaVersion":1,"agents":[{"key":"claude"},{"key":"claude"}]}"#,
@@ -8886,7 +9006,7 @@ mod tests {
     #[test]
     fn catalog_report_unsupported_schema_is_base_invalid() {
         for raw in [
-            r##"{"schemaVersion":2,"agents":[]}"##,
+            r##"{"schemaVersion":999,"agents":[]}"##,
             r##"{"schemaVersion":"1","agents":[]}"##,
             r##"{"schemaVersion":null,"agents":[]}"##,
         ] {
@@ -9962,7 +10082,7 @@ mod tests {
             ),
             (
                 "unsupported schema",
-                r##"{"schemaVersion":2,"agents":[]}"##,
+                r##"{"schemaVersion":999,"agents":[]}"##,
             ),
             (
                 "remove false",
@@ -13489,5 +13609,371 @@ mod p02_catalog_schema_tests {
             extract_legacy_local_mode(source, &[], true).unwrap(),
             historical
         );
+    }
+}
+
+#[cfg(test)]
+mod e2432_catalog_profile_tests {
+    use super::*;
+    use crate::config::settings as storage;
+    use serde_json::json;
+
+    // Exercise the existing production preparation, revision recheck and atomic
+    // publisher without activating the deferred coordination protocol.
+    fn save_catalog(
+        settings: &storage::AppSettings,
+        settings_path: &Path,
+        candidate: &serde_json::Value,
+    ) -> Result<serde_json::Value, storage::SourcePreparationError> {
+        let context = storage::SourceReadContext::from_settings(settings, settings_path)?;
+        let source = storage::list_active_sources(&context)
+            .into_iter()
+            .find(|source| {
+                source.kind == storage::SourceKind::CatalogPersonal
+                    && source.scope == storage::SourceScope::Project
+            })
+            .unwrap();
+        let snapshot = storage::read_source_snapshot(&context, &source)?;
+        let prepared = storage::prepare_source_candidate(
+            &snapshot,
+            &snapshot.snapshot.revision,
+            candidate,
+            None,
+        )?;
+        prepared.revalidate_before_write(&context)?;
+        let path = local_catalog_path(&Path::new(&settings.project_paths[0]).join(".ac"));
+        crate::config::local_config_io::write_file_atomic(&path, &prepared.serialized_after)
+            .unwrap();
+        Ok(serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap())
+    }
+
+    fn source(schema: u32) -> serde_json::Value {
+        let mut value = json!({
+            "schemaVersion":schema,
+            "agents":[{"key":"own","label":"Own","description":"Own","color":"#123456","baseCommand":"tool","envs":[],"isolatedHome":false,"removable":true,"updateCommands":[],"autoUpdate":false,"catalogOnly":{"keep":true}}],
+            "codingAgentProfiles":{"own":{"B":{"notes":"notes","extension":[null]}},"lost":null},
+            "profileLabels":{"own":{"B":"label"},"labels-only":{"raw":null}},
+            "identityByAgent":{"unrelated":"preserve"},
+            "unrelated":[null,1]
+        });
+        if schema == 1 {
+            value.as_object_mut().unwrap().remove("identityByAgent");
+            value.as_object_mut().unwrap().remove("unrelated");
+            value["agents"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("catalogOnly");
+        }
+        value
+    }
+
+    #[test]
+    fn e2432_canonical_serializer_catalog1_catalog2() {
+        for schema in [1, 2] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let settings = storage::AppSettings {
+                project_paths: vec![temp.path().to_string_lossy().into_owned()],
+                ..storage::AppSettings::default()
+            };
+            let path = local_catalog_path(&temp.path().join(".ac"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let raw = source(schema);
+            std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+            let view = crate::config::settings::project_physical_profiles(&raw, false).unwrap();
+            let saved = save_catalog(&settings, &settings_path, &view).unwrap();
+            assert!(saved["agents"][0].get("id_hash").is_none());
+            assert!(saved["agents"][0].get("id_hash_debug").is_none());
+            assert_eq!(saved["schemaVersion"], schema);
+            assert!(saved.get("codingAgentProfiles").is_none());
+            assert!(saved.get("profileLabels").is_none());
+            assert_eq!(saved["profileBindingVersion"], 1);
+            assert_eq!(saved["profileSlots"], json!({}));
+            assert_eq!(saved["identityByAgent"], raw["identityByAgent"]);
+            assert_eq!(saved["agents"][0]["key"], raw["agents"][0]["key"]);
+            assert_eq!(
+                saved["agents"][0]["catalogOnly"],
+                raw["agents"][0]["catalogOnly"]
+            );
+            assert_eq!(
+                saved["agents"][0]["baseCommand"],
+                raw["agents"][0]["baseCommand"]
+            );
+            assert_eq!(saved["unrelated"], raw["unrelated"]);
+            assert_eq!(
+                saved["legacyProfileOrphans"]["lost"],
+                json!([{"cells":null}])
+            );
+            let loaded = crate::config::settings::project_physical_profiles(&saved, false).unwrap();
+            assert_eq!(loaded["codingAgentProfiles"]["own"]["B"]["notes"], "notes");
+            let twice = save_catalog(&settings, &settings_path, &loaded).unwrap();
+            assert_eq!(twice, saved);
+            let mut stale = twice.clone();
+            stale["codingAgentProfiles"] = json!({"own":{"B":{"notes":"stale"}}});
+            stale["profileLabels"] = json!({"own":{"B":"stale"}});
+            std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+            let stale_view = storage::project_physical_profiles(&stale, false).unwrap();
+            assert_eq!(
+                stale_view["codingAgentProfiles"]["own"]["B"]["notes"],
+                "notes"
+            );
+            let cleaned = save_catalog(&settings, &settings_path, &stale_view).unwrap();
+            assert_eq!(cleaned, saved);
+            if schema == 1 {
+                let layer =
+                    parse_local_layer(&std::fs::read(&path).unwrap(), LayerDescription::Local)
+                        .unwrap();
+                let ordinary = compose_local_layer(&[], &layer, LayerDescription::Local).unwrap();
+                assert_eq!(ordinary[0].command, "tool");
+            } else {
+                let decoded = parse_catalog_schema2(&serde_json::to_vec(&saved).unwrap()).unwrap();
+                assert_eq!(decoded.agents[0].command, "tool");
+                assert_eq!(decoded.coding_agent_profiles["own"]["B"].notes, "notes");
+            }
+        }
+    }
+
+    #[test]
+    fn e2432_orphan_wire_catalog() {
+        for schema in [1, 2] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let settings = storage::AppSettings {
+                project_paths: vec![temp.path().to_string_lossy().into_owned()],
+                ..storage::AppSettings::default()
+            };
+            let path = local_catalog_path(&temp.path().join(".ac"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut raw = source(schema);
+            raw["legacyProfileOrphans"] = json!({"lost":[{"labels":null,"unknown":{"keep":[]}}]});
+            if schema == 1 {
+                raw["agents"].as_array_mut().unwrap().extend([
+                    json!({"key":"partial","label":"No own command"}),
+                    json!({"key":"removed","remove":true}),
+                ]);
+                raw["codingAgentProfiles"]["partial"] = json!({"opaque":false});
+                raw["codingAgentProfiles"]["removed"] = json!([]);
+            }
+            std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+            let view = crate::config::settings::project_physical_profiles(&raw, false).unwrap();
+            assert!(view["codingAgentProfiles"].get("partial").is_none());
+            assert!(view["codingAgentProfiles"].get("removed").is_none());
+            let saved = save_catalog(&settings, &settings_path, &view).unwrap();
+            assert!(saved["agents"][0].get("id_hash").is_none());
+            assert!(saved["agents"][0].get("id_hash_debug").is_none());
+            assert_eq!(
+                saved["legacyProfileOrphans"]["lost"],
+                json!([
+                    {"labels":null,"unknown":{"keep":[]}},{"cells":null}
+                ])
+            );
+            assert_eq!(
+                saved["legacyProfileOrphans"]["labels-only"],
+                json!([{"labels":{"raw":null}}])
+            );
+            if schema == 1 {
+                assert_eq!(
+                    saved["legacyProfileOrphans"]["partial"],
+                    json!([{"cells":{"opaque":false}}])
+                );
+                assert_eq!(
+                    saved["legacyProfileOrphans"]["removed"],
+                    json!([{"cells":[]}])
+                );
+            }
+            let reload = storage::project_physical_profiles(&saved, false).unwrap();
+            let twice = save_catalog(&settings, &settings_path, &reload).unwrap();
+            assert_eq!(twice, saved);
+            let mut recreated = storage::project_physical_profiles(&twice, false).unwrap();
+            let mut row = source(1)["agents"][0].clone();
+            row["key"] = json!("lost");
+            row["baseCommand"] = json!("recreated-tool");
+            recreated["agents"].as_array_mut().unwrap().push(row);
+            let recreated = save_catalog(&settings, &settings_path, &recreated).unwrap();
+            assert_eq!(
+                recreated["legacyProfileOrphans"],
+                saved["legacyProfileOrphans"]
+            );
+            let reloaded = storage::project_physical_profiles(&recreated, false).unwrap();
+            assert!(reloaded["codingAgentProfiles"]["lost"].get("B").is_none());
+            assert!(reloaded["profileLabels"]["lost"]
+                .as_object()
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn e2432_duplicate_catalog() {
+        for schema in [1, 2] {
+            let temp = tempfile::tempdir().unwrap();
+            let ac = temp.path().join(".ac");
+            let path = local_catalog_path(&ac);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let definition: CodingAgentDefinition =
+                serde_json::from_value(source(1)["agents"][0].clone()).unwrap();
+            std::fs::write(manifest_path(&ac), build_managed_base_bytes(&[definition])).unwrap();
+            let settings = storage::AppSettings {
+                project_paths: vec![temp.path().to_string_lossy().into_owned()],
+                ..storage::AppSettings::default()
+            };
+            let settings_path = temp.path().join("settings.json");
+            for duplicate in [
+                r#""x":1,"x":1"#,
+                r#""x":1,"\u0078":2"#,
+                r#""legacyProfileOrphans":{"X":[{"cells":{"nested":1,"nested":2}}]}"#,
+                r#""codingAgentProfiles":{},"codingAgentProfiles":{}"#,
+            ] {
+                let raw = format!(r#"{{"schemaVersion":{schema},"agents":[],{duplicate}}}"#);
+                std::fs::write(&path, raw.as_bytes()).unwrap();
+                let error = parse_local_layer(raw.as_bytes(), LayerDescription::Local).unwrap_err();
+                assert!(error.contains("duplicate JSON object member"));
+                if schema == 2 {
+                    assert!(parse_catalog_schema2(raw.as_bytes())
+                        .unwrap_err()
+                        .to_string()
+                        .contains("duplicate JSON object member"));
+                }
+                let report = load_catalog_report(&ac);
+                assert_eq!(report.catalog.len(), 1);
+                assert!(report
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.reason.contains("duplicate JSON object member")));
+                let context =
+                    storage::SourceReadContext::from_settings(&settings, &settings_path).unwrap();
+                let selected = storage::list_active_sources(&context)
+                    .into_iter()
+                    .find(|source| source.kind == storage::SourceKind::CatalogPersonal)
+                    .unwrap();
+                let snapshot = storage::read_source_snapshot(&context, &selected).unwrap();
+                assert_eq!(
+                    snapshot.snapshot.availability,
+                    storage::SourceAvailability::Invalid
+                );
+                assert!(!snapshot.snapshot.capabilities.available_read);
+                assert!(!snapshot.snapshot.capabilities.editable_save);
+                assert!(snapshot.snapshot.agents.is_empty());
+                assert!(save_catalog(&settings, &settings_path, &source(schema)).is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), raw.as_bytes());
+            }
+            let raw = json!({"schemaVersion":schema,"agents":[],"legacyProfileOrphans":{"X":[{"cells":null},{"cells":null}]}});
+            std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+            let view = storage::project_physical_profiles(&raw, false).unwrap();
+            let saved = save_catalog(&settings, &settings_path, &view).unwrap();
+            assert_eq!(saved["legacyProfileOrphans"], raw["legacyProfileOrphans"]);
+        }
+    }
+
+    #[test]
+    fn e2432_schema2_layers_replace_complete_keys_and_keep_siblings() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut donor = source(1)["agents"][0].clone();
+        donor["key"] = json!("replace");
+        donor["envs"] = json!([{"key":"DONOR","value":"forbidden"}]);
+        donor["instructionsFilename"] = json!("DONOR.md");
+        donor["configSeed"] = json!({"enabled":true,"dest":".donor"});
+        donor["installCommands"] = json!({"default":"donor install"});
+        let base = vec![
+            serde_json::from_value(source(1)["agents"][0].clone()).unwrap(),
+            serde_json::from_value(donor).unwrap(),
+        ];
+        let complete = |key: &str, command: &str| {
+            json!({
+                "key":key,"label":key,"description":"own","color":"#123456","baseCommand":command
+            })
+        };
+        let project = json!({"schemaVersion":2,"agents":[
+            complete("project", "project-tool"), complete("replace", "project-replacement")
+        ]});
+        let mut personal = json!({"schemaVersion":2,"agents":[
+            complete("personal", "personal-tool"), complete("replace", "personal-replacement")
+        ]});
+        let resolve = |personal: &serde_json::Value| {
+            resolve_catalog_snapshot(
+                temp.path(),
+                CatalogSnapshot {
+                    base: Ok(Some(build_managed_base_bytes(&base))),
+                    project: Some(Ok(Some(serde_json::to_vec(&project).unwrap()))),
+                    local: Ok(Some(serde_json::to_vec(personal).unwrap())),
+                    journal: Ok(None),
+                },
+                CatalogSourceContext::Project,
+            )
+        };
+        let resolved = resolve(&personal);
+        assert!(resolved.unavailable.is_none());
+        assert_eq!(
+            resolved
+                .catalog
+                .iter()
+                .map(|row| row.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["own", "replace", "project", "personal"]
+        );
+        let row = resolved
+            .catalog
+            .iter()
+            .find(|row| row.key == "replace")
+            .unwrap();
+        assert_eq!(row.command, "personal-replacement");
+        assert!(row.envs.is_empty());
+        assert!(row.instructions_filename.is_none());
+        assert!(row.config_seed.is_none());
+        assert!(row.install_commands.is_none());
+        personal["agents"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("baseCommand");
+        let rejected = resolve(&personal);
+        assert!(rejected
+            .warnings
+            .iter()
+            .any(|warning| warning.code == REPORT_CODE_LOCAL_INVALID));
+        assert!(!rejected.catalog.iter().any(|row| row.key == "personal"));
+        let row = rejected
+            .catalog
+            .iter()
+            .find(|row| row.key == "replace")
+            .unwrap();
+        assert_eq!(row.command, "project-replacement");
+        assert!(row.envs.is_empty());
+        assert!(row.config_seed.is_none());
+        assert!(rejected.catalog.iter().any(|row| row.key == "own"));
+        assert!(rejected.catalog.iter().any(|row| row.key == "project"));
+    }
+
+    #[test]
+    fn e2432_catalog_conflict_rejects_without_publication() {
+        for schema in [1, 2] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings_path = temp.path().join("settings.json");
+            let settings = storage::AppSettings {
+                project_paths: vec![temp.path().to_string_lossy().into_owned()],
+                ..storage::AppSettings::default()
+            };
+            let path = local_catalog_path(&temp.path().join(".ac"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let raw = source(schema);
+            std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+            let view = storage::project_physical_profiles(&raw, false).unwrap();
+            let saved = save_catalog(&settings, &settings_path, &view).unwrap();
+            let before = std::fs::read(&path).unwrap();
+            let mut candidate = storage::project_physical_profiles(&saved, false).unwrap();
+            let mut alias = candidate["agents"][0].clone();
+            alias["key"] = json!("alias");
+            candidate["agents"].as_array_mut().unwrap().push(alias);
+            candidate["codingAgentProfiles"]["alias"] = json!({"B":{"notes":"conflict"}});
+            candidate["profileLabels"]["alias"] = json!({"B":"different"});
+            assert!(save_catalog(&settings, &settings_path, &candidate).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            let mut legacy_conflict = raw.clone();
+            legacy_conflict["agents"] = candidate["agents"].clone();
+            legacy_conflict["codingAgentProfiles"]["alias"] = json!({"B":{"notes":"conflict"}});
+            std::fs::write(&path, serde_json::to_vec(&legacy_conflict).unwrap()).unwrap();
+            let before = std::fs::read(&path).unwrap();
+            assert!(save_catalog(&settings, &settings_path, &view).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
     }
 }
