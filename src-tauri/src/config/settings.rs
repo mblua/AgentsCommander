@@ -18173,7 +18173,9 @@ impl SettingsOwnerLease {
                 false
             }
         }) {
-            return Err(SettingsOwnerError::Lifecycle("lock_identity_rejected".to_string()));
+            return Err(SettingsOwnerError::Lifecycle(
+                "lock_identity_rejected".to_string(),
+            ));
         }
         self.retained
             .verify_current()
@@ -44170,7 +44172,10 @@ mod e2432_p02_closed_owner_tests {
             let epoch = owner.identity().epoch;
             let ram = serde_json::to_value(owner.settings.blocking_read().clone()).unwrap();
             let counters = [
-                owner.counters.transaction_lock_attempts.load(Ordering::Relaxed),
+                owner
+                    .counters
+                    .transaction_lock_attempts
+                    .load(Ordering::Relaxed),
                 owner.counters.captures.load(Ordering::Relaxed),
                 owner.counters.source_reads.load(Ordering::Relaxed),
                 owner.counters.operations.load(Ordering::Relaxed),
@@ -44189,7 +44194,11 @@ mod e2432_p02_closed_owner_tests {
                 AgentFileEdits::default(),
             );
             assert!(matches!(result, Err(reason) if reason == "ownerIntegrityLost"));
-            assert_eq!(hits.get(), 1, "first operation_guard verify must consume fault");
+            assert_eq!(
+                hits.get(),
+                1,
+                "first operation_guard verify must consume fault"
+            );
             assert_eq!(owner.availability(), SettingsAvailability::Invalid);
             assert_eq!(owner.identity().epoch, epoch);
             assert_eq!(
@@ -44198,7 +44207,10 @@ mod e2432_p02_closed_owner_tests {
             );
             assert_eq!(
                 [
-                    owner.counters.transaction_lock_attempts.load(Ordering::Relaxed),
+                    owner
+                        .counters
+                        .transaction_lock_attempts
+                        .load(Ordering::Relaxed),
                     owner.counters.captures.load(Ordering::Relaxed),
                     owner.counters.source_reads.load(Ordering::Relaxed),
                     owner.counters.operations.load(Ordering::Relaxed),
@@ -44218,12 +44230,7 @@ mod e2432_p02_closed_owner_tests {
                 .read_agent_files_blocking(AgentFileReadRequest::List)
                 .is_err());
             assert!(owner
-                .save_catalog_source_blocking(
-                    source,
-                    expected,
-                    context,
-                    AgentFileEdits::default(),
-                )
+                .save_catalog_source_blocking(source, expected, context, AgentFileEdits::default(),)
                 .is_err());
             // One-shot consumption leaves the real retained directory verifier intact.
             {
