@@ -54,7 +54,7 @@ pub struct AgentQuotaSource {
 /// `blocking_read` panics inside a runtime - and the tick is inside one. A sync signature
 /// here would kill the engine on tick 1, silently and permanently.
 pub trait QuotaSourceProvider: Send + Sync {
-    fn sources(&self) -> BoxFuture<'_, HashMap<String, AgentQuotaSource>>;
+    fn sources(&self) -> BoxFuture<'_, Option<HashMap<String, AgentQuotaSource>>>;
 }
 
 /// Where a reading goes.
@@ -307,7 +307,14 @@ impl AgentQuotaEngine {
             return;
         }
 
-        let sources = self.sources.sources().await;
+        let Some(sources) = self.sources.sources().await else {
+            for (id, _) in ids {
+                if self.rows.get_session_liveness(id) == ContextSessionLiveness::SessionOver {
+                    self.retire_session(id);
+                }
+            }
+            return;
+        };
         self.prune_resolved(&sources);
 
         ids.sort_unstable_by_key(|(id, _)| *id);
@@ -411,6 +418,8 @@ pub(crate) mod test_support {
 
     type ReadHook = Box<dyn Fn(Uuid) + Send + Sync>;
 
+    type LivenessHook = Arc<dyn Fn(Uuid) + Send + Sync>;
+
     /// Rows are THREE-state and scripted, with an independent liveness script: a
     /// two-state fake cannot express "a live child we could not ask".
     #[derive(Default)]
@@ -422,6 +431,7 @@ pub(crate) mod test_support {
         rows_calls: Mutex<Vec<Uuid>>,
         liveness_calls: Mutex<Vec<Uuid>>,
         on_rows_read: Mutex<Option<ReadHook>>,
+        pub(super) on_liveness: Mutex<Option<LivenessHook>>,
     }
 
     impl RowsFake {
@@ -464,6 +474,10 @@ pub(crate) mod test_support {
 
         fn get_session_liveness(&self, id: Uuid) -> ContextSessionLiveness {
             self.liveness_calls.lock().unwrap().push(id);
+            let hook = self.on_liveness.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook(id);
+            }
             self.liveness
                 .lock()
                 .unwrap()
@@ -478,6 +492,7 @@ pub(crate) mod test_support {
         specs: Mutex<HashMap<String, AgentQuotaSource>>,
         calls: AtomicUsize,
         hang: std::sync::atomic::AtomicBool,
+        pub(super) unavailable: std::sync::atomic::AtomicBool,
     }
 
     impl SourcesFake {
@@ -514,13 +529,17 @@ pub(crate) mod test_support {
     }
 
     impl QuotaSourceProvider for SourcesFake {
-        fn sources(&self) -> BoxFuture<'_, HashMap<String, AgentQuotaSource>> {
+        fn sources(&self) -> BoxFuture<'_, Option<HashMap<String, AgentQuotaSource>>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 if self.hang.load(Ordering::SeqCst) {
                     std::future::pending::<()>().await;
                 }
-                self.specs.lock().unwrap().clone()
+                if self.unavailable.load(Ordering::Relaxed) {
+                    None
+                } else {
+                    Some(self.specs.lock().unwrap().clone())
+                }
             })
         }
     }
@@ -595,6 +614,151 @@ mod tests {
             agent_id: agent_id.to_string(),
             weekly_used_percent: percent,
         }
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_unavailable_mid_tick_retirement() {
+        let (h, id) = configured();
+        h.sources.unavailable.store(true, Ordering::Relaxed);
+        h.rows.set_liveness(id, ContextSessionLiveness::SessionOver);
+        let (entered, handshake) = tokio::sync::oneshot::channel();
+        let entered = std::sync::Mutex::new(Some(entered));
+        let (release, resume) = std::sync::mpsc::sync_channel(1);
+        let resume = std::sync::Mutex::new(resume);
+        *h.rows.on_liveness.lock().unwrap() = Some(Arc::new(move |_| {
+            entered.lock().unwrap().take().unwrap().send(()).unwrap();
+            resume
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        }));
+        let engine = Arc::clone(&h.engine);
+        let tick = tokio::task::spawn_blocking(move || futures::executor::block_on(engine.tick()));
+        tokio::time::timeout(Duration::from_secs(2), handshake)
+            .await
+            .unwrap()
+            .unwrap();
+        h.engine.retire_session(id);
+        let replacement = Uuid::new_v4();
+        h.engine.register_session(replacement, AGENT.to_string());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), tick)
+            .await
+            .unwrap()
+            .unwrap();
+        *h.rows.on_liveness.lock().unwrap() = None;
+        assert!(!h.engine.is_session_registered(id));
+        assert!(h.engine.is_session_registered(replacement));
+        assert!(h.rows.rows_calls().is_empty());
+        assert!(h.sink.emitted().is_empty());
+
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let mut completed_ticks = 0;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.token().cancelled() => break,
+                    _ = h.engine.tick() => {
+                        completed_ticks += 1;
+                        if completed_ticks == 3 { shutdown.trigger(); }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(completed_ticks, 3);
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_quota_unavailable_preserves() {
+        let (h, id) = configured();
+        h.sources.configure_on(AGENT, "shared", spec(PATTERN));
+        h.sources.configure_on("peer", "shared", spec(PATTERN));
+        h.rows.push(id, rows(42));
+        h.engine.tick().await;
+        let published = h.engine.published();
+        let cursor = h.engine.sample_cursor.load(Ordering::Relaxed);
+        h.sources.unavailable.store(true, Ordering::Relaxed);
+        for live in [
+            ContextSessionLiveness::Live,
+            ContextSessionLiveness::Unavailable,
+        ] {
+            h.rows.set_liveness(id, live);
+            tokio::time::timeout(Duration::from_secs(1), h.engine.tick())
+                .await
+                .unwrap();
+        }
+        assert_eq!(h.engine.published(), published);
+        assert_eq!(
+            h.engine.account_readings.lock().unwrap().get("shared"),
+            Some(&42)
+        );
+        assert_eq!(h.engine.resolved.lock().unwrap().len(), 1);
+        assert_eq!(h.engine.resolve_count(), 1);
+        assert_eq!(h.engine.sample_cursor.load(Ordering::Relaxed), cursor);
+        assert_eq!(h.rows.rows_calls(), vec![id]);
+        assert_eq!(h.sink.emitted().len(), 2);
+        h.rows.set_liveness(id, ContextSessionLiveness::SessionOver);
+        h.engine.tick().await;
+        assert!(!h.engine.is_session_registered(id));
+        assert_eq!(
+            h.engine.account_readings.lock().unwrap().get("shared"),
+            Some(&42)
+        );
+        assert_eq!(h.engine.published(), published);
+        h.sources.disable(AGENT);
+        h.sources.disable("peer");
+        h.sources.unavailable.store(false, Ordering::Relaxed);
+        h.engine.tick().await;
+        h.engine.tick().await;
+        assert!(h.engine.published().is_empty());
+        assert!(h.engine.account_readings.lock().unwrap().is_empty());
+        assert!(h.engine.resolved.lock().unwrap().is_empty());
+        assert_eq!(h.sink.emitted().len(), 4);
+        assert_eq!(
+            h.sink.emitted()[2..],
+            [payload(AGENT, None), payload("peer", None)]
+        );
+        h.sources.configure(AGENT, spec(PATTERN));
+        h.engine.register_session(id, AGENT.to_string());
+        h.rows.push(id, rows(70));
+        h.engine.tick().await;
+        assert_eq!(h.engine.published().get(AGENT), Some(&Some(70)));
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_unavailable_progress_and_retirement() {
+        let (h, id) = configured();
+        h.sources.unavailable.store(true, Ordering::Relaxed);
+        for _ in 0..3 {
+            tokio::time::timeout(Duration::from_secs(1), h.engine.tick())
+                .await
+                .unwrap();
+        }
+        h.rows.set_liveness(id, ContextSessionLiveness::SessionOver);
+        h.engine.tick().await;
+        h.engine.retire_session(id);
+        h.engine.tick().await;
+        assert!(!h.engine.is_session_registered(id));
+        assert!(h.rows.rows_calls().is_empty());
+        assert!(h.sink.emitted().is_empty());
+        h.engine.register_session(id, AGENT.to_string());
+        h.rows.set_liveness(id, ContextSessionLiveness::Live);
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let worker = h
+            .engine
+            .start_with_interval(shutdown.clone(), Duration::from_millis(1));
+        shutdown.trigger();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || worker.join().unwrap()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     }
 
     /// A harness with AGENT configured and one registered session.

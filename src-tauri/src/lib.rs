@@ -1470,29 +1470,37 @@ struct ScraperPatterns {
 }
 
 impl ContextPatternSource for ScraperPatterns {
-    fn patterns(&self) -> futures::future::BoxFuture<'_, HashMap<String, String>> {
+    fn patterns(&self) -> futures::future::BoxFuture<'_, Option<HashMap<String, String>>> {
         Box::pin(async move {
-            let settings = self.settings.read().await;
-            settings
-                .agents
-                .iter()
-                .filter_map(|agent| {
-                    let regex = agent.context_regex.as_deref()?;
-                    // A blank field is the field being blank, and skipping it here is a
-                    // LOG-HYGIENE choice and nothing more: `pattern::compile` already
-                    // refuses "" and "   " for having no capture group 1, so this can never
-                    // become a pattern that matches everything - it would only warn on every
-                    // change while a user is still typing.
-                    //
-                    // Note what is trimmed and what is not: the emptiness TEST looks at a
-                    // trimmed view, the VALUE handed over is the user's string, byte for
-                    // byte. The pattern is the only defence this feature has - the engine
-                    // ships no anchoring rules of its own - so editing it can only weaken
-                    // it. Trimming would eat the leading spaces of `  Context ...`, which
-                    // ARE the column-2 anchor, and the reading would fail open.
-                    (!regex.trim().is_empty()).then(|| (agent.id.clone(), regex.to_string()))
-                })
-                .collect()
+            let settings = match self.settings.current_read().await {
+                Ok(settings) => settings,
+                Err(error) => {
+                    log::debug!("[context] settings unavailable: {error}");
+                    return None;
+                }
+            };
+            Some(
+                settings
+                    .agents
+                    .iter()
+                    .filter_map(|agent| {
+                        let regex = agent.context_regex.as_deref()?;
+                        // A blank field is the field being blank, and skipping it here is a
+                        // LOG-HYGIENE choice and nothing more: `pattern::compile` already
+                        // refuses "" and "   " for having no capture group 1, so this can never
+                        // become a pattern that matches everything - it would only warn on every
+                        // change while a user is still typing.
+                        //
+                        // Note what is trimmed and what is not: the emptiness TEST looks at a
+                        // trimmed view, the VALUE handed over is the user's string, byte for
+                        // byte. The pattern is the only defence this feature has - the engine
+                        // ships no anchoring rules of its own - so editing it can only weaken
+                        // it. Trimming would eat the leading spaces of `  Context ...`, which
+                        // ARE the column-2 anchor, and the reading would fail open.
+                        (!regex.trim().is_empty()).then(|| (agent.id.clone(), regex.to_string()))
+                    })
+                    .collect(),
+            )
         })
     }
 }
@@ -1650,10 +1658,16 @@ impl QuotaSources {
 }
 
 impl QuotaSourceProvider for QuotaSources {
-    fn sources(&self) -> futures::future::BoxFuture<'_, HashMap<String, AgentQuotaSource>> {
+    fn sources(&self) -> futures::future::BoxFuture<'_, Option<HashMap<String, AgentQuotaSource>>> {
         Box::pin(async move {
-            let settings = self.settings.read().await;
-            Self::sources_map(&settings)
+            let settings = match self.settings.current_read().await {
+                Ok(settings) => settings,
+                Err(error) => {
+                    log::debug!("[agent_quota] settings unavailable: {error}");
+                    return None;
+                }
+            };
+            Some(Self::sources_map(&settings))
         })
     }
 }
@@ -2076,10 +2090,18 @@ struct WatcherPatterns {
 impl WatcherPatternSource for WatcherPatterns {
     fn resolve(
         &self,
-    ) -> futures::future::BoxFuture<'_, HashMap<String, crate::pty::watchers::AgentResolution>>
-    {
+    ) -> futures::future::BoxFuture<
+        '_,
+        Option<HashMap<String, crate::pty::watchers::AgentResolution>>,
+    > {
         Box::pin(async move {
-            let settings = self.settings.read().await;
+            let settings = match self.settings.current_read().await {
+                Ok(settings) => settings,
+                Err(error) => {
+                    log::debug!("[watchers] settings unavailable: {error}");
+                    return None;
+                }
+            };
 
             // The agent list is cloned only when at least one watcher could possibly use it.
             // Otherwise this ran five times a second, forever, in every installation that
@@ -2109,7 +2131,7 @@ impl WatcherPatternSource for WatcherPatterns {
                 crate::pty::watchers::resolve_watchers(&agents, &settings.watchers);
             drop(settings);
             self.log.publish(notices);
-            resolved
+            Some(resolved)
         })
     }
 }
@@ -2314,15 +2336,8 @@ fn load_startup_sessions(
     Ok(load(&paths))
 }
 
-/// #1341 - the ONLY sanctioned way to launch the startup restore: as a spawned
-/// runtime task, never inside a main-thread `block_on`. A `block_on` here
-/// freezes the main thread while any session open awaits the #1327 update
-/// gate, which starves the WebView2 page and makes the SI/NO prompt expire
-/// unseen (the #1341 freeze). Anti-revert guard: bypassing this seam (e.g.
-/// inlining a `block_on` around the restore body) leaves this function dead
-/// code, and `cargo clippy --workspace --all-targets -- -D warnings` fails CI.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_restore_startup(
+fn start_native_restore_startup(
     app: tauri::AppHandle,
     restore_barrier: crate::session::selection::RestoreBarrierGuard,
     restore_observer_barrier: Arc<RestoreObserverStartBarrier>,
@@ -2345,49 +2360,19 @@ pub(crate) fn spawn_restore_startup(
     ui_automation_state: crate::testability::ui_automation::UiAutomationState,
     shutdown: ShutdownSignal,
 ) -> tauri::async_runtime::JoinHandle<()> {
-    use futures::FutureExt;
-    tauri::async_runtime::spawn(async move {
-        // §224 A.2.5 RAII guard (moved verbatim from the old block_on body):
-        // clears the flag on normal exit AND on panic unwind so the daemon
-        // can't get stuck advertising "still restoring" forever.
-        struct RestoreGuard(Arc<RestoreInProgress>);
-        impl Drop for RestoreGuard {
-            fn drop(&mut self) {
-                self.0 .0.store(false, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-        let _restore_guard = RestoreGuard(restore_flag);
-
-        // The moved body keeps the setup block's local names; re-bind the seam
-        // parameters to them here so the body is a byte-identical move. `app`
-        // and `pty_mgr` are also used by the tail, so the body gets clones;
-        // the body-only handles move by value.
-        let app_handle = app.clone();
-        let pty_mgr_clone = pty_mgr.clone();
-        let session_mgr_clone = session_mgr;
-        let settings_state_clone = settings_state;
-        let restore_transaction_for_task = restore_transaction;
-        // 14.4 - the body's shutdown checks need their own handle; the tail
-        // keeps the `shutdown` parameter (observer starts and services).
-        let shutdown_for_body = shutdown.clone();
-
-        // #1341 - the selection barrier must never wedge behind a failed
-        // restore (the webview's session commands queue on it).
-        let mut completion =
-            RestoreCompletionGuard::new(restore_barrier, Arc::clone(&restore_observer_barrier));
-
-        // (#1793) Collected in the restore loop, consumed once by the pass in
-        // the tail. Shared rather than returned so a body panic still hands the
-        // tail the targets restored before it.
-        let restart_resume_targets: Arc<Mutex<Vec<commands::session::RestartResumeTarget>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let restart_resume_targets_for_body = Arc::clone(&restart_resume_targets);
-
-        // #1341 - a panic inside the restore body degrades (logged + partial
-        // restore, retried next boot) instead of aborting the task and
-        // skipping the startup continuation. Mirrors the FinishGuard "never
-        // wedge" rule from #1327.
-        let body = std::panic::AssertUnwindSafe(async move {
+    let lifecycle_owner = Arc::clone(&settings_state);
+    let lifecycle_observer = Arc::clone(&restore_observer_barrier);
+    let app_handle = app.clone();
+    let pty_mgr_clone = pty_mgr.clone();
+    let session_mgr_clone = session_mgr;
+    let settings_state_clone = settings_state;
+    let restore_transaction_for_task = restore_transaction;
+    let shutdown_for_body = shutdown.clone();
+    let restart_resume_targets: Arc<Mutex<Vec<commands::session::RestartResumeTarget>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let restart_resume_targets_for_body = Arc::clone(&restart_resume_targets);
+    let body = Box::new(move || -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(async move {
             let mut persisted = match persisted {
                 Ok(persisted) => persisted,
                 Err(error) => {
@@ -2447,7 +2432,13 @@ pub(crate) fn spawn_restore_startup(
                             let last_coding_agent =
                                 crate::config::root_agent::read_last_coding_agent(&root_path);
                             let should_auto_create = {
-                                let cfg = settings_state_clone.read().await;
+                                let cfg = match settings_state_clone.current_read().await {
+                                    Ok(cfg) => cfg,
+                                    Err(error) => {
+                                        log::debug!("[restore] settings unavailable: {error}");
+                                        return;
+                                    }
+                                };
                                 should_auto_create_root_agent_on_first_restore(
                                     &cfg,
                                     last_coding_agent.as_deref(),
@@ -3108,26 +3099,10 @@ pub(crate) fn spawn_restore_startup(
                         .collect::<Vec<_>>()
                 );
             }
-        });
-        if let Err(panic) = body.catch_unwind().await {
-            log::error!(
-                "[restore] restore task panicked (partial restore; retried next boot): {:?}",
-                panic
-            );
-        }
-
-        // Flag window preserved (14.2): cleared at the end of the body, BEFORE
-        // the barrier release and the tail, exactly as today (pre-fix the guard
-        // dropped at the end of the block_on body, before finish/mark_complete
-        // and the tail). A body panic still clears via unwind, unchanged.
-        drop(_restore_guard);
-
-        completion.complete();
-
-        // Tail: same ordering as today; a panic here is logged and leaves the
-        // barrier already released (complete() ran), with services after the
-        // panic point not started - a documented, VISIBLE degradation (14.3).
-        let tail = std::panic::AssertUnwindSafe(async move {
+        })
+    });
+    let continuation = Box::new(move || -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(async move {
             // These observers mutate session metadata or persistence directly.
             // Start them only after restore has completed, which is stricter than
             // merely placing restore first and prevents an intermediate snapshot.
@@ -3199,7 +3174,60 @@ pub(crate) fn spawn_restore_startup(
                 shutdown.clone(),
             );
             ui_automation_state.start(app.app_handle().clone(), shutdown.clone());
+        })
+    });
+    spawn_restore_startup(
+        restore_barrier,
+        lifecycle_observer,
+        restore_flag,
+        lifecycle_owner,
+        body,
+        continuation,
+    )
+}
+
+/// Shared admission and completion boundary for native startup restore.
+/// Callbacks are invoked inside the unwind boundary, including synchronous panics.
+pub(crate) fn spawn_restore_startup(
+    restore_barrier: crate::session::selection::RestoreBarrierGuard,
+    restore_observer_barrier: Arc<RestoreObserverStartBarrier>,
+    restore_flag: Arc<RestoreInProgress>,
+    settings_state: SettingsState,
+    body: Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send + 'static>,
+    continuation: Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send + 'static>,
+) -> tauri::async_runtime::JoinHandle<()> {
+    use futures::FutureExt;
+    tauri::async_runtime::spawn(async move {
+        struct RestoreGuard(Arc<RestoreInProgress>);
+        impl Drop for RestoreGuard {
+            fn drop(&mut self) {
+                self.0 .0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let restore_guard = RestoreGuard(restore_flag);
+        let mut completion = RestoreCompletionGuard::new(restore_barrier, restore_observer_barrier);
+        let caught_body = std::panic::AssertUnwindSafe(async move {
+            let read_guard = match settings_state.current_read().await {
+                Ok(guard) => guard,
+                Err(error) => {
+                    log::debug!(
+                        "[restore] settings unavailable; automatic restore skipped: {error}"
+                    );
+                    return;
+                }
+            };
+            drop(read_guard);
+            (body)().await;
         });
+        if let Err(panic) = caught_body.catch_unwind().await {
+            log::error!(
+                "[restore] restore task panicked (partial restore; retried next boot): {:?}",
+                panic
+            );
+        }
+        drop(restore_guard);
+        completion.complete();
+        let tail = std::panic::AssertUnwindSafe(async move { (continuation)().await });
         if let Err(panic) = tail.catch_unwind().await {
             log::error!(
                 "[restore] post-restore startup panicked (services after the panic point not started): {:?}",
@@ -5436,7 +5464,7 @@ pub fn run(
                     .clone();
                 let restore_transaction_for_task = restore_transaction.clone();
 
-                spawn_restore_startup(
+                start_native_restore_startup(
                     app_handle,
                     restore_barrier,
                     Arc::new(restore_observer_barrier),
@@ -6460,17 +6488,17 @@ async fn surface_co_managed_user_message<R: tauri::Runtime>(
 /// Read the six `AppSettings` Jev fields into the leaf's plain value type.
 async fn co_managed_jev_settings<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-) -> capture::jev::JevSettings {
+) -> Result<capture::jev::JevSettings, config::settings::SettingsOwnerError> {
     let settings = app.state::<SettingsState>();
-    let guard = settings.read().await;
-    capture::jev::JevSettings {
+    let guard = settings.current_read().await?;
+    Ok(capture::jev::JevSettings {
         api_key: guard.jev_api_key.clone(),
         model: guard.jev_model.clone(),
         endpoint: guard.jev_endpoint.clone(),
         timeout_secs: guard.jev_timeout_secs,
         threshold: guard.jev_threshold,
         margin: guard.jev_margin,
-    }
+    })
 }
 
 /// Load and validate the room's catalog through the leaf loader. A missing
@@ -6959,6 +6987,13 @@ async fn co_managed_cycle<R: tauri::Runtime>(
     expected_seq: u64,
     candidate: &Arc<capture::record::CapturedRecord>,
 ) -> CoManagedOutcome {
+    let settings = match co_managed_jev_settings(app).await {
+        Ok(settings) => settings,
+        Err(error) => {
+            log::debug!("[co-managed] settings unavailable: {error}");
+            return CoManagedOutcome::Done("settings_unavailable".to_string());
+        }
+    };
     let session = {
         let manager = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let guard = manager.read().await;
@@ -7007,7 +7042,6 @@ async fn co_managed_cycle<R: tauri::Runtime>(
 
     // (2) Classify through the phase-6 leaf call.
     let catalog = co_managed_catalog(room_root);
-    let settings = co_managed_jev_settings(app).await;
     let outcome = {
         let network = app.state::<crate::network::OutboundNetwork>();
         capture::jev::classify(
@@ -7023,7 +7057,13 @@ async fn co_managed_cycle<R: tauri::Runtime>(
     // (3) Decide before committing, so an unreachable peer never spends budget.
     let project_paths = {
         let settings = app.state::<SettingsState>();
-        let guard = settings.read().await;
+        let guard = match settings.current_read().await {
+            Ok(guard) => guard,
+            Err(error) => {
+                log::debug!("[co-managed] settings unavailable: {error}");
+                return CoManagedOutcome::Done("settings_unavailable".to_string());
+            }
+        };
         co_managed_project_paths(&guard.project_paths, room_root)
     };
     let route = resolve_co_managed_route(outcome, &catalog, &from_fqn, &project_paths, &text);
@@ -7421,7 +7461,13 @@ async fn release_room_reader_demands_when_globally_off<R: tauri::Runtime>(
     let Some(settings) = app.try_state::<SettingsState>() else {
         return false;
     };
-    let enabled = settings.read().await.co_managed_enabled;
+    let enabled = match settings.current_read().await {
+        Ok(guard) => guard.co_managed_enabled,
+        Err(error) => {
+            log::debug!("[co-managed] settings unavailable; reader demands retained: {error}");
+            return false;
+        }
+    };
     if crate::config::co_managed::globally_capturable(enabled) {
         return false;
     }
@@ -8615,6 +8661,491 @@ mod tests {
         }
     }
 
+    async fn p51_open_owner(settings: AppSettings) -> (tempfile::TempDir, SettingsState) {
+        tokio::task::spawn_blocking(move || {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir
+                .path()
+                .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+            std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+            let owner =
+                crate::config::settings::SettingsOwner::open_active(&path, Duration::from_secs(5))
+                    .unwrap();
+            (dir, owner)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn p51_invalidate_owner(owner: &SettingsState) {
+        use crate::config::settings::{OperationOutcome, SettingsAvailability, SettingsPublisher};
+        let report = owner
+            .with_operation("p51-invalid", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |path| {
+                    std::fs::write(path, b"{").map_err(|error| error.to_string())?;
+                    Err::<(), String>("ReDecode".into())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        assert_eq!(owner.availability(), SettingsAvailability::Invalid);
+        assert!(owner.current_read().await.is_err());
+    }
+
+    async fn p51_invalid_owner(settings: AppSettings) -> (tempfile::TempDir, SettingsState) {
+        let (dir, owner) = p51_open_owner(settings).await;
+        p51_invalidate_owner(&owner).await;
+        (dir, owner)
+    }
+
+    async fn p51_close_owner(owner: SettingsState) {
+        tokio::task::spawn_blocking(move || {
+            owner.drain_blocking(Duration::from_secs(5));
+            assert_eq!(
+                owner.availability(),
+                crate::config::settings::SettingsAvailability::Closed
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_adapters_owner_denied() {
+        use super::{QuotaSourceProvider, QuotaSources, WatcherPatternSource, WatcherPatterns};
+        let (dir, denied) = p51_invalid_owner(settings_with_context_regex("context (.*)")).await;
+        let scraper = ScraperPatterns {
+            settings: Arc::clone(&denied),
+        };
+        let quota = QuotaSources {
+            settings: Arc::clone(&denied),
+        };
+        let watchers = WatcherPatterns {
+            settings: Arc::clone(&denied),
+            log: Default::default(),
+        };
+        for _ in 0..2 {
+            assert!(scraper.patterns().await.is_none());
+            assert!(quota.sources().await.is_none());
+            assert!(watchers.resolve().await.is_none());
+        }
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME)
+            )
+            .unwrap(),
+            b"{"
+        );
+        for settings in [
+            AppSettings {
+                agents: Vec::new(),
+                ..AppSettings::default()
+            },
+            settings_with_context_regex("context (.*)"),
+        ] {
+            let populated = !settings.agents.is_empty();
+            let owner = crate::config::settings::new_settings_state(settings);
+            assert_eq!(
+                ScraperPatterns {
+                    settings: Arc::clone(&owner)
+                }
+                .patterns()
+                .await
+                .unwrap()
+                .len(),
+                usize::from(populated)
+            );
+            assert!(QuotaSources {
+                settings: Arc::clone(&owner)
+            }
+            .sources()
+            .await
+            .unwrap()
+            .is_empty());
+            assert!(WatcherPatterns {
+                settings: owner,
+                log: Default::default()
+            }
+            .resolve()
+            .await
+            .unwrap()
+            .is_empty());
+        }
+        let mut settings = settings_with_context_regex("context (.*)");
+        settings.quota_sources.insert(
+            "codex".into(),
+            crate::config::settings::QuotaSourceEntry::Valid(
+                crate::config::settings::QuotaSourceConfig::ScreenRegex {
+                    pattern: "Weekly (.*)".into(),
+                    enabled: true,
+                },
+            ),
+        );
+        settings.watchers.insert(
+            "watch".into(),
+            serde_json::from_value(serde_json::json!({
+                "enabled": true, "mode": "state", "pattern": "ready"
+            }))
+            .unwrap(),
+        );
+        let owner = crate::config::settings::new_settings_state(settings);
+        let quota = QuotaSources {
+            settings: Arc::clone(&owner),
+        }
+        .sources()
+        .await
+        .unwrap();
+        assert_eq!(
+            quota.get("codex").unwrap().spec,
+            crate::pty::agent_quota::source::SourceSpec::ScreenRegex {
+                pattern: "Weekly (.*)".into()
+            }
+        );
+        let watchers = WatcherPatterns {
+            settings: owner,
+            log: Default::default(),
+        }
+        .resolve()
+        .await
+        .unwrap();
+        assert_eq!(watchers.get("codex").unwrap().running[0].pattern, "ready");
+        p51_close_owner(denied).await;
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_invalid_no_co_managed_budget() {
+        use crate::commands::session::co_managed_tests::{configure_room, room_fixture};
+        use crate::commands::session::reader_demand_tests::harness;
+        use crate::commands::telegram::{holds_room_reader_demand, room_demand_epoch};
+        use crate::telegram::manager::TelegramBridgeState;
+        use tauri::Manager;
+
+        let fixture = make_co_managed_fixture();
+        let (endpoint, hits) = spawn_jev_listener(vec![("to-user", 0.9)]).await;
+        let (dir, denied) = p51_invalid_owner(AppSettings {
+            jev_endpoint: endpoint.clone(),
+            jev_api_key: "test-key".to_string(),
+            ..AppSettings::default()
+        })
+        .await;
+        // Deliberately omit network and manager state: denied settings must return
+        // before touching either service, the detector, or any commit path.
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&denied))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let (handle, _rx) = CoManagedSupervisorHandle::new();
+        let id = uuid::Uuid::new_v4();
+        let record = co_managed_candidate(&id.to_string(), "leak AKIAIOSFODNN7EXAMPLE");
+        let slot = CaptureSlot::new();
+        slot.offer(Arc::clone(&record), 0);
+        let seq = slot.snapshot().seq;
+        let budget = crate::capture::state::budget(&fixture.room_root);
+        for _ in 0..2 {
+            let outcome = super::co_managed_cycle(
+                app.handle(),
+                &handle,
+                id,
+                &fixture.room_root,
+                &slot,
+                seq,
+                &record,
+            )
+            .await;
+            assert!(
+                matches!(outcome, super::CoManagedOutcome::Done(reason) if reason == "settings_unavailable")
+            );
+            assert!(!super::release_room_reader_demands_when_globally_off(app.handle()).await);
+        }
+        assert_eq!(slot.snapshot().seq, seq);
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert_eq!(crate::capture::state::budget(&fixture.room_root), budget);
+        assert!(messaging_files(&fixture.room_root).is_empty());
+        assert!(queue_files(&fixture.room_root).is_empty());
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME)
+            )
+            .unwrap(),
+            b"{"
+        );
+        // A held demand makes the unavailable/global-off distinction observable.
+        let demand_fixture = room_fixture();
+        configure_room(demand_fixture.room_path(), true);
+        let demand_harness = harness(&demand_fixture);
+        let demand_id = demand_harness
+            .session_in(demand_fixture.coordinator_path())
+            .await;
+        super::reader_demand_pass(demand_harness.app.handle()).await;
+        assert!(holds_room_reader_demand(demand_harness.app.handle(), demand_id).await);
+        let epoch = room_demand_epoch(demand_harness.app.handle(), demand_id).await;
+        let demand_app = tauri::test::mock_builder()
+            .manage(Arc::clone(&denied))
+            .manage(Arc::clone(
+                demand_harness
+                    .app
+                    .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                    .inner(),
+            ))
+            .manage(Arc::clone(
+                demand_harness.app.state::<TelegramBridgeState>().inner(),
+            ))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        for _ in 0..2 {
+            assert!(
+                !super::release_room_reader_demands_when_globally_off(demand_app.handle()).await
+            );
+            assert!(holds_room_reader_demand(demand_app.handle(), demand_id).await);
+            assert_eq!(
+                room_demand_epoch(demand_app.handle(), demand_id).await,
+                epoch
+            );
+        }
+        // Positive control: the same session and bridge really release when Ready/off.
+        demand_harness
+            .set_global_co_managed(false, "test-key")
+            .await;
+        assert!(
+            super::release_room_reader_demands_when_globally_off(demand_harness.app.handle()).await
+        );
+        assert!(!holds_room_reader_demand(demand_harness.app.handle(), demand_id).await);
+        assert_ne!(
+            room_demand_epoch(demand_harness.app.handle(), demand_id).await,
+            epoch
+        );
+        crate::commands::session::reader_demand_tests::assert_no_room_reader_state_for(
+            &demand_harness,
+            demand_id,
+        )
+        .await;
+        p51_close_owner(denied).await;
+
+        // Ready control: a secret is handled before any network request.
+        let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
+        let id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
+        let (slot, record) = install_candidate(&registry, id, "leak AKIAIOSFODNN7EXAMPLE");
+        let hooks = Arc::new(CoManagedTestHooks::default());
+        let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
+        let outcome = super::co_managed_cycle(
+            app.handle(),
+            &handle,
+            id,
+            &fixture.room_root,
+            &slot,
+            slot.snapshot().seq,
+            &record,
+        )
+        .await;
+        assert!(matches!(outcome, super::CoManagedOutcome::Done(_)));
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert!(hooks.commit_calls() > 0);
+        assert!(slot.snapshot().value.record().is_none());
+    }
+
+    fn p51_assert_restore_body_counts(
+        mode: &str,
+        body_entries: &std::sync::atomic::AtomicUsize,
+        body_completions: &std::sync::atomic::AtomicUsize,
+    ) {
+        assert_eq!(
+            body_entries.load(Ordering::SeqCst),
+            usize::from(mode != "invalid")
+        );
+        assert_eq!(
+            body_completions.load(Ordering::SeqCst),
+            usize::from(matches!(mode, "ready" | "tail-panic"))
+        );
+    }
+
+    async fn p51_assert_restore_state(
+        mode: &str,
+        owner: &SettingsState,
+        manager: &Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>,
+        saved_path: &std::path::Path,
+        saved_bytes: &[u8],
+    ) {
+        assert!(manager.read().await.list_sessions().await.is_empty());
+        assert_eq!(std::fs::read(saved_path).unwrap(), saved_bytes);
+        if mode == "invalid" {
+            assert_eq!(
+                owner.availability(),
+                crate::config::settings::SettingsAvailability::Invalid
+            );
+            assert!(owner.current_read().await.is_err());
+        }
+    }
+
+    // Production admission/lifecycle boundary; the concrete Wry body is not executed.
+    async fn p51_restore_lifecycle_case(mode: &'static str) {
+        use crate::session::manager::SessionManager;
+        use crate::session::selection::SelectionCoordinator;
+        let (dir, owner) = p51_open_owner(settings_with_agent()).await;
+        let snapshot = owner.current_read().await.unwrap().clone();
+        let rows = Ok::<_, String>(vec![persisted_row("saved-p51", true)]);
+        let saved_path = dir.path().join("sessions.json");
+        let saved_bytes = serde_json::to_vec(rows.as_ref().unwrap()).unwrap();
+        std::fs::write(&saved_path, &saved_bytes).unwrap();
+        if mode == "invalid" {
+            p51_invalidate_owner(&owner).await;
+        }
+        let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+        let coordinator = SelectionCoordinator::new(
+            Arc::clone(&manager),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let app = tauri::test::mock_builder()
+            .manage(Arc::clone(&manager))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        coordinator.start(app.handle().clone()).unwrap();
+        let barrier = coordinator.submit_restore_first().await.unwrap();
+        let observer = Arc::new(RestoreObserverStartBarrier::default());
+        observer.mark_restore_admitted().unwrap();
+        let flag = Arc::new(super::RestoreInProgress(
+            std::sync::atomic::AtomicBool::new(true),
+        ));
+        let (started, handshake) = tokio::sync::oneshot::channel();
+        let mut queued = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                started.send(()).unwrap();
+                coordinator.snapshot().await
+            })
+        };
+        handshake.await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued)
+            .await
+            .is_err());
+        let body_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tail_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let future_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let body_completions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tail_completions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let body = {
+            let body_entries = Arc::clone(&body_entries);
+            let future_entries = Arc::clone(&future_entries);
+            let body_completions = Arc::clone(&body_completions);
+            let manager = Arc::clone(&manager);
+            Box::new(move || -> futures::future::BoxFuture<'static, ()> {
+                body_entries.fetch_add(1, Ordering::SeqCst);
+                assert_ne!(
+                    mode, "invalid",
+                    "Invalid owner admitted saved restore input"
+                );
+                assert_ne!(mode, "sync-panic", "synchronous body panic control");
+                Box::pin(async move {
+                    future_entries.fetch_add(1, Ordering::SeqCst);
+                    assert!(matches!(rows, Ok(ref rows) if !rows.is_empty()));
+                    assert!(!snapshot.agents.is_empty());
+                    assert!(manager.read().await.list_sessions().await.is_empty());
+                    assert_ne!(mode, "future-panic", "body future panic control");
+                    body_completions.fetch_add(1, Ordering::SeqCst);
+                })
+            })
+        };
+        let continuation = {
+            let body_completions = Arc::clone(&body_completions);
+            let tail_completions = Arc::clone(&tail_completions);
+            let (body_entries, tail_entries, flag, observer) = (
+                Arc::clone(&body_entries),
+                Arc::clone(&tail_entries),
+                Arc::clone(&flag),
+                Arc::clone(&observer),
+            );
+            Box::new(move || -> futures::future::BoxFuture<'static, ()> {
+                Box::pin(async move {
+                    assert!(!flag.0.load(Ordering::SeqCst));
+                    observer
+                        .start("p51-independent", || {
+                            assert_eq!(tail_entries.fetch_add(1, Ordering::SeqCst), 0);
+                        })
+                        .unwrap();
+                    p51_assert_restore_body_counts(mode, &body_entries, &body_completions);
+                    assert_ne!(mode, "tail-panic", "tail panic control");
+                    tail_completions.fetch_add(1, Ordering::SeqCst);
+                })
+            })
+        };
+        let restore = super::spawn_restore_startup(
+            barrier,
+            Arc::clone(&observer),
+            Arc::clone(&flag),
+            Arc::clone(&owner),
+            body,
+            continuation,
+        );
+        tokio::time::timeout(Duration::from_secs(2), restore)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            body_entries.load(Ordering::SeqCst),
+            usize::from(mode != "invalid")
+        );
+        assert_eq!(tail_entries.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            future_entries.load(Ordering::SeqCst),
+            usize::from(!matches!(mode, "invalid" | "sync-panic"))
+        );
+        assert_eq!(
+            body_completions.load(Ordering::SeqCst),
+            usize::from(matches!(mode, "ready" | "tail-panic"))
+        );
+        assert_eq!(
+            tail_completions.load(Ordering::SeqCst),
+            usize::from(mode != "tail-panic")
+        );
+        assert!(!flag.0.load(Ordering::SeqCst));
+        observer.start("p51-after-join", || {}).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), queued)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        p51_assert_restore_state(mode, &owner, &manager, &saved_path, &saved_bytes).await;
+        tokio::time::timeout(Duration::from_secs(2), coordinator.close_and_join())
+            .await
+            .unwrap();
+        p51_close_owner(owner).await;
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_restore_unavailable_completes() {
+        p51_restore_lifecycle_case("invalid").await;
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_restore_ready_runs_body() {
+        p51_restore_lifecycle_case("ready").await;
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_restore_body_future_panic_completes() {
+        p51_restore_lifecycle_case("future-panic").await;
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_restore_body_sync_panic_completes() {
+        p51_restore_lifecycle_case("sync-panic").await;
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_restore_tail_panic_keeps_completion() {
+        p51_restore_lifecycle_case("tail-panic").await;
+    }
+
     fn settings_with_context_regex(regex: &str) -> AppSettings {
         let mut settings = settings_with_agent();
         settings.agents[0].context_regex = Some(regex.to_string());
@@ -8625,7 +9156,7 @@ mod tests {
         let source = ScraperPatterns {
             settings: crate::config::settings::new_settings_state(settings) as SettingsState,
         };
-        futures::executor::block_on(source.patterns())
+        futures::executor::block_on(source.patterns()).expect("Ready context fixture")
     }
 
     #[tokio::test]
