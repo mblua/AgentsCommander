@@ -151,7 +151,10 @@ pub async fn voice_transcribe(
     audio: Vec<u8>,
     mime_type: String,
 ) -> Result<String, String> {
-    let cfg = settings.read().await;
+    let cfg = settings
+        .current_read()
+        .await
+        .map_err(|error| error.to_string())?;
     let api_key = cfg.gemini_api_key.clone();
     let model = cfg.gemini_model.clone();
     drop(cfg);

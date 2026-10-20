@@ -1695,7 +1695,14 @@ pub async fn update_overview_with(
     cache: &Arc<AgentInstallCache>,
     probe: ProbeFn,
 ) -> Result<Vec<AgentUpdateOverviewRow>, CatalogUnavailable> {
-    let settings = settings.read().await.clone();
+    let settings = settings
+        .current_snapshot()
+        .await
+        .map_err(|error| CatalogUnavailable {
+            code: "settings_unavailable".to_string(),
+            path: String::new(),
+            reason: error.to_string(),
+        })?;
     let catalog = load_catalog_for_settings(&settings)?;
     // Read the gate ONCE, before any cache operation: that order is what makes
     // "finished implies the post-pass generation" hold (plan 5.4 step 8).
@@ -3541,7 +3548,13 @@ impl PassSupervisor {
     }
 
     async fn run_body(&self, runtime: &mut PassRuntime) {
-        let settings = self.app.state::<SettingsState>().read().await.clone();
+        let settings = match self.app.state::<SettingsState>().current_snapshot().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::debug!("[agent-update] startup pass skipped: {error}");
+                return;
+            }
+        };
         let catalog = match load_catalog_for_settings(&settings) {
             Ok(catalog) => catalog,
             Err(unavailable) => {
