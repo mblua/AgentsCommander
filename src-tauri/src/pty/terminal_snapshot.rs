@@ -3613,10 +3613,10 @@ mod tests {
         if prepare_denial {
             let fixture = P44Fixture::new().await;
             fixture.change(change).await;
-            assert!(matches!(
-                fixture.prepare().await,
-                Err(TerminalSnapshotReasonCode::TerminalSnapshotsDisabled)
-            ));
+            assert_eq!(
+                fixture.prepare().await.err(),
+                Some(TerminalSnapshotReasonCode::TerminalSnapshotsDisabled)
+            );
             fixture.close().await;
         }
         let fixture = P44Fixture::new().await;
