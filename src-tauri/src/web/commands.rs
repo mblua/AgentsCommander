@@ -571,6 +571,28 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             serde_json::to_value(crate::commands::config::get_agent_help())
                 .map_err(|e| e.to_string())?,
         ),
+        "list_agent_file_sources" => {
+            serde_json::to_value(crate::commands::config::list_agent_file_sources_inner(&state.settings).await?).map_err(|e| e.to_string())
+        }
+        "read_agent_file_source" => {
+            let source = serde_json::from_value(args.get("source").cloned().ok_or("missing source")?).map_err(|e| e.to_string())?;
+            serde_json::to_value(crate::commands::config::read_agent_file_source_inner(&state.settings, source).await?).map_err(|e| e.to_string())
+        }
+        "save_agent_file_source" => {
+            let source = serde_json::from_value(args.get("source").cloned().ok_or("missing source")?).map_err(|e| e.to_string())?;
+            let expected = serde_json::from_value(args.get("expectedRevision").cloned().ok_or("missing expectedRevision")?).map_err(|e| e.to_string())?;
+            let context = args.get("contextRevision").and_then(Value::as_str).ok_or("missing contextRevision")?.to_owned();
+            let edits = serde_json::from_value(args.get("edits").cloned().ok_or("missing edits")?).map_err(|e| e.to_string())?;
+            let reply = crate::commands::config::save_agent_file_source_inner(&state.settings, source, expected, context, edits).await?;
+            crate::commands::config::emit_agent_file_save_events(&state.app_handle, &reply);
+            serde_json::to_value(reply).map_err(|e| e.to_string())
+        }
+        "remember_agent_file_source" => {
+            let menu = serde_json::from_value(args.get("menu").cloned().ok_or("missing menu")?).map_err(|e| e.to_string())?;
+            let source = serde_json::from_value(args.get("source").cloned().ok_or("missing source")?).map_err(|e| e.to_string())?;
+            serde_json::to_value(crate::commands::config::remember_agent_file_source_inner(&state.settings, menu, source).await?).map_err(|e| e.to_string())
+        }
+
         "get_settings" => {
             // #1077: route through the exact shared snapshot helper so browser
             // and native clients receive the identical resolution report and
@@ -4087,5 +4109,101 @@ title: 'USER: café'
                 "outcome": "cancelled"
             })
         );
+    }
+    #[tokio::test]
+    async fn e2432_p02_browser_routes_share_physical_source_flow() {
+        use crate::config::instance_artifacts::{AGENTS_INSTANCE_FILE_NAME, SETTINGS_FILE_NAME};
+        use crate::config::settings::SettingsOwner;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        std::fs::write(&path, serde_json::to_vec(&AppSettings::default()).unwrap()).unwrap();
+        std::fs::write(temp.path().join(AGENTS_INSTANCE_FILE_NAME), br#"{"agents":[{"id":"own","label":"Own","color":"red","baseCommand":"tool"}]}"#).unwrap();
+        let (mut state, _rx) = ws_state_for(AppSettings::default());
+        state.settings = SettingsOwner::open_active(&path, std::time::Duration::from_secs(1)).unwrap();
+        let listed = dispatch_inner(&state, "list_agent_file_sources", &json!({})).await.unwrap();
+        let source = listed["sources"][0]["source"].clone();
+        assert!(listed["sources"][0].get("tickets").is_none());
+        let snapshot = dispatch_inner(&state, "read_agent_file_source", &json!({"source":source})).await.unwrap();
+        assert!(snapshot["tickets"]["own"]["default"]["ref"]["requestedProfile"].is_null());
+        let reply = dispatch_inner(&state, "save_agent_file_source", &json!({"source":source,"expectedRevision":snapshot["revision"],"contextRevision":snapshot["contextRevision"],"edits":{"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]}})).await.unwrap();
+        assert_eq!(reply["outcome"], json!("committed"));
+        assert_eq!(reply["snapshot"]["rows"][0]["raw"]["label"], json!("Edited"));
+        let remembered = dispatch_inner(&state, "remember_agent_file_source", &json!({"menu":"settings","source":source})).await.unwrap();
+        assert_eq!(remembered["settings"], source);
+        assert!(remembered.get("picker").is_none());
+    }
+    #[tokio::test]
+    async fn e2432_p02_browser_catalog_events_silent_registered_events_live() {
+        use tauri::Listener;
+        use crate::config::instance_artifacts::{AGENTS_INSTANCE_FILE_NAME, SETTINGS_FILE_NAME};
+        use crate::config::settings::{SettingsOwner, SourceKind};
+        use std::time::Duration;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        let project = temp.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let initial = AppSettings { project_paths: vec![project.to_string_lossy().into_owned()], ..AppSettings::default() };
+        std::fs::write(&path, serde_json::to_vec(&initial).unwrap()).unwrap();
+        std::fs::write(temp.path().join(AGENTS_INSTANCE_FILE_NAME), br#"{"agents":[{"id":"registered","label":"Registered","color":"red","baseCommand":"tool"}]}"#).unwrap();
+        let catalog = crate::config::coding_agents_catalog::independent_catalog_path(&project.join(".ac"), SourceKind::CatalogPersonal).unwrap();
+        std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
+        std::fs::write(&catalog, br#"{"schemaVersion":1,"agents":[{"key":"own","label":"Original","color":"blue","baseCommand":"catalog-tool"}]}"#).unwrap();
+        let (mut state, mut ws) = ws_state_for(initial);
+        state.settings = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
+        assert!(state.app_handle.manage(state.broadcaster.clone()));
+        let (tx, events) = std::sync::mpsc::channel();
+        for event in ["coding_agent_settings_updated", "coding_agent_profiles_updated"] {
+            let tx = tx.clone();
+            state.app_handle.listen_any(event, move |_| { tx.send(event).unwrap(); });
+        }
+        let list = dispatch_inner(&state, "list_agent_file_sources", &json!({})).await.unwrap();
+        let sources = list["sources"].as_array().unwrap();
+        let source = sources.iter().find(|s| s["source"]["scope"] == json!("project") && s["source"]["kind"] == json!("catalogPersonal")).unwrap()["source"].clone();
+        let before = dispatch_inner(&state, "read_agent_file_source", &json!({"source":source})).await.unwrap();
+        let epoch = state.settings.identity().epoch;
+        let ram = serde_json::to_value(state.settings.current_snapshot().await.unwrap()).unwrap();
+        let reply = dispatch_inner(&state, "save_agent_file_source", &json!({"source":source,"expectedRevision":before["revision"],"contextRevision":before["contextRevision"],"edits":{"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]}})).await.unwrap();
+        assert_eq!(reply["outcome"], json!("committed"));
+        assert!(reply["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == json!("effectiveSettingsUnchanged")));
+        assert_eq!(reply["effectiveSettings"], ram);
+        let actual: Value = serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
+        assert_eq!(actual["agents"][0]["label"], json!("Edited"));
+        let fresh = dispatch_inner(&state, "read_agent_file_source", &json!({"source":source})).await.unwrap();
+        assert_eq!(fresh["rows"][0]["raw"]["label"], json!("Edited"));
+        assert_eq!(fresh["revision"], reply["snapshot"]["revision"]);
+        assert_ne!(fresh["revision"], before["revision"]);
+        assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(matches!(ws.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        let stale = dispatch_inner(&state, "save_agent_file_source", &json!({"source":source,"expectedRevision":before["revision"],"contextRevision":before["contextRevision"],"edits":{"rows":[],"profileSets":[]}})).await.unwrap();
+        assert_eq!(stale["outcome"], json!("rejected"));
+        assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(matches!(ws.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+            let bytes = std::fs::read(&catalog).unwrap();
+            let held = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).open(&catalog).unwrap();
+            let uncertain = dispatch_inner(&state, "save_agent_file_source", &json!({"source":source,"expectedRevision":fresh["revision"],"contextRevision":fresh["contextRevision"],"edits":{"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Uncertain"}}],"profileSets":[]}})).await.unwrap();
+            assert_eq!(uncertain["outcome"], json!("partialOrUnknown"));
+            assert_eq!(uncertain["snapshot"]["revision"], fresh["revision"]);
+            assert_eq!(std::fs::read(&catalog).unwrap(), bytes);
+            assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
+            assert!(matches!(ws.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+            drop(held);
+        }
+        assert_eq!(state.settings.identity().epoch, epoch);
+        assert_eq!(serde_json::to_value(state.settings.current_snapshot().await.unwrap()).unwrap(), ram);
+        let registered = sources.iter().find(|s| s["source"]["kind"] == json!("registeredInstance")).unwrap()["source"].clone();
+        let snapshot = dispatch_inner(&state, "read_agent_file_source", &json!({"source":registered})).await.unwrap();
+        let adopted = dispatch_inner(&state, "save_agent_file_source", &json!({"source":registered,"expectedRevision":snapshot["revision"],"contextRevision":snapshot["contextRevision"],"edits":{"rows":[{"entryHint":"registered","action":"upsert","patch":{"label":"Adopted"}}],"profileSets":[]}})).await.unwrap();
+        assert_eq!(adopted["outcome"], json!("committed"));
+        assert!(state.settings.identity().epoch > epoch);
+        for expected in ["coding_agent_settings_updated", "coding_agent_profiles_updated"] {
+            assert_eq!(events.recv_timeout(Duration::from_secs(1)).unwrap(), expected);
+            match ws.try_recv().expect("managed WS sink must be live") { super::super::broadcast::WsOutMsg::Text(text) => assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["event"], json!(expected)), other => panic!("unexpected WS message {other:?}") }
+        }
+        assert!(events.try_recv().is_err());
+        assert!(matches!(ws.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
     }
 }

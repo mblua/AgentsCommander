@@ -1604,18 +1604,30 @@ impl RegisteredProfileCapture {
 // Collect every participant even after a failure. In particular, malformed
 // sidecar bytes must not hide a later participating overlay's rejection.
 fn collect_registered_profile_gate(path: &Path) -> RegisteredProfileCapture {
+    let inputs = [path.to_path_buf(), agents_instance_path(path), path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME)]
+        .into_iter().map(|participant| {
+            let input = match std::fs::read(&participant) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error.to_string()),
+            };
+            (participant, input)
+        }).collect();
+    classify_registered_profile_inputs(path, inputs)
+}
+
+fn classify_registered_profile_inputs(
+    path: &Path,
+    inputs: Vec<(PathBuf, Result<Option<Vec<u8>>, String>)>,
+) -> RegisteredProfileCapture {
     let mut captured = RegisteredProfileCapture::default();
     let mut sources = Vec::new();
-    for participant in [
-        path.to_path_buf(),
-        agents_instance_path(path),
-        path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
-    ] {
+    for (participant, input) in inputs {
         let overlay = participant.file_name()
             == Some(std::ffi::OsStr::new(SETTINGS_LOCAL_OVERRIDE_FILE_NAME));
-        let bytes = match std::fs::read(&participant) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let bytes = match input {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
                 captured.documents.push((participant, None));
                 continue;
             }
@@ -1843,7 +1855,7 @@ pub struct ConfigurationRef {
     pub version: u32,
     pub source: SourceRef,
     pub calculated_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub requested_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_calculated_id: Option<String>,
@@ -3369,12 +3381,13 @@ impl SourceReadContext {
         settings: &AppSettings,
         settings_path: &Path,
     ) -> Result<Self, SourcePreparationError> {
-        let config = settings_path
-            .parent()
-            .ok_or(SourcePreparationError::ContextUnavailable)?;
-        let config = std::fs::canonicalize(config)
-            .map_err(|_| SourcePreparationError::ContextUnavailable)?;
         let primary = crate::config::coding_agents_catalog::primary_project_root(settings);
+        Self::from_primary(settings_path, primary)
+    }
+
+    fn from_primary(settings_path: &Path, primary: Option<PathBuf>) -> Result<Self, SourcePreparationError> {
+        let config = settings_path.parent().ok_or(SourcePreparationError::ContextUnavailable)?;
+        let config = std::fs::canonicalize(config).map_err(|_| SourcePreparationError::ContextUnavailable)?;
         let catalog_root = match &primary {
             Some(root) => std::fs::canonicalize(root)
                 .map_err(|_| SourcePreparationError::ContextUnavailable)?,
@@ -7169,6 +7182,8 @@ pub struct AppSettings {
     /// Reusable coding-agent profile letters, defaults, and per-agent cells.
     #[serde(default)]
     pub coding_agent_profiles: CodingAgentProfilesConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_file_source_by_menu: Option<AgentFileSourcePreferences>,
     /// Configured Telegram bots for bridge
     #[serde(default)]
     pub telegram_bots: Vec<TelegramBotConfig>,
@@ -8084,6 +8099,7 @@ impl Default for AppSettings {
             default_shell_args,
             agents: vec![],
             coding_agent_profiles: CodingAgentProfilesConfig::default(),
+            agent_file_source_by_menu: None,
             telegram_bots: vec![],
             telegram_network_poll_error_logging: TelegramNetworkPollErrorLogging::default(),
             restore_coordinator_wake_state: true,
@@ -13096,6 +13112,7 @@ const FIELD_MAIN_DISPLAY_STATE: &str = "mainWindowDisplayState";
 /// #1737 (D7a) - top-level settings keys whose authority is the on-disk file, not
 /// the in-memory struct, and which `settings.local.json` therefore may not override.
 pub(crate) const OVERLAY_INELIGIBLE_DISK_KEYS: &[&str] = &[
+    "agentFileSourceByMenu",
     FIELD_ARCHIVED,
     FIELD_ARCHIVED_REL,
     FIELD_PROJECT_PATH,
@@ -13111,6 +13128,7 @@ pub(crate) const OVERLAY_INELIGIBLE_DISK_KEYS: &[&str] = &[
 /// the migration itself, so an override would write a key the restore plan does not
 /// own or would resurrect a key the #248 migration exists to delete.
 pub(crate) const OVERLAY_INELIGIBLE_LEGACY_KEYS: &[&str] = &[
+    "agentFileSourceByMenu",
     "sidebarAlwaysOnTop",
     "sidebarZoom",
     "startOnlyCoordinators",
@@ -16432,6 +16450,11 @@ fn save_settings_value_locked_with_startup(
         },
     };
 
+    // E2432: only the dedicated preference publisher changes menu choices.
+    out.remove("agentFileSourceByMenu");
+    if let Some(preferences) = disk.as_ref().and_then(|disk| disk.get("agentFileSourceByMenu")) {
+        out.insert("agentFileSourceByMenu".into(), preferences.clone());
+    }
     apply_registered_main_disk_fields(
         &mut out,
         disk.as_ref(),
@@ -18184,6 +18207,14 @@ impl SettingsOperationGuard<'_> {
 
     pub fn effect(&self) -> OperationEffect {
         self.effect
+    }
+
+    pub(crate) fn verify_agent_file_context(&self, revision: &str) -> Result<(), String> {
+        let captured = capture_sources_locked(self).map_err(|_| "sourceContextUnavailable")?;
+        let fresh = compose_captured_sources(&captured, CapturePolicy::Recovery).map_err(|_| "sourceContextUnavailable")?;
+        let context = SourceReadContext::from_settings(&fresh, self.settings_path()).map_err(|_| "sourceContextUnavailable")?;
+        if context.revision != revision { return Err("staleSourceContext".into()); }
+        Ok(())
     }
 
     /// Runs one publisher. The effect becomes `Possible` BEFORE the publisher
@@ -41627,5 +41658,1280 @@ mod e2432_profile_storage_tests {
         assert_eq!(invalid.snapshot.availability, SourceAvailability::Invalid);
         assert!(!invalid.snapshot.capabilities.available_read);
         assert!(invalid.snapshot.agents.is_empty());
+    }
+}
+
+// E2432 P02: finite physical-file APIs. These do not activate the broad source protocol.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentFileSourcePreferences {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<SourceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picker: Option<SourceRef>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentFileSourceMenu { Settings, Picker }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentFileSourceFormat { Registered, CatalogSchema1, CatalogSchema2 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentFileRowKind { Registered, CatalogComplete, CatalogPatch, Remove }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFileRow {
+    pub entry_hint: String,
+    pub kind: AgentFileRowKind,
+    pub raw: Value,
+    pub base_hash: Option<String>,
+    pub launchable: bool,
+    pub editable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedAgentFileSnapshot {
+    pub source: SourceRef,
+    pub revision: SourceRevision,
+    pub context_revision: String,
+    pub format: AgentFileSourceFormat,
+    pub availability: SourceAvailability,
+    pub capabilities: SourceCapabilities,
+    pub rows: Vec<AgentFileRow>,
+    // Raw cells retain extensions that typed runtime consumers do not understand.
+    pub profiles_by_base_hash: BTreeMap<String, Value>,
+    pub profile_labels_by_base_hash: BTreeMap<String, Value>,
+    pub profile_slots: BTreeMap<String, ProfileSlotConfig>,
+    pub diagnostics: Vec<SourceDiagnostic>,
+    pub tickets: BTreeMap<String, BTreeMap<String, SourceSelectionTicket>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFileSourceOption {
+    pub source: SourceRef,
+    pub revision: SourceRevision,
+    pub context_revision: String,
+    pub format: AgentFileSourceFormat,
+    pub availability: SourceAvailability,
+    pub capabilities: SourceCapabilities,
+    pub diagnostics: Vec<SourceDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFileSources {
+    pub sources: Vec<AgentFileSourceOption>,
+    pub last_selected: AgentFileSourcePreferences,
+    pub active_source_by_menu: AgentFileSourcePreferences,
+    pub menu_diagnostics: BTreeMap<String, Vec<SourceDiagnostic>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentFileRowEdit {
+    pub entry_hint: String,
+    pub action: AgentFileRowAction,
+    pub patch: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentFileRowAction { Upsert, Delete }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentFileProfileEdit {
+    pub base_hash: String,
+    pub cells: BTreeMap<String, Value>,
+    pub labels: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentFileEdits {
+    pub rows: Vec<AgentFileRowEdit>,
+    pub profile_sets: Vec<AgentFileProfileEdit>,
+    pub profile_slots: Option<BTreeMap<String, ProfileSlotConfig>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentFileSaveOutcome { Committed, Rejected, PartialOrUnknown }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFileSaveReply {
+    pub outcome: AgentFileSaveOutcome,
+    pub snapshot: Option<SelectedAgentFileSnapshot>,
+    pub effective_settings: Option<AppSettings>,
+    pub diagnostics: Vec<SourceDiagnostic>,
+}
+
+fn agent_file_read(path: &Path) -> Result<Vec<u8>, String> {
+    crate::config::coding_agents_catalog::read_selected_regular_file(path)
+}
+
+fn agent_file_decode(value: &Value, registered: bool) -> Result<(Vec<AgentConfig>, CodingAgentProfilesConfig), String> {
+    if registered {
+        decode_registered_raw(value).map_err(|_| "invalidRegisteredSource".to_owned())
+    } else {
+        let (agents, profiles) = decode_physical_catalog(value)?;
+        let agents = agents.into_iter().map(|agent| AgentConfig {
+            id: agent.id, id_hash: agent.id_hash, id_hash_debug: agent.id_hash_debug,
+            label: agent.label, command: agent.command, color: agent.color, envs: agent.envs,
+            isolated_home: agent.isolated_home, instructions_filename: agent.instructions_filename,
+            config_seed: agent.config_seed,
+            preflight: None, preflight_timeout_seconds: None, context_regex: None,
+            blocking_menus: None, order: None, backend: AgentBackendConfig::default(),
+        }).collect();
+        Ok((agents, profiles))
+    }
+}
+
+pub(crate) fn agent_file_projection(snapshot: &SelectedAgentFileSnapshot) -> Result<AppSettings, String> {
+    if snapshot.availability != SourceAvailability::Available { return Err("sourceUnavailable".into()); }
+    let registered = snapshot.source.kind == SourceKind::RegisteredInstance;
+    let mut value = serde_json::json!({
+        "agents": snapshot.rows.iter().map(|row| row.raw.clone()).collect::<Vec<_>>()
+    });
+    let profiles = serde_json::json!({
+        "profileBindingVersion": 1,
+        "profilesByBaseHash": snapshot.profiles_by_base_hash,
+        "profileLabelsByBaseHash": snapshot.profile_labels_by_base_hash,
+        "profileSlots": snapshot.profile_slots
+    });
+    if registered { value["codingAgentProfiles"] = profiles; }
+    else {
+        value["schemaVersion"] = serde_json::json!(match snapshot.format { AgentFileSourceFormat::CatalogSchema2 => 2, _ => 1 });
+        value.as_object_mut().unwrap().extend(profiles.as_object().unwrap().clone());
+    }
+    let (agents, profiles) = agent_file_decode(&value, registered)?;
+    Ok(AppSettings { agents, coding_agent_profiles: profiles, ..AppSettings::default() })
+}
+
+pub(crate) fn read_agent_file_snapshot(context: &SourceReadContext, source: &SourceRef) -> Result<SelectedAgentFileSnapshot, String> {
+    let path = context.locator(source).map_err(|_| "sourceContextUnavailable")?;
+    let observation = observe_agent_file(&path);
+    let validation = (source.kind == SourceKind::RegisteredInstance).then(|| collect_registered_profile_gate(&context.settings_path));
+    snapshot_from_captured_source(context, source, &observation, validation.as_ref())
+}
+
+fn snapshot_from_captured_source(context: &SourceReadContext, source: &SourceRef, observation: &BoundedSourceObservation, registered_validation: Option<&RegisteredProfileCapture>) -> Result<SelectedAgentFileSnapshot, String> {
+    let path = context.locator(source).map_err(|_| "sourceContextUnavailable")?;
+    let registered = source.kind == SourceKind::RegisteredInstance;
+    let mut snapshot = SelectedAgentFileSnapshot {
+        source: source.clone(), revision: SourceRevision::Absent {}, context_revision: context.revision.clone(),
+        format: if registered { AgentFileSourceFormat::Registered } else { AgentFileSourceFormat::CatalogSchema1 },
+        availability: SourceAvailability::Absent, capabilities: SourceCapabilities::default(), rows: Vec::new(),
+        profiles_by_base_hash: BTreeMap::new(), profile_labels_by_base_hash: BTreeMap::new(),
+        profile_slots: BTreeMap::new(), diagnostics: Vec::new(), tickets: BTreeMap::new(),
+    };
+    if matches!(observation, BoundedSourceObservation::Absent) {
+        snapshot.diagnostics.push(source_diagnostic("sourceAbsent"));
+        return Ok(snapshot);
+    }
+    let decoded = (|| -> Result<(), String> {
+        let bytes = observation.bytes().ok_or("sourceReadFailed")?;
+        snapshot.revision = source_bytes_revision(&bytes);
+        if let Some(reason) = duplicate_profile_document(&bytes, &path) { return Err(reason); }
+        let value = crate::config::coding_agents_catalog::parse_strict_json(&bytes)?;
+        let sets = physical_profile_sets(&value, registered)?;
+        let (agents, profiles) = agent_file_decode(&value, registered)?;
+        let projection = AppSettings { agents, coding_agent_profiles: profiles, ..AppSettings::default() };
+        validate_agent_commands(&projection)?;
+        if registered {
+            if let Some(reason) = registered_validation.and_then(RegisteredProfileCapture::ordinary_error) { return Err(reason); }
+        }
+        let owner = profile_container(&value, registered).cloned().unwrap_or_else(|| serde_json::json!({}));
+        snapshot.profile_slots = owner.get("profileSlots").cloned().map(serde_json::from_value).transpose().map_err(|_| "invalidProfileSlots")?.unwrap_or_default();
+        if snapshot.profile_slots.keys().any(|letter| !is_valid_profile_letter(letter)) { return Err("invalidProfileLetter".into()); }
+        if !registered && value.get("schemaVersion").and_then(Value::as_u64) == Some(2) { snapshot.format = AgentFileSourceFormat::CatalogSchema2; }
+        let editable = (registered || (source.scope == SourceScope::Project && source.kind == SourceKind::CatalogPersonal)) && value.get("managed").is_none();
+        snapshot.capabilities = SourceCapabilities { available_read: true, editable_save: editable, ..SourceCapabilities::default() };
+        for raw in value.get("agents").and_then(Value::as_array).ok_or("invalidAgentsArray")? {
+            let hint = raw.get(if registered { "id" } else { "key" }).and_then(Value::as_str).ok_or("invalidAgentKey")?.to_owned();
+            let hash = sets.rows.get(&hint).cloned();
+            let remove = raw.get("remove") == Some(&Value::Bool(true));
+            let kind = if registered { AgentFileRowKind::Registered } else if remove { AgentFileRowKind::Remove } else if matches!(snapshot.format, AgentFileSourceFormat::CatalogSchema2) { AgentFileRowKind::CatalogComplete } else { AgentFileRowKind::CatalogPatch };
+            if hash.is_none() {
+                let mut diagnostic = source_diagnostic(if remove { "removedRow" } else { "incompleteRow" });
+                diagnostic.entry_hint = Some(hint.clone());
+                snapshot.diagnostics.push(diagnostic);
+            }
+            snapshot.rows.push(AgentFileRow { entry_hint: hint, kind, raw: raw.clone(), launchable: hash.is_some(), base_hash: hash, editable });
+        }
+        snapshot.profiles_by_base_hash = sets.cells.into_iter().collect();
+        snapshot.profile_labels_by_base_hash = sets.labels.into_iter().collect();
+        snapshot.availability = SourceAvailability::Available;
+        Ok(())
+    })();
+    if let Err(reason) = decoded {
+        snapshot.availability = SourceAvailability::Invalid;
+        snapshot.capabilities = SourceCapabilities::default();
+        snapshot.rows.clear(); snapshot.profiles_by_base_hash.clear(); snapshot.profile_labels_by_base_hash.clear(); snapshot.profile_slots.clear();
+        let code = ["sourceProfileConflict", "invalidLegacyProfileOrphans", "duplicateJsonMember"].into_iter().find(|code| reason.contains(code)).unwrap_or("invalidSource");
+        let mut diagnostic = source_diagnostic(code);
+        if code == "sourceProfileConflict" { diagnostic.entry_hint = Some(reason); }
+        snapshot.diagnostics.push(diagnostic);
+    }
+    Ok(snapshot)
+}
+
+#[cfg(test)]
+pub(crate) fn list_agent_files(current: &AppSettings, path: &Path) -> Result<AgentFileSources, String> {
+    let context = SourceReadContext::from_settings(current, path).map_err(|_| "sourceContextUnavailable")?;
+    let sources = list_active_sources(&context).iter().map(|source| {
+        let snapshot = read_agent_file_snapshot(&context, source)?;
+        Ok(AgentFileSourceOption { source: snapshot.source, revision: snapshot.revision, context_revision: snapshot.context_revision,
+            format: snapshot.format, availability: snapshot.availability, capabilities: snapshot.capabilities, diagnostics: snapshot.diagnostics })
+    }).collect::<Result<Vec<_>, String>>()?;
+    agent_file_sources_reply(sources, current.agent_file_source_by_menu.clone().unwrap_or_default())
+}
+
+fn agent_file_sources_reply(mut sources: Vec<AgentFileSourceOption>, last_selected: AgentFileSourcePreferences) -> Result<AgentFileSources, String> {
+    sources.sort_by_key(|option| (match option.source.kind { SourceKind::RegisteredInstance => 0, SourceKind::CatalogBase => 1, SourceKind::CatalogProject => 2, SourceKind::CatalogPersonal => 3 }, option.source.context_root.clone()));
+    let mut active = AgentFileSourcePreferences::default();
+    let mut diagnostics = BTreeMap::new();
+    for (menu, remembered, selected) in [("settings", &last_selected.settings, &mut active.settings), ("picker", &last_selected.picker, &mut active.picker)] {
+        if let Some(remembered) = remembered {
+            if let Some(snapshot) = sources.iter().find(|snapshot| &snapshot.source == remembered) {
+                *selected = Some(remembered.clone());
+                if snapshot.availability != SourceAvailability::Available { diagnostics.insert(menu.to_owned(), snapshot.diagnostics.clone()); }
+            }
+            else { diagnostics.insert(menu.to_owned(), vec![source_diagnostic("rememberedSourceUnavailable")]); }
+        } else {
+            *selected = sources.iter().find(|s| s.source.kind == SourceKind::RegisteredInstance && s.availability == SourceAvailability::Available)
+                .or_else(|| sources.iter().find(|s| s.availability == SourceAvailability::Available)).map(|s| s.source.clone());
+        }
+    }
+    Ok(AgentFileSources { sources, last_selected, active_source_by_menu: active, menu_diagnostics: diagnostics })
+}
+
+pub(crate) fn prepare_agent_file_edits(before: &Value, registered: bool, edits: &AgentFileEdits) -> Result<Value, String> {
+    let mut incoming = project_physical_profiles(before, registered)?;
+    let key = if registered { "id" } else { "key" };
+    let rows = incoming.get_mut("agents").and_then(Value::as_array_mut).ok_or("invalidAgentsArray")?;
+    let mut seen = HashSet::new();
+    for edit in &edits.rows {
+        if edit.entry_hint.is_empty() || !seen.insert(&edit.entry_hint) { return Err("duplicateOrInvalidRowEdit".into()); }
+        if !registered { crate::config::coding_agents_catalog::validate_catalog_key(&edit.entry_hint)?; }
+        if edit.patch.contains_key("command") && edit.patch.contains_key("baseCommand") { return Err("ambiguousCommandEdit".into()); }
+        let index = rows.iter().position(|row| row.get(key).and_then(Value::as_str) == Some(&edit.entry_hint));
+        if matches!(edit.action, AgentFileRowAction::Delete) {
+            if !edit.patch.is_empty() { return Err("deletePatchNotEmpty".into()); }
+            rows.remove(index.ok_or("unknownEntryHint")?);
+            continue;
+        }
+        let mut row = index.map(|i| rows[i].clone()).unwrap_or_else(|| { let mut row = Map::new(); row.insert(key.into(), Value::String(edit.entry_hint.clone())); Value::Object(row) });
+        let object = row.as_object_mut().ok_or("invalidAgentRow")?;
+        for (field, value) in &edit.patch {
+            let common = ["label", "color", "command", "baseCommand", "envs", "instructionsFilename", "configSeed", "isolatedHome"];
+            let owned = common.contains(&field.as_str()) || (registered && ["preflight", "preflightTimeoutSeconds", "contextRegex", "backend", "order", "blockingMenus"].contains(&field.as_str())) || (!registered && ["description", "remove", "removable", "updateCommands", "autoUpdate", "idleBurst", "installCommands"].contains(&field.as_str()));
+            if !owned { return Err("uneditablePatchKey".into()); }
+            if value.is_null() {
+                if !["preflight", "preflightTimeoutSeconds", "instructionsFilename", "configSeed", "contextRegex", "order", "blockingMenus"].contains(&field.as_str()) { return Err("requiredFieldRemoval".into()); }
+                object.remove(field);
+            } else {
+                if field == "order" && value.as_u64().is_none_or(|order| order > u64::from(u32::MAX)) { return Err("invalidAgentOrder".into()); }
+                if field == "command" || field == "baseCommand" { object.remove("command"); object.remove("baseCommand"); }
+                object.insert(field.clone(), value.clone());
+            }
+        }
+        if index.is_none() && !registered {
+            let complete = serde_json::json!({"schemaVersion":2,"agents":[row.clone()]});
+            crate::config::coding_agents_catalog::parse_catalog_schema2(&serde_json::to_vec(&complete).map_err(|_| "invalidAgentRow")?).map_err(|_| "incompleteNewCatalogRow")?;
+        }
+        if let Some(index) = index { rows[index] = row; } else { rows.push(row); }
+    }
+    let mut canonical = canonical_profile_source(before, &incoming, registered)?;
+    let hashes = physical_profile_rows(&canonical, registered)?;
+    let owner = if registered { canonical.get_mut("codingAgentProfiles").and_then(Value::as_object_mut).ok_or("invalidProfileContainer")? } else { canonical.as_object_mut().ok_or("invalidSource")? };
+    let mut seen = HashSet::new();
+    for edit in &edits.profile_sets {
+        if !seen.insert(&edit.base_hash) { return Err("duplicateProfileEdit".into()); }
+        if !hashes.values().any(|hash| hash == &edit.base_hash) { return Err("unknownBaseHash".into()); }
+        if edit.labels.keys().any(|letter| !is_valid_profile_letter(letter)) { return Err("invalidProfileLetter".into()); }
+        let previous = owner.get("profilesByBaseHash").and_then(|sets| sets.get(&edit.base_hash));
+        let mut submitted = Map::new();
+        for (letter, raw) in &edit.cells {
+            if !is_valid_profile_letter(letter) { return Err("invalidProfileLetter".into()); }
+            let cell: ProfileCellConfig = serde_json::from_value(raw.clone()).map_err(|_| "invalidProfileCells")?;
+            let mut cell = serde_json::to_value(cell).map_err(|_| "invalidProfileCells")?;
+            let known = ["enabled", "command", "additionalArguments", "env", "notes", "preflight", "preflightTimeoutSeconds", "id_hash", "id_hash_debug"];
+            let old = previous.and_then(|set| set.get(letter)).and_then(Value::as_object);
+            for (field, value) in raw.as_object().ok_or("invalidProfileCells")? {
+                if !known.contains(&field.as_str()) && old.and_then(|old| old.get(field)) != Some(value) { return Err("uneditableProfileKey".into()); }
+            }
+            if let Some(old) = old {
+                for (field, value) in old { if !known.contains(&field.as_str()) { cell.as_object_mut().unwrap().insert(field.clone(), value.clone()); } }
+            }
+            submitted.insert(letter.clone(), cell);
+        }
+        let cells = normalized_profile_cells(Some(&Value::Object(submitted)))?;
+        owner.get_mut("profilesByBaseHash").and_then(Value::as_object_mut).ok_or("invalidProfileContainer")?.insert(edit.base_hash.clone(), cells);
+        owner.get_mut("profileLabelsByBaseHash").and_then(Value::as_object_mut).ok_or("invalidProfileContainer")?.insert(edit.base_hash.clone(), serde_json::to_value(&edit.labels).map_err(|_| "invalidProfileLabels")?);
+    }
+    if let Some(slots) = &edits.profile_slots {
+        if slots.keys().any(|letter| !is_valid_profile_letter(letter)) { return Err("invalidProfileLetter".into()); }
+        let mut replacement = Map::new();
+        for (letter, slot) in slots {
+            let mut raw = owner.get("profileSlots").and_then(|slots| slots.get(letter)).and_then(Value::as_object).cloned().unwrap_or_default();
+            raw.insert("label".into(), Value::String(slot.label.clone()));
+            replacement.insert(letter.clone(), Value::Object(raw));
+        }
+        owner.insert("profileSlots".into(), Value::Object(replacement));
+    }
+    let (agents, profiles) = agent_file_decode(&canonical, registered)?;
+    validate_agent_commands(&AppSettings { agents, coding_agent_profiles: profiles, ..AppSettings::default() })?;
+    Ok(canonical)
+}
+
+pub(crate) fn save_agent_file_locked(current: &AppSettings, guard: &mut SettingsOperationGuard<'_>, source: &SourceRef, expected: &SourceRevision, context_revision: &str, edits: &AgentFileEdits) -> Result<SelectedAgentFileSnapshot, String> {
+    let context = SourceReadContext::from_settings(current, guard.settings_path()).map_err(|_| "sourceContextUnavailable")?;
+    if context.revision != context_revision { return Err("staleSourceContext".into()); }
+    let snapshot = read_agent_file_snapshot(&context, source)?;
+    if &snapshot.revision != expected { return Err("staleSourceRevision".into()); }
+    if !snapshot.capabilities.editable_save { return Err("sourceReadOnlyOrUnavailable".into()); }
+    let registered = source.kind == SourceKind::RegisteredInstance;
+    if registered && (current.local_overlay_state.owns_top_level("agents") || current.local_overlay_state.owns_top_level("codingAgentProfiles")) { return Err("overlayOwnedGroups".into()); }
+    let path = context.locator(source).map_err(|_| "sourceContextUnavailable")?;
+    let bytes = agent_file_read(&path)?;
+    if &source_bytes_revision(&bytes) != expected { return Err("staleSourceRevision".into()); }
+    let before = crate::config::coding_agents_catalog::parse_strict_json(&bytes)?;
+    let candidate = prepare_agent_file_edits(&before, registered, edits)?;
+    if serde_json::to_vec_pretty(&candidate).map_err(|_| "invalidSource")?.len() > SETTINGS_CAPTURE_LIMIT { return Err("sourceTooLarge".into()); }
+    if registered {
+        guard.verify_agent_file_context(context_revision)?;
+        if &source_bytes_revision(&agent_file_read(&path)?) != expected { return Err("staleSourceRevision".into()); }
+        guard.publish(SettingsPublisher::AgentsSave, |_| write_value_atomic_labeled(&candidate, &path, &path).map(|_| ()).map_err(|e| e.to_string()))?;
+    } else {
+        return Err("catalogRequiresScopedOperation".into());
+    }
+    let snapshot = read_agent_file_snapshot(&context, source)?;
+    if snapshot.availability != SourceAvailability::Available { return Err("sourcePostPublicationUnavailable".into()); }
+    Ok(snapshot)
+}
+
+pub(crate) fn remember_agent_file_locked(current: &AppSettings, guard: &mut SettingsOperationGuard<'_>, menu: AgentFileSourceMenu, source: &SourceRef) -> Result<AgentFileSourcePreferences, String> {
+    let context = SourceReadContext::from_settings(current, guard.settings_path()).map_err(|_| "sourceContextUnavailable")?;
+    if !list_active_sources(&context).contains(source) { return Err("sourceAbsentOrForged".into()); }
+    let receipt = capture_registered_profile_gate(guard.settings_path())?;
+    let mut raw = captured_registered_profile_object(&receipt, guard.settings_path())?.ok_or("sourceContextUnavailable")?;
+    let bytes = receipt.iter().find(|(path, _)| path == guard.settings_path()).and_then(|(_, bytes)| bytes.as_ref()).ok_or("sourceContextUnavailable")?;
+    if agent_file_read(guard.settings_path())? != *bytes { return Err("staleSettingsRevision".into()); }
+    let mut preferences: AgentFileSourcePreferences = raw.get("agentFileSourceByMenu").cloned().map(serde_json::from_value).transpose().map_err(|_| "invalidSourcePreferences")?.unwrap_or_default();
+    match menu { AgentFileSourceMenu::Settings => preferences.settings = Some(source.clone()), AgentFileSourceMenu::Picker => preferences.picker = Some(source.clone()) }
+    raw.insert("agentFileSourceByMenu".into(), serde_json::to_value(&preferences).map_err(|_| "invalidSourcePreferences")?);
+    let raw = Value::Object(raw);
+    if serde_json::to_vec_pretty(&raw).map_err(|_| "invalidSourcePreferences")?.len() > SETTINGS_CAPTURE_LIMIT { return Err("sourceTooLarge".into()); }
+    guard.verify_agent_file_context(&context.revision)?;
+    if !list_active_sources(&context).contains(source) { return Err("sourceAbsentOrForged".into()); }
+    recheck_registered_profile_gate(&receipt)?;
+    if agent_file_read(guard.settings_path())? != *bytes { return Err("staleSettingsRevision".into()); }
+    guard.publish(SettingsPublisher::SettingsSave, |path| write_value_atomic_labeled(&raw, path, path).map(|_| ()).map_err(|e| e.to_string()))?;
+    agent_file_checkpoint("preference_published", guard.settings_path());
+    Ok(preferences)
+}
+
+pub(crate) async fn persist_agent_file_edits(owner: &SettingsState, source: SourceRef, expected: SourceRevision, context_revision: String, edits: AgentFileEdits) -> Result<AgentFileSaveReply, String> {
+    let owner = Arc::clone(owner);
+    tokio::task::spawn_blocking(move || {
+        if source.kind == SourceKind::CatalogPersonal && source.scope == SourceScope::Project {
+            return owner.save_catalog_source_blocking(source, expected, context_revision, edits);
+        }
+        let mut selected_context = None;
+        let report = owner.with_operation_blocking("save_agent_file_source", |current, guard| {
+            selected_context = SourceReadContext::from_settings(current, guard.settings_path()).ok();
+            save_agent_file_locked(current, guard, &source, &expected, &context_revision, &edits)
+        }).map_err(|_| "settingsOwnerUnavailable")?;
+        let snapshot = match report.value {
+            Some(snapshot) => Some(snapshot),
+            None => selected_context.as_ref().and_then(|context| read_agent_file_snapshot(context, &source).ok()),
+        };
+        let outcome = match report.outcome { OperationOutcome::Committed => AgentFileSaveOutcome::Committed, OperationOutcome::Rejected => AgentFileSaveOutcome::Rejected, OperationOutcome::PartialOrUnknown => AgentFileSaveOutcome::PartialOrUnknown };
+        let diagnostics = report.error.map(|reason| {
+            let code = ["staleSourceRevision", "staleSourceContext", "sourceProfileConflict", "overlayOwnedGroups", "catalogLockTimeout", "sourceReadOnlyOrUnavailable", "uneditablePatchKey", "unknownBaseHash"].into_iter().find(|code| reason.contains(code)).unwrap_or("sourceSaveFailed");
+            let mut diagnostic = source_diagnostic(code);
+            if code == "sourceProfileConflict" { diagnostic.entry_hint = Some(reason); }
+            vec![diagnostic]
+        }).unwrap_or_default();
+        Ok(AgentFileSaveReply { outcome, snapshot, effective_settings: owner.blocking_current_snapshot().ok(), diagnostics })
+    }).await.map_err(|_| "sourceWorkerFailed")?
+}
+
+#[cfg(test)]
+mod e2432_p02_physical_file_tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    fn write(path: &Path, value: &Value) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+    }
+
+    fn source() -> Value {
+        json!({"agents":[{"id":"same","label":"Own","color":"#123456","baseCommand":"tool","extension":{"keep":null}}],
+            "codingAgentProfiles":{"profilesByAgent":{"same":{"B":{"additionalArguments":"--own","opaque":{"keep":true}}}},"profileLabelsByAgent":{"same":{"B":"Own B"}}},
+            "unrelated":{"preserve":[1,null]}})
+    }
+
+    fn fixture() -> (tempfile::TempDir, PathBuf, Arc<SettingsOwner>) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        write(&path, &serde_json::to_value(AppSettings::default()).unwrap());
+        write(&agents_instance_path(&path), &source());
+        let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
+        (temp, path, owner)
+    }
+
+    fn selected(owner: &SettingsOwner, path: &Path) -> (SourceReadContext, SelectedAgentFileSnapshot) {
+        let current = owner.blocking_current_snapshot().unwrap();
+        let context = SourceReadContext::from_settings(&current, path).unwrap();
+        let snapshot = read_agent_file_snapshot(&context, &context.source(SourceKind::RegisteredInstance)).unwrap();
+        assert_eq!(snapshot.availability, SourceAvailability::Available);
+        (context, snapshot)
+    }
+
+    fn edits(value: Value) -> AgentFileEdits { serde_json::from_value(value).unwrap() }
+
+    #[test]
+    fn e2432_p02_registered_scoped_save_raw_alias_and_fresh_revision() {
+        let (_temp, path, owner) = fixture();
+        let (_, before) = selected(&owner, &path);
+        let main = std::fs::read(&path).unwrap();
+        let hash = configuration_identity("tool", &[]);
+        let edit = edits(json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"baseCommand":"tool --new"}}],"profileSets":[]}));
+        let report = owner.with_operation_blocking("p02-save", |current, guard| save_agent_file_locked(current, guard, &before.source, &before.revision, &before.context_revision, &edit)).unwrap();
+        assert_eq!(report.outcome, OperationOutcome::Committed);
+        let after = report.value.unwrap();
+        assert_ne!(before.revision, after.revision);
+        let raw: Value = serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+        assert_eq!(raw["unrelated"], source()["unrelated"]);
+        assert_eq!(raw["agents"][0]["extension"], source()["agents"][0]["extension"]);
+        assert_eq!(raw["codingAgentProfiles"]["profilesByBaseHash"][&hash]["B"]["opaque"], json!({"keep":true}));
+        let new_hash = configuration_identity("tool --new", &[]);
+        assert_eq!(raw["codingAgentProfiles"]["profilesByBaseHash"][&new_hash], raw["codingAgentProfiles"]["profilesByBaseHash"][&hash]);
+        assert!(raw["codingAgentProfiles"].get("profilesByAgent").is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), main);
+        assert!(!source_protocol_active());
+    }
+
+    #[test]
+    fn e2432_p02_cas_forgery_and_overlay_reject_before_publish() {
+        let (_temp, path, owner) = fixture();
+        let (_, snapshot) = selected(&owner, &path);
+        let bytes = std::fs::read(agents_instance_path(&path)).unwrap();
+        for case in 0..4 {
+            if case == 3 {
+                let overlay = path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+                write(&overlay, &json!({"agents":[{"id":"overlay","label":"Other","color":"red","baseCommand":"other"}]}));
+            }
+            let report = owner.with_operation_blocking("p02-reject", |current, guard| {
+                let mut source = snapshot.source.clone();
+                if case == 0 { source.context_root.push_str("-forged"); }
+                let current = current.clone();
+                let revision = if case == 1 { SourceRevision::Absent {} } else { snapshot.revision.clone() };
+                let context = if case == 2 { "stale" } else { &snapshot.context_revision };
+                let result = save_agent_file_locked(&current, guard, &source, &revision, context, &AgentFileEdits::default());
+                assert!(result.is_err());
+                assert_eq!(guard.effect(), OperationEffect::None);
+                result
+            }).unwrap();
+            assert_eq!(report.outcome, OperationOutcome::Rejected);
+            assert_eq!(std::fs::read(agents_instance_path(&path)).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn e2432_p02_inventory_keeps_instance_catalogs_under_primary_project() {
+        let (_temp, path, owner) = fixture();
+        let project = path.parent().unwrap().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let mut current = owner.blocking_current_snapshot().unwrap();
+        current.project_paths = vec![project.to_string_lossy().into_owned()];
+        let context = SourceReadContext::from_settings(&current, &path).unwrap();
+        let mut instance = context.clone();
+        instance.project = false;
+        instance.catalog_root = path.parent().unwrap().canonicalize().unwrap();
+        let catalog = json!({"schemaVersion":1,"agents":[{"key":"same","baseCommand":"tool","label":"Catalog","color":"blue"}]});
+        for ctx in [&context, &instance] {
+            for kind in [SourceKind::CatalogBase, SourceKind::CatalogPersonal] {
+                write(&ctx.locator(&ctx.source(kind)).unwrap(), &catalog);
+            }
+        }
+        write(&context.locator(&context.source(SourceKind::CatalogProject)).unwrap(), &catalog);
+        let listed = list_agent_files(&current, &path).unwrap();
+        assert_eq!(listed.sources.len(), 6);
+        assert_eq!(listed.sources.iter().filter(|s| s.source.scope == SourceScope::Instance).count(), 3);
+        assert_eq!(listed.sources.iter().filter(|s| s.capabilities.editable_save).count(), 2);
+        let absent = context.source(SourceKind::CatalogPersonal);
+        std::fs::remove_file(context.locator(&absent).unwrap()).unwrap();
+        assert_eq!(list_agent_files(&current, &path).unwrap().sources.len(), 5);
+        current.project_paths = vec![path.parent().unwrap().to_string_lossy().into_owned()];
+        let changed = SourceReadContext::from_settings(&current, &path).unwrap();
+        assert!(read_agent_file_snapshot(&changed, &absent).is_err());
+    }
+
+    #[test]
+    fn e2432_p02_preferences_independent_missing_retained_and_first_use_separate() {
+        let (_temp, path, owner) = fixture();
+        let (context, snapshot) = selected(&owner, &path);
+        let catalog_ref = context.source(SourceKind::CatalogPersonal);
+        let catalog_path = context.locator(&catalog_ref).unwrap();
+        write(&catalog_path, &json!({"schemaVersion":1,"agents":[]}));
+        let current = owner.blocking_current_snapshot().unwrap();
+        let first = list_agent_files(&current, &path).unwrap();
+        assert!(first.last_selected.settings.is_none());
+        assert_eq!(first.active_source_by_menu.settings, Some(snapshot.source.clone()));
+        let agents = std::fs::read(agents_instance_path(&path)).unwrap();
+        for (menu, source) in [(AgentFileSourceMenu::Settings, &snapshot.source), (AgentFileSourceMenu::Picker, &catalog_ref)] {
+            let report = owner.with_operation_blocking("p02-remember", |current, guard| remember_agent_file_locked(current, guard, menu, source)).unwrap();
+            assert_eq!(report.outcome, OperationOutcome::Committed);
+        }
+        assert_eq!(std::fs::read(agents_instance_path(&path)).unwrap(), agents);
+        std::fs::remove_file(&catalog_path).unwrap();
+        let current = owner.blocking_current_snapshot().unwrap();
+        let listed = list_agent_files(&current, &path).unwrap();
+        assert_eq!(listed.last_selected.picker, Some(catalog_ref.clone()));
+        assert!(listed.active_source_by_menu.picker.is_none());
+        assert_eq!(listed.active_source_by_menu.settings, Some(snapshot.source));
+        assert!(listed.menu_diagnostics.contains_key("picker"));
+        let bytes = std::fs::read(&path).unwrap();
+        let rejected = owner.with_operation_blocking("p02-absent-choice", |current, guard| {
+            let result = remember_agent_file_locked(current, guard, AgentFileSourceMenu::Picker, &catalog_ref);
+            assert_eq!(guard.effect(), OperationEffect::None);
+            result
+        }).unwrap();
+        assert_eq!(rejected.outcome, OperationOutcome::Rejected);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(read_agent_file_snapshot(&context, &catalog_ref).unwrap().tickets.is_empty());
+    }
+
+    #[test]
+    fn e2432_p02_nonregular_invalid_and_unreadable_are_diagnostic_options() {
+        let (_temp, path, owner) = fixture();
+        let (context, _) = selected(&owner, &path);
+        let source = context.source(SourceKind::CatalogPersonal);
+        let catalog = context.locator(&source).unwrap();
+        std::fs::create_dir_all(&catalog).unwrap();
+        let listed = list_agent_files(&owner.blocking_current_snapshot().unwrap(), &path).unwrap();
+        let invalid = listed.sources.iter().find(|s| s.source == source).unwrap();
+        assert_eq!(invalid.availability, SourceAvailability::Invalid);
+        assert!(!invalid.capabilities.available_read);
+        assert!(serde_json::to_value(invalid).unwrap().get("rows").is_none());
+        std::fs::remove_dir(&catalog).unwrap();
+        std::fs::write(&catalog, b"{broken").unwrap();
+        assert_eq!(read_agent_file_snapshot(&context, &source).unwrap().availability, SourceAvailability::Invalid);
+        std::fs::write(&catalog, br#"{"schemaVersion":9,"agents":[]}"#).unwrap();
+        assert_eq!(read_agent_file_snapshot(&context, &source).unwrap().availability, SourceAvailability::Invalid);
+        // Real sharing-denial (Windows), without links or permission-dependent root behavior.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let _held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&catalog).unwrap();
+            assert_eq!(read_agent_file_snapshot(&context, &source).unwrap().availability, SourceAvailability::Invalid);
+        }
+    }
+
+    #[test]
+    fn e2432_p02_partial_remove_rows_stay_raw_and_profile_deletion_is_hash_scoped() {
+        let (_temp, path, owner) = fixture();
+        let (context, _) = selected(&owner, &path);
+        let source = context.source(SourceKind::CatalogPersonal);
+        let catalog = context.locator(&source).unwrap();
+        let raw = json!({"schemaVersion":1,"agents":[
+            {"key":"same","baseCommand":"tool","label":"Own","color":"blue","unknown":{"keep":null}},
+            {"key":"partial","label":"Incomplete","unknown":42},
+            {"key":"removed","remove":true,"opaque":[null]}],"extension":{"keep":true},
+            "codingAgentProfiles":{"same":{"B":{"notes":"own","opaque":42}}},"profileLabels":{"same":{"B":"Own"}}});
+        write(&catalog, &raw);
+        let snapshot = read_agent_file_snapshot(&context, &source).unwrap();
+        assert_eq!(snapshot.availability, SourceAvailability::Available);
+        assert_eq!(snapshot.rows.iter().filter(|row| row.launchable).count(), 1);
+        assert!(snapshot.rows[1].base_hash.is_none());
+        assert!(snapshot.rows[2].base_hash.is_none());
+        let hash = configuration_identity("tool", &[]);
+        let edit = edits(json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{},"labels":{}}]}));
+        let after = prepare_agent_file_edits(&raw, false, &edit).unwrap();
+        assert_eq!(after["agents"], raw["agents"]);
+        assert_eq!(after["extension"], raw["extension"]);
+        assert!(after["profilesByBaseHash"][&hash].get("B").is_none());
+        assert!(after["profileLabelsByBaseHash"][&hash].as_object().unwrap().is_empty());
+        let bad = edits(json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"id":"forged"}}],"profileSets":[]}));
+        assert!(prepare_agent_file_edits(&raw, false, &bad).is_err());
+    }
+    #[test]
+    fn e2432_p02_profile_edits_preserve_unknowns_and_reject_duplicate_or_orphan_targets() {
+        let raw = source();
+        let hash = configuration_identity("tool", &[]);
+        let valid = edits(json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{"B":{"additionalArguments":"--edited"}},"labels":{"B":"Edited"}}]}));
+        let after = prepare_agent_file_edits(&raw, true, &valid).unwrap();
+        assert_eq!(after["codingAgentProfiles"]["profilesByBaseHash"][&hash]["B"]["opaque"], json!({"keep":true}));
+        for bad in [
+            json!({"rows":[],"profileSets":[{"baseHash":"unknown","cells":{},"labels":{}}]}),
+            json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{},"labels":{}},{"baseHash":hash,"cells":{},"labels":{}}]}),
+            json!({"rows":[{"entryHint":"same","action":"delete","patch":{}},{"entryHint":"same","action":"delete","patch":{}}],"profileSets":[]}),
+            json!({"rows":[],"profileSets":[{"baseHash":hash,"cells":{"B":{"newUnknown":true}},"labels":{}}]}),
+        ] {
+            assert!(prepare_agent_file_edits(&raw, true, &edits(bad)).is_err());
+        }
+        let deletion = edits(json!({"rows":[{"entryHint":"same","action":"delete","patch":{}}],"profileSets":[]}));
+        let removed = prepare_agent_file_edits(&after, true, &deletion).unwrap();
+        assert!(removed["agents"].as_array().unwrap().is_empty());
+        assert_eq!(removed["codingAgentProfiles"]["profilesByBaseHash"], after["codingAgentProfiles"]["profilesByBaseHash"]);
+    }
+
+    #[test]
+    fn e2432_p02_registered_atomic_failure_retains_actual_revision_and_owner() {
+        let (_temp, path, owner) = fixture();
+        let (_, before) = selected(&owner, &path);
+        let bytes = std::fs::read(agents_instance_path(&path)).unwrap();
+        let edit = edits(json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]}));
+        let report = owner.with_operation_blocking("p02-registered-atomic-failure", |current, guard| {
+            PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = Some((agents_instance_path(&path), SettingsSaveStage::TempCreate)));
+            let result = save_agent_file_locked(current, guard, &before.source, &before.revision, &before.context_revision, &edit);
+            PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+            assert_eq!(guard.effect(), OperationEffect::Possible);
+            result
+        }).unwrap();
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert_eq!(std::fs::read(agents_instance_path(&path)).unwrap(), bytes);
+        let (_, actual) = selected(&owner, &path);
+        assert_eq!(actual.revision, before.revision);
+        assert_eq!(actual.rows[0].raw["label"], json!("Own"));
+    }
+}
+
+// Source diagnostics retain bounded observations; Failure never means absence.
+#[derive(Debug, Clone)]
+enum BoundedSourceObservation {
+    Absent,
+    Bytes { bytes: Vec<u8>, witness: crate::path_identity::VerifiedPathIdentity },
+    Failure(String),
+}
+
+impl BoundedSourceObservation {
+    fn bytes(&self) -> Option<&[u8]> {
+        match self { Self::Bytes { bytes, witness } => { let _captured_identity = witness; Some(bytes) }, _ => None }
+    }
+
+    fn profile_input(&self) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Self::Absent => Ok(None),
+            Self::Bytes { bytes, .. } => Ok(Some(bytes.clone())),
+            Self::Failure(kind) => Err(kind.clone()),
+        }
+    }
+}
+
+fn observe_agent_file(path: &Path) -> BoundedSourceObservation {
+    agent_file_checkpoint("observe", path);
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return BoundedSourceObservation::Absent,
+        Err(error) => return BoundedSourceObservation::Failure(io_error_kind_as_str(error.kind()).into()),
+        Ok(_) => {}
+    }
+    match crate::path_identity::read_bounded_regular(path, SETTINGS_CAPTURE_LIMIT) {
+        Ok((bytes, witness)) => BoundedSourceObservation::Bytes { bytes, witness },
+        Err(_) => BoundedSourceObservation::Failure("sourceReadFailed".into()),
+    }
+}
+
+fn same_captured_source(left: &CapturedSource, right: &CapturedSource) -> bool {
+    match (left, right) {
+        (CapturedSource::Absent, CapturedSource::Absent) => true,
+        (CapturedSource::Present { bytes: a, witness: aw }, CapturedSource::Present { bytes: b, witness: bw }) => a == b && crate::path_identity::same_object(aw, bw),
+        _ => false,
+    }
+}
+
+// Authorization only: never a composed or adoptable AppSettings projection.
+struct AgentFileAuthority {
+    base: CapturedSource,
+    project_paths: CapturedSource,
+    context: SourceReadContext,
+    root: crate::path_identity::RetainedDirectory,
+    raw_main: Map<String, Value>,
+}
+
+impl AgentFileAuthority {
+    fn capture(guard: &SettingsOperationGuard<'_>) -> Result<Self, String> {
+        guard.lease.verify().map_err(|_| "ownerIntegrityLost")?;
+        let path = guard.settings_path();
+        let destination = project_paths_path(path);
+        let base = capture_source_file(path, guard.counters).map_err(|_| "sourceContextUnavailable")?;
+        let project_paths = capture_source_file(&destination, guard.counters).map_err(|_| "sourceContextUnavailable")?;
+        let legacy = base.bytes().map(|bytes| raw_project_source_from_bytes(bytes.to_vec(), path, path, true)).transpose().map_err(|_| "sourceContextUnavailable")?;
+        let project = project_paths.bytes().map(|bytes| raw_project_source_from_bytes(bytes.to_vec(), &destination, &destination, false)).transpose().map_err(|_| "sourceContextUnavailable")?;
+        let selected = select_project_source_from_raw(legacy, project, path, &destination, &destination).map_err(|_| "sourceContextUnavailable")?;
+        let raw_main = selected.legacy.as_ref().map(|source| source.object.clone()).unwrap_or_default();
+        let decoded = decode_project_state(&selected.projection, production_instance_base().as_deref(), &projects::FsCandidateResolver);
+        if decoded.has_structural() { return Err("sourceContextUnavailable".into()); }
+        let primary = decoded.active_selected().into_iter().next().or(decoded.selected_head).map(PathBuf::from);
+        let context = SourceReadContext::from_primary(path, primary).map_err(|_| "sourceContextUnavailable")?;
+        let root = crate::path_identity::retain_directory(&context.catalog_root).map_err(|_| "sourceContextUnavailable")?;
+        Ok(Self { base, project_paths, context, root, raw_main })
+    }
+
+    fn recheck(&self, guard: &SettingsOperationGuard<'_>) -> Result<(), String> {
+        guard.lease.verify().map_err(|_| "ownerIntegrityLost")?;
+        self.root.verify_current().map_err(|_| "staleSourceContext")?;
+        let current = Self::capture(guard)?;
+        if self.context != current.context || !same_captured_source(&self.base, &current.base) || !same_captured_source(&self.project_paths, &current.project_paths) {
+            return Err("staleSourceContext".into());
+        }
+        Ok(())
+    }
+
+    fn preferences(&self) -> Result<AgentFileSourcePreferences, String> {
+        self.raw_main.get("agentFileSourceByMenu").cloned().map(serde_json::from_value).transpose().map_err(|_| "invalidSourcePreferences".into()).map(|value| value.unwrap_or_default())
+    }
+
+    fn registered_validation(&self) -> (BoundedSourceObservation, RegisteredProfileCapture) {
+        let path = &self.context.settings_path;
+        let registered = observe_agent_file(&agents_instance_path(path));
+        let overlay_path = path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+        let overlay = observe_agent_file(&overlay_path);
+        let inputs = vec![(path.clone(), Ok(self.base.bytes().map(<[u8]>::to_vec))), (agents_instance_path(path), registered.profile_input()), (overlay_path, overlay.profile_input())];
+        (registered, classify_registered_profile_inputs(path, inputs))
+    }
+}
+
+pub(crate) enum AgentFileReadRequest { List, Read(SourceRef) }
+pub(crate) enum AgentFileReadReply { List(AgentFileSources), Read(SelectedAgentFileSnapshot) }
+
+impl SettingsOwner {
+    pub(crate) async fn read_agent_files(self: &Arc<Self>, request: AgentFileReadRequest) -> Result<AgentFileReadReply, String> {
+        let owner = Arc::clone(self);
+        tokio::task::spawn_blocking(move || owner.read_agent_files_blocking(request)).await.map_err(|_| "sourceWorkerFailed")?
+    }
+
+    fn read_agent_files_blocking(&self, request: AgentFileReadRequest) -> Result<AgentFileReadReply, String> {
+        let _admission = self.admit_operation().map_err(|_| "settingsOwnerUnavailable")?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _state = self.settings.blocking_write();
+            let lease = self.lease_guard();
+            let lease = lease.as_ref().ok_or("settingsOwnerUnavailable")?;
+            let guard = self.operation_guard(lease).map_err(|_| "ownerIntegrityLost")?;
+            self.revalidate().map_err(|_| "settingsOwnerUnavailable")?;
+            let authority = AgentFileAuthority::capture(&guard)?;
+            let (registered, validation) = authority.registered_validation();
+            agent_file_checkpoint("diagnostic_captured", guard.settings_path());
+            let snapshot = |source: &SourceRef| -> Result<SelectedAgentFileSnapshot, String> {
+                let registered_source = source.kind == SourceKind::RegisteredInstance;
+                let path = authority.context.locator(source).map_err(|_| "sourceContextUnavailable")?;
+                let observed = if registered_source { registered.clone() } else { observe_agent_file(&path) };
+                let mut result = snapshot_from_captured_source(&authority.context, source, &observed, registered_source.then_some(&validation))?;
+                if validation.problems.iter().any(|problem| !problem.ordinary_participant) { result.diagnostics.push(source_diagnostic("overlayUnavailable")); }
+                Ok(result)
+            };
+            let reply = match request {
+                AgentFileReadRequest::Read(source) => AgentFileReadReply::Read(snapshot(&source)?),
+                AgentFileReadRequest::List => {
+                    let sources = list_active_sources(&authority.context).iter().map(|source| {
+                        let s = snapshot(source)?;
+                        Ok(AgentFileSourceOption { source: s.source, revision: s.revision, context_revision: s.context_revision, format: s.format, availability: s.availability, capabilities: s.capabilities, diagnostics: s.diagnostics })
+                    }).collect::<Result<Vec<_>, String>>()?;
+                    AgentFileReadReply::List(agent_file_sources_reply(sources, authority.preferences()?)?)
+                }
+            };
+            authority.recheck(&guard)?;
+            self.revalidate().map_err(|_| "settingsOwnerUnavailable")?;
+            Ok(reply)
+        })).map_err(|_| "sourceWorkerFailed".to_owned())?
+    }
+}
+
+// Constructed only while the closed catalog operation holds owner authority.
+pub(crate) struct CatalogSourceOperationGuard<'op, 'lease> {
+    owner: &'op SettingsOwner,
+    guard: &'op mut SettingsOperationGuard<'lease>,
+    authority: AgentFileAuthority,
+    source: SourceRef,
+    path: PathBuf,
+    expected: SourceRevision,
+    adopted: AppSettings,
+}
+
+impl CatalogSourceOperationGuard<'_, '_> {
+    pub(crate) fn target(&self) -> &Path { &self.path }
+    pub(crate) fn effect(&self) -> OperationEffect { self.guard.effect() }
+
+    pub(crate) fn prepare(&self, edits: &AgentFileEdits) -> Result<Vec<u8>, String> {
+        let observation = observe_agent_file(&self.path);
+        let snapshot = snapshot_from_captured_source(&self.authority.context, &self.source, &observation, None)?;
+        if snapshot.revision != self.expected { return Err("staleSourceRevision".into()); }
+        if !snapshot.capabilities.editable_save { return Err("sourceReadOnlyOrUnavailable".into()); }
+        let before = crate::config::coding_agents_catalog::parse_strict_json(observation.bytes().ok_or("sourceReadFailed")?)?;
+        let candidate = prepare_agent_file_edits(&before, false, edits)?;
+        let encoded = serde_json::to_vec_pretty(&candidate).map_err(|_| "invalidSource")?;
+        if encoded.len() > SETTINGS_CAPTURE_LIMIT { return Err("sourceTooLarge".into()); }
+        Ok(encoded)
+    }
+
+    pub(crate) fn recheck(&self) -> Result<(), String> {
+        agent_file_checkpoint("catalog_pre_recheck", &self.path);
+        self.authority.recheck(self.guard)?;
+        self.owner.revalidate().map_err(|_| "settingsOwnerUnavailable")?;
+        let path = self.authority.context.locator(&self.source).map_err(|_| "sourceContextUnavailable")?;
+        if path != self.path { return Err("staleSourceContext".into()); }
+        let observation = observe_agent_file(&path);
+        let bytes = observation.bytes().ok_or("sourceReadFailed")?;
+        if source_bytes_revision(bytes) != self.expected { return Err("staleSourceRevision".into()); }
+        Ok(())
+    }
+
+    pub(crate) fn publish(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let path = &self.path;
+        self.guard.publish(SettingsPublisher::AgentsSave, |_| {
+            agent_file_checkpoint("catalog_publish", path);
+            crate::config::coding_agents_catalog::replace_selected_personal_bytes(path, bytes)
+        })
+    }
+
+    pub(crate) fn finish(&self, mut outcome: AgentFileSaveOutcome, reason: Option<&str>) -> AgentFileSaveReply {
+        agent_file_checkpoint("catalog_before_reread", &self.path);
+        let observed = observe_agent_file(&self.path);
+        let mut snapshot = snapshot_from_captured_source(&self.authority.context, &self.source, &observed, None).ok();
+        let mut diagnostics = vec![source_diagnostic("effectiveSettingsUnchanged")];
+        if let Some(reason) = reason {
+            let code = ["staleSourceRevision", "staleSourceContext", "sourceProfileConflict", "invalidLegacyProfileOrphans", "duplicateJsonMember", "sourceReadOnlyOrUnavailable", "catalogLockTimeout", "uneditablePatchKey", "unknownBaseHash"].into_iter().find(|code| reason.contains(code)).unwrap_or("catalogSaveFailed");
+            let mut diagnostic = source_diagnostic(code);
+            if code == "sourceProfileConflict" { diagnostic.entry_hint = Some(reason.to_owned()); }
+            diagnostics.push(diagnostic);
+        }
+        let authority = self.authority.recheck(self.guard);
+        let integrity_lost = matches!(&authority, Err(reason) if reason == "ownerIntegrityLost");
+        if integrity_lost { self.owner.mark_invalid("catalog-owner-integrity"); }
+        let ready = self.owner.revalidate().is_ok();
+        if authority.is_err() || !ready {
+            diagnostics.push(source_diagnostic(if integrity_lost { "ownerIntegrityLost" } else { "sourceContextUnavailable" }));
+            if let Some(snapshot) = snapshot.as_mut() {
+                snapshot.availability = SourceAvailability::ContextUnavailable;
+                snapshot.capabilities = SourceCapabilities::default();
+                snapshot.rows.clear(); snapshot.profiles_by_base_hash.clear(); snapshot.profile_labels_by_base_hash.clear(); snapshot.profile_slots.clear(); snapshot.tickets.clear();
+            }
+            outcome = if self.effect() == OperationEffect::Possible { AgentFileSaveOutcome::PartialOrUnknown } else { AgentFileSaveOutcome::Rejected };
+        }
+        if outcome == AgentFileSaveOutcome::Committed && snapshot.as_ref().is_none_or(|s| s.availability != SourceAvailability::Available) {
+            outcome = AgentFileSaveOutcome::PartialOrUnknown;
+            diagnostics.push(source_diagnostic("catalogRereadUnavailable"));
+        }
+        AgentFileSaveReply { outcome, snapshot, effective_settings: (ready && !integrity_lost).then(|| self.adopted.clone()), diagnostics }
+    }
+
+    pub(crate) fn interrupted(&self) -> AgentFileSaveReply {
+        AgentFileSaveReply { outcome: if self.effect() == OperationEffect::Possible { AgentFileSaveOutcome::PartialOrUnknown } else { AgentFileSaveOutcome::Rejected }, snapshot: None, effective_settings: None, diagnostics: vec![source_diagnostic("catalogRereadUnavailable")] }
+    }
+}
+
+impl SettingsOwner {
+    pub(crate) fn save_catalog_source_blocking(&self, source: SourceRef, expected: SourceRevision, context_revision: String, edits: AgentFileEdits) -> Result<AgentFileSaveReply, String> {
+        let _admission = self.admit_operation().map_err(|_| "settingsOwnerUnavailable")?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let state = self.settings.blocking_write();
+            let lease = self.lease_guard();
+            let lease = lease.as_ref().ok_or("settingsOwnerUnavailable")?;
+            let mut guard = self.operation_guard(lease).map_err(|error| {
+                if matches!(error, SettingsOwnerError::Lifecycle(_)) { self.mark_invalid("catalog-owner-integrity"); "ownerIntegrityLost" } else { "settingsOwnerUnavailable" }
+            })?;
+            self.revalidate().map_err(|_| "settingsOwnerUnavailable")?;
+            let authority = match AgentFileAuthority::capture(&guard) {
+                Ok(authority) => authority,
+                Err(reason) => {
+                    if reason == "ownerIntegrityLost" { self.mark_invalid("catalog-owner-integrity"); }
+                    return Ok(AgentFileSaveReply { outcome: AgentFileSaveOutcome::Rejected, snapshot: None, effective_settings: (self.revalidate().is_ok()).then(|| (*state).clone()), diagnostics: vec![source_diagnostic(&reason)] });
+                }
+            };
+            if source.scope != SourceScope::Project || source.kind != SourceKind::CatalogPersonal || context_revision != authority.context.revision {
+                return Ok(AgentFileSaveReply { outcome: AgentFileSaveOutcome::Rejected, snapshot: None, effective_settings: Some((*state).clone()), diagnostics: vec![source_diagnostic("sourceContextUnavailable")] });
+            }
+            let path = match authority.context.locator(&source) {
+                Ok(path) => path,
+                Err(_) => return Ok(AgentFileSaveReply { outcome: AgentFileSaveOutcome::Rejected, snapshot: None, effective_settings: Some((*state).clone()), diagnostics: vec![source_diagnostic("sourceContextUnavailable")] }),
+            };
+            let mut proof = CatalogSourceOperationGuard { owner: self, guard: &mut guard, authority, source, path, expected, adopted: (*state).clone() };
+            agent_file_checkpoint("catalog_authorized", proof.target());
+            Ok(crate::config::coding_agents_catalog::publish_selected_personal(&mut proof, &edits))
+        })).unwrap_or_else(|_| Ok(AgentFileSaveReply { outcome: AgentFileSaveOutcome::Rejected, snapshot: None, effective_settings: None, diagnostics: vec![source_diagnostic("catalogSetupPanicked")] }))
+    }
+}
+
+#[cfg(test)]
+type AgentFileTestHook = Box<dyn FnMut(&str, &Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static AGENT_FILE_CHECKPOINT: std::cell::RefCell<Option<AgentFileTestHook>> = const { std::cell::RefCell::new(None) };
+}
+
+fn agent_file_checkpoint(stage: &str, path: &Path) {
+    #[cfg(test)]
+    AGENT_FILE_CHECKPOINT.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() { hook(stage, path); }
+    });
+    #[cfg(not(test))]
+    let _ = (stage, path);
+}
+
+#[cfg(test)]
+mod e2432_p02_closed_owner_tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    struct Fixture {
+        path: PathBuf,
+        catalog: PathBuf,
+        owner: Arc<SettingsOwner>,
+        source: SourceRef,
+        snapshot: SelectedAgentFileSnapshot,
+        _temp: tempfile::TempDir,
+    }
+
+    fn write(path: &Path, value: &Value) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+    }
+
+    fn fixture() -> Fixture {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        let project = temp.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let mut settings = AppSettings::default();
+        settings.project_paths = vec![project.to_string_lossy().into_owned()];
+        write(&path, &serde_json::to_value(settings).unwrap());
+        write(&agents_instance_path(&path), &json!({"agents":[{"id":"own","label":"Own","color":"red","baseCommand":"tool"}]}));
+        let catalog = crate::config::coding_agents_catalog::independent_catalog_path(&project.join(".ac"), SourceKind::CatalogPersonal).unwrap();
+        write(&catalog, &json!({"schemaVersion":1,"agents":[{"key":"own","baseCommand":"catalog-tool","label":"Catalog","color":"blue","unknown":[null]}],"extension":{"keep":true}}));
+        let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
+        let list = match owner.read_agent_files_blocking(AgentFileReadRequest::List).unwrap() { AgentFileReadReply::List(list) => list, _ => panic!("list") };
+        let source = list.sources.into_iter().find(|s| s.source.scope == SourceScope::Project && s.source.kind == SourceKind::CatalogPersonal).unwrap().source;
+        let snapshot = match owner.read_agent_files_blocking(AgentFileReadRequest::Read(source.clone())).unwrap() { AgentFileReadReply::Read(snapshot) => snapshot, _ => panic!("snapshot") };
+        Fixture { _temp: temp, path, catalog, owner, source, snapshot }
+    }
+
+    fn save(f: &Fixture) -> AgentFileSaveReply {
+        f.owner.save_catalog_source_blocking(f.source.clone(), f.snapshot.revision.clone(), f.snapshot.context_revision.clone(), AgentFileEdits::default()).unwrap()
+    }
+
+    #[test]
+    fn e2432_p02_closed_catalog_isolates_registered_failure_and_preserves_owner() {
+        for nonregular in [false, true] {
+            let mut f = fixture();
+            let registered = agents_instance_path(&f.path);
+            if nonregular { std::fs::remove_file(&registered).unwrap(); std::fs::create_dir(&registered).unwrap(); }
+            else {
+                std::fs::write(&registered, b"{malformed").unwrap();
+                f.owner.drain_blocking(Duration::from_secs(1));
+                f.owner = SettingsOwner::open_active(&f.path, Duration::from_secs(1)).unwrap();
+            }
+            let adopted = serde_json::to_value(f.owner.blocking_current_snapshot().unwrap()).unwrap();
+            let epoch = f.owner.control().epoch;
+            let main_before = std::fs::read(&f.path).unwrap();
+            let listed = match f.owner.read_agent_files_blocking(AgentFileReadRequest::List).unwrap() { AgentFileReadReply::List(listed) => listed, _ => panic!("list") };
+            let registered_source = listed.sources.iter().find(|s| s.source.kind == SourceKind::RegisteredInstance).unwrap();
+            assert_eq!(registered_source.availability, SourceAvailability::Invalid);
+            let actual = match f.owner.read_agent_files_blocking(AgentFileReadRequest::Read(registered_source.source.clone())).unwrap() { AgentFileReadReply::Read(snapshot) => snapshot, _ => panic!("snapshot") };
+            assert!(actual.rows.is_empty() && actual.tickets.is_empty());
+            let committed = save(&f);
+            assert_eq!(committed.outcome, AgentFileSaveOutcome::Committed);
+            let disk = std::fs::read(&f.catalog).unwrap();
+            assert_eq!(committed.snapshot.unwrap().revision, source_bytes_revision(&disk));
+            assert_eq!(serde_json::to_value(committed.effective_settings.unwrap()).unwrap(), adopted);
+            assert!(committed.diagnostics.iter().any(|d| d.code == "effectiveSettingsUnchanged"));
+            assert_eq!(f.owner.control().epoch, epoch);
+            assert_eq!(serde_json::to_value(f.owner.blocking_current_snapshot().unwrap()).unwrap(), adopted);
+            let mut called = false;
+            let rejected = f.owner.with_operation_blocking("p02-preference-participants", |current, guard| { called = true; remember_agent_file_locked(current, guard, AgentFileSourceMenu::Picker, &f.source) });
+            assert!(rejected.is_err());
+            assert!(!called);
+            assert_eq!(std::fs::read(&f.path).unwrap(), main_before);
+            if nonregular { assert!(registered.is_dir()); } else { assert_eq!(std::fs::read(registered).unwrap(), b"{malformed"); }
+        }
+    }
+
+    #[test]
+    fn e2432_p02_authority_duplicates_and_syntax_refuse_public_owner_paths() {
+        for sidecar in [false, true] {
+            let f = fixture();
+            let target = if sidecar { project_paths_path(&f.path) } else { f.path.clone() };
+            let original = std::fs::read(&f.catalog).unwrap();
+            let main = std::fs::read(&f.path).unwrap();
+            if sidecar { std::fs::write(&target, br#"{"projectPaths":[],"unrelated":1,"unrelated":2}"#).unwrap(); }
+            else {
+                let mut bytes = main.clone(); bytes.pop(); bytes.extend_from_slice(br#", "agentFileSourceByMenu":{}, "agentFileSourceByMenu":{}}"#);
+                std::fs::write(&target, &bytes).unwrap();
+            }
+            let bad = std::fs::read(&target).unwrap();
+            assert!(f.owner.read_agent_files_blocking(AgentFileReadRequest::List).is_err());
+            let rejected = save(&f);
+            assert_eq!(rejected.outcome, AgentFileSaveOutcome::Rejected);
+            assert_eq!(std::fs::read(&f.catalog).unwrap(), original);
+            assert_eq!(std::fs::read(&target).unwrap(), bad);
+            std::fs::write(&target, b"{").unwrap();
+            assert!(f.owner.read_agent_files_blocking(AgentFileReadRequest::Read(f.source.clone())).is_err());
+            assert_eq!(save(&f).outcome, AgentFileSaveOutcome::Rejected);
+        }
+    }
+
+    #[test]
+    fn e2432_p02_captured_validation_has_no_participant_reread() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let f = fixture();
+        let registered = agents_instance_path(&f.path);
+        let overlay = f.path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+        write(&overlay, &json!({"codingAgentProfiles":{"profilesByAgent":{}}}));
+        let context = SourceReadContext::from_settings(&f.owner.blocking_current_snapshot().unwrap(), &f.path).unwrap();
+        let registered_ref = context.source(SourceKind::RegisteredInstance);
+        let captured = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&captured);
+        let registered_path = registered.clone(); let overlay_path = overlay.clone();
+        AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = Some(Box::new(move |stage, path| {
+            if stage == "diagnostic_captured" {
+                flag.set(true);
+                for participant in [&registered_path, &overlay_path] { std::fs::remove_file(participant).unwrap(); std::fs::create_dir(participant).unwrap(); }
+            } else if stage == "observe" && flag.get() && (path == registered_path.as_path() || path == overlay_path.as_path()) { panic!("unexpected participant read"); }
+        })));
+        let reply = f.owner.read_agent_files_blocking(AgentFileReadRequest::Read(registered_ref));
+        AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);
+        let snapshot = match reply.unwrap() { AgentFileReadReply::Read(snapshot) => snapshot, _ => panic!("snapshot") };
+        assert!(captured.get());
+        assert_eq!(snapshot.availability, SourceAvailability::Available);
+        assert_eq!(snapshot.rows[0].raw["baseCommand"], json!("tool"));
+        assert!(registered.is_dir() && overlay.is_dir());
+        let inputs = vec![(f.path.clone(), Ok(Some(std::fs::read(&f.path).unwrap()))), (registered, Ok(Some(b"{".to_vec()))), (overlay, Ok(Some(br#"{"agents":[],"unknown":1,"unknown":2}"#.to_vec())))];
+        let validation = classify_registered_profile_inputs(&f.path, inputs);
+        assert!(validation.problems.iter().any(|p| p.kind == RegisteredProfileProblemKind::JsonSyntax));
+        assert!(validation.problems.iter().any(|p| p.kind == RegisteredProfileProblemKind::DuplicateMember));
+    }
+
+    #[test]
+    fn e2432_p02_catalog_prepublication_authority_and_source_races_reject() {
+        for change_main in [false, true] {
+            let f = fixture();
+            let path = if change_main { f.path.clone() } else { f.catalog.clone() };
+            let mut raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            raw["externalChange"] = json!(true);
+            let injected = serde_json::to_vec(&raw).unwrap();
+            let bytes = injected.clone();
+            let old_catalog = std::fs::read(&f.catalog).unwrap();
+            AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = Some(Box::new(move |stage, _| {
+                if stage == "catalog_pre_recheck" { std::fs::write(&path, &bytes).unwrap(); }
+            })));
+            let rejected = save(&f);
+            AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);
+            assert_eq!(rejected.outcome, AgentFileSaveOutcome::Rejected);
+            if change_main { assert_eq!(std::fs::read(&f.catalog).unwrap(), old_catalog); }
+            else { assert_eq!(std::fs::read(&f.catalog).unwrap(), injected); }
+        }
+    }
+
+    #[test]
+    fn e2432_p02_catalog_postpossible_panic_and_reread_failure_are_uncertain() {
+        for panic_publish in [false, true] {
+            let f = fixture();
+            let epoch = f.owner.control().epoch;
+            let adopted = serde_json::to_value(f.owner.blocking_current_snapshot().unwrap()).unwrap();
+            let target = f.catalog.clone();
+            let original_revision = f.snapshot.revision.clone();
+            AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = Some(Box::new(move |stage, _| {
+                if panic_publish && stage == "catalog_publish" { panic!("publisher interruption"); }
+                if !panic_publish && stage == "catalog_before_reread" { std::fs::remove_file(&target).unwrap(); std::fs::create_dir(&target).unwrap(); }
+            })));
+            let uncertain = save(&f);
+            AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);
+            assert_eq!(uncertain.outcome, AgentFileSaveOutcome::PartialOrUnknown);
+            assert_eq!(f.owner.control().epoch, epoch);
+            assert_eq!(f.owner.control().availability, SettingsAvailability::Ready);
+            assert_eq!(serde_json::to_value(f.owner.blocking_current_snapshot().unwrap()).unwrap(), adopted);
+            if panic_publish { assert_eq!(uncertain.snapshot.unwrap().revision, original_revision); }
+            else { assert_eq!(uncertain.snapshot.unwrap().availability, SourceAvailability::Invalid); }
+        }
+    }
+
+    #[test]
+    fn e2432_p02_preferences_invalid_catalog_fresh_other_menu_and_missing_ref() {
+        let f = fixture();
+        let sidecar_before = std::fs::read(agents_instance_path(&f.path)).unwrap();
+        let context = SourceReadContext::from_settings(&f.owner.blocking_current_snapshot().unwrap(), &f.path).unwrap();
+        let registered = context.source(SourceKind::RegisteredInstance);
+        let mut raw: Value = serde_json::from_slice(&std::fs::read(&f.path).unwrap()).unwrap();
+        raw["agentFileSourceByMenu"] = json!({"picker":registered});
+        write(&f.path, &raw);
+        // Existing invalid catalog is an option, not a preference-write participant.
+        std::fs::write(&f.catalog, b"{").unwrap();
+        let report = f.owner.with_operation_blocking("p02-preference-invalid-catalog", |current, guard| remember_agent_file_locked(current, guard, AgentFileSourceMenu::Settings, &f.source)).unwrap();
+        assert_eq!(report.outcome, OperationOutcome::Committed);
+        let saved: Value = serde_json::from_slice(&std::fs::read(&f.path).unwrap()).unwrap();
+        assert_eq!(saved["agentFileSourceByMenu"]["picker"], json!(registered));
+        assert_eq!(saved["agentFileSourceByMenu"]["settings"], json!(f.source));
+        assert_eq!(std::fs::read(agents_instance_path(&f.path)).unwrap(), sidecar_before);
+        let list = match f.owner.read_agent_files_blocking(AgentFileReadRequest::List).unwrap() { AgentFileReadReply::List(list) => list, _ => panic!("list") };
+        assert_eq!(list.active_source_by_menu.settings, Some(f.source.clone()));
+        assert!(list.menu_diagnostics.contains_key("settings"));
+        let invalid = match f.owner.read_agent_files_blocking(AgentFileReadRequest::Read(f.source.clone())).unwrap() { AgentFileReadReply::Read(s) => s, _ => panic!("read") };
+        assert_eq!(invalid.availability, SourceAvailability::Invalid);
+        assert!(invalid.rows.is_empty() && invalid.tickets.is_empty());
+        std::fs::remove_file(&f.catalog).unwrap();
+        let before = std::fs::read(&f.path).unwrap();
+        let missing = match f.owner.read_agent_files_blocking(AgentFileReadRequest::List).unwrap() { AgentFileReadReply::List(list) => list, _ => panic!("list") };
+        assert_eq!(missing.last_selected.settings, Some(f.source));
+        assert!(missing.active_source_by_menu.settings.is_none());
+        assert_eq!(missing.active_source_by_menu.picker, Some(registered));
+        assert_eq!(std::fs::read(&f.path).unwrap(), before);
+    }
+
+    #[test]
+    fn e2432_p02_preference_failed_adoption_never_becomes_successful_owner_reply() {
+        let f = fixture();
+        let registered = agents_instance_path(&f.path);
+        AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = Some(Box::new(move |stage, _| {
+            if stage == "preference_published" { std::fs::write(&registered, b"{").unwrap(); }
+        })));
+        let report = f.owner.with_operation_blocking("p02-preference-recapture", |current, guard| remember_agent_file_locked(current, guard, AgentFileSourceMenu::Settings, &f.source)).unwrap();
+        AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert!(report.value.is_some());
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        assert!(f.owner.blocking_current_snapshot().is_err());
+        let saved: Value = serde_json::from_slice(&std::fs::read(&f.path).unwrap()).unwrap();
+        assert_eq!(saved["agentFileSourceByMenu"]["settings"], json!(f.source));
+        assert!(f.owner.read_agent_files_blocking(AgentFileReadRequest::List).is_err());
+        assert!(f.owner.save_catalog_source_blocking(f.source, f.snapshot.revision, f.snapshot.context_revision, AgentFileEdits::default()).is_err());
+    }
+
+    #[test]
+    fn e2432_p02_catalog_waiting_lock_rechecks_captured_authority() {
+        let f = fixture();
+        let held = crate::config::coding_agents_catalog::hold_selected_catalog_test_lock(&f.catalog);
+        let (authorized_tx, authorized_rx) = std::sync::mpsc::channel();
+        let owner = Arc::clone(&f.owner);
+        let source = f.source.clone(); let revision = f.snapshot.revision.clone(); let context = f.snapshot.context_revision.clone();
+        let worker = std::thread::spawn(move || {
+            AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = Some(Box::new(move |stage, _| {
+                if stage == "catalog_authorized" { authorized_tx.send(()).unwrap(); }
+            })));
+            let reply = owner.save_catalog_source_blocking(source, revision, context, AgentFileEdits::default());
+            AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);
+            reply.unwrap()
+        });
+        authorized_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let mut main: Value = serde_json::from_slice(&std::fs::read(&f.path).unwrap()).unwrap();
+        main["externalWhileCatalogLocked"] = json!(true);
+        write(&f.path, &main);
+        let before = std::fs::read(&f.catalog).unwrap();
+        drop(held);
+        let rejected = worker.join().unwrap();
+        assert_eq!(rejected.outcome, AgentFileSaveOutcome::Rejected);
+        assert_eq!(std::fs::read(&f.catalog).unwrap(), before);
+    }
+
+    #[test]
+    fn e2432_p02_drain_retains_admitted_diagnostic_until_worker_releases() {
+        let f = fixture();
+        let (captured_tx, captured_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let owner = Arc::clone(&f.owner);
+        let worker = std::thread::spawn(move || {
+            AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = Some(Box::new(move |stage, _| {
+                if stage == "diagnostic_captured" { captured_tx.send(()).unwrap(); release_rx.recv_timeout(Duration::from_secs(3)).unwrap(); }
+            })));
+            let result = owner.read_agent_files_blocking(AgentFileReadRequest::List);
+            AGENT_FILE_CHECKPOINT.with(|hook| *hook.borrow_mut() = None);
+            result
+        });
+        captured_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let owner = Arc::clone(&f.owner);
+        let drain = std::thread::spawn(move || owner.drain_blocking(Duration::from_secs(2)));
+        let start = std::time::Instant::now();
+        while f.owner.control().availability != SettingsAvailability::Draining && start.elapsed() < Duration::from_secs(2) { std::thread::yield_now(); }
+        assert_eq!(f.owner.control().availability, SettingsAvailability::Draining);
+        assert_eq!(f.owner.control().operations, 1);
+        assert!(f.owner.read_agent_files_blocking(AgentFileReadRequest::List).is_err());
+        assert!(!drain.is_finished());
+        release_tx.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err());
+        drain.join().unwrap();
+        assert_eq!(f.owner.control().availability, SettingsAvailability::Closed);
+        assert_eq!(f.owner.control().operations, 0);
+    }
+
+    #[test]
+    fn e2432_p02_owner_identity_loss_invalidates_catalog_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let instance = temp.path().join("instance");
+        std::fs::create_dir(&instance).unwrap();
+        let path = instance.join(SETTINGS_FILE_NAME);
+        write(&path, &serde_json::to_value(AppSettings::default()).unwrap());
+        let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
+        let context = SourceReadContext::from_settings(&owner.blocking_current_snapshot().unwrap(), &path).unwrap();
+        let mut source = context.source(SourceKind::CatalogPersonal);
+        source.scope = SourceScope::Project;
+        std::fs::rename(&instance, temp.path().join("old-instance")).unwrap();
+        std::fs::create_dir(&instance).unwrap();
+        write(&path, &serde_json::to_value(AppSettings::default()).unwrap());
+        let result = owner.save_catalog_source_blocking(source, SourceRevision::Absent {}, context.revision, AgentFileEdits::default());
+        assert!(result.is_err());
+        assert_eq!(owner.control().availability, SettingsAvailability::Invalid);
+    }
+
+    #[test]
+    fn e2432_p02_new_catalog_row_requires_complete_owned_fields() {
+        let f = fixture();
+        let before = std::fs::read(&f.catalog).unwrap();
+        let incomplete: AgentFileEdits = serde_json::from_value(json!({"rows":[{"entryHint":"added","action":"upsert","patch":{"label":"Incomplete"}}],"profileSets":[]})).unwrap();
+        let rejected = f.owner.save_catalog_source_blocking(f.source.clone(), f.snapshot.revision.clone(), f.snapshot.context_revision.clone(), incomplete).unwrap();
+        assert_eq!(rejected.outcome, AgentFileSaveOutcome::Rejected);
+        assert_eq!(std::fs::read(&f.catalog).unwrap(), before);
+        let complete: AgentFileEdits = serde_json::from_value(json!({"rows":[{"entryHint":"added","action":"upsert","patch":{"label":"Added","description":"Own","color":"blue","baseCommand":"catalog-tool"}}],"profileSets":[]})).unwrap();
+        let committed = f.owner.save_catalog_source_blocking(f.source, f.snapshot.revision, f.snapshot.context_revision, complete).unwrap();
+        assert_eq!(committed.outcome, AgentFileSaveOutcome::Committed);
+        let snapshot = committed.snapshot.unwrap();
+        assert_eq!(snapshot.rows.len(), 2);
+        assert_eq!(snapshot.rows[1].entry_hint, "added");
+        assert_eq!(snapshot.rows[1].base_hash, Some(configuration_identity("catalog-tool", &[])));
+        let stored: Value = serde_json::from_slice(&std::fs::read(&f.catalog).unwrap()).unwrap();
+        assert_eq!(stored["agents"][0]["unknown"], json!([null]));
+        assert_eq!(stored["extension"], json!({"keep":true}));
+    }
+
+    #[test]
+    fn e2432_p02_selected_catalog_raw_gates_reject_before_publish() {
+        let invalids = vec![
+            br#"{"schemaVersion":1,"agents":[],"unknown":1,"unknown":2}"#.to_vec(),
+            br#"{"schemaVersion":1,"agents":[],"legacyProfileOrphans":null}"#.to_vec(),
+            br#"{"schemaVersion":1,"agents":[{"key":"one","baseCommand":"tool"},{"key":"two","baseCommand":"tool"}],"codingAgentProfiles":{"one":{"B":{"notes":"first"}},"two":{"B":{"notes":"other"}}}}"#.to_vec(),
+            br#"{"schemaVersion":1,"agents":[],"managed":{}}"#.to_vec(),
+        ];
+        for bytes in invalids {
+            let f = fixture();
+            std::fs::write(&f.catalog, &bytes).unwrap();
+            let epoch = f.owner.control().epoch;
+            let rejected = f.owner.save_catalog_source_blocking(f.source, source_bytes_revision(&bytes), f.snapshot.context_revision, AgentFileEdits::default()).unwrap();
+            assert_eq!(rejected.outcome, AgentFileSaveOutcome::Rejected);
+            assert_eq!(std::fs::read(&f.catalog).unwrap(), bytes);
+            assert_eq!(f.owner.control().epoch, epoch);
+            assert_eq!(f.owner.control().availability, SettingsAvailability::Ready);
+        }
+        let f = fixture();
+        let before = std::fs::read(&f.catalog).unwrap();
+        let mut forged = f.source.clone(); forged.context_root.push_str("-forged");
+        assert_eq!(f.owner.save_catalog_source_blocking(forged, f.snapshot.revision.clone(), f.snapshot.context_revision.clone(), AgentFileEdits::default()).unwrap().outcome, AgentFileSaveOutcome::Rejected);
+        assert_eq!(f.owner.save_catalog_source_blocking(f.source.clone(), SourceRevision::Bytes { sha256: "0".repeat(64) }, f.snapshot.context_revision.clone(), AgentFileEdits::default()).unwrap().outcome, AgentFileSaveOutcome::Rejected);
+        assert_eq!(std::fs::read(&f.catalog).unwrap(), before);
+        std::fs::remove_file(&f.catalog).unwrap();
+        assert_eq!(save(&f).outcome, AgentFileSaveOutcome::Rejected);
+        assert!(!f.catalog.exists());
     }
 }
