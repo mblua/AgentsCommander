@@ -8817,7 +8817,6 @@ mod tests {
 
     #[tokio::test]
     async fn e2992_p51_invalid_no_co_managed_budget() {
-        use tauri::Manager;
         let fixture = make_co_managed_fixture();
         let (endpoint, hits) = spawn_jev_listener(vec![("to-user", 0.9)]).await;
         let (dir, denied) = p51_invalid_owner(AppSettings {
