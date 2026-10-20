@@ -893,16 +893,23 @@ mod tests {
         };
 
         let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap().join("target/2992-evidence/P44");
+            .parent()
+            .unwrap()
+            .join("target/2992-evidence/P44");
         std::fs::create_dir_all(&evidence).unwrap();
         for invalid in [true, false] {
-            let temp = tempfile::Builder::new().prefix("watchdog-").tempdir_in(&evidence).unwrap();
+            let temp = tempfile::Builder::new()
+                .prefix("watchdog-")
+                .tempdir_in(&evidence)
+                .unwrap();
             let path = temp.path().join("settings.30.instance.no-git.json");
             let cfg = orphan_settings(1);
             std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
             let owner = tokio::task::spawn_blocking(move || {
                 SettingsOwner::open_active(&path, Duration::from_secs(5)).unwrap()
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
             assert_eq!(owner.availability(), SettingsAvailability::Ready);
             assert!(owner.current_read().await.unwrap().resource_monitor_enabled);
             let backend = Arc::new(QuarantineWatchdogBackend::default());
@@ -916,20 +923,28 @@ mod tests {
             let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
             let (_app, coordinator) = running_coordinator(manager, Arc::clone(&monitor)).await;
             if invalid {
-                let report = owner.with_operation("p44-watchdog-invalid", |_, guard| {
-                    guard.publish(SettingsPublisher::SettingsSave, |path| {
-                        let mut value: serde_json::Value = serde_json::from_slice(
-                            &std::fs::read(path).map_err(|error| error.to_string())?
-                        ).map_err(|error| error.to_string())?;
-                        value["defaultShell"] = serde_json::json!(42);
-                        std::fs::write(path, serde_json::to_vec(&value).unwrap())
-                            .map_err(|error| error.to_string())
+                let report = owner
+                    .with_operation("p44-watchdog-invalid", |_, guard| {
+                        guard.publish(SettingsPublisher::SettingsSave, |path| {
+                            let mut value: serde_json::Value = serde_json::from_slice(
+                                &std::fs::read(path).map_err(|error| error.to_string())?,
+                            )
+                            .map_err(|error| error.to_string())?;
+                            value["defaultShell"] = serde_json::json!(42);
+                            std::fs::write(path, serde_json::to_vec(&value).unwrap())
+                                .map_err(|error| error.to_string())
+                        })
                     })
-                }).await.unwrap();
+                    .await
+                    .unwrap();
                 assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
                 assert_eq!(report.availability, SettingsAvailability::Invalid);
-                assert!(matches!(owner.current_read().await,
-                    Err(SettingsOwnerError::Unavailable(SettingsAvailability::Invalid))));
+                assert!(matches!(
+                    owner.current_read().await,
+                    Err(SettingsOwnerError::Unavailable(
+                        SettingsAvailability::Invalid
+                    ))
+                ));
             }
             let before = backend.call_counts();
             run_tick(&monitor, &owner, &coordinator).await;
@@ -950,7 +965,9 @@ mod tests {
             tokio::task::spawn_blocking(move || {
                 owner.drain_blocking(Duration::from_secs(5));
                 assert_eq!(owner.availability(), SettingsAvailability::Closed);
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
         }
     }
 
