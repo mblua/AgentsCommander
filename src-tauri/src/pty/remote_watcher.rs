@@ -1308,7 +1308,13 @@ impl RemoteSweeper {
         shutdown: ShutdownSignal,
     ) -> Option<std::thread::JoinHandle<()>> {
         let enabled = {
-            let settings = self.settings.blocking_read();
+            let settings = match self.settings.blocking_current_read() {
+                Ok(settings) => settings,
+                Err(_) => {
+                    log::debug!("[RemoteSweeper] settings unavailable; not starting");
+                    return None;
+                }
+            };
             settings.ci_activity_enabled || settings.branch_staleness_enabled
         };
         if !enabled {
@@ -1398,7 +1404,13 @@ impl RemoteSweeper {
     /// test ever sleeps.
     async fn run_round(&self, now: Instant, wall: DateTime<Local>) {
         let (ci_enabled, staleness_enabled, ci_dial, staleness_dial, archived) = {
-            let settings = self.settings.read().await;
+            let settings = match self.settings.current_read().await {
+                Ok(settings) => settings,
+                Err(_) => {
+                    log::debug!("[RemoteSweeper] settings unavailable; skipping round");
+                    return;
+                }
+            };
             (
                 settings.ci_activity_enabled,
                 settings.branch_staleness_enabled,

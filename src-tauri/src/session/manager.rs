@@ -1272,7 +1272,7 @@ impl SessionManager {
 
         let (route_guard, was_idle, activity) = {
             let settings_guard = Arc::clone(settings)
-                .try_read_owned()
+                .try_current_read_owned()
                 .map_err(|_| Failure::RouteUnavailable)?;
             let mut state = self.carrier_state_write(carrier_permit).await;
             if state.pending_create.contains_key(&id)
@@ -3757,6 +3757,207 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::session::selection::TrustedCreateIntent;
+
+    struct P44WriteBackend {
+        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        bytes: std::sync::Mutex<Vec<u8>>,
+    }
+
+    impl crate::pty::backend::PtyBackend for P44WriteBackend {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn spawn(&self, _: crate::pty::backend::BackendSpawnSpec)
+            -> futures::future::BoxFuture<'_, Result<(), AppError>> { panic!("unexpected spawn") }
+        fn write(&self, _: &crate::pty::manager::BackendWriteAuthority, _: Uuid, bytes: &[u8])
+            -> Result<(), AppError> {
+            self.entered.lock().unwrap().take().unwrap().send(()).unwrap();
+            self.release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            self.bytes.lock().unwrap().extend_from_slice(bytes);
+            Ok(())
+        }
+        fn resize(&self, _: Uuid, _: u16, _: u16) -> Result<(), AppError> { panic!("unexpected resize") }
+        fn kill(&self, _: Uuid) -> Result<(), AppError> { panic!("unexpected kill") }
+        fn has_session(&self, _: Uuid) -> bool { true }
+        fn get_screen_snapshot(&self, _: Uuid) -> Option<crate::pty::output::PtyScreenSnapshot> { None }
+        fn get_pty_size(&self, _: Uuid) -> Option<(u16, u16)> { None }
+        fn get_screen_rows(&self, _: Uuid) -> crate::pty::context_scrape::ScreenRowsRead {
+            crate::pty::context_scrape::ScreenRowsRead::Unavailable
+        }
+        fn register_response_watcher(&self, _: Uuid, _: String, _: PathBuf) { panic!("unexpected watcher") }
+        fn terminate_job_for_session(&self, _: Uuid) -> bool { panic!("unexpected terminate") }
+        fn kill_all_jobs(&self) -> (usize, usize) { panic!("unexpected kill all") }
+    }
+
+    #[tokio::test]
+    async fn e2992_p44_retained_settings_permit() {
+        use crate::config::settings::{
+            AppSettings, OperationOutcome, SettingsAvailability, SettingsOwner, SettingsOwnerError,
+            SettingsPublisher,
+        };
+        use crate::pty::idle_detector::{IdleDetector, PtyInputBoundaryFailure};
+        use crate::pty::manager::PtyManager;
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("target/2992-evidence/P44");
+        std::fs::create_dir_all(&evidence).unwrap();
+        let temp = tempfile::Builder::new().prefix("permit-").tempdir_in(evidence).unwrap();
+        let collection = temp.path().join("projects");
+        let ac = collection.join("p44-project/.ac");
+        std::fs::create_dir_all(ac.join("_team_p44-team")).unwrap();
+        std::fs::write(ac.join("_team_p44-team/config.json"),
+            br#"{"agents":["../_agent_worker","../_agent_coordinator"],"coordinator":"../_agent_coordinator"}"#).unwrap();
+        let manager = SessionManager::new();
+        let mut sessions = Vec::new();
+        let mut paths = Vec::new();
+        for (index, name) in ["coordinator", "worker"].iter().enumerate() {
+            std::fs::create_dir_all(ac.join(format!("_agent_{name}"))).unwrap();
+            let root = ac.join(format!("room-01-p44-team/__agent_{name}"));
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("config.json"), format!(r#"{{"identity":"../../_agent_{name}"}}"#)).unwrap();
+            sessions.push(manager.create_session("shell".into(), Vec::new(),
+                root.to_string_lossy().into_owned(), None, None, Vec::new(), index == 0,
+                SessionBackendKind::LocalProcess).await.unwrap());
+            paths.push(root);
+        }
+        let cfg = AppSettings {
+            project_paths: vec![collection.to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
+        let settings_path = temp.path().join("settings.30.instance.no-git.json");
+        std::fs::write(&settings_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+        let owner = tokio::task::spawn_blocking(move || {
+            SettingsOwner::open_active(&settings_path, Duration::from_secs(5)).unwrap()
+        }).await.unwrap();
+        let route = crate::config::teams::verify_pty_input_route(&paths[0], false,
+            "p44-project:room-01-p44-team/worker", &cfg.project_paths).unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend = Arc::new(P44WriteBackend {
+            entered: Mutex::new(Some(entered_tx)), release: Mutex::new(release_rx),
+            bytes: Mutex::new(Vec::new()),
+        });
+        let pty = Arc::new(Mutex::new(PtyManager::new_for_test(backend.clone())));
+        for (session, path) in sessions.iter().zip(&paths) {
+            let identity = crate::path_identity::verify_directory(path).unwrap();
+            pty.lock().unwrap().record_route_with_identities(session.id,
+                SessionBackendKind::LocalProcess, Some(identity.clone()), Some(identity)).unwrap();
+        }
+        let sender = sessions[0].id;
+        let target = sessions[1].id;
+        manager.mark_idle(target).await;
+        let idle = IdleDetector::new(|_| {}, |_| {});
+        idle.register_session(target, crate::session::profile::IdleTuning::DEFAULT);
+        idle.set_pty_input_ready_for_test(target);
+        macro_rules! boundary {
+            ($authority:expr, $permit:expr) => {
+                manager.prepare_pty_input_boundary(target, &route.target,
+                    SessionBackendKind::LocalProcess, sender, &route.sender,
+                    SessionBackendKind::LocalProcess, $authority, $permit, &idle, &owner,
+                    |_, _| true, || true)
+            };
+        }
+        let authority = PtyManager::authority_route_proof(&pty, sender).unwrap();
+        let permit = PtyManager::acquire_input_writer(&pty, target).await.unwrap();
+        // Contention uses a legitimate owner operation, without a raw writer.
+        let (builder_tx, builder_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let operation = {
+            let owner = owner.clone();
+            tokio::spawn(async move {
+                owner.with_operation("p44-contention", move |_, _| {
+                    builder_tx.send(()).unwrap();
+                    finish_rx.recv_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?;
+                    Ok(())
+                }).await.unwrap()
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), builder_rx).await.unwrap().unwrap();
+        let denied = boundary!(&authority, &permit).await;
+        assert!(matches!(denied, Err(PtyInputBoundaryFailure::RouteUnavailable)));
+        drop(denied);
+        assert!(backend.bytes.lock().unwrap().is_empty());
+        finish_tx.send(()).unwrap();
+        assert_eq!(operation.await.unwrap().outcome, OperationOutcome::Committed);
+        drop(permit);
+        drop(authority);
+
+        // The bounded backend rendezvous is after validation, inside the real write.
+        let worker = {
+            let manager = manager.clone();
+            let pty = pty.clone();
+            let idle = idle.clone();
+            let owner = owner.clone();
+            let handle = tokio::runtime::Handle::current();
+            let route = route.clone();
+            tokio::task::spawn_blocking(move || {
+                let authority = PtyManager::authority_route_proof(&pty, sender).unwrap();
+                let permit = handle.block_on(PtyManager::acquire_input_writer(&pty, target)).unwrap();
+                let guard = handle.block_on(manager.prepare_pty_input_boundary(target, &route.target,
+                    SessionBackendKind::LocalProcess, sender, &route.sender, SessionBackendKind::LocalProcess,
+                    &authority, &permit, &idle, &owner, |_, _| true, || true)).unwrap();
+                guard.write(b"p44 exact bytes").unwrap();
+                drop(guard);
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), entered_rx).await.unwrap().unwrap();
+        let (builder_tx, builder_rx) = std::sync::mpsc::channel();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let operation = {
+            let owner = owner.clone();
+            let backend = backend.clone();
+            tokio::spawn(async move {
+                started_tx.send(()).unwrap();
+                owner.with_operation("p44-retained", move |_, _| {
+                    assert_eq!(*backend.bytes.lock().unwrap(), b"p44 exact bytes");
+                    builder_tx.send(()).unwrap();
+                    Ok(())
+                }).await.unwrap()
+            })
+        };
+        started_rx.await.unwrap();
+        let no_entry = tokio::task::spawn_blocking(move || {
+            assert!(matches!(builder_rx.recv_timeout(Duration::from_millis(250)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+            builder_rx
+        }).await.unwrap();
+        assert!(!operation.is_finished());
+        assert!(backend.bytes.lock().unwrap().is_empty());
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), worker).await.unwrap().unwrap();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), operation).await.unwrap().unwrap().outcome,
+            OperationOutcome::Committed);
+        no_entry.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(*backend.bytes.lock().unwrap(), b"p44 exact bytes");
+
+        let report = owner.with_operation("p44-permit-invalid", |_, guard| {
+            guard.publish(SettingsPublisher::SettingsSave, |path| {
+                let mut value: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                value["defaultShell"] = serde_json::json!(42);
+                std::fs::write(path, serde_json::to_vec(&value).unwrap()).map_err(|e| e.to_string())
+            })
+        }).await.unwrap();
+        assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        assert!(matches!(owner.current_read().await,
+            Err(SettingsOwnerError::Unavailable(SettingsAvailability::Invalid))));
+        manager.mark_idle(target).await;
+        idle.set_pty_input_ready_for_test(target);
+        let authority = PtyManager::authority_route_proof(&pty, sender).unwrap();
+        let permit = PtyManager::acquire_input_writer(&pty, target).await.unwrap();
+        let denied = boundary!(&authority, &permit).await;
+        assert!(matches!(denied, Err(PtyInputBoundaryFailure::RouteUnavailable)));
+        drop(denied);
+        assert_eq!(*backend.bytes.lock().unwrap(), b"p44 exact bytes");
+        drop(permit);
+        drop(authority);
+        tokio::task::spawn_blocking(move || {
+            owner.drain_blocking(Duration::from_secs(5));
+            assert_eq!(owner.availability(), SettingsAvailability::Closed);
+        }).await.unwrap();
+    }
 
     fn birth_binding() -> CodingAgentBinding {
         CodingAgentBinding {

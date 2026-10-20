@@ -778,7 +778,13 @@ impl GitSweeper {
         // `tokio::sync::RwLock`, so holding it across an await compiles fine and
         // would block every `save_settings` write for the whole round.
         let (concurrency, floor, archived) = {
-            let cfg = self.settings.read().await;
+            let cfg = match self.settings.current_read().await {
+                Ok(cfg) => cfg,
+                Err(_) => {
+                    log::debug!("[GitSweeper] settings unavailable; skipping round");
+                    return Duration::from_secs(SWEEP_MIN_INTERVAL_SECS);
+                }
+            };
             let (concurrency, floor) = sweep_dials(&cfg);
             (concurrency, floor, cfg.archived_project_paths.clone())
         };
