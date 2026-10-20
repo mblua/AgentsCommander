@@ -107,7 +107,13 @@ fn watchdog_eligible(monitor: &ResourceMonitorState) -> bool {
 }
 
 async fn next_delay(monitor: &ResourceMonitorState, settings: &SettingsState) -> Duration {
-    let cfg = settings.read().await;
+    let cfg = match settings.current_read().await {
+        Ok(cfg) => cfg,
+        Err(_) => {
+            log::debug!("[ResourceWatchdog] settings unavailable; retrying");
+            return Duration::from_secs(2);
+        }
+    };
     if cfg.resource_backoff_polling && monitor.active_agent_groups() == 0 {
         Duration::from_secs(10)
     } else {
@@ -123,7 +129,13 @@ async fn run_tick(
     if !watchdog_eligible(monitor) {
         return;
     }
-    let cfg = settings.read().await.clone();
+    let cfg = match settings.current_read().await {
+        Ok(cfg) => cfg.clone(),
+        Err(_) => {
+            log::debug!("[ResourceWatchdog] settings unavailable; skipping enforcement");
+            return;
+        }
+    };
     if !cfg.resource_monitor_enabled {
         return;
     }
@@ -871,6 +883,92 @@ mod tests {
         );
         monitor.test_backdate_quarantine_retry(session_id);
         root
+    }
+
+    #[tokio::test]
+    async fn e2992_p44_invalid_no_enforcement() {
+        use crate::config::settings::{
+            OperationOutcome, SettingsAvailability, SettingsOwner, SettingsOwnerError,
+            SettingsPublisher,
+        };
+
+        let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target/2992-evidence/P44");
+        std::fs::create_dir_all(&evidence).unwrap();
+        for invalid in [true, false] {
+            let temp = tempfile::Builder::new()
+                .prefix("watchdog-")
+                .tempdir_in(&evidence)
+                .unwrap();
+            let path = temp.path().join("settings.30.instance.no-git.json");
+            let cfg = orphan_settings(1);
+            std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+            let owner = tokio::task::spawn_blocking(move || {
+                SettingsOwner::open_active(&path, Duration::from_secs(5)).unwrap()
+            })
+            .await
+            .unwrap();
+            assert_eq!(owner.availability(), SettingsAvailability::Ready);
+            assert!(owner.current_read().await.unwrap().resource_monitor_enabled);
+            let backend = Arc::new(QuarantineWatchdogBackend::default());
+            let monitor = Arc::new(ResourceMonitorState::with_backend(
+                backend.clone() as Arc<dyn ProcessTreeBackend>
+            ));
+            assert!(watchdog_eligible(&monitor));
+            let limits = ResourceLimits::from(&cfg);
+            let id = Uuid::new_v4();
+            orphan_one_group(&monitor, &backend, limits, id, 440, None);
+            let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
+            let (_app, coordinator) = running_coordinator(manager, Arc::clone(&monitor)).await;
+            if invalid {
+                let report = owner
+                    .with_operation("p44-watchdog-invalid", |_, guard| {
+                        guard.publish(SettingsPublisher::SettingsSave, |path| {
+                            let mut value: serde_json::Value = serde_json::from_slice(
+                                &std::fs::read(path).map_err(|error| error.to_string())?,
+                            )
+                            .map_err(|error| error.to_string())?;
+                            value["defaultShell"] = serde_json::json!(42);
+                            std::fs::write(path, serde_json::to_vec(&value).unwrap())
+                                .map_err(|error| error.to_string())
+                        })
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
+                assert_eq!(report.availability, SettingsAvailability::Invalid);
+                assert!(matches!(
+                    owner.current_read().await,
+                    Err(SettingsOwnerError::Unavailable(
+                        SettingsAvailability::Invalid
+                    ))
+                ));
+            }
+            let before = backend.call_counts();
+            run_tick(&monitor, &owner, &coordinator).await;
+            if invalid {
+                assert_eq!(backend.call_counts(), before);
+                assert!(monitor.group_counts_toward_admission(id));
+                assert_eq!(monitor.active_agent_groups(), 1);
+                assert_eq!(next_delay(&monitor, &owner).await, Duration::from_secs(2));
+                assert_eq!(owner.availability(), SettingsAvailability::Invalid);
+            } else {
+                assert!(backend.call_counts().0 > before.0);
+                assert!(!monitor.group_counts_toward_admission(id));
+                assert_eq!(monitor.active_agent_groups(), 0);
+                let permit = monitor.try_reserve_agent_slot(limits).unwrap().unwrap();
+                monitor.release_unregistered_permit(permit);
+            }
+            coordinator.close_and_join().await;
+            tokio::task::spawn_blocking(move || {
+                owner.drain_blocking(Duration::from_secs(5));
+                assert_eq!(owner.availability(), SettingsAvailability::Closed);
+            })
+            .await
+            .unwrap();
+        }
     }
 
     // #1151 (W1) - the issue's minimum supported-backend regression, end to end through

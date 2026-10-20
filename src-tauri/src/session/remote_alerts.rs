@@ -562,7 +562,16 @@ impl RemoteAlertPorts for ProductionRemoteAlertPorts {
                     staleness: false,
                 };
             };
-            let settings = state.read().await;
+            let settings = match state.current_read().await {
+                Ok(settings) => settings,
+                Err(_) => {
+                    log::debug!("[RemoteAlerts] settings unavailable; denying notifications");
+                    return RemoteNotifyDials {
+                        ci: false,
+                        staleness: false,
+                    };
+                }
+            };
             RemoteNotifyDials {
                 ci: settings.ci_activity_enabled && settings.ci_activity_notify_orchestrator,
                 staleness: settings.branch_staleness_enabled

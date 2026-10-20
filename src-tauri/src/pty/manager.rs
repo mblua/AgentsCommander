@@ -2060,8 +2060,7 @@ pub struct PtyRouteWriteGuard<'a> {
     backend: Arc<dyn PtyBackend>,
     _guard: std::sync::MutexGuard<'a, ()>,
     _authority_guard: Option<std::sync::MutexGuard<'a, ()>>,
-    _settings_guard:
-        Option<tokio::sync::OwnedRwLockReadGuard<crate::config::settings::AppSettings>>,
+    _settings_guard: Option<crate::config::settings::SettingsReadPermit>,
 }
 
 impl<'a> PtyRouteWriteGuard<'a> {
@@ -2079,7 +2078,7 @@ impl<'a> PtyRouteWriteGuard<'a> {
 
     pub(crate) fn retain_settings_guard(
         &mut self,
-        settings_guard: tokio::sync::OwnedRwLockReadGuard<crate::config::settings::AppSettings>,
+        settings_guard: crate::config::settings::SettingsReadPermit,
     ) {
         self._settings_guard = Some(settings_guard);
     }

@@ -304,7 +304,13 @@ impl MenuGuard {
         let Some(settings_state) = app.try_state::<SettingsState>() else {
             return;
         };
-        let settings = settings_state.read().await.clone();
+        let settings = match settings_state.current_read().await {
+            Ok(settings) => settings.clone(),
+            Err(_) => {
+                log::debug!("[MenuGuard] settings unavailable; skipping scan");
+                return;
+            }
+        };
 
         let Some(session_mgr_state) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>()
         else {

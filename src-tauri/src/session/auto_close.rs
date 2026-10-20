@@ -200,13 +200,16 @@ fn destroyed_is_team_coordinator(destroyed_id: Uuid, coord_id_of_team: Option<Uu
 
 async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<String, i64>) {
     let settings = app.state::<SettingsState>();
-    let (enabled, timeout_min, skip_telegram_assigned) = {
-        let s = settings.read().await;
-        (
+    let close_settings = match settings.current_read().await {
+        Ok(s) => Some((
             s.coordinator_auto_close_enabled,
             s.coordinator_auto_close_minutes,
             s.coordinator_auto_close_skip_telegram_assigned,
-        )
+        )),
+        Err(_) => {
+            log::debug!("[AutoClose] settings unavailable; skipping auto-close");
+            None
+        }
     };
     // NOTE: the enabled/timeout gate moved DOWN: steps 1-2 (advance + badge
     // emit) run even when auto-close is OFF (the badge is informational). Only
@@ -228,7 +231,7 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
             .filter(|(id, _)| pm.has_session(*id))
             .collect()
     };
-    let telegram_protected: HashSet<Uuid> = if skip_telegram_assigned {
+    let telegram_protected: HashSet<Uuid> = if matches!(close_settings, Some((_, _, true))) {
         let mgr = { session_mgr.read().await.clone() };
         let mut out = HashSet::new();
         for (id, _) in &members {
@@ -319,6 +322,9 @@ async fn tick<R: tauri::Runtime>(app: &AppHandle<R>, last_emitted: &mut HashMap<
     last_emitted.retain(|team, _| coord_refs.contains_key(team)); // bound the map
 
     // (3) KILL: gated on the setting; SAME anchor; established + timeout.
+    let Some((enabled, timeout_min, skip_telegram_assigned)) = close_settings else {
+        return;
+    };
     if !enabled || timeout_min == 0 {
         return;
     }
