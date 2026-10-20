@@ -20579,39 +20579,53 @@ mod tests {
     }
 
     #[cfg(test)]
-    async fn run_retained_source_child_scenario(pty: bool, inline: bool, scenario: &str) {
+    fn run_retained_source_child_scenario<'a>(
+        pty: bool,
+        inline: bool,
+        scenario: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
         match scenario {
             "native-waiter-context" | "native-waiter-seed" => {
-                retained_exited_respawn_native_waiter_cell(pty, scenario == "native-waiter-seed")
-                    .await
+                Box::pin(retained_exited_respawn_native_waiter_cell(
+                    pty,
+                    scenario == "native-waiter-seed",
+                ))
             }
-            "lifetime-source-panic" => retained_exited_respawn_lifetime_cell(pty, inline).await,
-            "root-full" => retained_exited_respawn_root_full_cell(pty, inline).await,
+            "lifetime-source-panic" => Box::pin(retained_exited_respawn_lifetime_cell(pty, inline)),
+            "root-full" => Box::pin(retained_exited_respawn_root_full_cell(pty, inline)),
             "root-poison" | "root-close-first" => {
-                retained_exited_respawn_root_refusal_cell(pty, inline, scenario == "root-poison")
-                    .await
+                Box::pin(retained_exited_respawn_root_refusal_cell(
+                    pty,
+                    inline,
+                    scenario == "root-poison",
+                ))
             }
             "queued-drain"
             | "cleanup-claim-first"
             | "cleanup-finalize-first"
             | "cleanup-runtime-changed"
             | "cleanup-unknown-veto" => {
-                retained_exited_respawn_queued_cell(pty, inline, scenario).await
+                Box::pin(retained_exited_respawn_queued_cell(pty, inline, scenario))
             }
-            "root-reservation-refusal" => retained_exited_respawn_reservation_refusal_cell().await,
-            "entry-root-reclaim" => retained_exited_respawn_entry_root_reclaim_cell().await,
-            "entry-restart-reclaim" => retained_exited_respawn_entry_restart_reclaim_cell().await,
+            "root-reservation-refusal" => Box::pin(retained_exited_respawn_reservation_refusal_cell()),
+            "entry-root-reclaim" => Box::pin(retained_exited_respawn_entry_root_reclaim_cell()),
+            "entry-restart-reclaim" => Box::pin(retained_exited_respawn_entry_restart_reclaim_cell()),
             "call-before-accept" | "call-after-accept" => {
-                retained_exited_respawn_caller_cell(pty, inline, scenario == "call-before-accept")
-                    .await
+                Box::pin(retained_exited_respawn_caller_cell(
+                    pty,
+                    inline,
+                    scenario == "call-before-accept",
+                ))
             }
             "submit-refused" | "submit-channel-close" => {
-                retained_exited_respawn_submit_refused_cell(pty, scenario == "submit-channel-close")
-                    .await
+                Box::pin(retained_exited_respawn_submit_refused_cell(
+                    pty,
+                    scenario == "submit-channel-close",
+                ))
             }
-            "recv-after-release" => retained_exited_respawn_receive_after_release_cell(pty).await,
+            "recv-after-release" => Box::pin(retained_exited_respawn_receive_after_release_cell(pty)),
             "pty-held-stop" | "pty-held-rollback" | "pty-cancel-held" => {
-                retained_exited_respawn_pty_held_cell(scenario).await
+                Box::pin(retained_exited_respawn_pty_held_cell(scenario))
             }
             "positive"
             | "reclaim-66"
@@ -20625,9 +20639,9 @@ mod tests {
             | "under-commit-full"
             | "seed-positive"
             | "seed-staging-file" => {
-                retained_exited_respawn_source_cell(pty, inline, scenario).await
+                Box::pin(retained_exited_respawn_source_cell(pty, inline, scenario))
             }
-            _ => retained_exited_respawn_failure_cell(pty, inline, scenario).await,
+            _ => Box::pin(retained_exited_respawn_failure_cell(pty, inline, scenario)),
         }
     }
 
