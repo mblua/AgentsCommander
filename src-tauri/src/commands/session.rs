@@ -8725,9 +8725,9 @@ impl LifecycleEntryAuthority {
         drop(claim);
         drop(self);
         // Drop's with_inner error permanently latches tracker failure. A
-        // positive existing health query after actual Drop proves that release;
+        // positive health query after actual Drop proves that release;
         // false/unknown keeps this entry unsafe without inspecting newer claims.
-        !claimed || tracker.is_some_and(|tracker| tracker.publishers_bound())
+        !claimed || tracker.is_some_and(|tracker| tracker.is_healthy())
     }
     pub(crate) fn has_owned_claim(&self) -> bool {
         self.reservation
@@ -13330,6 +13330,30 @@ mod tests {
             Some(old_id)
         );
         assert!(events.try_recv().is_err());
+        let tracker = pty_mgr.lock().unwrap().response_close_state();
+        let authority = match super::prepare_lifecycle_entry_authority(
+            app.handle(),
+            Uuid::new_v4(),
+            Some(old_id),
+            false,
+            None,
+        )
+        .await
+        .expect("real lifecycle authority")
+        {
+            super::LifecycleAuthorityAdmission::Ready(authority) => authority,
+            _ => panic!("healthy Foreign fixture must acquire real authority"),
+        };
+        assert!(authority.has_owned_claim());
+        assert!(authority
+            .tracker
+            .as_ref()
+            .is_some_and(|actual| actual.same_state(&tracker)));
+        tracker.fail_closed();
+        assert!(
+            !authority.release(),
+            "claimed failed tracker cannot certify release"
+        );
         close_test_coordinator(&app).await;
     }
 

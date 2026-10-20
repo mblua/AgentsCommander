@@ -728,6 +728,9 @@ impl ResponseCloseState {
         }
         Ok(f(&mut inner))
     }
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.with_inner(|_| ()).is_ok()
+    }
     pub(crate) fn apply_settings(&self, enabled: bool, seconds: u32, now: std::time::Instant) {
         let _ = self.with_inner(|inner| {
             if inner.enabled == enabled && inner.seconds == seconds {
@@ -4379,6 +4382,7 @@ mod response_close_tests {
     #[test]
     fn response_close_readiness_requires_all_publishers_and_work_bootstrap() {
         let state = ResponseCloseState::default();
+        assert!(state.is_healthy());
         assert_eq!(
             state.try_enable_readiness(),
             Err(ResponseCloseError::Unavailable)
@@ -4392,15 +4396,23 @@ mod response_close_tests {
             ResponseClosePublisher::Hold,
         ] {
             state.bind_publisher(publisher);
+            assert!(state.is_healthy());
         }
         assert!(state.publishers_bound());
+        assert!(state.is_healthy());
         assert_eq!(
             state.try_enable_readiness(),
             Err(ResponseCloseError::Unavailable)
         );
         state.mark_work_bootstrapped();
         assert_eq!(state.try_enable_readiness(), Ok(()));
+        assert!(state.is_healthy());
+        state.apply_settings(true, 30, Instant::now());
+        assert!(state.is_healthy());
+        state.apply_settings(false, 30, Instant::now());
+        assert!(state.is_healthy());
         state.fail_closed();
+        assert!(!state.is_healthy());
         assert_eq!(
             state.try_enable_readiness(),
             Err(ResponseCloseError::Unavailable)
@@ -4408,6 +4420,25 @@ mod response_close_tests {
         let other = ResponseCloseState::default();
         assert!(!state.same_state(&other));
         assert!(state.same_state(&state.clone()));
+
+        let state = ResponseCloseState::default();
+        let poisoned = state.clone();
+        let joined = std::thread::spawn(move || {
+            let _guard = poisoned.inner.lock().unwrap();
+            panic!("poison tracker mutex");
+        })
+        .join();
+        assert!(joined.is_err());
+        assert!(!state.is_healthy());
+        assert!(
+            state
+                .inner
+                .lock()
+                .err()
+                .expect("tracker mutex remains poisoned")
+                .into_inner()
+                .failed
+        );
     }
 
     #[tokio::test]
