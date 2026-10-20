@@ -15911,34 +15911,32 @@ fn restore_protected_agents_instance_groups(
             {
                 continue;
             }
-            match &identity_rows {
-                Some(rows) => {
-                    let profiles = out
-                        .entry(key.to_owned())
-                        .or_insert_with(|| Value::Object(Map::new()));
-                    let physical_ids: HashSet<_> = disk
-                        .and_then(|disk| disk.get("agents"))
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|row| row.get("id").and_then(Value::as_str))
-                        .collect();
-                    let identities = profiles
-                        .as_object_mut()
-                        .expect("validated profiles object")
-                        .entry("identityByAgent")
-                        .or_insert_with(|| serde_json::json!({}));
-                    if let (Some(identities), Some(rows)) =
-                        (identities.as_object_mut(), rows.as_object())
-                    {
-                        for (id, value) in rows {
-                            if physical_ids.contains(id.as_str()) {
-                                identities.insert(id.clone(), value.clone());
-                            }
+            // No projected row grants deletion of raw identities.
+            if let Some(rows) = &identity_rows {
+                let profiles = out
+                    .entry(key.to_owned())
+                    .or_insert_with(|| Value::Object(Map::new()));
+                let physical_ids: HashSet<_> = disk
+                    .and_then(|disk| disk.get("agents"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|row| row.get("id").and_then(Value::as_str))
+                    .collect();
+                let identities = profiles
+                    .as_object_mut()
+                    .expect("validated profiles object")
+                    .entry("identityByAgent")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let (Some(identities), Some(rows)) =
+                    (identities.as_object_mut(), rows.as_object())
+                {
+                    for (id, value) in rows {
+                        if physical_ids.contains(id.as_str()) {
+                            identities.insert(id.clone(), value.clone());
                         }
                     }
                 }
-                None => {} // No projected row grants deletion of raw identities.
             }
         }
     }
@@ -16275,11 +16273,10 @@ fn save_settings_value_locked_with_startup(
             .restore_base(profile_incoming.as_object_mut().unwrap());
         // The directional view and initial preparation use selected physical
         // rows. Their borrowed rows are stripped before sidecar publication.
-        let owner_has_active_agents = if directional_split {
-            true
-        } else if profiles_unprotected
-            && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
-                != Some(&Value::from(1))
+        let owner_has_active_agents = if directional_split
+            || (profiles_unprotected
+                && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
+                    != Some(&Value::from(1)))
         {
             true
         } else if profiles_in_sidecar {
