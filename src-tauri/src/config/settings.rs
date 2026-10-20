@@ -44365,6 +44365,7 @@ mod e2432_p02_closed_owner_tests {
             let path = temp.path().join(SETTINGS_FILE_NAME);
             let project = temp.path().join("project");
             std::fs::create_dir(&project).unwrap();
+            std::fs::create_dir(project.join(".ac")).unwrap();
             let settings = AppSettings {
                 default_shell: "p02-custom-shell".into(),
                 default_shell_args: vec!["--p02".into()],
@@ -44389,119 +44390,6 @@ mod e2432_p02_closed_owner_tests {
             let registered = agents_instance_path(&path);
             write(&registered, &packet);
             let registered_before = std::fs::read(&registered).unwrap();
-            if invalid == json!({"picker":{"bogus":1}}) {
-                let project_file = project_paths_path(&path);
-                let backup_file = path.with_file_name(
-                    crate::config::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME,
-                );
-                let original_inputs: Vec<_> = [
-                    path.clone(),
-                    registered.clone(),
-                    project_file.clone(),
-                    backup_file,
-                ]
-                .into_iter()
-                .map(|input| {
-                    let bytes = match std::fs::read(&input) {
-                        Ok(bytes) => Some(bytes),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                        Err(error) => panic!("diagnostic input capture failed: {error}"),
-                    };
-                    (input, bytes)
-                })
-                .collect();
-                let restore_inputs = || {
-                    for (input, bytes) in &original_inputs {
-                        match bytes {
-                            Some(bytes) => std::fs::write(input, bytes).unwrap(),
-                            None => match std::fs::remove_file(input) {
-                                Ok(()) => {}
-                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                                Err(error) => panic!("diagnostic input restore failed: {error}"),
-                            },
-                        }
-                    }
-                };
-                let valid_source = SourceReadContext::from_settings(&settings, &path)
-                    .unwrap()
-                    .source(SourceKind::RegisteredInstance);
-                let valid_preferences = AgentFileSourcePreferences {
-                    settings: Some(valid_source.clone()),
-                    picker: Some(valid_source),
-                };
-                for (mode, preferences) in [
-                    ("absent", None),
-                    ("valid", Some(json!(valid_preferences))),
-                    ("malformed", Some(invalid.clone())),
-                ] {
-                    restore_inputs();
-                    let mut comparison_main = main.clone();
-                    match preferences {
-                        Some(preferences) => {
-                            comparison_main["agentFileSourceByMenu"] = preferences;
-                        }
-                        None => {
-                            comparison_main
-                                .as_object_mut()
-                                .unwrap()
-                                .remove("agentFileSourceByMenu");
-                        }
-                    }
-                    write(&path, &comparison_main);
-                    let (ordinary_control, _, _) = read_settings_for_startup(&path);
-                    let loaded_control = load_settings_from_path(&path);
-                    let ordinary_pairs: Vec<_> = ordinary_control
-                        .project_path_state
-                        .active_pairs()
-                        .iter()
-                        .map(|pair| {
-                            (
-                                pair.absolute_side.status,
-                                pair.relative_side.status,
-                                &pair.selected,
-                                pair.issue,
-                            )
-                        })
-                        .collect();
-                    let loaded_pairs: Vec<_> = loaded_control
-                        .project_path_state
-                        .active_pairs()
-                        .iter()
-                        .map(|pair| {
-                            (
-                                pair.absolute_side.status,
-                                pair.relative_side.status,
-                                &pair.selected,
-                                pair.issue,
-                            )
-                        })
-                        .collect();
-                    let raw_sidecar_paths = match std::fs::read(&project_file) {
-                        Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
-                            .map(|value| value.get("projectPaths").cloned())
-                            .map_err(|error| error.to_string()),
-                        Err(error) => Err(error.to_string()),
-                    };
-                    eprintln!(
-                        "F2_CONTROL mode={mode} project_ac_absent={} ordinary_projects={:?} ordinary_persistence_error={:?} ordinary_pairs={:?} loaded_projects={:?} loaded_persistence_error={:?} loaded_pairs={:?} raw_sidecar_paths={:?}",
-                        !project.join(".ac").exists(),
-                        ordinary_control.project_paths,
-                        ordinary_control.project_paths_persistence_error,
-                        ordinary_pairs,
-                        loaded_control.project_paths,
-                        loaded_control.project_paths_persistence_error,
-                        loaded_pairs,
-                        raw_sidecar_paths,
-                    );
-                }
-                restore_inputs();
-                for (input, bytes) in &original_inputs {
-                    match bytes {
-                        Some(bytes) => assert_eq!(&std::fs::read(input).unwrap(), bytes),
-                        None => assert!(!input.exists()),
-                    }
-                }
-            }
             let mut ordinary_value = serde_json::to_value(&settings).unwrap();
             ordinary_value["agentFileSourceByMenu"] = invalid.clone();
             let decoded: AppSettings = serde_json::from_value(ordinary_value).unwrap();
