@@ -8968,6 +8968,24 @@ mod tests {
         );
     }
 
+    async fn p51_assert_restore_state(
+        mode: &str,
+        owner: &SettingsState,
+        manager: &Arc<tokio::sync::RwLock<crate::session::manager::SessionManager>>,
+        saved_path: &std::path::Path,
+        saved_bytes: &[u8],
+    ) {
+        assert!(manager.read().await.list_sessions().await.is_empty());
+        assert_eq!(std::fs::read(saved_path).unwrap(), saved_bytes);
+        if mode == "invalid" {
+            assert_eq!(
+                owner.availability(),
+                crate::config::settings::SettingsAvailability::Invalid
+            );
+            assert!(owner.current_read().await.is_err());
+        }
+    }
+
     // Production admission/lifecycle boundary; the concrete Wry body is not executed.
     async fn p51_restore_lifecycle_case(mode: &'static str) {
         use crate::session::manager::SessionManager;
@@ -9095,15 +9113,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        assert!(manager.read().await.list_sessions().await.is_empty());
-        assert_eq!(std::fs::read(&saved_path).unwrap(), saved_bytes);
-        if mode == "invalid" {
-            assert_eq!(
-                owner.availability(),
-                crate::config::settings::SettingsAvailability::Invalid
-            );
-            assert!(owner.current_read().await.is_err());
-        }
+        p51_assert_restore_state(mode, &owner, &manager, &saved_path, &saved_bytes).await;
         tokio::time::timeout(Duration::from_secs(2), coordinator.close_and_join())
             .await
             .unwrap();
