@@ -15438,7 +15438,7 @@ mod e2432_p02_source_api_tests {
             std::fs::create_dir(dir).unwrap();
         }
         let path = instance.join(SETTINGS_FILE_NAME);
-        let settings = AppSettings {
+        let mut settings = AppSettings {
             project_paths: vec![project.to_string_lossy().into_owned()],
             ..AppSettings::default()
         };
