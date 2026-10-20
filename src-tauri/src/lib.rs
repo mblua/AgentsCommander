@@ -8953,6 +8953,21 @@ mod tests {
         assert!(slot.snapshot().value.record().is_none());
     }
 
+    fn p51_assert_restore_body_counts(
+        mode: &str,
+        body_entries: &std::sync::atomic::AtomicUsize,
+        body_completions: &std::sync::atomic::AtomicUsize,
+    ) {
+        assert_eq!(
+            body_entries.load(Ordering::SeqCst),
+            usize::from(mode != "invalid")
+        );
+        assert_eq!(
+            body_completions.load(Ordering::SeqCst),
+            usize::from(matches!(mode, "ready" | "tail-panic"))
+        );
+    }
+
     // Production admission/lifecycle boundary; the concrete Wry body is not executed.
     async fn p51_restore_lifecycle_case(mode: &'static str) {
         use crate::session::manager::SessionManager;
@@ -9038,14 +9053,7 @@ mod tests {
                             assert_eq!(tail_entries.fetch_add(1, Ordering::SeqCst), 0);
                         })
                         .unwrap();
-                    assert_eq!(
-                        body_entries.load(Ordering::SeqCst),
-                        usize::from(mode != "invalid")
-                    );
-                    assert_eq!(
-                        body_completions.load(Ordering::SeqCst),
-                        usize::from(matches!(mode, "ready" | "tail-panic"))
-                    );
+                    p51_assert_restore_body_counts(mode, &body_entries, &body_completions);
                     assert_ne!(mode, "tail-panic", "tail panic control");
                     tail_completions.fetch_add(1, Ordering::SeqCst);
                 })
