@@ -7194,7 +7194,11 @@ pub struct AppSettings {
     /// Reusable coding-agent profile letters, defaults, and per-agent cells.
     #[serde(default)]
     pub coding_agent_profiles: CodingAgentProfilesConfig,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_agent_file_source_preferences"
+    )]
     pub agent_file_source_by_menu: Option<AgentFileSourcePreferences>,
     /// Configured Telegram bots for bridge
     #[serde(default)]
@@ -42951,6 +42955,17 @@ mod e2432_p02_physical_file_tests {
     }
 }
 
+// Only the ordinary optional field is lenient; captured raw authority stays strict.
+fn deserialize_agent_file_source_preferences<'de, D>(
+    deserializer: D,
+) -> Result<Option<AgentFileSourcePreferences>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<Value>::deserialize(deserializer)?;
+    Ok(raw.and_then(|value| serde_json::from_value(value).ok()))
+}
+
 // Source diagnostics retain bounded observations; Failure never means absence.
 #[derive(Debug, Clone)]
 enum BoundedSourceObservation {
@@ -43156,6 +43171,7 @@ impl SettingsOwner {
                 .map_err(|_| "ownerIntegrityLost")?;
             self.revalidate().map_err(|_| "settingsOwnerUnavailable")?;
             let authority = AgentFileAuthority::capture(&guard)?;
+            let preferences = authority.preferences()?;
             let (registered, validation) = authority.registered_validation();
             agent_file_checkpoint("diagnostic_captured", guard.settings_path());
             let snapshot = |source: &SourceRef| -> Result<SelectedAgentFileSnapshot, String> {
@@ -43204,10 +43220,7 @@ impl SettingsOwner {
                             })
                         })
                         .collect::<Result<Vec<_>, String>>()?;
-                    AgentFileReadReply::List(agent_file_sources_reply(
-                        sources,
-                        authority.preferences()?,
-                    )?)
+                    AgentFileReadReply::List(agent_file_sources_reply(sources, preferences)?)
                 }
             };
             authority.recheck(&guard)?;
@@ -44155,5 +44168,116 @@ mod e2432_p02_closed_owner_tests {
         std::fs::remove_file(&f.catalog).unwrap();
         assert_eq!(save(&f).outcome, AgentFileSaveOutcome::Rejected);
         assert!(!f.catalog.exists());
+    }
+    #[test]
+    fn e2432_p02_malformed_optional_preferences_preserve_ordinary_settings() {
+        for invalid in [
+            json!({"picker":{"bogus":1}}),
+            json!("wrong-type"),
+            json!({"unknownMenu":{}}),
+            json!({"settings":null,"picker":false}),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(SETTINGS_FILE_NAME);
+            let project = temp.path().join("project");
+            std::fs::create_dir(&project).unwrap();
+            let settings = AppSettings {
+                default_shell: "p02-custom-shell".into(),
+                default_shell_args: vec!["--p02".into()],
+                root_token: Some("p02-preserved-token".into()),
+                project_paths: vec![project.to_string_lossy().into_owned()],
+                ..AppSettings::default()
+            };
+            let mut main = serde_json::to_value(&settings).unwrap();
+            main.as_object_mut().unwrap().remove("agents");
+            main.as_object_mut().unwrap().remove("codingAgentProfiles");
+            main["agentFileSourceByMenu"] = invalid.clone();
+            write(&path, &main);
+            let packet = json!({
+                "agents":[{"id":"own","label":"Own","color":"red","baseCommand":"tool"}],
+                "codingAgentProfiles":{
+                    "schemaVersion":2,
+                    "profileSlots":{"A":{"label":""}},
+                    "profilesByAgent":{"own":{"A":{}}}
+                }
+            });
+            let packet = canonical_profile_source(&packet, &packet, true).unwrap();
+            let registered = agents_instance_path(&path);
+            write(&registered, &packet);
+            let original = std::fs::read(&path).unwrap();
+            let registered_before = std::fs::read(&registered).unwrap();
+            let mut ordinary_value = serde_json::to_value(&settings).unwrap();
+            ordinary_value["agentFileSourceByMenu"] = invalid.clone();
+            let decoded: AppSettings = serde_json::from_value(ordinary_value).unwrap();
+            assert_eq!(decoded.default_shell, settings.default_shell);
+            assert!(decoded.agent_file_source_by_menu.is_none());
+            assert!(serde_json::from_value::<AgentFileSourcePreferences>(invalid.clone()).is_err());
+            let (ordinary, _, _) = read_settings_for_startup(&path);
+            assert_eq!(ordinary.default_shell, settings.default_shell);
+            assert_eq!(ordinary.agents[0].id, "own");
+            assert!(ordinary.agent_file_source_by_menu.is_none());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            let loaded = load_settings_from_path(&path);
+            assert_eq!(loaded.default_shell, settings.default_shell);
+            assert_eq!(loaded.default_shell_args, settings.default_shell_args);
+            assert_eq!(loaded.root_token, settings.root_token);
+            assert_eq!(loaded.agents[0].command, "tool");
+            assert!(loaded.agent_file_source_by_menu.is_none());
+            assert!(loaded.project_paths.iter().any(|p| {
+                Path::new(p).canonicalize().unwrap() == project.canonicalize().unwrap()
+            }));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_eq!(std::fs::read(&registered).unwrap(), registered_before);
+            let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
+            let adopted = owner.blocking_current_snapshot().unwrap();
+            assert_eq!(adopted.default_shell, settings.default_shell);
+            assert_eq!(adopted.agents[0].id, "own");
+            assert!(adopted.agent_file_source_by_menu.is_none());
+            let context = SourceReadContext::from_settings(&adopted, &path).unwrap();
+            let source = context.source(SourceKind::RegisteredInstance);
+            assert!(matches!(
+                owner.read_agent_files_blocking(AgentFileReadRequest::List),
+                Err(reason) if reason == "invalidSourcePreferences"
+            ));
+            assert!(matches!(
+                owner.read_agent_files_blocking(AgentFileReadRequest::Read(source.clone())),
+                Err(reason) if reason == "invalidSourcePreferences"
+            ));
+            let rejected = owner
+                .with_operation_blocking("p02-malformed-preferences", |current, guard| {
+                    let result = remember_agent_file_locked(
+                        current,
+                        guard,
+                        AgentFileSourceMenu::Settings,
+                        &source,
+                    );
+                    assert_eq!(guard.effect(), OperationEffect::None);
+                    result
+                })
+                .unwrap();
+            assert_eq!(rejected.outcome, OperationOutcome::Rejected);
+            assert_eq!(rejected.error.as_deref(), Some("invalidSourcePreferences"));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            owner.drain_blocking(Duration::from_secs(1));
+            let saved = save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+            assert_eq!(saved.default_shell, settings.default_shell);
+            assert!(saved.agent_file_source_by_menu.is_none());
+            let disk: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(disk["agentFileSourceByMenu"], invalid);
+            assert_eq!(disk["defaultShell"], json!(settings.default_shell));
+            let valid = AgentFileSourcePreferences {
+                settings: Some(source.clone()),
+                picker: Some(source),
+            };
+            let mut valid_main = serde_json::to_value(&settings).unwrap();
+            valid_main["agentFileSourceByMenu"] = serde_json::to_value(&valid).unwrap();
+            let roundtrip: AppSettings = serde_json::from_value(valid_main).unwrap();
+            assert_eq!(
+                serde_json::to_value(&roundtrip.agent_file_source_by_menu).unwrap(),
+                json!(valid)
+            );
+            let encoded = serde_json::to_value(&roundtrip).unwrap();
+            assert_eq!(encoded["agentFileSourceByMenu"], json!(valid));
+        }
     }
 }

@@ -15250,7 +15250,7 @@ mod e2432_p02_source_api_tests {
         configuration_identity, pair_identity, AgentFileEdits, AgentFileSourceMenu, SettingsOwner,
         SourceKind,
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     fn fixture() -> (tempfile::TempDir, SettingsState) {
         let temp = tempfile::tempdir().unwrap();
