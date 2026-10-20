@@ -13980,13 +13980,14 @@ mod e2432_catalog_profile_tests {
 
 // E2432: narrow physical IO, no catalog initialization, migration or refresh.
 pub(crate) fn read_selected_regular_file(path: &Path) -> Result<Vec<u8>, String> {
-    crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024)
-        .map(|(bytes, _)| bytes)
+    crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024).map(|(bytes, _)| bytes)
 }
 
 pub(crate) fn replace_selected_personal_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let paths = CatalogPaths::new(path.parent().ok_or("sourceContextUnavailable")?);
-    if path != paths.local { return Err("sourceReadOnly".into()); }
+    if path != paths.local {
+        return Err("sourceReadOnly".into());
+    }
     publish_replace(path, bytes)
 }
 
@@ -13998,8 +13999,11 @@ pub(crate) fn publish_selected_personal(
     let path = proof.target().to_path_buf();
     let paths = CatalogPaths::new(path.parent().expect("authorized catalog parent"));
     let lock = (|| {
-        if path != paths.local { return Err("sourceReadOnly".into()); }
-        crate::path_identity::verify_component_chain(path.parent().expect("parent")).map_err(|_| "sourceContextUnavailable")?;
+        if path != paths.local {
+            return Err("sourceReadOnly".into());
+        }
+        crate::path_identity::verify_component_chain(path.parent().expect("parent"))
+            .map_err(|_| "sourceContextUnavailable")?;
         // Locking never initializes a catalog or creates its parent directory.
         acquire_catalog_lock(&paths)
     })();
@@ -14012,34 +14016,67 @@ pub(crate) fn publish_selected_personal(
         proof.recheck()?;
         proof.publish(&bytes)
     }));
-    let reason = match result { Ok(Ok(())) => None, Ok(Err(reason)) => Some(reason), Err(_) => Some("catalogPublicationPanicked".into()) };
-    let outcome = if reason.is_none() { AgentFileSaveOutcome::Committed } else if proof.effect() == OperationEffect::Possible { AgentFileSaveOutcome::PartialOrUnknown } else { AgentFileSaveOutcome::Rejected };
+    let reason = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(reason)) => Some(reason),
+        Err(_) => Some("catalogPublicationPanicked".into()),
+    };
+    let outcome = if reason.is_none() {
+        AgentFileSaveOutcome::Committed
+    } else if proof.effect() == OperationEffect::Possible {
+        AgentFileSaveOutcome::PartialOrUnknown
+    } else {
+        AgentFileSaveOutcome::Rejected
+    };
     // Both panic containment and recovery remain INSIDE the catalog lock scope.
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| proof.finish(outcome, reason.as_deref())))
-        .unwrap_or_else(|_| proof.interrupted())
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        proof.finish(outcome, reason.as_deref())
+    }))
+    .unwrap_or_else(|_| proof.interrupted())
 }
 
 #[cfg(test)]
 mod e2432_p02_catalog_publication_tests {
     use super::*;
-    use std::sync::Arc;
-    use crate::config::settings::{AgentFileEdits, AgentFileSaveOutcome, AppSettings, SettingsOwner, SourceKind};
+    use crate::config::settings::{
+        AgentFileEdits, AgentFileSaveOutcome, AppSettings, SettingsOwner, SourceKind,
+    };
     use serde_json::json;
+    use std::sync::Arc;
 
-    fn fixture() -> (tempfile::TempDir, Arc<SettingsOwner>, crate::config::settings::AgentFileSourceOption, CatalogPaths) {
+    fn fixture() -> (
+        tempfile::TempDir,
+        Arc<SettingsOwner>,
+        crate::config::settings::AgentFileSourceOption,
+        CatalogPaths,
+    ) {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
         std::fs::create_dir(&project).unwrap();
-        let path = temp.path().join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+        let path = temp
+            .path()
+            .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
         let mut settings = AppSettings::default();
         settings.project_paths = vec![project.to_string_lossy().into_owned()];
         std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
         let dir = catalog_dir(&project.join(".ac"));
         std::fs::create_dir_all(&dir).unwrap();
         let paths = CatalogPaths::new(&dir);
-        std::fs::write(&paths.local, br#"{"schemaVersion":1,"agents":[],"extension":"keep"}"#).unwrap();
+        std::fs::write(
+            &paths.local,
+            br#"{"schemaVersion":1,"agents":[],"extension":"keep"}"#,
+        )
+        .unwrap();
         let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
-        let source = crate::config::settings::list_agent_files(&owner.blocking_current_snapshot().unwrap(), &path).unwrap().sources.into_iter().find(|s| s.source.kind == SourceKind::CatalogPersonal).unwrap();
+        let source = crate::config::settings::list_agent_files(
+            &owner.blocking_current_snapshot().unwrap(),
+            &path,
+        )
+        .unwrap()
+        .sources
+        .into_iter()
+        .find(|s| s.source.kind == SourceKind::CatalogPersonal)
+        .unwrap();
         (temp, owner, source, paths)
     }
 
@@ -14049,27 +14086,54 @@ mod e2432_p02_catalog_publication_tests {
         let before = std::fs::read(&paths.local).unwrap();
         let held = acquire_catalog_lock(&paths).unwrap();
         CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.set(Some(Duration::from_millis(10))));
-        let rejected = owner.save_catalog_source_blocking(source.source.clone(), source.revision.clone(), source.context_revision.clone(), AgentFileEdits::default()).unwrap();
+        let rejected = owner
+            .save_catalog_source_blocking(
+                source.source.clone(),
+                source.revision.clone(),
+                source.context_revision.clone(),
+                AgentFileEdits::default(),
+            )
+            .unwrap();
         CATALOG_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.set(None));
         drop(held);
         assert_eq!(rejected.outcome, AgentFileSaveOutcome::Rejected);
-        assert!(rejected.diagnostics.iter().any(|d| d.code == "catalogLockTimeout"));
+        assert!(rejected
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "catalogLockTimeout"));
         assert_eq!(std::fs::read(&paths.local).unwrap(), before);
         let foreign = paths.local.parent().unwrap().join("foreign.tmp");
         std::fs::write(&foreign, b"foreign").unwrap();
         CATALOG_FAILURE_POINT.with(|cell| cell.set(Some("publication_temp_synced")));
-        let failed = owner.save_catalog_source_blocking(source.source.clone(), source.revision.clone(), source.context_revision.clone(), AgentFileEdits::default()).unwrap();
+        let failed = owner
+            .save_catalog_source_blocking(
+                source.source.clone(),
+                source.revision.clone(),
+                source.context_revision.clone(),
+                AgentFileEdits::default(),
+            )
+            .unwrap();
         CATALOG_FAILURE_POINT.with(|cell| cell.set(None));
         assert_eq!(failed.outcome, AgentFileSaveOutcome::PartialOrUnknown);
         assert_eq!(failed.snapshot.unwrap().revision, source.revision);
         assert_eq!(std::fs::read(&paths.local).unwrap(), before);
         assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign");
         assert!(owner.blocking_current_snapshot().is_ok());
-        let committed = owner.save_catalog_source_blocking(source.source, source.revision, source.context_revision, AgentFileEdits::default()).unwrap();
+        let committed = owner
+            .save_catalog_source_blocking(
+                source.source,
+                source.revision,
+                source.context_revision,
+                AgentFileEdits::default(),
+            )
+            .unwrap();
         assert_eq!(committed.outcome, AgentFileSaveOutcome::Committed);
         let actual = read_selected_regular_file(&paths.local).unwrap();
         assert_ne!(sha256_hex(&actual), sha256_hex(&before));
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&actual).unwrap()["extension"], json!("keep"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&actual).unwrap()["extension"],
+            json!("keep")
+        );
     }
 
     #[test]

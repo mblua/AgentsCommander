@@ -14996,47 +14996,93 @@ mod issue_3083_tests {
 }
 
 // E2432 P02: profile orchestration stays above settings' physical primitives.
-fn prepare_agent_file_tickets(snapshot: &mut crate::config::settings::SelectedAgentFileSnapshot) -> Result<(), String> {
+fn prepare_agent_file_tickets(
+    snapshot: &mut crate::config::settings::SelectedAgentFileSnapshot,
+) -> Result<(), String> {
     use crate::config::coding_agent_profiles::{resolve_profile, ProfileResolutionRequest};
-    use crate::config::settings::{agent_file_projection, configuration_identity, pair_identity, ConfigurationRef, SourceAvailability, SourceSelectionTicket};
-    if snapshot.availability != SourceAvailability::Available { return Ok(()); }
+    use crate::config::settings::{
+        agent_file_projection, configuration_identity, pair_identity, ConfigurationRef,
+        SourceAvailability, SourceSelectionTicket,
+    };
+    if snapshot.availability != SourceAvailability::Available {
+        return Ok(());
+    }
     let settings = agent_file_projection(snapshot)?;
     for agent in &settings.agents {
         let mut tickets = BTreeMap::new();
         let mut requests = vec![("default".to_owned(), None)];
-        if let Some(cells) = settings.coding_agent_profiles.profiles_by_agent.get(&agent.id) {
-            requests.extend(cells.keys().map(|letter| (letter.clone(), Some(letter.clone()))));
+        if let Some(cells) = settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get(&agent.id)
+        {
+            requests.extend(
+                cells
+                    .keys()
+                    .map(|letter| (letter.clone(), Some(letter.clone()))),
+            );
         }
-        if !requests.iter().any(|(key, _)| key == "A") { requests.push(("A".into(), Some("A".into()))); }
+        if !requests.iter().any(|(key, _)| key == "A") {
+            requests.push(("A".into(), Some("A".into())));
+        }
         for (key, requested_profile) in requests {
-            let resolution = resolve_profile(&settings, ProfileResolutionRequest {
-                coding_agent_id: &agent.id, launch_path: None, agent_matrix_name: None,
-                requested_profile: requested_profile.as_deref(), requested_profile_authoritative: true,
-            });
-            tickets.insert(key, SourceSelectionTicket {
-                configuration_ref: ConfigurationRef {
-                    version: 1, source: snapshot.source.clone(), calculated_id: configuration_identity(&agent.command, &agent.envs),
-                    requested_profile, profile_calculated_id: Some(pair_identity(&agent.command, &agent.envs, &resolution.cell)), legacy_entry_hint: Some(agent.id.clone()),
+            let resolution = resolve_profile(
+                &settings,
+                ProfileResolutionRequest {
+                    coding_agent_id: &agent.id,
+                    launch_path: None,
+                    agent_matrix_name: None,
+                    requested_profile: requested_profile.as_deref(),
+                    requested_profile_authoritative: true,
                 },
-                expected_source_revision: snapshot.revision.clone(), catalog_context_revision: snapshot.context_revision.clone(),
-            });
+            );
+            tickets.insert(
+                key,
+                SourceSelectionTicket {
+                    configuration_ref: ConfigurationRef {
+                        version: 1,
+                        source: snapshot.source.clone(),
+                        calculated_id: configuration_identity(&agent.command, &agent.envs),
+                        requested_profile,
+                        profile_calculated_id: Some(pair_identity(
+                            &agent.command,
+                            &agent.envs,
+                            &resolution.cell,
+                        )),
+                        legacy_entry_hint: Some(agent.id.clone()),
+                    },
+                    expected_source_revision: snapshot.revision.clone(),
+                    catalog_context_revision: snapshot.context_revision.clone(),
+                },
+            );
         }
         snapshot.tickets.insert(agent.id.clone(), tickets);
     }
     Ok(())
 }
 
-pub(crate) async fn list_agent_file_sources_inner(settings: &SettingsState) -> Result<crate::config::settings::AgentFileSources, String> {
-    use crate::config::settings::{AgentFileReadRequest, AgentFileReadReply};
-    match settings.read_agent_files(AgentFileReadRequest::List).await? {
+pub(crate) async fn list_agent_file_sources_inner(
+    settings: &SettingsState,
+) -> Result<crate::config::settings::AgentFileSources, String> {
+    use crate::config::settings::{AgentFileReadReply, AgentFileReadRequest};
+    match settings
+        .read_agent_files(AgentFileReadRequest::List)
+        .await?
+    {
         AgentFileReadReply::List(sources) => Ok(sources),
         AgentFileReadReply::Read(_) => Err("sourceReplyMismatch".into()),
     }
 }
 
-pub(crate) async fn read_agent_file_source_inner(settings: &SettingsState, source: crate::config::settings::SourceRef) -> Result<crate::config::settings::SelectedAgentFileSnapshot, String> {
-    use crate::config::settings::{AgentFileReadRequest, AgentFileReadReply};
-    let mut snapshot = match settings.read_agent_files(AgentFileReadRequest::Read(source)).await? {
+pub(crate) async fn read_agent_file_source_inner(
+    settings: &SettingsState,
+    source: crate::config::settings::SourceRef,
+) -> Result<crate::config::settings::SelectedAgentFileSnapshot, String> {
+    use crate::config::settings::{AgentFileReadReply, AgentFileReadRequest};
+    let mut snapshot = match settings
+        .read_agent_files(AgentFileReadRequest::Read(source))
+        .await?
+    {
         AgentFileReadReply::Read(snapshot) => snapshot,
         AgentFileReadReply::List(_) => return Err("sourceReplyMismatch".into()),
     };
@@ -15044,15 +15090,36 @@ pub(crate) async fn read_agent_file_source_inner(settings: &SettingsState, sourc
     Ok(snapshot)
 }
 
-pub(crate) async fn save_agent_file_source_inner(settings: &SettingsState, source: crate::config::settings::SourceRef, expected_revision: crate::config::settings::SourceRevision, context_revision: String, edits: crate::config::settings::AgentFileEdits) -> Result<crate::config::settings::AgentFileSaveReply, String> {
-    let mut result = crate::config::settings::persist_agent_file_edits(settings, source, expected_revision, context_revision, edits).await?;
-    if let Some(snapshot) = result.snapshot.as_mut() { prepare_agent_file_tickets(snapshot)?; }
+pub(crate) async fn save_agent_file_source_inner(
+    settings: &SettingsState,
+    source: crate::config::settings::SourceRef,
+    expected_revision: crate::config::settings::SourceRevision,
+    context_revision: String,
+    edits: crate::config::settings::AgentFileEdits,
+) -> Result<crate::config::settings::AgentFileSaveReply, String> {
+    let mut result = crate::config::settings::persist_agent_file_edits(
+        settings,
+        source,
+        expected_revision,
+        context_revision,
+        edits,
+    )
+    .await?;
+    if let Some(snapshot) = result.snapshot.as_mut() {
+        prepare_agent_file_tickets(snapshot)?;
+    }
     // Match the existing settings snapshot boundary on both transports.
-    if let Some(effective) = result.effective_settings.as_mut() { effective.root_token = None; }
+    if let Some(effective) = result.effective_settings.as_mut() {
+        effective.root_token = None;
+    }
     Ok(result)
 }
 
-pub(crate) async fn remember_agent_file_source_inner(settings: &SettingsState, menu: crate::config::settings::AgentFileSourceMenu, source: crate::config::settings::SourceRef) -> Result<crate::config::settings::AgentFileSourcePreferences, String> {
+pub(crate) async fn remember_agent_file_source_inner(
+    settings: &SettingsState,
+    menu: crate::config::settings::AgentFileSourceMenu,
+    source: crate::config::settings::SourceRef,
+) -> Result<crate::config::settings::AgentFileSourcePreferences, String> {
     use crate::config::settings::SettingsOwnerError;
     let report = settings.with_operation("remember_agent_file_source", move |current, guard| crate::config::settings::remember_agent_file_locked(current, guard, menu, &source)).await.map_err(|error| {
         match error {
@@ -15064,68 +15131,143 @@ pub(crate) async fn remember_agent_file_source_inner(settings: &SettingsState, m
     finish_remember_agent_file_report(settings, report).await
 }
 
-async fn finish_remember_agent_file_report(settings: &SettingsState, report: crate::config::settings::SettingsOperationReport<crate::config::settings::AgentFileSourcePreferences>) -> Result<crate::config::settings::AgentFileSourcePreferences, String> {
+async fn finish_remember_agent_file_report(
+    settings: &SettingsState,
+    report: crate::config::settings::SettingsOperationReport<
+        crate::config::settings::AgentFileSourcePreferences,
+    >,
+) -> Result<crate::config::settings::AgentFileSourcePreferences, String> {
     use crate::config::settings::{OperationOutcome, SettingsAvailability};
-    if report.outcome == OperationOutcome::PartialOrUnknown || (report.outcome == OperationOutcome::Committed && report.availability != SettingsAvailability::Ready) {
-        return Err("partialOrUnknown: preference publication may have occurred; reload actual settings".into());
+    if report.outcome == OperationOutcome::PartialOrUnknown
+        || (report.outcome == OperationOutcome::Committed
+            && report.availability != SettingsAvailability::Ready)
+    {
+        return Err(
+            "partialOrUnknown: preference publication may have occurred; reload actual settings"
+                .into(),
+        );
     }
     if report.outcome != OperationOutcome::Committed || report.value.is_none() {
         let reason = report.error.unwrap_or_default();
-        let code = ["duplicateJsonMember", "invalidLegacyProfileOrphans", "staleSourceContext", "staleSettingsRevision", "staleProfileSource", "sourceAbsentOrForged", "invalidSourcePreferences"].into_iter().find(|code| reason.contains(code)).unwrap_or("sourcePreferenceRejected");
+        let code = [
+            "duplicateJsonMember",
+            "invalidLegacyProfileOrphans",
+            "staleSourceContext",
+            "staleSettingsRevision",
+            "staleProfileSource",
+            "sourceAbsentOrForged",
+            "invalidSourcePreferences",
+        ]
+        .into_iter()
+        .find(|code| reason.contains(code))
+        .unwrap_or("sourcePreferenceRejected");
         return Err(format!("{code}: no files changed; correct the participating file externally or refresh the selection"));
     }
-    let adopted = settings.current_snapshot().await.map_err(|_| "partialOrUnknown: preferences were published but adopted settings are unavailable")?;
+    let adopted = settings.current_snapshot().await.map_err(|_| {
+        "partialOrUnknown: preferences were published but adopted settings are unavailable"
+    })?;
     Ok(adopted.agent_file_source_by_menu.unwrap_or_default())
 }
 
 #[tauri::command]
-pub async fn list_agent_file_sources(settings: State<'_, SettingsState>) -> Result<crate::config::settings::AgentFileSources, String> {
+pub async fn list_agent_file_sources(
+    settings: State<'_, SettingsState>,
+) -> Result<crate::config::settings::AgentFileSources, String> {
     list_agent_file_sources_inner(settings.inner()).await
 }
 
 #[tauri::command]
-pub async fn read_agent_file_source(settings: State<'_, SettingsState>, source: crate::config::settings::SourceRef) -> Result<crate::config::settings::SelectedAgentFileSnapshot, String> {
+pub async fn read_agent_file_source(
+    settings: State<'_, SettingsState>,
+    source: crate::config::settings::SourceRef,
+) -> Result<crate::config::settings::SelectedAgentFileSnapshot, String> {
     read_agent_file_source_inner(settings.inner(), source).await
 }
 
 #[tauri::command]
-pub async fn save_agent_file_source(app: AppHandle, settings: State<'_, SettingsState>, source: crate::config::settings::SourceRef, expected_revision: crate::config::settings::SourceRevision, context_revision: String, edits: crate::config::settings::AgentFileEdits) -> Result<crate::config::settings::AgentFileSaveReply, String> {
-    let reply = save_agent_file_source_inner(settings.inner(), source, expected_revision, context_revision, edits).await?;
+pub async fn save_agent_file_source(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+    source: crate::config::settings::SourceRef,
+    expected_revision: crate::config::settings::SourceRevision,
+    context_revision: String,
+    edits: crate::config::settings::AgentFileEdits,
+) -> Result<crate::config::settings::AgentFileSaveReply, String> {
+    let reply = save_agent_file_source_inner(
+        settings.inner(),
+        source,
+        expected_revision,
+        context_revision,
+        edits,
+    )
+    .await?;
     emit_agent_file_save_events(&app, &reply);
     Ok(reply)
 }
 
-pub(crate) fn emit_agent_file_save_events(app: &AppHandle, reply: &crate::config::settings::AgentFileSaveReply) {
-    if reply.outcome != crate::config::settings::AgentFileSaveOutcome::Committed || reply.effective_settings.is_none() { return; }
-    let catalog_only = reply.diagnostics.iter().any(|diagnostic| diagnostic.code == "effectiveSettingsUnchanged");
+pub(crate) fn emit_agent_file_save_events(
+    app: &AppHandle,
+    reply: &crate::config::settings::AgentFileSaveReply,
+) {
+    if reply.outcome != crate::config::settings::AgentFileSaveOutcome::Committed
+        || reply.effective_settings.is_none()
+    {
+        return;
+    }
+    let catalog_only = reply
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "effectiveSettingsUnchanged");
     // Catalogue publication adopts no owner settings; its actual reply is the receipt.
-    if catalog_only { return; }
+    if catalog_only {
+        return;
+    }
     let payload = serde_json::json!({});
-    for event in ["coding_agent_settings_updated", "coding_agent_profiles_updated"] {
+    for event in [
+        "coding_agent_settings_updated",
+        "coding_agent_profiles_updated",
+    ] {
         let _ = app.emit(event, &payload);
-        if let Some(broadcaster) = app.try_state::<WsBroadcaster>() { broadcaster.broadcast_event(event, &payload); }
+        if let Some(broadcaster) = app.try_state::<WsBroadcaster>() {
+            broadcaster.broadcast_event(event, &payload);
+        }
     }
 }
 
 #[tauri::command]
-pub async fn remember_agent_file_source(settings: State<'_, SettingsState>, menu: crate::config::settings::AgentFileSourceMenu, source: crate::config::settings::SourceRef) -> Result<crate::config::settings::AgentFileSourcePreferences, String> {
+pub async fn remember_agent_file_source(
+    settings: State<'_, SettingsState>,
+    menu: crate::config::settings::AgentFileSourceMenu,
+    source: crate::config::settings::SourceRef,
+) -> Result<crate::config::settings::AgentFileSourcePreferences, String> {
     remember_agent_file_source_inner(settings.inner(), menu, source).await
 }
 
 #[cfg(test)]
 mod e2432_p02_source_api_tests {
     use super::*;
-    use crate::config::settings::{configuration_identity, pair_identity, AgentFileEdits, AgentFileSourceMenu, SettingsOwner, SourceKind};
+    use crate::config::settings::{
+        configuration_identity, pair_identity, AgentFileEdits, AgentFileSourceMenu, SettingsOwner,
+        SourceKind,
+    };
     use serde_json::json;
 
     fn fixture() -> (tempfile::TempDir, SettingsState) {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join(SETTINGS_FILE_NAME);
-        let settings = AppSettings { root_token: Some("P02-TEST-SECRET".into()), ..AppSettings::default() };
+        let settings = AppSettings {
+            root_token: Some("P02-TEST-SECRET".into()),
+            ..AppSettings::default()
+        };
         std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
         let source = json!({"agents":[{"id":"same","label":"Registered","color":"red","baseCommand":"tool"}],
             "codingAgentProfiles":{"profilesByAgent":{"same":{"B":{"additionalArguments":"--registered"}}}}});
-        std::fs::write(temp.path().join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME), serde_json::to_vec(&source).unwrap()).unwrap();
+        std::fs::write(
+            temp.path()
+                .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME),
+            serde_json::to_vec(&source).unwrap(),
+        )
+        .unwrap();
         let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
         (temp, owner)
     }
@@ -15135,54 +15277,152 @@ mod e2432_p02_source_api_tests {
         use crate::config::coding_agent_profiles::{resolve_profile, ProfileResolutionRequest};
         let (_temp, owner) = fixture();
         let list = list_agent_file_sources_inner(&owner).await.unwrap();
-        let registered_ref = list.sources.iter().find(|s| s.source.kind == SourceKind::RegisteredInstance).unwrap().source.clone();
-        let registered = read_agent_file_source_inner(&owner, registered_ref).await.unwrap();
+        let registered_ref = list
+            .sources
+            .iter()
+            .find(|s| s.source.kind == SourceKind::RegisteredInstance)
+            .unwrap()
+            .source
+            .clone();
+        let registered = read_agent_file_source_inner(&owner, registered_ref)
+            .await
+            .unwrap();
         let null = &registered.tickets["same"]["default"];
         assert!(null.configuration_ref.requested_profile.is_none());
-        assert_eq!(serde_json::to_value(null).unwrap()["ref"]["requestedProfile"], json!(null));
+        assert_eq!(
+            serde_json::to_value(null).unwrap()["ref"]["requestedProfile"],
+            json!(null)
+        );
         let mut projection = crate::config::settings::agent_file_projection(&registered).unwrap();
         let agent = projection.agents[0].clone();
-        assert_eq!(null.configuration_ref.calculated_id, configuration_identity("tool", &[]));
-        assert_eq!(null.configuration_ref.profile_calculated_id, Some(pair_identity("tool", &[], &crate::config::settings::empty_profile_cell())));
-        projection.coding_agent_profiles.default_profile_by_agent.insert("target".into(), "B".into());
-        let later = resolve_profile(&projection, ProfileResolutionRequest { coding_agent_id: "same", launch_path: None, agent_matrix_name: Some("target"), requested_profile: None, requested_profile_authoritative: false });
+        assert_eq!(
+            null.configuration_ref.calculated_id,
+            configuration_identity("tool", &[])
+        );
+        assert_eq!(
+            null.configuration_ref.profile_calculated_id,
+            Some(pair_identity(
+                "tool",
+                &[],
+                &crate::config::settings::empty_profile_cell()
+            ))
+        );
+        projection
+            .coding_agent_profiles
+            .default_profile_by_agent
+            .insert("target".into(), "B".into());
+        let later = resolve_profile(
+            &projection,
+            ProfileResolutionRequest {
+                coding_agent_id: "same",
+                launch_path: None,
+                agent_matrix_name: Some("target"),
+                requested_profile: None,
+                requested_profile_authoritative: false,
+            },
+        );
         assert_eq!(later.effective_profile, "B");
-        assert_ne!(null.configuration_ref.profile_calculated_id, Some(pair_identity(&agent.command, &agent.envs, &later.cell)));
-        assert_eq!(registered.tickets["same"]["B"].configuration_ref.profile_calculated_id, Some(pair_identity(&agent.command, &agent.envs, &later.cell)));
+        assert_ne!(
+            null.configuration_ref.profile_calculated_id,
+            Some(pair_identity(&agent.command, &agent.envs, &later.cell))
+        );
+        assert_eq!(
+            registered.tickets["same"]["B"]
+                .configuration_ref
+                .profile_calculated_id,
+            Some(pair_identity(&agent.command, &agent.envs, &later.cell))
+        );
 
         // Same stable key AND BASE in another physical file cannot donate B or slots.
-        let catalog_source = crate::config::settings::list_agent_files(&owner.current_snapshot().await.unwrap(), &_temp.path().join(SETTINGS_FILE_NAME)).unwrap().sources[0].source.clone();
+        let catalog_source = crate::config::settings::list_agent_files(
+            &owner.current_snapshot().await.unwrap(),
+            &_temp.path().join(SETTINGS_FILE_NAME),
+        )
+        .unwrap()
+        .sources[0]
+            .source
+            .clone();
         assert_eq!(catalog_source, registered.source);
-        let catalog_path = crate::config::coding_agents_catalog::independent_catalog_path(_temp.path(), SourceKind::CatalogPersonal).unwrap();
+        let catalog_path = crate::config::coding_agents_catalog::independent_catalog_path(
+            _temp.path(),
+            SourceKind::CatalogPersonal,
+        )
+        .unwrap();
         std::fs::create_dir_all(catalog_path.parent().unwrap()).unwrap();
         std::fs::write(&catalog_path, serde_json::to_vec(&json!({"schemaVersion":1,"agents":[{"key":"same","label":"Catalog","color":"blue","baseCommand":"tool"}],"profileSlots":{"C":{"label":"Own C"}},"codingAgentProfiles":{"same":{"C":{"additionalArguments":"--catalog"}}}})).unwrap()).unwrap();
         let listed = list_agent_file_sources_inner(&owner).await.unwrap();
-        let catalog_ref = listed.sources.iter().find(|s| s.source.kind == SourceKind::CatalogPersonal).unwrap().source.clone();
-        let catalog = read_agent_file_source_inner(&owner, catalog_ref).await.unwrap();
+        let catalog_ref = listed
+            .sources
+            .iter()
+            .find(|s| s.source.kind == SourceKind::CatalogPersonal)
+            .unwrap()
+            .source
+            .clone();
+        let catalog = read_agent_file_source_inner(&owner, catalog_ref)
+            .await
+            .unwrap();
         assert!(!catalog.tickets["same"].contains_key("B"));
         assert!(catalog.tickets["same"].contains_key("C"));
         assert!(registered.profile_slots.get("C").is_none());
         assert_eq!(catalog.rows[0].base_hash, registered.rows[0].base_hash);
-        assert_ne!(catalog.tickets["same"]["C"].configuration_ref.profile_calculated_id, registered.tickets["same"]["B"].configuration_ref.profile_calculated_id);
+        assert_ne!(
+            catalog.tickets["same"]["C"]
+                .configuration_ref
+                .profile_calculated_id,
+            registered.tickets["same"]["B"]
+                .configuration_ref
+                .profile_calculated_id
+        );
     }
 
     #[tokio::test]
     async fn e2432_p02_public_save_normalizes_then_returns_fresh_and_rejects_stale() {
         let (_temp, owner) = fixture();
         let mut list = list_agent_file_sources_inner(&owner).await.unwrap();
-        let before = read_agent_file_source_inner(&owner, list.sources.remove(0).source).await.unwrap();
+        let before = read_agent_file_source_inner(&owner, list.sources.remove(0).source)
+            .await
+            .unwrap();
         let edit: AgentFileEdits = serde_json::from_value(json!({"rows":[],"profileSets":[{"baseHash":configuration_identity("tool", &[]),"cells":{"B":{"additionalArguments":"--edited"}},"labels":{"B":"Edited"}}]})).unwrap();
-        let reply = save_agent_file_source_inner(&owner, before.source.clone(), before.revision.clone(), before.context_revision.clone(), edit).await.unwrap();
-        assert_eq!(reply.outcome, crate::config::settings::AgentFileSaveOutcome::Committed);
-        assert!(!serde_json::to_string(&reply).unwrap().contains("P02-TEST-SECRET"));
+        let reply = save_agent_file_source_inner(
+            &owner,
+            before.source.clone(),
+            before.revision.clone(),
+            before.context_revision.clone(),
+            edit,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reply.outcome,
+            crate::config::settings::AgentFileSaveOutcome::Committed
+        );
+        assert!(!serde_json::to_string(&reply)
+            .unwrap()
+            .contains("P02-TEST-SECRET"));
         let after = reply.snapshot.unwrap();
         assert_ne!(after.revision, before.revision);
-        assert_eq!(after.tickets["same"]["B"].expected_source_revision, after.revision);
+        assert_eq!(
+            after.tickets["same"]["B"].expected_source_revision,
+            after.revision
+        );
         assert!(reply.effective_settings.is_some());
-        let stale = save_agent_file_source_inner(&owner, before.source.clone(), before.revision, before.context_revision, AgentFileEdits::default()).await.unwrap();
-        assert_eq!(stale.outcome, crate::config::settings::AgentFileSaveOutcome::Rejected);
+        let stale = save_agent_file_source_inner(
+            &owner,
+            before.source.clone(),
+            before.revision,
+            before.context_revision,
+            AgentFileEdits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stale.outcome,
+            crate::config::settings::AgentFileSaveOutcome::Rejected
+        );
         assert_eq!(stale.snapshot.unwrap().revision, after.revision);
-        remember_agent_file_source_inner(&owner, AgentFileSourceMenu::Picker, before.source).await.unwrap();
+        remember_agent_file_source_inner(&owner, AgentFileSourceMenu::Picker, before.source)
+            .await
+            .unwrap();
         let listed = list_agent_file_sources_inner(&owner).await.unwrap();
         assert!(listed.last_selected.settings.is_none());
         assert!(listed.last_selected.picker.is_some());
@@ -15194,35 +15434,72 @@ mod e2432_p02_source_api_tests {
         let instance = temp.path().join("instance");
         let project = temp.path().join("project");
         let second = temp.path().join("second");
-        for dir in [&instance, &project, &second] { std::fs::create_dir(dir).unwrap(); }
+        for dir in [&instance, &project, &second] {
+            std::fs::create_dir(dir).unwrap();
+        }
         let path = instance.join(SETTINGS_FILE_NAME);
         let mut settings = AppSettings::default();
         settings.project_paths = vec![project.to_string_lossy().into_owned()];
         std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
-        let catalog = crate::config::coding_agents_catalog::independent_catalog_path(&project.join(".ac"), SourceKind::CatalogPersonal).unwrap();
+        let catalog = crate::config::coding_agents_catalog::independent_catalog_path(
+            &project.join(".ac"),
+            SourceKind::CatalogPersonal,
+        )
+        .unwrap();
         std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
         let raw = json!({"schemaVersion":2,"agents":[{"key":"same","label":"Catalog","description":"Own","color":"blue","baseCommand":"catalog-tool","extension":{"keep":null}}],"extension":{"preserve":42},"codingAgentProfiles":{"same":{"B":{"additionalArguments":"--own"}}}});
         std::fs::write(&catalog, serde_json::to_vec(&raw).unwrap()).unwrap();
         let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
         let list = list_agent_file_sources_inner(&owner).await.unwrap();
-        let source = list.sources.iter().find(|s| s.source.scope == SourceScope::Project && s.source.kind == SourceKind::CatalogPersonal).unwrap().source.clone();
-        let before = read_agent_file_source_inner(&owner, source.clone()).await.unwrap();
+        let source = list
+            .sources
+            .iter()
+            .find(|s| {
+                s.source.scope == SourceScope::Project
+                    && s.source.kind == SourceKind::CatalogPersonal
+            })
+            .unwrap()
+            .source
+            .clone();
+        let before = read_agent_file_source_inner(&owner, source.clone())
+            .await
+            .unwrap();
         assert!(before.capabilities.editable_save);
         let edit = serde_json::from_value(json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]})).unwrap();
-        let reply = save_agent_file_source_inner(&owner, source.clone(), before.revision.clone(), before.context_revision.clone(), edit).await.unwrap();
+        let reply = save_agent_file_source_inner(
+            &owner,
+            source.clone(),
+            before.revision.clone(),
+            before.context_revision.clone(),
+            edit,
+        )
+        .await
+        .unwrap();
         assert_eq!(reply.outcome, AgentFileSaveOutcome::Committed);
         let after = reply.snapshot.unwrap();
-        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
         assert_eq!(saved["schemaVersion"], json!(2));
         assert_eq!(saved["extension"], raw["extension"]);
-        assert_eq!(saved["agents"][0]["extension"], raw["agents"][0]["extension"]);
+        assert_eq!(
+            saved["agents"][0]["extension"],
+            raw["agents"][0]["extension"]
+        );
         assert_eq!(saved["agents"][0]["label"], json!("Edited"));
         assert_eq!(after.rows[0].raw["label"], json!("Edited"));
         // Registry changed on disk: old context/source cannot publish into the old project.
         settings.project_paths = vec![second.to_string_lossy().into_owned()];
         std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
         let bytes = std::fs::read(&catalog).unwrap();
-        let rejected = save_agent_file_source_inner(&owner, source, after.revision, before.context_revision, AgentFileEdits::default()).await.unwrap();
+        let rejected = save_agent_file_source_inner(
+            &owner,
+            source,
+            after.revision,
+            before.context_revision,
+            AgentFileEdits::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(rejected.outcome, AgentFileSaveOutcome::Rejected);
         assert_eq!(std::fs::read(&catalog).unwrap(), bytes);
     }
@@ -15231,97 +15508,227 @@ mod e2432_p02_source_api_tests {
     async fn e2432_p02_preference_endpoint_rejects_value_after_actual_failed_adoption() {
         use crate::config::settings::{remember_agent_file_locked, OperationOutcome};
         let (temp, owner) = fixture();
-        let source = list_agent_file_sources_inner(&owner).await.unwrap().sources.remove(0).source;
+        let source = list_agent_file_sources_inner(&owner)
+            .await
+            .unwrap()
+            .sources
+            .remove(0)
+            .source;
         let worker_owner = Arc::clone(&owner);
-        let sidecar = temp.path().join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME);
+        let sidecar = temp
+            .path()
+            .join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME);
         let report = tokio::task::spawn_blocking(move || {
-            worker_owner.with_operation_blocking("p02-preference-endpoint-recapture", |current, guard| {
-                let preferences = remember_agent_file_locked(current, guard, AgentFileSourceMenu::Picker, &source)?;
-                std::fs::write(sidecar, b"{").unwrap();
-                Ok(preferences)
-            }).unwrap()
-        }).await.unwrap();
+            worker_owner
+                .with_operation_blocking("p02-preference-endpoint-recapture", |current, guard| {
+                    let preferences = remember_agent_file_locked(
+                        current,
+                        guard,
+                        AgentFileSourceMenu::Picker,
+                        &source,
+                    )?;
+                    std::fs::write(sidecar, b"{").unwrap();
+                    Ok(preferences)
+                })
+                .unwrap()
+        })
+        .await
+        .unwrap();
         assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
         assert!(report.value.is_some());
-        let error = finish_remember_agent_file_report(&owner, report).await.unwrap_err();
+        let error = finish_remember_agent_file_report(&owner, report)
+            .await
+            .unwrap_err();
         assert!(error.contains("partialOrUnknown"));
     }
 
     #[tokio::test]
     async fn e2432_p02_native_catalog_events_silent_registered_events_live() {
-        use tauri::{Listener, Manager};
         use crate::config::settings::{AgentFileSaveOutcome, SourceScope};
+        use tauri::{Listener, Manager};
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join(SETTINGS_FILE_NAME);
         let project = temp.path().join("project");
         std::fs::create_dir(&project).unwrap();
-        let initial = AppSettings { project_paths: vec![project.to_string_lossy().into_owned()], ..AppSettings::default() };
+        let initial = AppSettings {
+            project_paths: vec![project.to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
         std::fs::write(&path, serde_json::to_vec(&initial).unwrap()).unwrap();
         std::fs::write(temp.path().join(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME), br#"{"agents":[{"id":"registered","label":"Registered","color":"red","baseCommand":"tool"}]}"#).unwrap();
-        let catalog = crate::config::coding_agents_catalog::independent_catalog_path(&project.join(".ac"), SourceKind::CatalogPersonal).unwrap();
+        let catalog = crate::config::coding_agents_catalog::independent_catalog_path(
+            &project.join(".ac"),
+            SourceKind::CatalogPersonal,
+        )
+        .unwrap();
         std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
         std::fs::write(&catalog, br#"{"schemaVersion":1,"agents":[{"key":"own","label":"Original","color":"blue","baseCommand":"catalog-tool"}]}"#).unwrap();
         let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
         let broadcaster = WsBroadcaster::new();
         let mut ws = broadcaster.subscribe();
-        let app = crate::test_support::test_builder().manage(owner.clone()).manage(broadcaster)
-            .build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+        let app = crate::test_support::test_builder()
+            .manage(owner.clone())
+            .manage(broadcaster)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
         let (tx, events) = std::sync::mpsc::channel();
-        for event in ["coding_agent_settings_updated", "coding_agent_profiles_updated"] {
+        for event in [
+            "coding_agent_settings_updated",
+            "coding_agent_profiles_updated",
+        ] {
             let tx = tx.clone();
-            app.listen_any(event, move |_| { tx.send(event).unwrap(); });
+            app.listen_any(event, move |_| {
+                tx.send(event).unwrap();
+            });
         }
         let list = list_agent_file_sources_inner(&owner).await.unwrap();
-        let source = list.sources.iter().find(|s| s.source.scope == SourceScope::Project && s.source.kind == SourceKind::CatalogPersonal).unwrap().source.clone();
-        let before = read_agent_file_source_inner(&owner, source.clone()).await.unwrap();
+        let source = list
+            .sources
+            .iter()
+            .find(|s| {
+                s.source.scope == SourceScope::Project
+                    && s.source.kind == SourceKind::CatalogPersonal
+            })
+            .unwrap()
+            .source
+            .clone();
+        let before = read_agent_file_source_inner(&owner, source.clone())
+            .await
+            .unwrap();
         let epoch = owner.identity().epoch;
         let ram = serde_json::to_value(owner.current_snapshot().await.unwrap()).unwrap();
         let edits = serde_json::from_value(json!({"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]})).unwrap();
-        let reply = save_agent_file_source(app.handle().clone(), app.state(), source.clone(), before.revision.clone(), before.context_revision.clone(), edits).await.unwrap();
+        let reply = save_agent_file_source(
+            app.handle().clone(),
+            app.state(),
+            source.clone(),
+            before.revision.clone(),
+            before.context_revision.clone(),
+            edits,
+        )
+        .await
+        .unwrap();
         assert_eq!(reply.outcome, AgentFileSaveOutcome::Committed);
-        assert!(reply.diagnostics.iter().any(|d| d.code == "effectiveSettingsUnchanged"));
-        assert_eq!(serde_json::to_value(reply.effective_settings.unwrap()).unwrap(), ram);
-        assert_eq!(reply.snapshot.as_ref().unwrap().rows[0].raw["label"], json!("Edited"));
+        assert!(reply
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "effectiveSettingsUnchanged"));
+        assert_eq!(
+            serde_json::to_value(reply.effective_settings.unwrap()).unwrap(),
+            ram
+        );
+        assert_eq!(
+            reply.snapshot.as_ref().unwrap().rows[0].raw["label"],
+            json!("Edited")
+        );
         let actual: Value = serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
         assert_eq!(actual["agents"][0]["label"], json!("Edited"));
-        let fresh = read_agent_file_source_inner(&owner, source.clone()).await.unwrap();
+        let fresh = read_agent_file_source_inner(&owner, source.clone())
+            .await
+            .unwrap();
         assert_ne!(fresh.revision, before.revision);
         assert_eq!(fresh.revision, reply.snapshot.unwrap().revision);
         assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
-        assert!(matches!(ws.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
-        let stale = save_agent_file_source(app.handle().clone(), app.state(), source.clone(), before.revision, before.context_revision, AgentFileEdits::default()).await.unwrap();
+        assert!(matches!(
+            ws.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        let stale = save_agent_file_source(
+            app.handle().clone(),
+            app.state(),
+            source.clone(),
+            before.revision,
+            before.context_revision,
+            AgentFileEdits::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(stale.outcome, AgentFileSaveOutcome::Rejected);
         assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
-        assert!(matches!(ws.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        assert!(matches!(
+            ws.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
             use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
             let bytes = std::fs::read(&catalog).unwrap();
-            let held = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).open(&catalog).unwrap();
+            let held = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&catalog)
+                .unwrap();
             let edits = serde_json::from_value(json!({"rows":[{"entryHint":"own","action":"upsert","patch":{"label":"Uncertain"}}],"profileSets":[]})).unwrap();
-            let uncertain = save_agent_file_source(app.handle().clone(), app.state(), source, fresh.revision.clone(), fresh.context_revision, edits).await.unwrap();
+            let uncertain = save_agent_file_source(
+                app.handle().clone(),
+                app.state(),
+                source,
+                fresh.revision.clone(),
+                fresh.context_revision,
+                edits,
+            )
+            .await
+            .unwrap();
             assert_eq!(uncertain.outcome, AgentFileSaveOutcome::PartialOrUnknown);
             assert_eq!(uncertain.snapshot.unwrap().revision, fresh.revision);
             assert_eq!(std::fs::read(&catalog).unwrap(), bytes);
             assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
-            assert!(matches!(ws.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+            assert!(matches!(
+                ws.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
             drop(held);
         }
         assert_eq!(owner.identity().epoch, epoch);
-        assert_eq!(serde_json::to_value(owner.current_snapshot().await.unwrap()).unwrap(), ram);
-        let registered = list.sources.iter().find(|s| s.source.kind == SourceKind::RegisteredInstance).unwrap().source.clone();
-        let snapshot = read_agent_file_source_inner(&owner, registered.clone()).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(owner.current_snapshot().await.unwrap()).unwrap(),
+            ram
+        );
+        let registered = list
+            .sources
+            .iter()
+            .find(|s| s.source.kind == SourceKind::RegisteredInstance)
+            .unwrap()
+            .source
+            .clone();
+        let snapshot = read_agent_file_source_inner(&owner, registered.clone())
+            .await
+            .unwrap();
         let edits = serde_json::from_value(json!({"rows":[{"entryHint":"registered","action":"upsert","patch":{"label":"Adopted"}}],"profileSets":[]})).unwrap();
-        let reply = save_agent_file_source(app.handle().clone(), app.state(), registered, snapshot.revision, snapshot.context_revision, edits).await.unwrap();
+        let reply = save_agent_file_source(
+            app.handle().clone(),
+            app.state(),
+            registered,
+            snapshot.revision,
+            snapshot.context_revision,
+            edits,
+        )
+        .await
+        .unwrap();
         assert_eq!(reply.outcome, AgentFileSaveOutcome::Committed);
         assert!(owner.identity().epoch > epoch);
-        for expected in ["coding_agent_settings_updated", "coding_agent_profiles_updated"] {
-            assert_eq!(events.recv_timeout(Duration::from_secs(1)).unwrap(), expected);
+        for expected in [
+            "coding_agent_settings_updated",
+            "coding_agent_profiles_updated",
+        ] {
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(1)).unwrap(),
+                expected
+            );
             let message = ws.try_recv().expect("managed WS sink must be live");
-            match message { crate::web::broadcast::WsOutMsg::Text(text) => assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["event"], json!(expected)), other => panic!("unexpected WS message {other:?}") }
+            match message {
+                crate::web::broadcast::WsOutMsg::Text(text) => assert_eq!(
+                    serde_json::from_str::<Value>(&text).unwrap()["event"],
+                    json!(expected)
+                ),
+                other => panic!("unexpected WS message {other:?}"),
+            }
         }
         assert!(events.try_recv().is_err());
-        assert!(matches!(ws.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        assert!(matches!(
+            ws.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
     }
 }
