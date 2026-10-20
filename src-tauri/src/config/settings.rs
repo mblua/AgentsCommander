@@ -43725,10 +43725,9 @@ mod e2432_p02_closed_owner_tests {
             assert_eq!(migrated["agentFileSourceByMenu"], self.invalid);
             assert_eq!(migrated["defaultShell"], json!(self.settings.default_shell));
             assert!(migrated.get("projectPaths").is_none());
-            let project_disk: Value = serde_json::from_slice(
-                &std::fs::read(project_paths_path(&self.path)).unwrap(),
-            )
-            .unwrap();
+            let project_disk: Value =
+                serde_json::from_slice(&std::fs::read(project_paths_path(&self.path)).unwrap())
+                    .unwrap();
             assert_eq!(project_disk["projectPaths"], self.main["projectPaths"]);
             let loaded = load_settings_from_path(&self.path);
             assert_eq!(loaded.default_shell, self.settings.default_shell);
@@ -43742,8 +43741,14 @@ mod e2432_p02_closed_owner_tests {
             let original = std::fs::read(&self.path).unwrap();
             let stabilized: Value = serde_json::from_slice(&original).unwrap();
             assert_eq!(stabilized["agentFileSourceByMenu"], self.invalid);
-            assert_eq!(stabilized["defaultShell"], json!(self.settings.default_shell));
-            assert_eq!(std::fs::read(&self.registered).unwrap(), self.registered_before);
+            assert_eq!(
+                stabilized["defaultShell"],
+                json!(self.settings.default_shell)
+            );
+            assert_eq!(
+                std::fs::read(&self.registered).unwrap(),
+                self.registered_before
+            );
             (loaded, original)
         }
 
