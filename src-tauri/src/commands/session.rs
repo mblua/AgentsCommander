@@ -18504,6 +18504,7 @@ exec claude \"$@\"
     }
 
     #[tokio::test]
+    #[ignore = "#2854 WIP/technical debt: simulator-dependent C19 reclaim test"]
     async fn retained_exited_respawn_c19_completed_restarts_reclaim_more_than_64_entries() {
         let settings = muse_test_settings("muse");
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
