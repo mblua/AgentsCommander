@@ -8817,6 +8817,12 @@ mod tests {
 
     #[tokio::test]
     async fn e2992_p51_invalid_no_co_managed_budget() {
+        use crate::commands::session::co_managed_tests::{configure_room, room_fixture};
+        use crate::commands::session::reader_demand_tests::harness;
+        use crate::commands::telegram::{holds_room_reader_demand, room_demand_epoch};
+        use crate::telegram::manager::TelegramBridgeState;
+        use tauri::Manager;
+
         let fixture = make_co_managed_fixture();
         let (endpoint, hits) = spawn_jev_listener(vec![("to-user", 0.9)]).await;
         let (dir, denied) = p51_invalid_owner(AppSettings {
@@ -8867,6 +8873,49 @@ mod tests {
             .unwrap(),
             b"{"
         );
+        // A held demand makes the unavailable/global-off distinction observable.
+        let demand_fixture = room_fixture();
+        configure_room(demand_fixture.room_path(), true);
+        let demand_harness = harness(&demand_fixture);
+        let demand_id = demand_harness
+            .session_in(demand_fixture.coordinator_path())
+            .await;
+        super::reader_demand_pass(demand_harness.app.handle()).await;
+        assert!(holds_room_reader_demand(demand_harness.app.handle(), demand_id).await);
+        let epoch = room_demand_epoch(demand_harness.app.handle(), demand_id).await;
+        let demand_app = tauri::test::mock_builder()
+            .manage(Arc::clone(&denied))
+            .manage(Arc::clone(
+                demand_harness
+                    .app
+                    .state::<Arc<tokio::sync::RwLock<SessionManager>>>()
+                    .inner(),
+            ))
+            .manage(Arc::clone(
+                demand_harness.app.state::<TelegramBridgeState>().inner(),
+            ))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        for _ in 0..2 {
+            assert!(!super::release_room_reader_demands_when_globally_off(demand_app.handle()).await);
+            assert!(holds_room_reader_demand(demand_app.handle(), demand_id).await);
+            assert_eq!(room_demand_epoch(demand_app.handle(), demand_id).await, epoch);
+        }
+        // Positive control: the same session and bridge really release when Ready/off.
+        demand_harness.set_global_co_managed(false, "test-key").await;
+        assert!(
+            super::release_room_reader_demands_when_globally_off(demand_harness.app.handle()).await
+        );
+        assert!(!holds_room_reader_demand(demand_harness.app.handle(), demand_id).await);
+        assert_ne!(
+            room_demand_epoch(demand_harness.app.handle(), demand_id).await,
+            epoch
+        );
+        crate::commands::session::reader_demand_tests::assert_no_room_reader_state_for(
+            &demand_harness,
+            demand_id,
+        )
+        .await;
         p51_close_owner(denied).await;
 
         // Ready control: a secret is handled before any network request.
