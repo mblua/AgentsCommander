@@ -14051,8 +14051,10 @@ mod e2432_p02_catalog_publication_tests {
         let path = temp
             .path()
             .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
-        let mut settings = AppSettings::default();
-        settings.project_paths = vec![project.to_string_lossy().into_owned()];
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
         std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
         let dir = catalog_dir(&project.join(".ac"));
         std::fs::create_dir_all(&dir).unwrap();

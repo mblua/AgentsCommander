@@ -1622,9 +1622,11 @@ fn collect_registered_profile_gate(path: &Path) -> RegisteredProfileCapture {
     classify_registered_profile_inputs(path, inputs)
 }
 
+type RegisteredProfileInput = (PathBuf, Result<Option<Vec<u8>>, String>);
+
 fn classify_registered_profile_inputs(
     path: &Path,
-    inputs: Vec<(PathBuf, Result<Option<Vec<u8>>, String>)>,
+    inputs: Vec<RegisteredProfileInput>,
 ) -> RegisteredProfileCapture {
     let mut captured = RegisteredProfileCapture::default();
     let mut sources = Vec::new();
@@ -42003,11 +42005,11 @@ fn snapshot_from_captured_source(
     }
     let decoded = (|| -> Result<(), String> {
         let bytes = observation.bytes().ok_or("sourceReadFailed")?;
-        snapshot.revision = source_bytes_revision(&bytes);
-        if let Some(reason) = duplicate_profile_document(&bytes, &path) {
+        snapshot.revision = source_bytes_revision(bytes);
+        if let Some(reason) = duplicate_profile_document(bytes, &path) {
             return Err(reason);
         }
-        let value = crate::config::coding_agents_catalog::parse_strict_json(&bytes)?;
+        let value = crate::config::coding_agents_catalog::parse_strict_json(bytes)?;
         let sets = physical_profile_sets(&value, registered)?;
         let (agents, profiles) = agent_file_decode(&value, registered)?;
         let projection = AppSettings {
@@ -43599,8 +43601,10 @@ mod e2432_p02_closed_owner_tests {
         let path = temp.path().join(SETTINGS_FILE_NAME);
         let project = temp.path().join("project");
         std::fs::create_dir(&project).unwrap();
-        let mut settings = AppSettings::default();
-        settings.project_paths = vec![project.to_string_lossy().into_owned()];
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
         write(&path, &serde_json::to_value(settings).unwrap());
         write(
             &agents_instance_path(&path),

@@ -15363,7 +15363,7 @@ mod e2432_p02_source_api_tests {
             .unwrap();
         assert!(!catalog.tickets["same"].contains_key("B"));
         assert!(catalog.tickets["same"].contains_key("C"));
-        assert!(registered.profile_slots.get("C").is_none());
+        assert!(!registered.profile_slots.contains_key("C"));
         assert_eq!(catalog.rows[0].base_hash, registered.rows[0].base_hash);
         assert_ne!(
             catalog.tickets["same"]["C"]
@@ -15438,8 +15438,10 @@ mod e2432_p02_source_api_tests {
             std::fs::create_dir(dir).unwrap();
         }
         let path = instance.join(SETTINGS_FILE_NAME);
-        let mut settings = AppSettings::default();
-        settings.project_paths = vec![project.to_string_lossy().into_owned()];
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
         std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
         let catalog = crate::config::coding_agents_catalog::independent_catalog_path(
             &project.join(".ac"),
