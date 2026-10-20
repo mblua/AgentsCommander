@@ -43653,6 +43653,194 @@ mod e2432_p02_closed_owner_tests {
         }
     }
 
+    struct MalformedPreferencesCase {
+        _temp: tempfile::TempDir,
+        path: PathBuf,
+        project: PathBuf,
+        settings: AppSettings,
+        main: Value,
+        invalid: Value,
+        registered: PathBuf,
+        registered_before: Vec<u8>,
+    }
+
+    impl MalformedPreferencesCase {
+        fn new(invalid: Value) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(SETTINGS_FILE_NAME);
+            let project = temp.path().join("project");
+            std::fs::create_dir(&project).unwrap();
+            std::fs::create_dir(project.join(".ac")).unwrap();
+            let settings = AppSettings {
+                default_shell: "p02-custom-shell".into(),
+                default_shell_args: vec!["--p02".into()],
+                root_token: Some("p02-preserved-token".into()),
+                project_paths: vec![project.to_string_lossy().into_owned()],
+                ..AppSettings::default()
+            };
+            let mut main = serde_json::to_value(&settings).unwrap();
+            main.as_object_mut().unwrap().remove("agents");
+            main.as_object_mut().unwrap().remove("codingAgentProfiles");
+            main["agentFileSourceByMenu"] = invalid.clone();
+            write(&path, &main);
+            let packet = json!({
+                "agents":[{"id":"own","label":"Own","color":"red","baseCommand":"tool"}],
+                "codingAgentProfiles":{
+                    "schemaVersion":2,
+                    "profileSlots":{"A":{"label":""}},
+                    "profilesByAgent":{"own":{"A":{}}}
+                }
+            });
+            let packet = canonical_profile_source(&packet, &packet, true).unwrap();
+            let registered = agents_instance_path(&path);
+            write(&registered, &packet);
+            let registered_before = std::fs::read(&registered).unwrap();
+            Self {
+                _temp: temp,
+                path,
+                project,
+                settings,
+                main,
+                invalid,
+                registered,
+                registered_before,
+            }
+        }
+
+        fn assert_ordinary_loads(&self) -> (AppSettings, Vec<u8>) {
+            let mut ordinary_value = serde_json::to_value(&self.settings).unwrap();
+            ordinary_value["agentFileSourceByMenu"] = self.invalid.clone();
+            let decoded: AppSettings = serde_json::from_value(ordinary_value).unwrap();
+            assert_eq!(decoded.default_shell, self.settings.default_shell);
+            assert!(decoded.agent_file_source_by_menu.is_none());
+            assert!(
+                serde_json::from_value::<AgentFileSourcePreferences>(self.invalid.clone()).is_err()
+            );
+            let (ordinary, _, _) = read_settings_for_startup(&self.path);
+            assert_eq!(ordinary.default_shell, self.settings.default_shell);
+            assert_eq!(ordinary.agents[0].id, "own");
+            assert!(ordinary.agent_file_source_by_menu.is_none());
+            let migrated: Value =
+                serde_json::from_slice(&std::fs::read(&self.path).unwrap()).unwrap();
+            assert_eq!(migrated["agentFileSourceByMenu"], self.invalid);
+            assert_eq!(migrated["defaultShell"], json!(self.settings.default_shell));
+            assert!(migrated.get("projectPaths").is_none());
+            let project_disk: Value = serde_json::from_slice(
+                &std::fs::read(project_paths_path(&self.path)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(project_disk["projectPaths"], self.main["projectPaths"]);
+            let loaded = load_settings_from_path(&self.path);
+            assert_eq!(loaded.default_shell, self.settings.default_shell);
+            assert_eq!(loaded.default_shell_args, self.settings.default_shell_args);
+            assert_eq!(loaded.root_token, self.settings.root_token);
+            assert_eq!(loaded.agents[0].command, "tool");
+            assert!(loaded.agent_file_source_by_menu.is_none());
+            assert!(loaded.project_paths.iter().any(|p| {
+                Path::new(p).canonicalize().unwrap() == self.project.canonicalize().unwrap()
+            }));
+            let original = std::fs::read(&self.path).unwrap();
+            let stabilized: Value = serde_json::from_slice(&original).unwrap();
+            assert_eq!(stabilized["agentFileSourceByMenu"], self.invalid);
+            assert_eq!(stabilized["defaultShell"], json!(self.settings.default_shell));
+            assert_eq!(std::fs::read(&self.registered).unwrap(), self.registered_before);
+            (loaded, original)
+        }
+
+        fn assert_strict_owner_refusals(&self, original: &[u8]) -> SourceRef {
+            let owner = SettingsOwner::open_active(&self.path, Duration::from_secs(1)).unwrap();
+            let adopted = owner.blocking_current_snapshot().unwrap();
+            assert_eq!(adopted.default_shell, self.settings.default_shell);
+            assert_eq!(adopted.agents[0].id, "own");
+            assert!(adopted.agent_file_source_by_menu.is_none());
+            let context = SourceReadContext::from_settings(&adopted, &self.path).unwrap();
+            let source = context.source(SourceKind::RegisteredInstance);
+            assert!(matches!(
+                owner.read_agent_files_blocking(AgentFileReadRequest::List),
+                Err(reason) if reason == "invalidSourcePreferences"
+            ));
+            assert!(matches!(
+                owner.read_agent_files_blocking(AgentFileReadRequest::Read(source.clone())),
+                Err(reason) if reason == "invalidSourcePreferences"
+            ));
+            let rejected = owner
+                .with_operation_blocking("p02-malformed-preferences", |current, guard| {
+                    let result = remember_agent_file_locked(
+                        current,
+                        guard,
+                        AgentFileSourceMenu::Settings,
+                        &source,
+                    );
+                    assert_eq!(guard.effect(), OperationEffect::None);
+                    result
+                })
+                .unwrap();
+            assert_eq!(rejected.outcome, OperationOutcome::Rejected);
+            assert_eq!(rejected.error.as_deref(), Some("invalidSourcePreferences"));
+            assert_eq!(std::fs::read(&self.path).unwrap(), original);
+            owner.drain_blocking(Duration::from_secs(1));
+            source
+        }
+
+        fn assert_save_and_roundtrip(&self, loaded: &AppSettings, source: SourceRef) {
+            let saved = save_settings_to_path_preserving_project_paths(loaded, &self.path).unwrap();
+            assert_eq!(saved.default_shell, self.settings.default_shell);
+            assert!(saved.agent_file_source_by_menu.is_none());
+            let disk: Value = serde_json::from_slice(&std::fs::read(&self.path).unwrap()).unwrap();
+            assert_eq!(disk["agentFileSourceByMenu"], self.invalid);
+            assert_eq!(disk["defaultShell"], json!(self.settings.default_shell));
+            let valid = AgentFileSourcePreferences {
+                settings: Some(source.clone()),
+                picker: Some(source),
+            };
+            let mut valid_main = serde_json::to_value(&self.settings).unwrap();
+            valid_main["agentFileSourceByMenu"] = serde_json::to_value(&valid).unwrap();
+            let roundtrip: AppSettings = serde_json::from_value(valid_main).unwrap();
+            assert_eq!(
+                serde_json::to_value(&roundtrip.agent_file_source_by_menu).unwrap(),
+                json!(valid)
+            );
+            let encoded = serde_json::to_value(&roundtrip).unwrap();
+            assert_eq!(encoded["agentFileSourceByMenu"], json!(valid));
+        }
+    }
+
+    #[cfg(windows)]
+    fn assert_simulated_lease_failure_preserved(
+        owner: &SettingsOwner,
+        epoch: u64,
+        ram: &Value,
+        counters: [u64; 4],
+        bytes: Vec<(PathBuf, Option<Vec<u8>>)>,
+    ) {
+        assert_eq!(owner.availability(), SettingsAvailability::Invalid);
+        assert_eq!(owner.identity().epoch, epoch);
+        assert_eq!(
+            serde_json::to_value(owner.settings.blocking_read().clone()).unwrap(),
+            *ram
+        );
+        assert_eq!(
+            [
+                owner
+                    .counters
+                    .transaction_lock_attempts
+                    .load(Ordering::Relaxed),
+                owner.counters.captures.load(Ordering::Relaxed),
+                owner.counters.source_reads.load(Ordering::Relaxed),
+                owner.counters.operations.load(Ordering::Relaxed),
+            ],
+            counters
+        );
+        for (path, before) in bytes {
+            match before {
+                Some(before) => assert_eq!(std::fs::read(path).unwrap(), before),
+                None => assert!(!path.exists()),
+            }
+        }
+        assert_eq!(owner.control().operations, 0);
+        assert_eq!(owner.control().permits, 0);
+    }
+
     fn save(f: &Fixture) -> AgentFileSaveReply {
         f.owner
             .save_catalog_source_blocking(
@@ -44209,32 +44397,7 @@ mod e2432_p02_closed_owner_tests {
                 1,
                 "first operation_guard verify must consume fault"
             );
-            assert_eq!(owner.availability(), SettingsAvailability::Invalid);
-            assert_eq!(owner.identity().epoch, epoch);
-            assert_eq!(
-                serde_json::to_value(owner.settings.blocking_read().clone()).unwrap(),
-                ram
-            );
-            assert_eq!(
-                [
-                    owner
-                        .counters
-                        .transaction_lock_attempts
-                        .load(Ordering::Relaxed),
-                    owner.counters.captures.load(Ordering::Relaxed),
-                    owner.counters.source_reads.load(Ordering::Relaxed),
-                    owner.counters.operations.load(Ordering::Relaxed),
-                ],
-                counters
-            );
-            for (path, before) in bytes {
-                match before {
-                    Some(before) => assert_eq!(std::fs::read(path).unwrap(), before),
-                    None => assert!(!path.exists()),
-                }
-            }
-            assert_eq!(owner.control().operations, 0);
-            assert_eq!(owner.control().permits, 0);
+            assert_simulated_lease_failure_preserved(&owner, epoch, &ram, counters, bytes);
             assert!(owner.blocking_current_snapshot().is_err());
             assert!(owner
                 .read_agent_files_blocking(AgentFileReadRequest::List)
@@ -44371,116 +44534,10 @@ mod e2432_p02_closed_owner_tests {
             json!({"unknownMenu":{}}),
             json!({"settings":null,"picker":false}),
         ] {
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join(SETTINGS_FILE_NAME);
-            let project = temp.path().join("project");
-            std::fs::create_dir(&project).unwrap();
-            std::fs::create_dir(project.join(".ac")).unwrap();
-            let settings = AppSettings {
-                default_shell: "p02-custom-shell".into(),
-                default_shell_args: vec!["--p02".into()],
-                root_token: Some("p02-preserved-token".into()),
-                project_paths: vec![project.to_string_lossy().into_owned()],
-                ..AppSettings::default()
-            };
-            let mut main = serde_json::to_value(&settings).unwrap();
-            main.as_object_mut().unwrap().remove("agents");
-            main.as_object_mut().unwrap().remove("codingAgentProfiles");
-            main["agentFileSourceByMenu"] = invalid.clone();
-            write(&path, &main);
-            let packet = json!({
-                "agents":[{"id":"own","label":"Own","color":"red","baseCommand":"tool"}],
-                "codingAgentProfiles":{
-                    "schemaVersion":2,
-                    "profileSlots":{"A":{"label":""}},
-                    "profilesByAgent":{"own":{"A":{}}}
-                }
-            });
-            let packet = canonical_profile_source(&packet, &packet, true).unwrap();
-            let registered = agents_instance_path(&path);
-            write(&registered, &packet);
-            let registered_before = std::fs::read(&registered).unwrap();
-            let mut ordinary_value = serde_json::to_value(&settings).unwrap();
-            ordinary_value["agentFileSourceByMenu"] = invalid.clone();
-            let decoded: AppSettings = serde_json::from_value(ordinary_value).unwrap();
-            assert_eq!(decoded.default_shell, settings.default_shell);
-            assert!(decoded.agent_file_source_by_menu.is_none());
-            assert!(serde_json::from_value::<AgentFileSourcePreferences>(invalid.clone()).is_err());
-            let (ordinary, _, _) = read_settings_for_startup(&path);
-            assert_eq!(ordinary.default_shell, settings.default_shell);
-            assert_eq!(ordinary.agents[0].id, "own");
-            assert!(ordinary.agent_file_source_by_menu.is_none());
-            let migrated: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            assert_eq!(migrated["agentFileSourceByMenu"], invalid);
-            assert_eq!(migrated["defaultShell"], json!(settings.default_shell));
-            assert!(migrated.get("projectPaths").is_none());
-            let project_disk: Value =
-                serde_json::from_slice(&std::fs::read(project_paths_path(&path)).unwrap()).unwrap();
-            assert_eq!(project_disk["projectPaths"], main["projectPaths"]);
-            let loaded = load_settings_from_path(&path);
-            assert_eq!(loaded.default_shell, settings.default_shell);
-            assert_eq!(loaded.default_shell_args, settings.default_shell_args);
-            assert_eq!(loaded.root_token, settings.root_token);
-            assert_eq!(loaded.agents[0].command, "tool");
-            assert!(loaded.agent_file_source_by_menu.is_none());
-            assert!(loaded.project_paths.iter().any(|p| {
-                Path::new(p).canonicalize().unwrap() == project.canonicalize().unwrap()
-            }));
-            let original = std::fs::read(&path).unwrap();
-            let stabilized: Value = serde_json::from_slice(&original).unwrap();
-            assert_eq!(stabilized["agentFileSourceByMenu"], invalid);
-            assert_eq!(stabilized["defaultShell"], json!(settings.default_shell));
-            assert_eq!(std::fs::read(&registered).unwrap(), registered_before);
-            let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
-            let adopted = owner.blocking_current_snapshot().unwrap();
-            assert_eq!(adopted.default_shell, settings.default_shell);
-            assert_eq!(adopted.agents[0].id, "own");
-            assert!(adopted.agent_file_source_by_menu.is_none());
-            let context = SourceReadContext::from_settings(&adopted, &path).unwrap();
-            let source = context.source(SourceKind::RegisteredInstance);
-            assert!(matches!(
-                owner.read_agent_files_blocking(AgentFileReadRequest::List),
-                Err(reason) if reason == "invalidSourcePreferences"
-            ));
-            assert!(matches!(
-                owner.read_agent_files_blocking(AgentFileReadRequest::Read(source.clone())),
-                Err(reason) if reason == "invalidSourcePreferences"
-            ));
-            let rejected = owner
-                .with_operation_blocking("p02-malformed-preferences", |current, guard| {
-                    let result = remember_agent_file_locked(
-                        current,
-                        guard,
-                        AgentFileSourceMenu::Settings,
-                        &source,
-                    );
-                    assert_eq!(guard.effect(), OperationEffect::None);
-                    result
-                })
-                .unwrap();
-            assert_eq!(rejected.outcome, OperationOutcome::Rejected);
-            assert_eq!(rejected.error.as_deref(), Some("invalidSourcePreferences"));
-            assert_eq!(std::fs::read(&path).unwrap(), original);
-            owner.drain_blocking(Duration::from_secs(1));
-            let saved = save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
-            assert_eq!(saved.default_shell, settings.default_shell);
-            assert!(saved.agent_file_source_by_menu.is_none());
-            let disk: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            assert_eq!(disk["agentFileSourceByMenu"], invalid);
-            assert_eq!(disk["defaultShell"], json!(settings.default_shell));
-            let valid = AgentFileSourcePreferences {
-                settings: Some(source.clone()),
-                picker: Some(source),
-            };
-            let mut valid_main = serde_json::to_value(&settings).unwrap();
-            valid_main["agentFileSourceByMenu"] = serde_json::to_value(&valid).unwrap();
-            let roundtrip: AppSettings = serde_json::from_value(valid_main).unwrap();
-            assert_eq!(
-                serde_json::to_value(&roundtrip.agent_file_source_by_menu).unwrap(),
-                json!(valid)
-            );
-            let encoded = serde_json::to_value(&roundtrip).unwrap();
-            assert_eq!(encoded["agentFileSourceByMenu"], json!(valid));
+            let case = MalformedPreferencesCase::new(invalid);
+            let (loaded, original) = case.assert_ordinary_loads();
+            let source = case.assert_strict_owner_refusals(&original);
+            case.assert_save_and_roundtrip(&loaded, source);
         }
     }
 }
