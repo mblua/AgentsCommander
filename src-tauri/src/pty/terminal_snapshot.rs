@@ -3426,7 +3426,7 @@ mod tests {
             let bytes = finalization
                 .build_host_response(
                     payload,
-                    request_id,
+                    request_id.clone(),
                     "c".repeat(64),
                     terminal_snapshot_renderer::canonical_timestamp(
                         chrono::Utc::now() + chrono::Duration::seconds(60),
@@ -3434,7 +3434,24 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert!(String::from_utf8_lossy(&bytes).contains(P44_CANARY));
+            let response = terminal_snapshot_renderer::decode_host_response(
+                &bytes,
+                &request_id,
+                &"c".repeat(64),
+                P44_TARGET,
+                TerminalSnapshotFormat::Json,
+            )
+            .unwrap();
+            let Some(TerminalSnapshotPayload::Json { snapshot }) = response.result else {
+                panic!("expected JSON screen payload");
+            };
+            assert!(snapshot.screen.lines.iter().any(|line| {
+                line.cells
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+                    .contains(P44_CANARY)
+            }));
             (finalization, bytes)
         }
 
