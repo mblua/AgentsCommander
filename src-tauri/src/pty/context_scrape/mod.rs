@@ -361,7 +361,8 @@ impl ContextScraper {
                         .unwrap_or_else(|e| e.into_inner())
                         .contains_key(&id)
                     {
-                        self.samples.observe(ContextSample::SessionOver { session_id: id });
+                        self.samples
+                            .observe(ContextSample::SessionOver { session_id: id });
                         if self.retire_session_under_sequence(id) {
                             changed_readings.push((id, None));
                         }
@@ -677,7 +678,6 @@ mod tests {
         }
     }
 
-
     #[tokio::test]
     async fn e2992_p51_unavailable_mid_tick_retirement() {
         let h = harness(RowsFake::scripted(vec![]), PatternFake::with(AGENT, CLAUDE));
@@ -691,16 +691,26 @@ mod tests {
         let resume = std::sync::Mutex::new(resume);
         *h.rows.on_liveness.lock().unwrap() = Some(Arc::new(move |_| {
             entered.lock().unwrap().take().unwrap().send(()).unwrap();
-            resume.lock().unwrap().recv_timeout(Duration::from_secs(2)).unwrap();
+            resume
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
         }));
         let engine = Arc::clone(&h.scraper);
         let tick = tokio::task::spawn_blocking(move || futures::executor::block_on(engine.tick()));
-        tokio::time::timeout(Duration::from_secs(2), handshake).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), handshake)
+            .await
+            .unwrap()
+            .unwrap();
         h.scraper.retire_session(id);
         let replacement = Uuid::new_v4();
         h.scraper.register_session(replacement, AGENT.to_string());
         release.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), tick).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), tick)
+            .await
+            .unwrap()
+            .unwrap();
         *h.rows.on_liveness.lock().unwrap() = None;
         assert!(!h.scraper.is_session_registered(id));
         assert!(h.scraper.is_session_registered(replacement));
@@ -721,7 +731,9 @@ mod tests {
                     }
                 }
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         assert_eq!(completed_ticks, 3);
     }
 
@@ -742,22 +754,37 @@ mod tests {
             ContextSessionLiveness::Unavailable,
         ];
         for _ in 0..2 {
-            tokio::time::timeout(Duration::from_secs(1), h.scraper.tick()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), h.scraper.tick())
+                .await
+                .unwrap();
         }
         assert_eq!(h.scraper.last_reading(id), Some(42));
         assert_eq!(h.rows.call_count(), 1);
         assert_eq!(h.scraper.compile_count(), 1);
         assert_eq!(h.scraper.sample_cursor.load(Ordering::Relaxed), cursor);
-        assert_eq!(h.samples.observed(), vec![ContextSample::Reading { session_id: id, percent: 42 }]);
+        assert_eq!(
+            h.samples.observed(),
+            vec![ContextSample::Reading {
+                session_id: id,
+                percent: 42
+            }]
+        );
         assert_eq!(h.persist.commits(), vec![vec![(id, Some(42))]]);
         h.patterns.set(AGENT, None);
         h.patterns.unavailable.store(false, Ordering::Relaxed);
         h.scraper.tick().await;
         h.scraper.tick().await;
         assert_eq!(h.sink.emitted(), vec![Some(42), None]);
-        assert_eq!(h.persist.commits(), vec![vec![(id, Some(42))], vec![(id, None)]]);
+        assert_eq!(
+            h.persist.commits(),
+            vec![vec![(id, Some(42))], vec![(id, None)]]
+        );
         h.patterns.set(AGENT, Some(CLAUDE));
-        h.rows.script.lock().unwrap().push(ScreenRowsRead::Rows(vec![row(70)]));
+        h.rows
+            .script
+            .lock()
+            .unwrap()
+            .push(ScreenRowsRead::Rows(vec![row(70)]));
         h.scraper.tick().await;
         assert_eq!(h.scraper.last_reading(id), Some(70));
     }
@@ -777,14 +804,22 @@ mod tests {
             ContextSessionLiveness::SessionOver,
         ];
         for _ in 0..3 {
-            tokio::time::timeout(Duration::from_secs(1), h.scraper.tick()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), h.scraper.tick())
+                .await
+                .unwrap();
         }
         assert!(!h.scraper.is_registered(id));
         assert_eq!(h.rows.liveness_call_count(), 2);
         assert_eq!(h.rows.call_count(), 1);
         assert_eq!(h.sink.emitted(), vec![Some(42), None]);
-        assert_eq!(h.persist.commits(), vec![vec![(id, Some(42))], vec![(id, None)]]);
-        assert_eq!(h.samples.observed().last(), Some(&ContextSample::SessionOver { session_id: id }));
+        assert_eq!(
+            h.persist.commits(),
+            vec![vec![(id, Some(42))], vec![(id, None)]]
+        );
+        assert_eq!(
+            h.samples.observed().last(),
+            Some(&ContextSample::SessionOver { session_id: id })
+        );
         h.scraper.register_session(id, AGENT.to_string());
         h.scraper.retire_session(id);
         h.scraper.tick().await;

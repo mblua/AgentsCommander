@@ -614,7 +614,6 @@ mod tests {
         }
     }
 
-
     #[tokio::test]
     async fn e2992_p51_unavailable_mid_tick_retirement() {
         let (h, id) = configured();
@@ -626,16 +625,26 @@ mod tests {
         let resume = std::sync::Mutex::new(resume);
         *h.rows.on_liveness.lock().unwrap() = Some(Arc::new(move |_| {
             entered.lock().unwrap().take().unwrap().send(()).unwrap();
-            resume.lock().unwrap().recv_timeout(Duration::from_secs(2)).unwrap();
+            resume
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
         }));
         let engine = Arc::clone(&h.engine);
         let tick = tokio::task::spawn_blocking(move || futures::executor::block_on(engine.tick()));
-        tokio::time::timeout(Duration::from_secs(2), handshake).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), handshake)
+            .await
+            .unwrap()
+            .unwrap();
         h.engine.retire_session(id);
         let replacement = Uuid::new_v4();
         h.engine.register_session(replacement, AGENT.to_string());
         release.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), tick).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), tick)
+            .await
+            .unwrap()
+            .unwrap();
         *h.rows.on_liveness.lock().unwrap() = None;
         assert!(!h.engine.is_session_registered(id));
         assert!(h.engine.is_session_registered(replacement));
@@ -655,7 +664,9 @@ mod tests {
                     }
                 }
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         assert_eq!(completed_ticks, 3);
     }
 
@@ -669,12 +680,20 @@ mod tests {
         let published = h.engine.published();
         let cursor = h.engine.sample_cursor.load(Ordering::Relaxed);
         h.sources.unavailable.store(true, Ordering::Relaxed);
-        for live in [ContextSessionLiveness::Live, ContextSessionLiveness::Unavailable] {
+        for live in [
+            ContextSessionLiveness::Live,
+            ContextSessionLiveness::Unavailable,
+        ] {
             h.rows.set_liveness(id, live);
-            tokio::time::timeout(Duration::from_secs(1), h.engine.tick()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), h.engine.tick())
+                .await
+                .unwrap();
         }
         assert_eq!(h.engine.published(), published);
-        assert_eq!(h.engine.account_readings.lock().unwrap().get("shared"), Some(&42));
+        assert_eq!(
+            h.engine.account_readings.lock().unwrap().get("shared"),
+            Some(&42)
+        );
         assert_eq!(h.engine.resolved.lock().unwrap().len(), 1);
         assert_eq!(h.engine.resolve_count(), 1);
         assert_eq!(h.engine.sample_cursor.load(Ordering::Relaxed), cursor);
@@ -683,7 +702,10 @@ mod tests {
         h.rows.set_liveness(id, ContextSessionLiveness::SessionOver);
         h.engine.tick().await;
         assert!(!h.engine.is_session_registered(id));
-        assert_eq!(h.engine.account_readings.lock().unwrap().get("shared"), Some(&42));
+        assert_eq!(
+            h.engine.account_readings.lock().unwrap().get("shared"),
+            Some(&42)
+        );
         assert_eq!(h.engine.published(), published);
         h.sources.disable(AGENT);
         h.sources.disable("peer");
@@ -694,7 +716,10 @@ mod tests {
         assert!(h.engine.account_readings.lock().unwrap().is_empty());
         assert!(h.engine.resolved.lock().unwrap().is_empty());
         assert_eq!(h.sink.emitted().len(), 4);
-        assert_eq!(h.sink.emitted()[2..], [payload(AGENT, None), payload("peer", None)]);
+        assert_eq!(
+            h.sink.emitted()[2..],
+            [payload(AGENT, None), payload("peer", None)]
+        );
         h.sources.configure(AGENT, spec(PATTERN));
         h.engine.register_session(id, AGENT.to_string());
         h.rows.push(id, rows(70));
@@ -707,7 +732,9 @@ mod tests {
         let (h, id) = configured();
         h.sources.unavailable.store(true, Ordering::Relaxed);
         for _ in 0..3 {
-            tokio::time::timeout(Duration::from_secs(1), h.engine.tick()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), h.engine.tick())
+                .await
+                .unwrap();
         }
         h.rows.set_liveness(id, ContextSessionLiveness::SessionOver);
         h.engine.tick().await;
@@ -719,10 +746,17 @@ mod tests {
         h.engine.register_session(id, AGENT.to_string());
         h.rows.set_liveness(id, ContextSessionLiveness::Live);
         let shutdown = crate::shutdown::ShutdownSignal::new();
-        let worker = h.engine.start_with_interval(shutdown.clone(), Duration::from_millis(1));
+        let worker = h
+            .engine
+            .start_with_interval(shutdown.clone(), Duration::from_millis(1));
         shutdown.trigger();
-        tokio::time::timeout(Duration::from_secs(5), tokio::task::spawn_blocking(move || worker.join().unwrap()))
-            .await.unwrap().unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || worker.join().unwrap()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     }
 
     /// A harness with AGENT configured and one registered session.

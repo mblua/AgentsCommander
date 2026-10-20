@@ -2896,14 +2896,17 @@ mod tests {
             .collect()
     }
 
-
     #[tokio::test]
     async fn e2992_p51_unavailable_mid_tick_retirement() {
         let h = Harness::new();
         let id = Uuid::new_v4();
         h.engine.register_session(id, Some("a1".into()));
         h.patterns.1.store(true, Ordering::Relaxed);
-        h.backends.liveness.lock().unwrap().insert(id, ContextSessionLiveness::SessionOver);
+        h.backends
+            .liveness
+            .lock()
+            .unwrap()
+            .insert(id, ContextSessionLiveness::SessionOver);
         h.engine.ticks.store(24, Ordering::Relaxed);
         let (entered, handshake) = tokio::sync::oneshot::channel();
         let entered = std::sync::Mutex::new(Some(entered));
@@ -2911,16 +2914,26 @@ mod tests {
         let resume = std::sync::Mutex::new(resume);
         *h.backends.on_liveness.lock().unwrap() = Some(Arc::new(move |_| {
             entered.lock().unwrap().take().unwrap().send(()).unwrap();
-            resume.lock().unwrap().recv_timeout(Duration::from_secs(2)).unwrap();
+            resume
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
         }));
         let engine = Arc::clone(&h.engine);
         let tick = tokio::task::spawn_blocking(move || futures::executor::block_on(engine.tick()));
-        tokio::time::timeout(Duration::from_secs(2), handshake).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), handshake)
+            .await
+            .unwrap()
+            .unwrap();
         h.engine.retire_session(id);
         let replacement = Uuid::new_v4();
         h.engine.register_session(replacement, Some("a1".into()));
         release.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), tick).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), tick)
+            .await
+            .unwrap()
+            .unwrap();
         *h.backends.on_liveness.lock().unwrap() = None;
         assert!(!h.engine.is_session_registered(id));
         assert!(h.engine.is_session_registered(replacement));
@@ -2940,7 +2953,9 @@ mod tests {
                     }
                 }
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         assert_eq!(completed_ticks, 3);
     }
 
@@ -2950,7 +2965,10 @@ mod tests {
         let h = Harness::with_activity_factory(factory);
         let id = Uuid::new_v4();
         h.engine.register_session(id, Some("a1".to_string()));
-        h.configure("a1", vec![super::engine_tests::state_watcher("ctx", r"Context (\d+)%")]);
+        h.configure(
+            "a1",
+            vec![super::engine_tests::state_watcher("ctx", r"Context (\d+)%")],
+        );
         h.backend.paint(id, &["Context 42%", WORKING]);
         h.engine.tick().await;
         assert_eq!(h.emitted().len(), 1);
@@ -2963,11 +2981,16 @@ mod tests {
         h.patterns.1.store(true, Ordering::Relaxed);
         h.backend.paint(id, &["Context 70%"]);
         for _ in 0..2 {
-            tokio::time::timeout(Duration::from_secs(1), h.engine.tick()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), h.engine.tick())
+                .await
+                .unwrap();
         }
         assert_eq!(h.emitted().len(), 1);
         assert_eq!(h.engine.compile_count(), 1);
-        assert_eq!(serde_json::to_value(h.history.snapshot(id, None)).unwrap(), history);
+        assert_eq!(
+            serde_json::to_value(h.history.snapshot(id, None)).unwrap(),
+            history
+        );
         let registered = h.engine.registered.lock().unwrap();
         let session = registered.get(&id).unwrap();
         assert_eq!((session.stamp, session.seq), (stamp, seq));
@@ -2977,7 +3000,10 @@ mod tests {
         h.patterns.1.store(false, Ordering::Relaxed);
         h.engine.tick().await;
         assert!(h.history.snapshot(id, None).active_watchers.is_empty());
-        h.configure("a1", vec![super::engine_tests::state_watcher("ctx", r"Context (\d+)%")]);
+        h.configure(
+            "a1",
+            vec![super::engine_tests::state_watcher("ctx", r"Context (\d+)%")],
+        );
         h.backend.paint(id, &["Context 70%"]);
         h.engine.tick().await;
         assert_eq!(h.emitted().len(), 2);
@@ -2992,11 +3018,13 @@ mod tests {
             let (engine_cell, guards_free) = (Arc::clone(&engine_cell), Arc::clone(&guards_free));
             Arc::new(move |id: Uuid| {
                 let inner = inner(id)?;
-                let (engine_cell, guards_free) = (Arc::clone(&engine_cell), Arc::clone(&guards_free));
+                let (engine_cell, guards_free) =
+                    (Arc::clone(&engine_cell), Arc::clone(&guards_free));
                 let consumer: ActivityConsumer = Arc::new(move |observation| {
                     if let Some(engine) = engine_cell.get().and_then(std::sync::Weak::upgrade) {
                         guards_free.lock().unwrap().push(
-                            engine.sequence.try_lock().is_ok() && engine.registered.try_lock().is_ok(),
+                            engine.sequence.try_lock().is_ok()
+                                && engine.registered.try_lock().is_ok(),
                         );
                     }
                     inner(observation)
@@ -3015,7 +3043,11 @@ mod tests {
         h.patterns.1.store(true, Ordering::Relaxed);
         h.ticks(24).await;
         assert_eq!(h.backends.liveness_calls.load(Ordering::Relaxed), 0);
-        h.backends.liveness.lock().unwrap().insert(mixed, ContextSessionLiveness::SessionOver);
+        h.backends
+            .liveness
+            .lock()
+            .unwrap()
+            .insert(mixed, ContextSessionLiveness::SessionOver);
         let reads = h.backend.reads.load(Ordering::Relaxed);
         h.engine.tick().await;
         assert_eq!(h.backends.liveness_calls.load(Ordering::Relaxed), 2);
@@ -3036,7 +3068,11 @@ mod tests {
         let id = Uuid::new_v4();
         h.engine.register_session(id, Some("a1".to_string()));
         h.patterns.1.store(true, Ordering::Relaxed);
-        h.backends.liveness.lock().unwrap().insert(id, ContextSessionLiveness::SessionOver);
+        h.backends
+            .liveness
+            .lock()
+            .unwrap()
+            .insert(id, ContextSessionLiveness::SessionOver);
         h.ticks(25).await;
         assert_eq!(h.backends.liveness_calls.load(Ordering::Relaxed), 1);
         assert_eq!(h.backend.reads.load(Ordering::Relaxed), 0);

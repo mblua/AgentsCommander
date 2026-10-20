@@ -1479,26 +1479,28 @@ impl ContextPatternSource for ScraperPatterns {
                     return None;
                 }
             };
-            Some(settings
-                .agents
-                .iter()
-                .filter_map(|agent| {
-                    let regex = agent.context_regex.as_deref()?;
-                    // A blank field is the field being blank, and skipping it here is a
-                    // LOG-HYGIENE choice and nothing more: `pattern::compile` already
-                    // refuses "" and "   " for having no capture group 1, so this can never
-                    // become a pattern that matches everything - it would only warn on every
-                    // change while a user is still typing.
-                    //
-                    // Note what is trimmed and what is not: the emptiness TEST looks at a
-                    // trimmed view, the VALUE handed over is the user's string, byte for
-                    // byte. The pattern is the only defence this feature has - the engine
-                    // ships no anchoring rules of its own - so editing it can only weaken
-                    // it. Trimming would eat the leading spaces of `  Context ...`, which
-                    // ARE the column-2 anchor, and the reading would fail open.
-                    (!regex.trim().is_empty()).then(|| (agent.id.clone(), regex.to_string()))
-                })
-                .collect())
+            Some(
+                settings
+                    .agents
+                    .iter()
+                    .filter_map(|agent| {
+                        let regex = agent.context_regex.as_deref()?;
+                        // A blank field is the field being blank, and skipping it here is a
+                        // LOG-HYGIENE choice and nothing more: `pattern::compile` already
+                        // refuses "" and "   " for having no capture group 1, so this can never
+                        // become a pattern that matches everything - it would only warn on every
+                        // change while a user is still typing.
+                        //
+                        // Note what is trimmed and what is not: the emptiness TEST looks at a
+                        // trimmed view, the VALUE handed over is the user's string, byte for
+                        // byte. The pattern is the only defence this feature has - the engine
+                        // ships no anchoring rules of its own - so editing it can only weaken
+                        // it. Trimming would eat the leading spaces of `  Context ...`, which
+                        // ARE the column-2 anchor, and the reading would fail open.
+                        (!regex.trim().is_empty()).then(|| (agent.id.clone(), regex.to_string()))
+                    })
+                    .collect(),
+            )
         })
     }
 }
@@ -2088,8 +2090,10 @@ struct WatcherPatterns {
 impl WatcherPatternSource for WatcherPatterns {
     fn resolve(
         &self,
-    ) -> futures::future::BoxFuture<'_, Option<HashMap<String, crate::pty::watchers::AgentResolution>>>
-    {
+    ) -> futures::future::BoxFuture<
+        '_,
+        Option<HashMap<String, crate::pty::watchers::AgentResolution>>,
+    > {
         Box::pin(async move {
             let settings = match self.settings.current_read().await {
                 Ok(settings) => settings,
@@ -3201,13 +3205,14 @@ pub(crate) fn spawn_restore_startup(
             }
         }
         let restore_guard = RestoreGuard(restore_flag);
-        let mut completion =
-            RestoreCompletionGuard::new(restore_barrier, restore_observer_barrier);
+        let mut completion = RestoreCompletionGuard::new(restore_barrier, restore_observer_barrier);
         let caught_body = std::panic::AssertUnwindSafe(async move {
             let read_guard = match settings_state.current_read().await {
                 Ok(guard) => guard,
                 Err(error) => {
-                    log::debug!("[restore] settings unavailable; automatic restore skipped: {error}");
+                    log::debug!(
+                        "[restore] settings unavailable; automatic restore skipped: {error}"
+                    );
                     return;
                 }
             };
@@ -8656,27 +8661,33 @@ mod tests {
         }
     }
 
-
     async fn p51_open_owner(settings: AppSettings) -> (tempfile::TempDir, SettingsState) {
         tokio::task::spawn_blocking(move || {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
+            let path = dir
+                .path()
+                .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME);
             std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
-            let owner = crate::config::settings::SettingsOwner::open_active(
-                &path, Duration::from_secs(5),
-            ).unwrap();
+            let owner =
+                crate::config::settings::SettingsOwner::open_active(&path, Duration::from_secs(5))
+                    .unwrap();
             (dir, owner)
-        }).await.unwrap()
+        })
+        .await
+        .unwrap()
     }
 
     async fn p51_invalidate_owner(owner: &SettingsState) {
         use crate::config::settings::{OperationOutcome, SettingsAvailability, SettingsPublisher};
-        let report = owner.with_operation("p51-invalid", |_, guard| {
-            guard.publish(SettingsPublisher::SettingsSave, |path| {
-                std::fs::write(path, b"{").map_err(|error| error.to_string())?;
-                Err::<(), String>("ReDecode".into())
+        let report = owner
+            .with_operation("p51-invalid", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |path| {
+                    std::fs::write(path, b"{").map_err(|error| error.to_string())?;
+                    Err::<(), String>("ReDecode".into())
+                })
             })
-        }).await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(report.outcome, OperationOutcome::PartialOrUnknown);
         assert_eq!(report.availability, SettingsAvailability::Invalid);
         assert_eq!(owner.availability(), SettingsAvailability::Invalid);
@@ -8692,41 +8703,114 @@ mod tests {
     async fn p51_close_owner(owner: SettingsState) {
         tokio::task::spawn_blocking(move || {
             owner.drain_blocking(Duration::from_secs(5));
-            assert_eq!(owner.availability(), crate::config::settings::SettingsAvailability::Closed);
-        }).await.unwrap();
+            assert_eq!(
+                owner.availability(),
+                crate::config::settings::SettingsAvailability::Closed
+            );
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn e2992_p51_adapters_owner_denied() {
         use super::{QuotaSourceProvider, QuotaSources, WatcherPatternSource, WatcherPatterns};
         let (dir, denied) = p51_invalid_owner(settings_with_context_regex("context (.*)")).await;
-        let scraper = ScraperPatterns { settings: Arc::clone(&denied) };
-        let quota = QuotaSources { settings: Arc::clone(&denied) };
-        let watchers = WatcherPatterns { settings: Arc::clone(&denied), log: Default::default() };
+        let scraper = ScraperPatterns {
+            settings: Arc::clone(&denied),
+        };
+        let quota = QuotaSources {
+            settings: Arc::clone(&denied),
+        };
+        let watchers = WatcherPatterns {
+            settings: Arc::clone(&denied),
+            log: Default::default(),
+        };
         for _ in 0..2 {
             assert!(scraper.patterns().await.is_none());
             assert!(quota.sources().await.is_none());
             assert!(watchers.resolve().await.is_none());
         }
-        assert_eq!(std::fs::read(dir.path().join(crate::config::instance_artifacts::SETTINGS_FILE_NAME)).unwrap(), b"{");
-        for settings in [AppSettings { agents: Vec::new(), ..AppSettings::default() }, settings_with_context_regex("context (.*)")] {
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME)
+            )
+            .unwrap(),
+            b"{"
+        );
+        for settings in [
+            AppSettings {
+                agents: Vec::new(),
+                ..AppSettings::default()
+            },
+            settings_with_context_regex("context (.*)"),
+        ] {
             let populated = !settings.agents.is_empty();
             let owner = crate::config::settings::new_settings_state(settings);
-            assert_eq!(ScraperPatterns { settings: Arc::clone(&owner) }.patterns().await.unwrap().len(), usize::from(populated));
-            assert!(QuotaSources { settings: Arc::clone(&owner) }.sources().await.unwrap().is_empty());
-            assert!(WatcherPatterns { settings: owner, log: Default::default() }.resolve().await.unwrap().is_empty());
+            assert_eq!(
+                ScraperPatterns {
+                    settings: Arc::clone(&owner)
+                }
+                .patterns()
+                .await
+                .unwrap()
+                .len(),
+                usize::from(populated)
+            );
+            assert!(QuotaSources {
+                settings: Arc::clone(&owner)
+            }
+            .sources()
+            .await
+            .unwrap()
+            .is_empty());
+            assert!(WatcherPatterns {
+                settings: owner,
+                log: Default::default()
+            }
+            .resolve()
+            .await
+            .unwrap()
+            .is_empty());
         }
         let mut settings = settings_with_context_regex("context (.*)");
-        settings.quota_sources.insert("codex".into(), crate::config::settings::QuotaSourceEntry::Valid(
-            crate::config::settings::QuotaSourceConfig::ScreenRegex { pattern: "Weekly (.*)".into(), enabled: true },
-        ));
-        settings.watchers.insert("watch".into(), serde_json::from_value(serde_json::json!({
-            "enabled": true, "mode": "state", "pattern": "ready"
-        })).unwrap());
+        settings.quota_sources.insert(
+            "codex".into(),
+            crate::config::settings::QuotaSourceEntry::Valid(
+                crate::config::settings::QuotaSourceConfig::ScreenRegex {
+                    pattern: "Weekly (.*)".into(),
+                    enabled: true,
+                },
+            ),
+        );
+        settings.watchers.insert(
+            "watch".into(),
+            serde_json::from_value(serde_json::json!({
+                "enabled": true, "mode": "state", "pattern": "ready"
+            }))
+            .unwrap(),
+        );
         let owner = crate::config::settings::new_settings_state(settings);
-        let quota = QuotaSources { settings: Arc::clone(&owner) }.sources().await.unwrap();
-        assert_eq!(quota.get("codex").unwrap().spec, crate::pty::agent_quota::source::SourceSpec::ScreenRegex { pattern: "Weekly (.*)".into() });
-        let watchers = WatcherPatterns { settings: owner, log: Default::default() }.resolve().await.unwrap();
+        let quota = QuotaSources {
+            settings: Arc::clone(&owner),
+        }
+        .sources()
+        .await
+        .unwrap();
+        assert_eq!(
+            quota.get("codex").unwrap().spec,
+            crate::pty::agent_quota::source::SourceSpec::ScreenRegex {
+                pattern: "Weekly (.*)".into()
+            }
+        );
+        let watchers = WatcherPatterns {
+            settings: owner,
+            log: Default::default(),
+        }
+        .resolve()
+        .await
+        .unwrap();
         assert_eq!(watchers.get("codex").unwrap().running[0].pattern, "ready");
         p51_close_owner(denied).await;
     }
@@ -8740,12 +8824,14 @@ mod tests {
             jev_endpoint: endpoint.clone(),
             jev_api_key: "test-key".to_string(),
             ..AppSettings::default()
-        }).await;
+        })
+        .await;
         // Deliberately omit network and manager state: denied settings must return
         // before touching either service, the detector, or any commit path.
         let app = tauri::test::mock_builder()
             .manage(Arc::clone(&denied))
-            .build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
         let (handle, _rx) = CoManagedSupervisorHandle::new();
         let id = uuid::Uuid::new_v4();
         let record = co_managed_candidate(&id.to_string(), "leak AKIAIOSFODNN7EXAMPLE");
@@ -8754,8 +8840,19 @@ mod tests {
         let seq = slot.snapshot().seq;
         let budget = crate::capture::state::budget(&fixture.room_root);
         for _ in 0..2 {
-            let outcome = super::co_managed_cycle(app.handle(), &handle, id, &fixture.room_root, &slot, seq, &record).await;
-            assert!(matches!(outcome, super::CoManagedOutcome::Done(reason) if reason == "settings_unavailable"));
+            let outcome = super::co_managed_cycle(
+                app.handle(),
+                &handle,
+                id,
+                &fixture.room_root,
+                &slot,
+                seq,
+                &record,
+            )
+            .await;
+            assert!(
+                matches!(outcome, super::CoManagedOutcome::Done(reason) if reason == "settings_unavailable")
+            );
             assert!(!super::release_room_reader_demands_when_globally_off(app.handle()).await);
         }
         assert_eq!(slot.snapshot().seq, seq);
@@ -8763,16 +8860,38 @@ mod tests {
         assert_eq!(crate::capture::state::budget(&fixture.room_root), budget);
         assert!(messaging_files(&fixture.room_root).is_empty());
         assert!(queue_files(&fixture.room_root).is_empty());
-        assert_eq!(std::fs::read(dir.path().join(crate::config::instance_artifacts::SETTINGS_FILE_NAME)).unwrap(), b"{");
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join(crate::config::instance_artifacts::SETTINGS_FILE_NAME)
+            )
+            .unwrap(),
+            b"{"
+        );
         p51_close_owner(denied).await;
 
         // Ready control: a secret is handled before any network request.
         let (app, manager, registry) = co_managed_app(&fixture, endpoint, true);
-        let id = add_claude_session(&manager, &fixture.coordinator_cwd, SessionStatus::Running, &fixture.projects_dir).await;
+        let id = add_claude_session(
+            &manager,
+            &fixture.coordinator_cwd,
+            SessionStatus::Running,
+            &fixture.projects_dir,
+        )
+        .await;
         let (slot, record) = install_candidate(&registry, id, "leak AKIAIOSFODNN7EXAMPLE");
         let hooks = Arc::new(CoManagedTestHooks::default());
         let (handle, _rx) = CoManagedSupervisorHandle::with_test_hooks(Arc::clone(&hooks));
-        let outcome = super::co_managed_cycle(app.handle(), &handle, id, &fixture.room_root, &slot, slot.snapshot().seq, &record).await;
+        let outcome = super::co_managed_cycle(
+            app.handle(),
+            &handle,
+            id,
+            &fixture.room_root,
+            &slot,
+            slot.snapshot().seq,
+            &record,
+        )
+        .await;
         assert!(matches!(outcome, super::CoManagedOutcome::Done(_)));
         assert_eq!(hits.load(Ordering::SeqCst), 0);
         assert!(hooks.commit_calls() > 0);
@@ -8794,16 +8913,20 @@ mod tests {
         }
         let manager = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
         let coordinator = SelectionCoordinator::new(
-            Arc::clone(&manager), tokio_util::sync::CancellationToken::new(),
+            Arc::clone(&manager),
+            tokio_util::sync::CancellationToken::new(),
         );
         let app = tauri::test::mock_builder()
             .manage(Arc::clone(&manager))
-            .build(tauri::test::mock_context(tauri::test::noop_assets())).unwrap();
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
         coordinator.start(app.handle().clone()).unwrap();
         let barrier = coordinator.submit_restore_first().await.unwrap();
         let observer = Arc::new(RestoreObserverStartBarrier::default());
         observer.mark_restore_admitted().unwrap();
-        let flag = Arc::new(super::RestoreInProgress(std::sync::atomic::AtomicBool::new(true)));
+        let flag = Arc::new(super::RestoreInProgress(
+            std::sync::atomic::AtomicBool::new(true),
+        ));
         let (started, handshake) = tokio::sync::oneshot::channel();
         let mut queued = {
             let coordinator = coordinator.clone();
@@ -8813,7 +8936,9 @@ mod tests {
             })
         };
         handshake.await.unwrap();
-        assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued)
+            .await
+            .is_err());
         let body_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let tail_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let future_entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -8826,7 +8951,10 @@ mod tests {
             let manager = Arc::clone(&manager);
             Box::new(move || -> futures::future::BoxFuture<'static, ()> {
                 body_entries.fetch_add(1, Ordering::SeqCst);
-                assert_ne!(mode, "invalid", "Invalid owner admitted saved restore input");
+                assert_ne!(
+                    mode, "invalid",
+                    "Invalid owner admitted saved restore input"
+                );
                 assert_ne!(mode, "sync-panic", "synchronous body panic control");
                 Box::pin(async move {
                     future_entries.fetch_add(1, Ordering::SeqCst);
@@ -8842,42 +8970,80 @@ mod tests {
             let body_completions = Arc::clone(&body_completions);
             let tail_completions = Arc::clone(&tail_completions);
             let (body_entries, tail_entries, flag, observer) = (
-                Arc::clone(&body_entries), Arc::clone(&tail_entries),
-                Arc::clone(&flag), Arc::clone(&observer),
+                Arc::clone(&body_entries),
+                Arc::clone(&tail_entries),
+                Arc::clone(&flag),
+                Arc::clone(&observer),
             );
             Box::new(move || -> futures::future::BoxFuture<'static, ()> {
                 Box::pin(async move {
                     assert!(!flag.0.load(Ordering::SeqCst));
-                    observer.start("p51-independent", || {
-                        assert_eq!(tail_entries.fetch_add(1, Ordering::SeqCst), 0);
-                    }).unwrap();
-                    assert_eq!(body_entries.load(Ordering::SeqCst), usize::from(mode != "invalid"));
-                    assert_eq!(body_completions.load(Ordering::SeqCst), usize::from(matches!(mode, "ready" | "tail-panic")));
+                    observer
+                        .start("p51-independent", || {
+                            assert_eq!(tail_entries.fetch_add(1, Ordering::SeqCst), 0);
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        body_entries.load(Ordering::SeqCst),
+                        usize::from(mode != "invalid")
+                    );
+                    assert_eq!(
+                        body_completions.load(Ordering::SeqCst),
+                        usize::from(matches!(mode, "ready" | "tail-panic"))
+                    );
                     assert_ne!(mode, "tail-panic", "tail panic control");
                     tail_completions.fetch_add(1, Ordering::SeqCst);
                 })
             })
         };
         let restore = super::spawn_restore_startup(
-            barrier, Arc::clone(&observer), Arc::clone(&flag), Arc::clone(&owner),
-            body, continuation,
+            barrier,
+            Arc::clone(&observer),
+            Arc::clone(&flag),
+            Arc::clone(&owner),
+            body,
+            continuation,
         );
-        tokio::time::timeout(Duration::from_secs(2), restore).await.unwrap().unwrap();
-        assert_eq!(body_entries.load(Ordering::SeqCst), usize::from(mode != "invalid"));
+        tokio::time::timeout(Duration::from_secs(2), restore)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            body_entries.load(Ordering::SeqCst),
+            usize::from(mode != "invalid")
+        );
         assert_eq!(tail_entries.load(Ordering::SeqCst), 1);
-        assert_eq!(future_entries.load(Ordering::SeqCst), usize::from(!matches!(mode, "invalid" | "sync-panic")));
-        assert_eq!(body_completions.load(Ordering::SeqCst), usize::from(matches!(mode, "ready" | "tail-panic")));
-        assert_eq!(tail_completions.load(Ordering::SeqCst), usize::from(mode != "tail-panic"));
+        assert_eq!(
+            future_entries.load(Ordering::SeqCst),
+            usize::from(!matches!(mode, "invalid" | "sync-panic"))
+        );
+        assert_eq!(
+            body_completions.load(Ordering::SeqCst),
+            usize::from(matches!(mode, "ready" | "tail-panic"))
+        );
+        assert_eq!(
+            tail_completions.load(Ordering::SeqCst),
+            usize::from(mode != "tail-panic")
+        );
         assert!(!flag.0.load(Ordering::SeqCst));
         observer.start("p51-after-join", || {}).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), queued).await.unwrap().unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), queued)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         assert!(manager.read().await.list_sessions().await.is_empty());
         assert_eq!(std::fs::read(&saved_path).unwrap(), saved_bytes);
         if mode == "invalid" {
-            assert_eq!(owner.availability(), crate::config::settings::SettingsAvailability::Invalid);
+            assert_eq!(
+                owner.availability(),
+                crate::config::settings::SettingsAvailability::Invalid
+            );
             assert!(owner.current_read().await.is_err());
         }
-        tokio::time::timeout(Duration::from_secs(2), coordinator.close_and_join()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), coordinator.close_and_join())
+            .await
+            .unwrap();
         p51_close_owner(owner).await;
         drop(dir);
     }

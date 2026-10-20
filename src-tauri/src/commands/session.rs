@@ -15683,8 +15683,10 @@ exec claude \"$@\"
     impl crate::pty::watchers::WatcherPatternSource for NoopWatcherPatterns {
         fn resolve(
             &self,
-        ) -> futures::future::BoxFuture<'_, Option<HashMap<String, crate::pty::watchers::AgentResolution>>>
-        {
+        ) -> futures::future::BoxFuture<
+            '_,
+            Option<HashMap<String, crate::pty::watchers::AgentResolution>>,
+        > {
             Box::pin(async { Some(HashMap::new()) })
         }
     }
