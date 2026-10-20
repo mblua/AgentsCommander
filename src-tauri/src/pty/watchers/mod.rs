@@ -510,7 +510,7 @@ pub trait WatcherBackendSource: Send + Sync {
 /// (`context_scrape/mod.rs:65-72`): the settings live behind a `tokio::sync::RwLock` whose
 /// `blocking_read` panics inside a runtime, and the tick is inside one.
 pub trait WatcherPatternSource: Send + Sync {
-    fn resolve(&self) -> BoxFuture<'_, HashMap<String, AgentResolution>>;
+    fn resolve(&self) -> BoxFuture<'_, Option<HashMap<String, AgentResolution>>>;
 }
 
 /// Where a tick's matches go. The concrete implementation holds the `AppHandle` and decides
@@ -936,7 +936,39 @@ impl WatcherEngine {
         // watcher configured would keep any registry non-empty. This is what actually
         // delivers "zero cost when unconfigured" - no `screen_parsers` lock, no row allocated,
         // no backend resolved, no liveness probed.
-        let resolved = self.patterns.resolve().await;
+        let Some(resolved) = self.patterns.resolve().await else {
+            let mut ids: Vec<(Uuid, bool)> = {
+                let registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
+                registered
+                    .iter()
+                    .map(|(id, session)| (*id, session.activity.is_some()))
+                    .collect()
+            };
+            ids.sort_unstable_by_key(|(id, _)| *id);
+            let probe_liveness = tick_number.is_multiple_of(LIVENESS_PROBE_EVERY_TICKS);
+            let at = chrono::Utc::now();
+            let compiled = HashMap::new();
+            for (id, activity) in ids {
+                if probe_liveness
+                    && matches!(
+                        self.backends.liveness(id),
+                        ContextSessionLiveness::SessionOver
+                    )
+                {
+                    self.retire_session(id);
+                    continue;
+                }
+                if activity {
+                    let (_, retire, delivery) = self.tick_session(id, None, &compiled, at);
+                    if retire {
+                        self.retire_session(id);
+                    } else if let Some((consumer, observation)) = delivery {
+                        consumer(observation);
+                    }
+                }
+            }
+            return;
+        };
         // #2879 - an internal consumer is sampled whatever the user configured.
         if resolved.is_empty() && !self.samples_activity() {
             self.publish_unwatched(&resolved);
@@ -1629,6 +1661,7 @@ mod engine_tests {
         pub(super) liveness: Mutex<HashMap<Uuid, ContextSessionLiveness>>,
         pub(super) resolutions: AtomicUsize,
         pub(super) liveness_calls: AtomicUsize,
+        pub(super) on_liveness: Mutex<Option<Arc<dyn Fn(Uuid) + Send + Sync>>>,
     }
 
     impl WatcherBackendSource for FakeBackends {
@@ -1641,6 +1674,10 @@ mod engine_tests {
 
         fn liveness(&self, id: Uuid) -> ContextSessionLiveness {
             self.liveness_calls.fetch_add(1, Ordering::Relaxed);
+            let hook = self.on_liveness.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook(id);
+            }
             self.liveness
                 .lock()
                 .unwrap()
@@ -1651,11 +1688,20 @@ mod engine_tests {
     }
 
     #[derive(Default)]
-    pub(super) struct FakePatterns(Mutex<HashMap<String, AgentResolution>>);
+    pub(super) struct FakePatterns(
+        pub(super) Mutex<HashMap<String, AgentResolution>>,
+        pub(super) std::sync::atomic::AtomicBool,
+    );
 
     impl WatcherPatternSource for FakePatterns {
-        fn resolve(&self) -> BoxFuture<'_, HashMap<String, AgentResolution>> {
-            Box::pin(async move { self.0.lock().unwrap().clone() })
+        fn resolve(&self) -> BoxFuture<'_, Option<HashMap<String, AgentResolution>>> {
+            Box::pin(async move {
+                if self.1.load(Ordering::Relaxed) {
+                    None
+                } else {
+                    Some(self.0.lock().unwrap().clone())
+                }
+            })
         }
     }
 
@@ -1694,6 +1740,7 @@ mod engine_tests {
                 liveness: Mutex::new(HashMap::new()),
                 resolutions: AtomicUsize::new(0),
                 liveness_calls: AtomicUsize::new(0),
+                on_liveness: Mutex::new(None),
             });
             let patterns = Arc::new(FakePatterns::default());
             let sink = Arc::new(FakeSink::default());
@@ -2849,6 +2896,154 @@ mod tests {
             .collect()
     }
 
+
+    #[tokio::test]
+    async fn e2992_p51_unavailable_mid_tick_retirement() {
+        let h = Harness::new();
+        let id = Uuid::new_v4();
+        h.engine.register_session(id, Some("a1".into()));
+        h.patterns.1.store(true, Ordering::Relaxed);
+        h.backends.liveness.lock().unwrap().insert(id, ContextSessionLiveness::SessionOver);
+        h.engine.ticks.store(24, Ordering::Relaxed);
+        let (entered, handshake) = tokio::sync::oneshot::channel();
+        let entered = std::sync::Mutex::new(Some(entered));
+        let (release, resume) = std::sync::mpsc::sync_channel(1);
+        let resume = std::sync::Mutex::new(resume);
+        *h.backends.on_liveness.lock().unwrap() = Some(Arc::new(move |_| {
+            entered.lock().unwrap().take().unwrap().send(()).unwrap();
+            resume.lock().unwrap().recv_timeout(Duration::from_secs(2)).unwrap();
+        }));
+        let engine = Arc::clone(&h.engine);
+        let tick = tokio::task::spawn_blocking(move || futures::executor::block_on(engine.tick()));
+        tokio::time::timeout(Duration::from_secs(2), handshake).await.unwrap().unwrap();
+        h.engine.retire_session(id);
+        let replacement = Uuid::new_v4();
+        h.engine.register_session(replacement, Some("a1".into()));
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), tick).await.unwrap().unwrap();
+        *h.backends.on_liveness.lock().unwrap() = None;
+        assert!(!h.engine.is_session_registered(id));
+        assert!(h.engine.is_session_registered(replacement));
+        assert_eq!(h.backend.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(h.batches(), 0);
+
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let mut completed_ticks = 0;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.token().cancelled() => break,
+                    _ = h.engine.tick() => {
+                        completed_ticks += 1;
+                        if completed_ticks == 3 { shutdown.trigger(); }
+                    }
+                }
+            }
+        }).await.unwrap();
+        assert_eq!(completed_ticks, 3);
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_watchers_unavailable_preserves() {
+        let (factory, observed) = recording_factory();
+        let h = Harness::with_activity_factory(factory);
+        let id = Uuid::new_v4();
+        h.engine.register_session(id, Some("a1".to_string()));
+        h.configure("a1", vec![super::engine_tests::state_watcher("ctx", r"Context (\d+)%")]);
+        h.backend.paint(id, &["Context 42%", WORKING]);
+        h.engine.tick().await;
+        assert_eq!(h.emitted().len(), 1);
+        let history = serde_json::to_value(h.history.snapshot(id, None)).unwrap();
+        let (stamp, seq) = {
+            let registered = h.engine.registered.lock().unwrap();
+            let session = registered.get(&id).unwrap();
+            (session.stamp, session.seq)
+        };
+        h.patterns.1.store(true, Ordering::Relaxed);
+        h.backend.paint(id, &["Context 70%"]);
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(1), h.engine.tick()).await.unwrap();
+        }
+        assert_eq!(h.emitted().len(), 1);
+        assert_eq!(h.engine.compile_count(), 1);
+        assert_eq!(serde_json::to_value(h.history.snapshot(id, None)).unwrap(), history);
+        let registered = h.engine.registered.lock().unwrap();
+        let session = registered.get(&id).unwrap();
+        assert_eq!((session.stamp, session.seq), (stamp, seq));
+        drop(registered);
+        assert_eq!(observations(&observed, id).last(), Some(&Absent));
+        h.patterns.0.lock().unwrap().clear();
+        h.patterns.1.store(false, Ordering::Relaxed);
+        h.engine.tick().await;
+        assert!(h.history.snapshot(id, None).active_watchers.is_empty());
+        h.configure("a1", vec![super::engine_tests::state_watcher("ctx", r"Context (\d+)%")]);
+        h.backend.paint(id, &["Context 70%"]);
+        h.engine.tick().await;
+        assert_eq!(h.emitted().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_unavailable_progress_and_retirement() {
+        let engine_cell: Arc<std::sync::OnceLock<std::sync::Weak<WatcherEngine>>> = Arc::default();
+        let guards_free: Arc<Mutex<Vec<bool>>> = Arc::default();
+        let (inner, observed) = recording_factory();
+        let factory: ActivityFactory = {
+            let (engine_cell, guards_free) = (Arc::clone(&engine_cell), Arc::clone(&guards_free));
+            Arc::new(move |id: Uuid| {
+                let inner = inner(id)?;
+                let (engine_cell, guards_free) = (Arc::clone(&engine_cell), Arc::clone(&guards_free));
+                let consumer: ActivityConsumer = Arc::new(move |observation| {
+                    if let Some(engine) = engine_cell.get().and_then(std::sync::Weak::upgrade) {
+                        guards_free.lock().unwrap().push(
+                            engine.sequence.try_lock().is_ok() && engine.registered.try_lock().is_ok(),
+                        );
+                    }
+                    inner(observation)
+                });
+                Some(consumer)
+            })
+        };
+        let h = Harness::with_activity_factory(factory);
+        engine_cell.set(Arc::downgrade(&h.engine)).unwrap();
+        let mixed = Uuid::new_v4();
+        let internal = Uuid::new_v4();
+        h.engine.register_session(mixed, Some("a1".to_string()));
+        h.engine.register_session(internal, None);
+        h.backend.paint(mixed, &[WORKING]);
+        h.backend.paint(internal, &[WORKING]);
+        h.patterns.1.store(true, Ordering::Relaxed);
+        h.ticks(24).await;
+        assert_eq!(h.backends.liveness_calls.load(Ordering::Relaxed), 0);
+        h.backends.liveness.lock().unwrap().insert(mixed, ContextSessionLiveness::SessionOver);
+        let reads = h.backend.reads.load(Ordering::Relaxed);
+        h.engine.tick().await;
+        assert_eq!(h.backends.liveness_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(h.backend.reads.load(Ordering::Relaxed), reads + 1);
+        assert!(!h.engine.is_session_registered(mixed));
+        assert!(h.engine.is_session_registered(internal));
+        assert_eq!(observations(&observed, mixed).last(), Some(&Retired));
+        assert!(guards_free.lock().unwrap().iter().all(|free| *free));
+        assert_eq!(h.batches(), 0);
+        assert!(!h.history.snapshot(internal, None).warmed_up);
+        h.engine.retire_session(internal);
+        h.engine.tick().await;
+        assert!(!h.engine.is_session_registered(internal));
+
+        // A registry without internal consumers is still probed on tick25,
+        // but never reads rows or publishes unwatched history while unavailable.
+        let h = Harness::new();
+        let id = Uuid::new_v4();
+        h.engine.register_session(id, Some("a1".to_string()));
+        h.patterns.1.store(true, Ordering::Relaxed);
+        h.backends.liveness.lock().unwrap().insert(id, ContextSessionLiveness::SessionOver);
+        h.ticks(25).await;
+        assert_eq!(h.backends.liveness_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(h.backend.reads.load(Ordering::Relaxed), 0);
+        assert!(!h.engine.is_session_registered(id));
+        assert!(!h.history.snapshot(id, None).warmed_up);
+    }
+
     /// Sanitized from shared dev-live-snapshot.json, sequence 1342, 30x120.
     /// SHA256: 243ffe6321aacf4c2dc821e9e12ad422109aef8fc62b3b691ca3167a0f17c6a9.
     /// Wrap geometry and row 22 are preserved; unrelated transcript and Tip text are
@@ -3105,6 +3300,41 @@ mod tests {
     /// After `Missing`, the consumer re-reads with `seen = None` - through an `Unchanged`
     /// too - until a complete frame arrives; an identical frame then recovers `Present`
     /// and a negative one releases it.
+    #[tokio::test]
+    async fn e2992_p51_unavailable_missing_next_full_read() {
+        let (factory, observed) = recording_factory();
+        let harness = Harness::with_activity_factory(factory);
+        harness.patterns.1.store(true, Ordering::Relaxed);
+        let id = Uuid::new_v4();
+        harness.engine.register_session(id, None);
+        harness.backend.paint(id, &["› run", WORKING]);
+        harness.backend.push(id, Painted::Missing);
+        harness.backend.push(id, Painted::Missing);
+        harness.backend.push(id, Painted::Unchanged);
+        harness.backend.push(id, Painted::Same);
+        harness.backend.paint(id, &["› run", "Worked for 5s"]);
+
+        harness.ticks(5).await;
+        assert_eq!(harness.batches(), 0);
+        assert!(!harness.history.snapshot(id, None).warmed_up);
+        assert!(harness.engine.is_session_registered(id));
+
+        let first = Some(FrameStamp {
+            sequence: 1,
+            rows: 2,
+            cols: 120,
+        });
+        assert_eq!(
+            *harness.backend.seen.lock().unwrap(),
+            vec![None, first, first, None, None, first],
+            "Missing (read and re-resolved) forces full reads until a frame is complete"
+        );
+        assert_eq!(
+            observations(&observed, id),
+            vec![Validate, Present, Unavailable, Present, Absent]
+        );
+    }
+
     #[tokio::test]
     async fn i2879_feature_missing_recovery() {
         let (factory, observed) = recording_factory();

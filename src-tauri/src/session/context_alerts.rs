@@ -1759,8 +1759,8 @@ mod tests {
     struct GuardPatterns;
 
     impl crate::pty::context_scrape::ContextPatternSource for GuardPatterns {
-        fn patterns(&self) -> BoxFuture<'_, HashMap<String, String>> {
-            Box::pin(async { HashMap::new() })
+        fn patterns(&self) -> BoxFuture<'_, Option<HashMap<String, String>>> {
+            Box::pin(async { Some(HashMap::new()) })
         }
     }
 
