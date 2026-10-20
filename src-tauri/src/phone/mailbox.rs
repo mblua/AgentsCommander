@@ -18949,13 +18949,18 @@ mod tests {
         const MARKER: &str = "AC_P05_PHYSICAL_CWD_CHILD";
         const IDENTITY: &str = "AC_P05_PHYSICAL_CWD_IDENTITY";
         if let Some(marked_wrapper) = std::env::var_os(MARKER) {
-            assert_eq!(marked_wrapper.to_str(), Some(wrapper), "wrong child wrapper");
+            assert_eq!(
+                marked_wrapper.to_str(),
+                Some(wrapper),
+                "wrong child wrapper"
+            );
             let identity = std::env::var(IDENTITY).expect("child identity");
             let (run, suffix) = identity.split_once('\n').expect("run-bound identity");
             Uuid::parse_str(run).expect("parent run nonce");
             assert_eq!(suffix, wrapper);
-            let config =
-                PathBuf::from(std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR").expect("child config"));
+            let config = PathBuf::from(
+                std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR").expect("child config"),
+            );
             let test_config = PathBuf::from(
                 std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("child test config"),
             );
@@ -18968,7 +18973,10 @@ mod tests {
             );
             return false;
         }
-        assert!(std::env::var_os(IDENTITY).is_none(), "orphan child identity");
+        assert!(
+            std::env::var_os(IDENTITY).is_none(),
+            "orphan child identity"
+        );
         let directory = tempfile::tempdir().expect("parent child directory");
         let path = directory
             .path()
@@ -19468,9 +19476,7 @@ mod tests {
                 .await;
             drop(permit);
         }
-        complete_physical_cwd_child(
-            "phone::mailbox::tests::response_pair_physical_cwd_boundary",
-        );
+        complete_physical_cwd_child("phone::mailbox::tests::response_pair_physical_cwd_boundary");
     }
 
     #[cfg(windows)]
