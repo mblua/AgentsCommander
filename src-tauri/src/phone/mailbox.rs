@@ -18944,8 +18944,90 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn physical_cwd_child_or_parent(wrapper: &str) -> bool {
+        use std::os::windows::process::CommandExt;
+        const MARKER: &str = "AC_P05_PHYSICAL_CWD_CHILD";
+        const IDENTITY: &str = "AC_P05_PHYSICAL_CWD_IDENTITY";
+        if let Some(marked_wrapper) = std::env::var_os(MARKER) {
+            assert_eq!(marked_wrapper.to_str(), Some(wrapper), "wrong child wrapper");
+            let identity = std::env::var(IDENTITY).expect("child identity");
+            let (run, suffix) = identity.split_once('\n').expect("run-bound identity");
+            Uuid::parse_str(run).expect("parent run nonce");
+            assert_eq!(suffix, wrapper);
+            let config =
+                PathBuf::from(std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR").expect("child config"));
+            let test_config = PathBuf::from(
+                std::env::var_os("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("child test config"),
+            );
+            assert!(config.is_absolute());
+            assert_eq!(config, test_config);
+            assert_eq!(crate::config::config_dir().as_ref(), Some(&config));
+            assert!(
+                !config.join("completion.txt").exists(),
+                "receipt must be fresh"
+            );
+            return false;
+        }
+        assert!(std::env::var_os(IDENTITY).is_none(), "orphan child identity");
+        let directory = tempfile::tempdir().expect("parent child directory");
+        let path = directory
+            .path()
+            .canonicalize()
+            .expect("absolute child directory");
+        let temporary = path.join("tmp");
+        std::fs::create_dir(&temporary).expect("child temporary directory");
+        let identity = format!("{}\n{wrapper}", Uuid::new_v4());
+        let stdout = std::fs::File::create(path.join("stdout.log")).expect("child stdout");
+        let stderr = std::fs::File::create(path.join("stderr.log")).expect("child stderr");
+        let child = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([wrapper, "--exact", "--nocapture", "--test-threads=1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
+            .env(MARKER, wrapper)
+            .env(IDENTITY, &identity)
+            .env("AGENTSCOMMANDER_CONFIG_DIR", &path)
+            .env("AGENTSCOMMANDER_TEST_CONFIG_DIR", &path)
+            .env("TEMP", &temporary)
+            .env("TMP", &temporary)
+            .env("TMPDIR", &temporary)
+            .creation_flags(0x08000000)
+            .spawn()
+            .expect("spawn exact physical cwd child");
+        let mut owner = RetainedSourceChild {
+            child,
+            directory: Some(directory),
+            reaped: false,
+        };
+        owner.supervise(&identity, "physical-cwd");
+        true
+    }
+
+    #[cfg(windows)]
+    fn complete_physical_cwd_child(wrapper: &str) {
+        assert_eq!(
+            std::env::var("AC_P05_PHYSICAL_CWD_CHILD").as_deref(),
+            Ok(wrapper),
+            "completion requires exact child marker"
+        );
+        assert!(
+            !physical_cwd_child_or_parent(wrapper),
+            "completion requires child"
+        );
+        let identity = std::env::var("AC_P05_PHYSICAL_CWD_IDENTITY").expect("child identity");
+        let config =
+            PathBuf::from(std::env::var_os("AGENTSCOMMANDER_CONFIG_DIR").expect("child config"));
+        std::fs::write(config.join("completion.txt"), identity).expect("child assertion receipt");
+    }
+
+    #[cfg(windows)]
     #[tokio::test]
     async fn response_request_physical_cwd_boundary() {
+        if physical_cwd_child_or_parent(
+            "phone::mailbox::tests::response_request_physical_cwd_boundary",
+        ) {
+            return;
+        }
         use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
         let configured = PathBuf::from(
             std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
@@ -19170,11 +19252,19 @@ mod tests {
                 .await;
             drop(permit);
         }
+        complete_physical_cwd_child(
+            "phone::mailbox::tests::response_request_physical_cwd_boundary",
+        );
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn response_pair_physical_cwd_boundary() {
+        if physical_cwd_child_or_parent(
+            "phone::mailbox::tests::response_pair_physical_cwd_boundary",
+        ) {
+            return;
+        }
         use crate::pty::manager::{ResponseClosePublisher as P, ResponseRouteIdentity};
         let configured = PathBuf::from(
             std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
@@ -19378,11 +19468,19 @@ mod tests {
                 .await;
             drop(permit);
         }
+        complete_physical_cwd_child(
+            "phone::mailbox::tests::response_pair_physical_cwd_boundary",
+        );
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn response_close_physical_cwd_reaches_dormant() {
+        if physical_cwd_child_or_parent(
+            "phone::mailbox::tests::response_close_physical_cwd_reaches_dormant",
+        ) {
+            return;
+        }
         let configured = PathBuf::from(
             std::env::var("AGENTSCOMMANDER_TEST_CONFIG_DIR").expect("isolated test config"),
         );
@@ -19453,6 +19551,9 @@ mod tests {
             );
             drop(permit);
         }
+        complete_physical_cwd_child(
+            "phone::mailbox::tests::response_close_physical_cwd_reaches_dormant",
+        );
     }
 
     /// P05 preparation uses the existing mailbox fixture and the real

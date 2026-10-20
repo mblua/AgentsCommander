@@ -5808,6 +5808,31 @@ mod tests {
             .await;
         drop(permit);
         manager.mark_exited(row.id, 0).await;
+        let permit = acquire_carrier_mutation_permit().await;
+        manager
+            .with_current_carrier_snapshot(&permit, |current| {
+                assert_eq!(current.selection.id(), Some(row.id));
+                let physical_domain = physical_replica.clone().into();
+                assert!(
+                    super::with_confirmed_carrier(
+                        &permit,
+                        &initial,
+                        current,
+                        super::CarrierCheckpointTransition::FinishDormant {
+                            generation: 7,
+                            committed_version: initial.version,
+                            replica: &physical_domain,
+                        },
+                        |_| Some(())
+                    )
+                    .is_none(),
+                    "selected Exited carrier cannot finish Dormant"
+                );
+            })
+            .await;
+        drop(permit);
+        manager.clear_active().await;
+        assert_eq!(manager.selection_payload().await.id(), None);
         manager.set_start_fresh_on_restore(row.id, false).await;
         persist_current_state_to_dir_result(&manager, &directory)
             .await
