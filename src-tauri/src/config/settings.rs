@@ -897,6 +897,875 @@ impl<'de> Deserialize<'de> for ProfileCellConfig {
     }
 }
 
+// E2432: raw physical storage is authoritative. ID maps below are transient
+// compatibility projections only; quarantine never participates in projection.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PhysicalProfileSets {
+    rows: BTreeMap<String, String>,
+    cells: Map<String, Value>,
+    labels: Map<String, Value>,
+    orphans: Option<Map<String, Value>>,
+}
+
+fn profile_object(value: Option<&Value>, path: &str) -> Result<Map<String, Value>, String> {
+    match value {
+        None => Ok(Map::new()),
+        Some(Value::Object(map)) => Ok(map.clone()),
+        Some(_) => Err(format!("invalidProfileMap: {path}")),
+    }
+}
+
+fn profile_container(source: &Value, registered: bool) -> Option<&Value> {
+    if registered {
+        source.get("codingAgentProfiles")
+    } else {
+        Some(source)
+    }
+}
+
+fn validate_profile_orphans(value: Option<&Value>) -> Result<Option<Map<String, Value>>, String> {
+    let Some(value) = value else { return Ok(None) };
+    let invalid = |path: &str| format!("invalidLegacyProfileOrphans: {path}");
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("legacyProfileOrphans"))?;
+    for (id, records) in object {
+        let path = format!("legacyProfileOrphans[{id:?}]");
+        let records = records
+            .as_array()
+            .filter(|a| !a.is_empty())
+            .ok_or_else(|| invalid(&path))?;
+        for (index, record) in records.iter().enumerate() {
+            let record = record
+                .as_object()
+                .ok_or_else(|| invalid(&format!("{path}[{index}]")))?;
+            if !["cells", "labels", "identity"]
+                .iter()
+                .any(|key| record.contains_key(*key))
+            {
+                return Err(invalid(&format!("{path}[{index}]")));
+            }
+        }
+    }
+    Ok(Some(object.clone()))
+}
+
+fn normalized_profile_cells(value: Option<&Value>) -> Result<Value, String> {
+    let mut cells = profile_object(value, "cells")?;
+    for (letter, raw) in &mut cells {
+        if !is_valid_profile_letter(letter) {
+            return Err(format!("invalidProfileLetter: {letter}"));
+        }
+        let cell: ProfileCellConfig =
+            serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
+        let mut normalized = raw.as_object().cloned().ok_or("invalidProfileCell")?;
+        normalized.remove("id_hash");
+        normalized.remove("id_hash_debug");
+        let mut typed = serde_json::to_value(cell).map_err(|e| e.to_string())?;
+        let typed = typed.as_object_mut().expect("cell object");
+        typed.remove("id_hash");
+        typed.remove("id_hash_debug");
+        normalized.extend(typed.clone());
+        // Optional serde-default fields compare equally whether omitted or null.
+        for key in ["preflight", "preflightTimeoutSeconds"] {
+            if normalized.get(key).is_some_and(Value::is_null) {
+                normalized.remove(key);
+            }
+        }
+        *raw = Value::Object(normalized);
+    }
+    if !cells.contains_key("A") {
+        let mut empty = serde_json::to_value(empty_profile_cell()).map_err(|e| e.to_string())?;
+        empty.as_object_mut().unwrap().remove("id_hash");
+        empty.as_object_mut().unwrap().remove("id_hash_debug");
+        cells.insert("A".into(), empty);
+    }
+    Ok(Value::Object(cells))
+}
+
+fn physical_profile_rows(
+    source: &Value,
+    registered: bool,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut rows = BTreeMap::new();
+    let mut seen = HashSet::new();
+    let empty = Vec::new();
+    let agents = match source.get("agents") {
+        None => &empty,
+        Some(Value::Array(rows)) => rows,
+        Some(_) => return Err("invalidAgentsArray".into()),
+    };
+    for row in agents {
+        let object = row.as_object().ok_or("invalidAgentRow")?;
+        let id = object
+            .get(if registered { "id" } else { "key" })
+            .and_then(Value::as_str)
+            .ok_or("invalidAgentKey")?;
+        if id.is_empty() {
+            return Err("invalidAgentKey".into());
+        }
+        if !registered {
+            crate::config::coding_agents_catalog::validate_catalog_key(id)?;
+        }
+        if !seen.insert(id.to_owned()) {
+            return Err(format!("duplicateAgentKey: {id}"));
+        }
+        if object.get("remove") == Some(&Value::Bool(true)) {
+            continue;
+        }
+        let command = raw_configuration_command(object, "baseCommand")?;
+        let Some(command) = command.filter(|command| !command.trim().is_empty()) else {
+            if registered {
+                return Err("invalidRegisteredCommand".into());
+            }
+            continue;
+        };
+        if let Err(reason) = validate_agent_command_text("physical profile row", command) {
+            if registered {
+                return Err(reason);
+            }
+            continue;
+        }
+        let envs: Vec<CodingAgentEnv> = object
+            .get("envs")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        rows.insert(id.to_owned(), configuration_identity(command, &envs));
+    }
+    Ok(rows)
+}
+
+pub(crate) fn physical_profile_sets(
+    source: &Value,
+    registered: bool,
+) -> Result<PhysicalProfileSets, String> {
+    let rows = physical_profile_rows(source, registered)?;
+    let empty = Value::Object(Map::new());
+    let profiles = profile_container(source, registered).unwrap_or(&empty);
+    if !profiles.is_object() {
+        return Err("invalidProfileContainer".into());
+    }
+    let version = profiles.get("profileBindingVersion");
+    if version.is_some() && version != Some(&Value::from(1)) {
+        return Err("unsupportedProfileBindingVersion".into());
+    }
+    let canonical = version.is_some();
+    let legacy_cells_key = if registered {
+        "profilesByAgent"
+    } else {
+        "codingAgentProfiles"
+    };
+    let legacy_labels_key = if registered {
+        "profileLabelsByAgent"
+    } else {
+        "profileLabels"
+    };
+    let legacy_cells = profile_object(profiles.get(legacy_cells_key), legacy_cells_key)?;
+    let legacy_labels = profile_object(profiles.get(legacy_labels_key), legacy_labels_key)?;
+    let identities = if registered {
+        profile_object(profiles.get("identityByAgent"), "identityByAgent")?
+    } else {
+        Map::new()
+    };
+    let mut result = PhysicalProfileSets {
+        rows,
+        cells: profile_object(profiles.get("profilesByBaseHash"), "profilesByBaseHash")?,
+        labels: profile_object(
+            profiles.get("profileLabelsByBaseHash"),
+            "profileLabelsByBaseHash",
+        )?,
+        orphans: validate_profile_orphans(profiles.get("legacyProfileOrphans"))?,
+    };
+    for labels in legacy_labels
+        .iter()
+        .filter(|(id, _)| result.rows.contains_key(*id))
+        .filter_map(|(_, value)| value.as_object())
+        .filter(|_| !canonical)
+    {
+        if labels.keys().any(|letter| !is_valid_profile_letter(letter)) {
+            return Err("invalidProfileLetter".into());
+        }
+    }
+    for cells in result.cells.values_mut() {
+        *cells = normalized_profile_cells(Some(cells))?;
+    }
+    for labels in result.labels.values() {
+        if labels
+            .as_object()
+            .is_some_and(|labels| labels.keys().any(|letter| !is_valid_profile_letter(letter)))
+        {
+            return Err("invalidProfileLetter".into());
+        }
+        serde_json::from_value::<BTreeMap<String, String>>(labels.clone())
+            .map_err(|e| e.to_string())?;
+    }
+    if !canonical {
+        for (id, hash) in &result.rows {
+            let cells = normalized_profile_cells(legacy_cells.get(id))?;
+            let labels = Value::Object(profile_object(legacy_labels.get(id), "labels")?);
+            serde_json::from_value::<BTreeMap<String, String>>(labels.clone())
+                .map_err(|e| e.to_string())?;
+            if result
+                .cells
+                .get(hash)
+                .is_some_and(|previous| previous != &cells)
+                || result
+                    .labels
+                    .get(hash)
+                    .is_some_and(|previous| previous != &labels)
+            {
+                return Err(format!("sourceProfileConflict: {hash}; row {id}"));
+            }
+            result.cells.insert(hash.clone(), cells);
+            result.labels.insert(hash.clone(), labels);
+        }
+    }
+    // Capture raw values before typed decoding. Existing arrays (including equal
+    // records) keep their order. Only newly appended equal records are suppressed.
+    let ids: std::collections::BTreeSet<_> = legacy_cells
+        .keys()
+        .chain(legacy_labels.keys())
+        .chain(identities.keys())
+        .collect();
+    for id in ids {
+        if result.rows.contains_key(id) {
+            continue;
+        }
+        let mut record = Map::new();
+        for (key, map) in [
+            ("cells", &legacy_cells),
+            ("labels", &legacy_labels),
+            ("identity", &identities),
+        ] {
+            if let Some(value) = map.get(id) {
+                record.insert(key.into(), value.clone());
+            }
+        }
+        let record = Value::Object(record);
+        let records = result
+            .orphans
+            .get_or_insert_with(Map::new)
+            .entry(id.clone())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let records = records.as_array_mut().expect("validated quarantine array");
+        if !records.contains(&record) {
+            records.push(record);
+        }
+    }
+    Ok(result)
+}
+
+/// A read-only compatibility view. Never serialize this projection as storage.
+pub(crate) fn project_physical_profiles(source: &Value, registered: bool) -> Result<Value, String> {
+    let sets = physical_profile_sets(source, registered)?;
+    let mut projected = source.clone();
+    if registered && projected.get("codingAgentProfiles").is_none() {
+        projected["codingAgentProfiles"] = serde_json::json!({});
+    }
+    let profiles = if registered {
+        projected.get_mut("codingAgentProfiles").unwrap()
+    } else {
+        &mut projected
+    };
+    let profiles = profiles.as_object_mut().ok_or("invalidProfileContainer")?;
+    let mut cells = Map::new();
+    let mut labels = Map::new();
+    for (id, hash) in &sets.rows {
+        cells.insert(
+            id.clone(),
+            sets.cells
+                .get(hash)
+                .cloned()
+                .unwrap_or(normalized_profile_cells(None)?),
+        );
+        labels.insert(
+            id.clone(),
+            sets.labels
+                .get(hash)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
+        );
+    }
+    profiles.insert(
+        if registered {
+            "profilesByAgent"
+        } else {
+            "codingAgentProfiles"
+        }
+        .into(),
+        Value::Object(cells),
+    );
+    profiles.insert(
+        if registered {
+            "profileLabelsByAgent"
+        } else {
+            "profileLabels"
+        }
+        .into(),
+        Value::Object(labels),
+    );
+    if registered {
+        profiles.remove("identityByAgent");
+    }
+    // A compatibility draft is an ID projection, never a second canonical
+    // authority. This also distinguishes an explicit alias edit from stale
+    // legacy maps still present in a raw version1 physical document.
+    for key in [
+        "profileBindingVersion",
+        "profilesByBaseHash",
+        "profileLabelsByBaseHash",
+    ] {
+        profiles.remove(key);
+    }
+    Ok(projected)
+}
+
+fn registered_profiles_for_read(source: &Value) -> Value {
+    match project_physical_profiles(source, true) {
+        Ok(projected) => projected,
+        Err(reason) => {
+            log::warn!("[profiles] read-only diagnostic: {reason}");
+            let mut diagnostic = source.clone();
+            if let Some(profiles) = diagnostic
+                .get_mut("codingAgentProfiles")
+                .and_then(Value::as_object_mut)
+            {
+                if profiles.get("profileBindingVersion") == Some(&Value::from(1)) {
+                    for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                        profiles.remove(key);
+                    }
+                }
+            }
+            diagnostic
+        }
+    }
+}
+
+// Key presence selects each registered group independently, including []/{}.
+// Legacy preparation and the directional ordinary view use only this owner's
+// selected physical rows. Borrowing a row never transfers its ownership.
+fn selected_registered_profile_owner(
+    main: &Map<String, Value>,
+    sidecar: Option<&Map<String, Value>>,
+    consolidate_legacy: bool,
+) -> Value {
+    let profiles_in_sidecar = sidecar.is_some_and(|map| {
+        map.contains_key("codingAgentProfiles")
+            || (map.contains_key("agents") && !main.contains_key("codingAgentProfiles"))
+    });
+    let mut owner = if profiles_in_sidecar {
+        sidecar.cloned().unwrap_or_default()
+    } else {
+        main.clone()
+    };
+    // Shadowed main rows never become a donor, even for a canonical main group.
+    if !profiles_in_sidecar && sidecar.is_some_and(|map| map.contains_key("agents")) {
+        owner.remove("agents");
+    }
+    let directional = profiles_in_sidecar
+        && sidecar.is_some_and(|map| !map.contains_key("agents"))
+        && owner
+            .get("codingAgentProfiles")
+            .is_some_and(|profiles| profiles.get("profileBindingVersion") == Some(&Value::from(1)));
+    if directional
+        || (consolidate_legacy
+            && owner
+                .get("codingAgentProfiles")
+                .is_none_or(|profiles| profiles.get("profileBindingVersion").is_none()))
+    {
+        match sidecar
+            .and_then(|map| map.get("agents"))
+            .or_else(|| main.get("agents"))
+        {
+            Some(rows) => {
+                owner.insert("agents".into(), rows.clone());
+            }
+            None => {
+                owner.remove("agents");
+            }
+        }
+    }
+    Value::Object(owner)
+}
+
+/// Regroup an explicit ID-view edit against the previous physical projection.
+/// Unchanged aliases never compete with a changed alias. Raw extensions survive.
+pub(crate) fn canonical_profile_source(
+    before: &Value,
+    incoming: &Value,
+    registered: bool,
+) -> Result<Value, String> {
+    if !registered && before.get("managed").is_some() {
+        return Err("sourceReadOnly".into());
+    }
+    let mut sets = physical_profile_sets(before, registered)?;
+    let next_rows = physical_profile_rows(incoming, registered)?;
+    let empty = serde_json::json!({});
+    let incoming_profiles = profile_container(incoming, registered).unwrap_or(&empty);
+    let compatible_draft =
+        if incoming_profiles.get("profileBindingVersion") == Some(&Value::from(1)) {
+            project_physical_profiles(before, registered)?
+        } else {
+            incoming.clone()
+        };
+    let submitted = profile_container(&compatible_draft, registered).unwrap_or(&empty);
+    let old_projection = project_physical_profiles(before, registered)?;
+    let old = profile_container(&old_projection, registered).unwrap_or(&empty);
+    let cells_key = if registered {
+        "profilesByAgent"
+    } else {
+        "codingAgentProfiles"
+    };
+    let labels_key = if registered {
+        "profileLabelsByAgent"
+    } else {
+        "profileLabels"
+    };
+    let submitted_cells = profile_object(submitted.get(cells_key), cells_key)?;
+    let submitted_labels = profile_object(submitted.get(labels_key), labels_key)?;
+    let mut changes = BTreeMap::<String, (Value, Value)>::new();
+    let mut forks = BTreeMap::<String, (Value, Value)>::new();
+    for (id, hash) in &next_rows {
+        let old_hash = sets.rows.get(id);
+        let previous_cells = old.get(cells_key).and_then(|map| map.get(id));
+        let previous_labels = old
+            .get(labels_key)
+            .and_then(|map| map.get(id))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let mut cells = normalized_profile_cells(submitted_cells.get(id))?;
+        let labels = Value::Object(profile_object(submitted_labels.get(id), labels_key)?);
+        let old_cells = normalized_profile_cells(previous_cells)?;
+        if let (Some(new_cells), Some(previous)) = (cells.as_object_mut(), old_cells.as_object()) {
+            for (letter, cell) in new_cells {
+                if let (Some(cell), Some(previous)) = (
+                    cell.as_object_mut(),
+                    previous.get(letter).and_then(Value::as_object),
+                ) {
+                    let typed: ProfileCellConfig =
+                        serde_json::from_value(Value::Object(previous.clone()))
+                            .map_err(|e| e.to_string())?;
+                    let known = serde_json::to_value(typed).map_err(|e| e.to_string())?;
+                    for (key, value) in previous {
+                        if !known.as_object().unwrap().contains_key(key)
+                            && !["id_hash", "id_hash_debug"].contains(&key.as_str())
+                        {
+                            cell.entry(key.clone()).or_insert_with(|| value.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let changed = cells != old_cells || labels != previous_labels;
+        if changed {
+            let value = (cells, labels);
+            if changes.get(hash).is_some_and(|existing| existing != &value) {
+                return Err(format!("sourceProfileConflict: {hash}; row {id}"));
+            }
+            changes.insert(hash.clone(), value);
+        } else if old_hash.is_some_and(|old_hash| old_hash != hash) {
+            let value = (old_cells, previous_labels);
+            if forks.get(hash).is_some_and(|existing| existing != &value) {
+                return Err(format!("sourceProfileConflict: {hash}; row {id}"));
+            }
+            forks.insert(hash.clone(), value);
+        } else if !sets.cells.contains_key(hash) {
+            forks.insert(hash.clone(), (cells, labels));
+        }
+    }
+    for (hash, (cells, labels)) in forks {
+        if sets
+            .cells
+            .get(&hash)
+            .is_some_and(|existing| existing != &cells)
+            || sets
+                .labels
+                .get(&hash)
+                .is_some_and(|existing| existing != &labels)
+        {
+            return Err(format!("sourceProfileConflict: {hash}"));
+        }
+        sets.cells.entry(hash.clone()).or_insert(cells);
+        sets.labels.entry(hash).or_insert(labels);
+    }
+    for (hash, (cells, labels)) in changes {
+        if next_rows
+            .iter()
+            .any(|(id, h)| h == &hash && sets.rows.get(id).is_none_or(|old| old != h))
+            && (sets.cells.get(&hash).is_some_and(|v| v != &cells)
+                || sets.labels.get(&hash).is_some_and(|v| v != &labels))
+        {
+            return Err(format!("sourceProfileConflict: {hash}"));
+        }
+        sets.cells.insert(hash.clone(), cells);
+        sets.labels.insert(hash, labels);
+    }
+    let mut result = before.clone();
+    let result_root = result.as_object_mut().ok_or("invalidSource")?;
+    let incoming_root = incoming.as_object().ok_or("invalidSource")?;
+    if let Some(rows) = incoming_root.get("agents") {
+        result_root.insert("agents".into(), rows.clone());
+    }
+    if registered && !result_root.contains_key("codingAgentProfiles") {
+        result_root.insert("codingAgentProfiles".into(), empty.clone());
+    }
+    let target = if registered {
+        result_root
+            .get_mut("codingAgentProfiles")
+            .unwrap()
+            .as_object_mut()
+            .ok_or("invalidProfileContainer")?
+    } else {
+        result_root
+    };
+    if let Some(fields) = incoming_profiles.as_object() {
+        for key in [
+            "schemaVersion",
+            "profileSlots",
+            "defaultProfileByAgent",
+            "codexHomeKeyByAgent",
+        ] {
+            if let Some(value) = fields.get(key) {
+                target.insert(key.into(), value.clone());
+            }
+        }
+    }
+    if !registered {
+        target
+            .entry("profileSlots".to_owned())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(order) = incoming_root.get("order") {
+            target.insert("order".into(), order.clone());
+        } else {
+            target.remove("order");
+        }
+    }
+    target.insert("profileBindingVersion".into(), Value::from(1));
+    target.insert("profilesByBaseHash".into(), Value::Object(sets.cells));
+    target.insert("profileLabelsByBaseHash".into(), Value::Object(sets.labels));
+    if let Some(orphans) = sets.orphans {
+        target.insert("legacyProfileOrphans".into(), Value::Object(orphans));
+    }
+    target.remove(cells_key);
+    target.remove(labels_key);
+    if registered {
+        target.remove("identityByAgent");
+    }
+    refresh_physical_source_rows(&mut result, registered)?;
+    Ok(result)
+}
+
+fn refresh_physical_source_rows(source: &mut Value, registered: bool) -> Result<(), String> {
+    let hashes = physical_profile_rows(source, registered)?;
+    for row in source
+        .get_mut("agents")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        let object = row.as_object_mut().ok_or("invalidAgentRow")?;
+        let key = object
+            .get(if registered { "id" } else { "key" })
+            .and_then(Value::as_str)
+            .ok_or("invalidAgentKey")?;
+        if let Some(hash) = hashes.get(key).filter(|_| registered) {
+            let command = raw_configuration_command(object, "baseCommand")?.unwrap_or_default();
+            let envs: Vec<CodingAgentEnv> = object
+                .get("envs")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            let debug = serde_json::json!(configuration_identity_debug(command, &envs));
+            object.insert("id_hash".into(), Value::String(hash.clone()));
+            object.insert("id_hash_debug".into(), debug);
+        } else {
+            object.remove("id_hash");
+            object.remove("id_hash_debug");
+        }
+    }
+    Ok(())
+}
+
+/// Catalog keys become transient IDs; physical definitions remain untouched.
+fn decode_physical_catalog(
+    value: &Value,
+) -> Result<(Vec<AgentConfig>, CodingAgentProfilesConfig), String> {
+    if !matches!(
+        value.get("schemaVersion").and_then(Value::as_u64),
+        Some(1 | 2)
+    ) {
+        return Err("unsupportedCatalogSchema".into());
+    }
+    if value.get("schemaVersion").and_then(Value::as_u64) == Some(2) {
+        crate::config::coding_agents_catalog::parse_catalog_schema2(
+            &serde_json::to_vec(value).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let sets = physical_profile_sets(value, false)?;
+    let projected = project_physical_profiles(value, false)?;
+    let mut agents = Vec::new();
+    for raw in value
+        .get("agents")
+        .and_then(Value::as_array)
+        .ok_or("invalidAgentsArray")?
+    {
+        let key = raw
+            .get("key")
+            .and_then(Value::as_str)
+            .ok_or("invalidAgentKey")?;
+        if !sets.rows.contains_key(key) {
+            continue;
+        }
+        crate::config::coding_agents_catalog::validate_catalog_key(key)?;
+        let mut row = raw.as_object().cloned().ok_or("invalidAgentRow")?;
+        row.insert("id".into(), Value::String(key.to_owned()));
+        row.entry("label".to_owned())
+            .or_insert_with(|| Value::String(String::new()));
+        row.entry("color".to_owned())
+            .or_insert_with(|| Value::String(String::new()));
+        agents.push(serde_json::from_value(Value::Object(row)).map_err(|e| e.to_string())?);
+    }
+    let profiles = serde_json::json!({
+        "profilesByAgent":projected.get("codingAgentProfiles"),
+        "profileLabelsByAgent":projected.get("profileLabels"),
+        "profileSlots":value.get("profileSlots").cloned().unwrap_or_else(|| serde_json::json!({}))
+    });
+    let mut profiles = serde_json::from_value(profiles).map_err(|e| e.to_string())?;
+    refresh_agent_id_hashes(&mut agents);
+    refresh_pair_id_hashes(&agents, &mut profiles);
+    Ok((agents, profiles))
+}
+
+fn duplicate_profile_document(bytes: &[u8], path: &Path) -> Option<String> {
+    serde_json::from_slice::<Value>(bytes).ok()?;
+    crate::config::coding_agents_catalog::parse_strict_json(bytes).err().map(|reason| format!("duplicateJsonMember: {}: {reason}; no files changed; correct the ambiguous file externally", path.display()))
+}
+
+type RegisteredProfileDocument = (PathBuf, Option<Vec<u8>>);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegisteredProfileProblemKind {
+    Io,
+    JsonSyntax,
+    DuplicateMember,
+    ProfileSemantic,
+}
+
+struct RegisteredProfileProblem {
+    path: PathBuf,
+    kind: RegisteredProfileProblemKind,
+    reason: String,
+    ordinary_participant: bool,
+}
+
+#[derive(Default)]
+struct RegisteredProfileCapture {
+    documents: Vec<RegisteredProfileDocument>,
+    problems: Vec<RegisteredProfileProblem>,
+}
+
+impl RegisteredProfileCapture {
+    fn ordinary_error(&self) -> Option<String> {
+        self.problems
+            .iter()
+            .find(|problem| problem.ordinary_participant)
+            .map(|problem| problem.reason.clone())
+    }
+
+    fn admits_project_migration(&self, path: &Path) -> bool {
+        let sidecar = agents_instance_path(path);
+        self.problems.iter().all(|problem| {
+            !problem.ordinary_participant
+                || (problem.path == sidecar
+                    && problem.kind == RegisteredProfileProblemKind::JsonSyntax)
+        })
+    }
+
+    fn participant_documents(&self) -> Vec<RegisteredProfileDocument> {
+        self.documents
+            .iter()
+            .filter(|(path, _)| {
+                !self
+                    .problems
+                    .iter()
+                    .any(|problem| !problem.ordinary_participant && &problem.path == path)
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+// Collect every participant even after a failure. In particular, malformed
+// sidecar bytes must not hide a later participating overlay's rejection.
+fn collect_registered_profile_gate(path: &Path) -> RegisteredProfileCapture {
+    let mut captured = RegisteredProfileCapture::default();
+    let mut sources = Vec::new();
+    for participant in [
+        path.to_path_buf(),
+        agents_instance_path(path),
+        path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+    ] {
+        let overlay = participant.file_name()
+            == Some(std::ffi::OsStr::new(SETTINGS_LOCAL_OVERRIDE_FILE_NAME));
+        let bytes = match std::fs::read(&participant) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                captured.documents.push((participant, None));
+                continue;
+            }
+            Err(e) => {
+                captured.problems.push(RegisteredProfileProblem {
+                    reason: format!("{}: {e}", participant.display()),
+                    path: participant,
+                    kind: RegisteredProfileProblemKind::Io,
+                    ordinary_participant: !overlay,
+                });
+                continue;
+            }
+        };
+        let value = match serde_json::from_slice::<Value>(&bytes) {
+            Ok(value) => value,
+            Err(e) => {
+                captured.problems.push(RegisteredProfileProblem {
+                    reason: format!("{}: {e}", participant.display()),
+                    path: participant.clone(),
+                    kind: RegisteredProfileProblemKind::JsonSyntax,
+                    ordinary_participant: !overlay,
+                });
+                captured.documents.push((participant, Some(bytes)));
+                continue;
+            }
+        };
+        if participant.file_name() == Some(std::ffi::OsStr::new(SETTINGS_LOCAL_OVERRIDE_FILE_NAME))
+            && !AGENTS_INSTANCE_KEYS
+                .iter()
+                .any(|key| value.get(*key).is_some())
+        {
+            continue;
+        }
+        if let Some(reason) = duplicate_profile_document(&bytes, &participant) {
+            captured.problems.push(RegisteredProfileProblem {
+                path: participant.clone(),
+                kind: RegisteredProfileProblemKind::DuplicateMember,
+                reason,
+                ordinary_participant: true,
+            });
+        }
+        sources.push((participant.clone(), value));
+        captured.documents.push((participant, Some(bytes)));
+    }
+    validate_registered_profile_capture(path, &sources, &mut captured);
+    captured
+}
+
+fn validate_registered_profile_capture(
+    path: &Path,
+    sources: &[(PathBuf, Value)],
+    captured: &mut RegisteredProfileCapture,
+) {
+    let sidecar_path = agents_instance_path(path);
+    let sidecar = sources
+        .iter()
+        .find(|(source, _)| source == &sidecar_path)
+        .and_then(|(_, value)| value.as_object());
+    let main = sources
+        .iter()
+        .find(|(source, _)| source == path)
+        .and_then(|(_, value)| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let protected = sources.iter().any(|(source, value)| {
+        source.file_name() == Some(std::ffi::OsStr::new(SETTINGS_LOCAL_OVERRIDE_FILE_NAME))
+            && AGENTS_INSTANCE_KEYS
+                .iter()
+                .any(|key| value.get(*key).is_some())
+    });
+    for (participant, value) in sources {
+        let mut profile_source = value.clone();
+        // Shadowed rows/groups cannot contribute active collisions. Structural
+        // map/quarantine validation still covers each original participant.
+        if participant == path
+            && sidecar.is_some_and(|map| {
+                map.contains_key("agents") || map.contains_key("codingAgentProfiles")
+            })
+            || physical_profile_rows(&profile_source, true).is_err()
+        {
+            if let Some(object) = profile_source.as_object_mut() {
+                object.remove("agents");
+            }
+        }
+        if let Err(reason) = physical_profile_sets(&profile_source, true) {
+            captured.problems.push(RegisteredProfileProblem {
+                path: participant.clone(),
+                kind: RegisteredProfileProblemKind::ProfileSemantic,
+                reason: format!("{}: {reason}", participant.display()),
+                ordinary_participant: true,
+            });
+        }
+    }
+    if !protected {
+        let selected = selected_registered_profile_owner(&main, sidecar, true);
+        if physical_profile_rows(&selected, true).is_ok() {
+            if let Err(reason) = physical_profile_sets(&selected, true) {
+                captured.problems.push(RegisteredProfileProblem {
+                    path: path.to_path_buf(),
+                    kind: RegisteredProfileProblemKind::ProfileSemantic,
+                    reason: format!("{}: {reason}", path.display()),
+                    ordinary_participant: true,
+                });
+            }
+        }
+    }
+}
+
+fn capture_registered_profile_gate(path: &Path) -> Result<Vec<RegisteredProfileDocument>, String> {
+    let captured = collect_registered_profile_gate(path);
+    match captured.ordinary_error() {
+        Some(reason) => Err(reason),
+        None => Ok(captured.participant_documents()),
+    }
+}
+
+fn captured_registered_profile_object(
+    captured: &[RegisteredProfileDocument],
+    path: &Path,
+) -> Result<Option<Map<String, Value>>, String> {
+    let (_, bytes) = captured
+        .iter()
+        .find(|(source, _)| source == path)
+        .ok_or_else(|| format!("staleProfileSource: {}", path.display()))?;
+    bytes
+        .as_deref()
+        .map(serde_json::from_slice)
+        .transpose()
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn recheck_registered_profile_gate(captured: &[RegisteredProfileDocument]) -> Result<(), String> {
+    for (path, before) in captured {
+        let current = match std::fs::read(path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        if &current != before {
+            return Err(format!("staleProfileSource: {}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn registered_profile_raw_gate(path: &Path) -> Result<(), String> {
+    let captured = capture_registered_profile_gate(path)?;
+    recheck_registered_profile_gate(&captured)
+}
+
 // #2892 P01: additive source-aware contracts. These are data and pure helpers;
 // none of them changes the legacy selection, settings or persistence paths.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2556,6 +3425,19 @@ impl SourceReadContext {
     }
 
     fn locator(&self, source: &SourceRef) -> Result<PathBuf, SourcePreparationError> {
+        if source.scope == SourceScope::Instance
+            && source.kind != SourceKind::RegisteredInstance
+            && self.project
+        {
+            let mut instance = self.clone();
+            instance.project = false;
+            instance.catalog_root = self
+                .settings_path
+                .parent()
+                .ok_or(SourcePreparationError::ContextUnavailable)?
+                .to_path_buf();
+            return instance.locator(source);
+        }
         if source != &self.source(source.kind)
             || (!self.project && source.kind == SourceKind::CatalogProject)
         {
@@ -2576,16 +3458,46 @@ impl SourceReadContext {
 
 #[allow(dead_code)] // Dormant until the later source protocol cuts.
 pub(crate) fn list_active_sources(context: &SourceReadContext) -> Vec<SourceRef> {
-    [
-        SourceKind::CatalogBase,
-        SourceKind::CatalogProject,
-        SourceKind::CatalogPersonal,
-        SourceKind::RegisteredInstance,
-    ]
-    .into_iter()
-    .filter(|kind| context.project || *kind != SourceKind::CatalogProject)
-    .map(|kind| context.source(kind))
-    .collect()
+    let mut contexts = vec![context.clone()];
+    if context.project {
+        let mut instance = context.clone();
+        instance.project = false;
+        instance.catalog_root = context
+            .settings_path
+            .parent()
+            .expect("settings parent")
+            .to_path_buf();
+        contexts.push(instance);
+    }
+    let mut paths = HashSet::new();
+    let mut sources = Vec::new();
+    for owner in contexts {
+        for kind in [
+            SourceKind::RegisteredInstance,
+            SourceKind::CatalogBase,
+            SourceKind::CatalogProject,
+            SourceKind::CatalogPersonal,
+        ] {
+            if !owner.project && kind == SourceKind::CatalogProject {
+                continue;
+            }
+            let source = owner.source(kind);
+            let Ok(path) = owner.locator(&source) else {
+                continue;
+            };
+            // Missing files are omitted; nonregular/unreadable existing sources
+            // remain visible for a diagnostic snapshot. Never create on read.
+            if std::fs::symlink_metadata(&path)
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            {
+                continue;
+            }
+            if paths.insert(path) {
+                sources.push(source);
+            }
+        }
+    }
+    sources
 }
 
 #[derive(Debug, Clone)]
@@ -2621,7 +3533,9 @@ fn decode_registered_raw(
         .transpose()
         .map_err(|_| SourcePreparationError::InvalidCandidate)?
         .unwrap_or_default();
-    let profiles: CodingAgentProfilesConfig = map
+    let projected = project_physical_profiles(value, true)
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+    let profiles: CodingAgentProfilesConfig = projected
         .get("codingAgentProfiles")
         .cloned()
         .map(serde_json::from_value)
@@ -2641,6 +3555,10 @@ fn decode_registered_raw(
     {
         return Err(SourcePreparationError::InvalidCandidate);
     }
+    let mut agents = agents;
+    let mut profiles = profiles;
+    refresh_agent_id_hashes(&mut agents);
+    refresh_pair_id_hashes(&agents, &mut profiles);
     Ok((agents, profiles))
 }
 
@@ -2660,9 +3578,7 @@ fn source_snapshot_from_original(
     raw: OriginPhysicalInput,
 ) -> Result<RawSourceSnapshot, SourcePreparationError> {
     context.locator(source)?;
-    let revision = raw
-        .revision()
-        .ok_or(SourcePreparationError::OriginUnavailable)?;
+    let revision = raw.revision().unwrap_or(SourceRevision::Absent {});
     let mut snapshot = SourceSnapshot {
         source: source.clone(),
         revision,
@@ -2673,25 +3589,56 @@ fn source_snapshot_from_original(
         diagnostics: Vec::new(),
         context_revision: context.revision.clone(),
     };
-    let mut candidate_template = None;
+    let candidate_template = None;
     match &raw {
-        OriginPhysicalInput::Absent => {
-            if source.kind == SourceKind::CatalogPersonal {
-                snapshot.capabilities.editable_create = true;
-                candidate_template = serde_json::to_value(
-                    crate::config::coding_agents_catalog::CodingAgentCatalogSchema2::empty(),
-                )
-                .ok();
-            }
-        }
+        OriginPhysicalInput::Absent => {}
         OriginPhysicalInput::Bytes(bytes) => {
+            let path = context.locator(source)?;
+            let ambiguity = duplicate_profile_document(bytes, &path);
+            let registered_gate = if source.kind == SourceKind::RegisteredInstance {
+                registered_profile_raw_gate(&context.settings_path).err()
+            } else {
+                None
+            };
+            let catalog_gate = if source.kind != SourceKind::RegisteredInstance {
+                crate::config::coding_agents_catalog::parse_strict_json(bytes)
+                    .and_then(|value| decode_physical_catalog(&value))
+                    .err()
+                    .map(|reason| format!("{}: {reason}", path.display()))
+            } else {
+                None
+            };
+            let invalid = ambiguity.or(registered_gate).or(catalog_gate);
+            if let Some(reason) = invalid {
+                snapshot.availability = SourceAvailability::Invalid;
+                let code = [
+                    "duplicateJsonMember",
+                    "invalidLegacyProfileOrphans",
+                    "sourceProfileConflict",
+                ]
+                .into_iter()
+                .find(|code| reason.contains(code))
+                .unwrap_or("invalidSource");
+                let mut diagnostic = source_diagnostic(code);
+                diagnostic.entry_hint = Some(reason);
+                snapshot.diagnostics.push(diagnostic);
+                return Ok(RawSourceSnapshot {
+                    snapshot,
+                    candidate_template: None,
+                    raw,
+                    context: context.clone(),
+                });
+            }
             let decoded = if source.kind == SourceKind::RegisteredInstance {
                 raw.value()
                     .ok_or(SourcePreparationError::InvalidCandidate)
                     .and_then(|value| {
                         let (agents, profiles) = decode_registered_raw(&value)?;
                         snapshot.profiles = profiles.profiles_by_agent;
-                        snapshot.agents = value
+                        let mut view = value.clone();
+                        refresh_physical_source_rows(&mut view, true)
+                            .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+                        snapshot.agents = view
                             .get("agents")
                             .and_then(Value::as_array)
                             .cloned()
@@ -2717,18 +3664,41 @@ fn source_snapshot_from_original(
                         Ok(())
                     })
             } else {
-                crate::config::coding_agents_catalog::parse_independent_catalog(bytes, source.kind == SourceKind::CatalogBase)
-                    .map_err(|error| match error {
-                        crate::config::coding_agents_catalog::IdentityCatalogError::IndependentFormatRequired => SourcePreparationError::IndependentFormatRequired,
-                        _ => SourcePreparationError::InvalidCandidate,
-                    }).and_then(|catalog| {
-                        if let Err(error) = catalog.validate_identities() {
-                            snapshot.diagnostics.push(SourceDiagnostic { code: format!("{:?}", error.code), entry_hint: Some(error.entry_hint), existing_name: Some(error.existing_name), requested_profile: error.requested_profile });
+                crate::config::coding_agents_catalog::parse_strict_json(bytes)
+                    .and_then(|value| {
+                        let (agents, profiles) = decode_physical_catalog(&value)?;
+                        snapshot.profiles = profiles.profiles_by_agent;
+                        let mut view = value.clone();
+                        refresh_physical_source_rows(&mut view, false)?;
+                        snapshot.agents = view
+                            .get("agents")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter(|row| row.get("remove") != Some(&Value::Bool(true)))
+                            .cloned()
+                            .collect();
+                        let active: HashSet<_> =
+                            agents.iter().map(|agent| agent.id.as_str()).collect();
+                        for row in value
+                            .get("agents")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
+                            if let Some(key) = row
+                                .get("key")
+                                .and_then(Value::as_str)
+                                .filter(|key| !active.contains(key))
+                            {
+                                let mut diagnostic = source_diagnostic("incompletePhysicalRow");
+                                diagnostic.entry_hint = Some(key.to_owned());
+                                snapshot.diagnostics.push(diagnostic);
+                            }
                         }
-                        snapshot.profiles = catalog.coding_agent_profiles;
-                        snapshot.agents = catalog.agents.iter().map(serde_json::to_value).collect::<Result<_, _>>().map_err(|_| SourcePreparationError::InvalidCandidate)?;
                         Ok(())
                     })
+                    .map_err(|_| SourcePreparationError::InvalidCandidate)
             };
             match decoded {
                 Ok(()) => {
@@ -2738,8 +3708,14 @@ fn source_snapshot_from_original(
                         source.kind,
                         SourceKind::RegisteredInstance | SourceKind::CatalogPersonal
                     );
-                    snapshot.capabilities.repair_by_owner =
-                        source.kind == SourceKind::CatalogProject;
+                    snapshot.capabilities.editable_save &= source.scope == SourceScope::Project
+                        || source.kind == SourceKind::RegisteredInstance;
+                    snapshot.capabilities.editable_save &= source.kind
+                        == SourceKind::RegisteredInstance
+                        || raw
+                            .value()
+                            .is_some_and(|value| value.get("managed").is_none());
+                    snapshot.capabilities.repair_by_owner = false;
                 }
                 Err(SourcePreparationError::IndependentFormatRequired) => {
                     snapshot.availability = SourceAvailability::IndependentFormatRequired;
@@ -2749,13 +3725,20 @@ fn source_snapshot_from_original(
                 }
                 Err(_) => {
                     snapshot.availability = SourceAvailability::Invalid;
+                    snapshot.agents.clear();
+                    snapshot.profiles.clear();
                     snapshot
                         .diagnostics
                         .push(source_diagnostic("invalidSource"));
                 }
             }
         }
-        OriginPhysicalInput::Unknown => return Err(SourcePreparationError::OriginUnavailable),
+        OriginPhysicalInput::Unknown => {
+            snapshot.availability = SourceAvailability::Invalid;
+            snapshot
+                .diagnostics
+                .push(source_diagnostic("unreadableSource"));
+        }
     }
     Ok(RawSourceSnapshot {
         snapshot,
@@ -3467,17 +4450,14 @@ fn validate_source_identity_groups(
                 profiles.profiles_by_agent,
             )
         } else {
-            let catalog = crate::config::coding_agents_catalog::parse_catalog_schema2(
-                &serde_json::to_vec(value).map_err(|_| SourcePreparationError::InvalidCandidate)?,
-            )
-            .map_err(|_| SourcePreparationError::InvalidCandidate)?;
+            let (agents, profiles) = decode_physical_catalog(value)
+                .map_err(|_| SourcePreparationError::InvalidCandidate)?;
             (
-                catalog
-                    .agents
+                agents
                     .into_iter()
-                    .map(|a| (a.key, a.command, a.envs))
+                    .map(|a| (a.id, a.command, a.envs))
                     .collect::<Vec<_>>(),
-                catalog.coding_agent_profiles,
+                profiles.profiles_by_agent,
             )
         };
         for (key, command, envs) in agents {
@@ -3491,7 +4471,11 @@ fn validate_source_identity_groups(
                 .flat_map(|cells| cells.iter())
             {
                 groups
-                    .entry(format!("{key}/{}", profile_identity(profile)))
+                    .entry(format!(
+                        "{}/{}",
+                        configuration_identity(&command, &envs),
+                        profile_identity(profile)
+                    ))
                     .or_default()
                     .insert(letter.clone());
             }
@@ -3501,7 +4485,9 @@ fn validate_source_identity_groups(
     let old = groups(before)?;
     let new = groups(after)?;
     if let Some((id, members)) = new.iter().find(|(id, members)| {
-        members.len() > 1 && old.get(*id).is_none_or(|prior| !members.is_subset(prior))
+        id.contains("/pid1:")
+            && members.len() > 1
+            && old.get(*id).is_none_or(|prior| !members.is_subset(prior))
     }) {
         let entries = raw_entries(after, if registered { "id" } else { "key" });
         let profile_key = id.rsplit_once("/pid1:").map(|(key, _)| key);
@@ -3698,11 +4684,54 @@ pub(crate) fn prepare_source_candidate_with_original_links(
         let (agents, profiles) = decode_registered_raw(candidate)?;
         serde_json::json!({"agents":agents, "codingAgentProfiles":profiles})
     } else {
-        let catalog = crate::config::coding_agents_catalog::parse_catalog_schema2(&serde_json::to_vec(candidate).map_err(|_| SourcePreparationError::InvalidCandidate)?)
-            .map_err(|error| match error { crate::config::coding_agents_catalog::IdentityCatalogError::IndependentFormatRequired => SourcePreparationError::IndependentFormatRequired, _ => SourcePreparationError::InvalidCandidate })?;
-        serde_json::to_value(catalog).map_err(|_| SourcePreparationError::InvalidCandidate)?
+        decode_physical_catalog(candidate).map_err(|_| SourcePreparationError::InvalidCandidate)?;
+        candidate.clone()
     };
-    if !preserve_unknown_fields(&before, candidate, &model) {
+    // Binding fields are validated and preserved by canonical_profile_source,
+    // including unresolved raw legacy entries omitted from the editor's ID view.
+    let mut unknown_before = before.clone();
+    let binding = if registered {
+        unknown_before.get_mut("codingAgentProfiles")
+    } else {
+        Some(&mut unknown_before)
+    };
+    if let Some(binding) = binding.and_then(Value::as_object_mut) {
+        for key in [
+            "profileBindingVersion",
+            "profilesByBaseHash",
+            "profileLabelsByBaseHash",
+            if registered {
+                "profilesByAgent"
+            } else {
+                "codingAgentProfiles"
+            },
+            if registered {
+                "profileLabelsByAgent"
+            } else {
+                "profileLabels"
+            },
+        ] {
+            binding.remove(key);
+        }
+        if registered {
+            binding.remove("identityByAgent");
+        }
+    }
+    // Catalog slots default to an empty object. Compare an omitted default
+    // without discarding any actual before/candidate field or opaque data.
+    if !registered
+        && before
+            .get("profileSlots")
+            .and_then(Value::as_object)
+            .is_some_and(Map::is_empty)
+        && candidate.get("profileSlots").is_none()
+    {
+        unknown_before
+            .as_object_mut()
+            .expect("catalog object")
+            .remove("profileSlots");
+    }
+    if !preserve_unknown_fields(&unknown_before, candidate, &model) {
         return Err(SourcePreparationError::InvalidCandidate);
     }
     validate_source_identity_groups(&before, candidate, registered)?;
@@ -3779,6 +4808,8 @@ pub(crate) fn prepare_source_candidate_with_original_links(
         let units = changed_origin_units(&before, &candidate, origin);
         require_source_original_units(origin, &units, proofs)?;
     }
+    let candidate = canonical_profile_source(&before, &candidate, registered)
+        .map_err(|_| SourcePreparationError::InvalidCandidate)?;
     let mut serialized_after = serde_json::to_vec_pretty(&candidate)
         .map_err(|_| SourcePreparationError::InvalidCandidate)?;
     serialized_after.push(b'\n');
@@ -3993,10 +5024,19 @@ mod independent_source_tests {
         let saved: Value = serde_json::from_slice(&prepared.serialized_after).unwrap();
         assert_eq!(saved["agents"][1]["baseCommand"], "other-new");
         assert_eq!(saved["agents"][1]["command"], "other-base");
-        assert_eq!(saved["agents"][0], fixture.registered["agents"][0]);
         assert_eq!(
-            saved["codingAgentProfiles"],
-            fixture.registered["codingAgentProfiles"]
+            saved["agents"][0]["command"],
+            fixture.registered["agents"][0]["command"]
+        );
+        assert_eq!(
+            saved["agents"][0]["id"],
+            fixture.registered["agents"][0]["id"]
+        );
+        assert_eq!(
+            project_physical_profiles(&saved, true).unwrap()["codingAgentProfiles"]
+                ["profilesByAgent"],
+            project_physical_profiles(&fixture.registered, true).unwrap()["codingAgentProfiles"]
+                ["profilesByAgent"]
         );
         assert_eq!(saved["foreign"], fixture.registered["foreign"]);
         assert_eq!(
@@ -4368,8 +5408,10 @@ mod independent_source_tests {
         let saved: Value = serde_json::from_slice(&plan.serialized_after).unwrap();
         assert_eq!(saved["foreign"], fixture.registered["foreign"]);
         assert_eq!(
-            saved["codingAgentProfiles"]["profilesByAgent"]["K"],
-            fixture.registered["codingAgentProfiles"]["profilesByAgent"]["K"]
+            project_physical_profiles(&saved, true).unwrap()["codingAgentProfiles"]
+                ["profilesByAgent"]["K"],
+            project_physical_profiles(&fixture.registered, true).unwrap()["codingAgentProfiles"]
+                ["profilesByAgent"]["K"]
         );
         candidate = fixture.registered.clone();
         candidate["agents"][0]["command"] = json!("own-new");
@@ -4817,38 +5859,30 @@ mod independent_source_tests {
     }
 
     #[test]
-    fn source_personal_absent_template_and_no_clobber_precondition() {
+    fn e2432_source_personal_absent_has_no_creation_authority() {
         let fixture = Fixture::new();
         let source = fixture.context.source(SourceKind::CatalogPersonal);
         let snapshot = read_source_snapshot(&fixture.context, &source).unwrap();
         assert_eq!(snapshot.snapshot.availability, SourceAvailability::Absent);
         assert_eq!(snapshot.snapshot.revision, SourceRevision::Absent {});
-        assert!(snapshot.snapshot.capabilities.editable_create);
-        assert!(!snapshot.snapshot.capabilities.available_read);
-        let template = snapshot.candidate_template.as_ref().unwrap();
-        let plan = prepare_source_candidate(&snapshot, &SourceRevision::Absent {}, template, None)
-            .unwrap();
-        assert!(plan.before_bytes.is_none());
-        assert!(!fixture.context.locator(&source).unwrap().exists());
-        plan.revalidate_before_write(&fixture.context).unwrap();
-        let path = fixture.context.locator(&source).unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"third party").unwrap();
-        assert_eq!(
-            plan.revalidate_before_write(&fixture.context),
-            Err(SourcePreparationError::StaleRevision)
-        );
-        assert_eq!(std::fs::read(path).unwrap(), b"third party");
+        assert!(!snapshot.snapshot.capabilities.editable_create);
+        assert!(snapshot.candidate_template.is_none());
         assert!(matches!(
-            prepare_source_candidate(&snapshot, &source_bytes_revision(b""), template, None),
-            Err(SourcePreparationError::StaleRevision)
+            prepare_source_candidate(
+                &snapshot,
+                &SourceRevision::Absent {},
+                &json!({"schemaVersion":2,"agents":[]}),
+                None
+            ),
+            Err(SourcePreparationError::ReadOnly)
         ));
+        assert!(!fixture.context.locator(&source).unwrap().exists());
     }
 
     #[test]
     fn source_p_q_separation_fallback_c_and_stale_context() {
         let fixture = Fixture::new();
-        assert_eq!(list_active_sources(&fixture.context).len(), 3);
+        assert_eq!(list_active_sources(&fixture.context).len(), 1);
         let p = fixture.root.path().join("P");
         let q = fixture.root.path().join("Q");
         std::fs::create_dir_all(&p).unwrap();
@@ -4862,7 +5896,7 @@ mod independent_source_tests {
         };
         let context =
             SourceReadContext::from_settings(&settings, &fixture.context.settings_path).unwrap();
-        assert_eq!(list_active_sources(&context).len(), 4);
+        assert_eq!(list_active_sources(&context).len(), 1);
         let source = context.source(SourceKind::CatalogPersonal);
         assert!(context
             .locator(&source)
@@ -4895,13 +5929,201 @@ mod independent_source_tests {
                 assert!(snapshot.snapshot.capabilities.available_read);
                 assert!(!snapshot.snapshot.capabilities.editable_save);
                 assert!(!snapshot.snapshot.capabilities.publish_managed);
-                assert!(snapshot.snapshot.profiles.is_empty());
+                assert!(snapshot.snapshot.profiles.contains_key("own"));
+                assert_eq!(
+                    prepare_source_candidate(
+                        &snapshot,
+                        &snapshot.snapshot.revision,
+                        &json!({"schemaVersion":2,"agents":[]}),
+                        None,
+                    )
+                    .unwrap_err(),
+                    SourcePreparationError::ReadOnly
+                );
             } else {
                 assert_eq!(
                     snapshot.snapshot.availability,
-                    SourceAvailability::IndependentFormatRequired
+                    SourceAvailability::Available
                 );
+                assert_eq!(snapshot.snapshot.source.scope, SourceScope::Instance);
+                assert!(!snapshot.snapshot.capabilities.editable_save);
+                let bytes = std::fs::read(&path).unwrap();
+                assert_eq!(
+                    prepare_source_candidate(
+                        &snapshot,
+                        &snapshot.snapshot.revision,
+                        &json!({"schemaVersion":1,"agents":[]}),
+                        None,
+                    )
+                    .unwrap_err(),
+                    SourcePreparationError::ReadOnly
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
             }
+        }
+        // Catalog default slots roundtrip through the actual source snapshot,
+        // without changing unknown-field or source-admission authority.
+        let project = fixture.root.path().join("slots-project");
+        std::fs::create_dir(&project).unwrap();
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
+        let context =
+            SourceReadContext::from_settings(&settings, &fixture.context.settings_path).unwrap();
+        let source = context.source(SourceKind::CatalogPersonal);
+        assert_eq!(source.scope, SourceScope::Project);
+        let path = context.locator(&source).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for schema in [1, 2] {
+            for before_slots in [false, true] {
+                for candidate_slots in [false, true] {
+                    assert_empty_slots_candidate(
+                        &context,
+                        &source,
+                        &path,
+                        schema,
+                        before_slots,
+                        candidate_slots,
+                    );
+                }
+            }
+            for slots in [
+                json!({"A":{"label":"keep"}}),
+                json!({"A":{"label":"keep","opaque":{"nested":[null,7]}}}),
+            ] {
+                assert_nonempty_slots_omission(&context, &source, &path, schema, slots);
+            }
+            assert_invalid_slot_shapes(&context, &source, &path, schema);
+        }
+    }
+
+    fn assert_empty_slots_candidate(
+        context: &SourceReadContext,
+        source: &SourceRef,
+        path: &std::path::Path,
+        schema: u32,
+        before_slots: bool,
+        candidate_slots: bool,
+    ) {
+        let mut before = json!({"schemaVersion":schema,"agents":[]});
+        let mut candidate = before.clone();
+        if before_slots {
+            before["profileSlots"] = json!({});
+        }
+        if candidate_slots {
+            candidate["profileSlots"] = json!({});
+        }
+        std::fs::write(path, serde_json::to_vec(&before).unwrap()).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let snapshot = read_source_snapshot(context, source).unwrap();
+        assert_eq!(
+            snapshot.snapshot.availability,
+            SourceAvailability::Available
+        );
+        assert!(snapshot.snapshot.capabilities.editable_save);
+        let prepared =
+            prepare_source_candidate(&snapshot, &snapshot.snapshot.revision, &candidate, None)
+                .unwrap();
+        let output: Value = serde_json::from_slice(&prepared.serialized_after).unwrap();
+        assert_eq!(output["profileSlots"], json!({}));
+        assert_eq!(output["schemaVersion"], schema);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert_eq!(
+            prepare_source_candidate(&snapshot, &SourceRevision::Absent {}, &candidate, None,)
+                .unwrap_err(),
+            SourcePreparationError::StaleRevision
+        );
+    }
+
+    fn assert_nonempty_slots_omission(
+        context: &SourceReadContext,
+        source: &SourceRef,
+        path: &std::path::Path,
+        schema: u32,
+        slots: Value,
+    ) {
+        let before = json!({"schemaVersion":schema,"agents":[],"profileSlots":slots});
+        std::fs::write(path, serde_json::to_vec(&before).unwrap()).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let snapshot = read_source_snapshot(context, source).unwrap();
+        assert_eq!(
+            snapshot.snapshot.availability,
+            SourceAvailability::Available
+        );
+        assert_eq!(
+            prepare_source_candidate(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &json!({"schemaVersion":schema,"agents":[]}),
+                None,
+            )
+            .unwrap_err(),
+            SourcePreparationError::InvalidCandidate
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    fn assert_invalid_slot_shapes(
+        context: &SourceReadContext,
+        source: &SourceRef,
+        path: &std::path::Path,
+        schema: u32,
+    ) {
+        let before = json!({"schemaVersion":schema,"agents":[],"profileSlots":{}});
+        std::fs::write(path, serde_json::to_vec(&before).unwrap()).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let snapshot = read_source_snapshot(context, source).unwrap();
+        for bad in [Value::Null, json!(0), json!("bad"), json!([])] {
+            let mut candidate = before.clone();
+            candidate["profileSlots"] = bad;
+            assert_eq!(
+                prepare_source_candidate(&snapshot, &snapshot.snapshot.revision, &candidate, None,)
+                    .unwrap_err(),
+                SourcePreparationError::InvalidCandidate
+            );
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+        let before = json!({"schemaVersion":schema,"agents":[],"foreign":{"keep":[null,7]}});
+        std::fs::write(path, serde_json::to_vec(&before).unwrap()).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let snapshot = read_source_snapshot(context, source).unwrap();
+        let refused = prepare_source_candidate(
+            &snapshot,
+            &snapshot.snapshot.revision,
+            &json!({"schemaVersion":schema,"agents":[]}),
+            None,
+        )
+        .unwrap_err();
+        match snapshot.snapshot.availability {
+            SourceAvailability::Available => {
+                assert_eq!(refused, SourcePreparationError::InvalidCandidate)
+            }
+            SourceAvailability::Invalid => {
+                assert!(!snapshot.snapshot.capabilities.editable_save);
+                assert_eq!(refused, SourcePreparationError::ReadOnly);
+            }
+            other => panic!("unexpected catalog availability: {other:?}"),
+        }
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        for bad in [Value::Null, json!(0), json!([])] {
+            let before = json!({"schemaVersion":schema,"agents":[],"profileSlots":bad});
+            std::fs::write(path, serde_json::to_vec(&before).unwrap()).unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            let invalid = read_source_snapshot(context, source).unwrap();
+            assert_eq!(invalid.snapshot.availability, SourceAvailability::Invalid);
+            assert!(!invalid.snapshot.capabilities.editable_save);
+            assert_eq!(
+                prepare_source_candidate(
+                    &invalid,
+                    &invalid.snapshot.revision,
+                    &json!({"schemaVersion":schema,"agents":[]}),
+                    None,
+                )
+                .unwrap_err(),
+                SourcePreparationError::ReadOnly
+            );
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
     }
 
@@ -4932,6 +6154,25 @@ mod independent_source_tests {
             Some(&origin)
         )
         .is_err());
+        let mut registered = fixture.registered.clone();
+        registered["profileSlots"] = json!({});
+        let path = fixture.root.path().join(AGENTS_INSTANCE_FILE_NAME);
+        std::fs::write(&path, serde_json::to_vec(&registered).unwrap()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let snapshot = fixture.snapshot();
+        let (_, origin) = fixture.origin();
+        registered.as_object_mut().unwrap().remove("profileSlots");
+        assert_eq!(
+            prepare_source_candidate(
+                &snapshot,
+                &snapshot.snapshot.revision,
+                &registered,
+                Some(&origin),
+            )
+            .unwrap_err(),
+            SourcePreparationError::InvalidCandidate
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 
     #[test]
@@ -4950,7 +6191,7 @@ mod independent_source_tests {
         std::fs::write(&path, serde_json::to_vec(&candidate).unwrap()).unwrap();
         let snapshot = read_source_snapshot(&context, &source).unwrap();
         assert!(snapshot.snapshot.capabilities.available_read);
-        assert!(snapshot.snapshot.capabilities.repair_by_owner);
+        assert!(!snapshot.snapshot.capabilities.repair_by_owner);
         assert!(!snapshot.snapshot.capabilities.editable_save);
         assert!(matches!(
             prepare_source_candidate(&snapshot, &snapshot.snapshot.revision, &candidate, None),
@@ -5043,7 +6284,7 @@ fn configuration_identity_debug(command: &str, envs: &[CodingAgentEnv]) -> Vec<S
         .collect()
 }
 
-fn pair_identity_debug(
+pub(crate) fn pair_identity_debug(
     command: &str,
     envs: &[CodingAgentEnv],
     profile: &ProfileCellConfig,
@@ -5068,7 +6309,11 @@ pub fn refresh_agent_id_hashes(agents: &mut [AgentConfig]) {
 }
 
 /// Informational identity of one base/profile pair, using the existing scalar rules.
-fn pair_identity(command: &str, envs: &[CodingAgentEnv], profile: &ProfileCellConfig) -> String {
+pub(crate) fn pair_identity(
+    command: &str,
+    envs: &[CodingAgentEnv],
+    profile: &ProfileCellConfig,
+) -> String {
     identity_digest(
         "cid1:",
         &identity_preimage([
@@ -5296,7 +6541,9 @@ fn collect_configuration_identity_violations(
         .collect();
     for (index, agent) in agents.iter().enumerate() {
         for other in 0..index {
-            if hashes[index] != hashes[other] {
+            if hashes[index] != hashes[other]
+                || (preimages[index] == preimages[other] && agent.id != agents[other].id)
+            {
                 continue;
             }
             let mut pair = [
@@ -5326,9 +6573,18 @@ fn collect_profile_identity_violations(
     profiles: &CodingAgentProfilesConfig,
     record: &mut impl FnMut(PhysicalIdentityViolation, IdentityValidationError),
 ) {
+    let group_for = |id: &str| {
+        agents
+            .iter()
+            .find(|agent| agent.id == id)
+            .map(|agent| configuration_identity(&agent.command, &agent.envs))
+            .unwrap_or_else(|| format!("orphan:{id}"))
+    };
+    let mut groups = HashSet::new();
     let cells: Vec<_> = profiles
         .profiles_by_agent
         .iter()
+        .filter(|(id, _)| groups.insert(group_for(id)))
         .flat_map(|(id, cells)| {
             cells
                 .iter()
@@ -5347,11 +6603,11 @@ fn collect_profile_identity_violations(
             }
             let mut pair = [
                 (
-                    (*old_id).clone(),
+                    group_for(old_id),
                     (*old_letter).clone(),
                     old_preimage.clone(),
                 ),
-                ((*id).clone(), (*letter).clone(), preimage.clone()),
+                (group_for(id), (*letter).clone(), preimage.clone()),
             ];
             pair.sort();
             record(
@@ -5381,8 +6637,26 @@ fn validate_physical_identity_delta(
     configurations_editable: bool,
     profiles_editable: bool,
 ) -> Result<(), String> {
-    let old = physical_identity_violations(before, configurations_editable, profiles_editable)?;
-    let new = physical_identity_violations(after, configurations_editable, profiles_editable)?;
+    let project = |groups: &Map<String, Value>| {
+        let source = Value::Object(groups.clone());
+        if physical_profile_rows(&source, true).is_err() {
+            Ok(registered_profiles_for_read(&source))
+        } else {
+            project_physical_profiles(&source, true)
+        }
+    };
+    let before_view = project(before)?;
+    let after_view = project(after)?;
+    let old = physical_identity_violations(
+        before_view.as_object().unwrap(),
+        configurations_editable,
+        profiles_editable,
+    )?;
+    let new = physical_identity_violations(
+        after_view.as_object().unwrap(),
+        configurations_editable,
+        profiles_editable,
+    )?;
     for (signature, (count, mut error)) in new {
         if count > old.get(&signature).map_or(0, |(count, _)| *count) {
             // A prepended new row must still name an incumbent from BEFORE.
@@ -7872,6 +9146,10 @@ fn export_blocking_menus_with_startup(
     publish: crate::config::local_config_io::ConfigPublisher<'_>,
     mut startup: Option<&mut StartupAgentRows>,
 ) -> bool {
+    if let Err(reason) = registered_profile_raw_gate(settings_path) {
+        log::warn!("{reason}");
+        return false;
+    }
     if settings.agents.iter().all(|a| a.blocking_menus.is_none()) {
         return false;
     }
@@ -8048,6 +9326,9 @@ fn parse_agents_instance_contents(
     contents: &str,
     label: &Path,
 ) -> Result<Map<String, Value>, String> {
+    if let Some(reason) = duplicate_profile_document(contents.as_bytes(), label) {
+        log::warn!("{reason}");
+    }
     let map = match serde_json::from_str::<Value>(contents) {
         Ok(Value::Object(map)) => map,
         Ok(_) => return Err(format!("{} is not a JSON object", label.display())),
@@ -8057,7 +9338,9 @@ fn parse_agents_instance_contents(
         serde_json::from_value::<Vec<AgentConfig>>(agents.clone())
             .map_err(|e| format!("{} holds an undecodable agents array: {e}", label.display()))?;
     }
-    if let Some(profiles) = map.get(AGENTS_INSTANCE_KEYS[1]) {
+    let source = Value::Object(map.clone());
+    let projected = registered_profiles_for_read(&source);
+    if let Some(profiles) = projected.get(AGENTS_INSTANCE_KEYS[1]) {
         serde_json::from_value::<CodingAgentProfilesConfig>(profiles.clone()).map_err(|e| {
             format!(
                 "{} holds an undecodable codingAgentProfiles object: {e}",
@@ -8310,6 +9593,8 @@ fn write_agents_instance_file(
         )
     };
     let result = (|| {
+        #[cfg(test)]
+        project_atomic_checkpoint(path, SettingsSaveStage::TempCreate)?;
         let mut temporary = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -8322,6 +9607,8 @@ fn write_agents_instance_file(
             .sync_all()
             .map_err(|e| io_error(SettingsSaveStage::TempSync, e))?;
         drop(temporary);
+        #[cfg(test)]
+        project_atomic_checkpoint(path, SettingsSaveStage::AtomicReplace)?;
         replace_settings_file_atomic(&tmp_path, path)
             .map_err(|e| io_error(SettingsSaveStage::AtomicReplace, e))
     })();
@@ -8353,6 +9640,10 @@ pub(crate) fn export_agents_to_instance_file(
             return false;
         }
     };
+    if let Err(reason) = registered_profile_raw_gate(settings_path) {
+        log::warn!("{reason}");
+        return false;
+    }
     let legacy = match std::fs::read_to_string(settings_path)
         .ok()
         .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
@@ -8361,6 +9652,15 @@ pub(crate) fn export_agents_to_instance_file(
         _ => return false,
     };
     if legacy.is_empty() {
+        return false;
+    }
+    if legacy
+        .get("codingAgentProfiles")
+        .and_then(|profiles| profiles.get("profileBindingVersion"))
+        == Some(&Value::from(1))
+    {
+        // Canonical groups keep their physical owner. Only the admitted legacy
+        // preparation may transfer a registered profile packet to the sidecar.
         return false;
     }
     let path = agents_instance_path(settings_path);
@@ -8406,14 +9706,6 @@ pub(crate) fn export_agents_to_instance_file(
     }
 }
 
-/// #2716 (B3) - removes from the settings object exactly the keys the agents file
-/// now holds, key by key; a key it does not hold stays in the settings file.
-fn strip_agents_instance_keys(out: &mut Map<String, Value>, groups: &Map<String, Value>) {
-    for key in groups.keys() {
-        out.remove(key);
-    }
-}
-
 /// #2716 (B3) - puts the agents file's groups back into the just-written object
 /// for the save's re-decode. Like the load merge, `[]` stands in when neither file
 /// holds `agents`.
@@ -8452,6 +9744,525 @@ fn restore_codex_home_carrier(out: &mut Map<String, Value>, base_profiles: Optio
     }
 }
 
+// A missing physical identity image is not an absence proof. This local
+// reference is admitted only by the locked operation's original raw capture.
+// It is never installed as identity state or used as a publication candidate.
+fn absent_main_overlay_comparison(
+    settings: &AppSettings,
+    path: &Path,
+    physical_sidecar: &Option<Map<String, Value>>,
+    initial_disk: &Option<Map<String, Value>>,
+    captured: &[RegisteredProfileDocument],
+) -> Result<Value, String> {
+    let unavailable = || "overlayProfileComparisonUnavailable".to_owned();
+    if initial_disk.is_some() || settings.local_overlay_state.rejection().is_some() {
+        return Err(unavailable());
+    }
+    let main = captured
+        .iter()
+        .find(|(document, _)| document == path)
+        .ok_or_else(unavailable)?;
+    if main.1.is_some() {
+        return Err(unavailable());
+    }
+    let sidecar_path = agents_instance_path(path);
+    let sidecar = captured
+        .iter()
+        .find(|(document, _)| document == &sidecar_path)
+        .ok_or_else(unavailable)?;
+    let captured_sidecar: Option<Map<String, Value>> = sidecar
+        .1
+        .as_deref()
+        .map(serde_json::from_slice)
+        .transpose()
+        .map_err(|_| unavailable())?;
+    if &captured_sidecar != physical_sidecar {
+        return Err(unavailable());
+    }
+    let overlay_path = path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+    let bytes = captured
+        .iter()
+        .find(|(document, _)| document == &overlay_path)
+        .and_then(|(_, bytes)| bytes.as_deref())
+        .ok_or_else(unavailable)?;
+    let mut reference = serde_json::to_value(AppSettings::default()).map_err(|_| unavailable())?;
+    let overlay = LocalSettingsOverlay::from_overlay_bytes_paired(
+        &mut reference,
+        bytes,
+        OVERLAY_INELIGIBLE_DISK_KEYS,
+        OVERLAY_INELIGIBLE_LEGACY_KEYS,
+        OVERLAY_DERIVED_ID_CLOSURES,
+        CONFIGURATION_COMMAND_PAIRS,
+    );
+    if overlay.rejection().is_some()
+        || overlay.is_empty()
+        || overlay.owned_paths() != settings.local_overlay_state.owned_paths()
+        || overlay.dropped_keys() != settings.local_overlay_state.dropped_keys()
+    {
+        return Err(unavailable());
+    }
+    restore_codex_home_carrier(
+        reference.as_object_mut().ok_or_else(unavailable)?,
+        captured_sidecar
+            .as_ref()
+            .and_then(|sidecar| sidecar.get("codingAgentProfiles")),
+    );
+    serde_json::from_value::<AppSettings>(reference.clone()).map_err(|_| unavailable())?;
+    Ok(reference)
+}
+
+fn validate_registered_overlay_profile_edits(
+    settings: &AppSettings,
+    profile_before: &Value,
+    physical_sidecar: &Option<Map<String, Value>>,
+    initial_disk: &Option<Map<String, Value>>,
+    path: &Path,
+    captured: &[RegisteredProfileDocument],
+) -> Result<(), String> {
+    let paths = settings.local_overlay_state.owned_paths();
+    if !paths.iter().any(|path| {
+        path.first()
+            .is_some_and(|key| AGENTS_INSTANCE_KEYS.contains(&key.as_str()))
+    }) {
+        return Ok(());
+    }
+    let absence_reference = if settings.coding_agent_identity_physical.is_none() {
+        Some(absent_main_overlay_comparison(
+            settings,
+            path,
+            physical_sidecar,
+            initial_disk,
+            captured,
+        )?)
+    } else {
+        None
+    };
+    let raw = settings
+        .coding_agent_identity_physical
+        .as_ref()
+        .and_then(|raw| raw.as_object())
+        .or_else(|| absence_reference.as_ref().and_then(Value::as_object))
+        .ok_or("overlayProfileComparisonUnavailable")?;
+    let mut previous = registered_profiles_for_read(profile_before);
+    if let Some(rows) = physical_sidecar
+        .as_ref()
+        .and_then(|map| map.get("agents"))
+        .or_else(|| initial_disk.as_ref().and_then(|map| map.get("agents")))
+    {
+        previous["agents"] = rows.clone();
+    }
+    settings
+        .local_overlay_state
+        .reapply_from(raw, previous.as_object_mut().ok_or("invalidSource")?);
+    // These copies are comparison data only, never physical publication inputs.
+    let normalize = |mut value: Value| -> Result<Value, String> {
+        restore_codex_home_carrier(
+            value.as_object_mut().ok_or("invalidSource")?,
+            profile_before.get("codingAgentProfiles"),
+        );
+        let mut agents: Vec<AgentConfig> = value
+            .get("agents")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        let mut profiles: CodingAgentProfilesConfig = value
+            .get("codingAgentProfiles")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        finalize_agent_order(&mut agents);
+        // Match only implicit empty-A repair; do not prune submitted values.
+        profiles
+            .profile_slots
+            .entry("A".into())
+            .or_insert_with(|| ProfileSlotConfig {
+                label: String::new(),
+            });
+        for agent in &agents {
+            profiles
+                .profiles_by_agent
+                .entry(agent.id.clone())
+                .or_default()
+                .entry("A".into())
+                .or_insert_with(empty_profile_cell);
+        }
+        refresh_agent_id_hashes(&mut agents);
+        refresh_pair_id_hashes(&agents, &mut profiles);
+        for cell in profiles
+            .profiles_by_agent
+            .values_mut()
+            .flat_map(|cells| cells.values_mut())
+        {
+            cell.id_hash = None;
+            cell.id_hash_debug = None;
+        }
+        profiles.identity_by_agent.clear();
+        let agents = agents
+            .iter()
+            .map(comparable_agent)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(serde_json::json!({"agents":agents,"codingAgentProfiles":profiles}))
+    };
+    let previous = normalize(previous)?;
+    let incoming = normalize(serde_json::json!({
+        "agents":&settings.agents,
+        "codingAgentProfiles":&settings.coding_agent_profiles
+    }))?;
+    for path in paths {
+        let Some(key) = path
+            .first()
+            .filter(|key| AGENTS_INSTANCE_KEYS.contains(&key.as_str()))
+        else {
+            continue;
+        };
+        let previous_value = path
+            .iter()
+            .try_fold(&previous, |value, segment| value.get(segment));
+        let incoming_value = path
+            .iter()
+            .try_fold(&incoming, |value, segment| value.get(segment));
+        if previous_value != incoming_value {
+            return Err(format!("overlayOwnedProfileGroup: {key}"));
+        }
+    }
+    Ok(())
+}
+
+fn retain_unknown_registered_agent_fields(
+    profile_before: &Value,
+    profile_incoming: &mut Value,
+) -> Result<(), String> {
+    // The raw physical row retains fields unknown to AgentConfig.
+    let prior_rows = raw_entries(profile_before, "id");
+    if let Some(rows) = profile_incoming
+        .get_mut("agents")
+        .and_then(Value::as_array_mut)
+    {
+        for row in rows {
+            let Some(id) = row.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(prior) = prior_rows.get(id).and_then(Value::as_object) else {
+                continue;
+            };
+            let typed: AgentConfig =
+                serde_json::from_value(Value::Object(prior.clone())).map_err(|e| e.to_string())?;
+            let known = serde_json::to_value(typed).map_err(|e| e.to_string())?;
+            if let Some(object) = row.as_object_mut() {
+                for (key, value) in prior {
+                    if !known.as_object().unwrap().contains_key(key) && key != "command" {
+                        object.entry(key.clone()).or_insert_with(|| value.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// A legacy split may have projected no cells (or shadowed rows) on read. Keep
+// the selected raw payload for untouched aliases; only actual draft edits win.
+fn retain_selected_legacy_profile_aliases(
+    selected: &Value,
+    previous_owner: &Value,
+    incoming: &mut Value,
+) -> Result<(), String> {
+    let previous = registered_profiles_for_read(previous_owner);
+    let previous: CodingAgentProfilesConfig = previous
+        .get("codingAgentProfiles")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let previous = serde_json::to_value(previous).map_err(|error| error.to_string())?;
+    let projected = project_physical_profiles(selected, true)?;
+    for id in physical_profile_rows(selected, true)?.keys() {
+        let old_cells = previous.get("profilesByAgent").and_then(|map| map.get(id));
+        let cells = incoming
+            .pointer("/codingAgentProfiles/profilesByAgent")
+            .and_then(|map| map.get(id));
+        if normalized_profile_cells(old_cells)? == normalized_profile_cells(cells)? {
+            incoming["codingAgentProfiles"]["profilesByAgent"][id] =
+                projected["codingAgentProfiles"]["profilesByAgent"][id].clone();
+        }
+        let empty = serde_json::json!({});
+        let old_labels = previous
+            .get("profileLabelsByAgent")
+            .and_then(|map| map.get(id))
+            .unwrap_or(&empty);
+        let labels = incoming
+            .pointer("/codingAgentProfiles/profileLabelsByAgent")
+            .and_then(|map| map.get(id))
+            .unwrap_or(&empty);
+        if old_labels == labels {
+            incoming["codingAgentProfiles"]["profileLabelsByAgent"][id] =
+                projected["codingAgentProfiles"]["profileLabelsByAgent"][id].clone();
+        }
+    }
+    Ok(())
+}
+
+fn comparable_registered_profile_draft(
+    mut profiles: CodingAgentProfilesConfig,
+    agents: &[AgentConfig],
+) -> CodingAgentProfilesConfig {
+    repair_coding_agent_profiles_config(&mut profiles, agents);
+    profiles.identity_by_agent.clear();
+    for cell in profiles
+        .profiles_by_agent
+        .values_mut()
+        .flat_map(|cells| cells.values_mut())
+    {
+        cell.id_hash = None;
+        cell.id_hash_debug = None;
+    }
+    profiles
+}
+
+fn validate_split_canonical_profile_edits(
+    settings: &AppSettings,
+    original_owner: &Value,
+    selected_rows: Option<&Value>,
+) -> Result<(), String> {
+    let previous = registered_profiles_for_read(original_owner);
+    let previous = previous
+        .get("codingAgentProfiles")
+        .cloned()
+        .map(serde_json::from_value::<CodingAgentProfilesConfig>)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    if comparable_registered_profile_draft(previous, &settings.agents)
+        != comparable_registered_profile_draft(
+            settings.coding_agent_profiles.clone(),
+            &settings.agents,
+        )
+    {
+        return Err("crossOwnerCanonicalProfileEdit".into());
+    }
+    let old_rows = physical_profile_rows(
+        &serde_json::json!({
+            "agents": selected_rows.cloned().unwrap_or_else(|| serde_json::json!([]))
+        }),
+        true,
+    )?;
+    if settings.agents.iter().any(|agent| {
+        old_rows
+            .get(&agent.id)
+            .is_some_and(|hash| hash != &configuration_identity(&agent.command, &agent.envs))
+    }) {
+        return Err("crossOwnerCanonicalProfileEdit".into());
+    }
+    Ok(())
+}
+
+// Compare the full ordinary baseline before restricting mutation rows. A save
+// of unrelated preferences must not bind an externally changed physical BASE.
+fn restrict_split_profile_mutation_rows(
+    settings: &AppSettings,
+    before: &Value,
+    incoming: &mut Value,
+) -> Result<(), String> {
+    let sets = physical_profile_sets(before, true)?;
+    let previous = project_physical_profiles(before, true)?;
+    let rows = physical_profile_rows(incoming, true)?;
+    let empty = serde_json::json!({});
+    let mut admitted = HashSet::new();
+    for (id, hash) in rows {
+        let old_hash = sets.rows.get(&id);
+        // Both sides of intent comparison use the existing typed draft shape;
+        // canonical_profile_source retains the complete raw unknown fields.
+        let typed_cells = |source: &Value| -> Result<Value, String> {
+            let cells = normalized_profile_cells(
+                source
+                    .pointer("/codingAgentProfiles/profilesByAgent")
+                    .and_then(|map| map.get(&id)),
+            )?;
+            let cells: BTreeMap<String, ProfileCellConfig> =
+                serde_json::from_value(cells).map_err(|error| error.to_string())?;
+            normalized_profile_cells(Some(
+                &serde_json::to_value(cells).map_err(|error| error.to_string())?,
+            ))
+        };
+        let labels = incoming
+            .pointer("/codingAgentProfiles/profileLabelsByAgent")
+            .and_then(|map| map.get(&id))
+            .unwrap_or(&empty);
+        let old_labels = previous
+            .pointer("/codingAgentProfiles/profileLabelsByAgent")
+            .and_then(|map| map.get(&id))
+            .unwrap_or(&empty);
+        let profile_edit =
+            typed_cells(incoming)? != typed_cells(&previous)? || labels != old_labels;
+        let base_edit = old_hash != Some(&hash);
+        let stored = old_hash.is_some_and(|hash| sets.cells.contains_key(hash));
+        if settings.local_overlay_state.owns_top_level("agents") && !stored && profile_edit {
+            return Err("crossOwnerCanonicalProfileEdit: protected missing binding".into());
+        }
+        if stored || base_edit || profile_edit {
+            admitted.insert(id.clone());
+            if old_hash.is_none() && !profile_edit {
+                if let Some(cells) = sets.cells.get(&hash) {
+                    incoming["codingAgentProfiles"]["profilesByAgent"][&id] = cells.clone();
+                    incoming["codingAgentProfiles"]["profileLabelsByAgent"][&id] = sets
+                        .labels
+                        .get(&hash)
+                        .cloned()
+                        .unwrap_or_else(|| empty.clone());
+                }
+            }
+        }
+    }
+    if let Some(rows) = incoming.get_mut("agents").and_then(Value::as_array_mut) {
+        rows.retain(|row| {
+            row.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| admitted.contains(id))
+        });
+    }
+    Ok(())
+}
+
+fn prepare_registered_profile_owner(
+    settings: &AppSettings,
+    path: &Path,
+    profile_before: &Value,
+    profile_incoming: &Value,
+    profiles_in_sidecar: bool,
+    startup: Option<&StartupAgentRows>,
+    duplicate_rows: bool,
+) -> Result<Option<Value>, String> {
+    let prepared_profiles = if settings
+        .local_overlay_state
+        .owns_top_level("codingAgentProfiles")
+    {
+        None
+    } else {
+        let owner_path = if profiles_in_sidecar {
+            agents_instance_path(path)
+        } else {
+            path.to_path_buf()
+        };
+        let prepared = if duplicate_rows || physical_profile_rows(profile_before, true).is_err() {
+            // Preserve the pre-existing lenient row view without converting an
+            // ambiguous ID map. Profile edits still need an unambiguous BASE.
+            let previous_view = registered_profiles_for_read(profile_before);
+            let previous: CodingAgentProfilesConfig = previous_view
+                .get("codingAgentProfiles")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            if comparable_registered_profile_draft(previous, &settings.agents)
+                != comparable_registered_profile_draft(
+                    settings.coding_agent_profiles.clone(),
+                    &settings.agents,
+                )
+            {
+                return Err("ambiguousProfileConversion".into());
+            }
+            let mut retained = profile_incoming.clone();
+            retain_configuration_commands_with_startup(
+                &mut retained,
+                profile_before,
+                "id",
+                false,
+                true,
+                false,
+                startup,
+            )?;
+            match profile_before.get("codingAgentProfiles") {
+                Some(profiles) => retained["codingAgentProfiles"] = profiles.clone(),
+                None => {
+                    retained
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("codingAgentProfiles");
+                }
+            }
+            retained
+        } else if profile_before.get("agents").is_none()
+            && profile_incoming.get("agents").is_none()
+            && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
+                == Some(&Value::from(1))
+            && !["profilesByAgent", "profileLabelsByAgent", "identityByAgent"]
+                .iter()
+                .any(|key| {
+                    profile_before
+                        .get("codingAgentProfiles")
+                        .is_some_and(|profiles| profiles.get(*key).is_some())
+                })
+        {
+            // Canonical split owners do not acquire a new physical row donor
+            // or rewrite their packet for an unrelated preference save.
+            profile_before.clone()
+        } else {
+            let mut prepared = canonical_profile_source(profile_before, profile_incoming, true)
+                .map_err(|reason| format!("{}: {reason}", owner_path.display()))?;
+            // Typed slot edits own `label`; opaque siblings belong to the raw
+            // owner, including obsolete `name` and extension values.
+            if let Some(slots) = prepared
+                .pointer_mut("/codingAgentProfiles/profileSlots")
+                .and_then(Value::as_object_mut)
+            {
+                for (letter, slot) in slots {
+                    if let (Some(slot), Some(raw)) = (
+                        slot.as_object_mut(),
+                        profile_before
+                            .pointer("/codingAgentProfiles/profileSlots")
+                            .and_then(|slots| slots.get(letter))
+                            .and_then(Value::as_object),
+                    ) {
+                        for (key, value) in raw {
+                            if key != "label" {
+                                slot.insert(key.clone(), value.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            retain_configuration_commands_with_startup(
+                &mut prepared,
+                profile_before,
+                "id",
+                false,
+                true,
+                false,
+                startup,
+            )?;
+            prepared
+        };
+        Some(prepared)
+    };
+    Ok(prepared_profiles)
+}
+
+fn refresh_registered_agent_row_metadata(target: &mut Map<String, Value>) -> Result<(), String> {
+    if let Some(rows) = target.get_mut("agents") {
+        let agents: Vec<AgentConfig> =
+            serde_json::from_value(rows.clone()).map_err(|error| error.to_string())?;
+        for (raw, agent) in rows.as_array_mut().into_iter().flatten().zip(agents) {
+            if let Some(object) = raw.as_object_mut() {
+                object.insert(
+                    "id_hash".to_string(),
+                    Value::String(configuration_identity(&agent.command, &agent.envs)),
+                );
+                object.insert(
+                    "id_hash_debug".into(),
+                    serde_json::json!(configuration_identity_debug(&agent.command, &agent.envs)),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// #2716 (B3) - the agents-file half of a save, run under the settings lock before
 /// the settings file is written. Returns the groups the agents file now holds, which
 /// are exactly the keys the caller may strip from `out`. `Reconcile` never writes the
@@ -8463,8 +10274,9 @@ fn save_agents_instance_file(
     #[cfg(test)] disk: Option<&Map<String, Value>>,
     out: &Map<String, Value>,
     disk_gate_stage: SettingsSaveStage,
-    prepared_duplicate_agents: Option<&Value>,
+    prepared_groups: (Option<&Value>, Option<&Value>, Option<bool>),
 ) -> Result<Map<String, Value>, SettingsSaveError> {
+    let (prepared_duplicate_agents, prepared_profiles, profiles_in_sidecar) = prepared_groups;
     let sidecar_path = agents_instance_path(path);
     let existing = read_agents_instance_file(&sidecar_path).map_err(|e| {
         SettingsSaveError::io(
@@ -8498,36 +10310,38 @@ fn save_agents_instance_file(
                 .as_ref()
                 .and_then(|disk| disk.get("codingAgentProfiles"))
         });
-    let mut target = match mode {
+    let target = match mode {
         #[cfg(test)]
-        ProjectWriteMode::Reconcile { .. } => match &existing_groups {
-            Some(groups) => groups.clone(),
-            None => disk.map(agents_instance_groups).unwrap_or_default(),
-        },
-        ProjectWriteMode::Preserve => {
-            let mut groups = existing_groups.clone().unwrap_or_default();
-            // `out` is read after `write_identity_rows` and `restore_base`, so
-            // the #2450 identity rows and the base values reach the agents file.
-            for key in AGENTS_INSTANCE_KEYS {
-                if settings.local_overlay_state.owns_top_level(key) {
-                    continue;
-                }
-                let value = match out.get(key) {
-                    Some(value) => value.clone(),
-                    None if key == AGENTS_INSTANCE_KEYS[0] => {
-                        serialize_settings_component(&settings.agents, &sidecar_path)?
-                    }
-                    None => serialize_settings_component(
-                        &settings.coding_agent_profiles,
-                        &sidecar_path,
-                    )?,
-                };
-                groups.insert(key.to_string(), value);
+        ProjectWriteMode::Reconcile { .. } => {
+            let target = existing
+                .clone()
+                .unwrap_or_else(|| disk.map(agents_instance_groups).unwrap_or_default());
+            if existing.is_none() && !target.is_empty() {
+                write_agents_instance_file(&target, &sidecar_path)?;
             }
-            groups
+            return Ok(agents_instance_groups(&target));
+        }
+        ProjectWriteMode::Preserve => {
+            // With neither physical file present, an overlay-backed first save
+            // establishes the main owner only. Defaults/effective overlay data
+            // do not grant authority to create a registered sidecar.
+            if existing.is_none() && legacy.is_none() && !settings.local_overlay_state.is_empty() {
+                return Ok(Map::new());
+            }
+            collect_preserved_agents_groups(
+                settings,
+                &sidecar_path,
+                out,
+                (existing_groups.as_ref(), base_profiles),
+                profiles_in_sidecar,
+            )?
         }
     };
-    restore_codex_home_carrier(&mut target, base_profiles);
+    // A carrier belongs to a group this file already owns. An empty target
+    // must not create an absent sidecar from a legacy main-file carrier.
+    if existing.is_none() && target.is_empty() {
+        return Ok(Map::new());
+    }
     let mut before = legacy
         .as_ref()
         .map(agents_instance_groups)
@@ -8569,29 +10383,6 @@ fn save_agents_instance_file(
         .as_object()
         .expect("retained settings object")
         .clone();
-    // Decode the final physical rows, but update only their raw metadata property.
-    // Retained overlay-owned groups have no new backfill or validation authority.
-    if editable_agents {
-        if let Some(rows) = target.get_mut("agents") {
-            let agents: Vec<AgentConfig> = serde_json::from_value(rows.clone())
-                .map_err(|error| rejected(error.to_string()))?;
-            for (raw, agent) in rows.as_array_mut().into_iter().flatten().zip(agents) {
-                if let Some(object) = raw.as_object_mut() {
-                    object.insert(
-                        "id_hash".to_string(),
-                        Value::String(configuration_identity(&agent.command, &agent.envs)),
-                    );
-                    object.insert(
-                        "id_hash_debug".into(),
-                        serde_json::json!(configuration_identity_debug(
-                            &agent.command,
-                            &agent.envs
-                        )),
-                    );
-                }
-            }
-        }
-    }
     if editable_profiles {
         // A present empty physical agents array is authoritative. Never substitute
         // the effective (possibly overlay-owned) base for physical metadata.
@@ -8599,23 +10390,125 @@ fn save_agents_instance_file(
             .get("agents")
             .or_else(|| before.get("agents"))
             .cloned();
+        if !editable_agents {
+            if let Some(rows) = &agents {
+                let _: Vec<AgentConfig> = serde_json::from_value(rows.clone())
+                    .map_err(|error| rejected(error.to_string()))?;
+            }
+        }
         if let Some(profiles) = target.get_mut("codingAgentProfiles") {
             refresh_physical_pair_id_hashes(agents.as_ref(), profiles);
         }
     }
-    if editable_agents || editable_profiles {
-        let mut after = before.clone();
-        after.extend(target.clone());
-        validate_physical_identity_delta(&before, &after, editable_agents, editable_profiles)
-            .map_err(rejected)?;
+    if let Some(prepared) = prepared_profiles {
+        if editable_profiles && target.contains_key("codingAgentProfiles") {
+            match prepared.get("codingAgentProfiles") {
+                Some(profiles) => {
+                    target.insert("codingAgentProfiles".into(), profiles.clone());
+                }
+                None => {
+                    target.remove("codingAgentProfiles");
+                }
+            }
+        }
+        if editable_agents && target.contains_key("agents") {
+            if let Some(rows) = prepared.get("agents") {
+                target.insert("agents".into(), rows.clone());
+            }
+        }
     }
-    if existing_groups.as_ref() == Some(&target) {
-        return Ok(target);
+    // Prepared packets may retain original raw rows. Derive metadata from the
+    // final physical rows, after insertion, without changing protected rows.
+    if editable_agents {
+        refresh_registered_agent_row_metadata(&mut target).map_err(&rejected)?;
+    }
+    // Prepared canonical profiles cannot replace the physical owner's HOME carrier.
+    restore_codex_home_carrier(&mut target, base_profiles);
+    if editable_agents || editable_profiles {
+        let physical_before = if prepared_profiles.is_some()
+            && before
+                .get("codingAgentProfiles")
+                .is_some_and(|profiles| profiles.get("profileBindingVersion").is_none())
+        {
+            // A legacy same-owner transfer already owns these incumbents in
+            // main. Moving their packet must not turn them into new duplicates.
+            before.clone()
+        } else {
+            existing.clone().unwrap_or_default()
+        };
+        validate_physical_identity_delta(
+            &physical_before,
+            &target,
+            editable_agents,
+            editable_profiles,
+        )
+        .map_err(rejected)?;
+    }
+    // Preserve unrelated physical fields as well as recognized groups.
+    if let Some(existing) = &existing {
+        for (key, value) in existing {
+            if !AGENTS_INSTANCE_KEYS.contains(&key.as_str()) {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    if existing.as_ref() == Some(&target) {
+        return Ok(agents_instance_groups(&target));
     }
     if !target.is_empty() {
         write_agents_instance_file(&target, &sidecar_path)?;
     }
-    Ok(target)
+    Ok(agents_instance_groups(&target))
+}
+
+fn collect_preserved_agents_groups(
+    settings: &AppSettings,
+    sidecar_path: &Path,
+    out: &Map<String, Value>,
+    physical: (Option<&Map<String, Value>>, Option<&Value>),
+    profiles_in_sidecar: Option<bool>,
+) -> Result<Map<String, Value>, SettingsSaveError> {
+    let (existing_groups, base_profiles) = physical;
+    let mut groups = existing_groups.cloned().unwrap_or_default();
+    // `out` is read after `write_identity_rows` and `restore_base`, so
+    // the #2450 identity rows and the base values reach the agents file.
+    for key in AGENTS_INSTANCE_KEYS {
+        // Publication eligibility comes from the original physical owner,
+        // independently of whether profile conversion was possible. A
+        // canonical main owner stays put; legacy and new ordinary groups
+        // retain the established materialization path.
+        let owns = existing_groups
+            .as_ref()
+            .is_some_and(|groups| groups.contains_key(key))
+            || !base_profiles.is_some_and(|profiles| {
+                profiles.get("profileBindingVersion") == Some(&Value::from(1))
+            });
+        let canonical_split_rows = key == "agents"
+            && existing_groups.as_ref().is_some_and(|groups| {
+                !groups.contains_key("agents")
+                    && groups.get("codingAgentProfiles").is_some_and(|profiles| {
+                        profiles.get("profileBindingVersion") == Some(&Value::from(1))
+                    })
+            });
+        if !owns
+            || canonical_split_rows
+            || (key == "codingAgentProfiles" && profiles_in_sidecar == Some(false))
+        {
+            continue;
+        }
+        if settings.local_overlay_state.owns_top_level(key) {
+            continue;
+        }
+        let value = match out.get(key) {
+            Some(value) => value.clone(),
+            None if key == AGENTS_INSTANCE_KEYS[0] => {
+                serialize_settings_component(&settings.agents, sidecar_path)?
+            }
+            None => serialize_settings_component(&settings.coding_agent_profiles, sidecar_path)?,
+        };
+        groups.insert(key.to_string(), value);
+    }
+    Ok(groups)
 }
 
 /// The tree's only executable-stem rule, and the byte-for-byte twin of
@@ -8770,6 +10663,12 @@ fn parse_settings_with_startup(
     projection: Option<&Map<String, Value>>,
     startup: Option<&mut Option<StartupAgentRows>>,
 ) -> Result<(AppSettings, bool), String> {
+    if let Some(reason) = duplicate_profile_document(
+        contents.as_bytes(),
+        settings_path.unwrap_or_else(|| Path::new(source)),
+    ) {
+        log::warn!("{reason}");
+    }
     let value: Value = serde_json::from_str(contents)
         .map_err(|e| format!("Failed to parse settings file: {}", e))?;
     // One read of the agents file serves both the physical-group census and the
@@ -8835,6 +10734,12 @@ fn compose_settings_parts(
         replace_project_projection(object, projection);
     }
     let legacy_profiles = value.as_object().is_some_and(legacy_profiles_shape_present);
+    let main_profile_owner = value.as_object().expect("settings object").clone();
+    let physical_sidecar = agents
+        .as_ref()
+        .and_then(|read| read.as_ref().ok())
+        .and_then(Option::as_ref)
+        .cloned();
     let physical_groups = agents
         .as_ref()
         .and_then(|read| read.as_ref().ok())
@@ -8867,7 +10772,14 @@ fn compose_settings_parts(
     // #1737 (D5): the merge point, after the legacy-shape detection and before the
     // project decode. Merging after the detection keeps the `legacy_profiles` flag
     // a property of the base file alone and makes the B7 cross-key edge impossible.
+    let physical_base = value.clone();
     let mut overlay = overlay_merge(&mut value);
+    let profile_owner = selected_registered_profile_owner(
+        &main_profile_owner,
+        physical_sidecar.as_ref(),
+        !overlay.owns_top_level("codingAgentProfiles"),
+    );
+    let profile_owner_view = registered_profiles_for_read(&profile_owner);
     if let (Some(object), Some(base)) = (value.as_object_mut(), &pre_merge) {
         restore_codex_home_carrier(object, base.get("codingAgentProfiles"));
     }
@@ -8879,8 +10791,6 @@ fn compose_settings_parts(
     // AppSettings, so a wrong-typed project field cannot fail unrelated settings
     // deserialization and unresolved/conflicting pairs survive in hidden state.
     let base = production_instance_base();
-    let state =
-        apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
     // #2716 (B3, option C): with the agents file unreadable, the decode error also
     // names it, so the dialog does not name only the intact settings file.
     let unreadable_agents_file = agents_layer
@@ -8891,6 +10801,16 @@ fn compose_settings_parts(
     let decode_error = |e: serde_json::Error| {
         format!("Failed to deserialize settings from {source}: {e}{unreadable_agents_file}")
     };
+    let mut projected = physical_base.clone();
+    if let Some(profiles) = profile_owner_view.get("codingAgentProfiles") {
+        projected["codingAgentProfiles"] = profiles.clone();
+    }
+    if let (Some(effective), Some(base)) = (value.as_object(), projected.as_object_mut()) {
+        overlay.reapply_from(effective, base);
+    }
+    value = projected;
+    let state =
+        apply_project_decode_to_value(&mut value, base.as_deref(), &projects::FsCandidateResolver);
     let decoded: Result<AppSettings, String> = serde_json::from_value(value).map_err(decode_error);
     // #1737 (D21): a merged value that fails to decode falls back to the BASE
     // value, never to defaults. One wrong-typed leaf in settings.local.json must
@@ -8911,6 +10831,9 @@ fn compose_settings_parts(
                 base.as_deref(),
                 &projects::FsCandidateResolver,
             );
+            if let Some(profiles) = profile_owner_view.get("codingAgentProfiles") {
+                unmerged["codingAgentProfiles"] = profiles.clone();
+            }
             let settings: AppSettings = serde_json::from_value(unmerged).map_err(decode_error)?;
             overlay = overlay.into_undecodable(reason);
             (settings, base_state)
@@ -8971,6 +10894,102 @@ fn legacy_profiles_shape_present(root: &Map<String, Value>) -> bool {
                     .any(|cell| cell.contains_key("argv") || cell.contains_key("args"))
             })
         })
+}
+
+// A preview of this owner's profile property only. Retained opaque legacy
+// leaves are diagnostics, not a reason to republish canonical data forever.
+fn actionable_profile_legacy_work(owner: &Value, allow_main_cleanup: bool) -> Result<bool, String> {
+    let Some(profiles) = owner.get("codingAgentProfiles").and_then(Value::as_object) else {
+        return Ok(false);
+    };
+    let stale_active_maps = ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"]
+        .iter()
+        .any(|key| profiles.contains_key(*key));
+    let removable_roots = allow_main_cleanup
+        && ["letters", "matrix", "agentDefaults"]
+            .iter()
+            .any(|key| profiles.contains_key(*key));
+    if profiles.get("profileBindingVersion") == Some(&Value::from(1))
+        && !stale_active_maps
+        && !removable_roots
+    {
+        return Ok(false);
+    }
+    let projected = project_physical_profiles(owner, true)?;
+    let mut candidate = canonical_profile_source(owner, &projected, true)?;
+    if let Some(profiles) = candidate
+        .get_mut("codingAgentProfiles")
+        .and_then(Value::as_object_mut)
+        .filter(|_| allow_main_cleanup)
+    {
+        for key in ["letters", "matrix", "agentDefaults"] {
+            profiles.remove(key);
+        }
+    }
+    Ok(candidate.get("codingAgentProfiles") != owner.get("codingAgentProfiles"))
+}
+
+fn startup_profile_legacy_work(
+    settings: &AppSettings,
+    path: &Path,
+    original: Option<&str>,
+    main_legacy_detected: bool,
+) -> Result<Option<bool>, String> {
+    // O2 explicitly retains baseline scheduling for suppressed groups.
+    if settings
+        .local_overlay_state
+        .owns_top_level("codingAgentProfiles")
+    {
+        return Ok(Some(main_legacy_detected));
+    }
+    let main: Value =
+        serde_json::from_str(original.unwrap_or("{}")).map_err(|error| error.to_string())?;
+    let sidecar = read_agents_instance_file(&agents_instance_path(path))?;
+    let sidecar_profiles = sidecar
+        .as_ref()
+        .is_some_and(|groups| groups.contains_key("codingAgentProfiles"));
+    let owner = selected_registered_profile_owner(
+        main.as_object().ok_or("invalidSettingsObject")?,
+        sidecar.as_ref(),
+        true,
+    );
+    let encountered = owner
+        .get("codingAgentProfiles")
+        .and_then(Value::as_object)
+        .is_some_and(|profiles| {
+            ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"]
+                .iter()
+                .any(|key| profiles.contains_key(*key))
+        });
+    // An admitted legacy transfer is ordinary publication work even when
+    // ambiguous rows forbid conversion. The locked writer makes that decision.
+    let main_transfer = AGENTS_INSTANCE_KEYS.iter().any(|key| {
+        if settings.local_overlay_state.owns_top_level(key) {
+            return false;
+        }
+        main.get(*key).is_some()
+            && !sidecar
+                .as_ref()
+                .is_some_and(|groups| groups.contains_key(*key))
+    }) && owner.pointer("/codingAgentProfiles/profileBindingVersion")
+        != Some(&Value::from(1));
+    if main_transfer {
+        return Ok(Some(true));
+    }
+    if owner.get("codingAgentProfiles").is_none()
+        && owner.get("agents").is_some()
+        && physical_profile_rows(&owner, true).is_ok_and(|rows| !rows.is_empty())
+    {
+        return Ok(Some(true));
+    }
+    if !owner.as_object().is_some_and(legacy_profiles_shape_present) && !encountered {
+        return Ok(Some(false));
+    }
+    // Ambiguous raw row paths do not grant new canonical cleanup authority.
+    if physical_profile_rows(&owner, true).is_err() {
+        return Ok(None);
+    }
+    actionable_profile_legacy_work(&owner, !sidecar_profiles).map(Some)
 }
 
 /// #1737 (D15) - the settings value when the base `settings.json` is absent,
@@ -9148,9 +11167,35 @@ fn capture_project_settings_with_startup(
             callback(path);
         }
     });
-    let migration_error = if migrate {
-        ensure_project_paths_migrated_at_labeled_path(&transaction.path, path, &mut |_, _| Ok(()))
-            .err()
+    let raw_profile_capture = collect_registered_profile_gate(&transaction.path);
+    if let Some(reason) = raw_profile_capture.ordinary_error() {
+        log::warn!("[profiles] {reason}");
+    }
+    let migration_error = if migrate
+        && raw_profile_capture.admits_project_migration(&transaction.path)
+    {
+        let mut checked = false;
+        ensure_project_paths_migrated_at_labeled_path(&transaction.path, path, &mut |stage, _| {
+            if !checked
+                && matches!(
+                    stage,
+                    "backup_create" | "destination_before_write" | "source_cleanup"
+                )
+            {
+                recheck_registered_profile_gate(&raw_profile_capture.participant_documents())
+                    .map_err(|reason| {
+                        project_migration_error_labeled(
+                            &transaction.path,
+                            path,
+                            SettingsSaveStage::ProjectPathsRefreshDiskGate,
+                            &reason,
+                        )
+                    })?;
+                checked = true;
+            }
+            Ok(())
+        })
+        .err()
     } else {
         None
     };
@@ -9162,96 +11207,154 @@ fn capture_project_settings_with_startup(
             16 * 1024 * 1024,
         ),
     };
-    let captured = (|| {
-        match selected {
-            Ok(selected) => match selected.legacy {
-                Some(legacy) => {
-                    let contents =
-                        String::from_utf8(legacy.bytes).map_err(|error| error.to_string())?;
-                    match parse_settings_with_startup(
-                        &contents,
-                        &path.to_string_lossy(),
-                        Some(&transaction.path),
-                        Some(path),
-                        Some(&selected.projection),
-                        startup.as_deref_mut(),
-                    ) {
-                        Ok((settings, legacy_profiles)) => {
-                            Ok((settings, legacy_profiles, Some(contents)))
-                        }
-                        Err(error) => {
-                            if let Some(startup) = startup {
-                                *startup = None;
+    let captured = if raw_profile_capture
+        .problems
+        .iter()
+        .any(|problem| problem.kind == RegisteredProfileProblemKind::DuplicateMember)
+        && selected
+            .as_ref()
+            .err()
+            .is_none_or(|error| error.target_path.as_path() == transaction.path.as_path())
+    {
+        // The ordinary reader remains lenient. The strict project selector must
+        // not turn an unrelated duplicate into project persistence failure.
+        let contents = std::fs::read_to_string(&transaction.path).unwrap_or_else(|_| {
+            serde_json::to_string(&AppSettings::default()).expect("default settings")
+        });
+        let legacy: Value =
+            serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}));
+        let mut probe = legacy.clone();
+        apply_project_decode_to_value(
+            &mut probe,
+            production_instance_base().as_deref(),
+            &projects::FsCandidateResolver,
+        );
+        let projection = selected
+            .as_ref()
+            .ok()
+            .map(|selected| selected.projection.clone())
+            .unwrap_or_else(|| {
+                probe
+                    .as_object()
+                    .map(|map| {
+                        let mut projection = Map::new();
+                        for key in [
+                            FIELD_PROJECT_PATH,
+                            FIELD_PROJECT_PATHS,
+                            FIELD_ARCHIVED,
+                            FIELD_PROJECT_PATH_REL,
+                            FIELD_PROJECT_PATHS_REL,
+                            FIELD_ARCHIVED_REL,
+                        ] {
+                            if let Some(value) = map.get(key) {
+                                projection.insert(key.to_owned(), value.clone());
                             }
-                            log::error!("{error}");
-                            // Selection succeeded; unrelated decode failure must not
-                            // mark the authoritative project source unavailable.
-                            let mut settings = default_settings_with_overlay_captured(
-                                &transaction.path,
-                                &path.to_string_lossy(),
-                                &selected.projection,
-                            );
-                            set_agents_layer_state(
-                                &mut settings,
-                                path,
-                                agents_layer_state_at_labeled(&transaction.path, path),
-                            );
-                            Ok((settings, false, None))
+                        }
+                        projection
+                    })
+                    .unwrap_or_default()
+            });
+        let parsed = parse_settings_with_startup(
+            &contents,
+            &path.to_string_lossy(),
+            Some(&transaction.path),
+            Some(path),
+            Some(&projection),
+            startup.as_deref_mut(),
+        );
+        parsed.map(|(settings, legacy)| (settings, legacy, Some(contents)))
+    } else {
+        (|| {
+            match selected {
+                Ok(selected) => match selected.legacy {
+                    Some(legacy) => {
+                        let contents =
+                            String::from_utf8(legacy.bytes).map_err(|error| error.to_string())?;
+                        match parse_settings_with_startup(
+                            &contents,
+                            &path.to_string_lossy(),
+                            Some(&transaction.path),
+                            Some(path),
+                            Some(&selected.projection),
+                            startup.as_deref_mut(),
+                        ) {
+                            Ok((settings, legacy_profiles)) => {
+                                Ok((settings, legacy_profiles, Some(contents)))
+                            }
+                            Err(error) => {
+                                if let Some(startup) = startup {
+                                    *startup = None;
+                                }
+                                log::error!("{error}");
+                                // Selection succeeded; unrelated decode failure must not
+                                // mark the authoritative project source unavailable.
+                                let mut settings = default_settings_with_overlay_captured(
+                                    &transaction.path,
+                                    &path.to_string_lossy(),
+                                    &selected.projection,
+                                );
+                                set_agents_layer_state(
+                                    &mut settings,
+                                    path,
+                                    agents_layer_state_at_labeled(&transaction.path, path),
+                                );
+                                Ok((settings, false, None))
+                            }
                         }
                     }
-                }
-                None => Ok((
-                    default_settings_with_overlay_captured(
+                    None => Ok((
+                        default_settings_with_overlay_captured(
+                            &transaction.path,
+                            &path.to_string_lossy(),
+                            &selected.projection,
+                        ),
+                        false,
+                        None,
+                    )),
+                },
+                Err(error) => {
+                    let message = report_settings_save_error(
+                        error.with_capture_labels(path),
+                        SettingsSaveReportSurface::GeneralSettings,
+                    );
+                    // Preserve readable unrelated values while exposing no project authorization.
+                    let mut settings = read_raw_project_source_labeled_with_limit(
                         &transaction.path,
-                        &path.to_string_lossy(),
-                        &selected.projection,
-                    ),
-                    false,
-                    None,
-                )),
-            },
-            Err(error) => {
-                let message = report_settings_save_error(
-                    error.with_capture_labels(path),
-                    SettingsSaveReportSurface::GeneralSettings,
-                );
-                // Preserve readable unrelated values while exposing no project authorization.
-                let mut settings = read_raw_project_source_labeled_with_limit(
-                    &transaction.path,
-                    path,
-                    16 * 1024 * 1024,
-                    false,
-                )
-                .ok()
-                .flatten()
-                .and_then(|legacy| {
-                    let contents = String::from_utf8(legacy.bytes).ok()?;
-                    parse_settings_json_with_projection_labeled(
-                        &contents,
-                        &path.to_string_lossy(),
-                        Some(&transaction.path),
-                        Some(path),
-                        Some(&Map::new()),
+                        path,
+                        16 * 1024 * 1024,
+                        false,
                     )
                     .ok()
-                    .map(|pair| pair.0)
-                })
-                .unwrap_or_else(|| {
-                    default_settings_with_overlay_captured(
-                        &transaction.path,
-                        &path.to_string_lossy(),
-                        &Map::new(),
-                    )
-                });
-                set_agents_layer_state(
-                    &mut settings,
-                    path,
-                    agents_layer_state_at_labeled(&transaction.path, path),
-                );
-                Ok((unavailable_project_settings(settings, message), false, None))
+                    .flatten()
+                    .and_then(|legacy| {
+                        let contents = String::from_utf8(legacy.bytes).ok()?;
+                        parse_settings_json_with_projection_labeled(
+                            &contents,
+                            &path.to_string_lossy(),
+                            Some(&transaction.path),
+                            Some(path),
+                            Some(&Map::new()),
+                        )
+                        .ok()
+                        .map(|pair| pair.0)
+                    })
+                    .unwrap_or_else(|| {
+                        default_settings_with_overlay_captured(
+                            &transaction.path,
+                            &path.to_string_lossy(),
+                            &Map::new(),
+                        )
+                    });
+                    set_agents_layer_state(
+                        &mut settings,
+                        path,
+                        agents_layer_state_at_labeled(&transaction.path, path),
+                    );
+                    Ok((unavailable_project_settings(settings, message), false, None))
+                }
             }
-        }
-    })();
+        })()
+    };
     // Every fallback passes this check while the same lock is still held.
     if retained.verify_current().is_err() {
         let message = report(lock_error(SettingsSaveReason::LockIdentityRejected));
@@ -9395,6 +11498,13 @@ fn is_profile_gap(profiles: &CodingAgentProfilesConfig, id: &str) -> bool {
 /// force. Runs before every `repair_coding_agent_profiles_config` call, because
 /// repair fills a gap with an empty `A` that would otherwise hide it.
 pub(crate) fn adopt_orphaned_profiles(settings: &mut AppSettings) -> bool {
+    if settings
+        .coding_agent_identity_physical
+        .as_ref()
+        .is_some_and(|raw| raw.get("codingAgentProfiles").is_some())
+    {
+        return false;
+    }
     if settings.coding_agent_profiles.identity_by_agent.is_empty() {
         return false;
     }
@@ -10349,6 +12459,25 @@ fn load_settings_from_path_with_blocking_menus_publish(
     }
     apply_loaded_window_migrations(&mut settings);
 
+    // The main-file diagnostic remains separate for its original-byte backup.
+    // A sidecar-owned legacy cause must be reachable without that diagnostic.
+    let (legacy_profile_work, profile_preview_rejected) = match startup_profile_legacy_work(
+        &settings,
+        path,
+        legacy_profiles_contents.as_deref(),
+        legacy_profiles_detected,
+    ) {
+        Ok(Some(actionable)) => (actionable, false),
+        Ok(None) => {
+            log::warn!("[profiles] legacy action awaits unambiguous owner routing");
+            (legacy_profiles_detected, false)
+        }
+        Err(reason) => {
+            log::warn!("[profiles] legacy action preview rejected: {reason}");
+            (false, true)
+        }
+    };
+
     // #248 migration — translates legacy startOnlyCoordinators (if present).
     // Track whether the legacy field was on disk so we can fire a single save
     // at the end of the function (Grinch Z3 — without this, upgrade users
@@ -10358,33 +12487,79 @@ fn load_settings_from_path_with_blocking_menus_publish(
     apply_issue_248_migration(&mut settings);
 
     // Auto-generate root token if missing.
-    let mut needs_save = issue_248_migrated || legacy_profiles_detected;
-    let exported = export_blocking_menus_with_startup(
-        &mut settings,
-        path,
-        publish.unwrap_or(&crate::config::local_config_io::publish_temp_config),
-        startup.as_mut(),
-    );
-    if exported {
-        log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
-        needs_save = true;
-    }
-    if export_agents_to_instance_file(&mut settings, path) {
-        needs_save = true;
-    }
-    if adopt_orphaned_profiles(&mut settings) {
-        needs_save = true;
-    }
-    if repair_coding_agent_profiles_config(&mut settings.coding_agent_profiles, &settings.agents) {
-        log::info!("[settings-migration] repaired codingAgentProfiles invariants");
-        needs_save = true;
-    }
+    let mut needs_save = issue_248_migrated || legacy_profile_work;
     if settings.root_token.is_none() {
         settings.root_token = Some(uuid::Uuid::new_v4().to_string());
         log::info!("Generated new root token");
         needs_save = true;
     }
-    if needs_save {
+    let mut startup_writable = if profile_preview_rejected {
+        Err("profile migration preview rejected; no startup publication".to_owned())
+    } else {
+        registered_profile_raw_gate(path)
+    };
+    if legacy_profile_work
+        && startup_writable.is_ok()
+        && !settings
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles")
+    {
+        // Enter the admitted Preserve funnel before raw exports/adoption/repair.
+        // Its complete source preflight precedes migration and backup publishers.
+        match save_settings_value_with_startup(
+            &settings,
+            path,
+            ProjectWriteMode::Preserve,
+            startup.as_ref(),
+        ) {
+            Ok(written) => {
+                settings = written;
+                needs_save = false;
+                // A successful transfer changes the physical row owner. Later
+                // independent startup work must use a fresh correspondence image.
+                if let Err(reason) =
+                    capture_project_settings_with_startup(path, false, Some(&mut startup))
+                {
+                    startup_writable = Err(reason);
+                }
+            }
+            Err(error) => {
+                let reason =
+                    report_settings_save_error(error, SettingsSaveReportSurface::GeneralSettings);
+                startup_writable = Err(reason);
+            }
+        }
+    }
+    if let Err(reason) = &startup_writable {
+        log::warn!("[profiles] startup publication skipped: {reason}");
+    }
+    let exported = startup_writable.is_ok()
+        && export_blocking_menus_with_startup(
+            &mut settings,
+            path,
+            publish.unwrap_or(&crate::config::local_config_io::publish_temp_config),
+            startup.as_mut(),
+        );
+    if exported {
+        log::info!("[settings-migration] #1905 - moved blockingMenus out of settings.json");
+        needs_save = true;
+    }
+    if startup_writable.is_ok() && export_agents_to_instance_file(&mut settings, path) {
+        needs_save = true;
+    }
+    if startup_writable.is_ok() && adopt_orphaned_profiles(&mut settings) {
+        needs_save = true;
+    }
+    if startup_writable.is_ok()
+        && repair_coding_agent_profiles_config(
+            &mut settings.coding_agent_profiles,
+            &settings.agents,
+        )
+    {
+        log::info!("[settings-migration] repaired codingAgentProfiles invariants");
+        needs_save = true;
+    }
+    if needs_save && startup_writable.is_ok() {
         persist_loaded_settings_migrations(
             &mut settings,
             path,
@@ -12197,7 +14372,7 @@ fn validate_non_project_settings(disk: &Map<String, Value>) -> Result<(), String
         root.entry(AGENTS_INSTANCE_KEYS[0])
             .or_insert_with(|| Value::Array(Vec::new()));
     }
-    serde_json::from_value::<AppSettings>(probe)
+    serde_json::from_value::<AppSettings>(registered_profiles_for_read(&probe))
         .map(|_| ())
         .map_err(|e| {
             format!(
@@ -13766,24 +15941,276 @@ fn restore_protected_agents_instance_groups(
         // Only legacy MAIN identities retain the existing #2450 writer output.
         // All other fields of a protected profiles group remain raw disk values.
         if key == "codingAgentProfiles" {
-            match &identity_rows {
-                Some(rows) => {
-                    let profiles = out
-                        .entry(key.to_owned())
-                        .or_insert_with(|| Value::Object(Map::new()));
-                    profiles
-                        .as_object_mut()
-                        .expect("validated profiles object")
-                        .insert("identityByAgent".to_owned(), rows.clone());
-                }
-                None => {
-                    if let Some(profiles) = out.get_mut(key).and_then(Value::as_object_mut) {
-                        profiles.remove("identityByAgent");
+            if out
+                .get(key)
+                .and_then(|profiles| profiles.get("profileBindingVersion"))
+                == Some(&Value::from(1))
+            {
+                continue;
+            }
+            // No projected row grants deletion of raw identities.
+            if let Some(rows) = &identity_rows {
+                let profiles = out
+                    .entry(key.to_owned())
+                    .or_insert_with(|| Value::Object(Map::new()));
+                let physical_ids: HashSet<_> = disk
+                    .and_then(|disk| disk.get("agents"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|row| row.get("id").and_then(Value::as_str))
+                    .collect();
+                let identities = profiles
+                    .as_object_mut()
+                    .expect("validated profiles object")
+                    .entry("identityByAgent")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let (Some(identities), Some(rows)) =
+                    (identities.as_object_mut(), rows.as_object())
+                {
+                    for (id, value) in rows {
+                        if physical_ids.contains(id.as_str()) {
+                            identities.insert(id.clone(), value.clone());
+                        }
                     }
                 }
             }
         }
     }
+}
+
+fn retain_untransferred_registered_main_groups(
+    out: &mut Map<String, Value>,
+    disk: Option<&Map<String, Value>>,
+    published: &Map<String, Value>,
+    sidecar_before: Option<&Map<String, Value>>,
+    overlay: &LocalSettingsOverlay,
+    path: &Path,
+) {
+    for key in AGENTS_INSTANCE_KEYS {
+        let Some(destination) = published.get(key) else {
+            continue;
+        };
+        let raw = disk.and_then(|map| map.get(key));
+        let selected_main = !sidecar_before.is_some_and(|map| map.contains_key(key));
+        if !overlay.owns_top_level(key) && (selected_main || raw == Some(destination)) {
+            // Called only after the sidecar publisher confirmed this packet.
+            out.remove(key);
+        } else if let Some(raw) = raw {
+            if !overlay.owns_top_level(key) && raw != destination {
+                log::warn!("[profiles] {}: retaining unselected shadowed {key}; raw value differs from registered sidecar", path.display());
+            }
+            out.insert(key.into(), raw.clone());
+        } else {
+            out.remove(key);
+        }
+    }
+}
+
+type RegisteredMainPreparedGroups<'a> = (
+    Option<&'a Value>,
+    Option<&'a Value>,
+    Option<&'a Map<String, Value>>,
+    &'a Path,
+);
+
+fn prepare_registered_main_agent_groups(
+    mut out: Map<String, Value>,
+    settings: &AppSettings,
+    disk: Option<&Map<String, Value>>,
+    agents_groups: &Map<String, Value>,
+    profiles_in_sidecar: bool,
+    prepared_groups: RegisteredMainPreparedGroups<'_>,
+    mode: &ProjectWriteMode,
+) -> Result<Map<String, Value>, String> {
+    let (prepared_profiles, prepared_duplicate_agents, sidecar_before, path) = prepared_groups;
+    #[cfg(test)]
+    if matches!(mode, ProjectWriteMode::Reconcile { .. }) {
+        for key in AGENTS_INSTANCE_KEYS {
+            match disk.and_then(|disk| disk.get(key)) {
+                Some(raw) if !agents_groups.contains_key(key) => {
+                    out.insert(key.into(), raw.clone());
+                }
+                _ => {
+                    out.remove(key);
+                }
+            }
+        }
+        return Ok(out);
+    }
+    #[cfg(not(test))]
+    let _ = mode;
+    retain_untransferred_registered_main_groups(
+        &mut out,
+        disk,
+        agents_groups,
+        sidecar_before,
+        &settings.local_overlay_state,
+        path,
+    );
+    if profiles_in_sidecar
+        && !settings
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles")
+        && disk.is_none_or(|main| !main.contains_key("codingAgentProfiles"))
+        && prepared_profiles.is_some_and(|prepared| prepared.get("codingAgentProfiles").is_none())
+    {
+        // Ambiguous agents without a physical profile group do not grant
+        // authority to materialize the caller's repaired/default profile view.
+        out.remove("codingAgentProfiles");
+    }
+    if !profiles_in_sidecar {
+        if let Some(prepared) = prepared_profiles {
+            if let Some(profiles) = prepared.get("codingAgentProfiles") {
+                out.insert("codingAgentProfiles".into(), profiles.clone());
+            }
+            if !agents_groups.contains_key("agents") {
+                if let Some(rows) = prepared.get("agents") {
+                    out.insert("agents".into(), rows.clone());
+                }
+            }
+        }
+    }
+
+    // Partial profile ownership can keep these groups in settings.json instead
+    // of the sidecar. Retain its locked legacy leaves after raw overlay restore;
+    // complete overlay-owned groups stay outside this writer's authority.
+    if let Some(disk) = disk {
+        let profiles_owned = settings
+            .local_overlay_state
+            .owned_paths()
+            .iter()
+            .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
+        let mut retained = Value::Object(out);
+        if retained.get("agents").is_some() {
+            if let Some(prepared) = prepared_duplicate_agents {
+                retained["agents"] = prepared.clone();
+            }
+        }
+        retain_configuration_commands(
+            &mut retained,
+            &Value::Object(disk.clone()),
+            "id",
+            false,
+            !settings.local_overlay_state.owns_top_level("agents")
+                && !agents_groups.contains_key("agents")
+                && prepared_duplicate_agents.is_none(),
+            !profiles_owned && !agents_groups.contains_key("codingAgentProfiles"),
+        )?;
+        out = retained
+            .as_object()
+            .expect("retained settings object")
+            .clone();
+    }
+
+    // A synthesized legacy state (direct-constructed AppSettings) has no dirty
+    // repair, so the eligible branches above never fire for it; its groups are
+    // written verbatim from the live settings/disk, matching pre-#1077 behavior.
+    // Restore complete protected groups after every retention/repair stage.
+    // Sidecar key presence, including empty values, takes precedence over main.
+    restore_protected_agents_instance_groups(
+        &mut out,
+        disk,
+        &settings.local_overlay_state,
+        agents_groups,
+    );
+    if !profiles_in_sidecar {
+        restore_codex_home_carrier(
+            &mut out,
+            disk.and_then(|disk| disk.get("codingAgentProfiles")),
+        );
+    }
+    retain_untransferred_registered_main_groups(
+        &mut out,
+        disk,
+        agents_groups,
+        sidecar_before,
+        &settings.local_overlay_state,
+        path,
+    );
+    Ok(out)
+}
+
+fn apply_registered_main_disk_fields(
+    out: &mut Map<String, Value>,
+    disk: Option<&Map<String, Value>>,
+    path: &Path,
+    disk_gate_stage: SettingsSaveStage,
+    terminal_snapshot_gate_mode: TerminalSnapshotGateWriteMode,
+    main_window_placement_mode: MainWindowPlacementWriteMode,
+) -> Result<(), SettingsSaveError> {
+    if let Some(raw) = disk {
+        // Use Serde's existing field table without requiring the physical main
+        // object to contain groups legitimately owned by the sidecar.
+        let known = source_general_field_names();
+        for (key, value) in raw {
+            if !known.contains(&key.as_str()) {
+                out.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+    replace_project_projection(out, &Map::new());
+
+    // #1173: a whole-settings writer cannot opt in or re-enable an explicit
+    // value, and a present malformed gate is an error. An absent file or a
+    // valid object with an absent legacy key materializes true: the default-on
+    // phase deliberately reverses the shipped absent-key rule. Only the
+    // dedicated CAS uses Explicit.
+    let terminal_snapshots_enabled = match terminal_snapshot_gate_mode {
+        TerminalSnapshotGateWriteMode::Explicit(enabled) => enabled,
+        TerminalSnapshotGateWriteMode::Preserve => match disk {
+            Some(disk) => match disk.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED) {
+                Some(Value::Bool(enabled)) => *enabled,
+                None => true,
+                Some(_) => {
+                    return Err(SettingsSaveError::semantic(
+                        disk_gate_stage,
+                        path,
+                        None,
+                        SettingsSaveReason::TerminalSnapshotSettingInvalid,
+                        SettingsSaveLegacyOutward::TerminalSnapshotSettingInvalid(
+                            "terminal_snapshot_setting_invalid".to_string(),
+                        ),
+                    ));
+                }
+            },
+            None => true,
+        },
+    };
+    out.insert(
+        FIELD_TERMINAL_SNAPSHOTS_ENABLED.to_string(),
+        Value::Bool(terminal_snapshots_enabled),
+    );
+
+    // #2348: main-window placement is owned by the narrow placement command.
+    // `Preserve` never regresses it: for each key independently, a PRESENT disk
+    // value is authoritative, and an absent disk key leaves the caller value
+    // alone. An absent legacy `mainGeometry`
+    // must not erase the value the load-time migration synthesized in memory.
+    // `Explicit` writes the pair exactly as the placement command received it.
+    // Runs before `restore_base`, which stays the last writer over the base file.
+    match main_window_placement_mode {
+        MainWindowPlacementWriteMode::Preserve => {
+            if let Some(disk) = disk {
+                preserve_main_window_placement_keys(out, disk);
+            }
+        }
+        MainWindowPlacementWriteMode::Explicit {
+            geometry,
+            display_state,
+        } => {
+            out.insert(
+                FIELD_MAIN_GEOMETRY.to_string(),
+                serialize_settings_component(&geometry, path)?,
+            );
+            out.insert(
+                FIELD_MAIN_DISPLAY_STATE.to_string(),
+                serialize_settings_component(&display_state, path)?,
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn save_settings_value_locked_with_startup(
@@ -13794,16 +16221,71 @@ fn save_settings_value_locked_with_startup(
     main_window_placement_mode: MainWindowPlacementWriteMode,
     startup: Option<&StartupAgentRows>,
 ) -> Result<AppSettings, SettingsSaveError> {
-    let initial_disk = read_disk_object_for_write_typed(
-        path,
-        match &mode {
-            ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
-            #[cfg(test)]
-            ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
-        },
-    )?;
-    // Read-only duplicate proof precedes every publisher belonging to this save.
-    // The same prepared raw array is consumed by the sidecar/main writers.
+    let disk_gate_stage = match &mode {
+        ProjectWriteMode::Preserve => SettingsSaveStage::PreserveDiskGate,
+        #[cfg(test)]
+        ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
+    };
+    let initial_disk = read_disk_object_for_write_typed(path, disk_gate_stage)?;
+    let reject_profiles = |reason: String| {
+        SettingsSaveError::semantic(
+            disk_gate_stage,
+            path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    };
+    let profile_gate = capture_registered_profile_gate(path).map_err(&reject_profiles)?;
+    let physical_sidecar =
+        read_agents_instance_file(&agents_instance_path(path)).map_err(&reject_profiles)?;
+    // Preparation and ownership use the original bytes checked by this gate,
+    // rather than independently captured generations of the two files.
+    let captured_main =
+        captured_registered_profile_object(&profile_gate, path).map_err(&reject_profiles)?;
+    let captured_sidecar =
+        captured_registered_profile_object(&profile_gate, &agents_instance_path(path))
+            .map_err(&reject_profiles)?;
+    if initial_disk != captured_main || physical_sidecar != captured_sidecar {
+        return Err(reject_profiles(format!(
+            "staleProfileSource: {}",
+            path.display()
+        )));
+    }
+    let initial_disk = captured_main;
+    let physical_sidecar = captured_sidecar;
+    let profiles_in_sidecar = physical_sidecar.as_ref().is_some_and(|map| {
+        map.contains_key("codingAgentProfiles")
+            || (map.contains_key("agents")
+                && initial_disk
+                    .as_ref()
+                    .is_none_or(|main| !main.contains_key("codingAgentProfiles")))
+    });
+    let profiles_unprotected = !settings
+        .local_overlay_state
+        .owns_top_level("codingAgentProfiles");
+    let profile_before = selected_registered_profile_owner(
+        &initial_disk.clone().unwrap_or_default(),
+        physical_sidecar.as_ref(),
+        profiles_unprotected,
+    );
+    let directional_split = profiles_in_sidecar
+        && physical_sidecar
+            .as_ref()
+            .is_some_and(|map| !map.contains_key("agents"))
+        && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
+            == Some(&Value::from(1));
+    let consolidate_legacy = profiles_unprotected
+        && profile_before
+            .get("codingAgentProfiles")
+            .is_some_and(|profiles| profiles.get("profileBindingVersion").is_none())
+        && physical_profile_rows(&profile_before, true).is_ok();
+    let profiles_in_sidecar = profiles_in_sidecar
+        || (profiles_unprotected
+            && profile_before
+                .get("codingAgentProfiles")
+                .is_none_or(|profiles| profiles.get("profileBindingVersion").is_none()));
+    // Prove whole-row correspondence before any ID-keyed copying or conversion.
     let prepared_duplicate_agents = if matches!(mode, ProjectWriteMode::Preserve)
         && !settings.local_overlay_state.owns_top_level("agents")
     {
@@ -13811,6 +16293,89 @@ fn save_settings_value_locked_with_startup(
     } else {
         None
     };
+    let prepared_profiles = if matches!(mode, ProjectWriteMode::Preserve) {
+        let (profile_incoming, owner_has_active_agents, duplicate_rows) =
+            prepare_registered_profile_incoming(
+                (settings, path),
+                &profile_before,
+                &physical_sidecar,
+                &initial_disk,
+                &profile_gate,
+                (
+                    directional_split,
+                    profiles_unprotected,
+                    profiles_in_sidecar,
+                    consolidate_legacy,
+                ),
+                prepared_duplicate_agents.as_ref(),
+            )
+            .map_err(&reject_profiles)?;
+        let mut prepared_profiles = prepare_registered_profile_owner(
+            settings,
+            path,
+            &profile_before,
+            &profile_incoming,
+            profiles_in_sidecar,
+            startup,
+            (owner_has_active_agents && prepared_duplicate_agents.is_some()) || duplicate_rows,
+        )
+        .map_err(&reject_profiles)?;
+        // Original main bytes are backed up below before any cleanup publish.
+        if !physical_sidecar
+            .as_ref()
+            .is_some_and(|map| map.contains_key("codingAgentProfiles"))
+            && owner_has_active_agents
+        {
+            if let Some(profiles) = prepared_profiles
+                .as_mut()
+                .and_then(|prepared| prepared.get_mut("codingAgentProfiles"))
+                .and_then(Value::as_object_mut)
+            {
+                for key in ["letters", "matrix", "agentDefaults"] {
+                    profiles.remove(key);
+                }
+            }
+        }
+        if let Some(prepared) = &prepared_profiles {
+            validate_physical_identity_delta(
+                profile_before.as_object().unwrap(),
+                prepared.as_object().unwrap(),
+                !settings.local_overlay_state.owns_top_level("agents"),
+                !directional_split,
+            )
+            .map_err(&reject_profiles)?;
+            if directional_split {
+                validate_directional_prepared_identity(&profile_before, prepared)
+                    .map_err(&reject_profiles)?;
+            }
+        }
+        if directional_split || settings.local_overlay_state.owns_top_level("agents") {
+            if let Some(prepared) = prepared_profiles.as_mut().and_then(Value::as_object_mut) {
+                prepared.remove("agents");
+            }
+        }
+        prepared_profiles
+    } else {
+        None
+    };
+    // Validate the main-row packet as well before any migration, backup or
+    // sidecar publisher. The real publishers below retain their existing order.
+    prevalidate_registered_main_packet(
+        (settings, path),
+        &initial_disk,
+        &physical_sidecar,
+        prepared_profiles.as_ref(),
+        prepared_duplicate_agents.as_ref(),
+        (
+            &mode,
+            disk_gate_stage,
+            terminal_snapshot_gate_mode,
+            &main_window_placement_mode,
+            directional_split,
+            profiles_in_sidecar,
+        ),
+    )?;
+    recheck_registered_profile_gate(&profile_gate).map_err(&reject_profiles)?;
     ensure_project_paths_migrated_at_locked_path(path, &mut |_, _| Ok(()))?;
     let selected_projection = select_project_source_at_locked_path(path)?.projection;
     let base = production_instance_base();
@@ -13820,26 +16385,13 @@ fn save_settings_value_locked_with_startup(
         ProjectWriteMode::Reconcile { .. } => SettingsSaveStage::ReconcileDiskGate,
     };
     let disk_read = read_disk_object_and_contents_for_write_typed(path, disk_gate_stage)?;
-    // #2015: Preserve builds from the struct, which ignores legacy pre-v2
-    // profile fields; keep the original once before any save drops them.
-    if matches!(mode, ProjectWriteMode::Preserve) {
-        if let Some((map, contents)) = &disk_read {
-            if legacy_profiles_shape_present(map) {
-                write_pre_384_v1_backup(path, contents).map_err(|e| {
-                    SettingsSaveError::io(
-                        disk_gate_stage,
-                        path,
-                        None,
-                        std::io::Error::other(e.clone()),
-                        SettingsSaveLegacyOutward::DiskRead(format!(
-                            "Refusing to overwrite {}: legacy settings backup failed ({e})",
-                            path.display()
-                        )),
-                    )
-                })?;
-            }
-        }
-    }
+    backup_legacy_profiles_before_write(
+        path,
+        disk_gate_stage,
+        &mode,
+        disk_read.as_ref().map(|(map, _)| map),
+        disk_read.as_ref().map(|(_, contents)| contents.as_str()),
+    )?;
     // #2058: the exact bytes this save is about to replace, captured before the
     // tuple is reduced to its object half.
     let previous_contents: Option<String> = disk_read.as_ref().map(|(_, c)| c.clone());
@@ -13880,66 +16432,14 @@ fn save_settings_value_locked_with_startup(
         },
     };
 
-    replace_project_projection(&mut out, &Map::new());
-
-    // #1173: a whole-settings writer cannot opt in or re-enable an explicit
-    // value, and a present malformed gate is an error. An absent file or a
-    // valid object with an absent legacy key materializes true: the default-on
-    // phase deliberately reverses the shipped absent-key rule. Only the
-    // dedicated CAS uses Explicit.
-    let terminal_snapshots_enabled = match terminal_snapshot_gate_mode {
-        TerminalSnapshotGateWriteMode::Explicit(enabled) => enabled,
-        TerminalSnapshotGateWriteMode::Preserve => match &disk {
-            Some(disk) => match disk.get(FIELD_TERMINAL_SNAPSHOTS_ENABLED) {
-                Some(Value::Bool(enabled)) => *enabled,
-                None => true,
-                Some(_) => {
-                    return Err(SettingsSaveError::semantic(
-                        disk_gate_stage,
-                        path,
-                        None,
-                        SettingsSaveReason::TerminalSnapshotSettingInvalid,
-                        SettingsSaveLegacyOutward::TerminalSnapshotSettingInvalid(
-                            "terminal_snapshot_setting_invalid".to_string(),
-                        ),
-                    ));
-                }
-            },
-            None => true,
-        },
-    };
-    out.insert(
-        FIELD_TERMINAL_SNAPSHOTS_ENABLED.to_string(),
-        Value::Bool(terminal_snapshots_enabled),
-    );
-
-    // #2348: main-window placement is owned by the narrow placement command.
-    // `Preserve` never regresses it: for each key independently, a PRESENT disk
-    // value is authoritative, and an absent disk key leaves the caller value
-    // alone. An absent legacy `mainGeometry`
-    // must not erase the value the load-time migration synthesized in memory.
-    // `Explicit` writes the pair exactly as the placement command received it.
-    // Runs before `restore_base`, which stays the last writer over the base file.
-    match main_window_placement_mode {
-        MainWindowPlacementWriteMode::Preserve => {
-            if let Some(disk) = &disk {
-                preserve_main_window_placement_keys(&mut out, disk);
-            }
-        }
-        MainWindowPlacementWriteMode::Explicit {
-            geometry,
-            display_state,
-        } => {
-            out.insert(
-                FIELD_MAIN_GEOMETRY.to_string(),
-                serialize_settings_component(&geometry, path)?,
-            );
-            out.insert(
-                FIELD_MAIN_DISPLAY_STATE.to_string(),
-                serialize_settings_component(&display_state, path)?,
-            );
-        }
-    }
+    apply_registered_main_disk_fields(
+        &mut out,
+        disk.as_ref(),
+        path,
+        disk_gate_stage,
+        terminal_snapshot_gate_mode,
+        main_window_placement_mode,
+    )?;
 
     // #1737: the effective view the caller must adopt for overlay-owned paths. `out`
     // is not a usable source: in Reconcile mode it was seeded from the disk object,
@@ -13954,7 +16454,9 @@ fn save_settings_value_locked_with_startup(
     // into the base file. Runs in both project write modes: Reconcile seeds `out`
     // from the live settings when the file is absent. The overlay-ineligible sets
     // (D7a, D7b) already exclude every key the #1077 and #1173 stages touch.
-    write_identity_rows(&mut out, &settings.local_overlay_state);
+    if matches!(mode, ProjectWriteMode::Preserve) {
+        write_identity_rows(&mut out, &settings.local_overlay_state);
+    }
     settings.local_overlay_state.restore_base(&mut out);
 
     // #2716 (B3): the agents file is written first; only the keys it now holds
@@ -13967,60 +16469,35 @@ fn save_settings_value_locked_with_startup(
         disk.as_ref(),
         &out,
         disk_gate_stage,
-        prepared_duplicate_agents.as_ref(),
+        (
+            prepared_duplicate_agents.as_ref(),
+            prepared_profiles.as_ref().filter(|_| profiles_in_sidecar),
+            Some(profiles_in_sidecar),
+        ),
     )?;
-    strip_agents_instance_keys(&mut out, &agents_groups);
-
-    // Partial profile ownership can keep these groups in settings.json instead
-    // of the sidecar. Retain its locked legacy leaves after raw overlay restore;
-    // complete overlay-owned groups stay outside this writer's authority.
-    if let Some(disk) = &disk {
-        let profiles_owned = settings
-            .local_overlay_state
-            .owned_paths()
-            .iter()
-            .any(|path| path.len() == 1 && path[0] == "codingAgentProfiles");
-        let mut retained = Value::Object(out);
-        if retained.get("agents").is_some() {
-            if let Some(prepared) = &prepared_duplicate_agents {
-                retained["agents"] = prepared.clone();
-            }
-        }
-        retain_configuration_commands(
-            &mut retained,
-            &Value::Object(disk.clone()),
-            "id",
-            false,
-            !settings.local_overlay_state.owns_top_level("agents")
-                && prepared_duplicate_agents.is_none(),
-            !profiles_owned,
-        )
-        .map_err(|reason| {
-            SettingsSaveError::semantic(
-                disk_gate_stage,
-                path,
-                None,
-                SettingsSaveReason::DiskSettingsValidationRejected,
-                SettingsSaveLegacyOutward::DiskValidation(reason),
-            )
-        })?;
-        out = retained
-            .as_object()
-            .expect("retained settings object")
-            .clone();
-    }
-
-    // A synthesized legacy state (direct-constructed AppSettings) has no dirty
-    // repair, so the eligible branches above never fire for it; its groups are
-    // written verbatim from the live settings/disk, matching pre-#1077 behavior.
-    // Restore complete protected groups after every retention/repair stage.
-    // Sidecar key presence, including empty values, takes precedence over main.
-    restore_protected_agents_instance_groups(
-        &mut out,
+    out = prepare_registered_main_agent_groups(
+        out,
+        settings,
         disk.as_ref(),
-        &settings.local_overlay_state,
         &agents_groups,
-    );
+        profiles_in_sidecar,
+        (
+            prepared_profiles.as_ref(),
+            prepared_duplicate_agents.as_ref(),
+            physical_sidecar.as_ref(),
+            path,
+        ),
+        &mode,
+    )
+    .map_err(|reason| {
+        SettingsSaveError::semantic(
+            disk_gate_stage,
+            path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    })?;
     let value = Value::Object(out);
     let written_bytes = write_value_atomic(&value, path)?;
     if let Some(previous) = previous_contents {
@@ -14034,10 +16511,21 @@ fn save_settings_value_locked_with_startup(
     // #2716 (B3): the re-decode sees what a load would, the agents file's groups
     // in the base object, under the overlay reapplied below.
     let physical_groups = agents_groups.keys().cloned().collect::<Vec<_>>();
-    let base_profiles = agents_groups.get("codingAgentProfiles").cloned();
+    let profile_owner = selected_registered_profile_owner(
+        written_value.as_object().expect("written settings object"),
+        Some(&agents_groups),
+        !settings
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles"),
+    );
+    let profile_owner_view = registered_profiles_for_read(&profile_owner);
+    let base_profiles = profile_owner.get("codingAgentProfiles").cloned();
     restore_agents_groups_for_redecode(&mut written_value, agents_groups);
     let identity_physical =
         coding_agent_identity_with_physical_overlay(written_value.clone(), path, &physical_groups);
+    if let Some(profiles) = profile_owner_view.get("codingAgentProfiles") {
+        written_value["codingAgentProfiles"] = profiles.clone();
+    }
     // #1737: disk holds the base, memory holds the effective value. Without this the
     // caller would adopt base values for every overlay-owned key on the first save.
     if let (Some(effective), Value::Object(object)) = (&effective, &mut written_value) {
@@ -14070,6 +16558,247 @@ fn save_settings_value_locked_with_startup(
     repair_loaded_response_close_settings(&mut written, &path.display().to_string());
     repair_loaded_room_idle_confirmation_settings(&mut written, &path.display().to_string());
     Ok(written)
+}
+
+fn prevalidate_registered_main_packet(
+    owner: (&AppSettings, &Path),
+    initial_disk: &Option<Map<String, Value>>,
+    physical_sidecar: &Option<Map<String, Value>>,
+    prepared_profiles: Option<&Value>,
+    prepared_duplicate_agents: Option<&Value>,
+    controls: (
+        &ProjectWriteMode,
+        SettingsSaveStage,
+        TerminalSnapshotGateWriteMode,
+        &MainWindowPlacementWriteMode,
+        bool,
+        bool,
+    ),
+) -> Result<(), SettingsSaveError> {
+    let (settings, path) = owner;
+    let (
+        mode,
+        disk_gate_stage,
+        terminal_snapshot_gate_mode,
+        main_window_placement_mode,
+        directional_split,
+        profiles_in_sidecar,
+    ) = controls;
+    let reject_profiles = |reason: String| {
+        SettingsSaveError::semantic(
+            disk_gate_stage,
+            path,
+            None,
+            SettingsSaveReason::DiskSettingsValidationRejected,
+            SettingsSaveLegacyOutward::DiskValidation(reason),
+        )
+    };
+    if prepared_profiles.is_some()
+        && (directional_split || settings.local_overlay_state.owns_top_level("agents"))
+    {
+        let mut main_packet = serde_json::to_value(settings)
+            .map_err(|error| reject_profiles(error.to_string()))?
+            .as_object()
+            .ok_or_else(|| reject_profiles("invalidSettingsObject".into()))?
+            .clone();
+        apply_registered_main_disk_fields(
+            &mut main_packet,
+            initial_disk.as_ref(),
+            path,
+            disk_gate_stage,
+            terminal_snapshot_gate_mode,
+            main_window_placement_mode.clone(),
+        )?;
+        settings.local_overlay_state.restore_base(&mut main_packet);
+        let mut sidecar_packet = physical_sidecar.clone().unwrap_or_default();
+        if let Some(profiles) =
+            prepared_profiles.and_then(|prepared| prepared.get("codingAgentProfiles"))
+        {
+            sidecar_packet.insert("codingAgentProfiles".into(), profiles.clone());
+        }
+        let main_packet = prepare_registered_main_agent_groups(
+            main_packet,
+            settings,
+            initial_disk.as_ref(),
+            &sidecar_packet,
+            profiles_in_sidecar,
+            (
+                prepared_profiles,
+                prepared_duplicate_agents,
+                physical_sidecar.as_ref(),
+                path,
+            ),
+            mode,
+        )
+        .map_err(&reject_profiles)?;
+        if !settings.local_overlay_state.owns_top_level("agents") {
+            validate_physical_identity_delta(
+                &initial_disk.clone().unwrap_or_default(),
+                &main_packet,
+                true,
+                false,
+            )
+            .map_err(&reject_profiles)?;
+        }
+    }
+    Ok(())
+}
+
+fn backup_legacy_profiles_before_write(
+    path: &Path,
+    disk_gate_stage: SettingsSaveStage,
+    mode: &ProjectWriteMode,
+    map: Option<&Map<String, Value>>,
+    contents: Option<&str>,
+) -> Result<(), SettingsSaveError> {
+    // #2015: Preserve builds from the struct, which ignores legacy pre-v2
+    // profile fields; keep the original once before any save drops them.
+    if matches!(mode, ProjectWriteMode::Preserve) {
+        if let (Some(map), Some(contents)) = (map, contents) {
+            if legacy_profiles_shape_present(map) {
+                write_pre_384_v1_backup(path, contents).map_err(|e| {
+                    SettingsSaveError::io(
+                        disk_gate_stage,
+                        path,
+                        None,
+                        std::io::Error::other(e.clone()),
+                        SettingsSaveLegacyOutward::DiskRead(format!(
+                            "Refusing to overwrite {}: legacy settings backup failed ({e})",
+                            path.display()
+                        )),
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn prepare_registered_profile_incoming(
+    owner: (&AppSettings, &Path),
+    profile_before: &Value,
+    physical_sidecar: &Option<Map<String, Value>>,
+    initial_disk: &Option<Map<String, Value>>,
+    profile_gate: &[RegisteredProfileDocument],
+    flags: (bool, bool, bool, bool),
+    prepared_duplicate_agents: Option<&Value>,
+) -> Result<(Value, bool, bool), String> {
+    let (settings, path) = owner;
+    let (directional_split, profiles_unprotected, profiles_in_sidecar, consolidate_legacy) = flags;
+    let mut profile_incoming = serde_json::to_value(settings).map_err(|e| e.to_string())?;
+    validate_registered_overlay_profile_edits(
+        settings,
+        profile_before,
+        physical_sidecar,
+        initial_disk,
+        path,
+        profile_gate,
+    )?;
+    settings
+        .local_overlay_state
+        .restore_base(profile_incoming.as_object_mut().unwrap());
+    // The directional view and initial preparation use selected physical
+    // rows. Their borrowed rows are stripped before sidecar publication.
+    let owner_has_active_agents = if directional_split
+        || (profiles_unprotected
+            && profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
+                != Some(&Value::from(1)))
+    {
+        true
+    } else if profiles_in_sidecar {
+        physical_sidecar
+            .as_ref()
+            .is_some_and(|map| map.contains_key("agents"))
+    } else {
+        !physical_sidecar
+            .as_ref()
+            .is_some_and(|map| map.contains_key("agents"))
+    };
+    if !owner_has_active_agents {
+        if profile_before.pointer("/codingAgentProfiles/profileBindingVersion")
+            == Some(&Value::from(1))
+        {
+            let selected_rows = physical_sidecar
+                .as_ref()
+                .and_then(|map| map.get("agents"))
+                .or_else(|| initial_disk.as_ref().and_then(|map| map.get("agents")));
+            validate_split_canonical_profile_edits(settings, profile_before, selected_rows)?;
+        }
+        match profile_before.get("agents") {
+            Some(rows) => {
+                profile_incoming["agents"] = rows.clone();
+            }
+            None => {
+                profile_incoming.as_object_mut().unwrap().remove("agents");
+            }
+        }
+    }
+    if settings.local_overlay_state.owns_top_level("agents") {
+        match profile_before.get("agents") {
+            Some(rows) => profile_incoming["agents"] = rows.clone(),
+            None => {
+                profile_incoming.as_object_mut().unwrap().remove("agents");
+            }
+        }
+    }
+    if consolidate_legacy {
+        retain_selected_legacy_profile_aliases(
+            profile_before,
+            profile_before,
+            &mut profile_incoming,
+        )?;
+    }
+    if owner_has_active_agents {
+        if let Some(rows) = prepared_duplicate_agents {
+            profile_incoming["agents"] = rows.clone();
+        } else {
+            retain_unknown_registered_agent_fields(profile_before, &mut profile_incoming)?;
+        }
+    }
+    let mut incoming_ids = HashSet::new();
+    let duplicate_rows = profile_incoming
+        .get("agents")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("id").and_then(Value::as_str))
+        .any(|id| !incoming_ids.insert(id));
+    if directional_split {
+        restrict_split_profile_mutation_rows(settings, profile_before, &mut profile_incoming)?;
+    }
+    Ok((profile_incoming, owner_has_active_agents, duplicate_rows))
+}
+
+fn validate_directional_prepared_identity(
+    profile_before: &Value,
+    prepared: &Value,
+) -> Result<(), String> {
+    // A BASE fork carries its old complete set, including historical
+    // duplicate profiles. Compare profile edits under the proposed
+    // row grouping; configuration admission above stays independent.
+    let mut previous = project_physical_profiles(profile_before, true)?;
+    let old_rows = physical_profile_rows(profile_before, true)?;
+    let mut target_baseline = profile_before.clone();
+    target_baseline["agents"] = prepared["agents"].clone();
+    let target_baseline = project_physical_profiles(&target_baseline, true)?;
+    for id in physical_profile_rows(prepared, true)?.keys() {
+        if !old_rows.contains_key(id) {
+            for key in ["profilesByAgent", "profileLabelsByAgent"] {
+                previous["codingAgentProfiles"][key][id] =
+                    target_baseline["codingAgentProfiles"][key][id].clone();
+            }
+        }
+    }
+    previous["agents"] = prepared["agents"].clone();
+    let proposed = project_physical_profiles(prepared, true)?;
+    let old = physical_identity_violations(previous.as_object().unwrap(), false, true)?;
+    let new = physical_identity_violations(proposed.as_object().unwrap(), false, true)?;
+    for (signature, (count, error)) in new {
+        if count > old.get(&signature).map_or(0, |(count, _)| *count) {
+            return Err(error.to_string());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14430,10 +17159,17 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     // #2716 (B3) 4.2b: the same merge as `parse_settings_json`, in the same layer
     // order, under the overlay reapplied below. The decoded value is adopted and
     // written, so without it an empty `agents` would reach the agents file.
+    let main_profile_owner = value.as_object().expect("settings object").clone();
     let agents_layer = merge_agents_instance_file(settings_path, &mut value);
-    let physical_groups = read_agents_instance_file(&agents_instance_path(settings_path))
+    let physical_sidecar = read_agents_instance_file(&agents_instance_path(settings_path))
         .ok()
-        .flatten()
+        .flatten();
+    let profile_owner = selected_registered_profile_owner(
+        &main_profile_owner,
+        physical_sidecar.as_ref(),
+        !overlay.owns_top_level("codingAgentProfiles"),
+    );
+    let physical_groups = physical_sidecar
         .map(|groups| {
             agents_instance_groups(&groups)
                 .keys()
@@ -14444,6 +17180,10 @@ fn decode_disk_settings_for_terminal_snapshot_cas(
     let identity_physical =
         coding_agent_identity_with_physical_overlay(value.clone(), settings_path, &physical_groups);
     let base_profiles = value.get("codingAgentProfiles").cloned();
+    if let Some(profiles) = registered_profiles_for_read(&profile_owner).get("codingAgentProfiles")
+    {
+        value["codingAgentProfiles"] = profiles.clone();
+    }
     // #1737 (D17): re-apply the overlay to the disk-decoded object, so the
     // `disk_gate == enabled` early return does not hand the caller base values.
     // Pinned before the project decode, and therefore strictly before
@@ -17751,11 +20491,1201 @@ mod tests {
     }
 
     #[test]
+    fn e2432_project_capture_syntax_admission_all_participants() {
+        for case in [
+            "syntax",
+            "overlay-syntax",
+            "overlay-syntax-only",
+            "overlay-io",
+            "main-duplicate",
+            "overlay-duplicate",
+            "overlay-binding",
+            "overlay-quarantine",
+            "overlay-conflict",
+            "sidecar-io",
+        ] {
+            project_capture_syntax_case(case);
+        }
+    }
+
+    fn project_capture_syntax_case(case: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(project.join(".ac")).unwrap();
+        let mut main = serde_json::json!({
+            "rootToken":"stable", "projectPaths":[project], "projectPath":project
+        })
+        .to_string();
+        if case == "main-duplicate" {
+            main.pop();
+            main.push_str(",\"unknown\":1,\"unknown\":1}");
+        }
+        std::fs::write(&path, &main).unwrap();
+        let sidecar = super::agents_instance_path(&path);
+        if case == "sidecar-io" {
+            std::fs::create_dir(&sidecar).unwrap();
+        } else if case == "overlay-syntax-only" {
+            std::fs::write(&sidecar, b"{}").unwrap();
+        } else {
+            std::fs::write(&sidecar, b"{broken agents").unwrap();
+        }
+        let overlay = path.with_file_name(super::SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+        if case == "overlay-io" {
+            std::fs::create_dir(&overlay).unwrap();
+        }
+        let overlay_bytes = match case {
+            "overlay-syntax" | "overlay-syntax-only" => Some("{broken overlay".to_owned()),
+            "overlay-duplicate" => Some(r#"{"agents":[],"unknown":1,"unknown":1}"#.to_owned()),
+            "overlay-binding" => {
+                Some(r#"{"codingAgentProfiles":{"profileBindingVersion":9}}"#.to_owned())
+            }
+            "overlay-quarantine" => {
+                Some(r#"{"codingAgentProfiles":{"legacyProfileOrphans":null}}"#.to_owned())
+            }
+            "overlay-conflict" => Some(
+                serde_json::json!({
+                    "agents":[b3_agent("alpha", "A"), b3_agent("beta", "B")],
+                    "codingAgentProfiles":{"profilesByAgent":{
+                        "alpha":{"A":{"notes":"first"}}, "beta":{"A":{"notes":"second"}}
+                    }}
+                })
+                .to_string(),
+            ),
+            _ => None,
+        };
+        if let Some(bytes) = &overlay_bytes {
+            std::fs::write(&overlay, bytes).unwrap();
+        }
+        let capture = super::collect_registered_profile_gate(&path);
+        let migrates = matches!(
+            case,
+            "syntax" | "overlay-syntax" | "overlay-syntax-only" | "overlay-io"
+        );
+        assert_eq!(capture.admits_project_migration(&path), migrates, "{case}");
+        assert_eq!(
+            capture.ordinary_error().is_some(),
+            case != "overlay-syntax-only",
+            "{case}"
+        );
+        if matches!(
+            case,
+            "overlay-syntax" | "overlay-syntax-only" | "overlay-io"
+        ) {
+            assert!(!capture
+                .participant_documents()
+                .iter()
+                .any(|(document, _)| document == &overlay));
+        }
+        super::read_settings_for_startup(&path);
+        assert_eq!(
+            super::project_paths_path(&path).exists(),
+            migrates,
+            "{case}"
+        );
+        if !migrates {
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), main, "{case}");
+            assert!(!path
+                .with_file_name(super::super::instance_artifacts::PROJECT_PATHS_BACKUP_FILE_NAME)
+                .exists());
+        }
+        if case == "overlay-syntax-only" {
+            assert_eq!(std::fs::read(&sidecar).unwrap(), b"{}");
+        } else if case != "sidecar-io" {
+            assert_eq!(std::fs::read(&sidecar).unwrap(), b"{broken agents");
+        }
+        if let Some(bytes) = overlay_bytes {
+            assert_eq!(std::fs::read_to_string(&overlay).unwrap(), bytes);
+        }
+        if case == "overlay-io" {
+            assert!(overlay.is_dir());
+        }
+    }
+
+    #[test]
+    fn e2432_project_capture_rechecks_malformed_bytes_and_absence() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, b"{}").unwrap();
+        let sidecar = super::agents_instance_path(&path);
+        std::fs::write(&sidecar, b"{broken").unwrap();
+        let captured = super::collect_registered_profile_gate(&path);
+        assert!(captured.admits_project_migration(&path));
+        assert!(super::recheck_registered_profile_gate(&captured.documents).is_ok());
+        std::fs::write(&sidecar, b"{changed").unwrap();
+        assert!(super::recheck_registered_profile_gate(&captured.documents).is_err());
+        std::fs::write(&sidecar, b"{broken").unwrap();
+        std::fs::write(
+            path.with_file_name(super::SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+            b"{}",
+        )
+        .unwrap();
+        assert!(super::recheck_registered_profile_gate(&captured.documents).is_err());
+    }
+
+    #[test]
+    fn e2432_editable_legacy_action_preserves_opaque_canonical_fixed_point() {
+        let owner = serde_json::json!({
+            "agents":[b3_agent("alpha", "A")],
+            "codingAgentProfiles":{
+                "schemaVersion":2,"letters":{"old":true},
+                "profileSlots":{"A":{"name":"opaque", "extension":7}},
+                "profilesByAgent":{"alpha":{"A":{"command":"--x", "argv":["opaque"], "extension":9}}}
+            }
+        });
+        assert!(super::actionable_profile_legacy_work(&owner, true).unwrap());
+        let projected = super::project_physical_profiles(&owner, true).unwrap();
+        let mut canonical = super::canonical_profile_source(&owner, &projected, true).unwrap();
+        canonical["codingAgentProfiles"]
+            .as_object_mut()
+            .unwrap()
+            .remove("letters");
+        assert!(super::legacy_profiles_shape_present(
+            canonical.as_object().unwrap()
+        ));
+        assert!(!super::actionable_profile_legacy_work(&canonical, true).unwrap());
+        assert_eq!(
+            canonical["codingAgentProfiles"]["profileSlots"]["A"]["name"],
+            "opaque"
+        );
+        let hash = super::configuration_identity("claude", &[]);
+        assert_eq!(
+            canonical["codingAgentProfiles"]["profilesByBaseHash"][&hash]["A"]["argv"],
+            serde_json::json!(["opaque"])
+        );
+        assert_eq!(
+            canonical["codingAgentProfiles"]["profilesByBaseHash"][&hash]["A"]["extension"],
+            9
+        );
+        canonical["codingAgentProfiles"]["matrix"] = serde_json::json!({"old":true});
+        assert!(super::actionable_profile_legacy_work(&canonical, true).unwrap());
+    }
+
+    #[test]
     fn selected_project_decode_fallback_retains_overlay_and_agents_state() {
         for startup in [false, true] {
             for unreadable in [false, true] {
                 assert_selected_project_decode_fallback_case(startup, unreadable);
             }
+        }
+    }
+
+    fn n1_test_overlay(kind: &str) -> serde_json::Value {
+        if kind == "agents" {
+            serde_json::json!({"agents":[b3_agent("overlay-only", "Overlay")]})
+        } else {
+            serde_json::json!({"codingAgentProfiles":{
+                "profileSlots":{"A":{"label":"overlay-slot"}},
+                "profilesByAgent":{"overlay-only":{"A":{"additionalArguments":"--overlay"}}},
+                "defaultProfileByAgent":{"overlay-matrix":"A"}
+            }})
+        }
+    }
+
+    #[test]
+    fn e2432_n1_absent_main_startup_and_ordinary_first_save() {
+        for startup in [false, true] {
+            for kind in ["agents", "profiles"] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = b3_settings_path(temp.path());
+                let overlay_path = b3_overlay_path(temp.path());
+                b3_write(&overlay_path, &n1_test_overlay(kind));
+                let overlay_bytes = std::fs::read(&overlay_path).unwrap();
+                let before = hash_activation_files(temp.path());
+                let mut draft = super::load_settings_for_cli_from_path(&path);
+                assert!(draft.coding_agent_identity_physical.is_none());
+                assert_eq!(hash_activation_files(temp.path()), before);
+                assert!(!path.exists());
+                assert!(!super::agents_instance_path(&path).exists());
+                let written = if startup {
+                    super::load_settings_from_path(&path)
+                } else {
+                    draft.root_token = Some("ordinary-first-save".into());
+                    let written =
+                        super::save_settings_to_path_preserving_project_paths(&draft, &path)
+                            .unwrap();
+                    assert!(
+                        draft.coding_agent_identity_physical.is_none(),
+                        "comparison reference must not become input identity"
+                    );
+                    written
+                };
+                assert!(path.exists(), "first save {kind}/{startup}");
+                assert!(written.root_token.is_some());
+                assert_eq!(std::fs::read(&overlay_path).unwrap(), overlay_bytes);
+                assert!(!super::agents_instance_path(&path).exists());
+                let physical = b3_object(&path);
+                assert!(!physical
+                    .get("agents")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .any(|row| row["id"] == "overlay-only"));
+                let profiles = physical.get("codingAgentProfiles");
+                assert!(profiles
+                    .and_then(|p| p.get("profilesByAgent"))
+                    .and_then(|p| p.get("overlay-only"))
+                    .is_none());
+                assert!(profiles
+                    .and_then(|p| p.get("defaultProfileByAgent"))
+                    .and_then(|p| p.get("overlay-matrix"))
+                    .is_none());
+                assert_ne!(
+                    profiles
+                        .and_then(|p| p.pointer("/profileSlots/A/label"))
+                        .and_then(serde_json::Value::as_str),
+                    Some("overlay-slot")
+                );
+                let reloaded = super::load_settings_for_cli_from_path(&path);
+                assert_eq!(
+                    serde_json::to_value(&written.agents).unwrap(),
+                    serde_json::to_value(&reloaded.agents).unwrap()
+                );
+                assert_eq!(
+                    written.coding_agent_profiles,
+                    reloaded.coding_agent_profiles
+                );
+                if kind == "agents" {
+                    assert_eq!(written.agents[0].id, "overlay-only");
+                } else {
+                    assert_eq!(
+                        written.coding_agent_profiles.profile_slots["A"].label,
+                        "overlay-slot"
+                    );
+                    assert_eq!(
+                        written.coding_agent_profiles.profiles_by_agent["overlay-only"]["A"]
+                            .command,
+                        "--overlay"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn e2432_n1_absent_main_real_owned_edits_refuse_before_publishers() {
+        for kind in ["agents", "profiles", "default"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            b3_write(&b3_overlay_path(temp.path()), &n1_test_overlay(kind));
+            let mut draft = super::load_settings_for_cli_from_path(&path);
+            assert!(draft.coding_agent_identity_physical.is_none());
+            match kind {
+                "agents" => draft.agents[0].command = "changed-owned-command".into(),
+                "profiles" => {
+                    draft
+                        .coding_agent_profiles
+                        .profiles_by_agent
+                        .get_mut("overlay-only")
+                        .unwrap()
+                        .get_mut("A")
+                        .unwrap()
+                        .command = "changed-owned-profile".into()
+                }
+                _ => {
+                    draft
+                        .coding_agent_profiles
+                        .default_profile_by_agent
+                        .insert("overlay-matrix".into(), "B".into());
+                }
+            }
+            let before = hash_activation_files(temp.path());
+            let error =
+                super::save_settings_to_path_preserving_project_paths(&draft, &path).unwrap_err();
+            assert!(
+                error.contains("overlayOwnedProfileGroup"),
+                "{kind}: {error}"
+            );
+            assert_eq!(hash_activation_files(temp.path()), before);
+            assert!(!path.exists());
+            assert!(!super::project_paths_path(&path).exists());
+        }
+    }
+
+    #[test]
+    fn e2432_n1_captured_sidecar_home_is_not_overlay_or_default_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let defaults = serde_json::to_value(super::AppSettings::default()).unwrap();
+        let sidecar_path = super::agents_instance_path(&path);
+        let mut sidecar = serde_json::json!({"agents":defaults["agents"],"codingAgentProfiles":defaults["codingAgentProfiles"]});
+        sidecar["codingAgentProfiles"]["codexHomeKeyByAgent"] =
+            serde_json::json!({"overlay-only":"physical-home"});
+        b3_write(&sidecar_path, &sidecar);
+        let mut overlay = n1_test_overlay("agents");
+        overlay["codingAgentProfiles"] =
+            serde_json::json!({"codexHomeKeyByAgent":{"overlay-only":"forged-home"}});
+        b3_write(&b3_overlay_path(temp.path()), &overlay);
+        let raw_sidecar = std::fs::read(&sidecar_path).unwrap();
+        let raw_overlay = std::fs::read(b3_overlay_path(temp.path())).unwrap();
+        let mut draft = super::load_settings_for_cli_from_path(&path);
+        assert!(!path.exists());
+        assert!(draft.coding_agent_identity_physical.is_none());
+        assert_eq!(
+            draft.coding_agent_profiles.codex_home_key_by_agent["overlay-only"],
+            "physical-home"
+        );
+        draft.root_token = Some("ordinary-first-save".into());
+        let written = super::save_settings_to_path_preserving_project_paths(&draft, &path).unwrap();
+        assert!(draft.coding_agent_identity_physical.is_none());
+        assert_eq!(
+            written.coding_agent_profiles.codex_home_key_by_agent["overlay-only"],
+            "physical-home"
+        );
+        assert_eq!(std::fs::read(&sidecar_path).unwrap(), raw_sidecar);
+        assert_eq!(
+            std::fs::read(b3_overlay_path(temp.path())).unwrap(),
+            raw_overlay
+        );
+        assert_eq!(written.agents[0].id, "overlay-only");
+        assert_eq!(
+            written.coding_agent_profiles,
+            super::load_settings_for_cli_from_path(&path).coding_agent_profiles
+        );
+    }
+
+    #[test]
+    fn e2432_n1_stale_overlay_ownership_and_present_main_stay_refused() {
+        for case in [
+            "changed-value",
+            "changed-ownership",
+            "typed-invalid",
+            "main-present",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = b3_settings_path(temp.path());
+            let overlay = b3_overlay_path(temp.path());
+            b3_write(&overlay, &n1_test_overlay("agents"));
+            let draft = super::load_settings_for_cli_from_path(&path);
+            assert!(draft.coding_agent_identity_physical.is_none());
+            match case {
+                "changed-value" => b3_write(
+                    &overlay,
+                    &serde_json::json!({"agents":[{"id":"overlay-only","label":"Overlay","color":"red","command":"changed"}]}),
+                ),
+                "changed-ownership" => b3_write(&overlay, &n1_test_overlay("profiles")),
+                "typed-invalid" => {
+                    b3_write(&overlay, &serde_json::json!({"agents":"not-an-array"}))
+                }
+                _ => b3_write(
+                    &path,
+                    &serde_json::to_value(super::AppSettings::default()).unwrap(),
+                ),
+            }
+            let before = hash_activation_files(temp.path());
+            let error =
+                super::save_settings_to_path_preserving_project_paths(&draft, &path).unwrap_err();
+            assert!(
+                error.contains("overlayProfileComparisonUnavailable")
+                    || (case == "changed-value" && error.contains("overlayOwnedProfileGroup")),
+                "{case}: {error}"
+            );
+            assert_eq!(hash_activation_files(temp.path()), before);
+        }
+    }
+
+    #[test]
+    fn e2432_dl1_membership_and_n1_absence_revision_barriers() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = b3_settings_path(temp.path());
+        let overlay = b3_overlay_path(temp.path());
+        b3_write(&path, &serde_json::json!({}));
+        std::fs::write(&overlay, b"{rejected").unwrap();
+        let captured = super::collect_registered_profile_gate(&path);
+        assert!(captured.admits_project_migration(&path));
+        assert!(!captured
+            .participant_documents()
+            .iter()
+            .any(|(p, _)| p == &overlay));
+        std::fs::write(&overlay, b"{different rejected").unwrap();
+        assert!(super::recheck_registered_profile_gate(&captured.participant_documents()).is_ok());
+        b3_write(&overlay, &n1_test_overlay("agents"));
+        let participating = super::capture_registered_profile_gate(&path).unwrap();
+        std::fs::remove_file(&overlay).unwrap();
+        std::fs::create_dir(&overlay).unwrap();
+        assert!(super::recheck_registered_profile_gate(&participating).is_err());
+        std::fs::remove_dir(&overlay).unwrap();
+        b3_write(&overlay, &n1_test_overlay("agents"));
+        std::fs::remove_file(&path).unwrap();
+        let absent = super::capture_registered_profile_gate(&path).unwrap();
+        let draft = super::load_settings_for_cli_from_path(&path);
+        assert!(
+            super::absent_main_overlay_comparison(&draft, &path, &None, &None, &absent).is_ok()
+        );
+        b3_write(&path, &serde_json::json!({}));
+        assert!(super::recheck_registered_profile_gate(&absent).is_err());
+        let present = super::capture_registered_profile_gate(&path).unwrap();
+        assert!(
+            super::absent_main_overlay_comparison(&draft, &path, &None, &None, &present).is_err()
+        );
+        std::fs::remove_file(&path).unwrap();
+        b3_write(&overlay, &n1_test_overlay("profiles"));
+        assert!(super::recheck_registered_profile_gate(&absent).is_err());
+    }
+
+    fn assert_o2_stable_full_load(path: &std::path::Path) {
+        let before = hash_activation_files(path.parent().unwrap());
+        let (diagnostics, _capture) = capture_settings_save_diagnostics();
+        // An attempted final main publication reports this existing fault even
+        // when equal bytes would otherwise hide an unnecessary write.
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+            *slot.borrow_mut() = Some((path.to_path_buf(), super::SettingsSaveStage::TempCreate));
+        });
+        let loaded = super::load_settings_from_path(path);
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+        assert!(loaded.project_paths_persistence_error.is_none());
+        assert!(
+            diagnostics.borrow().is_empty(),
+            "unexpected automatic publication: {:?}",
+            diagnostics.borrow()
+        );
+        assert_eq!(hash_activation_files(path.parent().unwrap()), before);
+    }
+
+    #[test]
+    fn e2432_round7_schema2_load_migrates_without_old_markers() {
+        for in_sidecar in [false, true] {
+            let (_temp, path) = hash_activation_seed(in_sidecar);
+            let owner = if in_sidecar {
+                super::agents_instance_path(&path)
+            } else {
+                path.clone()
+            };
+            let mut raw = serde_json::Value::Object(b3_object(&owner));
+            raw["codingAgentProfiles"] = serde_json::json!({
+                "schemaVersion":2,
+                "profilesByAgent":{"alpha":{"A":{"command":"--model x","notes":"retained","opaque":{"null":null}}}},
+                "profileLabelsByAgent":{"alpha":{"A":"Own"}},
+                "profileSlots":{"A":{"label":"Slot","opaque":[null,3]}},
+                "defaultProfileByAgent":{"matrix":"A"},
+                "codexHomeKeyByAgent":{"alpha":"home-leaf"},
+                "identityByAgent":{"alpha":"not-BASE","identity-only":null}
+            });
+            b3_write(&owner, &raw);
+            assert!(!super::legacy_profiles_shape_present(
+                raw.as_object().unwrap()
+            ));
+            let before = super::load_settings_for_cli_from_path(&path);
+            assert!(before.root_token.is_some());
+            let loaded = super::load_settings_from_path(&path);
+            let stored = b3_object(&super::agents_instance_path(&path));
+            let profiles = &stored["codingAgentProfiles"];
+            let hash = super::configuration_identity("claude", &[]);
+            assert_eq!(profiles["profileBindingVersion"], 1);
+            assert_eq!(
+                profiles["profilesByBaseHash"][&hash],
+                super::normalized_profile_cells(
+                    raw.pointer("/codingAgentProfiles/profilesByAgent/alpha")
+                )
+                .unwrap()
+            );
+            for key in [
+                "profileLabelsByBaseHash",
+                "profileSlots",
+                "defaultProfileByAgent",
+                "codexHomeKeyByAgent",
+            ] {
+                let expected = if key == "profileLabelsByBaseHash" {
+                    serde_json::json!({(hash.clone()):{"A":"Own"}})
+                } else {
+                    raw["codingAgentProfiles"][key].clone()
+                };
+                assert_eq!(profiles[key], expected, "{key}");
+            }
+            for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                assert!(profiles.get(key).is_none());
+            }
+            assert_eq!(
+                profiles["legacyProfileOrphans"]["identity-only"],
+                serde_json::json!([{"identity":null}])
+            );
+            assert_eq!(
+                serde_json::to_value(&loaded.agents).unwrap(),
+                serde_json::to_value(&before.agents).unwrap()
+            );
+            assert_eq!(loaded.root_token, before.root_token);
+            assert_eq!(
+                loaded.coding_agent_profiles.profiles_by_agent["alpha"]["A"].notes,
+                "retained"
+            );
+            if !in_sidecar {
+                let main = b3_object(&path);
+                assert!(!main.contains_key("agents"));
+                assert!(!main.contains_key("codingAgentProfiles"));
+            }
+            assert_o2_stable_full_load(&path);
+        }
+    }
+
+    #[test]
+    fn e2432_round7_authoritative_split_routes_only_selected_raw_groups() {
+        for sidecar_rows in [false, true] {
+            let (_temp, path) = hash_activation_seed(true);
+            let sidecar_path = super::agents_instance_path(&path);
+            let mut main = b3_object(&path);
+            let mut sidecar = b3_object(&sidecar_path);
+            let mut rows = sidecar.remove("agents").unwrap();
+            rows[0]["baseCommand"] = serde_json::json!("codex");
+            rows[0].as_object_mut().unwrap().remove("command");
+            rows[0]["opaqueRow"] = serde_json::json!({"keep":[null,7]});
+            let mut profiles = sidecar.remove("codingAgentProfiles").unwrap();
+            profiles["profilesByAgent"] =
+                serde_json::json!({"alpha":{"A":{"command":"--selected","opaqueCell":[null]}}});
+            profiles["profilesByAgent"]["beta"] =
+                serde_json::json!({"A":{"notes":"distinct shadowed claude set","opaque":null}});
+            profiles["profileLabelsByAgent"] = serde_json::json!({"alpha":{"A":"Selected"}});
+            profiles["codexHomeKeyByAgent"] = serde_json::json!({"alpha":"selected-home"});
+            if sidecar_rows {
+                sidecar.insert("agents".into(), rows.clone());
+                main.insert(
+                    "agents".into(),
+                    serde_json::json!([
+                        b3_agent("alpha", "Shadowed claude"),
+                        b3_agent("beta", "Conflicting shadowed claude")
+                    ]),
+                );
+                main.insert("codingAgentProfiles".into(), profiles.clone());
+            } else {
+                main.insert("agents".into(), rows.clone());
+                main.insert(
+                    "codingAgentProfiles".into(),
+                    serde_json::json!({"profilesByAgent":{"alpha":{"A":{"notes":"shadowed"}}}}),
+                );
+                sidecar.insert("codingAgentProfiles".into(), profiles.clone());
+            }
+            b3_write(&path, &serde_json::Value::Object(main.clone()));
+            b3_write(&sidecar_path, &serde_json::Value::Object(sidecar));
+            let loaded = super::load_settings_from_path(&path);
+            assert!(loaded.project_paths_persistence_error.is_none());
+            let saved = b3_object(&sidecar_path);
+            let hash = super::configuration_identity("codex", &[]);
+            assert_eq!(
+                saved["codingAgentProfiles"]["profilesByBaseHash"][&hash],
+                super::normalized_profile_cells(profiles.pointer("/profilesByAgent/alpha"))
+                    .unwrap()
+            );
+            assert_eq!(
+                saved["codingAgentProfiles"]["profilesByBaseHash"]
+                    .as_object()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(saved["codingAgentProfiles"]["profilesByBaseHash"]
+                .get(super::configuration_identity("claude", &[]))
+                .is_none());
+            assert_eq!(
+                saved["codingAgentProfiles"]["codexHomeKeyByAgent"],
+                profiles["codexHomeKeyByAgent"]
+            );
+            assert_eq!(
+                saved["codingAgentProfiles"]["legacyProfileOrphans"]["beta"],
+                serde_json::json!([{"cells":profiles["profilesByAgent"]["beta"].clone()}])
+            );
+            assert_eq!(saved["agents"][0]["opaqueRow"], rows[0]["opaqueRow"]);
+            assert_eq!(saved["agents"][0].get("command"), rows[0].get("command"));
+            assert_eq!(saved["agents"][0]["baseCommand"], rows[0]["baseCommand"]);
+            let expected: Vec<super::AgentConfig> = serde_json::from_value(rows).unwrap();
+            let mut expected = expected;
+            super::finalize_agent_order(&mut expected);
+            super::refresh_agent_id_hashes(&mut expected);
+            assert_eq!(
+                serde_json::to_value(&loaded.agents).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+            let saved_main = b3_object(&path);
+            let transferred = if sidecar_rows {
+                "codingAgentProfiles"
+            } else {
+                "agents"
+            };
+            let unselected = if sidecar_rows {
+                "agents"
+            } else {
+                "codingAgentProfiles"
+            };
+            assert!(!saved_main.contains_key(transferred));
+            assert_eq!(saved_main.get(unselected), main.get(unselected));
+            assert_eq!(
+                loaded.coding_agent_profiles.profiles_by_agent["alpha"]["A"].command,
+                "--selected"
+            );
+            assert_o2_stable_full_load(&path);
+        }
+    }
+
+    #[test]
+    fn e2432_round7_empty_presence_blocks_main_donors() {
+        for empty_rows in [false, true] {
+            let (_temp, path) = hash_activation_seed(false);
+            let sidecar = super::agents_instance_path(&path);
+            let mut main = serde_json::Value::Object(b3_object(&path));
+            main["codingAgentProfiles"]["profilesByAgent"] =
+                serde_json::json!({"alpha":{"B":{"notes":"main"}}});
+            b3_write(&path, &main);
+            b3_write(
+                &sidecar,
+                &if empty_rows {
+                    serde_json::json!({"agents":[]})
+                } else {
+                    serde_json::json!({"codingAgentProfiles":{}})
+                },
+            );
+            let loaded = super::load_settings_from_path(&path);
+            let saved = b3_object(&sidecar);
+            let profiles = &saved["codingAgentProfiles"];
+            if empty_rows {
+                assert_eq!(saved["agents"], serde_json::json!([]));
+                assert!(loaded.agents.is_empty());
+                assert_eq!(profiles["profilesByBaseHash"], serde_json::json!({}));
+                assert_eq!(
+                    profiles["legacyProfileOrphans"]["alpha"],
+                    serde_json::json!([{"cells":{"B":{"notes":"main"}}}])
+                );
+            } else {
+                let hash = super::configuration_identity("claude", &[]);
+                assert!(profiles["profilesByBaseHash"][&hash].get("B").is_none());
+                assert_eq!(
+                    b3_object(&path)["codingAgentProfiles"],
+                    main["codingAgentProfiles"]
+                );
+            }
+            assert_o2_stable_full_load(&path);
+        }
+    }
+
+    #[test]
+    fn e2432_round7_complete_collision_matrix_leaves_every_id_and_publisher_untouched() {
+        for difference in [
+            "notes",
+            "env",
+            "enabled",
+            "letter",
+            "unknown",
+            "label",
+            "destination",
+        ] {
+            let (_temp, path) = hash_activation_seed(true);
+            let sidecar = super::agents_instance_path(&path);
+            let mut source = serde_json::Value::Object(b3_object(&sidecar));
+            let mut first = b3_agent("a-compatible", "Earlier compatible row");
+            first["command"] = serde_json::json!("safe-tool");
+            first["blockingMenus"] =
+                serde_json::json!([{"pattern":"^Ready?","notification":"choose","enabled":true}]);
+            source["agents"].as_array_mut().unwrap().insert(0, first);
+            source["agents"]
+                .as_array_mut()
+                .unwrap()
+                .push(b3_agent("beta", "Second alias"));
+            let cells = serde_json::json!({"A":{"notes":"same","opaque":{"keep":null}}});
+            source["codingAgentProfiles"]["profilesByAgent"] =
+                serde_json::json!({"alpha":cells.clone(),"beta":cells.clone()});
+            source["codingAgentProfiles"]["profileLabelsByAgent"] =
+                serde_json::json!({"alpha":{"A":"same"},"beta":{"A":"same"}});
+            match difference {
+                "label" => {
+                    source["codingAgentProfiles"]["profileLabelsByAgent"]["beta"]["A"] =
+                        serde_json::json!("different")
+                }
+                "letter" => {
+                    source["codingAgentProfiles"]["profilesByAgent"]["beta"]["B"] =
+                        serde_json::json!({})
+                }
+                "destination" => {
+                    let hash = super::configuration_identity("claude", &[]);
+                    source["codingAgentProfiles"]["profilesByBaseHash"] =
+                        serde_json::json!({(hash):{"A":{"notes":"prospective destination"}}});
+                }
+                field => {
+                    let value = match field {
+                        "enabled" => serde_json::json!(false),
+                        "env" => serde_json::json!({"KEY":"different"}),
+                        "unknown" => serde_json::json!([null, 7]),
+                        _ => serde_json::json!("different"),
+                    };
+                    source["codingAgentProfiles"]["profilesByAgent"]["beta"]["A"][field] = value;
+                }
+            }
+            b3_write(&sidecar, &source);
+            let mut main = serde_json::Value::Object(b3_object(&path));
+            main["projectPaths"] = serde_json::json!([]);
+            b3_write(&path, &main);
+            std::fs::remove_file(super::project_paths_path(&path)).unwrap();
+            let before = hash_activation_files(path.parent().unwrap());
+            let menus = std::cell::Cell::new(0);
+            let publish = |_: &std::path::Path, _: &std::path::Path| {
+                menus.set(menus.get() + 1);
+                Err("unexpected menu publisher".to_owned())
+            };
+            let loaded =
+                super::load_settings_from_path_with_blocking_menus_publish(&path, Some(&publish));
+            assert!(
+                loaded.project_paths_persistence_error.is_none(),
+                "{difference}"
+            );
+            assert!(super::registered_profile_raw_gate(&path)
+                .unwrap_err()
+                .contains("sourceProfileConflict"));
+            assert!(super::save_settings_to_path_preserving_project_paths(&loaded, &path).is_err());
+            assert_eq!(menus.get(), 0);
+            assert_eq!(
+                hash_activation_files(path.parent().unwrap()),
+                before,
+                "{difference}"
+            );
+            let stored = b3_object(&sidecar);
+            assert_eq!(
+                stored["codingAgentProfiles"]["profilesByAgent"],
+                source["codingAgentProfiles"]["profilesByAgent"]
+            );
+            // No denied flag is cached: correction permits the next load alone.
+            source["codingAgentProfiles"]["profilesByAgent"]["beta"] = cells;
+            source["codingAgentProfiles"]["profileLabelsByAgent"]["beta"]["A"] =
+                serde_json::json!("same");
+            source["codingAgentProfiles"]
+                .as_object_mut()
+                .unwrap()
+                .remove("profilesByBaseHash");
+            b3_write(&sidecar, &source);
+            let retried = super::load_settings_from_path(&path);
+            assert_eq!(
+                retried.coding_agent_profiles.profiles_by_agent["alpha"]["A"].notes,
+                "same"
+            );
+            assert!(b3_object(&sidecar)["codingAgentProfiles"]
+                .get("profilesByAgent")
+                .is_none());
+            assert_o2_stable_full_load(&path);
+        }
+    }
+
+    #[test]
+    fn e2432_round7_sidecar_failure_keeps_complete_legacy_packet_for_retry() {
+        for stage in [
+            super::SettingsSaveStage::TempCreate,
+            super::SettingsSaveStage::AtomicReplace,
+        ] {
+            let (_temp, path) = hash_activation_seed(false);
+            let sidecar = super::agents_instance_path(&path);
+            let before = hash_activation_files(path.parent().unwrap());
+            let before_revision = super::source_bytes_revision(&std::fs::read(&sidecar).unwrap());
+            super::PROJECT_MIGRATION_ATOMIC_FAULT
+                .with(|slot| *slot.borrow_mut() = Some((sidecar.clone(), stage)));
+            let (records, capture) = capture_settings_save_diagnostics();
+            let loaded = super::load_settings_from_path(&path);
+            super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+            assert!(!records.borrow().is_empty());
+            drop(capture);
+            assert!(loaded.project_paths_persistence_error.is_none());
+            assert_eq!(hash_activation_files(path.parent().unwrap()), before);
+            assert_eq!(
+                super::source_bytes_revision(&std::fs::read(&sidecar).unwrap()),
+                before_revision
+            );
+            assert!(b3_object(&path)["codingAgentProfiles"]
+                .get("profilesByAgent")
+                .is_some());
+            let retried = super::load_settings_from_path(&path);
+            assert!(retried.project_paths_persistence_error.is_none());
+            assert_eq!(
+                b3_object(&sidecar)["codingAgentProfiles"]["profileBindingVersion"],
+                1
+            );
+            assert_ne!(
+                super::source_bytes_revision(&std::fs::read(&sidecar).unwrap()),
+                before_revision
+            );
+            assert!(!b3_object(&path).contains_key("codingAgentProfiles"));
+            assert_o2_stable_full_load(&path);
+        }
+    }
+
+    #[test]
+    fn e2432_round7_sidecar_success_main_failure_restarts_canonical_first() {
+        let (temp, path) = hash_activation_seed(false);
+        let path = std::fs::canonicalize(temp.path())
+            .unwrap()
+            .join(path.file_name().unwrap());
+        let main_before = std::fs::read(&path).unwrap();
+        let owner =
+            super::SettingsOwner::open_active(&path, std::time::Duration::from_secs(2)).unwrap();
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+            *slot.borrow_mut() = Some((path.clone(), super::SettingsSaveStage::AtomicReplace))
+        });
+        let report = owner
+            .with_operation_blocking("e2432-round7-transfer", |current, guard| {
+                super::registered_profile_raw_gate(guard.settings_path())?;
+                guard.publish(super::SettingsPublisher::SettingsSave, |physical| {
+                    super::save_settings_value_locked(
+                        current,
+                        physical,
+                        super::ProjectWriteMode::Preserve,
+                        super::TerminalSnapshotGateWriteMode::Preserve,
+                        super::MainWindowPlacementWriteMode::Preserve,
+                    )
+                    .map_err(|error| error.to_string())
+                })
+            })
+            .unwrap();
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+        assert_eq!(report.outcome, super::OperationOutcome::PartialOrUnknown);
+        assert!(report.value.is_none());
+        assert!(report.error.is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), main_before);
+        let sidecar = super::agents_instance_path(&path);
+        let committed = b3_object(&sidecar);
+        let committed_revision = super::source_bytes_revision(&std::fs::read(&sidecar).unwrap());
+        assert_eq!(committed["codingAgentProfiles"]["profileBindingVersion"], 1);
+        assert!(committed["codingAgentProfiles"]
+            .get("profilesByAgent")
+            .is_none());
+        owner.drain_blocking(std::time::Duration::from_secs(2));
+        let before_restart = hash_activation_files(temp.path());
+        let restarted = super::load_settings_from_path(&path);
+        assert_eq!(hash_activation_files(temp.path()), before_restart);
+        assert_eq!(
+            super::source_bytes_revision(&std::fs::read(&sidecar).unwrap()),
+            committed_revision
+        );
+        assert_eq!(
+            serde_json::to_value(&restarted.agents).unwrap(),
+            serde_json::to_value(super::load_settings_for_cli_from_path(&path).agents).unwrap()
+        );
+        let mut edited = restarted;
+        edited
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .notes = "fresh canonical edit".into();
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&edited, &path).unwrap();
+        assert_eq!(
+            written.coding_agent_profiles.profiles_by_agent["alpha"]["A"].notes,
+            "fresh canonical edit"
+        );
+        let hash = super::configuration_identity("claude", &[]);
+        assert_eq!(
+            b3_object(&sidecar)["codingAgentProfiles"]["profilesByBaseHash"][&hash]["A"]["notes"],
+            "fresh canonical edit"
+        );
+        assert_ne!(
+            super::source_bytes_revision(&std::fs::read(&sidecar).unwrap()),
+            committed_revision
+        );
+        assert_eq!(
+            b3_object(&path).get("codingAgentProfiles"),
+            serde_json::from_slice::<serde_json::Value>(&main_before)
+                .unwrap()
+                .get("codingAgentProfiles")
+        );
+        assert_o2_stable_full_load(&path);
+    }
+
+    #[test]
+    fn e2432_round7_shadowed_equal_strips_only_on_legitimate_publication() {
+        let (_temp, path) = hash_activation_seed(true);
+        super::load_settings_from_path(&path);
+        let sidecar = b3_object(&super::agents_instance_path(&path));
+        let mut main = b3_object(&path);
+        for key in super::AGENTS_INSTANCE_KEYS {
+            main.insert(key.into(), sidecar[key].clone());
+        }
+        b3_write(&path, &serde_json::Value::Object(main));
+        assert_o2_stable_full_load(&path);
+        let mut settings = super::load_settings_for_cli_from_path(&path);
+        settings.log_level = Some("debug".into());
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        let main = b3_object(&path);
+        assert_eq!(main["logLevel"], "debug");
+        for key in super::AGENTS_INSTANCE_KEYS {
+            assert!(!main.contains_key(key));
+        }
+        assert_o2_stable_full_load(&path);
+    }
+
+    #[test]
+    fn e2432_round7_read_only_catalog_decoys_never_supply_migration_data() {
+        let (_temp, path) = hash_activation_seed(true);
+        let initial = super::load_settings_for_cli_from_path(&path);
+        let mut context = super::SourceReadContext::from_settings(&initial, &path).unwrap();
+        context.project = false;
+        context.catalog_root = path.parent().unwrap().to_path_buf();
+        let mut catalogs = Vec::new();
+        for kind in [
+            super::SourceKind::CatalogBase,
+            super::SourceKind::CatalogPersonal,
+        ] {
+            let source = context.source(kind);
+            let locator = context.locator(&source).unwrap();
+            std::fs::create_dir_all(locator.parent().unwrap()).unwrap();
+            let decoy = serde_json::json!({"schemaVersion":2,
+                "agents":[{"key":"alpha","label":"Decoy","description":"Independent","color":"#112233","baseCommand":"claude"}],
+                "codingAgentProfiles":{"alpha":{"A":{"notes":"independent decoy"}}}});
+            b3_write(&locator, &decoy);
+            catalogs.push((source, locator.clone(), std::fs::read(locator).unwrap()));
+        }
+        let main_before = std::fs::read(&path).unwrap();
+        let sidecar = super::agents_instance_path(&path);
+        let registered_before = std::fs::read(&sidecar).unwrap();
+        super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+        super::capture_project_settings(&path, false).unwrap();
+        super::list_active_sources(&context);
+        let registered_source = context.source(super::SourceKind::RegisteredInstance);
+        for source in catalogs
+            .iter()
+            .map(|(source, _, _)| source)
+            .chain(std::iter::once(&registered_source))
+        {
+            let snapshot = super::read_source_snapshot(&context, source).unwrap();
+            assert_eq!(
+                snapshot.snapshot.availability,
+                super::SourceAvailability::Available
+            );
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), main_before);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), registered_before);
+        let migrated = super::load_settings_from_path(&path);
+        assert_ne!(
+            migrated.coding_agent_profiles.profiles_by_agent["alpha"]["A"].notes,
+            "independent decoy"
+        );
+        for (_, locator, bytes) in catalogs {
+            assert_eq!(std::fs::read(locator).unwrap(), bytes);
+        }
+        assert_o2_stable_full_load(&path);
+    }
+
+    #[test]
+    fn e2432_round7_canonical_main_does_not_relocate_on_startup() {
+        let (_temp, path) = hash_activation_seed(false);
+        let main = serde_json::Value::Object(b3_object(&path));
+        let projected = super::project_physical_profiles(&main, true).unwrap();
+        let canonical = super::canonical_profile_source(&main, &projected, true).unwrap();
+        b3_write(&path, &canonical);
+        std::fs::remove_file(super::agents_instance_path(&path)).unwrap();
+        assert_o2_stable_full_load(&path);
+        assert!(!super::agents_instance_path(&path).exists());
+        let mut settings = super::load_settings_for_cli_from_path(&path);
+        settings.log_level = Some("debug".into());
+        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        assert!(!super::agents_instance_path(&path).exists());
+        assert_eq!(
+            b3_object(&path)["codingAgentProfiles"],
+            canonical["codingAgentProfiles"]
+        );
+    }
+
+    #[test]
+    fn e2432_o2_sidecar_full_load_converts_once_and_keeps_raw_roots() {
+        let (temp, path) = hash_activation_seed(true);
+        let sidecar = super::agents_instance_path(&path);
+        let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+        raw["codingAgentProfiles"]["letters"] = serde_json::Value::Null;
+        raw["codingAgentProfiles"]["matrix"] = serde_json::json!([{"raw":null}]);
+        raw["codingAgentProfiles"]["agentDefaults"] = serde_json::json!({"unknown":[7]});
+        raw["codingAgentProfiles"]["profileSlots"]["A"]["name"] = serde_json::json!("opaque");
+        raw["codingAgentProfiles"]["profileSlots"]["A"]["extension"] = serde_json::json!([null, 9]);
+        raw["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["additionalArguments"] =
+            serde_json::json!("--model x");
+        raw["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["argv"] =
+            serde_json::json!(["opaque"]);
+        raw["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["args"] =
+            serde_json::json!({"raw":null});
+        raw["codingAgentProfiles"]["legacyProfileOrphans"] =
+            serde_json::json!({"old":[{"cells":null,"extension":[7]}]});
+        b3_write(&sidecar, &raw);
+        let backup = path.with_file_name(
+            super::super::instance_artifacts::SETTINGS_MIGRATION_BACKUP_384_V1_NAME,
+        );
+        std::fs::write(&backup, b"first main backup").unwrap();
+        assert!(!super::legacy_profiles_shape_present(&b3_object(&path)));
+
+        let loaded = super::load_settings_from_path(&path);
+        assert_eq!(
+            loaded.coding_agent_profiles.profiles_by_agent["alpha"]["A"].command,
+            "--model x"
+        );
+        let saved = b3_object(&sidecar);
+        let profiles = &saved["codingAgentProfiles"];
+        assert_eq!(profiles["profileBindingVersion"], 1);
+        for key in ["letters", "matrix", "agentDefaults", "legacyProfileOrphans"] {
+            assert_eq!(
+                profiles.get(key),
+                raw["codingAgentProfiles"].get(key),
+                "{key}"
+            );
+        }
+        assert_eq!(profiles["profileSlots"]["A"]["name"], "opaque");
+        assert_eq!(
+            profiles["profileSlots"]["A"]["extension"],
+            serde_json::json!([null, 9])
+        );
+        let hash = super::configuration_identity("claude", &[]);
+        assert_eq!(
+            profiles["profilesByBaseHash"][&hash]["A"]["argv"],
+            serde_json::json!(["opaque"])
+        );
+        assert_eq!(
+            profiles["profilesByBaseHash"][&hash]["A"]["args"],
+            serde_json::json!({"raw":null})
+        );
+        assert!(profiles.get("profilesByAgent").is_none());
+        assert!(profiles.get("profileLabelsByAgent").is_none());
+        assert!(profiles.get("identityByAgent").is_none());
+        assert_eq!(std::fs::read(&backup).unwrap(), b"first main backup");
+        assert_o2_stable_full_load(&path);
+        assert_o2_stable_full_load(&path);
+        assert_eq!(std::fs::read(&backup).unwrap(), b"first main backup");
+        let backups: Vec<_> = hash_activation_files(temp.path())
+            .into_keys()
+            .filter(|name| name.contains("pre-384"))
+            .collect();
+        assert_eq!(
+            backups,
+            vec![backup.file_name().unwrap().to_string_lossy().into_owned()]
+        );
+    }
+
+    #[test]
+    fn e2432_o2_sidecar_stale_maps_cleanup_remains_actionable_without_replay() {
+        let (_temp, path) = hash_activation_seed(true);
+        let sidecar = super::agents_instance_path(&path);
+        let raw = serde_json::Value::Object(b3_object(&sidecar));
+        let projected = super::project_physical_profiles(&raw, true).unwrap();
+        let mut canonical = super::canonical_profile_source(&raw, &projected, true).unwrap();
+        canonical["codingAgentProfiles"]["letters"] = serde_json::json!([null, {"opaque":7}]);
+        canonical["codingAgentProfiles"]["profilesByAgent"] = serde_json::json!({
+            "alpha":{"A":{"notes":"stale cannot overwrite BASE"}}, "lost":null
+        });
+        canonical["codingAgentProfiles"]["profileLabelsByAgent"] =
+            serde_json::json!({"labels-only":null});
+        canonical["codingAgentProfiles"]["identityByAgent"] =
+            serde_json::json!({"identity-only":"not BASE"});
+        b3_write(&sidecar, &canonical);
+        assert!(!super::legacy_profiles_shape_present(&b3_object(&path)));
+        let loaded = super::load_settings_from_path(&path);
+        assert_ne!(
+            loaded.coding_agent_profiles.profiles_by_agent["alpha"]["A"].notes,
+            "stale cannot overwrite BASE"
+        );
+        let saved = b3_object(&sidecar);
+        let profiles = &saved["codingAgentProfiles"];
+        assert_eq!(
+            profiles["letters"],
+            canonical["codingAgentProfiles"]["letters"]
+        );
+        for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+            assert!(profiles.get(key).is_none(), "{key}");
+        }
+        assert_eq!(
+            profiles["legacyProfileOrphans"]["lost"],
+            serde_json::json!([{"cells":null}])
+        );
+        assert_eq!(
+            profiles["legacyProfileOrphans"]["labels-only"],
+            serde_json::json!([{"labels":null}])
+        );
+        assert_eq!(
+            profiles["legacyProfileOrphans"]["identity-only"],
+            serde_json::json!([{"identity":"not BASE"}])
+        );
+        let backup = path.with_file_name(
+            super::super::instance_artifacts::SETTINGS_MIGRATION_BACKUP_384_V1_NAME,
+        );
+        assert!(!backup.exists());
+        assert_o2_stable_full_load(&path);
+        assert_eq!(b3_object(&sidecar)["codingAgentProfiles"], *profiles);
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn e2432_o2_protected_legacy_keeps_baseline_save_cause() {
+        let (temp, path) = hash_activation_seed(true);
+        let mut main = b3_object(&path);
+        main.insert(
+            "codingAgentProfiles".into(),
+            serde_json::json!({"schemaVersion":2,"letters":{"old":true}}),
+        );
+        b3_write(&path, &serde_json::Value::Object(main));
+        b3_write(
+            &b3_overlay_path(temp.path()),
+            &serde_json::json!({"codingAgentProfiles":{"profileSlots":{"A":{"label":"overlay"}}}}),
+        );
+        let sidecar = super::agents_instance_path(&path);
+        let raw_profiles = b3_object(&sidecar)["codingAgentProfiles"].clone();
+        let (diagnostics, _capture) = capture_settings_save_diagnostics();
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+            *slot.borrow_mut() = Some((path.clone(), super::SettingsSaveStage::TempCreate));
+        });
+        let loaded = super::load_settings_from_path(&path);
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+        assert!(loaded
+            .local_overlay_state
+            .owns_top_level("codingAgentProfiles"));
+        assert!(
+            !diagnostics.borrow().is_empty(),
+            "baseline protected legacy save was suppressed"
+        );
+        assert_eq!(b3_object(&sidecar)["codingAgentProfiles"], raw_profiles);
+    }
+
+    #[test]
+    fn e2432_o2_ordinary_repair_keeps_baseline_save_cause() {
+        let (_temp, path) = hash_activation_seed(true);
+        let sidecar = super::agents_instance_path(&path);
+        let raw = serde_json::Value::Object(b3_object(&sidecar));
+        let projected = super::project_physical_profiles(&raw, true).unwrap();
+        let mut canonical = super::canonical_profile_source(&raw, &projected, true).unwrap();
+        canonical["codingAgentProfiles"]["profileSlots"] = serde_json::json!({});
+        b3_write(&sidecar, &canonical);
+        assert!(!super::actionable_profile_legacy_work(&canonical, false).unwrap());
+        let (diagnostics, _capture) = capture_settings_save_diagnostics();
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+            *slot.borrow_mut() = Some((path.clone(), super::SettingsSaveStage::TempCreate));
+        });
+        let loaded = super::load_settings_from_path(&path);
+        super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+        assert!(loaded.coding_agent_profiles.profile_slots.contains_key("A"));
+        assert!(
+            !diagnostics.borrow().is_empty(),
+            "ordinary repair publication was suppressed"
+        );
+    }
+
+    #[test]
+    fn e2432_o2_sidecar_rejections_keep_every_source_unchanged() {
+        for case in ["conflict", "quarantine", "duplicate"] {
+            let (temp, path) = hash_activation_seed(true);
+            let sidecar = super::agents_instance_path(&path);
+            let mut raw = serde_json::Value::Object(b3_object(&sidecar));
+            raw["codingAgentProfiles"]["letters"] = serde_json::json!([null]);
+            if case == "conflict" {
+                raw["agents"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(b3_agent("beta", "B"));
+                raw["codingAgentProfiles"]["profilesByAgent"]["beta"] =
+                    serde_json::json!({"A":{"notes":"different complete set"}});
+            } else if case == "quarantine" {
+                raw["codingAgentProfiles"]["legacyProfileOrphans"] = serde_json::Value::Null;
+            }
+            let mut bytes = raw.to_string();
+            if case == "duplicate" {
+                bytes.pop();
+                bytes.push_str(",\"unknown\":1,\"unknown\":1}");
+            }
+            std::fs::write(&sidecar, bytes).unwrap();
+            let before = hash_activation_files(temp.path());
+            let loaded = super::load_settings_from_path(&path);
+            assert_eq!(hash_activation_files(temp.path()), before, "startup {case}");
+            assert!(
+                super::save_settings_to_path_preserving_project_paths(&loaded, &path).is_err(),
+                "save {case}"
+            );
+            assert_eq!(hash_activation_files(temp.path()), before, "save {case}");
         }
     }
 
@@ -22302,11 +26232,15 @@ mod tests {
         assert_eq!(saved["codingAgentProfiles"]["schemaVersion"], 2);
         assert!(saved["codingAgentProfiles"].get("profileSlots").is_some());
         assert!(saved["codingAgentProfiles"]
-            .get("profilesByAgent")
+            .get("profilesByBaseHash")
             .is_some());
         assert!(saved["codingAgentProfiles"]
-            .get("profileLabelsByAgent")
+            .get("profileLabelsByBaseHash")
             .is_some());
+        for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+            assert!(saved["codingAgentProfiles"].get(key).is_none());
+        }
+        assert_eq!(saved["codingAgentProfiles"]["profileBindingVersion"], 1);
         assert!(saved["codingAgentProfiles"].get("matrix").is_none());
         assert!(saved["codingAgentProfiles"].get("letters").is_none());
     }
@@ -22533,11 +26467,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            raw["codingAgentProfiles"]["profileLabelsByAgent"]["codex"]["A"],
+            raw["codingAgentProfiles"]["profileLabelsByBaseHash"]
+                [&super::configuration_identity("codex", &[])]["A"],
             "First"
         );
         assert_eq!(
-            raw["codingAgentProfiles"]["profileLabelsByAgent"]["codex"]["B"],
+            raw["codingAgentProfiles"]["profileLabelsByBaseHash"]
+                [&super::configuration_identity("codex", &[])]["B"],
             "Second"
         );
         assert!(!temp
@@ -25782,31 +29718,18 @@ mod tests {
             let mut base = base_fixture();
             base["agents"] = json!([agent_value("n", "Claude", "claude")]);
             let path = seed(temp.path(), Some(&base), None);
-            // Normalize the file to today's full shape, then strip the new key.
             load_save(&path);
-            let mut old = disk_object(&crate::config::settings::agents_instance_path(&path));
-            old["codingAgentProfiles"]
-                .as_object_mut()
-                .unwrap()
-                .remove("identityByAgent")
-                .expect("the save writes identityByAgent");
-            std::fs::write(
-                crate::config::settings::agents_instance_path(&path),
-                serde_json::to_string_pretty(&old).unwrap(),
-            )
-            .unwrap();
-
+            let old = disk_object(&crate::config::settings::agents_instance_path(&path));
+            assert_eq!(old["codingAgentProfiles"]["profileBindingVersion"], 1);
+            assert!(old["codingAgentProfiles"].get("identityByAgent").is_none());
             let settings = load_settings_from_path(&path);
             assert_eq!(a_command(&settings, "n").as_deref(), Some(""));
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
-            let mut written = disk_object(&crate::config::settings::agents_instance_path(&path));
-            let rows = written["codingAgentProfiles"]
-                .as_object_mut()
-                .unwrap()
-                .remove("identityByAgent")
-                .unwrap();
-            assert_eq!(rows, json!({"n": identity_of("n", "Claude", "claude")}));
-            assert_eq!(written, old, "the only diff is the added key");
+            let written = disk_object(&crate::config::settings::agents_instance_path(&path));
+            assert!(written["codingAgentProfiles"]
+                .get("identityByAgent")
+                .is_none());
+            assert_eq!(written, old, "BASE storage never regenerates ID identities");
         }
 
         // 5
@@ -25848,16 +29771,18 @@ mod tests {
             let object = disk_object(&crate::config::settings::agents_instance_path(&path));
             assert_eq!(object["agents"], json!([]));
             assert_eq!(
-                object["codingAgentProfiles"]["profilesByAgent"]["agent_1_aaaaaa"]["A"],
+                object["codingAgentProfiles"]["profilesByBaseHash"]
+                    [&configuration_identity("claude", &[])]["A"],
                 cell_value("--special")
             );
-            assert_eq!(
-                object["codingAgentProfiles"]["identityByAgent"]["agent_1_aaaaaa"],
-                json!(identity_of("x", "Claude", "claude"))
-            );
+            assert!(object["codingAgentProfiles"]
+                .get("identityByAgent")
+                .is_none());
 
             let mut settings = load_settings_from_path(&path);
             apply_coding_agent_op(&mut settings, &add("agent_2_bbbbbb")).unwrap();
+            let settings =
+                save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
             assert_eq!(
                 a_command(&settings, "agent_2_bbbbbb").as_deref(),
                 Some("--special"),
@@ -25867,22 +29792,17 @@ mod tests {
 
             let object = disk_object(&crate::config::settings::agents_instance_path(&path));
             let profiles = &object["codingAgentProfiles"];
-            assert_eq!(profiles["profilesByAgent"]["agent_2_bbbbbb"]["A"], {
-                let mut expected = cell_value("--special");
-                expected["id_hash"] = json!(configuration_identity("claude--special", &[]));
-                expected["id_hash_debug"] = json!(["claude", "--special"]);
-                expected
-            });
             assert_eq!(
-                profiles["profileLabelsByAgent"]["agent_2_bbbbbb"],
+                profiles["profilesByBaseHash"][&configuration_identity("claude", &[])]["A"],
+                cell_value("--special")
+            );
+            assert_eq!(
+                profiles["profileLabelsByBaseHash"][&configuration_identity("claude", &[])],
                 json!({"A": "Mine"})
             );
             assert!(profiles["profilesByAgent"].get("agent_1_aaaaaa").is_none());
             assert!(profiles["identityByAgent"].get("agent_1_aaaaaa").is_none());
-            assert_eq!(
-                profiles["identityByAgent"]["agent_2_bbbbbb"],
-                json!(identity_of("x", "Claude", "claude"))
-            );
+            assert!(profiles.get("identityByAgent").is_none());
         }
 
         // 6
@@ -25990,18 +29910,18 @@ mod tests {
             load_save(&path);
             let profiles = &disk_object(&crate::config::settings::agents_instance_path(&path))
                 ["codingAgentProfiles"];
+            assert_eq!(profiles["profileBindingVersion"], 1);
             assert_eq!(
-                profiles["profilesByAgent"]["o"],
-                base["codingAgentProfiles"]["profilesByAgent"]["o"]
+                profiles["legacyProfileOrphans"]["o"],
+                json!([{
+                    "cells": base["codingAgentProfiles"]["profilesByAgent"]["o"],
+                    "labels": base["codingAgentProfiles"]["profileLabelsByAgent"]["o"],
+                    "identity": base["codingAgentProfiles"]["identityByAgent"]["o"]
+                }])
             );
-            assert_eq!(
-                profiles["profileLabelsByAgent"]["o"],
-                base["codingAgentProfiles"]["profileLabelsByAgent"]["o"]
-            );
-            assert_eq!(
-                profiles["identityByAgent"]["o"],
-                base["codingAgentProfiles"]["identityByAgent"]["o"]
-            );
+            for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                assert!(profiles.get(key).is_none());
+            }
         }
 
         // 10
@@ -26045,11 +29965,25 @@ mod tests {
             let settings = load_settings_from_path(&path);
             assert_eq!(settings.agents[0].command, "codex");
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
-            let row = disk_object(&crate::config::settings::agents_instance_path(&path))
-                ["codingAgentProfiles"]["identityByAgent"]["a"]
-                .clone();
-            assert_eq!(row, json!(identity_of("a", "Agent", "claude")));
-            assert_ne!(row, json!(identity_of("a", "Agent", "codex")));
+            let sidecar = disk_object(&crate::config::settings::agents_instance_path(&path));
+            let profiles = &sidecar["codingAgentProfiles"];
+            let physical = super::super::configuration_identity("claude", &[]);
+            let effective = super::super::configuration_identity("codex", &[]);
+            assert_eq!(profiles["profileBindingVersion"], 1);
+            assert_eq!(
+                profiles["profilesByBaseHash"][&physical],
+                json!({
+                    "A":{"enabled":true,"additionalArguments":"","env":{},"notes":""}
+                })
+            );
+            assert_eq!(profiles["profileLabelsByBaseHash"][&physical], json!({}));
+            assert!(profiles["profilesByBaseHash"].get(&effective).is_none());
+            for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                assert!(profiles.get(key).is_none());
+            }
+            assert!(sidecar.get("agents").is_none());
+            assert_eq!(disk_object(&path)["agents"], base["agents"]);
+            assert_eq!(load_settings_from_path(&path).agents[0].command, "codex");
         }
 
         // 12
@@ -26146,19 +30080,34 @@ mod tests {
             let mut settings = load_settings_from_path(&path);
             assert!(!settings.local_overlay_state.is_empty());
             validate_and_repair_settings(&mut settings).unwrap();
-            assert_eq!(a_command(&settings, "o").as_deref(), Some("--special"));
+            assert!(a_command(&settings, "o").is_none());
+            assert_eq!(a_command(&settings, "n").as_deref(), Some(""));
             save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
             std::fs::remove_file(temp.path().join("settings.50.personal.no-git.json")).unwrap();
 
-            let profiles = &disk_object(&crate::config::settings::agents_instance_path(&path))
-                ["codingAgentProfiles"];
+            let profiles = &disk_object(&path)["codingAgentProfiles"];
             assert_eq!(
                 profiles["profilesByAgent"]["o"]["A"],
                 cell_value("--special")
             );
             assert_eq!(
+                profiles["profileLabelsByAgent"]["o"],
+                json!({"A":"Special"})
+            );
+            assert_eq!(
                 profiles["identityByAgent"]["o"],
                 json!(identity_of("n", "Claude", "claude"))
+            );
+            let reloaded = load_settings_from_path(&path);
+            assert_eq!(a_command(&reloaded, "n").as_deref(), Some(""));
+            assert!(a_command(&reloaded, "o").is_none());
+            let canonical = disk_object(&crate::config::settings::agents_instance_path(&path));
+            assert_eq!(
+                canonical["codingAgentProfiles"]["legacyProfileOrphans"]["o"],
+                json!([{
+                    "cells":{"A":cell_value("--special")}, "labels":{"A":"Special"},
+                    "identity":identity_of("n", "Claude", "claude")
+                }])
             );
         }
 
@@ -26168,21 +30117,34 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let path = seed(temp.path(), Some(&profile_only_overlay_base()), None);
             let settings = load_settings_from_path(&path);
-            assert_eq!(a_command(&settings, "n").as_deref(), Some("--special"));
-            let profiles = &disk_object(&crate::config::settings::agents_instance_path(&path))
-                ["codingAgentProfiles"];
-            assert_eq!(profiles["profilesByAgent"]["n"]["A"], {
-                let mut expected = cell_value("--special");
-                expected["id_hash"] = json!(configuration_identity("claude--special", &[]));
-                expected["id_hash_debug"] = json!(["claude", "--special"]);
-                expected
-            });
+            assert_eq!(a_command(&settings, "n").as_deref(), Some(""));
+            assert!(a_command(&settings, "o").is_none());
+            let object = disk_object(&crate::config::settings::agents_instance_path(&path));
+            let profiles = &object["codingAgentProfiles"];
+            assert_eq!(profiles["profileBindingVersion"], 1);
             assert_eq!(
-                profiles["profileLabelsByAgent"]["n"],
-                json!({"A": "Special"})
+                profiles["profilesByBaseHash"][&configuration_identity("claude", &[])]["A"],
+                cell_value("")
             );
-            assert!(profiles["profilesByAgent"].get("o").is_none());
-            assert!(profiles["identityByAgent"].get("o").is_none());
+            assert_eq!(
+                profiles["legacyProfileOrphans"]["o"],
+                json!([{
+                    "cells":{"A":cell_value("--special")},
+                    "labels":{"A":"Special"},
+                    "identity":identity_of("n", "Claude", "claude")
+                }])
+            );
+            for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                assert!(profiles.get(key).is_none());
+            }
+            let before =
+                std::fs::read(crate::config::settings::agents_instance_path(&path)).unwrap();
+            let reloaded = load_settings_from_path(&path);
+            assert_eq!(a_command(&reloaded, "n").as_deref(), Some(""));
+            assert_eq!(
+                std::fs::read(crate::config::settings::agents_instance_path(&path)).unwrap(),
+                before
+            );
         }
 
         // 16
@@ -26744,19 +30706,35 @@ mod tests {
                     "cid1:2cf586be28b9573af75bfbdadfe0bd8760e3382b547cfe2c527eea368920a8e5",
                 ),
             ]);
-            for (id, cells) in object["codingAgentProfiles"]["profilesByAgent"]
-                .as_object_mut()
+            let profiles = object
+                .get_mut("codingAgentProfiles")
                 .unwrap()
-                .iter_mut()
-            {
+                .as_object_mut()
+                .unwrap();
+            let cells = profiles.remove("profilesByAgent").unwrap();
+            let labels = profiles.remove("profileLabelsByAgent").unwrap();
+            profiles.remove("identityByAgent");
+            let mut by_hash = Map::new();
+            let mut labels_by_hash = Map::new();
+            for (id, cells) in cells.as_object().unwrap() {
+                let mut cells = cells.clone();
                 for cell in cells.as_object_mut().unwrap().values_mut() {
                     let command = cell.as_object_mut().unwrap().remove("command").unwrap();
                     cell["additionalArguments"] = command;
                     assert!(cell.get("id_hash").is_none());
-                    cell["id_hash"] = json!(pair_hashes[id.as_str()]);
-                    cell["id_hash_debug"] = json!([id, ""]);
                 }
+                by_hash.insert(pair_hashes[id.as_str()].to_string(), cells);
+                labels_by_hash.insert(
+                    pair_hashes[id.as_str()].to_string(),
+                    labels.get(id).cloned().unwrap_or_else(|| json!({})),
+                );
             }
+            profiles.insert("profileBindingVersion".into(), json!(1));
+            profiles.insert("profilesByBaseHash".into(), Value::Object(by_hash));
+            profiles.insert(
+                "profileLabelsByBaseHash".into(),
+                Value::Object(labels_by_hash),
+            );
             let sorted: BTreeMap<String, Value> =
                 object.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             let expected = serde_json::to_string_pretty(&sorted).unwrap();
@@ -29301,7 +33279,7 @@ mod tests {
                 "rootToken": "base-token",
                 "agents": [
                     {"id":"a","label":"A","command":"claude","color":"#000000","order":-1},
-                    {"id":"b","label":"B","command":"claude","color":"#000000"}
+                    {"id":"b","label":"B","command":"codex","color":"#000000"}
                 ],
                 "codingAgentProfiles": {
                     "schemaVersion": 2,
@@ -31000,32 +34978,12 @@ mod tests {
         let mut expected_a = super::empty_profile_cell();
         expected_a.id_hash = Some(super::configuration_identity("claude", &[]));
         expected_a.id_hash_debug = Some(vec!["claude".into(), "".into()]);
-        if orphan == "A" {
-            expected_a.command = "--special".into();
-            expected_a.notes = "payload".into();
-            expected_a.id_hash = Some(super::configuration_identity("claude--special", &[]));
-            expected_a.id_hash_debug = Some(vec!["claude".into(), "--special".into()]);
-        }
         assert_eq!(cells["A"], expected_a, "{sidecar}/{orphan}");
-        if orphan == "B" {
-            assert_eq!(cells["B"].command, "--special");
-            assert_eq!(cells["B"].notes, "payload");
-            assert_eq!(
-                cells["B"].id_hash,
-                Some(super::configuration_identity("claude--special", &[]))
-            );
-        }
-        if orphan == "unmatched" {
-            assert_eq!(
-                settings.coding_agent_profiles.profiles_by_agent["o"]["A"].id_hash,
-                None
-            );
-        } else {
-            assert!(!settings
-                .coding_agent_profiles
-                .profiles_by_agent
-                .contains_key("o"));
-        }
+        assert_eq!(cells.len(), 1, "quarantine never supplies active cells");
+        assert!(!settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .contains_key("o"));
     }
 
     fn check_issue_3047_pair_adoption_case(sidecar: bool, orphan: &str, fail_publish: bool) {
@@ -31088,11 +35046,27 @@ mod tests {
         );
         if fail_publish {
             assert_eq!(std::fs::read(&path).unwrap(), main_before);
+            let stored = b3_object(&b3_sidecar_path(temp.path()));
+            let profiles = &stored["codingAgentProfiles"];
+            assert_eq!(profiles["profileBindingVersion"], 1);
             assert!(
-                b3_object(&b3_sidecar_path(temp.path()))["codingAgentProfiles"]["profilesByAgent"]
-                    ["alpha"]["A"]["id_hash"]
-                    .is_string()
+                profiles["profilesByBaseHash"][&super::configuration_identity("claude", &[])]["A"]
+                    .is_object()
             );
+            assert!(profiles.get("profilesByAgent").is_none());
+            if orphan != "missing" {
+                let mut expected = serde_json::json!({
+                    "cells":raw["codingAgentProfiles"]["profilesByAgent"]["o"],
+                    "identity":raw["codingAgentProfiles"]["identityByAgent"]["o"]
+                });
+                if let Some(labels) = raw["codingAgentProfiles"]["profileLabelsByAgent"].get("o") {
+                    expected["labels"] = labels.clone();
+                }
+                assert_eq!(
+                    profiles["legacyProfileOrphans"]["o"],
+                    serde_json::json!([expected])
+                );
+            }
         } else {
             let reload = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
             assert_eq!(gui.coding_agent_profiles, reload.coding_agent_profiles);
@@ -31126,6 +35100,18 @@ mod tests {
                         "sentinel":{"keep":true}}}
                 });
                 b3_write(&physical, &raw);
+                // CLI views remain read-only before the admitted GUI conversion.
+                let before_cli = hash_activation_files(temp.path());
+                super::load_settings_for_cli_from_path(&path);
+                super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+                assert_eq!(hash_activation_files(temp.path()), before_cli);
+                let first_gui = super::load_settings_from_path(&path);
+                hash_activation_assert(&first_gui);
+                let stored = b3_object(&b3_sidecar_path(temp.path()));
+                assert_eq!(stored["codingAgentProfiles"]["profileBindingVersion"], 1);
+                for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                    assert!(stored["codingAgentProfiles"].get(key).is_none());
+                }
                 let before = hash_activation_files(temp.path());
                 for (loader, loaded) in b3_all_loaders(&path) {
                     let cell = &loaded.coding_agent_profiles.profiles_by_agent["alpha"]["A"];
@@ -31144,16 +35130,15 @@ mod tests {
                 let written =
                     super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
                 let groups = b3_object(&b3_sidecar_path(temp.path()));
+                let stored_cell = &groups["codingAgentProfiles"]["profilesByBaseHash"]
+                    [&super::configuration_identity("claude", &[])]["A"];
                 assert_eq!(
-                    groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"],
-                    serde_json::json!(["claude", "--model x"])
+                    stored_cell,
+                    &serde_json::json!({"additionalArguments":"--model x","enabled":true,"env":{},"notes":"","sentinel":{"keep":true}})
                 );
                 assert_eq!(
-                    groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
-                    written.coding_agent_profiles.profiles_by_agent["alpha"]["A"]
-                        .id_hash
-                        .clone()
-                        .unwrap()
+                    written.coding_agent_profiles.profiles_by_agent["alpha"]["A"].id_hash_debug,
+                    Some(vec!["claude".into(), "--model x".into()])
                 );
                 let stable = hash_activation_files(temp.path());
                 let reloaded = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
@@ -31265,7 +35250,7 @@ mod tests {
                     None,
                     out.as_object().unwrap(),
                     super::SettingsSaveStage::PreserveDiskGate,
-                    None,
+                    (None, None, None),
                 );
                 if invalid {
                     let error = result.unwrap_err();
@@ -31329,7 +35314,7 @@ mod tests {
                 None,
                 &serde_json::Map::new(),
                 super::SettingsSaveStage::PreserveDiskGate,
-                None,
+                (None, None, None),
             )
             .is_err());
             assert_eq!(std::fs::read(b3_sidecar_path(temp.path())).unwrap(), bytes);
@@ -31475,14 +35460,24 @@ mod tests {
             } else {
                 "--model x"
             };
+            let hash = super::configuration_identity(expected_base, &[]);
+            let main = b3_object(&path);
+            let profiles = groups
+                .get("codingAgentProfiles")
+                .or_else(|| main.get("codingAgentProfiles"))
+                .expect("physical profile owner");
+            assert_eq!(profiles["profileBindingVersion"], 1);
             assert_eq!(
-                groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"],
-                serde_json::json!([expected_base, expected_args])
+                profiles["profilesByBaseHash"][&hash]["A"],
+                serde_json::json!({
+                    "command":"--model x", "additionalArguments":expected_args,
+                    "enabled":true, "env":{}, "notes":"", "sentinel":17
+                })
             );
-            assert_eq!(
-                groups["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
-                super::configuration_identity(&format!("{expected_base}{expected_args}"), &[])
-            );
+            assert_eq!(profiles["sentinel"], raw["codingAgentProfiles"]["sentinel"]);
+            for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                assert!(profiles.get(key).is_none());
+            }
         }
         if protected == "agents" {
             let retained = groups
@@ -31566,7 +35561,7 @@ mod tests {
                     assert_eq!(main["codingAgentProfiles"], expected);
                 }
                 "sidecar-empty" => {
-                    assert!(!main.contains_key("codingAgentProfiles"));
+                    assert_eq!(main["codingAgentProfiles"], sparse);
                     assert_eq!(groups["codingAgentProfiles"], serde_json::json!({}));
                 }
                 _ => unreachable!(),
@@ -31638,9 +35633,15 @@ mod tests {
         super::PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
         assert!(result.is_err());
         assert_eq!(std::fs::read(&path).unwrap(), previous);
+        let saved = b3_object(&sidecar);
+        assert_eq!(saved["codingAgentProfiles"]["profileBindingVersion"], 1);
+        assert!(saved["codingAgentProfiles"]
+            .get("profilesByAgent")
+            .is_none());
         assert_eq!(
-            b3_object(&sidecar)["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash"],
-            super::configuration_identity("claude--modelx", &[])
+            saved["codingAgentProfiles"]["profilesByBaseHash"]
+                [&super::configuration_identity("claude", &[])]["A"],
+            serde_json::json!({"additionalArguments":"--model x","enabled":true,"env":{},"notes":""})
         );
     }
 
@@ -31694,6 +35695,18 @@ mod tests {
             raw["codingAgentProfiles"]["profilesByAgent"]["alpha"]["A"]["id_hash_debug"] =
                 serde_json::json!(["old-pair"]);
             b3_write(&physical, &raw);
+            // CLI views remain read-only before the admitted GUI conversion.
+            let before_cli = hash_activation_files(temp.path());
+            super::load_settings_for_cli_from_path(&path);
+            super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
+            assert_eq!(hash_activation_files(temp.path()), before_cli);
+            let first_gui = super::load_settings_from_path(&path);
+            hash_activation_assert(&first_gui);
+            let stored = b3_object(&b3_sidecar_path(temp.path()));
+            assert_eq!(stored["codingAgentProfiles"]["profileBindingVersion"], 1);
+            for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                assert!(stored["codingAgentProfiles"].get(key).is_none());
+            }
             let before = hash_activation_files(temp.path());
             for (loader, settings) in b3_all_loaders(&path) {
                 assert_eq!(settings.agents[0].id, "alpha", "{loader}");
@@ -31961,40 +35974,64 @@ mod tests {
     }
 
     #[test]
-    fn id_hash_activation_delta_rejects_new_anagrams_and_allows_separate_files() {
+    fn e2432_duplicate_rows_keep_existing_general_save_control() {
+        id_hash_activation_legacy_duplicates_preserve_rows_and_refuse_ambiguous_changes();
+    }
+
+    #[test]
+    fn e2432_id_hash_activation_anagram_alias_is_source_local() {
         let (_temp, path) = hash_activation_seed(true);
         let mut settings = super::load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
-        let mut duplicate = settings.agents[0].clone();
-        duplicate.id = "beta".into();
-        duplicate.label = "Requested".into();
-        duplicate.command = "eduacl".into(); // anagram of claude
-        settings.agents.push(duplicate);
-        let before = hash_activation_files(path.parent().unwrap());
-        let error =
-            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap_err();
-        assert!(error.contains("DuplicateConfigurationIdentity") && error.contains("Incumbent"));
-        assert_eq!(hash_activation_files(path.parent().unwrap()), before);
-        let fresh = tempfile::tempdir().unwrap();
-        let fresh_path = b3_settings_path(fresh.path());
-        assert!(
-            super::save_settings_to_path_preserving_project_paths(&settings, &fresh_path).is_err()
+        let mut alias = settings.agents[0].clone();
+        alias.id = "beta".into();
+        alias.label = "Alias".into();
+        alias.command = "eduacl".into();
+        settings.agents.push(alias);
+        let written =
+            super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        assert_eq!(written.agents[0].id_hash, written.agents[1].id_hash);
+        // Sharing compares payloads, while debug metadata keeps each physical
+        // row's original command/env strings. Pair hashes still compare equal.
+        let payload = |id: &str| {
+            let agent = written.agents.iter().find(|agent| agent.id == id).unwrap();
+            let mut cells = written.coding_agent_profiles.profiles_by_agent[id].clone();
+            for cell in cells.values_mut() {
+                assert_eq!(
+                    cell.id_hash,
+                    Some(super::pair_identity(&agent.command, &agent.envs, cell))
+                );
+                assert_eq!(
+                    cell.id_hash_debug,
+                    Some(super::pair_identity_debug(
+                        &agent.command,
+                        &agent.envs,
+                        cell
+                    ))
+                );
+                cell.id_hash_debug = None;
+            }
+            cells
+        };
+        assert_eq!(payload("alpha"), payload("beta"));
+        let (other_temp, other_path) = hash_activation_seed(true);
+        let other_before = hash_activation_files(other_temp.path());
+        let other = super::load_settings_for_cli_strict_from_path(Some(&other_path)).unwrap();
+        assert_eq!(other.agents.len(), 1);
+        let mut edited = written;
+        edited
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("alpha")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .notes = "same-source edit".into();
+        let edited = super::save_settings_to_path_preserving_project_paths(&edited, &path).unwrap();
+        assert_eq!(
+            edited.coding_agent_profiles.profiles_by_agent["beta"]["A"].notes,
+            "same-source edit"
         );
-        assert!(!fresh_path.exists() && !b3_sidecar_path(fresh.path()).exists());
-        settings.agents[1].command = "unique-extra-character".into();
-        super::save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
-        settings.agents[1].command = "eduacl".into();
-        let before_edit = hash_activation_files(path.parent().unwrap());
-        assert!(
-            super::save_settings_to_path_preserving_project_paths(&settings, &path)
-                .unwrap_err()
-                .contains("Incumbent")
-        );
-        assert_eq!(hash_activation_files(path.parent().unwrap()), before_edit);
-        let (_other, other_path) = hash_activation_seed(true);
-        settings.agents.remove(0);
-        assert!(
-            super::save_settings_to_path_preserving_project_paths(&settings, &other_path).is_ok()
-        );
+        assert_eq!(hash_activation_files(other_temp.path()), other_before);
     }
 
     #[test]
@@ -32008,6 +36045,7 @@ mod tests {
         let mut other = raw["agents"][0].clone();
         other["id"] = serde_json::json!("beta");
         other["command"] = serde_json::json!("distinct-command");
+        other["baseCommand"] = serde_json::json!("distinct-command");
         raw["agents"].as_array_mut().unwrap().push(other);
         raw["codingAgentProfiles"]["profilesByAgent"]["beta"] =
             serde_json::json!({"A":{"command":"--one"}});
@@ -32114,7 +36152,8 @@ mod tests {
         let sidecar = b3_object(&b3_sidecar_path(temp.path()));
         assert_eq!(sidecar["agents"][0]["label"], "Alpha Recognisable");
         assert_eq!(
-            sidecar["codingAgentProfiles"]["profileLabelsByAgent"]["alpha"]["A"],
+            sidecar["codingAgentProfiles"]["profileLabelsByBaseHash"]
+                [&super::configuration_identity("claude", &[])]["A"],
             "Recognisable P"
         );
         let disk = b3_object(&path);
@@ -32175,7 +36214,8 @@ mod tests {
         assert_eq!(sidecar["agents"][0]["label"], "Alpha Recognisable");
         assert_eq!(sidecar["agents"].as_array().unwrap().len(), 1);
         assert_eq!(
-            sidecar["codingAgentProfiles"]["profileLabelsByAgent"]["alpha"]["A"],
+            sidecar["codingAgentProfiles"]["profileLabelsByBaseHash"]
+                [&super::configuration_identity("claude", &[])]["A"],
             "Recognisable P"
         );
     }
@@ -32343,26 +36383,32 @@ mod tests {
         let mut settings = super::load_settings_for_cli_from_path(&path);
         assert!(!super::export_agents_to_instance_file(&mut settings, &path));
 
+        let legacy = b3_object(&path);
         let loaded = super::load_settings_from_path(&path);
 
         assert_eq!(b3_labels(&loaded), vec!["Sidecar".to_string()]);
         assert_eq!(b3_marker(&loaded).as_deref(), Some("Sidecar P"));
-        assert_eq!(
+        assert_ne!(
             std::fs::read(b3_sidecar_path(temp.path())).unwrap(),
             sidecar_bytes
         );
+        let stable = std::fs::read(b3_sidecar_path(temp.path())).unwrap();
+        super::load_settings_from_path(&path);
+        assert_eq!(std::fs::read(b3_sidecar_path(temp.path())).unwrap(), stable);
         let disk = b3_object(&path);
         assert!(disk.contains_key("agents") && disk.contains_key("codingAgentProfiles"));
 
         super::save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
 
         let disk = b3_object(&path);
-        assert!(!disk.contains_key("agents") && !disk.contains_key("codingAgentProfiles"));
+        assert_eq!(disk["agents"], legacy["agents"]);
+        assert_eq!(disk["codingAgentProfiles"], legacy["codingAgentProfiles"]);
         // The save may add the #2450 identity rows; the sidecar's values still win.
         let sidecar = b3_object(&b3_sidecar_path(temp.path()));
         assert_eq!(sidecar["agents"][0]["label"], "Sidecar");
         assert_eq!(
-            sidecar["codingAgentProfiles"]["profileLabelsByAgent"]["alpha"]["A"],
+            sidecar["codingAgentProfiles"]["profileLabelsByBaseHash"]
+                [&super::configuration_identity("claude", &[])]["A"],
             "Sidecar P"
         );
     }
@@ -32643,6 +36689,9 @@ mod tests {
         let seed: serde_json::Value = serde_json::from_slice(seeded).unwrap();
         let mut seed = seed.as_object().unwrap().clone();
         let physical_agents = seed.get("agents").cloned();
+        let ambiguous_rows = super::physical_profile_rows(
+            &serde_json::json!({"agents":physical_agents.clone().unwrap_or_else(|| serde_json::json!([]))}), true,
+        ).is_err();
         let mut disk = b3_object(path);
         let sidecar = b3_object(&super::agents_instance_path(path));
         for key in super::AGENTS_INSTANCE_KEYS {
@@ -32659,125 +36708,24 @@ mod tests {
                 .unwrap_or_else(|| panic!("the agents file does not hold {key}"));
             match (&seeded_group, held) {
                 (serde_json::Value::Array(seeded_rows), serde_json::Value::Array(held_rows)) => {
-                    assert_eq!(seeded_rows.len(), held_rows.len(), "{key} length");
-                    for (seeded_row, held_row) in seeded_rows.iter().zip(held_rows) {
-                        let command = seeded_row
-                            .get("baseCommand")
-                            .or_else(|| seeded_row.get("command"))
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default();
-                        let mut leaves = vec![command.to_string()];
-                        for env in seeded_row
-                            .get("envs")
-                            .and_then(serde_json::Value::as_array)
-                            .into_iter()
-                            .flatten()
-                        {
-                            leaves.push(env["key"].as_str().unwrap().to_string());
-                            leaves.push(env["value"].as_str().unwrap().to_string());
-                        }
-                        assert_eq!(held_row["id_hash_debug"], serde_json::json!(leaves));
-                        if seeded_row.get("blockingMenus").is_none() {
-                            b3_assert_blocking_menus_legs(
-                                None,
-                                held_row.get("blockingMenus"),
-                                "",
-                                &format!("{key}.{}", seeded_row["id"]),
-                            );
-                        }
-                        for (field, value) in seeded_row.as_object().unwrap() {
-                            if skip.contains(&field.as_str()) {
-                                continue;
-                            }
-                            if field == "blockingMenus" {
-                                b3_assert_blocking_menus_legs(
-                                    Some(value),
-                                    held_row.get(field),
-                                    seeded_row["command"].as_str().unwrap_or_default(),
-                                    &format!("{key}.{}", seeded_row["id"]),
-                                );
-                                continue;
-                            }
-                            assert_eq!(held_row.get(field), Some(value), "{key}.{field}");
-                        }
-                    }
+                    b3_assert_seeded_rows(key, seeded_rows, held_rows, skip);
                 }
                 (serde_json::Value::Object(seeded_fields), serde_json::Value::Object(held)) => {
-                    for (field, value) in seeded_fields {
-                        let mut expected = value.clone();
-                        if field == "profilesByAgent" {
-                            // Compare the complete original cells, including old
-                            // command values, plus only the new physical leaf.
-                            for (id, cells) in expected.as_object_mut().unwrap().iter_mut() {
-                                // First raw ID wins before decoding, including an
-                                // unresolvable first row. Never use effective/held.
-                                let base = physical_agents
-                                    .as_ref()
-                                    .and_then(serde_json::Value::as_array)
-                                    .and_then(|rows| {
-                                        rows.iter().find(|row| {
-                                            row.get("id").and_then(serde_json::Value::as_str)
-                                                == Some(id.as_str())
-                                        })
-                                    })
-                                    .and_then(|row| {
-                                        serde_json::from_value::<super::AgentConfig>(row.clone())
-                                            .ok()
-                                    });
-                                for cell in cells.as_object_mut().unwrap().values_mut() {
-                                    assert!(cell.get("additionalArguments").is_none());
-                                    cell["additionalArguments"] = cell["command"].clone();
-                                    let profile: super::ProfileCellConfig =
-                                        serde_json::from_value(cell.clone()).unwrap();
-                                    let hash = base.as_ref().map(|base| {
-                                        // Independent raw-field preimage, every base
-                                        // env row (disabled included), then cell env.
-                                        let parts = std::iter::once(base.command.as_str())
-                                            .chain(base.envs.iter().flat_map(|env| {
-                                                [env.key.as_str(), env.value.as_str()]
-                                            }))
-                                            .chain(std::iter::once(profile.command.as_str()))
-                                            .chain(profile.env.iter().flat_map(|(key, value)| {
-                                                [key.as_str(), value.as_str()]
-                                            }));
-                                        let mut chars: Vec<char> = parts
-                                            .flat_map(str::chars)
-                                            .flat_map(char::to_lowercase)
-                                            .filter(|c| !c.is_whitespace())
-                                            .collect();
-                                        chars.sort_unstable();
-                                        serde_json::Value::String(format!(
-                                            "cid1:{:x}",
-                                            <sha2::Sha256 as sha2::Digest>::digest(
-                                                chars.iter().collect::<String>()
-                                            )
-                                        ))
-                                    });
-                                    // Replace only expected derived metadata. None
-                                    // asserts concrete absence; observed stays raw.
-                                    let object = cell.as_object_mut().unwrap();
-                                    object.remove("id_hash");
-                                    object.extend(hash.map(|hash| ("id_hash".to_string(), hash)));
-                                    object.remove("id_hash_debug");
-                                    if let Some(base) = &base {
-                                        let mut leaves = vec![base.command.clone()];
-                                        for env in &base.envs {
-                                            leaves.extend([env.key.clone(), env.value.clone()]);
-                                        }
-                                        leaves.push(profile.command.clone());
-                                        for (key, value) in &profile.env {
-                                            leaves.extend([key.clone(), value.clone()]);
-                                        }
-                                        object.insert(
-                                            "id_hash_debug".into(),
-                                            serde_json::json!(leaves),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        assert_eq!(held.get(field), Some(&expected), "{key}.{field}");
+                    if held.get("profileBindingVersion") == Some(&serde_json::json!(1)) {
+                        b3_assert_canonical_seeded_profiles(
+                            seeded_fields,
+                            held,
+                            physical_agents.as_ref(),
+                        );
+                        continue;
                     }
+                    b3_assert_legacy_seeded_profiles(
+                        key,
+                        seeded_fields,
+                        held,
+                        physical_agents.as_ref(),
+                        ambiguous_rows,
+                    );
                 }
                 other => panic!("{key}: unexpected shapes {other:?}"),
             }
@@ -32813,6 +36761,241 @@ mod tests {
             differing.is_empty(),
             "keys differ from the typed seed: {differing:?}"
         );
+    }
+
+    fn b3_assert_seeded_rows(
+        key: &str,
+        seeded_rows: &[serde_json::Value],
+        held_rows: &[serde_json::Value],
+        skip: &[&str],
+    ) {
+        assert_eq!(seeded_rows.len(), held_rows.len(), "{key} length");
+        for (seeded_row, held_row) in seeded_rows.iter().zip(held_rows) {
+            let command = seeded_row
+                .get("baseCommand")
+                .or_else(|| seeded_row.get("command"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let mut leaves = vec![command.to_string()];
+            for env in seeded_row
+                .get("envs")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                leaves.push(env["key"].as_str().unwrap().to_string());
+                leaves.push(env["value"].as_str().unwrap().to_string());
+            }
+            assert_eq!(held_row["id_hash_debug"], serde_json::json!(leaves));
+            if seeded_row.get("blockingMenus").is_none() {
+                b3_assert_blocking_menus_legs(
+                    None,
+                    held_row.get("blockingMenus"),
+                    "",
+                    &format!("{key}.{}", seeded_row["id"]),
+                );
+            }
+            for (field, value) in seeded_row.as_object().unwrap() {
+                if skip.contains(&field.as_str()) {
+                    continue;
+                }
+                if field == "blockingMenus" {
+                    b3_assert_blocking_menus_legs(
+                        Some(value),
+                        held_row.get(field),
+                        seeded_row["command"].as_str().unwrap_or_default(),
+                        &format!("{key}.{}", seeded_row["id"]),
+                    );
+                    continue;
+                }
+                assert_eq!(held_row.get(field), Some(value), "{key}.{field}");
+            }
+        }
+    }
+
+    fn b3_assert_canonical_seeded_profiles(
+        seeded_fields: &serde_json::Map<String, serde_json::Value>,
+        held: &serde_json::Map<String, serde_json::Value>,
+        physical_agents: Option<&serde_json::Value>,
+    ) {
+        // Compare storage directly against the seeded physical rows,
+        // including unknown cells and sibling fields, never an ID view.
+        let mut expected_cells = serde_json::Map::new();
+        let mut expected_labels = serde_json::Map::new();
+        let mut resolved = std::collections::HashSet::new();
+        for row in physical_agents
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let agent: super::AgentConfig = serde_json::from_value(row.clone()).unwrap();
+            assert!(
+                resolved.insert(agent.id.clone()),
+                "ambiguous rows cannot convert"
+            );
+            let hash = super::configuration_identity(&agent.command, &agent.envs);
+            let mut cells = seeded_fields
+                .get("profilesByAgent")
+                .and_then(|map| map.get(&agent.id))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            for cell in cells.as_object_mut().unwrap().values_mut() {
+                let typed: super::ProfileCellConfig = serde_json::from_value(cell.clone()).unwrap();
+                let mut defaults = serde_json::to_value(typed).unwrap();
+                defaults.as_object_mut().unwrap().remove("id_hash");
+                defaults.as_object_mut().unwrap().remove("id_hash_debug");
+                let raw = cell.as_object_mut().unwrap();
+                raw.remove("id_hash");
+                raw.remove("id_hash_debug");
+                raw.extend(defaults.as_object().unwrap().clone());
+                for key in ["preflight", "preflightTimeoutSeconds"] {
+                    if raw.get(key).is_some_and(serde_json::Value::is_null) {
+                        raw.remove(key);
+                    }
+                }
+            }
+            cells
+                .as_object_mut()
+                .unwrap()
+                .entry("A".to_string())
+                .or_insert_with(|| serde_json::to_value(super::empty_profile_cell()).unwrap());
+            let labels = seeded_fields
+                .get("profileLabelsByAgent")
+                .and_then(|map| map.get(&agent.id))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(previous) = expected_cells.insert(hash.clone(), cells.clone()) {
+                assert_eq!(previous, cells, "complete alias cells");
+            }
+            if let Some(previous) = expected_labels.insert(hash, labels.clone()) {
+                assert_eq!(previous, labels, "complete alias labels");
+            }
+        }
+        assert_eq!(
+            held.get("profilesByBaseHash"),
+            Some(&serde_json::Value::Object(expected_cells))
+        );
+        assert_eq!(
+            held.get("profileLabelsByBaseHash"),
+            Some(&serde_json::Value::Object(expected_labels))
+        );
+        let mut orphan_records = serde_json::Map::new();
+        for (map_key, record_key) in [
+            ("profilesByAgent", "cells"),
+            ("profileLabelsByAgent", "labels"),
+            ("identityByAgent", "identity"),
+        ] {
+            for (id, raw) in seeded_fields
+                .get(map_key)
+                .and_then(serde_json::Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                if !resolved.contains(id) {
+                    let record = orphan_records
+                        .entry(id.clone())
+                        .or_insert_with(|| serde_json::json!([{}]));
+                    record[0][record_key] = raw.clone();
+                }
+            }
+            assert!(!held.contains_key(map_key));
+        }
+        if !orphan_records.is_empty() {
+            assert_eq!(
+                held.get("legacyProfileOrphans"),
+                Some(&serde_json::Value::Object(orphan_records))
+            );
+        }
+        for (field, value) in seeded_fields {
+            if !["profilesByAgent", "profileLabelsByAgent", "identityByAgent"]
+                .contains(&field.as_str())
+            {
+                assert_eq!(held.get(field), Some(value), "raw sibling {field}");
+            }
+        }
+    }
+
+    fn b3_assert_legacy_seeded_profiles(
+        key: &str,
+        seeded_fields: &serde_json::Map<String, serde_json::Value>,
+        held: &serde_json::Map<String, serde_json::Value>,
+        physical_agents: Option<&serde_json::Value>,
+        ambiguous_rows: bool,
+    ) {
+        for (field, value) in seeded_fields {
+            let mut expected = value.clone();
+            if field == "profilesByAgent" && !ambiguous_rows {
+                // Compare the complete original cells, including old
+                // command values, plus only the new physical leaf.
+                for (id, cells) in expected.as_object_mut().unwrap().iter_mut() {
+                    // First raw ID wins before decoding, including an
+                    // unresolvable first row. Never use effective/held.
+                    let base = physical_agents
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|rows| {
+                            rows.iter().find(|row| {
+                                row.get("id").and_then(serde_json::Value::as_str)
+                                    == Some(id.as_str())
+                            })
+                        })
+                        .and_then(|row| {
+                            serde_json::from_value::<super::AgentConfig>(row.clone()).ok()
+                        });
+                    for cell in cells.as_object_mut().unwrap().values_mut() {
+                        assert!(cell.get("additionalArguments").is_none());
+                        cell["additionalArguments"] = cell["command"].clone();
+                        let profile: super::ProfileCellConfig =
+                            serde_json::from_value(cell.clone()).unwrap();
+                        let hash =
+                            base.as_ref().map(|base| {
+                                // Independent raw-field preimage, every base
+                                // env row (disabled included), then cell env.
+                                let parts =
+                                    std::iter::once(base.command.as_str())
+                                        .chain(
+                                            base.envs.iter().flat_map(|env| {
+                                                [env.key.as_str(), env.value.as_str()]
+                                            }),
+                                        )
+                                        .chain(std::iter::once(profile.command.as_str()))
+                                        .chain(profile.env.iter().flat_map(|(key, value)| {
+                                            [key.as_str(), value.as_str()]
+                                        }));
+                                let mut chars: Vec<char> = parts
+                                    .flat_map(str::chars)
+                                    .flat_map(char::to_lowercase)
+                                    .filter(|c| !c.is_whitespace())
+                                    .collect();
+                                chars.sort_unstable();
+                                serde_json::Value::String(format!(
+                                    "cid1:{:x}",
+                                    <sha2::Sha256 as sha2::Digest>::digest(
+                                        chars.iter().collect::<String>()
+                                    )
+                                ))
+                            });
+                        // Replace only expected derived metadata. None
+                        // asserts concrete absence; observed stays raw.
+                        let object = cell.as_object_mut().unwrap();
+                        object.remove("id_hash");
+                        object.extend(hash.map(|hash| ("id_hash".to_string(), hash)));
+                        object.remove("id_hash_debug");
+                        if let Some(base) = &base {
+                            let mut leaves = vec![base.command.clone()];
+                            for env in &base.envs {
+                                leaves.extend([env.key.clone(), env.value.clone()]);
+                            }
+                            leaves.push(profile.command.clone());
+                            for (key, value) in &profile.env {
+                                leaves.extend([key.clone(), value.clone()]);
+                            }
+                            object.insert("id_hash_debug".into(), serde_json::json!(leaves));
+                        }
+                    }
+                }
+            }
+            assert_eq!(held.get(field), Some(&expected), "{key}.{field}");
+        }
     }
 
     // #2716 (B3) - rows E25 to E31 and E40 of the phase plan.
@@ -33101,6 +37284,8 @@ mod tests {
             let mut legacy = b3_legacy_fixture("Alpha", "P");
             legacy["agents"] =
                 serde_json::json!([b3_agent("alpha", "Alpha"), b3_agent("beta", "Beta")]);
+            legacy["codingAgentProfiles"]["profileLabelsByAgent"]["beta"] =
+                legacy["codingAgentProfiles"]["profileLabelsByAgent"]["alpha"].clone();
             b3_write(&path, &legacy);
             path
         };
@@ -35226,7 +39411,13 @@ mod p02_physical_schema_tests {
         let names_before = names();
         let strict = load_settings_for_cli_strict_from_path(Some(&path)).unwrap();
         let cli = load_settings_for_cli_from_path(&path);
+        assert_eq!(std::fs::read(&path).unwrap(), main_before);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), agents_before);
+        assert_eq!(names(), names_before, "CLI reads create no files");
         let gui = load_settings_from_path(&path);
+        let first_gui_main = std::fs::read(&path).unwrap();
+        let first_gui_agents = std::fs::read(&sidecar).unwrap();
+        let first_gui_names = names();
         for settings in [&strict, &cli, &gui] {
             assert_eq!(settings.agents[0].command, "tool --current");
             assert_eq!(
@@ -35234,10 +39425,16 @@ mod p02_physical_schema_tests {
                 "--current"
             );
         }
-        assert_eq!(std::fs::read(&path).unwrap(), main_before);
-        assert_eq!(std::fs::read(&sidecar).unwrap(), agents_before);
+        let canonical: Value = serde_json::from_slice(&first_gui_agents).unwrap();
+        assert_eq!(canonical["codingAgentProfiles"]["profileBindingVersion"], 1);
+        assert!(canonical["codingAgentProfiles"]
+            .get("profilesByAgent")
+            .is_none());
+        load_settings_from_path(&path);
+        assert_eq!(std::fs::read(&path).unwrap(), first_gui_main);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), first_gui_agents);
         assert_eq!(std::fs::read(&project_paths).unwrap(), b"{}");
-        assert_eq!(names(), names_before, "read creates no backups or journals");
+        assert_eq!(names(), first_gui_names, "second GUI load is a fixed point");
         let mut edited = strict;
         edited.agents[0].command = "tool --edited".into();
         edited
@@ -35253,11 +39450,13 @@ mod p02_physical_schema_tests {
         assert_eq!(raw["agents"][0]["baseCommand"], "tool --edited");
         assert_eq!(raw["agents"][0]["command"], "tool --legacy");
         assert_eq!(
-            raw["codingAgentProfiles"]["profilesByAgent"]["own"]["A"]["additionalArguments"],
+            raw["codingAgentProfiles"]["profilesByBaseHash"]
+                [&configuration_identity("tool --edited", &[])]["A"]["additionalArguments"],
             "--edited"
         );
         assert_eq!(
-            raw["codingAgentProfiles"]["profilesByAgent"]["own"]["A"]["command"],
+            raw["codingAgentProfiles"]["profilesByBaseHash"]
+                [&configuration_identity("tool --edited", &[])]["A"]["command"],
             "--legacy"
         );
         let bytes = std::fs::read(&sidecar).unwrap();
@@ -36070,5 +40269,1363 @@ mod e2992_p41_owner_tests {
             assert!(sidecar.is_file());
             link_dir.close().unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod e2432_profile_storage_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn registered() -> Value {
+        json!({
+            "agents":[
+                {"id":"one","label":"One","color":"#123456","baseCommand":"tool"},
+                {"id":"two","label":"Two","color":"#123456","baseCommand":"loot"}
+            ],
+            "codingAgentProfiles":{
+                "schemaVersion":2,
+                "profilesByAgent":{
+                    "one":{"B":{"notes":"shared","extra":{"keep":null}}},
+                    "two":{"B":{"notes":"shared","extra":{"keep":null}}}
+                },
+                "profileLabelsByAgent":{"one":{"B":"label"},"two":{"B":"label"}},
+                "profileSlots":{"B":{"label":"slot"}},
+                "defaultProfileByAgent":{"matrix":"B"},
+                "codexHomeKeyByAgent":{"one":"leaf"}
+            },
+            "unrelated":{"keep":[1,null]}
+        })
+    }
+
+    fn write_source(path: &Path, source: &Value) {
+        let mut settings = serde_json::to_value(AppSettings::default()).unwrap();
+        settings["agents"] = json!([]);
+        settings["rootToken"] = json!("retained-token");
+        std::fs::write(path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        std::fs::write(
+            agents_instance_path(path),
+            serde_json::to_vec(source).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn canonical(source: &Value) -> Value {
+        let view = project_physical_profiles(source, true).unwrap();
+        canonical_profile_source(source, &view, true).unwrap()
+    }
+
+    #[test]
+    fn e2432_canonical_serializer_registered_alias_edit_and_raw_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        let source = registered();
+        write_source(&path, &source);
+        let original = std::fs::read(agents_instance_path(&path)).unwrap();
+        let mut settings = load_settings_for_cli_from_path(&path);
+        assert_eq!(
+            std::fs::read(agents_instance_path(&path)).unwrap(),
+            original
+        );
+        settings
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("one")
+            .unwrap()
+            .get_mut("B")
+            .unwrap()
+            .notes = "edited".into();
+        let saved = save_settings_to_path_preserving_project_paths(&settings, &path).unwrap();
+        assert_eq!(
+            saved.coding_agent_profiles.profiles_by_agent["two"]["B"].notes,
+            "edited"
+        );
+        let raw: Value =
+            serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+        let profiles = &raw["codingAgentProfiles"];
+        for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+            assert!(profiles.get(key).is_none());
+        }
+        let hash = configuration_identity("tool", &[]);
+        assert_eq!(profiles["profileBindingVersion"], 1);
+        assert_eq!(profiles["profilesByBaseHash"].as_object().unwrap().len(), 1);
+        assert_eq!(
+            profiles["profilesByBaseHash"][&hash]["B"]["extra"],
+            json!({"keep":null})
+        );
+        assert_eq!(profiles["defaultProfileByAgent"], json!({"matrix":"B"}));
+        assert_eq!(profiles["codexHomeKeyByAgent"], json!({"one":"leaf"}));
+        assert_eq!(raw["unrelated"], source["unrelated"]);
+        let mut stale = raw.clone();
+        stale["codingAgentProfiles"]["profilesByAgent"] = json!({"one":{"B":{"notes":"stale"}}});
+        assert_eq!(
+            project_physical_profiles(&stale, true).unwrap()["codingAgentProfiles"]
+                ["profilesByAgent"]["one"]["B"]["notes"],
+            "edited"
+        );
+    }
+
+    #[test]
+    fn e2432_alias_conflict_base_fork_deletion_recreation_and_source_isolation() {
+        let source = canonical(&registered());
+        let mut view = project_physical_profiles(&source, true).unwrap();
+        view["codingAgentProfiles"]["profilesByAgent"]["one"]["B"]["notes"] = json!("first");
+        view["codingAgentProfiles"]["profilesByAgent"]["two"]["B"]["notes"] = json!("second");
+        assert!(canonical_profile_source(&source, &view, true)
+            .unwrap_err()
+            .contains("sourceProfileConflict"));
+        let mut view = project_physical_profiles(&source, true).unwrap();
+        view["agents"][0]["baseCommand"] = json!("different");
+        let fork = canonical_profile_source(&source, &view, true).unwrap();
+        assert_eq!(
+            fork["codingAgentProfiles"]["profilesByBaseHash"]
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
+        let mut removed = project_physical_profiles(&fork, true).unwrap();
+        removed["agents"] = json!([]);
+        let orphaned = canonical_profile_source(&fork, &removed, true).unwrap();
+        assert_eq!(
+            orphaned["codingAgentProfiles"]["profilesByBaseHash"],
+            fork["codingAgentProfiles"]["profilesByBaseHash"]
+        );
+        let recreated = canonical_profile_source(
+            &orphaned,
+            &project_physical_profiles(&fork, true).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            recreated["codingAgentProfiles"]["profilesByBaseHash"],
+            fork["codingAgentProfiles"]["profilesByBaseHash"]
+        );
+        let mut other = registered();
+        other["codingAgentProfiles"]["profilesByAgent"]["one"]["B"]["notes"] = json!("other");
+        other["codingAgentProfiles"]["profilesByAgent"]["two"]["B"]["notes"] = json!("other");
+        assert_ne!(
+            canonical(&other)["codingAgentProfiles"]["profilesByBaseHash"],
+            source["codingAgentProfiles"]["profilesByBaseHash"]
+        );
+    }
+
+    #[test]
+    fn e2432_orphan_wire_registered() {
+        let mut source = registered();
+        let profiles = source["codingAgentProfiles"].as_object_mut().unwrap();
+        profiles["profilesByAgent"]["absent"] = Value::Null;
+        profiles["profileLabelsByAgent"]["labels-only"] = json!([]);
+        profiles.insert(
+            "identityByAgent".into(),
+            json!({"identity-only":null,"absent":"short-not-BASE"}),
+        );
+        let saved = canonical(&source);
+        let orphans = &saved["codingAgentProfiles"]["legacyProfileOrphans"];
+        assert_eq!(
+            orphans["absent"],
+            json!([{"cells":null,"identity":"short-not-BASE"}])
+        );
+        assert_eq!(orphans["labels-only"], json!([{"labels":[]}]));
+        assert_eq!(orphans["identity-only"], json!([{"identity":null}]));
+        assert!(saved["codingAgentProfiles"]
+            .get("identityByAgent")
+            .is_none());
+        assert!(
+            project_physical_profiles(&saved, true).unwrap()["codingAgentProfiles"]
+                ["profilesByAgent"]
+                .get("absent")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn e2432_orphan_collision_idempotence() {
+        let mut source = canonical(&registered());
+        source["codingAgentProfiles"]["legacyProfileOrphans"] = json!({"X":[
+            {"cells":{"B":{"notes":"old","extension":null}},"unknown":[1]},
+            {"cells":{"B":{"notes":"old","extension":null}},"unknown":[1]}
+        ]});
+        source["codingAgentProfiles"]["profilesByAgent"] = json!({"X":{"B":{"notes":"new"}}});
+        let once = canonical(&source);
+        let records = &once["codingAgentProfiles"]["legacyProfileOrphans"]["X"];
+        assert_eq!(records.as_array().unwrap().len(), 3);
+        assert_eq!(records[0], records[1]);
+        assert_eq!(records[2], json!({"cells":{"B":{"notes":"new"}}}));
+        let twice = canonical(&once);
+        assert_eq!(twice, once);
+        let mut repeated = twice.clone();
+        repeated["codingAgentProfiles"]["profilesByAgent"] =
+            source["codingAgentProfiles"]["profilesByAgent"].clone();
+        assert_eq!(canonical(&repeated), twice);
+        let mut recreated = project_physical_profiles(&twice, true).unwrap();
+        recreated["agents"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"X","label":"X","color":"red","baseCommand":"new-command"}));
+        let recreated = canonical_profile_source(&twice, &recreated, true).unwrap();
+        let view = project_physical_profiles(&recreated, true).unwrap();
+        assert!(view["codingAgentProfiles"]["profilesByAgent"]["X"]
+            .get("B")
+            .is_none());
+        assert_eq!(
+            recreated["codingAgentProfiles"]["legacyProfileOrphans"],
+            twice["codingAgentProfiles"]["legacyProfileOrphans"]
+        );
+    }
+
+    fn assert_no_publication(path: &Path, settings_bytes: &[u8], sidecar_bytes: &[u8]) {
+        assert_eq!(std::fs::read(path).unwrap(), settings_bytes);
+        assert_eq!(
+            std::fs::read(agents_instance_path(path)).unwrap(),
+            sidecar_bytes
+        );
+        for entry in std::fs::read_dir(path.parent().unwrap()).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(
+                name == SETTINGS_FILE_NAME
+                    || name == AGENTS_INSTANCE_FILE_NAME
+                    || name.ends_with(".lock"),
+                "unexpected publisher output: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn e2432_orphan_malformed_preflight() {
+        for invalid in [
+            Value::Null,
+            json!([]),
+            json!({"X":[]}),
+            json!({"X":{}}),
+            json!({"X":[null]}),
+            json!({"X":[{}]}),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(SETTINGS_FILE_NAME);
+            let mut source = registered();
+            source["codingAgentProfiles"]["legacyProfileOrphans"] = invalid;
+            write_source(&path, &source);
+            let settings_bytes = std::fs::read(&path).unwrap();
+            let sidecar_bytes = std::fs::read(agents_instance_path(&path)).unwrap();
+            let error = registered_profile_raw_gate(&path).unwrap_err();
+            assert!(error.contains("invalidLegacyProfileOrphans"));
+            let loaded = load_settings_from_path(&path);
+            assert_no_publication(&path, &settings_bytes, &sidecar_bytes);
+            assert!(save_settings_to_path_preserving_project_paths(&loaded, &path).is_err());
+            {
+                let _lock = SettingsFileLock::acquire_contextual(
+                    &path,
+                    std::time::Duration::from_secs(2),
+                    "e2432_orphan_preference",
+                )
+                .unwrap();
+                assert!(save_settings_value_locked(
+                    &loaded,
+                    &path,
+                    ProjectWriteMode::Preserve,
+                    TerminalSnapshotGateWriteMode::Explicit(false),
+                    MainWindowPlacementWriteMode::Preserve
+                )
+                .is_err());
+            }
+            let context = SourceReadContext::from_settings(&AppSettings::default(), &path).unwrap();
+            let snapshot =
+                read_source_snapshot(&context, &context.source(SourceKind::RegisteredInstance))
+                    .unwrap();
+            assert_eq!(snapshot.snapshot.availability, SourceAvailability::Invalid);
+            assert!(snapshot.snapshot.agents.is_empty());
+            assert!(!snapshot.snapshot.capabilities.editable_save);
+            assert_no_publication(&path, &settings_bytes, &sidecar_bytes);
+        }
+        for valid in [
+            json!({}),
+            json!({"X":[{"cells":null,"unknown":{"nested":[]}}]}),
+        ] {
+            assert!(validate_profile_orphans(Some(&valid)).is_ok());
+        }
+    }
+
+    #[test]
+    fn e2432_duplicate_registered_compatibility() {
+        for duplicate in [
+            r#""x":1,"x":1"#,
+            r#""x":1,"\u0078":2"#,
+            r#""unknown":{"nested":1,"nested":2}"#,
+            r#""codingAgentProfiles":{},"codingAgentProfiles":{}"#,
+            r#""codingAgentProfiles":{"profilesByAgent":{},"profilesByAgent":{}}"#,
+            r#""codingAgentProfiles":{"profilesByAgent":{"one":{},"one":{}}}"#,
+            r#""codingAgentProfiles":{"profilesByAgent":{"one":{"B":{"notes":"a","notes":"b"}}}}"#,
+            r#""codingAgentProfiles":{"legacyProfileOrphans":{"X":[{"cells":null,"cells":null}]}}"#,
+        ] {
+            for sidecar in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join(SETTINGS_FILE_NAME);
+                write_source(&path, &registered());
+                let target = if sidecar {
+                    agents_instance_path(&path)
+                } else {
+                    path.clone()
+                };
+                let mut original: Value =
+                    serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
+                if duplicate.starts_with("\"codingAgentProfiles\"") {
+                    original
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("codingAgentProfiles");
+                }
+                let mut raw = serde_json::to_string(&original).unwrap();
+                raw.pop();
+                raw.push(',');
+                raw.push_str(duplicate);
+                if !sidecar {
+                    raw.push_str(r#", "projectPaths":[],"projectPath":null"#);
+                }
+                raw.push('}');
+                std::fs::write(&target, &raw).unwrap();
+                let settings_bytes = std::fs::read(&path).unwrap();
+                let sidecar_bytes = std::fs::read(agents_instance_path(&path)).unwrap();
+                let diagnostic = duplicate_profile_document(raw.as_bytes(), &target).unwrap();
+                assert!(diagnostic.contains("duplicateJsonMember"));
+                assert!(diagnostic.contains("line"));
+                assert!(diagnostic.contains("column"));
+                assert!(diagnostic.contains(&target.to_string_lossy().to_string()));
+                assert!(read_agents_instance_file(&agents_instance_path(&path)).is_ok());
+                let cli = load_settings_for_cli_from_path(&path);
+                assert_eq!(cli.agents[0].id, "one");
+                let loaded = load_settings_from_path(&path);
+                assert_eq!(loaded.agents[0].id, "one");
+                assert!(loaded.root_token.is_some());
+                assert!(loaded.project_paths_persistence_error.is_none());
+                assert_no_publication(&path, &settings_bytes, &sidecar_bytes);
+                assert!(save_settings_to_path_preserving_project_paths(&loaded, &path).is_err());
+                {
+                    let _lock = SettingsFileLock::acquire_contextual(
+                        &path,
+                        std::time::Duration::from_secs(2),
+                        "e2432_preference",
+                    )
+                    .unwrap();
+                    assert!(save_settings_value_locked(
+                        &loaded,
+                        &path,
+                        ProjectWriteMode::Preserve,
+                        TerminalSnapshotGateWriteMode::Explicit(false),
+                        MainWindowPlacementWriteMode::Preserve
+                    )
+                    .is_err());
+                }
+                let context =
+                    SourceReadContext::from_settings(&AppSettings::default(), &path).unwrap();
+                let snapshot =
+                    read_source_snapshot(&context, &context.source(SourceKind::RegisteredInstance))
+                        .unwrap();
+                assert_eq!(snapshot.snapshot.availability, SourceAvailability::Invalid);
+                assert!(snapshot.snapshot.agents.is_empty());
+                assert_no_publication(&path, &settings_bytes, &sidecar_bytes);
+                write_source(&path, &registered());
+                let fresh = load_settings_for_cli_from_path(&path);
+                assert!(save_settings_to_path_preserving_project_paths(&fresh, &path).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn e2432_duplicate_overlay_participation_and_isolation() {
+        for participating in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(SETTINGS_FILE_NAME);
+            write_source(&path, &registered());
+            let overlay = path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+            let raw = if participating {
+                br#"{"codingAgentProfiles":{"profileSlots":{"A":{"label":"a","label":"b"}}}}"#
+                    .as_slice()
+            } else {
+                br#"{"unrelated":{"x":1,"x":2}}"#.as_slice()
+            };
+            std::fs::write(&overlay, raw).unwrap();
+            assert_eq!(registered_profile_raw_gate(&path).is_err(), participating);
+            let settings = load_settings_for_cli_from_path(&path);
+            if participating {
+                let before = std::fs::read(&path).unwrap();
+                let source_before = std::fs::read(agents_instance_path(&path)).unwrap();
+                assert!(save_settings_to_path_preserving_project_paths(&settings, &path).is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+                assert_eq!(
+                    std::fs::read(agents_instance_path(&path)).unwrap(),
+                    source_before
+                );
+            } else {
+                assert!(save_settings_to_path_preserving_project_paths(&settings, &path).is_ok());
+            }
+            assert_eq!(std::fs::read(&overlay).unwrap(), raw);
+        }
+    }
+
+    #[test]
+    fn e2432_legacy_conflict_rejects_before_every_publisher() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        let mut source = registered();
+        source["codingAgentProfiles"]["profilesByAgent"]["two"]["B"]["notes"] = json!("different");
+        write_source(&path, &source);
+        let before = std::fs::read(&path).unwrap();
+        let source_before = std::fs::read(agents_instance_path(&path)).unwrap();
+        let loaded = load_settings_from_path(&path);
+        assert!(registered_profile_raw_gate(&path)
+            .unwrap_err()
+            .contains("sourceProfileConflict"));
+        assert!(save_settings_to_path_preserving_project_paths(&loaded, &path).is_err());
+        assert_no_publication(&path, &before, &source_before);
+    }
+    #[test]
+    fn e2432_main_legacy_owner_preserves_unknown_and_orphan_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        let mut main = serde_json::to_value(AppSettings::default()).unwrap();
+        let mut source = registered();
+        source["codingAgentProfiles"]["profilesByAgent"]["missing"] = json!({"raw":null});
+        main["agents"] = source["agents"].clone();
+        main["codingAgentProfiles"] = source["codingAgentProfiles"].clone();
+        main["unrecognized"] = json!({"nested":[null,7]});
+        std::fs::write(&path, serde_json::to_vec(&main).unwrap()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(!agents_instance_path(&path).exists());
+        let loaded = load_settings_for_cli_from_path(&path);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!agents_instance_path(&path).exists());
+        let written = save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        let saved_main: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved_main["unrecognized"], main["unrecognized"]);
+        assert!(saved_main.get("agents").is_none());
+        assert!(saved_main.get("codingAgentProfiles").is_none());
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+        assert_eq!(saved["codingAgentProfiles"]["profileBindingVersion"], 1);
+        assert_eq!(
+            saved["codingAgentProfiles"]["legacyProfileOrphans"]["missing"],
+            json!([{"cells":{"raw":null}}])
+        );
+        assert!(saved["codingAgentProfiles"]
+            .get("profilesByAgent")
+            .is_none());
+        // Equal BASE shares every payload field; each alias still reports the
+        // exact original row strings in its recomputed diagnostic metadata.
+        let payload = |id: &str| {
+            let agent = written.agents.iter().find(|agent| agent.id == id).unwrap();
+            let mut cells = written.coding_agent_profiles.profiles_by_agent[id].clone();
+            for cell in cells.values_mut() {
+                assert_eq!(
+                    cell.id_hash,
+                    Some(pair_identity(&agent.command, &agent.envs, cell))
+                );
+                assert_eq!(
+                    cell.id_hash_debug,
+                    Some(pair_identity_debug(&agent.command, &agent.envs, cell))
+                );
+                cell.id_hash_debug = None;
+            }
+            cells
+        };
+        assert_eq!(payload("one"), payload("two"));
+    }
+
+    #[test]
+    fn e2432_canonical_split_physical_owners_never_donate_rows() {
+        // The bounded ordinary direction starts with protected physical main
+        // rows; the sidecar receives profiles only and strict reads stay local.
+        let directional = tempfile::tempdir().unwrap();
+        let directional_path = directional.path().join(SETTINGS_FILE_NAME);
+        let mut physical = serde_json::to_value(AppSettings::default()).unwrap();
+        let legacy = registered();
+        physical["agents"] = legacy["agents"].clone();
+        physical["codingAgentProfiles"] = legacy["codingAgentProfiles"].clone();
+        physical["rootToken"] = json!("directional-token");
+        std::fs::write(&directional_path, serde_json::to_vec(&physical).unwrap()).unwrap();
+        let overlay_path = directional.path().join(SETTINGS_LOCAL_OVERRIDE_FILE_NAME);
+        let mut overlay_rows = legacy["agents"].clone();
+        overlay_rows[0]["baseCommand"] = json!("overlay-command");
+        overlay_rows[1]["baseCommand"] = json!("overlay-second");
+        std::fs::write(
+            &overlay_path,
+            serde_json::to_vec(&json!({"agents":overlay_rows})).unwrap(),
+        )
+        .unwrap();
+        let protected = load_settings_from_path(&directional_path);
+        let directional_sidecar = agents_instance_path(&directional_path);
+        let stored: Value =
+            serde_json::from_slice(&std::fs::read(&directional_sidecar).unwrap()).unwrap();
+        let old_hash = configuration_identity("tool", &[]);
+        let old_set = stored["codingAgentProfiles"]["profilesByBaseHash"][&old_hash].clone();
+        assert_eq!(old_set["B"]["notes"], "shared");
+        assert_eq!(old_set["B"]["extra"], json!({"keep":null}));
+        assert!(stored.get("agents").is_none());
+        let after_main: Value =
+            serde_json::from_slice(&std::fs::read(&directional_path).unwrap()).unwrap();
+        assert_eq!(after_main["agents"], physical["agents"]);
+        assert_eq!(protected.agents[0].command, "overlay-command");
+        assert_eq!(
+            startup_profile_legacy_work(
+                &protected,
+                &directional_path,
+                Some(&std::fs::read_to_string(&directional_path).unwrap()),
+                false
+            )
+            .unwrap(),
+            Some(false)
+        );
+        let stable_main = std::fs::read(&directional_path).unwrap();
+        let stable_sidecar = std::fs::read(&directional_sidecar).unwrap();
+        let second = load_settings_from_path(&directional_path);
+        assert_eq!(std::fs::read(&directional_path).unwrap(), stable_main);
+        assert_eq!(std::fs::read(&directional_sidecar).unwrap(), stable_sidecar);
+        assert_eq!(
+            second.coding_agent_profiles,
+            protected.coding_agent_profiles
+        );
+        let context = SourceReadContext::from_settings(&protected, &directional_path).unwrap();
+        let strict =
+            read_source_snapshot(&context, &context.source(SourceKind::RegisteredInstance))
+                .unwrap();
+        assert!(strict.snapshot.agents.is_empty());
+        let mut forbidden = protected.clone();
+        forbidden.agents[0].command = "forbidden".into();
+        assert!(
+            save_settings_to_path_preserving_project_paths(&forbidden, &directional_path).is_err()
+        );
+        assert_eq!(std::fs::read(&directional_path).unwrap(), stable_main);
+        assert_eq!(std::fs::read(&directional_sidecar).unwrap(), stable_sidecar);
+
+        split_alias_and_base_edits(&directional_path, &directional_sidecar, &overlay_path);
+        split_missing_binding_edits(&directional_path, &directional_sidecar, &overlay_path);
+        split_new_row_alias_edit(&directional_path);
+        split_complete_target_edits(&directional_path, &directional_sidecar);
+        split_empty_new_row_edit(&directional_path, &directional_sidecar);
+        split_publication_failure_cuts(&directional_path, &directional_sidecar);
+        split_inverse_owners();
+    }
+
+    fn split_alias_and_base_edits(
+        path: &std::path::Path,
+        sidecar: &std::path::Path,
+        overlay: &std::path::Path,
+    ) {
+        let directional_path = path;
+        let directional_sidecar = sidecar;
+        let overlay_path = overlay;
+        std::fs::remove_file(overlay_path).unwrap();
+        let mut draft = load_settings_for_cli_from_path(directional_path);
+        draft
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("one")
+            .unwrap()
+            .get_mut("B")
+            .unwrap()
+            .notes = "alias edit".into();
+        let shared =
+            save_settings_to_path_preserving_project_paths(&draft, directional_path).unwrap();
+        assert_eq!(
+            shared.coding_agent_profiles.profiles_by_agent["two"]["B"].notes,
+            "alias edit"
+        );
+        let mut conflicting = shared.clone();
+        conflicting
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("one")
+            .unwrap()
+            .get_mut("B")
+            .unwrap()
+            .notes = "first proposal".into();
+        conflicting
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("two")
+            .unwrap()
+            .get_mut("B")
+            .unwrap()
+            .notes = "second proposal".into();
+        let before_main = std::fs::read(directional_path).unwrap();
+        let before_sidecar = std::fs::read(directional_sidecar).unwrap();
+        assert!(
+            save_settings_to_path_preserving_project_paths(&conflicting, directional_path)
+                .unwrap_err()
+                .contains("sourceProfileConflict")
+        );
+        assert_eq!(std::fs::read(directional_path).unwrap(), before_main);
+        assert_eq!(std::fs::read(directional_sidecar).unwrap(), before_sidecar);
+        for env_edit in [false, true] {
+            let mut draft = load_settings_for_cli_from_path(directional_path);
+            let old_command = draft.agents[0].command.clone();
+            let old_envs = draft.agents[0].envs.clone();
+            let previous_hash = configuration_identity(&old_command, &old_envs);
+            let previous: Value =
+                serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
+            if env_edit {
+                draft.agents[0].envs = serde_json::from_value(json!([
+                    {"key":"ROUND11","value":"yes","enabled":true}
+                ]))
+                .unwrap();
+            } else {
+                draft.agents[0].command = "new-physical-command".into();
+            }
+            draft
+                .coding_agent_profiles
+                .profiles_by_agent
+                .get_mut("one")
+                .unwrap()
+                .get_mut("B")
+                .unwrap()
+                .notes = if env_edit { "env edit" } else { "command edit" }.into();
+            let new_hash = configuration_identity(&draft.agents[0].command, &draft.agents[0].envs);
+            let saved =
+                save_settings_to_path_preserving_project_paths(&draft, directional_path).unwrap();
+            let next: Value =
+                serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
+            assert!(next.get("agents").is_none());
+            assert_eq!(
+                next["codingAgentProfiles"]["profilesByBaseHash"][&previous_hash],
+                previous["codingAgentProfiles"]["profilesByBaseHash"][&previous_hash]
+            );
+            assert_eq!(
+                next["codingAgentProfiles"]["profilesByBaseHash"][&new_hash]["B"]["extra"],
+                json!({"keep":null})
+            );
+            assert_eq!(
+                load_settings_for_cli_from_path(directional_path).coding_agent_profiles,
+                saved.coding_agent_profiles
+            );
+            assert_eq!(
+                saved.coding_agent_profiles.profiles_by_agent["two"]["B"].notes,
+                "alias edit"
+            );
+        }
+    }
+
+    fn split_missing_binding_edits(
+        path: &std::path::Path,
+        sidecar: &std::path::Path,
+        overlay: &std::path::Path,
+    ) {
+        let directional_path = path;
+        let directional_sidecar = sidecar;
+        let overlay_path = overlay;
+        // A physical external BASE change is already in the fresh baseline;
+        // preference save cannot fork its old set or persist an empty binding.
+        let mut external: Value =
+            serde_json::from_slice(&std::fs::read(directional_path).unwrap()).unwrap();
+        external["agents"][0]["baseCommand"] = json!("external-unbound");
+        std::fs::write(directional_path, serde_json::to_vec(&external).unwrap()).unwrap();
+        let bindings: Value =
+            serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
+        let mut preference = load_settings_for_cli_from_path(directional_path);
+        preference.theme_light = !preference.theme_light;
+        save_settings_to_path_preserving_project_paths(&preference, directional_path).unwrap();
+        let unchanged: Value =
+            serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
+        assert_eq!(unchanged, bindings);
+        std::fs::write(
+            overlay_path,
+            serde_json::to_vec(&json!({
+                "agents":[{"id":"one","label":"Overlay","color":"#123456","baseCommand":"overlay"}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut protected_missing = load_settings_for_cli_from_path(directional_path);
+        protected_missing
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("one")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .notes = "refused protected binding".into();
+        let before_main = std::fs::read(directional_path).unwrap();
+        let before_sidecar = std::fs::read(directional_sidecar).unwrap();
+        assert!(save_settings_to_path_preserving_project_paths(
+            &protected_missing,
+            directional_path
+        )
+        .unwrap_err()
+        .contains("crossOwnerCanonicalProfileEdit"));
+        assert_eq!(std::fs::read(directional_path).unwrap(), before_main);
+        assert_eq!(std::fs::read(directional_sidecar).unwrap(), before_sidecar);
+        std::fs::remove_file(overlay_path).unwrap();
+        let mut explicit = load_settings_for_cli_from_path(directional_path);
+        explicit
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("one")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .notes = "explicit binding".into();
+        save_settings_to_path_preserving_project_paths(&explicit, directional_path).unwrap();
+        assert_eq!(
+            load_settings_for_cli_from_path(directional_path)
+                .coding_agent_profiles
+                .profiles_by_agent["one"]["A"]
+                .notes,
+            "explicit binding"
+        );
+    }
+
+    fn split_new_row_alias_edit(path: &std::path::Path) {
+        let directional_path = path;
+        // A new physical row attaches a complete existing target unchanged.
+        let mut new_row = load_settings_for_cli_from_path(directional_path);
+        let mut third = new_row.agents[1].clone();
+        third.id = "three".into();
+        third.label = "Three".into();
+        third.command = "tool".into();
+        new_row.agents.push(third);
+        let attached =
+            save_settings_to_path_preserving_project_paths(&new_row, directional_path).unwrap();
+        assert_eq!(
+            attached.coding_agent_profiles.profiles_by_agent["three"]["B"].notes,
+            "alias edit"
+        );
+        let mut edited = attached.clone();
+        edited
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("three")
+            .unwrap()
+            .get_mut("B")
+            .unwrap()
+            .notes = "new row edit".into();
+        let shared =
+            save_settings_to_path_preserving_project_paths(&edited, directional_path).unwrap();
+        assert_eq!(
+            shared.coding_agent_profiles.profiles_by_agent["two"]["B"].notes,
+            "new row edit"
+        );
+    }
+
+    fn split_complete_target_edits(path: &std::path::Path, sidecar: &std::path::Path) {
+        let directional_path = path;
+        let directional_sidecar = sidecar;
+        // Complete target equality accepts a move; differences, including opaque
+        // target fields and labels, reject before any physical publication.
+        for difference in ["unknown", "label", "simultaneous"] {
+            let mut target: Value =
+                serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
+            let mut proposal = load_settings_for_cli_from_path(directional_path);
+            let target_command = "destination-command";
+            let target_hash = configuration_identity(target_command, &proposal.agents[0].envs);
+            let current_hash =
+                configuration_identity(&proposal.agents[0].command, &proposal.agents[0].envs);
+            target["codingAgentProfiles"]["profilesByBaseHash"][&target_hash] =
+                target["codingAgentProfiles"]["profilesByBaseHash"][&current_hash].clone();
+            target["codingAgentProfiles"]["profileLabelsByBaseHash"][&target_hash] =
+                target["codingAgentProfiles"]["profileLabelsByBaseHash"][&current_hash].clone();
+            if difference == "unknown" {
+                target["codingAgentProfiles"]["profilesByBaseHash"][&target_hash]["A"]["unknown"] =
+                    json!({"different":true});
+            } else if difference == "label" {
+                target["codingAgentProfiles"]["profileLabelsByBaseHash"][&target_hash]["A"] =
+                    json!("different");
+            }
+            std::fs::write(directional_sidecar, serde_json::to_vec(&target).unwrap()).unwrap();
+            proposal = load_settings_for_cli_from_path(directional_path);
+            proposal.agents[0].command = target_command.into();
+            if difference == "simultaneous" {
+                proposal
+                    .coding_agent_profiles
+                    .profiles_by_agent
+                    .get_mut("one")
+                    .unwrap()
+                    .get_mut("A")
+                    .unwrap()
+                    .notes = "simultaneous change".into();
+            }
+            let before_main = std::fs::read(directional_path).unwrap();
+            let before_sidecar = std::fs::read(directional_sidecar).unwrap();
+            assert!(
+                save_settings_to_path_preserving_project_paths(&proposal, directional_path)
+                    .unwrap_err()
+                    .contains("sourceProfileConflict")
+            );
+            assert_eq!(std::fs::read(directional_path).unwrap(), before_main);
+            assert_eq!(std::fs::read(directional_sidecar).unwrap(), before_sidecar);
+            target["codingAgentProfiles"]["profilesByBaseHash"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&target_hash);
+            target["codingAgentProfiles"]["profileLabelsByBaseHash"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&target_hash);
+            std::fs::write(directional_sidecar, serde_json::to_vec(&target).unwrap()).unwrap();
+        }
+
+        let mut equal = load_settings_for_cli_from_path(directional_path);
+        let old = configuration_identity(&equal.agents[0].command, &equal.agents[0].envs);
+        let equal_hash = configuration_identity("equal-target", &equal.agents[0].envs);
+        let mut target: Value =
+            serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
+        target["codingAgentProfiles"]["profilesByBaseHash"][&equal_hash] =
+            target["codingAgentProfiles"]["profilesByBaseHash"][&old].clone();
+        target["codingAgentProfiles"]["profileLabelsByBaseHash"][&equal_hash] =
+            target["codingAgentProfiles"]["profileLabelsByBaseHash"][&old].clone();
+        std::fs::write(directional_sidecar, serde_json::to_vec(&target).unwrap()).unwrap();
+        equal = load_settings_for_cli_from_path(directional_path);
+        equal.agents[0].command = "equal-target".into();
+        save_settings_to_path_preserving_project_paths(&equal, directional_path).unwrap();
+        let equal_raw: Value =
+            serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
+        assert_eq!(
+            equal_raw["codingAgentProfiles"]["profilesByBaseHash"],
+            target["codingAgentProfiles"]["profilesByBaseHash"]
+        );
+
+        let mut divergent = load_settings_for_cli_from_path(directional_path);
+        divergent.agents[0].command = "same-target".into();
+        divergent.agents[0].envs.clear();
+        divergent.agents[1].command = "target-same".into();
+        assert_eq!(
+            configuration_identity(&divergent.agents[0].command, &[]),
+            configuration_identity(&divergent.agents[1].command, &[])
+        );
+        let before_main = std::fs::read(directional_path).unwrap();
+        let before_sidecar = std::fs::read(directional_sidecar).unwrap();
+        assert!(
+            save_settings_to_path_preserving_project_paths(&divergent, directional_path)
+                .unwrap_err()
+                .contains("sourceProfileConflict")
+        );
+        assert_eq!(std::fs::read(directional_path).unwrap(), before_main);
+        assert_eq!(std::fs::read(directional_sidecar).unwrap(), before_sidecar);
+    }
+
+    fn split_empty_new_row_edit(path: &std::path::Path, sidecar: &std::path::Path) {
+        let directional_path = path;
+        let directional_sidecar = sidecar;
+        let mut empty_new = load_settings_for_cli_from_path(directional_path);
+        let mut fourth = empty_new.agents[1].clone();
+        fourth.id = "four".into();
+        fourth.label = "Four".into();
+        fourth.command = "new-unbound-row".into();
+        empty_new.agents.push(fourth);
+        let empty_saved =
+            save_settings_to_path_preserving_project_paths(&empty_new, directional_path).unwrap();
+        let empty_hash = configuration_identity("new-unbound-row", &[]);
+        let raw: Value =
+            serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
+        assert_eq!(
+            raw["codingAgentProfiles"]["profilesByBaseHash"][&empty_hash],
+            json!({
+                "A":{"enabled":true,"additionalArguments":"","env":{},"notes":""}
+            })
+        );
+        assert_eq!(
+            raw["codingAgentProfiles"]["profileLabelsByBaseHash"][&empty_hash],
+            json!({})
+        );
+        let mut profile_edit = empty_saved;
+        profile_edit
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("four")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .notes = "four edit".into();
+        save_settings_to_path_preserving_project_paths(&profile_edit, directional_path).unwrap();
+        assert_eq!(
+            load_settings_for_cli_from_path(directional_path)
+                .coding_agent_profiles
+                .profiles_by_agent["four"]["A"]
+                .notes,
+            "four edit"
+        );
+    }
+
+    fn split_publication_failure_cuts(path: &std::path::Path, sidecar: &std::path::Path) {
+        let directional_path = path;
+        let directional_sidecar = sidecar;
+        // The existing atomic hook exercises both physical failure cuts. A
+        // sidecar-only target after main failure remains an inert hash orphan.
+        for fail_main in [false, true] {
+            let mut candidate = load_settings_for_cli_from_path(directional_path);
+            candidate.agents[0].command = if fail_main {
+                "after-sidecar"
+            } else {
+                "before-sidecar"
+            }
+            .into();
+            let before_main = std::fs::read(directional_path).unwrap();
+            let before_sidecar = std::fs::read(directional_sidecar).unwrap();
+            PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
+                *slot.borrow_mut() = Some((
+                    if fail_main {
+                        directional_path.to_path_buf()
+                    } else {
+                        directional_sidecar.to_path_buf()
+                    },
+                    SettingsSaveStage::TempCreate,
+                ))
+            });
+            let result =
+                save_settings_to_path_preserving_project_paths(&candidate, directional_path);
+            PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(directional_path).unwrap(), before_main);
+            if !fail_main {
+                assert_eq!(std::fs::read(directional_sidecar).unwrap(), before_sidecar);
+            } else {
+                let published: Value =
+                    serde_json::from_slice(&std::fs::read(directional_sidecar).unwrap()).unwrap();
+                let hash =
+                    configuration_identity(&candidate.agents[0].command, &candidate.agents[0].envs);
+                assert!(published["codingAgentProfiles"]["profilesByBaseHash"]
+                    .get(&hash)
+                    .is_some());
+                assert!(published.get("agents").is_none());
+                assert_ne!(
+                    load_settings_for_cli_from_path(directional_path).agents[0].command,
+                    candidate.agents[0].command
+                );
+                let restarted = load_settings_from_path(directional_path);
+                assert_ne!(restarted.agents[0].command, candidate.agents[0].command);
+            }
+        }
+    }
+
+    fn split_inverse_owners() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        let mut sidecar = registered();
+        sidecar
+            .as_object_mut()
+            .unwrap()
+            .remove("codingAgentProfiles");
+        write_source(&path, &sidecar);
+        let mut main: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        main["codingAgentProfiles"] = json!({"profilesByAgent":{"one":{"B":{"notes":"neighbor"}}}});
+        main = canonical(&main);
+        std::fs::write(&path, serde_json::to_vec(&main).unwrap()).unwrap();
+        let loaded = load_settings_for_cli_from_path(&path);
+        assert!(!loaded.coding_agent_profiles.profiles_by_agent["one"].contains_key("B"));
+        save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        let saved_main: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let saved_sidecar: Value =
+            serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+        assert!(saved_sidecar.get("codingAgentProfiles").is_none());
+        assert_eq!(
+            saved_main["codingAgentProfiles"]["profilesByBaseHash"],
+            json!({})
+        );
+        assert_eq!(
+            saved_main["codingAgentProfiles"]["legacyProfileOrphans"]["one"],
+            json!([{"cells":{"B":{"notes":"neighbor"}}}])
+        );
+        assert_eq!(
+            saved_main["codingAgentProfiles"],
+            main["codingAgentProfiles"]
+        );
+        let mut edited = load_settings_for_cli_from_path(&path);
+        edited
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("one")
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .notes = "requires canonical cross-owner edit".into();
+        let before_main = std::fs::read(&path).unwrap();
+        let before_sidecar = std::fs::read(agents_instance_path(&path)).unwrap();
+        assert!(
+            save_settings_to_path_preserving_project_paths(&edited, &path)
+                .unwrap_err()
+                .contains("crossOwnerCanonicalProfileEdit")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before_main);
+        assert_eq!(
+            std::fs::read(agents_instance_path(&path)).unwrap(),
+            before_sidecar
+        );
+        split_inverse_shadowed_rows();
+    }
+
+    fn split_inverse_shadowed_rows() {
+        // Inverse canonical split: sidecar rows shadow main rows with the same
+        // ID and a different command. A preference CAS must never adopt the
+        // main row's BASE cells, including through writer re-decode.
+        let inverse = tempfile::tempdir().unwrap();
+        let inverse_path = inverse.path().join(SETTINGS_FILE_NAME);
+        let mut shadowed = registered();
+        shadowed["agents"] = json!([{
+            "id":"one", "label":"One", "baseCommand":"claude", "color":"#123456"
+        }]);
+        shadowed["codingAgentProfiles"] = json!({"profilesByAgent":{
+            "one":{"B":{"notes":"shadow-only","extension":{"keep":7}}}
+        }});
+        let mut inverse_main = canonical(&shadowed);
+        inverse_main["defaultShell"] = json!("test-shell");
+        inverse_main["defaultShellArgs"] = json!([]);
+        inverse_main["rootToken"] = json!("inverse-token");
+        inverse_main["terminalSnapshotsEnabled"] = json!(false);
+        let physical_profiles = inverse_main["codingAgentProfiles"].clone();
+        assert!(
+            physical_profiles["profilesByBaseHash"][&configuration_identity("claude", &[])]["B"]
+                .is_object()
+        );
+        let row: AgentConfig = serde_json::from_value(json!({
+            "id":"one", "label":"One", "baseCommand":"codex", "color":"#123456", "order":0
+        }))
+        .unwrap();
+        let mut row = serde_json::to_value(row).unwrap();
+        row["id_hash"] = json!(configuration_identity("codex", &[]));
+        row["id_hash_debug"] = json!(["codex"]);
+        let inverse_sidecar = json!({"agents":[row],"opaque":{"keep":true}});
+        std::fs::write(
+            &inverse_path,
+            serde_json::to_vec_pretty(&inverse_main).unwrap(),
+        )
+        .unwrap();
+        let inverse_agents = agents_instance_path(&inverse_path);
+        std::fs::write(
+            &inverse_agents,
+            serde_json::to_vec_pretty(&inverse_sidecar).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(project_paths_path(&inverse_path), b"{}").unwrap();
+        let main_bytes = std::fs::read(&inverse_path).unwrap();
+        let agents_bytes = std::fs::read(&inverse_agents).unwrap();
+        let no_op = compare_and_set_terminal_snapshots_enabled_at_path(
+            &AppSettings::default(),
+            &inverse_path,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(no_op.agents[0].command, "codex");
+        assert!(no_op.coding_agent_profiles.profiles_by_agent.is_empty());
+        assert_eq!(std::fs::read(&inverse_path).unwrap(), main_bytes);
+        assert_eq!(std::fs::read(&inverse_agents).unwrap(), agents_bytes);
+        let toggled =
+            compare_and_set_terminal_snapshots_enabled_at_path(&no_op, &inverse_path, false, true)
+                .unwrap();
+        assert_eq!(toggled.agents[0].command, "codex");
+        assert!(toggled.coding_agent_profiles.profiles_by_agent.is_empty());
+        let after: Value = serde_json::from_slice(&std::fs::read(&inverse_path).unwrap()).unwrap();
+        assert_eq!(after["codingAgentProfiles"], physical_profiles);
+        assert_eq!(after["agents"], inverse_main["agents"]);
+        assert_eq!(std::fs::read(&inverse_agents).unwrap(), agents_bytes);
+        let stable = std::fs::read(&inverse_path).unwrap();
+        let reloaded =
+            compare_and_set_terminal_snapshots_enabled_at_path(&toggled, &inverse_path, true, true)
+                .unwrap();
+        assert_eq!(
+            reloaded.coding_agent_profiles,
+            toggled.coding_agent_profiles
+        );
+        assert_eq!(std::fs::read(&inverse_path).unwrap(), stable);
+        assert_eq!(std::fs::read(&inverse_agents).unwrap(), agents_bytes);
+        let loaded = load_settings_from_path(&inverse_path);
+        assert_eq!(loaded.agents[0].command, "codex");
+        assert!(loaded.coding_agent_profiles.profiles_by_agent.is_empty());
+        assert_eq!(std::fs::read(&inverse_path).unwrap(), stable);
+        assert_eq!(std::fs::read(&inverse_agents).unwrap(), agents_bytes);
+    }
+
+    #[test]
+    fn e2432_invalid_rows_keep_preferences_and_startup_token_persistence() {
+        for kind in [
+            "duplicate-equal",
+            "duplicate-different",
+            "empty-command",
+            "invalid-command",
+        ] {
+            invalid_row_persistence_case(kind);
+        }
+        for protected_main in [true, false] {
+            for duplicate in [true, false] {
+                invalid_row_without_profiles_case(protected_main, duplicate);
+            }
+        }
+    }
+
+    fn invalid_row_persistence_case(kind: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        let mut raw = registered();
+        if kind.starts_with("duplicate") {
+            let mut duplicate = raw["agents"][0].clone();
+            if kind == "duplicate-different" {
+                duplicate["baseCommand"] = json!("different-tool");
+            }
+            raw["agents"].as_array_mut().unwrap().push(duplicate);
+        } else {
+            raw["agents"][0]["baseCommand"] = if kind == "empty-command" {
+                json!("")
+            } else {
+                json!("claude --continue")
+            };
+        }
+        if kind == "invalid-command" {
+            let command = raw["agents"][0]["baseCommand"].as_str().unwrap();
+            assert!(validate_agent_command_text("fixture negative control", command).is_err());
+            // Newlines are token separators in the existing command parser,
+            // so they cannot stand in for a rejected command.
+            assert!(
+                validate_agent_command_text("fixture positive control", "tool\ninvalid").is_ok()
+            );
+        }
+        write_source(&path, &raw);
+        let mut main: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        main.as_object_mut().unwrap().remove("rootToken");
+        std::fs::write(&path, serde_json::to_vec(&main).unwrap()).unwrap();
+        let sidecar_before = std::fs::read(agents_instance_path(&path)).unwrap();
+        let mut loaded = load_settings_for_cli_from_path(&path);
+        assert_eq!(loaded.agents.len(), raw["agents"].as_array().unwrap().len());
+        assert!(loaded.root_token.is_none());
+        assert_eq!(
+            std::fs::read(agents_instance_path(&path)).unwrap(),
+            sidecar_before
+        );
+        let context = SourceReadContext::from_settings(&loaded, &path).unwrap();
+        let selected = context.source(SourceKind::RegisteredInstance);
+        let snapshot = read_source_snapshot(&context, &selected).unwrap();
+        assert_eq!(
+            snapshot.snapshot.availability,
+            SourceAvailability::Invalid,
+            "{kind}"
+        );
+        assert!(!snapshot.snapshot.capabilities.editable_save);
+        assert!(!snapshot.snapshot.capabilities.available_read);
+        assert!(snapshot.snapshot.agents.is_empty());
+        assert!(canonical_profile_source(&raw, &raw, true).is_err());
+        loaded.log_level = Some("debug".into());
+        let written = save_settings_to_path_preserving_project_paths(&loaded, &path).unwrap();
+        assert_eq!(written.log_level.as_deref(), Some("debug"));
+        let preference = compare_and_set_terminal_snapshots_enabled_at_path(
+            &written,
+            &path,
+            written.terminal_snapshots_enabled,
+            !written.terminal_snapshots_enabled,
+        )
+        .unwrap();
+        assert_ne!(
+            preference.terminal_snapshots_enabled,
+            written.terminal_snapshots_enabled
+        );
+        let mut edited = preference.clone();
+        edited
+            .coding_agent_profiles
+            .profiles_by_agent
+            .get_mut("one")
+            .unwrap()
+            .get_mut("B")
+            .unwrap()
+            .notes = "ambiguous edit".into();
+        let before = std::fs::read(agents_instance_path(&path)).unwrap();
+        assert!(save_settings_to_path_preserving_project_paths(&edited, &path).is_err());
+        assert_eq!(std::fs::read(agents_instance_path(&path)).unwrap(), before);
+        let startup = load_settings_from_path(&path);
+        assert!(startup.project_paths_persistence_error.is_none());
+        let token = startup.root_token.as_ref().unwrap();
+        let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["rootToken"], token.as_str());
+        assert_eq!(
+            load_settings_from_path(&path).root_token,
+            startup.root_token
+        );
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(agents_instance_path(&path)).unwrap()).unwrap();
+        assert_eq!(saved["codingAgentProfiles"], raw["codingAgentProfiles"]);
+        assert!(saved["codingAgentProfiles"]
+            .get("profileBindingVersion")
+            .is_none());
+    }
+
+    fn invalid_row_without_profiles_case(protected_main: bool, duplicate: bool) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        let mut source = registered();
+        source
+            .as_object_mut()
+            .unwrap()
+            .remove("codingAgentProfiles");
+        if duplicate {
+            let row = source["agents"][0].clone();
+            source["agents"].as_array_mut().unwrap().push(row);
+        } else {
+            source["agents"][0]["baseCommand"] = json!("");
+        }
+        assert!(physical_profile_rows(&source, true).is_err());
+        let mut main = serde_json::to_value(AppSettings::default()).unwrap();
+        for key in ["agents", "codingAgentProfiles", "rootToken"] {
+            main.as_object_mut().unwrap().remove(key);
+        }
+        if protected_main {
+            main["agents"] = source["agents"].clone();
+            std::fs::write(
+                temp.path().join(SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+                serde_json::to_vec(&json!({"agents":[{
+                    "id":"overlay", "label":"Overlay", "color":"#123456",
+                    "baseCommand":"overlay-tool"
+                }]}))
+                .unwrap(),
+            )
+            .unwrap();
+        } else {
+            std::fs::write(
+                agents_instance_path(&path),
+                serde_json::to_vec(&source).unwrap(),
+            )
+            .unwrap();
+        }
+        std::fs::write(&path, serde_json::to_vec(&main).unwrap()).unwrap();
+        let baseline = load_settings_for_cli_from_path(&path);
+        assert!(baseline.root_token.is_none());
+        assert_eq!(
+            startup_profile_legacy_work(
+                &baseline,
+                &path,
+                Some(&std::fs::read_to_string(&path).unwrap()),
+                false,
+            )
+            .unwrap(),
+            Some(false),
+        );
+        let loaded = load_settings_from_path(&path);
+        assert!(loaded.project_paths_persistence_error.is_none());
+        let token = loaded.root_token.clone().unwrap();
+        let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["rootToken"], token.as_str());
+        if protected_main {
+            assert_eq!(persisted["agents"], source["agents"]);
+            assert_eq!(loaded.agents[0].command, "overlay-tool");
+        } else {
+            assert_eq!(
+                loaded.agents.len(),
+                source["agents"].as_array().unwrap().len()
+            );
+        }
+        let mut preference = loaded;
+        preference.log_level = Some("debug".into());
+        let saved = save_settings_to_path_preserving_project_paths(&preference, &path).unwrap();
+        assert_eq!(saved.log_level.as_deref(), Some("debug"));
+        let reloaded = load_settings_for_cli_from_path(&path);
+        assert_eq!(reloaded.root_token.as_ref(), Some(&token));
+        assert_eq!(reloaded.log_level.as_deref(), Some("debug"));
+        let owner_path = if protected_main {
+            path.clone()
+        } else {
+            agents_instance_path(&path)
+        };
+        let owner: Value = serde_json::from_slice(&std::fs::read(owner_path).unwrap()).unwrap();
+        assert_eq!(
+            owner["agents"].as_array().unwrap().len(),
+            source["agents"].as_array().unwrap().len()
+        );
+        assert_invalid_row_members(&owner, &source);
+        assert!(owner
+            .pointer("/codingAgentProfiles/profileBindingVersion")
+            .is_none());
+        assert!(owner
+            .pointer("/codingAgentProfiles/profilesByBaseHash")
+            .is_none());
+    }
+
+    fn assert_invalid_row_members(owner: &Value, source: &Value) {
+        for (stored, original) in owner["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(source["agents"].as_array().unwrap())
+        {
+            for (key, value) in original.as_object().unwrap() {
+                assert_eq!(stored.get(key), Some(value));
+            }
+        }
+    }
+
+    #[test]
+    fn e2432_disabled_env_and_supplied_hashes() {
+        let mut raw = registered();
+        for row in raw["agents"].as_array_mut().unwrap() {
+            row["envs"] = json!([{"key":"K","value":"V","enabled":false}]);
+            row["id_hash"] = json!("forged");
+            row["id_hash_debug"] = json!(["forged"]);
+        }
+        let saved = canonical(&raw);
+        let envs: Vec<CodingAgentEnv> =
+            serde_json::from_value(raw["agents"][0]["envs"].clone()).unwrap();
+        let hash = configuration_identity("tool", &envs);
+        assert_ne!(hash, configuration_identity("tool", &[]));
+        assert_eq!(saved["agents"][0]["id_hash"], hash);
+        assert_ne!(saved["agents"][0]["id_hash_debug"], json!(["forged"]));
+        assert_eq!(
+            saved["codingAgentProfiles"]["profilesByBaseHash"]
+                .as_object()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(saved["codingAgentProfiles"]["profilesByBaseHash"]
+            .get(&hash)
+            .is_some());
+    }
+
+    #[test]
+    fn e2432_inventory_keeps_instance_and_primary_project_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SETTINGS_FILE_NAME);
+        write_source(&path, &registered());
+        let project = temp.path().join("primary");
+        std::fs::create_dir(&project).unwrap();
+        let settings = AppSettings {
+            project_paths: vec![project.to_string_lossy().into_owned()],
+            ..AppSettings::default()
+        };
+        let context = SourceReadContext::from_settings(&settings, &path).unwrap();
+        let mut instance = context.clone();
+        instance.project = false;
+        instance.catalog_root = context.settings_path.parent().unwrap().to_path_buf();
+        for owner in [&context, &instance] {
+            for kind in [
+                SourceKind::CatalogBase,
+                SourceKind::CatalogProject,
+                SourceKind::CatalogPersonal,
+            ] {
+                if !owner.project && kind == SourceKind::CatalogProject {
+                    continue;
+                }
+                let source = owner.source(kind);
+                let locator = owner.locator(&source).unwrap();
+                std::fs::create_dir_all(locator.parent().unwrap()).unwrap();
+                std::fs::write(locator, br#"{"schemaVersion":2,"agents":[]}"#).unwrap();
+            }
+        }
+        let sources = list_active_sources(&context);
+        assert_eq!(sources.len(), 6);
+        for source in &sources {
+            let snapshot = read_source_snapshot(&context, source).unwrap();
+            assert!(snapshot.snapshot.capabilities.available_read);
+            assert_eq!(
+                snapshot.snapshot.capabilities.editable_save,
+                source.kind == SourceKind::RegisteredInstance
+                    || (source.kind == SourceKind::CatalogPersonal
+                        && source.scope == SourceScope::Project)
+            );
+            assert!(!snapshot.snapshot.capabilities.editable_create);
+            assert!(!snapshot.snapshot.capabilities.repair_by_owner);
+        }
+        let source = context.source(SourceKind::CatalogBase);
+        let locator = context.locator(&source).unwrap();
+        std::fs::remove_file(&locator).unwrap();
+        assert_eq!(list_active_sources(&context).len(), 5);
+        std::fs::create_dir(&locator).unwrap();
+        assert_eq!(list_active_sources(&context).len(), 6);
+        let invalid = read_source_snapshot(&context, &source).unwrap();
+        assert_eq!(invalid.snapshot.availability, SourceAvailability::Invalid);
+        assert!(!invalid.snapshot.capabilities.available_read);
+        assert!(invalid.snapshot.agents.is_empty());
     }
 }
