@@ -476,6 +476,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    type LivenessHook = Arc<dyn Fn(Uuid) + Send + Sync>;
+
     const CLAUDE: &str = r"^ {2}Context [\u{2591}\u{2588}]+ (\d{1,3})%";
     const AGENT: &str = "claude";
 
@@ -493,7 +495,7 @@ mod tests {
         calls: StdMutex<Vec<Uuid>>,
         liveness_script: StdMutex<Vec<ContextSessionLiveness>>,
         liveness_calls: StdMutex<Vec<Uuid>>,
-        on_liveness: StdMutex<Option<Arc<dyn Fn(Uuid) + Send + Sync>>>,
+        on_liveness: StdMutex<Option<LivenessHook>>,
     }
 
     impl RowsFake {

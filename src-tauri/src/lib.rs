@@ -9013,7 +9013,7 @@ mod tests {
                 assert_ne!(mode, "sync-panic", "synchronous body panic control");
                 Box::pin(async move {
                     future_entries.fetch_add(1, Ordering::SeqCst);
-                    assert!(!rows.unwrap().is_empty());
+                    assert!(matches!(rows, Ok(ref rows) if !rows.is_empty()));
                     assert!(!snapshot.agents.is_empty());
                     assert!(manager.read().await.list_sessions().await.is_empty());
                     assert_ne!(mode, "future-panic", "body future panic control");

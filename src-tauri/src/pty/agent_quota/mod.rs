@@ -418,6 +418,8 @@ pub(crate) mod test_support {
 
     type ReadHook = Box<dyn Fn(Uuid) + Send + Sync>;
 
+    type LivenessHook = Arc<dyn Fn(Uuid) + Send + Sync>;
+
     /// Rows are THREE-state and scripted, with an independent liveness script: a
     /// two-state fake cannot express "a live child we could not ask".
     #[derive(Default)]
@@ -429,7 +431,7 @@ pub(crate) mod test_support {
         rows_calls: Mutex<Vec<Uuid>>,
         liveness_calls: Mutex<Vec<Uuid>>,
         on_rows_read: Mutex<Option<ReadHook>>,
-        pub(super) on_liveness: Mutex<Option<Arc<dyn Fn(Uuid) + Send + Sync>>>,
+        pub(super) on_liveness: Mutex<Option<LivenessHook>>,
     }
 
     impl RowsFake {

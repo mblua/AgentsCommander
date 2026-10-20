@@ -1482,6 +1482,8 @@ mod engine_tests {
     use super::*;
     use std::collections::VecDeque;
 
+    type LivenessHook = Arc<dyn Fn(Uuid) + Send + Sync>;
+
     /// What the scripted backend paints on the next read.
     pub(super) enum Painted {
         Frame(Vec<String>, Vec<bool>, u16),
@@ -1661,7 +1663,7 @@ mod engine_tests {
         pub(super) liveness: Mutex<HashMap<Uuid, ContextSessionLiveness>>,
         pub(super) resolutions: AtomicUsize,
         pub(super) liveness_calls: AtomicUsize,
-        pub(super) on_liveness: Mutex<Option<Arc<dyn Fn(Uuid) + Send + Sync>>>,
+        pub(super) on_liveness: Mutex<Option<LivenessHook>>,
     }
 
     impl WatcherBackendSource for FakeBackends {
@@ -2991,10 +2993,11 @@ mod tests {
             serde_json::to_value(h.history.snapshot(id, None)).unwrap(),
             history
         );
-        let registered = h.engine.registered.lock().unwrap();
-        let session = registered.get(&id).unwrap();
-        assert_eq!((session.stamp, session.seq), (stamp, seq));
-        drop(registered);
+        {
+            let registered = h.engine.registered.lock().unwrap();
+            let session = registered.get(&id).unwrap();
+            assert_eq!((session.stamp, session.seq), (stamp, seq));
+        }
         assert_eq!(observations(&observed, id).last(), Some(&Absent));
         h.patterns.0.lock().unwrap().clear();
         h.patterns.1.store(false, Ordering::Relaxed);
