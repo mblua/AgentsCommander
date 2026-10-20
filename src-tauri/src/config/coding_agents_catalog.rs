@@ -5891,7 +5891,7 @@ mod tests {
         let cases = [
             "<<<<<<< conflict",
             "{",
-            r#"{"schemaVersion":2,"agents":[]}"#,
+            r#"{"schemaVersion":999,"agents":[]}"#,
             r#"{"schemaVersion":1,"agents":[],"unexpected":true}"#,
             r#"{"schemaVersion":1,"schemaVersion":1,"agents":[]}"#,
             r#"{"schemaVersion":1,"agents":[{"key":"claude"},{"key":"claude"}]}"#,
@@ -9006,7 +9006,7 @@ mod tests {
     #[test]
     fn catalog_report_unsupported_schema_is_base_invalid() {
         for raw in [
-            r##"{"schemaVersion":2,"agents":[]}"##,
+            r##"{"schemaVersion":999,"agents":[]}"##,
             r##"{"schemaVersion":"1","agents":[]}"##,
             r##"{"schemaVersion":null,"agents":[]}"##,
         ] {
@@ -10082,7 +10082,7 @@ mod tests {
             ),
             (
                 "unsupported schema",
-                r##"{"schemaVersion":2,"agents":[]}"##,
+                r##"{"schemaVersion":999,"agents":[]}"##,
             ),
             (
                 "remove false",

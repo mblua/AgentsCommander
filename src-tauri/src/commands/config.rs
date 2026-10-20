@@ -1265,6 +1265,7 @@ async fn persist_settings_draft_update_with_saver(
     // #1737: the same overlay-state carry-over as in
     // `build_protected_settings_candidate` above, and for the same reason (plan D14).
     draft.local_overlay_state = current.local_overlay_state.clone();
+    draft.coding_agent_identity_physical = current.coding_agent_identity_physical.clone();
     // #965: same protect as `build_protected_settings_candidate`. The SettingsModal
     // Save path lands here, and so does every whole-object writer that reads
     // `settingsStore.current` first (window geometry, zoom, titlebar...). Rail
