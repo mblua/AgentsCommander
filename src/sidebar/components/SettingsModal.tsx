@@ -3774,6 +3774,10 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               return (
                 <div
                   class="settings-env-row"
+                  classList={{ "settings-env-managed": readOnly() }}
+                  title={readOnly() ? "Variable seteada por AgentsCommander" : undefined}
+                  role={readOnly() ? "group" : undefined}
+                  aria-label={readOnly() ? "Variable seteada por AgentsCommander" : undefined}
                   data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}`}
                   data-ac-role="row"
                   data-ac-state={readOnly() ? "managed" : row.enabled ? "enabled" : "disabled"}
@@ -3812,14 +3816,6 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
                       data-ac-state={readOnly() ? "disabled" : row.enabled ? "checked" : "unchecked"}
                     />
                   </label>
-                  <span
-                    class={`settings-env-source ${row.source === "system" ? "generated" : ""}`}
-                    data-ac-testid={`settings.agentRow.${agentIndex}.envRow.${rowIndex()}.source`}
-                    data-ac-role="status"
-                    data-ac-env-source={row.source}
-                  >
-                    {row.source}
-                  </span>
                   <button
                     class="settings-env-delete"
                     disabled={readOnly()}
@@ -3861,12 +3857,14 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           </label>
           <Show when={agent.isolatedHome}>
             <div
-              class="settings-codex-home-preview warning"
+              class="settings-codex-home-preview warning settings-env-managed"
+              title="Variable seteada por AgentsCommander"
+              role="status"
+              aria-label="Variable seteada por AgentsCommander"
               data-ac-testid={`settings.agentRow.${agentIndex}.codexHomeIsolation.preview`}
               data-ac-role="status"
               data-ac-state="isolated"
             >
-              <span class="settings-env-source generated">system</span>
               Generated CODEX_HOME will be used for launches from this agent.
               <Show when={hasUserCodexHome()}>
                 <span> Saved CODEX_HOME rows are kept but overridden while isolation is on.</span>
@@ -3880,7 +3878,7 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
               data-ac-role="status"
               data-ac-state="user"
             >
-              User CODEX_HOME is active for this Codex agent.
+              Saved CODEX_HOME is active for this Codex agent.
             </div>
           </Show>
         </Show>

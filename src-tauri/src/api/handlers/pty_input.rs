@@ -97,6 +97,24 @@ fn validate_content_headers(headers: &HeaderMap) -> Result<(), ApiError> {
     Ok(())
 }
 
+// Keep the RAM fallback conditional on verified physical absence. A valid RAM
+// value cannot turn a strict capture error into permission to route.
+async fn current_pty_input_project_paths(
+    settings: &crate::config::settings::SettingsState,
+    strict: impl std::future::Future<Output = Result<Option<Vec<String>>, String>>,
+) -> Result<Vec<String>, ApiError> {
+    let in_memory = settings
+        .current_read()
+        .await
+        .map_err(|error| ApiError::ServiceUnavailable(error.to_string()))?
+        .project_paths
+        .clone();
+    strict
+        .await
+        .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::UnsafePath))
+        .map(|paths| paths.unwrap_or(in_memory))
+}
+
 async fn post_inner(
     state: &ApiState,
     ip: IpAddr,
@@ -152,18 +170,16 @@ async fn post_inner(
     let proof = crate::api::identity::InitialApiCredentialProof::from_fresh_guard(fresh)
         .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::ApiClientUnbound))?;
     let authority = crate::api::identity::verify_live_pty_input_authority(state, proof).await?;
-    let in_memory_project_paths = {
+    let mut project_paths = {
         let settings = state
             .app_handle
             .state::<crate::config::settings::SettingsState>();
-        let paths = settings.read().await.project_paths.clone();
-        paths
+        current_pty_input_project_paths(
+            &settings,
+            crate::config::settings::read_pty_input_project_paths_strict_offloaded(),
+        )
+        .await?
     };
-    let mut project_paths =
-        crate::config::settings::read_pty_input_project_paths_strict_offloaded()
-            .await
-            .map_err(|_| pty_input_error(crate::phone::types::PtyInputReasonCode::UnsafePath))?
-            .unwrap_or(in_memory_project_paths);
     if let Some(project_path) = authority.sender.ac_root_identity.canonical_path.parent() {
         let project = project_path
             .to_str()
@@ -320,6 +336,77 @@ fn map_store_error(error: MessageStoreError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn e2992_p43_strict_revalidation() {
+        use crate::config::settings::{
+            new_settings_state, AppSettings, SettingsAvailability, SettingsOwner, SettingsPublisher,
+        };
+
+        let settings = new_settings_state(AppSettings {
+            project_paths: vec!["ram-project".to_string()],
+            ..AppSettings::default()
+        });
+        assert_eq!(
+            current_pty_input_project_paths(&settings, async { Ok(None) })
+                .await
+                .unwrap(),
+            vec!["ram-project"]
+        );
+        assert_eq!(
+            current_pty_input_project_paths(&settings, async { Ok(Some(Vec::new())) })
+                .await
+                .unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            current_pty_input_project_paths(&settings, async {
+                Ok(Some(vec!["physical-project".into()]))
+            })
+            .await
+            .unwrap(),
+            vec!["physical-project"]
+        );
+        for reason in ["unsafe_path", "settings_invalid", "settings_unavailable"] {
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let error = current_pty_input_project_paths(&settings, async {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(reason.to_string())
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                error.code(),
+                "unsafe_path",
+                "strict rejection must win over valid RAM"
+            );
+        }
+
+        let instance = tempfile::tempdir().unwrap();
+        let path = instance.path().join("settings.json");
+        let ready = AppSettings {
+            project_paths: vec!["ram-project".to_string()],
+            ..AppSettings::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&ready).unwrap()).unwrap();
+        let owner = SettingsOwner::open_active(&path, std::time::Duration::ZERO).unwrap();
+        let report = owner
+            .with_operation("p43-invalid", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |path| {
+                    std::fs::write(path, b"{").map_err(|error| error.to_string())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        let error = current_pty_input_project_paths(&owner, async {
+            panic!("unavailable RAM must reject before polling the physical reader")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), "service_unavailable");
+    }
 
     #[test]
     fn strict_request_rejects_caller_selected_authority_fields() {

@@ -73,6 +73,39 @@ struct UnrecordedDelivery {
     state_after: Vec<u8>,
 }
 
+#[derive(Clone)]
+enum SchedulerContext {
+    Native(AppHandle),
+    #[cfg(test)]
+    Headless {
+        owner: SettingsState,
+        // P43 preserves the six event arguments inline in this test-only recorder.
+        #[allow(clippy::type_complexity)]
+        transitions: Arc<
+            std::sync::Mutex<
+                Vec<(
+                    PathBuf,
+                    PathBuf,
+                    String,
+                    String,
+                    Option<crate::config::loops::AcLoopSummary>,
+                    Option<String>,
+                )>,
+            >,
+        >,
+    },
+}
+
+impl SchedulerContext {
+    fn settings_owner(&self) -> SettingsState {
+        match self {
+            Self::Native(app) => Arc::clone(app.state::<SettingsState>().inner()),
+            #[cfg(test)]
+            Self::Headless { owner, .. } => Arc::clone(owner),
+        }
+    }
+}
+
 pub struct LoopScheduler {
     notify: tokio::sync::Notify,
     /// One scan at a time. Taken by `scan_once` and `run_loop_now` and held
@@ -96,6 +129,8 @@ pub struct LoopScheduler {
     delivery_gate: std::sync::Mutex<Option<LoopDeliveryGate>>,
     #[cfg(test)]
     replay_gate: std::sync::Mutex<Option<LoopReplayGate>>,
+    #[cfg(test)]
+    completed_scans: std::sync::atomic::AtomicUsize,
 }
 
 impl LoopScheduler {
@@ -110,6 +145,8 @@ impl LoopScheduler {
             delivery_gate: std::sync::Mutex::new(None),
             #[cfg(test)]
             replay_gate: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            completed_scans: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -138,21 +175,26 @@ impl LoopScheduler {
     }
 
     pub fn start(self: Arc<Self>, app: AppHandle, shutdown: ShutdownSignal) {
+        self.start_with_context(SchedulerContext::Native(app), shutdown);
+    }
+
+    fn start_with_context(self: Arc<Self>, context: SchedulerContext, shutdown: ShutdownSignal) {
         tauri::async_runtime::spawn(async move {
-            self.scan_once(app.clone(), true, false).await;
+            self.scan_once(&context, true, false).await;
             let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
                 tokio::select! {
                     _ = shutdown.token().cancelled() => break,
-                    _ = interval.tick() => self.scan_once(app.clone(), false, false).await,
-                    _ = self.notify.notified() => self.scan_once(app.clone(), false, false).await,
+                    _ = interval.tick() => self.scan_once(&context, false, false).await,
+                    _ = self.notify.notified() => self.scan_once(&context, false, false).await,
                 }
             }
         });
     }
 
     pub async fn on_session_idle(&self, app: AppHandle, _session_id: Uuid) {
-        self.scan_once(app, false, true).await;
+        let context = SchedulerContext::Native(app);
+        self.scan_once(&context, false, true).await;
     }
 
     pub async fn run_loop_now(
@@ -161,6 +203,7 @@ impl LoopScheduler {
         project_dir: PathBuf,
         loop_id: String,
     ) -> Result<LoopConfigDetails, String> {
+        let context = SchedulerContext::Native(app);
         let _guard = self.scan_lock.lock().await;
         let ac_root = existing_ac_root(&project_dir).ok_or_else(|| {
             format!(
@@ -191,11 +234,11 @@ impl LoopScheduler {
             return Err(format!("Loop '{}' changed before delivery", loop_id));
         }
         let report = self
-            .deliver(&app, &project_dir, &config, run_id, due_at)
+            .deliver(&context, &project_dir, &config, run_id, due_at)
             .await;
         let state = self
             .apply_delivery_report(
-                &app,
+                &context,
                 &project_dir,
                 &dir,
                 &config,
@@ -219,12 +262,13 @@ impl LoopScheduler {
         alerts
     }
 
-    async fn scan_once(&self, app: AppHandle, startup: bool, pending_only: bool) {
+    async fn scan_once(&self, context: &SchedulerContext, startup: bool, pending_only: bool) {
         let _guard = self.scan_lock.lock().await;
-        let projects = active_project_candidates(&app).await;
+        let owner = context.settings_owner();
+        let projects = active_project_candidates_for_owner(&owner).await;
         for project in projects {
             if let Err(e) = self
-                .scan_project(&app, &project.path, startup, pending_only)
+                .scan_project(context, &project.path, startup, pending_only)
                 .await
             {
                 log::warn!(
@@ -234,6 +278,9 @@ impl LoopScheduler {
                 );
             }
         }
+        #[cfg(test)]
+        self.completed_scans
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// `scan_once` for one known project, minus project enumeration (which
@@ -244,8 +291,9 @@ impl LoopScheduler {
         app: AppHandle,
         dir: PathBuf,
     ) -> Result<(), String> {
+        let context = SchedulerContext::Native(app);
         let _guard = self.scan_lock.lock().await;
-        self.scan_project(&app, &dir, false, false).await
+        self.scan_project(&context, &dir, false, false).await
     }
 
     #[cfg(test)]
@@ -260,7 +308,7 @@ impl LoopScheduler {
 
     async fn deliver(
         &self,
-        app: &AppHandle,
+        context: &SchedulerContext,
         project_dir: &Path,
         config: &LoopConfigToml,
         run_id: Uuid,
@@ -278,12 +326,20 @@ impl LoopScheduler {
             }
             return gate.report.take().expect("delivery gate report");
         }
-        deliver_loop_prompt(app, project_dir, config, run_id, due_at).await
+        match context {
+            SchedulerContext::Native(app) => {
+                deliver_loop_prompt(app, project_dir, config, run_id, due_at).await
+            }
+            #[cfg(test)]
+            SchedulerContext::Headless { .. } => {
+                panic!("headless scheduler delivery requires installed gate")
+            }
+        }
     }
 
     async fn scan_project(
         &self,
-        app: &AppHandle,
+        context: &SchedulerContext,
         project_dir: &Path,
         startup: bool,
         pending_only: bool,
@@ -294,7 +350,7 @@ impl LoopScheduler {
         let loop_dirs = loop_dirs(&ac_root)?;
         for dir in loop_dirs {
             if let Err(e) = self
-                .scan_loop(app, project_dir, &dir, startup, pending_only)
+                .scan_loop(context, project_dir, &dir, startup, pending_only)
                 .await
             {
                 log::warn!("[loops] Loop scan failed for {}: {}", dir.display(), e);
@@ -305,7 +361,7 @@ impl LoopScheduler {
 
     async fn scan_loop(
         &self,
-        app: &AppHandle,
+        context: &SchedulerContext,
         project_dir: &Path,
         dir: &Path,
         startup: bool,
@@ -346,7 +402,14 @@ impl LoopScheduler {
                 );
             } else {
                 return self
-                    .retry_unrecorded_delivery(app, project_dir, dir, record, s0_generation, s0_raw)
+                    .retry_unrecorded_delivery(
+                        context,
+                        project_dir,
+                        dir,
+                        record,
+                        s0_generation,
+                        s0_raw,
+                    )
                     .await;
             }
         }
@@ -375,11 +438,11 @@ impl LoopScheduler {
             }
             let started_at = Utc::now();
             let report = self
-                .deliver(app, project_dir, &config, pending_run, pending_due)
+                .deliver(context, project_dir, &config, pending_run, pending_due)
                 .await;
             if report.kind == LoopAuditKind::PendingBusy {
                 self.maybe_coalesce_pending(
-                    app,
+                    context,
                     project_dir,
                     dir,
                     &config,
@@ -391,7 +454,7 @@ impl LoopScheduler {
                 return Ok(());
             }
             self.apply_delivery_report(
-                app,
+                context,
                 project_dir,
                 dir,
                 &config,
@@ -423,7 +486,7 @@ impl LoopScheduler {
                 return Ok(());
             }
             self.record_missed_while_closed(
-                app,
+                context,
                 project_dir,
                 dir,
                 &config,
@@ -442,10 +505,10 @@ impl LoopScheduler {
             return Ok(());
         }
         let report = self
-            .deliver(app, project_dir, &config, run_id, due_at)
+            .deliver(context, project_dir, &config, run_id, due_at)
             .await;
         self.apply_delivery_report(
-            app,
+            context,
             project_dir,
             dir,
             &config,
@@ -464,7 +527,7 @@ impl LoopScheduler {
     #[allow(clippy::too_many_arguments)]
     async fn maybe_coalesce_pending(
         &self,
-        app: &AppHandle,
+        context: &SchedulerContext,
         project_dir: &Path,
         dir: &Path,
         config: &LoopConfigToml,
@@ -515,7 +578,7 @@ impl LoopScheduler {
             return Ok(());
         }
         emit_transition(
-            app,
+            context,
             project_dir,
             dir,
             config,
@@ -529,7 +592,7 @@ impl LoopScheduler {
     #[allow(clippy::too_many_arguments)]
     async fn record_missed_while_closed(
         &self,
-        app: &AppHandle,
+        context: &SchedulerContext,
         project_dir: &Path,
         dir: &Path,
         config: &LoopConfigToml,
@@ -574,7 +637,7 @@ impl LoopScheduler {
             return Ok(state);
         }
         emit_transition(
-            app,
+            context,
             project_dir,
             dir,
             config,
@@ -588,7 +651,7 @@ impl LoopScheduler {
     #[allow(clippy::too_many_arguments)]
     async fn apply_delivery_report(
         &self,
-        app: &AppHandle,
+        context: &SchedulerContext,
         project_dir: &Path,
         dir: &Path,
         config: &LoopConfigToml,
@@ -683,7 +746,7 @@ impl LoopScheduler {
             return Ok(next);
         }
         emit_transition(
-            app,
+            context,
             project_dir,
             dir,
             config,
@@ -748,7 +811,7 @@ impl LoopScheduler {
     /// failed commit started from or the one it wrote.
     async fn retry_unrecorded_delivery(
         &self,
-        app: &AppHandle,
+        context: &SchedulerContext,
         project_dir: &Path,
         dir: &Path,
         record: UnrecordedDelivery,
@@ -777,7 +840,7 @@ impl LoopScheduler {
         if result? == LoopStateWrite::Written {
             self.take_unrecorded_delivery(dir);
             emit_transition(
-                app,
+                context,
                 project_dir,
                 dir,
                 &record.config,
@@ -944,9 +1007,19 @@ impl Default for LoopScheduler {
 }
 
 async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {
+    let owner = Arc::clone(app.state::<SettingsState>().inner());
+    active_project_candidates_for_owner(&owner).await
+}
+
+async fn active_project_candidates_for_owner(owner: &SettingsState) -> Vec<ProjectResolution> {
     let (project_paths, archived) = {
-        let settings = app.state::<SettingsState>();
-        let s = settings.read().await;
+        let s = match owner.current_read().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::debug!("[loops] candidate eligibility unavailable: {error}");
+                return Vec::new();
+            }
+        };
         (s.project_paths.clone(), s.archived_project_paths.clone())
     };
     let projects = enumerate_registered_project_candidates(&project_paths);
@@ -1067,7 +1140,7 @@ fn retain_unarchived_candidates(
 }
 
 fn emit_transition(
-    app: &AppHandle,
+    context: &SchedulerContext,
     project_dir: &Path,
     dir: &Path,
     config: &LoopConfigToml,
@@ -1076,15 +1149,28 @@ fn emit_transition(
     message: Option<String>,
 ) {
     let details = details_from_parts(dir, config, state);
-    emit_loop_change(
-        app,
-        project_dir,
-        dir,
-        &config.loop_def.id,
-        kind,
-        Some(details.summary),
-        message,
-    );
+    match context {
+        SchedulerContext::Native(app) => emit_loop_change(
+            app,
+            project_dir,
+            dir,
+            &config.loop_def.id,
+            kind,
+            Some(details.summary),
+            message,
+        ),
+        #[cfg(test)]
+        SchedulerContext::Headless { transitions, .. } => {
+            transitions.lock().expect("scheduler transitions").push((
+                project_dir.to_path_buf(),
+                dir.to_path_buf(),
+                config.loop_def.id.clone(),
+                kind.to_owned(),
+                Some(details.summary),
+                message,
+            ));
+        }
+    }
 }
 
 fn audit_kind_name(kind: &LoopAuditKind) -> &'static str {
@@ -1143,6 +1229,145 @@ mod tests {
                 ..LoopPolicy::default()
             },
         }
+    }
+
+    #[tokio::test]
+    async fn e2992_p43_invalid_no_candidate_action() {
+        use crate::config::settings::{
+            AppSettings, SettingsAvailability, SettingsOwner, SettingsPublisher,
+        };
+
+        let (project, dir) = pending_loop_fixture();
+        let instance = tempfile::tempdir().unwrap();
+        let path = instance.path().join("settings.json");
+        let settings = AppSettings {
+            project_paths: vec![project.path().to_string_lossy().to_string()],
+            ..AppSettings::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let owner = SettingsOwner::open_active(&path, Duration::ZERO).unwrap();
+        let transitions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let context = SchedulerContext::Headless {
+            owner: Arc::clone(&owner),
+            transitions: Arc::clone(&transitions),
+        };
+        let scheduler = Arc::new(LoopScheduler::new());
+        assert!(!active_project_candidates_for_owner(&owner).await.is_empty());
+        let pending = std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap();
+        install_report_gate(&scheduler, delivered_report());
+        scheduler.scan_once(&context, false, false).await;
+        assert!(
+            !gate_is_untaken(&scheduler),
+            "Ready delivers the eligible pending run"
+        );
+        let ready_transitions = {
+            let recorded = transitions.lock().expect("scheduler transitions");
+            assert!(!recorded.is_empty(), "Ready emits a real transition");
+            let config = read_loop_config(&dir).unwrap();
+            assert!(recorded.iter().any(
+                |(project_dir, loop_dir, loop_id, kind, summary, message)| {
+                    std::fs::canonicalize(project_dir).expect("recorded project exists")
+                        == std::fs::canonicalize(project.path()).expect("fixture project exists")
+                        && std::fs::canonicalize(loop_dir).expect("recorded loop exists")
+                            == std::fs::canonicalize(&dir).expect("fixture loop exists")
+                        && loop_id == &config.loop_def.id
+                        && kind == "delivered"
+                        && summary.is_some()
+                        && message.as_deref() == Some("gated delivery")
+                }
+            ));
+            recorded.len()
+        };
+        // Keep the same eligible work pending for the Invalid negative control.
+        std::fs::write(dir.join(LOOP_STATE_FILE), &pending).unwrap();
+
+        let report = owner
+            .with_operation("p43-invalid", |_, guard| {
+                guard.publish(SettingsPublisher::SettingsSave, |path| {
+                    std::fs::write(path, b"{").map_err(|error| error.to_string())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.availability, SettingsAvailability::Invalid);
+        let before = std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap();
+        install_report_gate(&scheduler, delivered_report());
+        for _ in 0..2 {
+            scheduler.scan_once(&context, false, false).await;
+            assert!(
+                gate_is_untaken(&scheduler),
+                "Invalid never reaches delivery"
+            );
+            assert_eq!(std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap(), before);
+            assert_eq!(
+                transitions.lock().expect("scheduler transitions").len(),
+                ready_transitions
+            );
+        }
+        assert!(active_project_candidates_for_owner(&owner).await.is_empty());
+        assert_eq!(std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap(), before);
+        let shutdown = ShutdownSignal::new();
+        let completed = scheduler
+            .completed_scans
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let started = tokio::time::Instant::now();
+        Arc::clone(&scheduler).start_with_context(context.clone(), shutdown.clone());
+        // Observe the actual task's startup scan and first interval tick.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while scheduler
+                .completed_scans
+                .load(std::sync::atomic::Ordering::SeqCst)
+                < completed + 2
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("Invalid preserves startup and interval scans");
+        scheduler.request_scan();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while scheduler
+                .completed_scans
+                .load(std::sync::atomic::Ordering::SeqCst)
+                < completed + 3
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("Invalid preserves requested scans");
+        tokio::time::timeout(Duration::from_secs(35), async {
+            while scheduler
+                .completed_scans
+                .load(std::sync::atomic::Ordering::SeqCst)
+                < completed + 4
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Invalid preserves the next 30-second interval tick");
+        assert!(started.elapsed() >= Duration::from_secs(30));
+        shutdown.trigger();
+        // The task owns the only other scheduler Arc. Its release proves exit,
+        // unlike waiting on the token we just cancelled ourselves.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while Arc::strong_count(&scheduler) != 1 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("scheduler task exits after cancellation");
+        assert_eq!(std::fs::read(dir.join(LOOP_STATE_FILE)).unwrap(), before);
+        assert!(gate_is_untaken(&scheduler));
+        assert_eq!(
+            transitions.lock().expect("scheduler transitions").len(),
+            ready_transitions
+        );
+        assert!(
+            scheduler.scan_lock.try_lock().is_ok(),
+            "scans release their lock"
+        );
     }
 
     #[test]
@@ -1302,10 +1527,31 @@ mod tests {
             .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production scheduler source");
+        let scan = production
+            .split("    async fn scan_once(")
+            .nth(1)
+            .expect("scan_once definition")
+            .split("    pub(crate) async fn scan_project_under_scan_lock(")
+            .next()
+            .expect("scan_once body");
+        assert!(scan.contains("active_project_candidates_for_owner(&owner).await"));
+        let wrapper = production
+            .split(
+                "async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {",
+            )
+            .nth(1)
+            .expect("active_project_candidates definition")
+            .split("async fn active_project_candidates_for_owner(")
+            .next()
+            .expect("active_project_candidates body");
+        assert!(wrapper.contains("active_project_candidates_for_owner(&owner).await"));
         let candidates = production
-            .find("async fn active_project_candidates(app: &AppHandle) -> Vec<ProjectResolution> {")
-            .expect("active_project_candidates definition");
-        let body = &production[candidates..];
+            .find("async fn active_project_candidates_for_owner(owner: &SettingsState) -> Vec<ProjectResolution> {")
+            .expect("active_project_candidates_for_owner definition");
+        let body = production[candidates..]
+            .split("fn unresolved_targets_in_project(")
+            .next()
+            .expect("active_project_candidates_for_owner body");
         let normalize = body
             .find("let archived_roots = sessions_persistence::normalize_project_roots(&archived);")
             .expect("archived root normalization");
@@ -1315,7 +1561,7 @@ mod tests {
 
         assert!(
             normalize < retain,
-            "active_project_candidates must subtract archived candidates after normalizing archived roots"
+            "active_project_candidates_for_owner must subtract archived candidates after normalizing archived roots"
         );
     }
 
@@ -1395,7 +1641,7 @@ mod tests {
 
         scheduler
             .maybe_coalesce_pending(
-                app.handle(),
+                &SchedulerContext::Native(app.handle().clone()),
                 &project_dir,
                 &dir,
                 &config,
@@ -1432,7 +1678,7 @@ mod tests {
 
         scheduler
             .record_missed_while_closed(
-                app.handle(),
+                &SchedulerContext::Native(app.handle().clone()),
                 &project_dir,
                 &dir,
                 &config,
@@ -1474,7 +1720,7 @@ mod tests {
 
         scheduler
             .apply_delivery_report(
-                app.handle(),
+                &SchedulerContext::Native(app.handle().clone()),
                 &project_dir,
                 &dir,
                 &config,
@@ -1557,7 +1803,13 @@ mod tests {
         let app = audit_writer_app();
 
         LoopScheduler::new()
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect("an unreadable state is not a scan failure");
 
@@ -1637,7 +1889,13 @@ mod tests {
 
         let missing = loop_dir(&ac_root, "gone");
         scheduler
-            .scan_loop(app.handle(), tmp.path(), &missing, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &missing,
+                false,
+                false,
+            )
             .await
             .expect("a missing directory is Ok");
         assert!(!missing.exists(), "nothing recreated the missing directory");
@@ -1646,7 +1904,13 @@ mod tests {
         std::fs::remove_file(dir.join(crate::config::loops::LOOP_CONFIG_FILE))
             .expect("remove config");
         scheduler
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect("a missing config is Ok");
         assert_eq!(
@@ -2137,7 +2401,7 @@ mod tests {
             let (project, dir) = (project.to_path_buf(), dir.to_path_buf());
             tokio::spawn(async move {
                 scheduler
-                    .scan_loop(&app, &project, &dir, false, false)
+                    .scan_loop(&SchedulerContext::Native(app), &project, &dir, false, false)
                     .await
             })
         };
@@ -2311,7 +2575,13 @@ mod tests {
 
         install_report_gate(&scheduler, delivered_report());
         let err = scheduler
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect_err("the audit append fails");
         assert!(err.contains("Failed to read"), "{err}");
@@ -2521,7 +2791,7 @@ mod tests {
             let (project, dir) = (tmp.path().to_path_buf(), dir.clone());
             tokio::spawn(async move {
                 scheduler
-                    .scan_loop(&app, &project, &dir, false, false)
+                    .scan_loop(&SchedulerContext::Native(app), &project, &dir, false, false)
                     .await
             })
         };
@@ -2628,7 +2898,13 @@ mod tests {
         let scheduler = LoopScheduler::new();
 
         scheduler
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect("scan 1");
         let after_1 = issue_2733_state(&dir);
@@ -2649,7 +2925,13 @@ mod tests {
             .last_checked_at
             .expect("forced check");
         scheduler
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect("scan 2");
         let after_2 = issue_2733_state(&dir);
@@ -2678,7 +2960,13 @@ mod tests {
         for _ in 0..2 {
             issue_2733_make_due(&dir);
             scheduler
-                .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+                .scan_loop(
+                    &SchedulerContext::Native(app.handle().clone()),
+                    tmp.path(),
+                    &dir,
+                    false,
+                    false,
+                )
                 .await
                 .expect("scan");
         }
@@ -2694,7 +2982,13 @@ mod tests {
         let app = audit_writer_app();
 
         LoopScheduler::new()
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect("scan");
 
@@ -2726,7 +3020,13 @@ mod tests {
         let kinds = issue_2733_listen(&app);
 
         LoopScheduler::new()
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect("scan");
 
@@ -2748,7 +3048,13 @@ mod tests {
 
         // 1. Room absent, real delivery.
         scheduler
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect("scan 1");
         assert_eq!(
@@ -2769,7 +3075,13 @@ mod tests {
         issue_2733_make_due(&dir);
         install_report_gate(&scheduler, delivered_report());
         scheduler
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect("scan 2");
 
@@ -2793,7 +3105,13 @@ mod tests {
         std::fs::remove_dir_all(tmp.path().join(".ac").join("wg-1-dev-team")).expect("remove room");
         issue_2733_make_due(&dir);
         scheduler
-            .scan_loop(app.handle(), tmp.path(), &dir, false, false)
+            .scan_loop(
+                &SchedulerContext::Native(app.handle().clone()),
+                tmp.path(),
+                &dir,
+                false,
+                false,
+            )
             .await
             .expect("scan 3");
         let rows = audit_rows(&dir);
