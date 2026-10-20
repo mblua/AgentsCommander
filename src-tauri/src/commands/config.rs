@@ -10150,28 +10150,7 @@ mod tests {
                 );
             } else {
                 let physical = disk(&physical_path);
-                let codex: crate::config::settings::AgentConfig = serde_json::from_value(
-                    physical["agents"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .find(|row| row["id"] == "codex")
-                        .unwrap()
-                        .clone(),
-                )
-                .unwrap();
-                assert_eq!(codex.command, "codex");
-                assert!(codex.envs.is_empty());
-                let hash =
-                    crate::config::settings::configuration_identity(&codex.command, &codex.envs);
-                let cell = &profiles["profilesByBaseHash"][&hash]["A"];
-                assert_eq!(cell["additionalArguments"], json!("codex --edited"));
-                assert_eq!(cell["command"], json!("codex"));
-                for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
-                    assert!(profiles.get(key).is_none());
-                }
-                assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
-                assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
+                p6_assert_unprotected_profile_storage(&physical, &profiles);
             }
             if protected {
                 assert_eq!(
@@ -10220,6 +10199,30 @@ mod tests {
             );
             let reloaded = load_settings_from_path(&path);
             assert_eq!(saved.coding_agent_profiles, reloaded.coding_agent_profiles);
+        }
+
+        fn p6_assert_unprotected_profile_storage(physical: &Value, profiles: &Value) {
+            let codex: crate::config::settings::AgentConfig = serde_json::from_value(
+                physical["agents"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["id"] == "codex")
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+            assert_eq!(codex.command, "codex");
+            assert!(codex.envs.is_empty());
+            let hash = crate::config::settings::configuration_identity(&codex.command, &codex.envs);
+            let cell = &profiles["profilesByBaseHash"][&hash]["A"];
+            assert_eq!(cell["additionalArguments"], json!("codex --edited"));
+            assert_eq!(cell["command"], json!("codex"));
+            for key in ["profilesByAgent", "profileLabelsByAgent", "identityByAgent"] {
+                assert!(profiles.get(key).is_none());
+            }
+            assert_eq!(profiles["profileSlots"]["B"]["label"], json!("Second"));
+            assert_eq!(profiles["defaultProfileByAgent"]["codex"], json!("A"));
         }
 
         // P7
