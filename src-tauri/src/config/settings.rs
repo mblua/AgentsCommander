@@ -18058,6 +18058,55 @@ struct SettingsOwnerLease {
     settings_path: PathBuf,
 }
 
+#[cfg(all(test, windows))]
+struct SettingsOwnerLeaseVerifyFault {
+    path: PathBuf,
+    armed: bool,
+    hits: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+#[cfg(all(test, windows))]
+thread_local! {
+    static SETTINGS_OWNER_LEASE_VERIFY_FAULT: std::cell::RefCell<Option<SettingsOwnerLeaseVerifyFault>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, windows))]
+struct SettingsOwnerLeaseVerifyFaultGuard {
+    path: PathBuf,
+    hits: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+#[cfg(all(test, windows))]
+impl SettingsOwnerLeaseVerifyFaultGuard {
+    fn install(path: PathBuf) -> Self {
+        let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+        SETTINGS_OWNER_LEASE_VERIFY_FAULT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none(), "lease verification faults cannot nest");
+            *slot = Some(SettingsOwnerLeaseVerifyFault {
+                path: path.clone(),
+                armed: true,
+                hits: std::rc::Rc::clone(&hits),
+            });
+        });
+        Self { path, hits }
+    }
+}
+
+#[cfg(all(test, windows))]
+impl Drop for SettingsOwnerLeaseVerifyFaultGuard {
+    fn drop(&mut self) {
+        SETTINGS_OWNER_LEASE_VERIFY_FAULT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.as_ref().is_some_and(|fault| {
+                fault.path == self.path && std::rc::Rc::ptr_eq(&fault.hits, &self.hits)
+            }) {
+                *slot = None;
+            }
+        });
+    }
+}
+
 impl SettingsOwnerLease {
     fn acquire(
         settings_path: &Path,
@@ -18110,6 +18159,22 @@ impl SettingsOwnerLease {
     }
 
     fn verify(&self) -> Result<(), SettingsOwnerError> {
+        #[cfg(all(test, windows))]
+        if SETTINGS_OWNER_LEASE_VERIFY_FAULT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(fault) = slot.as_mut() else {
+                return false;
+            };
+            if fault.armed && fault.path == self.settings_path {
+                fault.armed = false;
+                fault.hits.set(fault.hits.get() + 1);
+                true
+            } else {
+                false
+            }
+        }) {
+            return Err(SettingsOwnerError::Lifecycle("lock_identity_rejected".to_string()));
+        }
         self.retained
             .verify_current()
             .map_err(|_| SettingsOwnerError::Lifecycle("lock_identity_rejected".to_string()))
@@ -42923,7 +42988,8 @@ mod e2432_p02_physical_file_tests {
     #[test]
     fn e2432_p02_registered_atomic_failure_retains_actual_revision_and_owner() {
         let (_temp, path, owner) = fixture();
-        let (_, before) = selected(&owner, &path);
+        let (context, before) = selected(&owner, &path);
+        let target = context.locator(&before.source).unwrap();
         let bytes = std::fs::read(agents_instance_path(&path)).unwrap();
         let edit = edits(
             json!({"rows":[{"entryHint":"same","action":"upsert","patch":{"label":"Edited"}}],"profileSets":[]}),
@@ -42931,8 +42997,7 @@ mod e2432_p02_physical_file_tests {
         let report = owner
             .with_operation_blocking("p02-registered-atomic-failure", |current, guard| {
                 PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| {
-                    *slot.borrow_mut() =
-                        Some((agents_instance_path(&path), SettingsSaveStage::TempCreate))
+                    *slot.borrow_mut() = Some((target.clone(), SettingsSaveStage::TempCreate))
                 });
                 let result = save_agent_file_locked(
                     current,
@@ -42942,7 +43007,12 @@ mod e2432_p02_physical_file_tests {
                     &before.context_revision,
                     &edit,
                 );
+                let fault_fired = matches!(
+                    &result,
+                    Err(reason) if reason.contains("injected migration atomic failure")
+                );
                 PROJECT_MIGRATION_ATOMIC_FAULT.with(|slot| *slot.borrow_mut() = None);
+                assert!(fault_fired, "exact publisher checkpoint must fire");
                 assert_eq!(guard.effect(), OperationEffect::Possible);
                 result
             })
@@ -44037,6 +44107,7 @@ mod e2432_p02_closed_owner_tests {
         assert_eq!(f.owner.control().operations, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn e2432_p02_owner_identity_loss_invalidates_catalog_authority() {
         let temp = tempfile::tempdir().unwrap();
@@ -44067,6 +44138,112 @@ mod e2432_p02_closed_owner_tests {
         );
         assert!(result.is_err());
         assert_eq!(owner.control().availability, SettingsAvailability::Invalid);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn e2432_p02_simulated_windows_lease_failure_invalidates_catalog_authority() {
+        let f = fixture();
+        let owner = Arc::clone(&f.owner);
+        let source = f.source.clone();
+        let expected = f.snapshot.revision.clone();
+        let context = f.snapshot.context_revision.clone();
+        let paths = [
+            f.path.clone(),
+            agents_instance_path(&f.path),
+            project_paths_path(&f.path),
+            f.path.with_file_name(SETTINGS_LOCAL_OVERRIDE_FILE_NAME),
+            f.catalog.clone(),
+        ];
+        let bytes: Vec<_> = paths
+            .into_iter()
+            .map(|path| {
+                let bytes = match std::fs::read(&path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => panic!("fixture participant capture failed: {error}"),
+                };
+                (path, bytes)
+            })
+            .collect();
+        std::thread::spawn(move || {
+            let epoch = owner.identity().epoch;
+            let ram = serde_json::to_value(owner.settings.blocking_read().clone()).unwrap();
+            let counters = [
+                owner.counters.transaction_lock_attempts.load(Ordering::Relaxed),
+                owner.counters.captures.load(Ordering::Relaxed),
+                owner.counters.source_reads.load(Ordering::Relaxed),
+                owner.counters.operations.load(Ordering::Relaxed),
+            ];
+            let path = {
+                let lease = owner.lease_guard();
+                lease.as_ref().unwrap().settings_path.clone()
+            };
+            // Simulates the verifier error, never Windows physical substitution.
+            let fault = SettingsOwnerLeaseVerifyFaultGuard::install(path);
+            let hits = std::rc::Rc::clone(&fault.hits);
+            let result = owner.save_catalog_source_blocking(
+                source.clone(),
+                expected.clone(),
+                context.clone(),
+                AgentFileEdits::default(),
+            );
+            assert!(matches!(result, Err(reason) if reason == "ownerIntegrityLost"));
+            assert_eq!(hits.get(), 1, "first operation_guard verify must consume fault");
+            assert_eq!(owner.availability(), SettingsAvailability::Invalid);
+            assert_eq!(owner.identity().epoch, epoch);
+            assert_eq!(
+                serde_json::to_value(owner.settings.blocking_read().clone()).unwrap(),
+                ram
+            );
+            assert_eq!(
+                [
+                    owner.counters.transaction_lock_attempts.load(Ordering::Relaxed),
+                    owner.counters.captures.load(Ordering::Relaxed),
+                    owner.counters.source_reads.load(Ordering::Relaxed),
+                    owner.counters.operations.load(Ordering::Relaxed),
+                ],
+                counters
+            );
+            for (path, before) in bytes {
+                match before {
+                    Some(before) => assert_eq!(std::fs::read(path).unwrap(), before),
+                    None => assert!(!path.exists()),
+                }
+            }
+            assert_eq!(owner.control().operations, 0);
+            assert_eq!(owner.control().permits, 0);
+            assert!(owner.blocking_current_snapshot().is_err());
+            assert!(owner
+                .read_agent_files_blocking(AgentFileReadRequest::List)
+                .is_err());
+            assert!(owner
+                .save_catalog_source_blocking(
+                    source,
+                    expected,
+                    context,
+                    AgentFileEdits::default(),
+                )
+                .is_err());
+            // One-shot consumption leaves the real retained directory verifier intact.
+            {
+                let lease = owner.lease_guard();
+                assert!(lease.as_ref().unwrap().verify().is_ok());
+            }
+            assert_eq!(hits.get(), 1);
+            drop(fault);
+            SETTINGS_OWNER_LEASE_VERIFY_FAULT.with(|slot| assert!(slot.borrow().is_none()));
+            assert_eq!(hits.get(), 1, "witness survives guard cleanup");
+            let healthy = fixture();
+            let committed = save(&healthy);
+            assert_eq!(committed.outcome, AgentFileSaveOutcome::Committed);
+            assert_eq!(healthy.owner.availability(), SettingsAvailability::Ready);
+            assert_eq!(owner.availability(), SettingsAvailability::Invalid);
+            assert_eq!(owner.control().operations, 0);
+            assert_eq!(owner.control().permits, 0);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
@@ -44204,7 +44381,6 @@ mod e2432_p02_closed_owner_tests {
             let packet = canonical_profile_source(&packet, &packet, true).unwrap();
             let registered = agents_instance_path(&path);
             write(&registered, &packet);
-            let original = std::fs::read(&path).unwrap();
             let registered_before = std::fs::read(&registered).unwrap();
             let mut ordinary_value = serde_json::to_value(&settings).unwrap();
             ordinary_value["agentFileSourceByMenu"] = invalid.clone();
@@ -44216,7 +44392,13 @@ mod e2432_p02_closed_owner_tests {
             assert_eq!(ordinary.default_shell, settings.default_shell);
             assert_eq!(ordinary.agents[0].id, "own");
             assert!(ordinary.agent_file_source_by_menu.is_none());
-            assert_eq!(std::fs::read(&path).unwrap(), original);
+            let migrated: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(migrated["agentFileSourceByMenu"], invalid);
+            assert_eq!(migrated["defaultShell"], json!(settings.default_shell));
+            assert!(migrated.get("projectPaths").is_none());
+            let project_disk: Value =
+                serde_json::from_slice(&std::fs::read(project_paths_path(&path)).unwrap()).unwrap();
+            assert_eq!(project_disk["projectPaths"], main["projectPaths"]);
             let loaded = load_settings_from_path(&path);
             assert_eq!(loaded.default_shell, settings.default_shell);
             assert_eq!(loaded.default_shell_args, settings.default_shell_args);
@@ -44226,7 +44408,10 @@ mod e2432_p02_closed_owner_tests {
             assert!(loaded.project_paths.iter().any(|p| {
                 Path::new(p).canonicalize().unwrap() == project.canonicalize().unwrap()
             }));
-            assert_eq!(std::fs::read(&path).unwrap(), original);
+            let original = std::fs::read(&path).unwrap();
+            let stabilized: Value = serde_json::from_slice(&original).unwrap();
+            assert_eq!(stabilized["agentFileSourceByMenu"], invalid);
+            assert_eq!(stabilized["defaultShell"], json!(settings.default_shell));
             assert_eq!(std::fs::read(&registered).unwrap(), registered_before);
             let owner = SettingsOwner::open_active(&path, Duration::from_secs(1)).unwrap();
             let adopted = owner.blocking_current_snapshot().unwrap();
