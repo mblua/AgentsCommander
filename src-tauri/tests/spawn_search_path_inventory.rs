@@ -273,6 +273,12 @@ const INVENTORY: &[Row] = &[
     ),
     ("src-tauri/src/pty/remote_watcher.rs", 2, 2, &[]),
     (
+        "src-tauri/src/pty/terminal_snapshot.rs",
+        1,
+        0,
+        &[(TestOnly, 1)],
+    ),
+    (
         "src-tauri/src/pty/terminal_snapshot/acceptance_tests.rs",
         10,
         0,
