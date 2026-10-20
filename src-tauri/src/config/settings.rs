@@ -41883,8 +41883,8 @@ pub struct AgentFileSaveReply {
     pub diagnostics: Vec<SourceDiagnostic>,
 }
 
-fn agent_file_read(path: &Path) -> Result<Vec<u8>, String> {
-    crate::config::coding_agents_catalog::read_selected_regular_file(path)
+pub(super) fn agent_file_read(path: &Path) -> Result<Vec<u8>, String> {
+    crate::path_identity::read_bounded_regular(path, SETTINGS_CAPTURE_LIMIT).map(|(bytes, _)| bytes)
 }
 
 fn agent_file_decode(
@@ -43318,6 +43318,12 @@ impl CatalogSourceOperationGuard<'_, '_> {
     pub(crate) fn target(&self) -> &Path {
         &self.path
     }
+
+    pub(super) fn verify_target_parent_chain(&self) -> Result<(), String> {
+        crate::path_identity::verify_component_chain(self.path.parent().expect("parent"))
+            .map_err(|_| "sourceContextUnavailable".to_owned())
+    }
+
     pub(crate) fn effect(&self) -> OperationEffect {
         self.guard.effect()
     }

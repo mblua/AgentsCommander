@@ -13979,10 +13979,6 @@ mod e2432_catalog_profile_tests {
 }
 
 // E2432: narrow physical IO, no catalog initialization, migration or refresh.
-pub(crate) fn read_selected_regular_file(path: &Path) -> Result<Vec<u8>, String> {
-    crate::path_identity::read_bounded_regular(path, 16 * 1024 * 1024).map(|(bytes, _)| bytes)
-}
-
 pub(crate) fn replace_selected_personal_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let paths = CatalogPaths::new(path.parent().ok_or("sourceContextUnavailable")?);
     if path != paths.local {
@@ -14002,8 +13998,7 @@ pub(crate) fn publish_selected_personal(
         if path != paths.local {
             return Err("sourceReadOnly".into());
         }
-        crate::path_identity::verify_component_chain(path.parent().expect("parent"))
-            .map_err(|_| "sourceContextUnavailable")?;
+        proof.verify_target_parent_chain()?;
         // Locking never initializes a catalog or creates its parent directory.
         acquire_catalog_lock(&paths)
     })();
@@ -14128,7 +14123,7 @@ mod e2432_p02_catalog_publication_tests {
             )
             .unwrap();
         assert_eq!(committed.outcome, AgentFileSaveOutcome::Committed);
-        let actual = read_selected_regular_file(&paths.local).unwrap();
+        let actual = crate::config::settings::agent_file_read(&paths.local).unwrap();
         assert_ne!(sha256_hex(&actual), sha256_hex(&before));
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&actual).unwrap()["extension"],
@@ -14143,8 +14138,8 @@ mod e2432_p02_catalog_publication_tests {
         let alias = temp.path().join("alias.json");
         std::fs::write(&source, b"{}").unwrap();
         std::fs::hard_link(&source, &alias).unwrap();
-        assert!(read_selected_regular_file(&source).is_err());
-        assert!(read_selected_regular_file(&alias).is_err());
+        assert!(crate::config::settings::agent_file_read(&source).is_err());
+        assert!(crate::config::settings::agent_file_read(&alias).is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"{}");
     }
 }
