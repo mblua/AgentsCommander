@@ -8897,12 +8897,19 @@ mod tests {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         for _ in 0..2 {
-            assert!(!super::release_room_reader_demands_when_globally_off(demand_app.handle()).await);
+            assert!(
+                !super::release_room_reader_demands_when_globally_off(demand_app.handle()).await
+            );
             assert!(holds_room_reader_demand(demand_app.handle(), demand_id).await);
-            assert_eq!(room_demand_epoch(demand_app.handle(), demand_id).await, epoch);
+            assert_eq!(
+                room_demand_epoch(demand_app.handle(), demand_id).await,
+                epoch
+            );
         }
         // Positive control: the same session and bridge really release when Ready/off.
-        demand_harness.set_global_co_managed(false, "test-key").await;
+        demand_harness
+            .set_global_co_managed(false, "test-key")
+            .await;
         assert!(
             super::release_room_reader_demands_when_globally_off(demand_harness.app.handle()).await
         );
