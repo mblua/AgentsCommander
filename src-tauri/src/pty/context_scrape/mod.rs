@@ -68,7 +68,7 @@ pub trait ScreenRowsSource: Send + Sync {
 /// `blocking_read` panics inside a runtime - and the tick is inside one. A sync signature
 /// here would kill the scraper on tick 1, silently and permanently, for every session.
 pub trait ContextPatternSource: Send + Sync {
-    fn patterns(&self) -> BoxFuture<'_, HashMap<String, String>>;
+    fn patterns(&self) -> BoxFuture<'_, Option<HashMap<String, String>>>;
 }
 
 /// Where a badge reading goes. Its equality gate remains independent of internal samples.
@@ -341,7 +341,7 @@ impl ContextScraper {
                 .collect()
         };
         ids.sort_unstable_by_key(|(id, _)| *id);
-        if !ids.is_empty() {
+        if patterns.is_some() && !ids.is_empty() {
             let start = self.sample_cursor.fetch_add(1, Ordering::Relaxed) % ids.len();
             ids.rotate_left(start);
         }
@@ -352,6 +352,24 @@ impl ContextScraper {
         let mut changed_readings: Vec<(Uuid, Option<u8>)> = Vec::new();
 
         for (id, agent_id) in ids {
+            let Some(patterns) = patterns.as_ref() else {
+                if self.rows.get_session_liveness(id) == ContextSessionLiveness::SessionOver {
+                    let _sequence = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
+                    if self
+                        .registered
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .contains_key(&id)
+                    {
+                        self.samples
+                            .observe(ContextSample::SessionOver { session_id: id });
+                        if self.retire_session_under_sequence(id) {
+                            changed_readings.push((id, None));
+                        }
+                    }
+                }
+                continue;
+            };
             let usable_pattern = patterns
                 .get(&agent_id)
                 .filter(|source| !source.trim().is_empty())
@@ -458,6 +476,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    type LivenessHook = Arc<dyn Fn(Uuid) + Send + Sync>;
+
     const CLAUDE: &str = r"^ {2}Context [\u{2591}\u{2588}]+ (\d{1,3})%";
     const AGENT: &str = "claude";
 
@@ -475,6 +495,7 @@ mod tests {
         calls: StdMutex<Vec<Uuid>>,
         liveness_script: StdMutex<Vec<ContextSessionLiveness>>,
         liveness_calls: StdMutex<Vec<Uuid>>,
+        on_liveness: StdMutex<Option<LivenessHook>>,
     }
 
     impl RowsFake {
@@ -484,6 +505,7 @@ mod tests {
                 calls: StdMutex::new(Vec::new()),
                 liveness_script: StdMutex::new(Vec::new()),
                 liveness_calls: StdMutex::new(Vec::new()),
+                on_liveness: StdMutex::new(None),
             })
         }
         fn with_liveness(reads: Vec<ContextSessionLiveness>) -> Arc<Self> {
@@ -492,6 +514,7 @@ mod tests {
                 calls: StdMutex::new(Vec::new()),
                 liveness_script: StdMutex::new(reads),
                 liveness_calls: StdMutex::new(Vec::new()),
+                on_liveness: StdMutex::new(None),
             })
         }
         fn call_count(&self) -> usize {
@@ -515,6 +538,10 @@ mod tests {
 
         fn get_session_liveness(&self, id: Uuid) -> ContextSessionLiveness {
             self.liveness_calls.lock().unwrap().push(id);
+            let hook = self.on_liveness.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook(id);
+            }
             let mut script = self.liveness_script.lock().unwrap();
             if script.is_empty() {
                 ContextSessionLiveness::Unavailable
@@ -527,6 +554,7 @@ mod tests {
     #[derive(Default)]
     struct PatternFake {
         patterns: StdMutex<HashMap<String, String>>,
+        unavailable: std::sync::atomic::AtomicBool,
         calls: StdMutex<usize>,
     }
 
@@ -552,10 +580,14 @@ mod tests {
     }
 
     impl ContextPatternSource for PatternFake {
-        fn patterns(&self) -> BoxFuture<'_, HashMap<String, String>> {
+        fn patterns(&self) -> BoxFuture<'_, Option<HashMap<String, String>>> {
             Box::pin(async move {
                 *self.calls.lock().unwrap() += 1;
-                self.patterns.lock().unwrap().clone()
+                if self.unavailable.load(Ordering::Relaxed) {
+                    None
+                } else {
+                    Some(self.patterns.lock().unwrap().clone())
+                }
             })
         }
     }
@@ -646,6 +678,155 @@ mod tests {
             samples,
             persist,
         }
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_unavailable_mid_tick_retirement() {
+        let h = harness(RowsFake::scripted(vec![]), PatternFake::with(AGENT, CLAUDE));
+        let id = Uuid::new_v4();
+        h.scraper.register_session(id, AGENT.to_string());
+        h.patterns.unavailable.store(true, Ordering::Relaxed);
+        *h.rows.liveness_script.lock().unwrap() = vec![ContextSessionLiveness::SessionOver];
+        let (entered, handshake) = tokio::sync::oneshot::channel();
+        let entered = std::sync::Mutex::new(Some(entered));
+        let (release, resume) = std::sync::mpsc::sync_channel(1);
+        let resume = std::sync::Mutex::new(resume);
+        *h.rows.on_liveness.lock().unwrap() = Some(Arc::new(move |_| {
+            entered.lock().unwrap().take().unwrap().send(()).unwrap();
+            resume
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        }));
+        let engine = Arc::clone(&h.scraper);
+        let tick = tokio::task::spawn_blocking(move || futures::executor::block_on(engine.tick()));
+        tokio::time::timeout(Duration::from_secs(2), handshake)
+            .await
+            .unwrap()
+            .unwrap();
+        h.scraper.retire_session(id);
+        let replacement = Uuid::new_v4();
+        h.scraper.register_session(replacement, AGENT.to_string());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), tick)
+            .await
+            .unwrap()
+            .unwrap();
+        *h.rows.on_liveness.lock().unwrap() = None;
+        assert!(!h.scraper.is_session_registered(id));
+        assert!(h.scraper.is_session_registered(replacement));
+        assert!(h.samples.observed().is_empty());
+        assert!(h.persist.commits().is_empty());
+        assert!(h.sink.emitted().is_empty());
+
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let mut completed_ticks = 0;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.token().cancelled() => break,
+                    _ = h.scraper.tick() => {
+                        completed_ticks += 1;
+                        if completed_ticks == 3 { shutdown.trigger(); }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(completed_ticks, 3);
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_context_unavailable_preserves() {
+        let h = harness(
+            RowsFake::scripted(vec![ScreenRowsRead::Rows(vec![row(42)])]),
+            PatternFake::with(AGENT, CLAUDE),
+        );
+        let id = Uuid::new_v4();
+        h.scraper.register_session(id, AGENT.to_string());
+        h.scraper.tick().await;
+        assert_eq!(h.sink.emitted(), vec![Some(42)]);
+        let cursor = h.scraper.sample_cursor.load(Ordering::Relaxed);
+        h.patterns.unavailable.store(true, Ordering::Relaxed);
+        *h.rows.liveness_script.lock().unwrap() = vec![
+            ContextSessionLiveness::Live,
+            ContextSessionLiveness::Unavailable,
+        ];
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(1), h.scraper.tick())
+                .await
+                .unwrap();
+        }
+        assert_eq!(h.scraper.last_reading(id), Some(42));
+        assert_eq!(h.rows.call_count(), 1);
+        assert_eq!(h.scraper.compile_count(), 1);
+        assert_eq!(h.scraper.sample_cursor.load(Ordering::Relaxed), cursor);
+        assert_eq!(
+            h.samples.observed(),
+            vec![ContextSample::Reading {
+                session_id: id,
+                percent: 42
+            }]
+        );
+        assert_eq!(h.persist.commits(), vec![vec![(id, Some(42))]]);
+        h.patterns.set(AGENT, None);
+        h.patterns.unavailable.store(false, Ordering::Relaxed);
+        h.scraper.tick().await;
+        h.scraper.tick().await;
+        assert_eq!(h.sink.emitted(), vec![Some(42), None]);
+        assert_eq!(
+            h.persist.commits(),
+            vec![vec![(id, Some(42))], vec![(id, None)]]
+        );
+        h.patterns.set(AGENT, Some(CLAUDE));
+        h.rows
+            .script
+            .lock()
+            .unwrap()
+            .push(ScreenRowsRead::Rows(vec![row(70)]));
+        h.scraper.tick().await;
+        assert_eq!(h.scraper.last_reading(id), Some(70));
+    }
+
+    #[tokio::test]
+    async fn e2992_p51_unavailable_progress_and_retirement() {
+        let h = harness(
+            RowsFake::scripted(vec![ScreenRowsRead::Rows(vec![row(42)])]),
+            PatternFake::with(AGENT, CLAUDE),
+        );
+        let id = Uuid::new_v4();
+        h.scraper.register_session(id, AGENT.to_string());
+        h.scraper.tick().await;
+        h.patterns.unavailable.store(true, Ordering::Relaxed);
+        *h.rows.liveness_script.lock().unwrap() = vec![
+            ContextSessionLiveness::Unavailable,
+            ContextSessionLiveness::SessionOver,
+        ];
+        for _ in 0..3 {
+            tokio::time::timeout(Duration::from_secs(1), h.scraper.tick())
+                .await
+                .unwrap();
+        }
+        assert!(!h.scraper.is_registered(id));
+        assert_eq!(h.rows.liveness_call_count(), 2);
+        assert_eq!(h.rows.call_count(), 1);
+        assert_eq!(h.sink.emitted(), vec![Some(42), None]);
+        assert_eq!(
+            h.persist.commits(),
+            vec![vec![(id, Some(42))], vec![(id, None)]]
+        );
+        assert_eq!(
+            h.samples.observed().last(),
+            Some(&ContextSample::SessionOver { session_id: id })
+        );
+        h.scraper.register_session(id, AGENT.to_string());
+        h.scraper.retire_session(id);
+        h.scraper.tick().await;
+        assert!(!h.scraper.is_registered(id));
+        assert_eq!(h.sink.emitted().len(), 2);
     }
 
     // Stage E (#1064) retirement race sentinel (plan section 10.4 item 21,

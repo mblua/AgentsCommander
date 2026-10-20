@@ -15683,9 +15683,11 @@ exec claude \"$@\"
     impl crate::pty::watchers::WatcherPatternSource for NoopWatcherPatterns {
         fn resolve(
             &self,
-        ) -> futures::future::BoxFuture<'_, HashMap<String, crate::pty::watchers::AgentResolution>>
-        {
-            Box::pin(async { HashMap::new() })
+        ) -> futures::future::BoxFuture<
+            '_,
+            Option<HashMap<String, crate::pty::watchers::AgentResolution>>,
+        > {
+            Box::pin(async { Some(HashMap::new()) })
         }
     }
     struct NoopWatcherSink;
