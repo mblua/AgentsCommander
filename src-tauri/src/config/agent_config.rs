@@ -270,13 +270,22 @@ fn activity_only_update(path: &Path, at_rfc3339: &str) -> Result<bool, String> {
 /// unparseable, or carries no `tooling.lastAgentMessageAt`. Reads the greatest
 /// landed valid state/legacy timestamp; invalid legacy-only data stays visible.
 pub fn read_last_agent_message_at(repo_path: &str) -> Option<String> {
+    read_last_agent_message_at_checked(repo_path).ok().flatten()
+}
+
+pub fn read_last_agent_message_at_checked(repo_path: &str) -> Result<Option<String>, String> {
     let dir = Path::new(repo_path).join(crate::config::agent_local_dir_name().as_str());
     // Read only landed state and tracked legacy stamps. A pending activity
     // intent must never be advertised before its state publish.
     let mut maximum: Option<(chrono::DateTime<chrono::FixedOffset>, String)> = None;
+    let mut texts = Vec::new();
     for path in [dir.join("config.json"), state_file_path(&dir)] {
-        let value = std::fs::read(&path)
-            .ok()
+        let bytes = std::fs::read(&path).ok();
+        if let Some(bytes) = &bytes {
+            check_configuration_json(&path, bytes)?;
+        }
+        texts.push(bytes.as_ref().and_then(|bytes| String::from_utf8(bytes.clone()).ok()));
+        let value = bytes
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .and_then(|value| {
                 value
@@ -293,9 +302,16 @@ pub fn read_last_agent_message_at(repo_path: &str) -> Option<String> {
             }
         }
     }
-    maximum
-        .map(|(_, value)| value)
-        .or_else(|| read_agent_local_config(&dir).and_then(|cfg| cfg.tooling.last_agent_message_at))
+    if let Some((_, value)) = maximum {
+        return Ok(Some(value));
+    }
+    let mut texts = texts.into_iter();
+    let decisions = texts.next().flatten();
+    let state = texts.next().flatten();
+    if decisions.as_ref().is_some_and(|text| !typed_ok(text)) { return Ok(None); }
+    let config = merge_config_texts(decisions, state.filter(|text| typed_ok(text))).ok().flatten()
+        .and_then(|value| serde_json::from_value::<AgentLocalConfig>(value).ok());
+    Ok(config.and_then(|cfg| cfg.tooling.last_agent_message_at))
 }
 
 // ── State file loader (#2786, C1) ───────────────────────────────────────────
@@ -1029,15 +1045,22 @@ pub(crate) mod load_probe_harness {
 /// a duplicate known field is still a rejection and never collapses to the
 /// last value through `Value`. A state file that fails it is ignored.
 pub fn read_agent_local_config(dir: &Path) -> Option<AgentLocalConfig> {
+    read_agent_local_config_checked(dir).ok().flatten()
+}
+
+pub fn read_agent_local_config_checked(dir: &Path) -> Result<Option<AgentLocalConfig>, String> {
     #[cfg(test)]
     load_probe::record_load(dir);
-    let decisions = read_config_text(&dir.join("config.json"));
+    let decisions = read_config_text_checked(&dir.join("config.json"))?;
+    let state = read_config_text_checked(&state_file_path(dir))?;
     if decisions.as_ref().is_some_and(|text| !typed_ok(text)) {
-        return None;
+        return Ok(None);
     }
-    let state = read_config_text(&state_file_path(dir)).filter(|text| typed_ok(text));
-    let value = merge_config_texts(decisions, state).ok()??;
-    serde_json::from_value(value).ok()
+    let state = state.filter(|text| typed_ok(text));
+    let Some(value) = merge_config_texts(decisions, state).ok().flatten() else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// #2786 (C1) - the raw JSON the loader serves: `config.json` in `dir` with
@@ -1050,8 +1073,8 @@ pub fn read_agent_local_config_json(dir: &Path) -> Result<Option<serde_json::Val
     #[cfg(test)]
     load_probe::record_load(dir);
     merge_config_texts(
-        read_config_text(&dir.join("config.json")),
-        read_config_text(&state_file_path(dir)).filter(|text| typed_ok(text)),
+        read_config_text_checked(&dir.join("config.json"))?,
+        read_config_text_checked(&state_file_path(dir))?.filter(|text| typed_ok(text)),
     )
 }
 
@@ -1069,12 +1092,18 @@ pub fn overlay_agent_local_state(
     overlay_state(decisions, state)
 }
 
-fn state_file_path(dir: &Path) -> std::path::PathBuf {
+pub(super) fn state_file_path(dir: &Path) -> std::path::PathBuf {
     dir.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME)
 }
 
-fn read_config_text(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
+pub(super) fn check_configuration_json(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    super::local_config_io::check_configuration_json(path, bytes)
+}
+
+fn read_config_text_checked(path: &Path) -> Result<Option<String>, String> {
+    let Ok(bytes) = std::fs::read(path) else { return Ok(None); };
+    check_configuration_json(path, &bytes)?;
+    Ok(String::from_utf8(bytes).ok())
 }
 
 /// Merge the two texts. `config.json` that is not JSON is an error; a state
@@ -1153,6 +1182,8 @@ fn overlay_state(
 // ── Config pair entry point (#2807, C2) ─────────────────────────────────────
 type JsonMap = serde_json::Map<String, serde_json::Value>;
 
+pub(super) use super::local_config_io::ConfigWriteError as AgentConfigWriteError;
+
 /// #2807 (C2) - the one writer of an agent's config pair: `decisions` is the
 /// tracked `config.json`, and the state file is the one beside it. `mutate`
 /// gets `(decisions, state)`; a decision-only writer ignores the second map.
@@ -1184,7 +1215,29 @@ pub(super) fn update_existing_agent_config_with_publish<F>(
 where
     F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
 {
-    update_agent_config_with_activity_and_publish(
+    update_existing_agent_config_with_publish_classified(decisions, mutate, publish)
+        .map_err(|error| error.to_string())
+}
+
+pub(super) fn update_existing_agent_config_classified<F>(
+    decisions: &Path,
+    mutate: F,
+) -> Result<(), AgentConfigWriteError>
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
+    update_existing_agent_config_with_publish_classified(decisions, mutate, None)
+}
+
+pub(super) fn update_existing_agent_config_with_publish_classified<F>(
+    decisions: &Path,
+    mutate: F,
+    publish: Option<crate::config::local_config_io::ConfigPublisher<'_>>,
+) -> Result<(), AgentConfigWriteError>
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
+    update_agent_config_with_activity_and_publish_classified(
         decisions,
         production_journal_dir().as_deref(),
         &|_: &str| {},
@@ -1306,6 +1359,22 @@ fn update_agent_config_with_activity_and_publish<F>(
 where
     F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
 {
+    update_agent_config_with_activity_and_publish_classified(
+        decisions, journal_dir, on_stage, mutate, activity, publish,
+    ).map_err(|error| error.to_string())
+}
+
+fn update_agent_config_with_activity_and_publish_classified<F>(
+    decisions: &Path,
+    journal_dir: Option<&Path>,
+    on_stage: &dyn Fn(&str),
+    mutate: F,
+    activity: Option<(&str, &std::cell::Cell<bool>)>,
+    publish: Option<crate::config::local_config_io::ConfigPublisher<'_>>,
+) -> Result<(), AgentConfigWriteError>
+where
+    F: FnOnce(&mut JsonMap, &mut JsonMap) -> Result<(), String>,
+{
     let parent = decisions.parent().ok_or_else(|| {
         format!(
             "Local config {} has no parent directory",
@@ -1342,7 +1411,7 @@ where
         activity,
     );
     match publish {
-        None => crate::config::local_config_io::update_config_pair_guarded(
+        None => crate::config::local_config_io::update_config_pair_guarded_classified(
             args.0,
             args.1,
             args.2,
@@ -1354,7 +1423,7 @@ where
             args.7,
             args.8,
         ),
-        Some(publish) => crate::config::local_config_io::update_config_pair_inner(
+        Some(publish) => crate::config::local_config_io::update_config_pair_inner_classified(
             args.0,
             args.1,
             Some(args.2),
@@ -1703,6 +1772,56 @@ fn upsert_config(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn e2992_duplicate_json_agent_readers_and_classified_writer_preserve_bytes() {
+        for side in 0..2 {
+            let temp = loader_fixture(Some(serde_json::json!({})), Some(serde_json::json!({})));
+            let d = temp.path().join("config.json");
+            let st = state_file_path(temp.path());
+            let paths = [&d, &st];
+            std::fs::write(paths[side], br#"{"unknown-canary":"value-canary","unknown-canary":0}"#).unwrap();
+            let originals = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+            for error in [
+                read_agent_local_config_checked(temp.path()).unwrap_err(),
+                read_agent_local_config_json(temp.path()).unwrap_err(),
+            ] {
+                assert!(error.contains("duplicateJsonMember:"));
+                assert!(error.contains(paths[side].to_str().unwrap()));
+                assert!(!error.contains("canary"));
+            }
+            let called = std::cell::Cell::new(false);
+            let error = update_existing_agent_config_classified(&d, |_, _| {
+                called.set(true);
+                Ok(())
+            }).unwrap_err();
+            assert!(matches!(&error, AgentConfigWriteError::DuplicateJsonMember(message)
+                if message.contains(paths[side].to_str().unwrap())));
+            assert!(!called.get());
+            assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
+            assert_eq!(std::fs::read(&st).unwrap(), originals[1]);
+        }
+        for name in ["config.json", crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME] {
+            let repo = tempfile::tempdir().unwrap();
+            let dir = repo.path().join(crate::config::agent_local_dir_name().as_str());
+            std::fs::create_dir(&dir).unwrap();
+            let path = dir.join(name);
+            let bytes = br#"{"unknown-canary":0,"unknown-canary":"value-canary"}"#;
+            std::fs::write(&path, bytes).unwrap();
+            let error = read_last_agent_message_at_checked(repo.path().to_str().unwrap()).unwrap_err();
+            assert!(error.contains(path.to_str().unwrap()));
+            assert!(!error.contains("canary"));
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+        let temp = loader_fixture(Some(serde_json::json!({})), None);
+        let error = update_existing_agent_config_classified(&temp.path().join("config.json"), |_, _| {
+            Err("duplicateJsonMember: ordinary callback".to_string())
+        }).unwrap_err();
+        assert!(matches!(error, AgentConfigWriteError::Ordinary(_)));
+        std::fs::write(temp.path().join("config.json"), b"{").unwrap();
+        assert!(read_agent_local_config_checked(temp.path()).unwrap().is_none());
+        assert!(read_agent_local_config_json(temp.path()).unwrap_err().contains("parse"));
+    }
+
     use super::*;
     use std::path::PathBuf;
 
@@ -2505,14 +2624,8 @@ mod tests {
             duplicate,
         )
         .expect("seed state");
-        assert_eq!(
-            read_agent_local_config(temp.path())
-                .expect("config")
-                .tooling
-                .last_coding_agent
-                .as_deref(),
-            Some("tracked")
-        );
+        assert!(read_agent_local_config_checked(temp.path()).unwrap_err().contains("duplicateJsonMember:"));
+        assert!(read_agent_local_config(temp.path()).is_none());
     }
 
     /// #2786 C1 E7e: the raw wrapper filters the STATE file through the typed
@@ -2526,14 +2639,14 @@ mod tests {
                 .expect("some")
         };
 
-        // (1) a tracked duplicate is last wins, with no state file.
+        // (1) a tracked duplicate is rejected before projection.
         let temp = loader_fixture(None, None);
         std::fs::write(
             temp.path().join("config.json"),
             r#"{"tooling":{"lastCodingAgent":"a","lastCodingAgent":"b"}}"#,
         )
         .expect("seed decisions");
-        assert_eq!(raw(temp.path())["tooling"]["lastCodingAgent"], "b");
+        assert!(read_agent_local_config_json(temp.path()).unwrap_err().contains("duplicateJsonMember:"));
 
         // (2) an unrelated malformed tracked field is tolerated.
         let temp = loader_fixture(
@@ -2561,7 +2674,11 @@ mod tests {
         ] {
             let temp = loader_fixture(Some(tracked.clone()), None);
             std::fs::write(temp.path().join(state_name), state).expect("seed state");
-            assert_eq!(raw(temp.path())["tooling"], tracked["tooling"], "leg {leg}");
+            if leg.starts_with('4') {
+                assert!(read_agent_local_config_json(temp.path()).unwrap_err().contains("duplicateJsonMember:"));
+            } else {
+                assert_eq!(raw(temp.path())["tooling"], tracked["tooling"], "leg {leg}");
+            }
         }
 
         // (5) control: a well-formed state file for the same key does overlay.

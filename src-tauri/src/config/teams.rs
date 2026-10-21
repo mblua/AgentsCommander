@@ -3,7 +3,8 @@ use thiserror::Error;
 
 use crate::config::ac_root::{existing_ac_root, find_ac_root_segment, has_ac_root};
 use crate::config::replica_identity::{
-    agent_bare_name_from_ref, read_and_repair_wg_replica_config, WG_REPLICA_REQUIRED_CONTEXT,
+    agent_bare_name_from_ref, read_and_repair_wg_replica_config_classified, ReplicaRepairError,
+    WG_REPLICA_REQUIRED_CONTEXT,
 };
 
 /// #280 §3.4 — record whether the missing-config one-shot INFO has already
@@ -470,29 +471,36 @@ fn identity_compare_key(path: &Path) -> String {
     normalize_path_for_compare(&raw)
 }
 
-pub fn resolve_wg_coordinator_replica(
+pub fn resolve_wg_coordinator_replica(ac_root: &Path, wg_dir: &Path) -> Option<WgCoordinatorReplica> {
+    resolve_wg_coordinator_replica_checked(ac_root, wg_dir).ok().flatten()
+}
+
+pub fn resolve_wg_coordinator_replica_checked(
     ac_root: &Path,
     wg_dir: &Path,
-) -> Option<WgCoordinatorReplica> {
-    let project = ac_root.parent()?.file_name()?.to_str()?.to_string();
-    let wg_name = wg_dir.file_name()?.to_str()?.to_string();
-    let team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
-        .and_then(|s| s.split_once('-').map(|(_, rest)| rest.to_string()))?;
-
-    let team_dir = ac_root.join(format!("_team_{}", team));
-    let team_config: serde_json::Value = std::fs::read_to_string(team_dir.join("config.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())?;
-    let coordinator_ref = team_config.get("coordinator").and_then(|c| c.as_str())?;
-    let coordinator_name = agent_bare_name_from_ref(coordinator_ref).ok()?;
+) -> Result<Option<WgCoordinatorReplica>, String> {
+    let Some((project, wg_name, team)) = (|| {
+        let project = ac_root.parent()?.file_name()?.to_str()?.to_string();
+        let wg_name = wg_dir.file_name()?.to_str()?.to_string();
+        let team = crate::config::entity_prefix::strip_entity_prefix(&wg_name)
+            .and_then(|s| s.split_once('-').map(|(_, rest)| rest.to_string()))?;
+        Some((project, wg_name, team))
+    })() else { return Ok(None); };
+    let config_path = ac_root.join(format!("_team_{}", team)).join("config.json");
+    let Ok(bytes) = std::fs::read(&config_path) else { return Ok(None); };
+    crate::path_identity::validate_ac_configuration_json(&config_path, &bytes)?;
+    let Ok(team_config) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return Ok(None); };
+    let Some(coordinator_ref) = team_config.get("coordinator").and_then(|c| c.as_str()) else { return Ok(None); };
+    let Ok(coordinator_name) = agent_bare_name_from_ref(coordinator_ref) else { return Ok(None); };
     if !ac_root
         .join(format!("_agent_{}", coordinator_name))
         .is_dir()
     {
-        return None;
+        return Ok(None);
     }
 
-    for replica_entry in std::fs::read_dir(wg_dir).ok()?.flatten() {
+    let Ok(entries) = std::fs::read_dir(wg_dir) else { return Ok(None); };
+    for replica_entry in entries.flatten() {
         let replica_dir = replica_entry.path();
         if !replica_dir.is_dir() {
             continue;
@@ -501,36 +509,40 @@ pub fn resolve_wg_coordinator_replica(
             Some(n) if n.starts_with("__agent_") => n,
             _ => continue,
         };
-        let Ok((_config, identity)) =
-            read_and_repair_wg_replica_config(&replica_dir, WG_REPLICA_REQUIRED_CONTEXT)
-        else {
-            continue;
+        let identity = match read_and_repair_wg_replica_config_classified(&replica_dir, WG_REPLICA_REQUIRED_CONTEXT) {
+            Ok((_config, identity)) => identity,
+            Err(ReplicaRepairError::Ordinary(_)) => continue,
+            Err(ReplicaRepairError::DuplicateJsonMember(message)) => return Err(message),
         };
         if identity.agent_name == coordinator_name {
-            return Some(WgCoordinatorReplica {
+            return Ok(Some(WgCoordinatorReplica {
                 project,
                 team,
                 wg_name,
                 agent_name: identity.agent_name,
                 replica_dir,
-            });
+            }));
         }
     }
 
-    None
+    Ok(None)
 }
 
-pub fn verified_wg_coordinator_target(
+pub fn verified_wg_coordinator_target(target: &str, project_paths: &[String]) -> Option<WgCoordinatorReplica> {
+    verified_wg_coordinator_target_checked(target, project_paths).ok().flatten()
+}
+
+pub fn verified_wg_coordinator_target_checked(
     target: &str,
     project_paths: &[String],
-) -> Option<WgCoordinatorReplica> {
+) -> Result<Option<WgCoordinatorReplica>, String> {
     let (Some(project), local) = split_project_prefix(target) else {
-        return None;
+        return Ok(None);
     };
     if !is_valid_wg_local_shape(local) {
-        return None;
+        return Ok(None);
     }
-    let (wg_name, agent_name) = local.split_once('/')?;
+    let Some((wg_name, agent_name)) = local.split_once('/') else { return Ok(None); };
 
     for (project_name, project_dir) in enumerate_project_dirs(project_paths) {
         if project_name != project {
@@ -543,14 +555,14 @@ pub fn verified_wg_coordinator_target(
         if !wg_dir.is_dir() {
             continue;
         }
-        if let Some(resolved) = resolve_wg_coordinator_replica(&ac_root, &wg_dir) {
+        if let Some(resolved) = resolve_wg_coordinator_replica_checked(&ac_root, &wg_dir)? {
             if resolved.agent_name == agent_name {
-                return Some(resolved);
+                return Ok(Some(resolved));
             }
         }
     }
 
-    None
+    Ok(None)
 }
 
 // Privileged PTY-input routing is intentionally separate from broad message
@@ -784,6 +796,7 @@ fn read_identity_json(
     String,
 > {
     let (bytes, identity) = crate::path_identity::read_bounded_regular(path, 1024 * 1024)?;
+    crate::path_identity::validate_ac_configuration_json(path, &bytes)?;
     let value = crate::path_identity::parse_json_no_duplicates(&bytes)?;
     if !value.is_object() {
         return Err("sender_identity_invalid".to_string());
@@ -1784,8 +1797,12 @@ pub fn can_communicate(from: &str, to: &str, teams: &[DiscoveredTeam]) -> bool {
 /// Discover all teams from all known project paths.
 /// Scans settings.project_paths (and immediate children) for Project AC Root `_team_*/config.json`.
 pub fn discover_teams() -> Vec<DiscoveredTeam> {
+    discover_teams_checked().unwrap_or_default()
+}
+
+pub fn discover_teams_checked() -> Result<Vec<DiscoveredTeam>, String> {
     let settings = crate::config::settings::load_settings();
-    discover_teams_from_project_paths(&settings.project_paths)
+    discover_teams_from_project_paths_checked(&settings.project_paths)
 }
 
 /// CLI coordinator discovery fails closed on an unreadable registered source.
@@ -1802,6 +1819,10 @@ pub(crate) fn discover_teams_for_cli() -> Vec<DiscoveredTeam> {
 
 /// Scan a captured registered-project slice without loading or saving settings.
 pub(crate) fn discover_teams_from_project_paths(project_paths: &[String]) -> Vec<DiscoveredTeam> {
+    discover_teams_from_project_paths_checked(project_paths).unwrap_or_default()
+}
+
+pub(crate) fn discover_teams_from_project_paths_checked(project_paths: &[String]) -> Result<Vec<DiscoveredTeam>, String> {
     let mut teams = Vec::new();
 
     for repo_path in project_paths {
@@ -1838,7 +1859,7 @@ pub(crate) fn discover_teams_from_project_paths(project_paths: &[String]) -> Vec
                 "[teams] discover_teams: entering project_dir='{}'",
                 project_dir.display()
             );
-            discover_teams_in_project(&project_dir, &mut teams);
+            discover_teams_in_project_filtered_checked(&project_dir, &mut teams, |_| true)?;
             log::trace!(
                 "[teams] discover_teams: project_dir='{}' produced {} team(s)",
                 project_dir.display(),
@@ -1852,7 +1873,7 @@ pub(crate) fn discover_teams_from_project_paths(project_paths: &[String]) -> Vec
         teams.len(),
         project_paths.len()
     );
-    teams
+    Ok(teams)
 }
 
 /// Discover teams in a single project directory.
@@ -1866,8 +1887,17 @@ pub(crate) fn discover_teams_in_project_filtered(
     teams: &mut Vec<DiscoveredTeam>,
     accept_team: impl Fn(&Path) -> bool,
 ) {
+    let _ = discover_teams_in_project_filtered_checked(project_dir, teams, accept_team);
+}
+
+pub(crate) fn discover_teams_in_project_filtered_checked(
+    project_dir: &Path,
+    teams: &mut Vec<DiscoveredTeam>,
+    accept_team: impl Fn(&Path) -> bool,
+) -> Result<(), String> {
+    let mut discovered = Vec::new();
     let Some(ac_root) = existing_ac_root(project_dir) else {
-        return;
+        return Ok(());
     };
 
     let project_folder = project_dir
@@ -1878,7 +1908,7 @@ pub(crate) fn discover_teams_in_project_filtered(
 
     let entries = match std::fs::read_dir(&ac_root) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
 
     for entry in entries.flatten() {
@@ -1945,6 +1975,7 @@ pub(crate) fn discover_teams_in_project_filtered(
                 continue;
             }
         };
+        crate::path_identity::validate_ac_configuration_json(&config_path, raw.as_bytes())?;
         let parsed: serde_json::Value = match serde_json::from_str(&raw) {
             Ok(v) => v,
             Err(e) => {
@@ -1993,7 +2024,7 @@ pub(crate) fn discover_teams_in_project_filtered(
             .as_ref()
             .and_then(|r| resolve_agent_path(&ac_root, r));
 
-        teams.push(DiscoveredTeam {
+        discovered.push(DiscoveredTeam {
             name: team_name,
             project: project_folder.clone(),
             agent_names,
@@ -2001,7 +2032,7 @@ pub(crate) fn discover_teams_in_project_filtered(
             coordinator_name,
             coordinator_path,
         });
-        let pushed = teams.last().expect("just pushed");
+        let pushed = discovered.last().expect("just pushed");
         log::debug!(
             "[teams] discovered team — project='{}' team='{}' coord_name={:?} coord_path={:?} agent_count={}",
             pushed.project,
@@ -2011,6 +2042,8 @@ pub(crate) fn discover_teams_in_project_filtered(
             pushed.agent_names.len()
         );
     }
+    teams.extend(discovered);
+    Ok(())
 }
 
 /// Reuse the existing classified test-only junction spawn site.
@@ -2034,6 +2067,128 @@ pub(crate) fn create_test_junction(link: &Path, target: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn e2992_duplicate_json_coordinator_checked_and_atomic_discovery() {
+        for side in 0..3 {
+            let (tmp, paths) = make_coordinator_fixture(false);
+            let ac_root = tmp.path().join("proj-a/.ac");
+            let room = ac_root.join("wg-1-dev-team");
+            let replica = room.join("__agent_tech-lead");
+            let d = replica.join("config.json");
+            let st = replica.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+            let team = ac_root.join("_team_dev-team/config.json");
+            std::fs::write(&st, b"{}").unwrap();
+            let files = [&d, &st, &team];
+            std::fs::write(files[side], br#"{"unknown-canary":"value-canary","unknown-canary":0}"#).unwrap();
+            let before: Vec<_> = files.iter().map(|path| std::fs::read(path).unwrap()).collect();
+            for error in [
+                resolve_wg_coordinator_replica_checked(&ac_root, &room).unwrap_err(),
+                verified_wg_coordinator_target_checked("proj-a:wg-1-dev-team/tech-lead", &paths).unwrap_err(),
+            ] {
+                assert!(error.contains("duplicateJsonMember:"));
+                assert!(error.contains(files[side].to_str().unwrap()));
+                assert!(!error.contains("canary"));
+            }
+            for (path, bytes) in files.iter().zip(before) { assert_eq!(std::fs::read(path).unwrap(), bytes); }
+            if side == 2 {
+                let mut destination = vec![DiscoveredTeam {
+                    name: "existing".into(), project: "existing".into(), agent_names: vec![],
+                    agent_paths: vec![], coordinator_name: None, coordinator_path: None,
+                }];
+                assert!(discover_teams_in_project_filtered_checked(&tmp.path().join("proj-a"), &mut destination, |_| true).is_err());
+                assert_eq!(destination.len(), 1);
+                assert_eq!(destination[0].name, "existing");
+                assert!(discover_teams_from_project_paths_checked(&paths).is_err());
+            }
+        }
+        // Collapsed valid PAIR stages keep the coordinator pending. Corrupt one
+        // captured configuration image at a time without using a publisher that
+        // would correctly refuse the duplicate fixture.
+        for side in 0..2 {
+            for slot in 0..7 {
+                use crate::config::settings::{IdentityReferencePhysicalState, identity_reference_protected_revision};
+                use sha2::{Digest, Sha256};
+                let (tmp, paths) = make_coordinator_fixture(false);
+                let ac_root = tmp.path().join("proj-a/.ac");
+                let room = ac_root.join("wg-1-dev-team");
+                let replica = room.join("__agent_tech-lead");
+                let (d, st, reservation) = crate::config::settings::identity_reference_pair_paths(&replica);
+                std::fs::write(&st, b"{}").unwrap();
+                let files = [&d, &st];
+                let original = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+                let tuple = original.clone().map(IdentityReferencePhysicalState::from_bytes);
+                let protected = identity_reference_protected_revision(&tuple).unwrap();
+                let protected_images = vec![protected; 5];
+                let mappings = "a".repeat(64);
+                let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&(1u32, &protected_images, &mappings)).unwrap()));
+                let resolved = files.map(|path| {
+                    let value = std::fs::canonicalize(path.parent().unwrap()).unwrap()
+                        .join(path.file_name().unwrap()).to_string_lossy().into_owned();
+                    if cfg!(windows) { value.to_lowercase() } else { value }
+                });
+                let target = format!("{:x}", Sha256::digest(serde_json::to_vec(&resolved).unwrap()));
+                let mut envelope = serde_json::json!({
+                    "version": 2, "operationId": "pending-coordinator", "sourcePhysicalKey": "fixture",
+                    "planDigest": digest, "physicalTargetIdentity": target, "protectedPolicyVersion": 1,
+                    "mappingsDigest": mappings, "beforeTuple": tuple, "protectedImages": protected_images,
+                    "changedSides": [false, false], "timestampFloor": null, "activityIntent": null,
+                    "planImages": {"stages": vec![tuple.clone(); 5]},
+                });
+                let control = serde_json::to_vec(&envelope).unwrap();
+                std::fs::write(&reservation, &control).unwrap();
+                assert!(resolve_wg_coordinator_replica_checked(&ac_root, &room).unwrap().is_none());
+                assert_eq!(std::fs::read(&reservation).unwrap(), control);
+                assert_eq!(std::fs::read(&d).unwrap(), original[0]);
+                assert_eq!(std::fs::read(&st).unwrap(), original[1]);
+                let closing = original[side].iter().rposition(|byte| *byte == b'}').unwrap();
+                let mut bytes = original[side][..closing].to_vec();
+                if closing > 1 { bytes.push(b','); }
+                bytes.extend_from_slice(br#""unknown-canary":"secret-canary","unknown-canary":0}"#);
+                let image = serde_json::to_value(IdentityReferencePhysicalState::from_bytes(bytes.clone())).unwrap();
+                match slot {
+                    0 => std::fs::write(files[side], bytes).unwrap(),
+                    1 => envelope["beforeTuple"][side] = image,
+                    _ => envelope["planImages"]["stages"][slot - 2][side] = image,
+                }
+                let packet = serde_json::to_vec(&envelope).unwrap();
+                std::fs::write(&reservation, &packet).unwrap();
+                let captured = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+                for error in [
+                    resolve_wg_coordinator_replica_checked(&ac_root, &room).unwrap_err(),
+                    verified_wg_coordinator_target_checked("proj-a:wg-1-dev-team/tech-lead", &paths).unwrap_err(),
+                ] {
+                    assert!(error.contains("duplicateJsonMember:"));
+                    assert!(error.contains(files[side].to_str().unwrap()));
+                    assert!(!error.contains("canary"));
+                }
+                assert_eq!(std::fs::read(&d).unwrap(), captured[0]);
+                assert_eq!(std::fs::read(&st).unwrap(), captured[1]);
+                assert_eq!(std::fs::read(&reservation).unwrap(), packet);
+            }
+        }
+        for invalid in [None, Some("{"), Some("[]"), Some(r#"{"identity":"../../_agent_wrong"}"#)] {
+            let (tmp, _) = make_coordinator_fixture(false);
+            let ac_root = tmp.path().join("proj-a/.ac");
+            let room = ac_root.join("wg-1-dev-team");
+            let d = room.join("__agent_tech-lead/config.json");
+            match invalid {
+                Some(bytes) => std::fs::write(&d, bytes).unwrap(),
+                None => std::fs::remove_file(&d).unwrap(),
+            }
+            assert!(resolve_wg_coordinator_replica_checked(&ac_root, &room).unwrap().is_none());
+        }
+        let (io_tmp, _) = make_coordinator_fixture(false);
+        let io_root = io_tmp.path().join("proj-a/.ac");
+        let io_room = io_root.join("wg-1-dev-team");
+        let io_path = io_room.join("__agent_tech-lead/config.json");
+        std::fs::remove_file(&io_path).unwrap();
+        std::fs::create_dir(&io_path).unwrap();
+        assert!(resolve_wg_coordinator_replica_checked(&io_root, &io_room).unwrap().is_none());
+        let (tmp, _) = make_coordinator_fixture(false);
+        let ac_root = tmp.path().join("proj-a/.ac");
+        assert!(resolve_wg_coordinator_replica_checked(&ac_root, &ac_root.join("wg-1-dev-team")).unwrap().is_some());
+    }
+
     use super::*;
 
     #[test]

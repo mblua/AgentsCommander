@@ -1482,6 +1482,17 @@ impl PersistedSession {
     }
 }
 
+/// Read the startup selection without purge, archive, save or settings IO.
+pub(crate) fn read_startup_sessions_for_admission(
+    config_dir: &Path,
+    settings: &super::settings::AppSettings,
+) -> Result<Vec<PersistedSession>, String> {
+    let paths = session_retention_project_paths(settings)?;
+    let roots = normalize_project_roots(&paths);
+    let sessions = load_sessions_from_path_with_settings(&config_dir.join("sessions.json"), Some(settings));
+    Ok(partition_orphaned_sessions(sessions, &roots).0)
+}
+
 fn load_sessions_from_path(path: &Path) -> Vec<PersistedSession> {
     load_sessions_from_path_with_settings(path, None)
 }
@@ -2774,6 +2785,43 @@ async fn write_start_fresh_and_persist_to_dir_result(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn e2992_duplicate_json_startup_sessions_admission_is_read_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let active = temp.path().join("active");
+        let archived = temp.path().join("archived");
+        let settings = crate::config::settings::AppSettings {
+            project_paths: vec![active.to_string_lossy().to_string()],
+            archived_project_paths: vec![archived.to_string_lossy().to_string()],
+            ..Default::default()
+        };
+        let config = temp.path().join("config");
+        assert!(super::read_startup_sessions_for_admission(&config, &settings).unwrap().is_empty());
+        assert!(!config.exists());
+        std::fs::create_dir(&config).unwrap();
+        let path = config.join("sessions.json");
+        let rows = vec![
+            PersistedSession { name: "active".into(), working_directory: active.to_string_lossy().to_string(), ..Default::default() },
+            PersistedSession { name: "archived".into(), working_directory: archived.to_string_lossy().to_string(), ..Default::default() },
+            PersistedSession { name: "Root".into(), is_root_agent: true, working_directory: "missing-root".into(), ..Default::default() },
+            PersistedSession { name: "orphan".into(), working_directory: "missing-orphan".into(), ..Default::default() },
+        ];
+        let bytes = serde_json::to_vec(&rows).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let selected = super::read_startup_sessions_for_admission(&config, &settings).unwrap();
+        assert_eq!(selected.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(), vec!["active", "archived", "Root"]);
+        let expected = super::partition_orphaned_sessions(
+            super::load_sessions_from_path_with_settings(&path, Some(&settings)),
+            &super::normalize_project_roots(&super::session_retention_project_paths(&settings).unwrap()),
+        ).0;
+        assert_eq!(serde_json::to_value(selected).unwrap(), serde_json::to_value(expected).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(&config).unwrap().count(), 1);
+        std::fs::write(&path, b"{").unwrap();
+        assert!(super::read_startup_sessions_for_admission(&config, &settings).unwrap().is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{");
+    }
+
     use super::{
         append_orphan_archive_record, clear_blocked_menu_and_persist_to_dir,
         clear_user_input_transitions_and_persist_to_dir_result,

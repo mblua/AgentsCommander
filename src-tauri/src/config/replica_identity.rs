@@ -22,6 +22,7 @@ pub struct WgReplicaIdentity {
 pub enum ReplicaConfigFault {
     ConfigUnreadable,
     ConfigNotJson,
+    DuplicateJsonMember,
     ConfigNotObject,
     IdentityMissing,
     IdentityMismatch,
@@ -409,6 +410,8 @@ pub fn read_wg_replica_config_read_only_classified(
                 "Room replica config failed a bounded path-safe read".to_string(),
             )
         })?;
+    crate::path_identity::validate_ac_configuration_json(&config_path, &bytes)
+        .map_err(|message| (ReplicaConfigFault::DuplicateJsonMember, message))?;
     let config = crate::path_identity::parse_json_no_duplicates(&bytes).map_err(|_| {
         (
             ReplicaConfigFault::ConfigNotJson,
@@ -428,16 +431,26 @@ pub fn read_wg_replica_config_read_only_classified(
     Ok((config, identity))
 }
 
+pub(super) use super::agent_config::AgentConfigWriteError as ReplicaRepairError;
+
 pub fn read_and_repair_wg_replica_config(
     replica_dir: &Path,
     required_context_prefix: &[&str],
 ) -> Result<(Value, WgReplicaIdentity), String> {
+    read_and_repair_wg_replica_config_classified(replica_dir, required_context_prefix)
+        .map_err(|error| error.to_string())
+}
+
+pub(super) fn read_and_repair_wg_replica_config_classified(
+    replica_dir: &Path,
+    required_context_prefix: &[&str],
+) -> Result<(Value, WgReplicaIdentity), ReplicaRepairError> {
     let config_path = replica_dir.join("config.json");
     let mut repaired_identity: Option<WgReplicaIdentity> = None;
     // #2816 (C3) - the returned value is the decisions object as published,
     // captured inside the guard: no re-read and no state overlay.
     let mut published: Option<Value> = None;
-    crate::config::agent_config::update_existing_agent_config(&config_path, |obj, _state| {
+    crate::config::agent_config::update_existing_agent_config_classified(&config_path, |obj, _state| {
         let mut value = Value::Object(std::mem::take(obj));
         let identity =
             repair_wg_replica_config_value(replica_dir, &mut value, required_context_prefix)?;
@@ -518,6 +531,33 @@ pub(crate) mod strict_read_probe {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn e2992_duplicate_json_replica_repair_and_read_only_reason() {
+        for side in 0..2 {
+            let temp = setup_replica(".ac");
+            let replica = temp.path().join("AgentsCommander_ac/.ac/wg-2-dev-team/__agent_tech-lead");
+            let d = replica.join("config.json");
+            let st = replica.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+            std::fs::write(&d, br#"{"identity":"../../_agent_tech-lead"}"#).unwrap();
+            std::fs::write(&st, b"{}").unwrap();
+            let paths = [&d, &st];
+            std::fs::write(paths[side], br#"{"unknown-canary":"value-canary","unknown-canary":0}"#).unwrap();
+            let originals = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+            if side == 0 {
+                let (fault, message) = read_wg_replica_config_read_only_classified(&replica).unwrap_err();
+                assert_eq!(fault, ReplicaConfigFault::DuplicateJsonMember);
+                assert!(message.contains(d.to_str().unwrap()));
+                assert!(!message.contains("canary"));
+            }
+            let error = read_and_repair_wg_replica_config_classified(&replica, WG_REPLICA_REQUIRED_CONTEXT).unwrap_err();
+            assert!(matches!(&error, ReplicaRepairError::DuplicateJsonMember(message)
+                if message.contains("duplicateJsonMember:") && message.contains(paths[side].to_str().unwrap())));
+            assert!(!error.to_string().contains("canary"));
+            assert_eq!(std::fs::read(&d).unwrap(), originals[0]);
+            assert_eq!(std::fs::read(&st).unwrap(), originals[1]);
+        }
+    }
+
     use super::*;
 
     #[test]

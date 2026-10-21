@@ -1218,6 +1218,7 @@ pub fn ensure_root_agent_dir() -> Result<String, String> {
 
 pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
     validate_root_agent_root_path(root_dir)?;
+    crate::config::agent_config::read_agent_local_config_json(root_dir)?;
     crate::commands::entity_creation::create_agent_matrix_layout(root_dir).map_err(
         |(sub, e)| {
             format!(
@@ -2425,14 +2426,14 @@ fn context_array_matches(arr: &[Value], expected: &[&str]) -> bool {
 }
 
 pub fn read_last_coding_agent(root_dir: &str) -> Option<String> {
+    read_last_coding_agent_checked(root_dir).ok().flatten()
+}
+
+pub fn read_last_coding_agent_checked(root_dir: &str) -> Result<Option<String>, String> {
     // #2786 (C1) - the raw loader with field-level extraction, as before C1:
     // an unrelated malformed field must not hide `lastCodingAgent`.
-    crate::config::agent_config::read_agent_local_config_json(Path::new(root_dir))
-        .ok()??
-        .get("tooling")?
-        .get("lastCodingAgent")?
-        .as_str()
-        .map(ToString::to_string)
+    Ok(crate::config::agent_config::read_agent_local_config_json(Path::new(root_dir))?
+        .and_then(|value| value.get("tooling")?.get("lastCodingAgent")?.as_str().map(ToString::to_string)))
 }
 
 fn paths_equivalent(left: &Path, right: &Path) -> bool {
@@ -2460,6 +2461,31 @@ fn display_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn e2992_duplicate_json_root_admits_both_files_before_layout() {
+        for side in 0..2 {
+            let temp = tempfile::tempdir().unwrap();
+            let d = temp.path().join("config.json");
+            let st = temp.path().join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+            std::fs::write(&d, b"{}").unwrap();
+            std::fs::write(&st, b"{}").unwrap();
+            let paths = [&d, &st];
+            std::fs::write(paths[side], br#"{"unknown-canary":"value-canary","unknown-canary":0}"#).unwrap();
+            let before = [std::fs::read(&d).unwrap(), std::fs::read(&st).unwrap()];
+            for error in [
+                read_last_coding_agent_checked(temp.path().to_str().unwrap()).unwrap_err(),
+                merge_root_agent_config(&d).unwrap_err(),
+                ensure_root_agent_dir_at(temp.path()).unwrap_err(),
+            ] {
+                assert!(error.contains("duplicateJsonMember:"));
+                assert!(error.contains(paths[side].to_str().unwrap()));
+                assert!(!error.contains("canary"));
+            }
+            assert_eq!(std::fs::read(&d).unwrap(), before[0]);
+            assert_eq!(std::fs::read(&st).unwrap(), before[1]);
+        }
+    }
+
     use super::*;
 
     #[test]
