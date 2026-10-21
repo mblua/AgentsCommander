@@ -1218,7 +1218,7 @@ pub fn ensure_root_agent_dir() -> Result<String, String> {
 
 pub(crate) fn ensure_root_agent_dir_at(root_dir: &Path) -> Result<(), String> {
     validate_root_agent_root_path(root_dir)?;
-    crate::config::agent_config::read_agent_local_config_json(root_dir)?;
+    crate::config::agent_config::read_agent_local_config_checked(root_dir)?;
     crate::commands::entity_creation::create_agent_matrix_layout(root_dir).map_err(
         |(sub, e)| {
             format!(
@@ -2498,7 +2498,35 @@ mod tests {
             }
             assert_eq!(std::fs::read(&d).unwrap(), before[0]);
             assert_eq!(std::fs::read(&st).unwrap(), before[1]);
+            assert!(!temp.path().join("skills").exists());
+            assert!(!temp.path().join("messaging").exists());
+            assert!(!temp.path().join("Role.md").exists());
         }
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join(ROOT_AGENT_DIR_NAME);
+        std::fs::create_dir(&root).unwrap();
+        let d = root.join("config.json");
+        let st = root.join(crate::config::instance_artifacts::CONFIG_STATE_TARGET_NAME);
+        std::fs::write(&d, b"{").unwrap();
+        std::fs::write(&st, b"{}").unwrap();
+        let native_error = serde_json::from_str::<Value>("{").unwrap_err();
+        assert!(native_error.is_eof());
+        let error = ensure_root_agent_dir_at(&root).unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "Config pair {} and {} blocked: Failed to parse {}: {}",
+                d.display(),
+                st.display(),
+                d.display(),
+                native_error
+            )
+        );
+        assert!(root.join("skills").is_dir());
+        assert!(root.join("messaging").is_dir());
+        assert!(root.join("Role.md").is_file());
+        assert_eq!(std::fs::read(&d).unwrap(), b"{");
+        assert_eq!(std::fs::read(&st).unwrap(), b"{}");
     }
 
     use super::*;
