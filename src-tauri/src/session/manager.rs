@@ -1596,6 +1596,19 @@ impl SessionManager {
         self.state.write().await.retained_prompts.remove(key);
     }
 
+    pub(crate) async fn block_retained_prompt_domains(&self, keys: Vec<PromptKey>) {
+        let mut state = self.state.write().await;
+        for key in keys {
+            state.retained_prompts.insert(
+                key,
+                RetainedPrompt {
+                    last_prompt: None,
+                    blocked: true,
+                },
+            );
+        }
+    }
+
     pub(crate) async fn initialize_pending_prompt(
         &self,
         binding: PendingCreateBinding,
@@ -3257,6 +3270,7 @@ impl SessionManager {
                 &mut state,
                 binding.session_id,
                 predecessors.get(&binding.session_id).copied(),
+                !matches!(cause, SelectionCause::Restore),
             );
         }
         let mut result = CommitResult::default();
@@ -3574,7 +3588,12 @@ fn prompt_domain_exclusive(
         .all(|(id, candidate)| Some(*id) == owner || candidate != key)
 }
 
-fn finalize_prompt_domain(state: &mut SessionManagerState, id: Uuid, predecessor: Option<Uuid>) {
+fn finalize_prompt_domain(
+    state: &mut SessionManagerState,
+    id: Uuid,
+    predecessor: Option<Uuid>,
+    allow_fresh_reopen: bool,
+) {
     let Some(prepared) = state.pending_prompts.remove(&id) else {
         return;
     };
@@ -3595,7 +3614,11 @@ fn finalize_prompt_domain(state: &mut SessionManagerState, id: Uuid, predecessor
         entry.last_prompt = None;
     } else if prepared.fresh || row.start_fresh_on_restore {
         state.prompt_seed_blocked.insert(id);
-        entry.blocked = false;
+        // Startup fresh markers cannot disprove persisted duplicate recipes
+        // whose manager rows have not been restored yet.
+        if allow_fresh_reopen {
+            entry.blocked = false;
+        }
         entry.last_prompt = None;
         row.last_prompt = None;
     } else if prepared.continuation {

@@ -163,6 +163,32 @@ pub(crate) async fn initialize_prompt_retention_in_dir(mgr: &SessionManager, dir
         .await;
 }
 
+/// Cold restore admits rows sequentially, so inspect its complete recipe set
+/// before the first cache lookup. This creates no session associations.
+pub(crate) async fn block_duplicate_restore_prompt_domains(
+    mgr: &SessionManager,
+    rows: &[PersistedSession],
+) {
+    let mut counts = HashMap::new();
+    for row in rows {
+        if let Some(key) = prompt_key(
+            &row.working_directory,
+            row.agent_id.as_deref(),
+            row.requested_profile.as_deref(),
+            row.effective_profile.as_deref(),
+        ) {
+            *counts.entry(key).or_insert(0usize) += 1;
+        }
+    }
+    mgr.block_retained_prompt_domains(
+        counts
+            .into_iter()
+            .filter_map(|(key, count)| (count > 1).then_some(key))
+            .collect(),
+    )
+    .await;
+}
+
 /// Called only after sessions_save_lock; always reads the current manager.
 async fn flush_retained_prompts_locked(mgr: &SessionManager, dir: &Path) -> Result<(), String> {
     let Some(snapshot) = mgr.retained_prompt_snapshot().await else {

@@ -2386,6 +2386,8 @@ fn start_native_restore_startup(
             {
                 let manager = session_mgr_clone.read().await;
                 sessions_persistence::initialize_prompt_retention(&manager).await;
+                sessions_persistence::block_duplicate_restore_prompt_domains(&manager, &persisted)
+                    .await;
             }
             for ps in &mut persisted {
                 if let Err(error) = ps.capture_binding_seed(&settings_snapshot) {
