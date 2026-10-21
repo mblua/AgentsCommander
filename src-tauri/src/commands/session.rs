@@ -7953,6 +7953,16 @@ mod tests {
         host.archived_project_paths = vec![project.clone(), missing.clone()];
         std::fs::write(&path, serde_json::to_vec(&host).unwrap()).unwrap();
         let host = crate::config::settings::load_settings_from_path(&path);
+        let project_path =
+            path.with_file_name(crate::config::instance_artifacts::PROJECT_PATHS_FILE_NAME);
+        let source_path =
+            path.with_file_name(crate::config::instance_artifacts::AGENTS_INSTANCE_FILE_NAME);
+        let before_projects = std::fs::read(&project_path).unwrap();
+        let before_source = std::fs::read(&source_path).unwrap();
+        assert!(host.project_paths_persistence_error.is_none());
+        assert!(!host.project_paths.contains(&project));
+        assert!(host.archived_project_paths.contains(&project));
+        assert!(host.archived_project_paths.contains(&missing));
         let owner =
             crate::config::settings::new_runtime_settings_state_at_path(host.clone(), &path)
                 .unwrap();
@@ -7980,6 +7990,11 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.contains("sessionCreateBlocked"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read(&project_path).unwrap(), before_projects);
+        assert_eq!(std::fs::read(&source_path).unwrap(), before_source);
+        assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 0);
+        assert!(session_mgr.read().await.list_sessions().await.is_empty());
         let error = crate::config::archive_gate::enforce_unarchived_for_spawn(
             app.handle(),
             &missing,
@@ -7992,6 +8007,8 @@ mod tests {
             "{error}"
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read(&project_path).unwrap(), before_projects);
+        assert_eq!(std::fs::read(&source_path).unwrap(), before_source);
         assert_eq!(backend.spawn_count.load(Ordering::SeqCst), 0);
         assert!(session_mgr.read().await.list_sessions().await.is_empty());
         let outcome = super::create_session_inner_impl(
@@ -8035,7 +8052,19 @@ mod tests {
         assert!(!current.archived_project_paths.contains(&project));
         assert!(current.archived_project_paths.contains(&missing));
         drop(current);
-        assert_ne!(std::fs::read(&path).unwrap(), before);
+        let published_project_bytes = std::fs::read(&project_path).unwrap();
+        assert_ne!(published_project_bytes, before_projects);
+        let published: serde_json::Value =
+            serde_json::from_slice(&published_project_bytes).unwrap();
+        assert!(published.is_object());
+        assert!(published
+            .get("projectPaths")
+            .is_some_and(serde_json::Value::is_array));
+        assert!(published
+            .get("archivedProjectPaths")
+            .is_some_and(serde_json::Value::is_array));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read(&source_path).unwrap(), before_source);
         let disk = crate::config::settings::load_settings_from_path(&path);
         assert!(disk
             .project_paths
@@ -8044,6 +8073,11 @@ mod tests {
                 == crate::config::projects::normalize_for_compare(&project)));
         assert!(!disk.archived_project_paths.contains(&project));
         assert!(disk.archived_project_paths.contains(&missing));
+        assert!(disk.project_paths_persistence_error.is_none());
+        assert!(!disk.project_paths.contains(&missing));
+        assert_eq!(std::fs::read(&project_path).unwrap(), published_project_bytes);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read(&source_path).unwrap(), before_source);
         assert!(!owner.identity().managed_operations_enabled);
         assert!(owner.runtime_source_settings_path().is_ok());
         close_test_coordinator(&app).await;
