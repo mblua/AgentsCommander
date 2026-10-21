@@ -6230,26 +6230,33 @@ mod tests {
                     } else {
                         std::fs::create_dir(&selected).unwrap();
                         if relative.is_empty() {
-                            std::fs::copy(moved.join("Role.md"), selected.join("Role.md")).unwrap();
+                            // AC-3142-001: preserve every selected child identity/stamp;
+                            // only the source root identity may cause this rejection.
+                            for child in ["Role.md", "skills", "default-tools"] {
+                                std::fs::rename(moved.join(child), selected.join(child)).unwrap();
+                            }
                         }
                     }
                 }
                 Ok(())
             };
-            assert!(
-                copy_agent_matrix_strict_with_hooks(
-                    &project,
-                    "alpha",
-                    &destination,
-                    "_agent_copy",
-                    &mut MatrixCopyHooks {
-                        callback: Some(&mut callback),
-                        ..Default::default()
-                    }
-                )
-                .is_err(),
-                "{relative}"
-            );
+            let error = copy_agent_matrix_strict_with_hooks(
+                &project,
+                "alpha",
+                &destination,
+                "_agent_copy",
+                &mut MatrixCopyHooks {
+                    callback: Some(&mut callback),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            if relative.is_empty() {
+                assert!(
+                    error.contains("Source Matrix root replaced"),
+                    "AC-3142-001: {error}"
+                );
+            }
             assert!(!destination.join("_agent_copy").exists());
             assert!(project.join("held-original").exists());
         }
